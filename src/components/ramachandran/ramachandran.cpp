@@ -844,7 +844,6 @@ struct Ramachandran : viamd::EventHandler {
                         ImPlotPoint mouse_coord = ImPlot::GetPlotMousePos();
 
                         if (is_selecting[plot_idx]) {
-                            state.mold.dirty_buffers |= MolBit_DirtyFlags;
                             selection_rect.X.Max = mouse_coord.x;
                             selection_rect.Y.Max = mouse_coord.y;
                             if (selection_rect.Size().x != 0 && selection_rect.Size().y != 0) {
@@ -864,6 +863,10 @@ struct Ramachandran : viamd::EventHandler {
                         const double cut_d2 = fabs(ImPlot::PixelsToPlot(9,0).x - ImPlot::PixelsToPlot(0,0).x);
                         double min_d2 = DBL_MAX;
                         int64_t mouse_hover_idx = -1;
+
+                        if (hovered) {
+                            md_bitfield_clear(highlight_mask);
+                        }
 
                         if (show_curr && mol.backbone.angle) {
                             const uint32_t* indices = rama_type_indices[plot_idx];
@@ -908,7 +911,6 @@ struct Ramachandran : viamd::EventHandler {
 
                             if (is_selecting[plot_idx]) {
                                 grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, mol);
-                                state.mold.dirty_buffers |= MolBit_DirtyFlags;
                             }
 
                             if (mouse_hover_idx != -1) {
@@ -918,7 +920,6 @@ struct Ramachandran : viamd::EventHandler {
                                         md_range_t range = md_residue_atom_range(mol.residue, res_idx);
                                         modify_field(highlight_mask, range, SelectionOperator::Or);
                                         grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, mol);
-                                        state.mold.dirty_buffers |= MolBit_DirtyFlags;
                                     }
                                     str_t lbl = LBL_TO_STR(mol.residue.name[res_idx]);
                                     ImGui::SetTooltip("res[%d]: %.*s %d", res_idx + 1, (int)lbl.len, lbl.ptr, mol.residue.id[res_idx]);
@@ -1291,7 +1292,7 @@ struct Ramachandran : viamd::EventHandler {
         user_data->frame_stride = frame_stride;
         user_data->sigma = blur_sigma;
 
-        task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Rama density"), [](void* user_data) {
+        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Rama density"), [](void* user_data) {
             UserData* data = (UserData*)user_data;
             const float angle_to_coord_scale = 1.0f / (2.0f * PI);
             const float angle_to_coord_offset = 0.5f;
@@ -1334,13 +1335,14 @@ struct Ramachandran : viamd::EventHandler {
             data->rep->den_sum[3] = (float)sum[3];
         }, user_data);
 
-        task_system::ID main_task = task_system::main_enqueue(STR_LIT("##Update rama texture"), [](void* user_data) {
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update rama texture"), [](void* user_data) {
             UserData* data = (UserData*)user_data;
             gl::set_texture_2D_data(data->rep->den_tex, data->density_tex, GL_RGBA32F);
             md_free(md_get_heap_allocator(), data, data->alloc_size);
         }, user_data);
 
         task_system::set_task_dependency(main_task, async_task);
+        task_system::enqueue_task(async_task);
 
         return async_task;
     }

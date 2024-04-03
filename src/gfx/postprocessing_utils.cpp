@@ -148,14 +148,6 @@ static struct {
     struct {
         GLuint program = 0;
         struct {
-            GLint tex_color = -1;
-            GLint bg_color = -1;
-        } uniform_loc;
-    } compose;
-
-    struct {
-        GLuint program = 0;
-        struct {
             GLint tex_rgba = -1;
         } uniform_loc;
     } luma;
@@ -522,33 +514,49 @@ void shutdown() {
 
 namespace compose {
 
+struct ubo_data_t {
+    mat4_t inv_proj_mat;
+    vec3_t bg_color;
+    float  time;
+    vec3_t env_radiance;
+    float  roughness;
+    vec3_t dir_radiance;
+    float  F0;
+    vec3_t light_dir;
+};
+
 static struct {
     GLuint program = 0;
+    GLuint ubo = 0;
     struct {
+        GLint uniform_data = -1;
         GLint texture_depth = -1;
         GLint texture_color = -1;
         GLint texture_normal = -1;
-        GLint inv_proj_mat = -1;
-        GLint bg_color = -1;
-        GLint time = -1;
     } uniform_loc;
 } compose;
 
 void initialize() {
     compose.program = setup_program_from_source(STR_LIT("compose deferred"), {(const char*)compose_deferred_frag, compose_deferred_frag_size});
+    
+    if (compose.ubo == 0) {
+        glGenBuffers(1, &compose.ubo);
+        glBindBuffer(GL_UNIFORM_BUFFER, compose.ubo);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(ubo_data_t), 0, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    }
 
     compose.uniform_loc.texture_depth       = glGetUniformLocation(compose.program, "u_texture_depth");
     compose.uniform_loc.texture_color       = glGetUniformLocation(compose.program, "u_texture_color");
     compose.uniform_loc.texture_normal      = glGetUniformLocation(compose.program, "u_texture_normal");
-    compose.uniform_loc.inv_proj_mat        = glGetUniformLocation(compose.program, "u_inv_proj_mat");
-    compose.uniform_loc.bg_color            = glGetUniformLocation(compose.program, "u_bg_color");
-    compose.uniform_loc.time                = glGetUniformLocation(compose.program, "u_time");
+    compose.uniform_loc.uniform_data        = glGetUniformBlockIndex(compose.program, "UniformData");
 }
 
 void shutdown() {
-    if (compose.program)   glDeleteProgram(compose.program);
+    if (compose.program)    glDeleteProgram(compose.program);
+    if (compose.ubo)        glDeleteBuffers(1, &compose.ubo);
 }
-}  // namespace deferred
+}  // namespace compose
 
 namespace tonemapping {
 
@@ -1234,10 +1242,31 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
     POP_GPU_SECTION()
 }
 
-static void compose_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4_t& inv_proj_matrix, const vec4_t bg_color, float time) {
+static void compose_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4_t& inv_proj_matrix, const vec3_t bg_color, float time) {
     ASSERT(glIsTexture(depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(normal_tex));
+
+    const vec3_t env_radiance = bg_color * 0.25f;
+    const vec3_t dir_radiance = {10, 10, 10};
+    const float roughness = 0.4f;
+    const float F0 = 0.04f;
+    const vec3_t L = {0.57735026918962576451f, 0.57735026918962576451f, 0.57735026918962576451f};
+
+    compose::ubo_data_t data = {
+        .inv_proj_mat = inv_proj_matrix,
+        .bg_color = bg_color,
+        .time = time,
+        .env_radiance = env_radiance,
+        .roughness = roughness,
+        .dir_radiance = dir_radiance,
+        .F0 = F0,
+        .light_dir = L,
+    };
+
+    glBindBuffer(GL_UNIFORM_BUFFER, compose::compose.ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(data), &data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_tex);
@@ -1249,13 +1278,12 @@ static void compose_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_t
     GLuint program = compose::compose.program;
 
     glUseProgram(program);
+
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, compose::compose.ubo);
+    glUniformBlockBinding(program, compose::compose.uniform_loc.uniform_data, 0);
     glUniform1i (compose::compose.uniform_loc.texture_depth, 0);
     glUniform1i (compose::compose.uniform_loc.texture_color, 1);
     glUniform1i (compose::compose.uniform_loc.texture_normal, 2);
-
-    glUniformMatrix4fv(compose::compose.uniform_loc.inv_proj_mat, 1, GL_FALSE, &inv_proj_matrix.elem[0][0]);
-    glUniform4fv(compose::compose.uniform_loc.bg_color, 1, bg_color.elem);
-    glUniform1f(compose::compose.uniform_loc.time, time);
 
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);

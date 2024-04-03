@@ -584,8 +584,8 @@ struct ApplicationState {
         struct {
             bool enabled = true;
             bool jitter = true;
-            float feedback_min = 0.88f;
-            float feedback_max = 0.97f;
+            float feedback_min = 0.80f;
+            float feedback_max = 0.95f;
 
             struct {
                 bool enabled = true;
@@ -614,6 +614,7 @@ struct ApplicationState {
         RepresentationInfo info = {};
         md_array(Representation) reps = 0;
         md_bitfield_t visibility_mask = {0};
+        uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
     } representation;

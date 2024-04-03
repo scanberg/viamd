@@ -479,7 +479,7 @@ struct VeloxChem : viamd::EventHandler {
 
         MD_LOG_DEBUG("Starting async eval of orbital grid [%i][%i][%i]", dim[0], dim[1], dim[2]);
 
-        task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
             (void)thread_num;
             Payload* data = (Payload*)user_data;
 
@@ -531,7 +531,7 @@ struct VeloxChem : viamd::EventHandler {
         }, payload);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::main_enqueue(STR_LIT("##Update Volume"), [](void* user_data) {
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
             
             // The init here is just to ensure that the volume has not changed its dimensions during the async evaluation
@@ -543,6 +543,7 @@ struct VeloxChem : viamd::EventHandler {
         }, payload);
 
         task_system::set_task_dependency(main_task, async_task);
+        task_system::enqueue_task(async_task);
 
         return async_task;
     }
@@ -749,7 +750,7 @@ struct VeloxChem : viamd::EventHandler {
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
 
-        const char* x_unit_str[] = { "eV", "nm", "cm-1", "hartree"};
+        const char* x_unit_str[] = { "eV", "nm", (const char*)u8"cm⁻¹", "hartree"};
         static x_unit_t x_unit = X_UNIT_EV;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
@@ -770,9 +771,9 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             const int num_samples = 1024;
-            double* x_values    = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_cgs_str   = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* y_cgs_str = (double*)md_temp_push(sizeof(double) * num_samples);
 
             ImVec2*   pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
             ImVec2*   pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
@@ -1284,7 +1285,7 @@ struct VeloxChem : viamd::EventHandler {
             PUSH_GPU_SECTION("Postprocessing")
             postprocessing::Descriptor postprocess_desc = {
                 .background = {
-                    .color = {24.f, 24.f, 24.f, 1.0f},
+                    .color = {24.f, 24.f, 24.f},
                 },
                 .bloom = {
                     .enabled = false,
@@ -1369,6 +1370,12 @@ struct VeloxChem : viamd::EventHandler {
                                 .count  = (size_t)orb.iso.count,
                                 .values = orb.iso.values,
                                 .colors = orb.iso.colors,
+                        },
+                        .shading = {
+                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                .roughness = 0.3f,
+                                .dir_radiance = {10,10,10},
+                                .ior = 1.5f,
                         },
                         .voxel_spacing = orb.vol[i].step_size,
                         };
@@ -1667,7 +1674,7 @@ struct VeloxChem : viamd::EventHandler {
             PUSH_GPU_SECTION("Postprocessing")
             postprocessing::Descriptor postprocess_desc = {
                 .background = {
-                    .color = {24.f, 24.f, 24.f, 1.0f},
+                    .color = {24.f, 24.f, 24.f},
                 },
                 .bloom = {
                     .enabled = false,

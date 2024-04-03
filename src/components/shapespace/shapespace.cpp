@@ -37,6 +37,7 @@ struct ShapeSpace : viamd::EventHandler {
     md_array(vec3_t) weights = 0;
     md_array(vec2_t) coords  = 0;
     md_array(md_bitfield_t) bitfields = 0;
+    md_bitfield_t joined_bitfield = {};
 
     md_allocator_i* arena = 0;
 
@@ -58,6 +59,7 @@ struct ShapeSpace : viamd::EventHandler {
             case viamd::EventType_ViamdInitialize: {
                 app_state = (ApplicationState*)e.payload;
                 arena = md_arena_allocator_create(app_state->allocator.persistent, MEGABYTES(1));
+                md_bitfield_init(&joined_bitfield, arena);
                 break;
             }
             case viamd::EventType_ViamdShutdown:
@@ -136,11 +138,7 @@ struct ShapeSpace : viamd::EventHandler {
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered()) {
                 if (input_valid) {
-                    md_bitfield_clear(&app_state->selection.highlight_mask);
-                    for (size_t i = 0; i < md_array_size(bitfields); ++i) {
-                        md_bitfield_or_inplace(&app_state->selection.highlight_mask, &bitfields[i]);
-                    }
-                    viamd::event_system_enqueue_event(viamd::EventType_ViamdHoverMaskChanged);
+                    md_bitfield_copy(&app_state->selection.highlight_mask, &joined_bitfield);
                 } else if (error[0] != '\0') {
                     ImGui::SetTooltip("%s", error);
                 }
@@ -254,6 +252,10 @@ struct ShapeSpace : viamd::EventHandler {
                 }
                 ImPlot::PopStyleVar(2);
 
+                if (ImPlot::IsPlotHovered()) {
+                    md_bitfield_clear(&app_state->selection.highlight_mask);
+                }
+
                 // Redraw hovered index
                 ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
                 ImPlot::PushStyleVar(ImPlotStyleVar_MarkerSize, marker_size * 1.1f);
@@ -269,7 +271,6 @@ struct ShapeSpace : viamd::EventHandler {
                     ImPlot::PlotScatterG("##hovered structure", getter, coordinates, count);
                     if (hovered_structure_idx < (int)md_array_size(bitfields)) {
                         md_bitfield_copy(&app_state->selection.highlight_mask, &bitfields[hovered_structure_idx]);
-                        app_state->mold.dirty_buffers |= MolBit_DirtyFlags;
                     }
                 }
                 if (hovered_point_idx != -1) {
@@ -288,7 +289,6 @@ struct ShapeSpace : viamd::EventHandler {
 
                     if (structure_idx < (int)md_array_size(bitfields)) {
                         md_bitfield_copy(&app_state->selection.highlight_mask, &bitfields[structure_idx]);
-                        app_state->mold.dirty_buffers |= MolBit_DirtyFlags;
                     }
 
                     if (ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseClicked[0]) {
@@ -315,6 +315,7 @@ struct ShapeSpace : viamd::EventHandler {
                 num_frames = 0;
                 num_structures = 0;
                 md_arena_allocator_reset(arena);
+                md_bitfield_clear(&joined_bitfield);
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
@@ -332,12 +333,15 @@ struct ShapeSpace : viamd::EventHandler {
                         MD_LOG_ERROR("No trajectory frames present when attempting to populate shape space");
                         return;
                     }
+                    for (size_t i = 0; i < num_structures; ++i) {
+                        md_bitfield_or_inplace(&joined_bitfield, &bitfields[i]);
+                    }
 
                     md_array_resize(weights, num_frames * num_structures, arena);
                     md_array_resize(coords,  num_frames * num_structures, arena);
                     MEMSET(weights, 0, md_array_bytes(weights));
                     MEMSET(coords,  0, md_array_bytes(coords));
-                    evaluate_task = task_system::pool_enqueue(STR_LIT("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                    evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                         (void)thread_num;
                         ShapeSpace* shape_space = (ShapeSpace*)user_data;
                         ApplicationState* app_state = shape_space->app_state;
@@ -382,6 +386,8 @@ struct ShapeSpace : viamd::EventHandler {
                         }
                         md_array_free(xyzw, md_get_heap_allocator());
                     }, this);
+
+                    task_system::enqueue_task(evaluate_task);
                 }
             }
         }

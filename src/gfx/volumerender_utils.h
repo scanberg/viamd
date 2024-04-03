@@ -81,6 +81,26 @@ struct RenderDesc {
         float max_tf_value = 1.0f;
     } dvr;
 
+    // A simplified shading model based on Cook-Torrance
+    // Static enviromental radiance (uniformly lit from all directions)
+    // 1 directional light positioned at {1,1,1} in viewspace
+
+    // env_radiance: The uniformly incomming radiance from all directions
+    // dir_radiance: The directional radiance incomming from a directional light
+    // roughness: Approximates the micro-roughness of the surface
+    // A value of 0.0 would approximate a perfectly smooth surface
+    // A value of 1.0 would approximate a perfectly 'diffuse' surface
+
+    // ior: corresponds to the Index of refraction of the iso surfaces.
+    // A value of 1.5 is recommended and roughly approximates plastic
+
+    struct {
+        vec3_t env_radiance = {0,0,0};
+        float roughness = 0.4f;
+        vec3_t dir_radiance = {1,1,1};
+        float ior = 1.5f;
+    } shading;
+
     vec3_t voxel_spacing = {};
 };
 

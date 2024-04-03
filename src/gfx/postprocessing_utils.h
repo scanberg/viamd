@@ -61,7 +61,7 @@ enum Tonemapping_ {
 
 struct Descriptor {
     struct {
-        vec4_t color = {20.f, 20.f, 20.f, 1.0f};
+        vec3_t color = {20.f, 20.f, 20.f};
     } background;
 
     struct {
@@ -95,8 +95,8 @@ struct Descriptor {
 
     struct {
         bool enabled = true;
-        float feedback_min = 0.88f;
-        float feedback_max = 0.97f;
+        float feedback_min = 0.80f;
+        float feedback_max = 0.95f;
         struct {
             bool enabled = true;
             float motion_scale = 0.5f;

@@ -700,13 +700,11 @@ static bool filter_expression(ApplicationState* data, str_t expr, md_bitfield_t*
 static void modify_selection(ApplicationState* data, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
     modify_field(&data->selection.selection_mask, atom_mask, op);
-    data->mold.dirty_buffers |= MolBit_DirtyFlags;
 }
 
 static void modify_selection(ApplicationState* data, md_range_t range, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
     modify_field(&data->selection.selection_mask, range, op);
-    data->mold.dirty_buffers |= MolBit_DirtyFlags;
 }
 
 static void set_hovered_property(ApplicationState* data, str_t label, int population_idx = -1) {
@@ -903,8 +901,6 @@ int main(int argc, char** argv) {
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
         const double   max_frame = (double)last_frame;
 
-        md_bitfield_clear(&data.selection.highlight_mask);
-
         if (!file_queue_empty(&data.file_queue) && !data.load_dataset.show_window) {
             FileQueue::Entry e = file_queue_pop(&data.file_queue);
 
@@ -972,8 +968,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        viamd::event_system_enqueue_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &data);
-        viamd::event_system_process_event_queue();
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &data);
 
         // GUI
 
@@ -1096,13 +1091,14 @@ int main(int argc, char** argv) {
                         frame_end = CLAMP((uint32_t)data.animation.frame, 0, traj_frames);
                     }
                     if (frame_beg != frame_end) {
-                        data.tasks.prefetch_frames = task_system::pool_enqueue(STR_LIT("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
+                        data.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
                             (void)thread_num;
                             ApplicationState* data = (ApplicationState*)user_data;
                             for (uint32_t i = frame_beg; i < frame_end; ++i) {
                                 md_trajectory_load_frame(data->mold.traj, i, 0, 0, 0, 0);
                             }
                         }, &data);
+                        task_system::enqueue_task(data.tasks.prefetch_frames);
                     }
                 }
             }
@@ -1340,7 +1336,7 @@ int main(int argc, char** argv) {
                         md_script_eval_clear_data(data.script.full_eval);
 
                         if (md_script_ir_property_count(data.script.eval_ir) > 0) {
-                            data.tasks.evaluate_full = task_system::pool_enqueue(STR_LIT("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
+                            data.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
                                 (void)thread_num;
                                 ApplicationState* data = (ApplicationState*)user_data;
                                 md_script_eval_frame_range(data->script.full_eval, data->script.eval_ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
@@ -1348,7 +1344,7 @@ int main(int argc, char** argv) {
                             
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_time_current();
-                            task_system::ID time_task = task_system::pool_enqueue(STR_LIT("##Time Eval Full"), [](void* user_data) {
+                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [](void* user_data) {
                                 uint64_t t1 = md_time_current();
                                 uint64_t t0 = (uint64_t)user_data;
                                 double s = md_time_as_seconds(t1 - t0);
@@ -1356,6 +1352,7 @@ int main(int argc, char** argv) {
                             }, (void*)time);
 #endif
                             task_system::set_task_dependency(time_task, data.tasks.evaluate_full);
+                            task_system::enqueue_task(data.tasks.evaluate_full);
                         }
                     }
                 }
@@ -1376,11 +1373,12 @@ int main(int argc, char** argv) {
                                 const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
                                 const uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
                                 const uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                                data.tasks.evaluate_filt = task_system::pool_enqueue(STR_LIT("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data, uint32_t thread_num) {
+                                data.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data, uint32_t thread_num) {
                                     (void)thread_num;
                                     ApplicationState* data = (ApplicationState*)user_data;
                                     md_script_eval_frame_range(data->script.filt_eval, data->script.eval_ir, &data->mold.mol, data->mold.traj, beg, end);
                                 }, &data);
+                                task_system::enqueue_task(data.tasks.evaluate_filt);
                             }
                             
                             /*
@@ -1418,6 +1416,38 @@ int main(int argc, char** argv) {
             postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
         }
 
+        // The motivation for doing this is to reduce the frequency at which we invalidate and upload the atom flag field to the GPU
+        // For large systems, this can be a costly operation: Consider a system of 100'000'000 atoms
+        // The the size of each bitfield to represent the mask would be 12.5 MB
+        // Given a throughput of 10GB/s for hash64 results in a time of 1.25 ms per bitfield.
+
+        uint64_t v_hash = data.representation.visibility_mask_hash;
+        uint64_t h_hash = md_bitfield_hash64(&data.selection.highlight_mask, 0);
+        uint64_t s_hash = md_bitfield_hash64(&data.selection.selection_mask, 0);
+        uint64_t f_hash = v_hash ^ h_hash ^ s_hash;
+
+        // These represent the 'current' state so we can compare against it to see if they were modified
+        static uint64_t highlight_hash = 0;
+        static uint64_t selection_hash = 0;
+        static uint64_t flag_hash = 0;
+
+        if (h_hash != highlight_hash) {
+            highlight_hash = h_hash;
+            // enqueue the event here and do not broadcast (stall)
+            viamd::event_system_enqueue_event(viamd::EventType_ViamdHoverMaskChanged, viamd::EventPayloadType_ApplicationState, &data);
+        }
+
+        if (s_hash != selection_hash) {
+            selection_hash = s_hash;
+            // enqueue the event here and do not broadcast (stall)
+            viamd::event_system_enqueue_event(viamd::EventType_ViamdSelectionMaskChanged, viamd::EventPayloadType_ApplicationState, &data);
+        }
+
+        if (f_hash != flag_hash) {
+            flag_hash = f_hash;
+            data.mold.dirty_buffers |= MolBit_DirtyFlags;
+        }
+
         update_md_buffers(&data);
         update_display_properties(&data);
 
@@ -1451,13 +1481,14 @@ int main(int argc, char** argv) {
             str_free(data.screenshot.path_to_file, persistent_alloc);
         }
 
-        // Swap buffers
-        application::swap_buffers(&data.app);
-
-        task_system::execute_queued_tasks();
+        viamd::event_system_process_event_queue();
+        task_system::execute_main_task_queue();
 
         // Reset frame allocator
         md_vm_arena_reset(frame_alloc);
+
+        // Swap buffers
+        application::swap_buffers(&data.app);
     }
 
     interrupt_async_tasks(&data);
@@ -2419,8 +2450,8 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::Checkbox("Temporal AA", &data->visuals.temporal_reprojection.enabled);
                 if (data->visuals.temporal_reprojection.enabled) {
                     // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-                    // ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
-                    // ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
+                    //ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
+                    //ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
                     ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
                     if (data->visuals.temporal_reprojection.motion_blur.enabled) {
                         ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 2.0f);
@@ -2509,11 +2540,9 @@ static void draw_main_menu(ApplicationState* data) {
             int64_t num_selected_atoms = md_bitfield_popcount(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
                 md_bitfield_not_inplace(&data->selection.selection_mask, 0, data->mold.mol.atom.count);
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
             if (ImGui::IsItemHovered()) {
                 md_bitfield_not(&data->selection.highlight_mask, &data->selection.selection_mask, 0, data->mold.mol.atom.count);
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
             if (ImGui::MenuItem("Query")) data->selection.query.show_window = true;
             if (num_selected_atoms == 0) ImGui::PushDisabled();
@@ -2521,7 +2550,6 @@ static void draw_main_menu(ApplicationState* data) {
             if (num_selected_atoms == 0) ImGui::PopDisabled();
             if (ImGui::MenuItem("Clear")) {
                 md_bitfield_clear(&data->selection.selection_mask);
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
             ImGui::Spacing();
             ImGui::Separator();
@@ -2559,7 +2587,6 @@ static void draw_main_menu(ApplicationState* data) {
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Load the stored selection into the active selection");
                         md_bitfield_copy(&data->selection.highlight_mask, &sel.atom_mask);
-                        data->mold.dirty_buffers |= MolBit_DirtyFlags;
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Store")) {
@@ -3610,7 +3637,6 @@ void draw_context_popup(ApplicationState* data) {
 
                 if (!md_bitfield_empty(&mask)) {
                     md_bitfield_copy(&data->selection.highlight_mask, &mask);
-                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
 
                     if (apply) {
                         load::traj::set_recenter_target(data->mold.traj, &mask);
@@ -3628,12 +3654,10 @@ void draw_context_popup(ApplicationState* data) {
         if (ImGui::BeginMenu("Selection")) {
             if (ImGui::MenuItem("Invert")) {
                 md_bitfield_not_inplace(&data->selection.selection_mask, 0, data->mold.mol.atom.count);
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
                 md_bitfield_not(&data->selection.highlight_mask, &data->selection.selection_mask, 0, data->mold.mol.atom.count);
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
             if (ImGui::MenuItem("Query")) {
                 data->selection.query.show_window = true;
@@ -3646,7 +3670,6 @@ void draw_context_popup(ApplicationState* data) {
                 }
                 if (ImGui::MenuItem("Clear")) {
                     md_bitfield_clear(&data->selection.selection_mask);
-                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
                 }
             }
             ImGui::EndMenu();
@@ -3700,7 +3723,6 @@ static void draw_selection_grow_window(ApplicationState* data) {
 
         if (show_preview) {
             md_bitfield_copy(&data->selection.highlight_mask, &data->selection.grow.mask);
-            data->mold.dirty_buffers |= MolBit_DirtyFlags;
         }
         if (apply) {
             md_bitfield_copy(&data->selection.selection_mask, &data->selection.grow.mask);
@@ -3754,12 +3776,10 @@ static void draw_selection_query_window(ApplicationState* data) {
 
         if (preview) {
             md_bitfield_copy(&data->selection.highlight_mask, &data->selection.query.mask);
-            data->mold.dirty_buffers |= MolBit_DirtyFlags;
         }
 
         if (apply && data->selection.query.query_ok) {
             md_bitfield_copy(&data->selection.selection_mask, &data->selection.query.mask);
-            data->mold.dirty_buffers |= MolBit_DirtyFlags;
             data->selection.query.show_window = false;
         }
     }
@@ -4606,7 +4626,6 @@ static void visualize_payload(ApplicationState* data, const md_script_vis_payloa
     if (md_script_vis_eval_payload(&data->script.vis, payload, subidx, &ctx, flags)) {
         if (!md_bitfield_empty(&data->script.vis.atom_mask)) {
             md_bitfield_copy(&data->selection.highlight_mask, &data->script.vis.atom_mask);
-            data->mold.dirty_buffers |= MolBit_DirtyFlags;
         }
     }
 }
@@ -6216,7 +6235,14 @@ static void draw_density_volume_window(ApplicationState* data) {
                         .min_tf_value = data->density_volume.dvr.tf.min_val,
                         .max_tf_value = data->density_volume.dvr.tf.max_val,
                     },
+                    .shading = {
+                        .env_radiance = data->visuals.background.color * data->visuals.background.intensity * 0.25f,
+                        .roughness = 0.3f,
+                        .dir_radiance = {10,10,10},
+                        .ior = 1.5f,
+                    },
                     .voxel_spacing = data->density_volume.voxel_spacing
+                    
                 };
                 volume::render_volume(vol_desc);
             }
@@ -6253,7 +6279,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         PUSH_GPU_SECTION("Postprocessing")
         postprocessing::Descriptor postprocess_desc = {
             .background = {
-                .color = vec4_from_vec3(data->visuals.background.color * data->visuals.background.intensity, 1.0f),
+                .color = data->visuals.background.color * data->visuals.background.intensity,
             },
             .bloom = {
                 .enabled = false,
@@ -6355,9 +6381,7 @@ static void draw_dataset_window(ApplicationState* data) {
 
                         if (ImGui::IsItemHovered()) {
                             ImGui::SetTooltip("%s: count %d", item.label, item.count);
-                            if (filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask)) {
-                                data->mold.dirty_buffers |= MolBit_DirtyFlags;
-                            }
+                            filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask);
                         }
 
                         float last_item_x = ImGui::GetItemRectMax().x;
@@ -6545,7 +6569,6 @@ static void draw_script_editor_window(ApplicationState* data) {
                 if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
                     const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
                     md_bitfield_copy(&data->selection.highlight_mask, bf);
-                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
                 }
                 else if (hovered_marker->type == MarkerType_Visualization) {
                     if (md_script_ir_valid(data->script.ir)) {
@@ -6562,7 +6585,6 @@ static void draw_script_editor_window(ApplicationState* data) {
                     
                         if (!md_bitfield_empty(&data->script.vis.atom_mask)) {
                             md_bitfield_copy(&data->selection.highlight_mask, &data->script.vis.atom_mask);
-                            data->mold.dirty_buffers |= MolBit_DirtyFlags;
                         }
                     }
                 }
@@ -7021,48 +7043,34 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
-        static uint64_t highlight_hash = 0;
-        static uint64_t selection_hash = 0;
-        static uint64_t visibility_hash = 0;
-        static uint64_t flag_hash = 0;
+        md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+        defer { md_vm_arena_temp_end(tmp); };
 
-        uint64_t h_hash = md_bitfield_hash64(&data->selection.highlight_mask, 0);
-        uint64_t s_hash = md_bitfield_hash64(&data->selection.selection_mask, 0);
-        uint64_t v_hash = md_bitfield_hash64(&data->representation.visibility_mask, 0);
-        uint64_t f_hash = h_hash ^ s_hash ^ v_hash;
+        uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
+        MEMSET(flags, 0, mol.atom.count * sizeof(uint8_t));
 
-        if (f_hash != flag_hash) {
-            flag_hash = f_hash;
-            md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-            defer { md_vm_arena_temp_end(tmp); };
-
-            uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
-            MEMSET(flags, 0, mol.atom.count * sizeof(uint8_t));
-
-            {
-                md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.highlight_mask);
-                while (md_bitfield_iter_next(&it)) {
-                    uint64_t idx = md_bitfield_iter_idx(&it);
-                    flags[idx] |= AtomBit_Highlighted;
-                }
+        {
+            md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.highlight_mask);
+            while (md_bitfield_iter_next(&it)) {
+                uint64_t idx = md_bitfield_iter_idx(&it);
+                flags[idx] |= AtomBit_Highlighted;
             }
-            {
-                md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.selection_mask);
-                while (md_bitfield_iter_next(&it)) {
-                    uint64_t idx = md_bitfield_iter_idx(&it);
-                    flags[idx] |= AtomBit_Selected;
-                }
-            }
-            {
-                md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
-                while (md_bitfield_iter_next(&it)) {
-                    uint64_t idx = md_bitfield_iter_idx(&it);
-                    flags[idx] |= AtomBit_Visible;
-                }
-            }
-            flag_hash = f_hash;
-            md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
         }
+        {
+            md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.selection_mask);
+            while (md_bitfield_iter_next(&it)) {
+                uint64_t idx = md_bitfield_iter_idx(&it);
+                flags[idx] |= AtomBit_Selected;
+            }
+        }
+        {
+            md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
+            while (md_bitfield_iter_next(&it)) {
+                uint64_t idx = md_bitfield_iter_idx(&it);
+                flags[idx] |= AtomBit_Visible;
+            }
+        }
+        md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
@@ -7150,7 +7158,7 @@ static void init_trajectory_data(ApplicationState* data) {
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
 
-            data->tasks.backbone_computations = task_system::pool_enqueue(STR_LIT("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+            data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                 (void)thread_num;
                 ApplicationState* data = (ApplicationState*)user_data;
                 
@@ -7173,7 +7181,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 }
             }, data);
 
-            task_system::ID main_task = task_system::main_enqueue(STR_LIT("Update Trajectory Data"), [](void* user_data) {
+            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [](void* user_data) {
                 ApplicationState* data = (ApplicationState*)user_data;
                 data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
@@ -7186,6 +7194,8 @@ static void init_trajectory_data(ApplicationState* data) {
             }, data);
 
             task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
+
+            task_system::enqueue_task(data->tasks.backbone_computations);
         }
 
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
@@ -7290,7 +7300,7 @@ static void launch_prefetch_job(ApplicationState* data) {
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::pool_enqueue(STR_LIT("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+    data->tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
         (void)thread_num;
         ApplicationState* data = (ApplicationState*)user_data;
         for (uint32_t i = range_beg; i < range_end; ++i) {
@@ -7299,7 +7309,7 @@ static void launch_prefetch_job(ApplicationState* data) {
         }
     }, data);
 
-    task_system::ID main_task = task_system::main_enqueue(STR_LIT("Prefetch Complete"), [](void* user_data) {
+    task_system::ID main_task = task_system::create_main_task(STR_LIT("Prefetch Complete"), [](void* user_data) {
         ApplicationState* data = (ApplicationState*)user_data;
         interpolate_atomic_properties(data);
         update_md_buffers(data);
@@ -7307,6 +7317,8 @@ static void launch_prefetch_job(ApplicationState* data) {
     }, data);
 
     task_system::set_task_dependency(main_task, data->tasks.prefetch_frames);
+
+    task_system::enqueue_task(data->tasks.prefetch_frames);
 }
 
 static bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
@@ -7773,8 +7785,7 @@ static void recompute_atom_visibility_mask(ApplicationState* state) {
         if (!rep.enabled) continue;
         md_bitfield_or_inplace(&mask, &rep.atom_mask);
     }
-
-    state->mold.dirty_buffers |= MolBit_DirtyFlags;
+    state->representation.visibility_mask_hash = md_bitfield_hash64(&mask, 0);
 }
 
 static void update_all_representations(ApplicationState* state) {
@@ -8213,7 +8224,6 @@ static void handle_camera_interaction(ApplicationState* data) {
 
                 if (min_p != max_p) {
                     md_bitfield_clear(&data->selection.highlight_mask);
-                    data->mold.dirty_buffers |= MolBit_DirtyFlags;
                     data->selection.selecting = true;
 
                     const vec2_t res = { (float)data->app.window.width, (float)data->app.window.height };
@@ -8277,13 +8287,11 @@ static void handle_camera_interaction(ApplicationState* data) {
                         md_bitfield_clear(&data->selection.highlight_mask);
                     }
                 }
-
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
             }
         }
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
+            md_bitfield_clear(&data->selection.highlight_mask);
             if (data->picking.idx != INVALID_PICKING_IDX) {
-                md_bitfield_clear(&data->selection.highlight_mask);
                 if (data->selection.atom_idx.hovered != -1 && data->mold.mol.atom.count) {
                     md_bitfield_set_bit(&data->selection.highlight_mask, data->picking.idx);
                 }
@@ -8294,7 +8302,6 @@ static void handle_camera_interaction(ApplicationState* data) {
                 }
                 grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.mol);
 
-                data->mold.dirty_buffers |= MolBit_DirtyFlags;
                 draw_info_window(*data, data->picking.idx);
             }
         }
@@ -8657,7 +8664,7 @@ static void apply_postprocessing(const ApplicationState& data) {
     PUSH_GPU_SECTION("Postprocessing")
     postprocessing::Descriptor desc;
 
-    desc.background.color = vec4_from_vec3(data.visuals.background.color * data.visuals.background.intensity, 1.0f);
+    desc.background.color = data.visuals.background.color * data.visuals.background.intensity;
 
     desc.ambient_occlusion.enabled = data.visuals.ssao.enabled;
     desc.ambient_occlusion.intensity = data.visuals.ssao.intensity;
@@ -8835,6 +8842,12 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .min_tf_value = -1.0f,
                 .max_tf_value =  1.0f,
             },
+            .shading = {
+                .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25f,
+                .roughness = 0.3f,
+                .dir_radiance = {10,10,10},
+                .ior = 1.5f,
+        },
             .voxel_spacing = rep.orbital.vol.voxel_spacing,
         };
 
