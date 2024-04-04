@@ -42,8 +42,8 @@ If you want to stay informed about the latest update of VIAMD, please register y
 VIAMD has received constant financial support since 2018 from the Swedish e-Research center ([SeRC](https://e-science.se/)) and the [Wallenberg Foundation](https://www.wallenberg.org/en)
 
 VIAMD is supported by [InfraVis](https://infravis.se/) for specific projets:
-- Parser for LAMMPS file
-- Interactice analysis of VeloxChem file (interactive analysis of orbitals and spectra plotting)
+- Parser for LAMMPS file (2301-5217 / 140 hours)
+- Interactice analysis of VeloxChem file (interactive analysis of orbitals and spectra plotting) (600 hours) 
 
 <p align="center">
 <img src="https://github.com/scanberg/viamd/assets/38646069/e7245119-3ec4-4b84-9056-7197b3d1448b"  height="75" >
