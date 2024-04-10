@@ -94,7 +94,7 @@ struct VeloxChem : viamd::EventHandler {
         float distance_scale = 2.0f;
 
         bool show_coordinate_system_widget = true;
-        md_gl_representation_t gl_rep = {};
+        md_gl_rep_t gl_rep = {};
     } orb;
 
     struct Nto {
@@ -125,7 +125,7 @@ struct VeloxChem : viamd::EventHandler {
         float distance_scale = 2.0f;
 
         bool show_coordinate_system_widget = true;
-        md_gl_representation_t gl_rep = {};
+        md_gl_rep_t gl_rep = {};
     } nto;
 
     struct Rsp {
@@ -171,10 +171,10 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdDrawMenu:
-                ImGui::Checkbox("VeloxChem Orbital", &orb.show_window);
-                ImGui::Checkbox("VeloxChem NTO", &nto.show_window);
-                ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
                 ImGui::Checkbox("VeloxChem SCF", &scf.show_window);
+                ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
+                ImGui::Checkbox("VeloxChem ORB", &orb.show_window);
+                ImGui::Checkbox("VeloxChem NTO", &nto.show_window);
                 break;
             case viamd::EventType_ViamdRenderTransparent: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
@@ -215,7 +215,7 @@ struct VeloxChem : viamd::EventHandler {
                         min_aabb = vec3_from_vec4(min_box);
                         max_aabb = vec3_from_vec4(max_box);
 
-                        vec3_t com = md_util_com_compute_vec4(xyzw, vlx.geom.num_atoms, 0);
+                        vec3_t com =  md_util_com_compute_vec4(xyzw, 0, vlx.geom.num_atoms, 0);
                         mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
                         mat3_eigen_t eigen = mat3_eigen(C);
                         PCA = mat3_extract_rotation(eigen.vectors);
@@ -226,8 +226,8 @@ struct VeloxChem : viamd::EventHandler {
                         // NTO
                         if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
                             nto.show_window = true;
-                            md_gl_representation_init(&nto.gl_rep, &state.mold.gl_mol);
-                            md_gl_representation_set_color(&nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
+                            nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+                            md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
                             camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
                         }
 
@@ -238,8 +238,8 @@ struct VeloxChem : viamd::EventHandler {
 
                         // ORB
                         orb.show_window = true;
-                        md_gl_representation_init(&orb.gl_rep, &state.mold.gl_mol);
-                        md_gl_representation_set_color(&orb.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
+                        orb.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+                        md_gl_rep_set_color(orb.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
                         camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
                         orb.mo_idx = homo_idx;
                         orb.scroll_to_idx = homo_idx;
@@ -256,7 +256,7 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdTopologyFree:
-                md_gl_representation_free(&nto.gl_rep);
+                md_gl_rep_destroy(nto.gl_rep);
 
                 md_arena_allocator_reset(arena);
                 vlx = {};
@@ -865,6 +865,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
+                    ImPlot::SetupFinish();
 
                     peaks_to_pixels(pixel_osc_peaks, x_peaks, y_osc_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
@@ -902,6 +903,8 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Rotatory Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
+                    ImPlot::SetupFinish();
+
                     peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
@@ -950,8 +953,9 @@ struct VeloxChem : viamd::EventHandler {
 
     void draw_orb_window(const ApplicationState& state) {
         if (!orb.show_window) return;
+        if (num_orbitals() == 0) return;
         ImGui::SetNextWindowSize({600,300}, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("VeloxChem Orbital Viewer", &orb.show_window)) {
+        if (ImGui::Begin("VeloxChem Orbital Grid", &orb.show_window)) {
 #if 0
             if (vlx.geom.num_atoms) {
                 if (ImGui::TreeNode("Geometry")) {
@@ -1235,93 +1239,91 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::DrawCoordinateSystemWidget(param);
             }
 
-            const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
-            mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
-            mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
-            mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(orb.camera, aspect_ratio);
+            if (orb.gl_rep.id) {
+                const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
+                mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
+                mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
+                mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(orb.camera, aspect_ratio);
 
-            clear_gbuffer(&gbuf);
+                clear_gbuffer(&gbuf);
 
-            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+                const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                    GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_BACK);
 
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
-            glEnable(GL_SCISSOR_TEST);
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_LESS);
+                glDepthMask(GL_TRUE);
+                glEnable(GL_SCISSOR_TEST);
 
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-            glViewport(0, 0, gbuf.width, gbuf.height);
-            glScissor(0, 0, gbuf.width, gbuf.height);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+                glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+                glViewport(0, 0, gbuf.width, gbuf.height);
+                glScissor(0, 0, gbuf.width, gbuf.height);
 
-            md_gl_draw_op_t draw_op = {};
-            draw_op.type = MD_GL_REP_BALL_AND_STICK;
-            draw_op.args.ball_and_stick.ball_scale   = 1.0f;
-            draw_op.args.ball_and_stick.stick_radius = 1.0f;
-            draw_op.rep = &orb.gl_rep;
+                md_gl_draw_op_t draw_op = {};
+                draw_op.type = MD_GL_REP_BALL_AND_STICK;
+                draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+                draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                draw_op.rep = orb.gl_rep;
 
-            md_gl_draw_args_t draw_args = {
-                .shaders = &state.mold.gl_shaders,
-                .draw_operations = {
-                    .count = 1,
-                    .ops = &draw_op
-            },
-                .view_transform = {
-                    .view_matrix = (const float*)view_mat.elem,
-                    .proj_matrix = (const float*)proj_mat.elem,
-            },
-            };
+                md_gl_draw_args_t draw_args = {
+                    .shaders = state.mold.gl_shaders,
+                    .draw_operations = {
+                        .count = 1,
+                        .ops = &draw_op
+                    },
+                    .view_transform = {
+                        .view_matrix = (const float*)view_mat.elem,
+                        .proj_matrix = (const float*)proj_mat.elem,
+                    },
+                };
 
-            md_gl_draw(&draw_args);
+                md_gl_draw(&draw_args);
 
-            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-            glClearColor(1, 1, 1, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
+                glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+                glClearColor(1, 1, 1, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
 
-            PUSH_GPU_SECTION("Postprocessing")
-            postprocessing::Descriptor postprocess_desc = {
-                .background = {
-                    .color = {24.f, 24.f, 24.f},
-                },
-                .bloom = {
-                    .enabled = false,
-                },
-                .tonemapping = {
-                    .enabled    = state.visuals.tonemapping.enabled,
-                    .mode       = state.visuals.tonemapping.tonemapper,
-                    .exposure   = state.visuals.tonemapping.exposure,
-                    .gamma      = state.visuals.tonemapping.gamma,
-                },
-                .ambient_occlusion = {
-                    .enabled = false
-                },
-                .depth_of_field = {
-                    .enabled = false,
-                },
-                .fxaa = {
-                    .enabled = true,
-                },
-                .temporal_reprojection = {
-                    .enabled = false,
-                },
-                .sharpen = {
-                    .enabled = true,
-                },
-                .input_textures = {
-                    .depth          = orb.gbuf.tex.depth,
-                    .color          = orb.gbuf.tex.color,
-                    .normal         = orb.gbuf.tex.normal,
-                    .velocity       = orb.gbuf.tex.velocity,
-                }
-            };
+                PUSH_GPU_SECTION("Postprocessing")
+                postprocessing::Descriptor postprocess_desc = {
+                    .background = {
+                        .color = {24.f, 24.f, 24.f},
+                    },
+                    .tonemapping = {
+                        .enabled    = state.visuals.tonemapping.enabled,
+                        .mode       = state.visuals.tonemapping.tonemapper,
+                        .exposure   = state.visuals.tonemapping.exposure,
+                        .gamma      = state.visuals.tonemapping.gamma,
+                    },
+                    .ambient_occlusion = {
+                        .enabled = false
+                    },
+                    .depth_of_field = {
+                        .enabled = false,
+                    },
+                    .fxaa = {
+                        .enabled = true,
+                    },
+                    .temporal_aa = {
+                        .enabled = false,
+                    },
+                    .sharpen = {
+                        .enabled = false,
+                    },
+                    .input_textures = {
+                        .depth          = orb.gbuf.tex.depth,
+                        .color          = orb.gbuf.tex.color,
+                        .normal         = orb.gbuf.tex.normal,
+                        .velocity       = orb.gbuf.tex.velocity,
+                    }
+                };
 
-            ViewParam view_param = {
-                .matrix = {
-                    .curr = {
+                ViewParam view_param = {
+                    .matrix = {
+                        .curr = {
                         .view = view_mat,
                         .proj = proj_mat,
                         .norm = view_mat,
@@ -1329,59 +1331,60 @@ struct VeloxChem : viamd::EventHandler {
                     .inv = {
                         .proj = inv_proj_mat,
                     }
-                },
-                .clip_planes = {
-                    .near = orb.camera.near_plane,
-                    .far  = orb.camera.far_plane,
-                },
-                .resolution = {orb_win_sz.x, orb_win_sz.y},
-                .fov_y = orb.camera.fov_y,
-            };
+                    },
+                    .clip_planes = {
+                        .near = orb.camera.near_plane,
+                        .far  = orb.camera.far_plane,
+                    },
+                    .resolution = {orb_win_sz.x, orb_win_sz.y},
+                    .fov_y = orb.camera.fov_y,
+                };
 
-            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
-            POP_GPU_SECTION()
+                postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+                POP_GPU_SECTION()
 
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glDrawBuffer(GL_BACK);
-            glDisable(GL_SCISSOR_TEST);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+                glDrawBuffer(GL_BACK);
+                glDisable(GL_SCISSOR_TEST);
 
-            if (orb.iso.enabled) {
-                PUSH_GPU_SECTION("ORB GRID RAYCAST")
-                    for (int i = 0; i < num_mos; ++i) {
-                        volume::RenderDesc vol_desc = {
-                            .render_target = {
-                                .depth  = orb.gbuf.tex.depth,
-                                .color  = orb.iso_tex[i],
-                                .width  = orb.gbuf.width,
-                                .height = orb.gbuf.height,
-                                .clear_color = true,
-                        },
-                        .texture = {
-                                .volume = orb.vol[i].tex_id,
-                        },
-                        .matrix = {
-                                .model = orb.vol[i].tex_to_world,
-                                .view  = view_mat,
-                                .proj  = proj_mat,
-                                .inv_proj = inv_proj_mat,
-                        },
-                        .iso = {
-                                .enabled = true,
-                                .count  = (size_t)orb.iso.count,
-                                .values = orb.iso.values,
-                                .colors = orb.iso.colors,
-                        },
-                        .shading = {
-                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
-                                .roughness = 0.3f,
-                                .dir_radiance = {10,10,10},
-                                .ior = 1.5f,
-                        },
-                        .voxel_spacing = orb.vol[i].step_size,
-                        };
-                        volume::render_volume(vol_desc);
-                    }
-                POP_GPU_SECTION();
+                if (orb.iso.enabled) {
+                    PUSH_GPU_SECTION("ORB GRID RAYCAST")
+                        for (int i = 0; i < num_mos; ++i) {
+                            volume::RenderDesc vol_desc = {
+                                .render_target = {
+                                    .depth  = orb.gbuf.tex.depth,
+                                    .color  = orb.iso_tex[i],
+                                    .width  = orb.gbuf.width,
+                                    .height = orb.gbuf.height,
+                                    .clear_color = true,
+                                },
+                                .texture = {
+                                    .volume = orb.vol[i].tex_id,
+                                },
+                                .matrix = {
+                                    .model = orb.vol[i].tex_to_world,
+                                    .view  = view_mat,
+                                    .proj  = proj_mat,
+                                    .inv_proj = inv_proj_mat,
+                                },
+                                .iso = {
+                                    .enabled = true,
+                                    .count  = (size_t)orb.iso.count,
+                                    .values = orb.iso.values,
+                                    .colors = orb.iso.colors,
+                                },
+                                .shading = {
+                                    .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                    .roughness = 0.3f,
+                                    .dir_radiance = {10,10,10},
+                                    .ior = 1.5f,
+                                },
+                                .voxel_spacing = orb.vol[i].step_size,
+                            };
+                            volume::render_volume(vol_desc);
+                        }
+                    POP_GPU_SECTION();
+                }
             }
         }
         ImGui::End();
@@ -1651,10 +1654,10 @@ struct VeloxChem : viamd::EventHandler {
             draw_op.type = MD_GL_REP_BALL_AND_STICK;
             draw_op.args.ball_and_stick.ball_scale   = 1.0f;
             draw_op.args.ball_and_stick.stick_radius = 1.0f;
-            draw_op.rep = &nto.gl_rep;
+            draw_op.rep = nto.gl_rep;
 
             md_gl_draw_args_t draw_args = {
-                .shaders = &state.mold.gl_shaders,
+                .shaders = state.mold.gl_shaders,
                 .draw_operations = {
                     .count = 1,
                     .ops = &draw_op
@@ -1676,9 +1679,6 @@ struct VeloxChem : viamd::EventHandler {
                 .background = {
                     .color = {24.f, 24.f, 24.f},
                 },
-                .bloom = {
-                    .enabled = false,
-                },
                 .tonemapping = {
                     .enabled    = state.visuals.tonemapping.enabled,
                     .mode       = state.visuals.tonemapping.tonemapper,
@@ -1694,11 +1694,11 @@ struct VeloxChem : viamd::EventHandler {
                 .fxaa = {
                     .enabled = true,
                 },
-                .temporal_reprojection = {
+                .temporal_aa = {
                     .enabled = false,
                 },
                 .sharpen = {
-                    .enabled = true,
+                    .enabled = false,
                 },
                 .input_textures = {
                     .depth      = nto.gbuf.tex.depth,

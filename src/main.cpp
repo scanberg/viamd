@@ -833,8 +833,8 @@ int main(int argc, char** argv) {
     task_system::initialize(CLAMP(num_threads, 2, (uint32_t)md_os_num_processors()));
 
     md_gl_initialize();
-    md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet.ptr, shader_output_snippet.len);
-    md_gl_shaders_init(&data.mold.gl_shaders_lean_and_mean, shader_output_snippet_lean_and_mean.ptr, shader_output_snippet_lean_and_mean.len);
+    data.mold.gl_shaders                = md_gl_shaders_create(shader_output_snippet);
+    data.mold.gl_shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &data);
 
@@ -961,6 +961,7 @@ int main(int argc, char** argv) {
                                 create_default_representations(&data);
                             }
                             interpolate_atomic_properties(&data);
+                            data.mold.dirty_buffers |= MolBit_ClearVelocity;
                             reset_view(&data, true, false);
                         }
                     }
@@ -971,7 +972,6 @@ int main(int argc, char** argv) {
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &data);
 
         // GUI
-
         if (data.show_script_window) draw_script_editor_window(&data);
         if (data.load_dataset.show_window) draw_load_dataset_window(&data);
         if (data.representation.show_window) draw_representations_window(&data);
@@ -1024,8 +1024,8 @@ int main(int argc, char** argv) {
                 LOG_INFO("Recompiling shaders and re-initializing volume");
                 postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
                 volume::initialize();
-                md_gl_shaders_free(&data.mold.gl_shaders);
-                md_gl_shaders_init(&data.mold.gl_shaders, shader_output_snippet.ptr, shader_output_snippet.len);
+                md_gl_shaders_destroy(data.mold.gl_shaders);
+                data.mold.gl_shaders = md_gl_shaders_create(shader_output_snippet);
             }
 
             if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
@@ -1074,31 +1074,35 @@ int main(int argc, char** argv) {
                 data.animation.frame = 0;
             }
 
-            if (!task_system::task_is_running(data.tasks.prefetch_frames)) {
-                uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
-                if (traj_frames > 0 && load::traj::num_cache_frames(data.mold.traj) < traj_frames) {
-                    uint32_t frame_beg = 0;
-                    uint32_t frame_end = 0;
-                    // @NOTE: This is certainly something which can be improved upon.
-                    // It prefetches frames in the direction of the animation.
-                    // In a more optimal case, it should never yield until it catches up with the number of frames it expects to have as a buffer.
+            if (data.settings.prefetch_frames) {
+                if (!task_system::task_is_running(data.tasks.prefetch_frames)) {
+                    uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
+                    if (traj_frames > 0 && load::traj::num_cache_frames(data.mold.traj) < traj_frames) {
+                        uint32_t frame_beg = 0;
+                        uint32_t frame_end = 0;
+                        // @NOTE: This is certainly something which can be improved upon.
+                        // It prefetches frames in the direction of the animation.
+                        // In a more optimal case, it should never yield until it catches up with the number of frames it expects to have as a buffer.
+
+                        int look_ahead = CLAMP((int)load::traj::num_cache_frames(data.mold.traj) / 2, 1, 10);
                     
-                    if (data.animation.fps > 0) {
-                        frame_beg = CLAMP((uint32_t)data.animation.frame, 0, traj_frames - 1);
-                        frame_end = CLAMP((uint32_t)data.animation.frame + 20, 0, traj_frames);
-                    } else {
-                        frame_beg = CLAMP((uint32_t)data.animation.frame - 20, 0, traj_frames - 1);
-                        frame_end = CLAMP((uint32_t)data.animation.frame, 0, traj_frames);
-                    }
-                    if (frame_beg != frame_end) {
-                        data.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
-                            (void)thread_num;
-                            ApplicationState* data = (ApplicationState*)user_data;
-                            for (uint32_t i = frame_beg; i < frame_end; ++i) {
-                                md_trajectory_load_frame(data->mold.traj, i, 0, 0, 0, 0);
-                            }
-                        }, &data);
-                        task_system::enqueue_task(data.tasks.prefetch_frames);
+                        if (data.animation.fps > 0) {
+                            frame_beg = (uint32_t)CLAMP((int)data.animation.frame             , 0, (int)traj_frames);
+                            frame_end = (uint32_t)CLAMP((int)data.animation.frame + look_ahead, 0, (int)traj_frames);
+                        } else {
+                            frame_beg = (uint32_t)CLAMP((int)data.animation.frame - look_ahead, 0, (int)traj_frames);
+                            frame_end = (uint32_t)CLAMP((int)data.animation.frame             , 0, (int)traj_frames);
+                        }
+                        if (frame_beg != frame_end) {
+                            data.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
+                                (void)thread_num;
+                                ApplicationState* data = (ApplicationState*)user_data;
+                                for (uint32_t i = frame_beg; i < frame_end; ++i) {
+                                    md_trajectory_load_frame(data->mold.traj, i, 0, 0, 0, 0);
+                                }
+                            }, &data);
+                            task_system::enqueue_task(data.tasks.prefetch_frames);
+                        }
                     }
                 }
             }
@@ -1963,7 +1967,7 @@ static void update_density_volume(ApplicationState* data) {
             if (data->density_volume.gl_reps) {
                 // Only free superflous entries
                 for (size_t i = num_reps; i < old_size; ++i) {
-                    md_gl_representation_free(&data->density_volume.gl_reps[i]);
+                    md_gl_rep_destroy(data->density_volume.gl_reps[i]);
                 }
             }
             md_array_resize(data->density_volume.gl_reps, num_reps, persistent_alloc);
@@ -1971,7 +1975,7 @@ static void update_density_volume(ApplicationState* data) {
 
             for (size_t i = old_size; i < num_reps; ++i) {
                 // Only init new entries
-                md_gl_representation_init(&data->density_volume.gl_reps[i], &data->mold.gl_mol);
+                data->density_volume.gl_reps[i] = md_gl_rep_create(data->mold.gl_mol);
             }
 
             const auto& mol = data->mold.mol;
@@ -2016,7 +2020,7 @@ static void update_density_volume(ApplicationState* data) {
 
             for (size_t i = 0; i < num_reps; ++i) {
                 filter_colors(colors, num_colors, &vis.sdf.structures[i]);
-                md_gl_representation_set_color(&data->density_volume.gl_reps[i], 0, (uint32_t)num_colors, colors, 0);
+                md_gl_rep_set_color(data->density_volume.gl_reps[i], 0, (uint32_t)num_colors, colors, 0);
                 data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
             }
         }
@@ -2036,26 +2040,24 @@ static void update_density_volume(ApplicationState* data) {
     }
 }
 
-static void clear_density_volume(ApplicationState* data) {
-    md_array_shrink(data->density_volume.gl_reps, 0);
-    md_array_shrink(data->density_volume.rep_model_mats, 0);
-    data->density_volume.model_mat = {0};
+static void clear_density_volume(ApplicationState* state) {
+    md_array_shrink(state->density_volume.gl_reps, 0);
+    md_array_shrink(state->density_volume.rep_model_mats, 0);
+    state->density_volume.model_mat = {0};
 }
 
-static void interpolate_atomic_properties(ApplicationState* data) {
-    ASSERT(data);
-    auto& mol = data->mold.mol;
-    const auto& traj = data->mold.traj;
+static void interpolate_atomic_properties(ApplicationState* state) {
+    ASSERT(state);
+    auto& mol = state->mold.mol;
+    const auto& traj = state->mold.traj;
 
     if (!mol.atom.count || !md_trajectory_num_frames(traj)) return;
 
     const int64_t last_frame = MAX(0LL, (int64_t)md_trajectory_num_frames(traj) - 1);
     // This is not actually time, but the fractional frame representation
-    const double time = CLAMP(data->animation.frame, 0.0, double(last_frame));
+    const double time = CLAMP(state->animation.frame, 0.0, double(last_frame));
 
     // Scaling factor for cubic spline
-    const float s = 1.0f - CLAMP(data->animation.tension, 0.0f, 1.0f);
-    const float t = (float)fractf(time);
     const int64_t frame = (int64_t)time;
     const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
 
@@ -2066,73 +2068,166 @@ static void interpolate_atomic_properties(ApplicationState* data) {
         MIN(frame + 2, last_frame)
     };
 
-    size_t stride = ALIGN_TO(mol.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
-    size_t bytes = stride * sizeof(float) * 3 * 4;
+    const size_t num_threads = task_system::pool_num_threads();
+
+    const size_t stride = ALIGN_TO(mol.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
+    const size_t bytes = stride * sizeof(float) * 3 * 4;
 
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
     defer { md_vm_arena_temp_end(tmp); };
 
     void* mem = md_vm_arena_push(frame_alloc, bytes);
 
-    float* src_x[4] = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2, (float*)mem + stride * 3 };
-    float* src_y[4] = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6, (float*)mem + stride * 7 };
-    float* src_z[4] = { (float*)mem + stride * 8, (float*)mem + stride * 9, (float*)mem + stride * 10, (float*)mem + stride * 11};
+    struct Payload {
+        ApplicationState* state;
+        float s;
+        float t;
+        InterpolationMode mode;
 
-    float* dst_x = mol.atom.x;
-    float* dst_y = mol.atom.y;
-    float* dst_z = mol.atom.z;
+        int64_t nearest_frame;
+        int64_t frames[4];
+        md_trajectory_frame_header_t headers[4];
+        md_unit_cell_t unit_cell;
 
-    const InterpolationMode mode = (frames[1] != frames[2]) ? data->animation.interpolation : InterpolationMode::Nearest;
+        float* src_x[4];
+        float* src_y[4];
+        float* src_z[4];
+
+        float* dst_x;
+        float* dst_y;
+        float* dst_z;
+
+        vec3_t* aabb_min;
+        vec3_t* aabb_max;
+    };
+
+    const InterpolationMode mode = (frames[1] != frames[2]) ? state->animation.interpolation : InterpolationMode::Nearest;
+
+    Payload payload = {
+        .state = state,
+        .s = 1.0f - CLAMP(state->animation.tension, 0.0f, 1.0f),
+        .t = (float)fractf(time),
+        .mode = mode,
+        .nearest_frame = nearest_frame,
+        .frames = { frames[0], frames[1], frames[2], frames[3]},
+        .src_x = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2,  (float*)mem + stride * 3 },
+        .src_y = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6,  (float*)mem + stride * 7 },
+        .src_z = { (float*)mem + stride * 8, (float*)mem + stride * 9, (float*)mem + stride * 10, (float*)mem + stride * 11},
+        .dst_x = mol.atom.x,
+        .dst_y = mol.atom.y,
+        .dst_z = mol.atom.z,
+        .aabb_min = (vec3_t*)md_vm_arena_push(frame_alloc, num_threads * sizeof(vec3_t)),
+        .aabb_max = (vec3_t*)md_vm_arena_push(frame_alloc, num_threads * sizeof(vec3_t)),
+    };
+
+    // This holds the chain of tasks we are about to submit
+    task_system::ID tasks[16] = {0};
+    int num_tasks = 0;
+
     switch (mode) {
         case InterpolationMode::Nearest: {
-            md_trajectory_frame_header_t header = {0};
-            md_trajectory_load_frame(data->mold.traj, nearest_frame, &header, mol.atom.x, mol.atom.y, mol.atom.z);
-            data->mold.mol.unit_cell = header.unit_cell;
+            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"),[](void* user_data) {
+                Payload* data = (Payload*)user_data;
+                md_trajectory_frame_header_t header;
+                md_trajectory_load_frame(data->state->mold.traj, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
+                data->unit_cell = header.unit_cell;
+            }, &payload);
+
+            tasks[num_tasks++] = load_task;
             break;
         }
         case InterpolationMode::Linear: {
-            md_trajectory_frame_header_t header[2] = {0};
-            md_trajectory_load_frame(data->mold.traj, frames[1], &header[0], src_x[0], src_y[0], src_z[0]);
-            md_trajectory_load_frame(data->mold.traj, frames[2], &header[1], src_x[1], src_y[1], src_z[1]);
-            // @NOTE: The question here is what the correct way would be to interpolate the unit cell.
-            // All of this is very shady from a mathematical point of view, but it seems to work.
-            if ((header[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) && (header[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO)) {
-                double ext_x = lerp(header[0].unit_cell.basis[0][0], header[1].unit_cell.basis[0][0], t);
-                double ext_y = lerp(header[0].unit_cell.basis[1][1], header[1].unit_cell.basis[1][1], t);
-                double ext_z = lerp(header[0].unit_cell.basis[2][2], header[1].unit_cell.basis[2][2], t);
-                data->mold.mol.unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
-            } else if ((header[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) || (header[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC)) {
-                data->mold.mol.unit_cell.basis     = lerp(header[0].unit_cell.basis, header[1].unit_cell.basis, t);
-                data->mold.mol.unit_cell.inv_basis = mat3_inverse(data->mold.mol.unit_cell.basis);
-            }
-            md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, mol.atom.count, &mol.unit_cell, t);
+            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 0, 2, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                (void)thread_num;
+                Payload* data = (Payload*)user_data;
+                for (uint32_t i = range_beg; i < range_end; ++i) {
+                    md_trajectory_load_frame(data->state->mold.traj, data->frames[i+1], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
+                }
+            }, &payload);
+
+            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [](void* user_data) {
+                Payload* data = (Payload*)user_data;
+
+                if ((data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) && (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO)) {
+                    double ext_x = lerp(data->headers[0].unit_cell.basis[0][0], data->headers[1].unit_cell.basis[0][0], data->t);
+                    double ext_y = lerp(data->headers[0].unit_cell.basis[1][1], data->headers[1].unit_cell.basis[1][1], data->t);
+                    double ext_z = lerp(data->headers[0].unit_cell.basis[2][2], data->headers[1].unit_cell.basis[2][2], data->t);
+                    data->unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
+                } else if ( (data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) || (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC)) {
+                    data->unit_cell.basis = lerp(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->t);
+                    data->unit_cell.inv_basis = mat3_inverse(data->state->mold.mol.unit_cell.basis);
+                }
+            }, &payload);
+
+            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                (void)thread_num;
+                Payload* data = (Payload*)user_data;
+                size_t count = range_end - range_beg;
+                float* dst_x = data->dst_x + range_beg;
+                float* dst_y = data->dst_y + range_beg;
+                float* dst_z = data->dst_z + range_beg;
+                const float* src_x[2] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg};
+                const float* src_y[2] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg};
+                const float* src_z[2] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg};
+
+                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t);
+            }, &payload);
+
+            tasks[num_tasks++] = load_task;
+            tasks[num_tasks++] = interp_unit_cell_task;
+            tasks[num_tasks++] = interp_coord_task;
+
             break;
         }
         case InterpolationMode::CubicSpline: {
-            md_trajectory_frame_header_t header[4] = {0};
-            md_trajectory_load_frame(data->mold.traj, frames[0], &header[0], src_x[0], src_y[0], src_z[0]);
-            md_trajectory_load_frame(data->mold.traj, frames[1], &header[1], src_x[1], src_y[1], src_z[1]);
-            md_trajectory_load_frame(data->mold.traj, frames[2], &header[2], src_x[2], src_y[2], src_z[2]);
-            md_trajectory_load_frame(data->mold.traj, frames[3], &header[3], src_x[3], src_y[3], src_z[3]);
-            if ((header[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                (header[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                (header[2].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                (header[3].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO))
-            {
-                double ext_x = cubic_spline(header[0].unit_cell.basis[0][0], header[1].unit_cell.basis[0][0], header[2].unit_cell.basis[0][0], header[3].unit_cell.basis[0][0], t);
-                double ext_y = cubic_spline(header[0].unit_cell.basis[1][1], header[1].unit_cell.basis[1][1], header[2].unit_cell.basis[1][1], header[3].unit_cell.basis[1][1], t);
-                double ext_z = cubic_spline(header[0].unit_cell.basis[2][2], header[1].unit_cell.basis[2][2], header[2].unit_cell.basis[2][2], header[3].unit_cell.basis[2][2], t);
-                data->mold.mol.unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
-            } else if ((header[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                       (header[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                       (header[2].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                       (header[3].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC))
-            {
-                data->mold.mol.unit_cell.basis = cubic_spline(header[0].unit_cell.basis, header[1].unit_cell.basis, header[2].unit_cell.basis, header[3].unit_cell.basis, t, s);
-                data->mold.mol.unit_cell.inv_basis = mat3_inverse(data->mold.mol.unit_cell.basis);
-            }
+            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 0, 4, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                (void)thread_num;
+                Payload* data = (Payload*)user_data;
+                for (uint32_t i = range_beg; i < range_end; ++i) {
+                    md_trajectory_load_frame(data->state->mold.traj, data->frames[i], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
+                }
+            }, &payload);
 
-            md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, mol.atom.count, &mol.unit_cell, t, s);
+            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [](void* user_data) {
+                Payload* data = (Payload*)user_data;
+
+                if ((data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
+                    (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
+                    (data->headers[2].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
+                    (data->headers[3].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO))
+                {
+                    double ext_x = cubic_spline(data->headers[0].unit_cell.basis[0][0], data->headers[1].unit_cell.basis[0][0], data->headers[2].unit_cell.basis[0][0], data->headers[3].unit_cell.basis[0][0], data->t);
+                    double ext_y = cubic_spline(data->headers[0].unit_cell.basis[1][1], data->headers[1].unit_cell.basis[1][1], data->headers[2].unit_cell.basis[1][1], data->headers[3].unit_cell.basis[1][1], data->t);
+                    double ext_z = cubic_spline(data->headers[0].unit_cell.basis[2][2], data->headers[1].unit_cell.basis[2][2], data->headers[2].unit_cell.basis[2][2], data->headers[3].unit_cell.basis[2][2], data->t);
+                    data->unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
+                } else if ( (data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
+                            (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
+                            (data->headers[2].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
+                            (data->headers[3].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC))
+                {
+                    data->unit_cell.basis = cubic_spline(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->headers[2].unit_cell.basis, data->headers[3].unit_cell.basis, data->t, data->s);
+                    data->unit_cell.inv_basis = mat3_inverse(data->state->mold.mol.unit_cell.basis);
+                }
+            }, &payload);
+
+            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                (void)thread_num;
+                Payload* data = (Payload*)user_data;
+                size_t count = range_end - range_beg;
+                float* dst_x = data->dst_x + range_beg;
+                float* dst_y = data->dst_y + range_beg;
+                float* dst_z = data->dst_z + range_beg;
+                const float* src_x[4] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg, data->src_x[2] + range_beg, data->src_x[3] + range_beg};
+                const float* src_y[4] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg, data->src_y[2] + range_beg, data->src_y[3] + range_beg};
+                const float* src_z[4] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg, data->src_z[2] + range_beg, data->src_z[3] + range_beg};
+
+                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t, data->s);
+            }, &payload);
+
+            tasks[num_tasks++] = load_task;
+            tasks[num_tasks++] = interp_unit_cell_task;
+            tasks[num_tasks++] = interp_coord_task;
+            
             break;
         }
         default:
@@ -2140,117 +2235,221 @@ static void interpolate_atomic_properties(ApplicationState* data) {
             break;
     }
 
-    if (data->operations.apply_pbc) {
-        md_util_pbc(mol.atom.x, mol.atom.y, mol.atom.z, 0, mol.atom.count, &mol.unit_cell);
+    if (state->operations.apply_pbc) {
+        task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+            (void)thread_num;
+            Payload* data = (Payload*)user_data;
+            size_t count = range_end - range_beg;
+            float* x = data->dst_x + range_beg;
+            float* y = data->dst_y + range_beg;
+            float* z = data->dst_z + range_beg;
+            md_util_pbc(x, y, z, 0, count, &data->unit_cell);
+        }, &payload);
+        tasks[num_tasks++] = pbc_task;
     } 
-    if (data->operations.unwrap_structures) {
+    if (state->operations.unwrap_structures) {
         size_t num_structures = md_index_data_count(mol.structures);
-        for (size_t i = 0; i < num_structures; ++i) {
-            int32_t* s_idx = md_index_range_beg(mol.structures, i);
-            size_t   s_len = md_index_range_size(mol.structures, i);
-            md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
-        }
+        task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), 0, (uint32_t)num_structures, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+            (void)thread_num;
+            Payload* data = (Payload*)user_data;
+            for (uint32_t i = range_beg; i < range_end; ++i) {
+                int32_t* s_idx = md_index_range_beg(data->state->mold.mol.structures, i);
+                size_t   s_len = md_index_range_size(data->state->mold.mol.structures, i);
+                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unit_cell);
+            }
+        }, &payload);
+        tasks[num_tasks++] = unwrap_task;
     }
 
-    md_util_aabb_compute(data->mold.mol_aabb_min.elem, data->mold.mol_aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
+    {
+        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+            Payload* data = (Payload*)user_data;
+
+            size_t count = range_end - range_beg;
+            const float* x = data->state->mold.mol.atom.x + range_beg;
+            const float* y = data->state->mold.mol.atom.y + range_beg;
+            const float* z = data->state->mold.mol.atom.z + range_beg;
+            const float* r = data->state->mold.mol.atom.radius + range_beg;
+
+            vec3_t aabb_min = vec3_set1(FLT_MAX);
+            vec3_t aabb_max = vec3_set1(-FLT_MAX);
+            md_util_aabb_compute(aabb_min.elem, aabb_max.elem, x, y, z, r, 0, count);
+
+            data->aabb_min[thread_num] = aabb_min;
+            data->aabb_max[thread_num] = aabb_max;
+        }, &payload);
+
+        tasks[num_tasks++] = aabb_task;
+        // md_util_aabb_compute(state->mold.mol_aabb_min.elem, state->mold.mol_aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
+    }
 
     if (mol.backbone.angle) {
-        const md_backbone_angles_t* src_angles[4] = {
-            data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frames[0],
-            data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frames[1],
-            data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frames[2],
-            data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frames[3]
-        };
-
         switch (mode) {
-        case InterpolationMode::Nearest: {
-            const md_backbone_angles_t* src_angle = t < 0.5f ? src_angles[1] : src_angles[2];
-            MEMCPY(mol.backbone.angle, src_angle, mol.backbone.count * sizeof(md_backbone_angles_t));
-            break;
-        }
-        case InterpolationMode::Linear: {
-            for (size_t i = 0; i < mol.backbone.count; ++i) {
-                float phi[2] = {src_angles[1][i].phi, src_angles[2][i].phi};
-                float psi[2] = {src_angles[1][i].psi, src_angles[2][i].psi};
+            case InterpolationMode::Nearest: {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [](void* user_data) {
+                    Payload* data = (Payload*)user_data;
+                    const md_backbone_angles_t* src_angles[2] = {
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
+                    };
+                    const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
+                    MEMCPY(data->state->mold.mol.backbone.angle, src_angle, data->state->mold.mol.backbone.count * sizeof(md_backbone_angles_t));
+                }, &payload);
 
-                phi[1] = deperiodizef(phi[1], phi[0], (float)TWO_PI);
-                psi[1] = deperiodizef(psi[1], psi[0], (float)TWO_PI);
-
-                float final_phi = lerp(phi[0], phi[1], t);
-                float final_psi = lerp(psi[0], psi[1], t);
-                mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
+                tasks[num_tasks++] = angle_task;
+                break;
             }
-            break;
-        }
-        case InterpolationMode::CubicSpline: {
-            for (size_t i = 0; i < mol.backbone.count; ++i) {
-                float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
-                float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
+            case InterpolationMode::Linear: {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), 0, (uint32_t)mol.backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                    (void)thread_num;
+                    Payload* data = (Payload*)user_data;
+                    const md_backbone_angles_t* src_angles[2] = {
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
+                    };
+                    md_molecule_t& mol = data->state->mold.mol;
+                    for (size_t i = range_beg; i < range_end; ++i) {
+                        float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
+                        float psi[2] = {src_angles[0][i].psi, src_angles[1][i].psi};
 
-                phi[0] = deperiodizef(phi[0], phi[1], (float)TWO_PI);
-                phi[2] = deperiodizef(phi[2], phi[1], (float)TWO_PI);
-                phi[3] = deperiodizef(phi[3], phi[2], (float)TWO_PI);
+                        phi[1] = deperiodizef(phi[1], phi[0], (float)TWO_PI);
+                        psi[1] = deperiodizef(psi[1], psi[0], (float)TWO_PI);
 
-                psi[0] = deperiodizef(psi[0], psi[1], (float)TWO_PI);
-                psi[2] = deperiodizef(psi[2], psi[1], (float)TWO_PI);
-                psi[3] = deperiodizef(psi[3], psi[2], (float)TWO_PI);
+                        float final_phi = lerp(phi[0], phi[1], data->t);
+                        float final_psi = lerp(psi[0], psi[1], data->t);
+                        mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
+                    }
+                }, &payload);
 
-                float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], t, s);
-                float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], t, s);
-                mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
+                tasks[num_tasks++] = angle_task;
+                break;
             }
-            break;
-        }
-        default:
-            ASSERT(false);
+            case InterpolationMode::CubicSpline: {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), 0, (uint32_t)mol.backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                    (void)thread_num;
+                    Payload* data = (Payload*)user_data;
+                    const md_backbone_angles_t* src_angles[4] = {
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[0],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[3],
+                    };
+                    md_molecule_t& mol = data->state->mold.mol;
+                    for (size_t i = range_beg; i < range_end; ++i) {
+                        float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
+                        float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
+
+                        phi[0] = deperiodizef(phi[0], phi[1], (float)TWO_PI);
+                        phi[2] = deperiodizef(phi[2], phi[1], (float)TWO_PI);
+                        phi[3] = deperiodizef(phi[3], phi[2], (float)TWO_PI);
+
+                        psi[0] = deperiodizef(psi[0], psi[1], (float)TWO_PI);
+                        psi[2] = deperiodizef(psi[2], psi[1], (float)TWO_PI);
+                        psi[3] = deperiodizef(psi[3], psi[2], (float)TWO_PI);
+
+                        float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], data->t, data->s);
+                        float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], data->t, data->s);
+                        mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
+                    }
+                }, &payload);
+
+                tasks[num_tasks++] = angle_task;
+                break;
+            }
+            default:
+                ASSERT(false);
+                break;
         }
     }
 
     if (mol.backbone.secondary_structure) {
-        const md_secondary_structure_t* src_ss[4] = {
-            (md_secondary_structure_t*)data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frames[0],
-            (md_secondary_structure_t*)data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frames[1],
-            (md_secondary_structure_t*)data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frames[2],
-            (md_secondary_structure_t*)data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frames[3]
-        };
-
         switch (mode) {
-        case InterpolationMode::Nearest: {
-            const md_secondary_structure_t* ss = t < 0.5f ? src_ss[1] : src_ss[2];
-            memcpy(mol.backbone.secondary_structure, ss, mol.backbone.count * sizeof(md_secondary_structure_t));
-            break;
-        }
-        case InterpolationMode::Linear: {
-            for (size_t i = 0; i < mol.backbone.count; ++i) {
-                const vec4_t ss_f[2] = {
-                    convert_color((uint32_t)src_ss[0][i]),
-                    convert_color((uint32_t)src_ss[1][i]),
-                };
-                const vec4_t ss_res = vec4_lerp(ss_f[0], ss_f[1], t);
-                mol.backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
+            case InterpolationMode::Nearest: {
+                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [](void* user_data) {
+                    Payload* data = (Payload*)user_data;
+                    const md_secondary_structure_t* src_ss[2] = {
+                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
+                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
+                    };
+                    const md_secondary_structure_t* ss = data->t < 0.5f ? src_ss[0] : src_ss[1];
+                    MEMCPY(data->state->mold.mol.backbone.secondary_structure, ss, data->state->mold.mol.backbone.count * sizeof(md_secondary_structure_t));
+                }, &payload);
+
+                tasks[num_tasks++] = ss_task;
+                break;
             }
-            break;
-        }
-        case InterpolationMode::CubicSpline: {
-            for (size_t i = 0; i < mol.backbone.count; ++i) {
-                const vec4_t ss_f[4] = {
-                    convert_color((uint32_t)src_ss[0][i]),
-                    convert_color((uint32_t)src_ss[1][i]),
-                    convert_color((uint32_t)src_ss[2][i]),
-                    convert_color((uint32_t)src_ss[3][i]),
-                };
-                const vec4_t ss_res = cubic_spline(ss_f[0], ss_f[1], ss_f[2], ss_f[3], t, s);
-                mol.backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
+            case InterpolationMode::Linear: {
+                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), 0, (uint32_t)mol.backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                    (void)thread_num;
+                    Payload* data = (Payload*)user_data;
+                    const md_secondary_structure_t* src_ss[2] = {
+                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
+                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
+                    };
+                    for (size_t i = range_beg; i < range_end; ++i) {
+                        const vec4_t ss_f[2] = {
+                            convert_color((uint32_t)src_ss[0][i]),
+                            convert_color((uint32_t)src_ss[1][i]),
+                        };
+                        const vec4_t ss_res = vec4_lerp(ss_f[0], ss_f[1], data->t);
+                        data->state->mold.mol.backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
+                    }
+                }, &payload);
+
+                tasks[num_tasks++] = ss_task;
+                break;
             }
-            break;
-        }
-        default:
-            ASSERT(false);
+            case InterpolationMode::CubicSpline: {
+                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), 0, (uint32_t)mol.backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                    (void)thread_num;
+                    Payload* data = (Payload*)user_data;
+                    const md_secondary_structure_t* src_ss[4] = {
+                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
+                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
+                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
+                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[3],
+                    };
+                    for (size_t i = range_beg; i < range_end; ++i) {
+                        const vec4_t ss_f[4] = {
+                            convert_color((uint32_t)src_ss[0][i]),
+                            convert_color((uint32_t)src_ss[1][i]),
+                            convert_color((uint32_t)src_ss[2][i]),
+                            convert_color((uint32_t)src_ss[3][i]),
+                        };
+                        const vec4_t ss_res = cubic_spline(ss_f[0], ss_f[1], ss_f[2], ss_f[3], data->t, data->s);
+                        data->state->mold.mol.backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
+                    }
+                }, &payload);
+
+                tasks[num_tasks++] = ss_task;
+                break;
+            }
+            default:
+                ASSERT(false);
+                break;
         }
     }
 
-    data->mold.dirty_buffers |= MolBit_DirtyPosition;
-    data->mold.dirty_buffers |= MolBit_DirtySecondaryStructure;
+    if (num_tasks > 0) {
+        for (int i = 1; i < num_tasks; ++i) {
+            task_system::set_task_dependency(tasks[i], tasks[i-1]);
+        }
+        task_system::enqueue_task(tasks[0]);
+        task_system::task_wait_for(tasks[num_tasks - 1]);
+    }
+
+    vec3_t aabb_min = payload.aabb_min[0];
+    vec3_t aabb_max = payload.aabb_max[0];
+    for (size_t i = 1; i < task_system::pool_num_threads(); ++i) {
+        aabb_min = vec3_min(aabb_min, payload.aabb_min[i]);
+        aabb_max = vec3_max(aabb_max, payload.aabb_max[i]);
+    }
+    state->mold.mol_aabb_min = aabb_min;
+    state->mold.mol_aabb_max = aabb_max;
+    mol.unit_cell = payload.unit_cell;
+
+    state->mold.dirty_buffers |= MolBit_DirtyPosition;
+    state->mold.dirty_buffers |= MolBit_DirtySecondaryStructure;
 }
 
 // #misc
@@ -2267,7 +2466,7 @@ static void update_view_param(ApplicationState* data) {
     param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera);
     param.matrix.inv.view  = camera_view_to_world_matrix(data->view.camera);
 
-    if (data->visuals.temporal_reprojection.enabled && data->visuals.temporal_reprojection.jitter) {
+    if (data->visuals.temporal_aa.enabled && data->visuals.temporal_aa.jitter) {
         static uint32_t i = 0;
         i = (i+1) % (uint32_t)ARRAY_SIZE(data->view.jitter.sequence);
         param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
@@ -2287,6 +2486,7 @@ static void update_view_param(ApplicationState* data) {
             param.matrix.inv.proj  = camera_inverse_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
         }
     } else {
+        param.jitter.curr = {0,0};
         if (data->view.mode == CameraMode::Perspective) {
             param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
             param.matrix.inv.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
@@ -2447,20 +2647,20 @@ static void draw_main_menu(ApplicationState* data) {
             // Temporal
             ImGui::BeginGroup();
             {
-                ImGui::Checkbox("Temporal AA", &data->visuals.temporal_reprojection.enabled);
-                if (data->visuals.temporal_reprojection.enabled) {
+                ImGui::Checkbox("Temporal AA", &data->visuals.temporal_aa.enabled);
+                if (data->visuals.temporal_aa.enabled) {
                     // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-                    //ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_reprojection.feedback_min, 0.5f, 1.0f);
-                    //ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_reprojection.feedback_max, 0.5f, 1.0f);
-                    ImGui::Checkbox("Motion Blur", &data->visuals.temporal_reprojection.motion_blur.enabled);
-                    if (data->visuals.temporal_reprojection.motion_blur.enabled) {
-                        ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_reprojection.motion_blur.motion_scale, 0.f, 2.0f);
+                    ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f);
+                    ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f);
+                    ImGui::Checkbox("Motion Blur", &data->visuals.temporal_aa.motion_blur.enabled);
+                    if (data->visuals.temporal_aa.motion_blur.enabled) {
+                        ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f);
+                    }
+                    ImGui::Checkbox("Sharpen", &data->visuals.sharpen.enabled);
+                    if (data->visuals.sharpen.enabled) {
+                        ImGui::SliderFloat("Weight", &data->visuals.sharpen.weight, 0.0f, 4.0f);
                     }
                 }
-            }
-            ImGui::Checkbox("Sharpen", &data->visuals.sharpen.enabled);
-            if (data->visuals.sharpen.enabled) {
-                ImGui::SliderFloat("Weight", &data->visuals.sharpen.weight, 0.0f, 4.0f);
             }
             ImGui::EndGroup();
             ImGui::Separator();
@@ -2695,6 +2895,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
+            ImGui::Checkbox("Prefetch Frames", &data->settings.prefetch_frames);
+            ImGui::SetItemTooltip("Prefetch frames during animation\n");
             ImGui::Checkbox("Keep Representations", &data->settings.keep_representations);
             ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
 
@@ -3642,9 +3844,7 @@ void draw_context_popup(ApplicationState* data) {
                         load::traj::set_recenter_target(data->mold.traj, &mask);
                         load::traj::clear_cache(data->mold.traj);
                         interpolate_atomic_properties(data);
-                        data->mold.dirty_buffers |= MolBit_DirtyPosition;
-                        update_md_buffers(data);
-                        md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+                        data->mold.dirty_buffers |= MolBit_ClearVelocity;
                         ImGui::CloseCurrentPopup();
                     }
                 }
@@ -6168,17 +6368,17 @@ static void draw_density_volume_window(ApplicationState* data) {
             md_gl_draw_op_t* draw_ops = 0;
 
             md_gl_draw_op_t op = {};
-            op.type = (md_gl_representation_type_t)data->density_volume.rep.type;
+            op.type = (md_gl_rep_type_t)data->density_volume.rep.type;
             MEMCPY(&op.args, data->density_volume.rep.param, sizeof(op.args));
 
             for (size_t i = 0; i < num_reps; ++i) {
-                op.rep = &data->density_volume.gl_reps[i];
+                op.rep = data->density_volume.gl_reps[i];
                 op.model_matrix = &data->density_volume.rep_model_mats[i].elem[0][0];
                 md_array_push(draw_ops, op, frame_alloc);
             }
 
             md_gl_draw_args_t draw_args = {
-                .shaders = &data->mold.gl_shaders,
+                .shaders = data->mold.gl_shaders,
                 .draw_operations = {
                     .count = (uint32_t)md_array_size(draw_ops),
                     .ops = draw_ops
@@ -6260,15 +6460,12 @@ static void draw_density_volume_window(ApplicationState* data) {
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
             if (data->density_volume.model_mat != mat4_t{0}) {
-                const vec3_t min_box = {0,0,0};
-                const vec3_t max_box = {1,1,1};
-
                 immediate::set_model_view_matrix(mat4_mul(view_mat, data->density_volume.model_mat));
                 immediate::set_proj_matrix(proj_mat);
 
                 uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
                 uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
-                immediate::draw_box_wireframe(min_box, max_box, box_color);
+                immediate::draw_box_wireframe({0,0,0}, {1,1,1}, box_color);
                 immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
 
                 immediate::render();
@@ -6280,9 +6477,6 @@ static void draw_density_volume_window(ApplicationState* data) {
         postprocessing::Descriptor postprocess_desc = {
             .background = {
                 .color = data->visuals.background.color * data->visuals.background.intensity,
-            },
-            .bloom = {
-                .enabled = false,
             },
             .tonemapping = {
                 .enabled = data->visuals.tonemapping.enabled,
@@ -6299,7 +6493,7 @@ static void draw_density_volume_window(ApplicationState* data) {
             .fxaa = {
                 .enabled = true,
             },
-            .temporal_reprojection = {
+            .temporal_aa = {
                 .enabled = false,
             },
             .sharpen = {
@@ -6539,8 +6733,7 @@ static void draw_script_editor_window(ApplicationState* data) {
         const ImVec2 text_size(content_size - ImVec2(0, btn_size.y + ImGui::GetStyle().ItemSpacing.y));
 
         editor.Render("TextEditor", text_size);
-
-        
+        bool editor_hovered = ImGui::IsItemHovered();
         bool eval = false;
         if (editor.IsFocused() && ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
             eval = true;
@@ -6559,6 +6752,10 @@ static void draw_script_editor_window(ApplicationState* data) {
 
         if (eval && valid) {
             data->script.eval_init = true;
+        }
+
+        if (editor_hovered) {
+            md_bitfield_clear(&data->selection.highlight_mask);
         }
 
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
@@ -7027,16 +7224,22 @@ static void update_md_buffers(ApplicationState* data) {
 
     if (data->mold.dirty_buffers & MolBit_DirtyPosition) {
         const vec3_t pbc_ext = data->mold.mol.unit_cell.basis * vec3_t{1,1,1};
-        md_gl_molecule_set_atom_position(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gl_molecule_compute_velocity(&data->mold.gl_mol, pbc_ext.elem);
+        md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        if (!(data->mold.dirty_buffers & MolBit_ClearVelocity)) {
+            md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
+        }
 #if EXPERIMENTAL_GFX_API
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.mol_aabb_min, &data->mold.mol_aabb_max);
 #endif
     }
 
+    if (data->mold.dirty_buffers & MolBit_ClearVelocity) {
+        md_gl_mol_zero_velocity(data->mold.gl_mol);
+    }
+
     if (data->mold.dirty_buffers & MolBit_DirtyRadius) {
-        md_gl_molecule_set_atom_radius(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
+        md_gl_mol_set_atom_radius(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
 #if EXPERIMENTAL_GFX_API
         md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
 #endif
@@ -7070,16 +7273,16 @@ static void update_md_buffers(ApplicationState* data) {
                 flags[idx] |= AtomBit_Visible;
             }
         }
-        md_gl_molecule_set_atom_flags(&data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
+        md_gl_mol_set_atom_flags(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
-        md_gl_molecule_set_bonds(&data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_bond_pair_t));
+        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_bond_pair_t));
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
         if (mol.backbone.secondary_structure) {
-            md_gl_molecule_set_backbone_secondary_structure(&data->mold.gl_mol, 0, (uint32_t)mol.backbone.count, mol.backbone.secondary_structure, 0);
+            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)mol.backbone.count, mol.backbone.secondary_structure, 0);
         }
     }
 
@@ -7187,20 +7390,17 @@ static void init_trajectory_data(ApplicationState* data) {
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
                 
                 interpolate_atomic_properties(data);
-                update_md_buffers(data);
-                md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+                data->mold.dirty_buffers |= MolBit_ClearVelocity;
                 update_all_representations(data);
 
             }, data);
 
             task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
-
             task_system::enqueue_task(data->tasks.backbone_computations);
         }
 
         data->mold.dirty_buffers |= MolBit_DirtyPosition;
-        update_md_buffers(data);
-        md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+        data->mold.dirty_buffers |= MolBit_ClearVelocity;
 
         // Prefetch frames
         //launch_prefetch_job(data);
@@ -7232,7 +7432,7 @@ static void free_molecule_data(ApplicationState* data) {
     md_arena_allocator_reset(data->mold.mol_alloc);
     MEMSET(&data->mold.mol, 0, sizeof(data->mold.mol));
 
-    md_gl_molecule_free(&data->mold.gl_mol);
+    md_gl_mol_destroy(data->mold.gl_mol);
     MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
     md_bitfield_clear(&data->selection.selection_mask);
@@ -7267,7 +7467,7 @@ static void init_molecule_data(ApplicationState* data) {
         data->selection.bond_idx.hovered = -1;
         data->selection.bond_idx.right_click = -1;
 
-        md_gl_molecule_init(&data->mold.gl_mol, &data->mold.mol);
+        data->mold.gl_mol = md_gl_mol_create(&data->mold.mol);
 
 #if EXPERIMENTAL_GFX_API
         const md_molecule_t& mol = data->mold.mol;
@@ -7312,12 +7512,10 @@ static void launch_prefetch_job(ApplicationState* data) {
     task_system::ID main_task = task_system::create_main_task(STR_LIT("Prefetch Complete"), [](void* user_data) {
         ApplicationState* data = (ApplicationState*)user_data;
         interpolate_atomic_properties(data);
-        update_md_buffers(data);
-        md_gl_molecule_zero_velocity(&data->mold.gl_mol); // Do this explicitly to update the previous position to avoid motion blur trails
+        data->mold.dirty_buffers |= MolBit_ClearVelocity;
     }, data);
 
     task_system::set_task_dependency(main_task, data->tasks.prefetch_frames);
-
     task_system::enqueue_task(data->tasks.prefetch_frames);
 }
 
@@ -7768,7 +7966,7 @@ static void remove_representation(ApplicationState* state, int idx) {
     ASSERT(idx < md_array_size(state->representation.reps));
     auto& rep = state->representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
-    md_gl_representation_free(&rep.md_rep);
+    md_gl_rep_destroy(rep.md_rep);
     if (rep.orbital.vol.vol_tex != 0) gl::free_texture(&rep.orbital.vol.vol_tex);
     if (rep.orbital.vol.dvr.tf_tex != 0) gl::free_texture(&rep.orbital.vol.dvr.tf_tex);
     md_array_swap_back_and_pop(state->representation.reps, idx);
@@ -7966,7 +8164,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     if (rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
         state->representation.atom_visibility_mask_dirty = true;
-        md_gl_representation_set_color(&rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+        md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
 
 #if EXPERIMENTAL_GFX_API
         md_gfx_rep_attr_t attributes = {};
@@ -7981,7 +8179,7 @@ static void init_representation(ApplicationState* state, Representation* rep) {
 #if EXPERIMENTAL_GFX_API
     rep->gfx_rep = md_gfx_rep_create(state->mold.mol.atom.count);
 #endif
-    md_gl_representation_init(&rep->md_rep, &state->mold.gl_mol);
+    rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_alloc);
     rep->filt_is_dirty = true;
 }
@@ -8684,14 +8882,14 @@ static void apply_postprocessing(const ApplicationState& data) {
 
     constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
     const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)data.app.timing.delta_s;
-    const float motion_scale = data.visuals.temporal_reprojection.motion_blur.motion_scale * dt_compensation;
-    desc.temporal_reprojection.enabled = data.visuals.temporal_reprojection.enabled;
-    desc.temporal_reprojection.feedback_min = data.visuals.temporal_reprojection.feedback_min;
-    desc.temporal_reprojection.feedback_max = data.visuals.temporal_reprojection.feedback_max;
-    desc.temporal_reprojection.motion_blur.enabled = data.visuals.temporal_reprojection.motion_blur.enabled;
-    desc.temporal_reprojection.motion_blur.motion_scale = motion_scale;
+    const float motion_scale = data.visuals.temporal_aa.motion_blur.motion_scale * dt_compensation;
+    desc.temporal_aa.enabled = data.visuals.temporal_aa.enabled;
+    desc.temporal_aa.feedback_min = data.visuals.temporal_aa.feedback_min;
+    desc.temporal_aa.feedback_max = data.visuals.temporal_aa.feedback_max;
+    desc.temporal_aa.motion_blur.enabled = data.visuals.temporal_aa.motion_blur.enabled;
+    desc.temporal_aa.motion_blur.motion_scale = motion_scale;
 
-    desc.sharpen.enabled = data.visuals.sharpen.enabled;
+    desc.sharpen.enabled = data.visuals.temporal_aa.enabled && data.visuals.sharpen.enabled;
     desc.sharpen.weight  = data.visuals.sharpen.weight;
 
     desc.input_textures.depth = data.gbuffer.tex.depth;
@@ -8765,9 +8963,9 @@ static void draw_representations_opaque(ApplicationState* data) {
 
             if (rep.enabled && rep.type_is_valid) {
                 md_gl_draw_op_t op = {
-                    .type = (md_gl_representation_type_t)rep.type,
+                    .type = (md_gl_rep_type_t)rep.type,
                     .args = {},
-                    .rep = &data->representation.reps[i].md_rep,
+                    .rep = data->representation.reps[i].md_rep,
                     .model_matrix = NULL,
                 };
                 MEMCPY(&op.args, &rep.scale, sizeof(op.args));
@@ -8776,7 +8974,7 @@ static void draw_representations_opaque(ApplicationState* data) {
         }
 
         md_gl_draw_args_t args = {
-            .shaders = &data->mold.gl_shaders,
+            .shaders = data->mold.gl_shaders,
             .draw_operations = {
                 .count = (uint32_t)md_array_size(draw_ops),
                 .ops = draw_ops,
@@ -8829,7 +9027,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .max = {1,1,1},
             },
             .temporal = {
-                .enabled = state->visuals.temporal_reprojection.enabled,
+                .enabled = state->visuals.temporal_aa.enabled,
             },
             .iso = {
                 .enabled = rep.orbital.vol.iso.enabled,
@@ -8864,9 +9062,9 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
 
         if (rep.enabled && rep.type_is_valid) {
             md_gl_draw_op_t op = {
-                .type = (md_gl_representation_type_t)rep.type,
+                .type = (md_gl_rep_type_t)rep.type,
                 .args = {},
-                .rep = &data->representation.reps[i].md_rep,
+                .rep = data->representation.reps[i].md_rep,
                 .model_matrix = NULL,
             };
             MEMCPY(&op.args, &rep.scale, sizeof(op.args));
@@ -8875,9 +9073,9 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
     }
 
     md_gl_draw_args_t args = {
-        .shaders = &data->mold.gl_shaders_lean_and_mean,
+        .shaders = data->mold.gl_shaders_lean_and_mean,
         .draw_operations = {
-            .count = (uint32_t)md_array_size(draw_ops),
+            .count = md_array_size(draw_ops),
             .ops = draw_ops,
         },
         .view_transform = {

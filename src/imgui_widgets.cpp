@@ -506,7 +506,7 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
                 if (fabsf(dp) < 0.99999f) {
                     const vec3_t axis = vec3_normalize(vec3_cross(view_z, f));
                     const float angle = acosf(vec3_dot(view_z, f));
-                    const quat_t q = quat_angle_axis(angle, axis);
+                    const quat_t q = quat_axis_angle(axis, angle);
 
                     // Orientate to align with 'z'
                     ori = quat_normalize(q * ori);
@@ -535,7 +535,7 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
                 if (fabsf(dp) < 0.99999f) {
                     const vec3_t axis = vec3_normalize(vec3_cross(view_y, u));
                     const float angle = acosf(vec3_dot(view_y, u));
-                    const quat_t q = quat_angle_axis(angle, axis);
+                    const quat_t q = quat_axis_angle(axis, angle);
 
                     // Orientate to align with 'y'
                     ori = quat_normalize(q * ori);
