@@ -21,8 +21,8 @@ struct GBuffer {
         uint32_t color = 0;
         uint32_t normal = 0;
         uint32_t velocity = 0;
-        uint32_t transparency = 0;
         uint32_t picking = 0;
+        uint32_t transparency = 0;
         uint32_t temporal_accumulation[2] = {};
     } tex;
 
@@ -64,10 +64,12 @@ struct Descriptor {
         vec3_t color = {20.f, 20.f, 20.f};
     } background;
 
+#if 0
     struct {
         bool enabled = true;
         float clip_point = 1.0f;
     } bloom;
+#endif
 
     struct {
         bool enabled = true;
@@ -101,7 +103,7 @@ struct Descriptor {
             bool enabled = true;
             float motion_scale = 0.5f;
         } motion_blur;
-    } temporal_reprojection;
+    } temporal_aa;
 
     struct {
         bool enabled = true;

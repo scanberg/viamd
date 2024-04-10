@@ -135,10 +135,6 @@ static struct {
 
     struct {
         GLuint program = 0;
-    } bloom;
-
-    struct {
-        GLuint program = 0;
         struct {
             GLint mode = -1;
             GLint tex_color = -1;
@@ -296,7 +292,7 @@ struct HBAOData {
     float radius_to_screen;
     float neg_inv_r2;
     float n_dot_v_bias;
-    unsigned frame;
+    float z_max;
 
     vec2_t inv_full_res;
     float ao_multiplier;
@@ -307,8 +303,8 @@ struct HBAOData {
     vec4_t sample_pattern[32];
 };
 
-void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_res, const mat4_t& proj_mat, float intensity, float radius, float bias, unsigned frame) {
-    ASSERT(ubo);
+void setup_ubo_hbao_data(HBAOData* data, int width, int height, const vec2_t& inv_res, const mat4_t& proj_mat, float intensity, float radius, float bias) {
+    ASSERT(data);
 
     // From intel ASSAO
     static constexpr float SAMPLE_PATTERN[] = {
@@ -324,10 +320,14 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_re
 
     vec4_t proj_info;
     float proj_scl;
+    float z_max;
 
     const float* proj_data = &proj_mat.elem[0][0];
     const bool ortho = is_orthographic_proj_matrix(proj_mat);
+    const float x = proj_mat.elem[2][2];
+    const float y = proj_mat.elem[3][2];
     if (!ortho) {
+        // Persp
         proj_info = {
             2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
             2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
@@ -337,7 +337,9 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_re
 
         // proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
         proj_scl = float(height) * proj_data[4 * 1 + 1] * 0.5f;
+        z_max = (float)(y / (x + 1.0));
     } else {
+        // Ortho
         proj_info = {
             2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
             2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
@@ -345,30 +347,25 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_re
             -(1.0f - proj_data[4 * 3 + 1]) / proj_data[4 * 1 + 1]   // B
         };
         proj_scl = float(height) / proj_info.y;
+        z_max = (float)((-2.0 + y) / x);
     }
 
     float r = radius * METERS_TO_VIEWSPACE;
 
-    HBAOData data;
-    data.radius_to_screen = r * 0.5f * proj_scl;
-    data.neg_inv_r2 = -1.f / (r * r);
-    data.n_dot_v_bias = CLAMP(bias, 0.f, 1.f - FLT_EPSILON);
-    data.frame = frame;
-    data.inv_full_res = inv_res;
-    data.ao_multiplier = 1.f / (1.f - data.n_dot_v_bias);
-    data.pow_exponent = MAX(intensity, 0.f);
-    data.proj_info = proj_info;
-    memcpy(&data.sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
-
-    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(HBAOData), &data);
-    //glBufferData(GL_UNIFORM_BUFFER, sizeof(HBAOData), &data, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    data->radius_to_screen = r * 0.5f * proj_scl;
+    data->neg_inv_r2 = -1.f / (r * r);
+    data->n_dot_v_bias = CLAMP(bias, 0.f, 1.f - FLT_EPSILON);
+    data->z_max = z_max * 0.99f;
+    data->inv_full_res = inv_res;
+    data->ao_multiplier = 1.f / (1.f - data->n_dot_v_bias);
+    data->pow_exponent = MAX(intensity, 0.f);
+    data->proj_info = proj_info;
+    MEMCPY(&data->sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
 }
 
 void initialize_rnd_tex(GLuint rnd_tex) {
     const int buffer_size = AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE;
-    signed short buffer[buffer_size * 4];
+    int16_t buffer[buffer_size * 4];
 
     for (int i = 0; i < buffer_size; i++) {
 #define SCALE ((1 << 15))
@@ -376,10 +373,10 @@ void initialize_rnd_tex(GLuint rnd_tex) {
         float rand2 = md_halton(i + 1, 3);
         float angle = 2.f * 3.1415926535f * rand1;
 
-        buffer[i * 4 + 0] = (signed short)(SCALE * cosf(angle));
-        buffer[i * 4 + 1] = (signed short)(SCALE * sinf(angle));
-        buffer[i * 4 + 2] = (signed short)(SCALE * rand2);
-        buffer[i * 4 + 3] = (signed short)(SCALE * 0);
+        buffer[i * 4 + 0] = (int16_t)(SCALE * cosf(angle));
+        buffer[i * 4 + 1] = (int16_t)(SCALE * sinf(angle));
+        buffer[i * 4 + 2] = (int16_t)(SCALE * rand2);
+        buffer[i * 4 + 3] = (int16_t)(SCALE * 0);
 #undef SCALE
     }
 
@@ -1152,7 +1149,7 @@ void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, b
     glBindVertexArray(0);
 }
 
-void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_matrix, float intensity, float radius, float bias, unsigned int frame) {
+void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_matrix, float intensity, float radius, float bias) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(normal_tex));
 
@@ -1174,7 +1171,11 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
 
     glBindVertexArray(gl.vao);
 
-    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, width, height, inv_res, proj_matrix, intensity, radius, bias, frame);
+    ssao::HBAOData ubo_data = {};
+    ssao::setup_ubo_hbao_data(&ubo_data, width, height, inv_res, proj_matrix, intensity, radius, bias);
+    glBindBuffer(GL_UNIFORM_BUFFER, gl.ssao.ubo_hbao_data);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(ssao::HBAOData), &ubo_data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -1210,6 +1211,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
     glUniform1i(glGetUniformLocation(gl.ssao.blur.program, "u_tex_linear_depth"), 0);
     glUniform1i(glGetUniformLocation(gl.ssao.blur.program, "u_tex_ao"), 1);
     glUniform1f(glGetUniformLocation(gl.ssao.blur.program, "u_sharpness"), sharpness);
+    glUniform1f(glGetUniformLocation(gl.ssao.blur.program, "u_zmax"), ubo_data.z_max);
     glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_inv_res_dir"), inv_res.x, 0);
 
     glActiveTexture(GL_TEXTURE1);
@@ -1781,7 +1783,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     ASSERT(glIsTexture(desc.input_textures.depth));
     ASSERT(glIsTexture(desc.input_textures.color));
     ASSERT(glIsTexture(desc.input_textures.normal));
-    if (desc.temporal_reprojection.enabled) {
+    if (desc.temporal_aa.enabled) {
         ASSERT(glIsTexture(desc.input_textures.velocity));
     }
 
@@ -1789,8 +1791,8 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     static float time = 0.f;
     time = time + 0.01f;
     if (time > 100.f) time -= 100.f;
-    static unsigned int frame = 0;
-    frame = frame + 1;
+    //static unsigned int frame = 0;
+    //frame = frame + 1;
 
     const auto near_dist = view_param.clip_planes.near;
     const auto far_dist = view_param.clip_planes.far;
@@ -1834,7 +1836,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         POP_GPU_SECTION()
     }
 
-    if (desc.temporal_reprojection.enabled) {
+    if (desc.temporal_aa.enabled) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.velocity.fbo);
         glViewport(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
         glScissor(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
@@ -1879,14 +1881,14 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("SSAO")
-        compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, frame);
+        compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias);
         POP_GPU_SECTION()
     }
 
     PUSH_GPU_SECTION("Tonemapping")
     swap_target();
     glDrawBuffer(dst_buffer);
-    const auto tonemapper = desc.tonemapping.enabled ? desc.tonemapping.mode : Tonemapping_Passthrough;
+    Tonemapping tonemapper = desc.tonemapping.enabled ? desc.tonemapping.mode : Tonemapping_Passthrough;
     apply_tonemapping(src_texture, tonemapper, desc.tonemapping.exposure, desc.tonemapping.gamma);
     POP_GPU_SECTION()
 
@@ -1921,12 +1923,12 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         POP_GPU_SECTION()
     }
 
-    if (desc.temporal_reprojection.enabled) {
+    if (desc.temporal_aa.enabled) {
         swap_target();
         glDrawBuffer(dst_buffer);
-        const float feedback_min = desc.temporal_reprojection.feedback_min;
-        const float feedback_max = desc.temporal_reprojection.feedback_max;
-        const float motion_scale = desc.temporal_reprojection.motion_blur.enabled ? desc.temporal_reprojection.motion_blur.motion_scale : 0.f;
+        const float feedback_min = desc.temporal_aa.feedback_min;
+        const float feedback_max = desc.temporal_aa.feedback_max;
+        const float motion_scale = desc.temporal_aa.motion_blur.enabled ? desc.temporal_aa.motion_blur.motion_scale : 0.f;
         if (motion_scale != 0.f)
             PUSH_GPU_SECTION("Temporal AA + Motion Blur")
         else
