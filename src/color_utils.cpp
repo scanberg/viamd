@@ -119,12 +119,12 @@ void color_atoms_sec_str(uint32_t* colors, size_t count, const md_molecule_t& mo
     const uint32_t color_sheet   = 0xFFDD2222;
 
     set_colors(colors, count, color_unknown);
-    if (mol.backbone.secondary_structure) {
-        for (size_t i = 0; i < mol.backbone.count; i++) {
-            const vec4_t w = convert_color((uint32_t)mol.backbone.secondary_structure[i]);
+    if (mol.protein_backbone.secondary_structure) {
+        for (size_t i = 0; i < mol.protein_backbone.count; i++) {
+            const vec4_t w = convert_color((uint32_t)mol.protein_backbone.secondary_structure[i]);
             const vec4_t rgba = w.x * convert_color(color_coil) + w.y * convert_color(color_helix) + w.z * convert_color(color_sheet);
             const uint32_t color = convert_color(rgba);
-            md_residue_idx_t res_idx = mol.backbone.residue_idx[i];
+            md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[i];
             md_range_t range = md_residue_atom_range(mol.residue, res_idx);
             set_colors(colors + range.beg, range.end - range.beg, color);
         }

@@ -2283,7 +2283,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         // md_util_aabb_compute(state->mold.mol_aabb_min.elem, state->mold.mol_aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
     }
 
-    if (mol.backbone.angle) {
+    if (mol.protein_backbone.angle) {
         switch (mode) {
             case InterpolationMode::Nearest: {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [](void* user_data) {
@@ -2293,14 +2293,14 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
-                    MEMCPY(data->state->mold.mol.backbone.angle, src_angle, data->state->mold.mol.backbone.count * sizeof(md_backbone_angles_t));
+                    MEMCPY(data->state->mold.mol.protein_backbone.angle, src_angle, data->state->mold.mol.protein_backbone.count * sizeof(md_backbone_angles_t));
                 }, &payload);
 
                 tasks[num_tasks++] = angle_task;
                 break;
             }
             case InterpolationMode::Linear: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), 0, (uint32_t)mol.backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), 0, (uint32_t)mol.protein_backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                     (void)thread_num;
                     Payload* data = (Payload*)user_data;
                     const md_backbone_angles_t* src_angles[2] = {
@@ -2317,7 +2317,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
 
                         float final_phi = lerp(phi[0], phi[1], data->t);
                         float final_psi = lerp(psi[0], psi[1], data->t);
-                        mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
+                        mol.protein_backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
                     }
                 }, &payload);
 
@@ -2325,7 +2325,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 break;
             }
             case InterpolationMode::CubicSpline: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), 0, (uint32_t)mol.backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), 0, (uint32_t)mol.protein_backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                     (void)thread_num;
                     Payload* data = (Payload*)user_data;
                     const md_backbone_angles_t* src_angles[4] = {
@@ -2349,7 +2349,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
 
                         float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], data->t, data->s);
                         float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], data->t, data->s);
-                        mol.backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
+                        mol.protein_backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
                     }
                 }, &payload);
 
@@ -2362,7 +2362,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         }
     }
 
-    if (mol.backbone.secondary_structure) {
+    if (mol.protein_backbone.secondary_structure) {
         switch (mode) {
             case InterpolationMode::Nearest: {
                 task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [](void* user_data) {
@@ -2372,14 +2372,14 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
                     };
                     const md_secondary_structure_t* ss = data->t < 0.5f ? src_ss[0] : src_ss[1];
-                    MEMCPY(data->state->mold.mol.backbone.secondary_structure, ss, data->state->mold.mol.backbone.count * sizeof(md_secondary_structure_t));
+                    MEMCPY(data->state->mold.mol.protein_backbone.secondary_structure, ss, data->state->mold.mol.protein_backbone.count * sizeof(md_secondary_structure_t));
                 }, &payload);
 
                 tasks[num_tasks++] = ss_task;
                 break;
             }
             case InterpolationMode::Linear: {
-                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), 0, (uint32_t)mol.backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), 0, (uint32_t)mol.protein_backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                     (void)thread_num;
                     Payload* data = (Payload*)user_data;
                     const md_secondary_structure_t* src_ss[2] = {
@@ -2392,7 +2392,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                             convert_color((uint32_t)src_ss[1][i]),
                         };
                         const vec4_t ss_res = vec4_lerp(ss_f[0], ss_f[1], data->t);
-                        data->state->mold.mol.backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
+                        data->state->mold.mol.protein_backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
                     }
                 }, &payload);
 
@@ -2400,7 +2400,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 break;
             }
             case InterpolationMode::CubicSpline: {
-                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), 0, (uint32_t)mol.backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), 0, (uint32_t)mol.protein_backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                     (void)thread_num;
                     Payload* data = (Payload*)user_data;
                     const md_secondary_structure_t* src_ss[4] = {
@@ -2417,7 +2417,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                             convert_color((uint32_t)src_ss[3][i]),
                         };
                         const vec4_t ss_res = cubic_spline(ss_f[0], ss_f[1], ss_f[2], ss_f[3], data->t, data->s);
-                        data->state->mold.mol.backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
+                        data->state->mold.mol.protein_backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
                     }
                 }, &payload);
 
@@ -6574,7 +6574,7 @@ static void draw_dataset_window(ApplicationState* data) {
                         ImGui::PopStyleColor();
 
                         if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("%s: count %d", item.label, item.count);
+                            ImGui::SetTooltip("%s: count %d (%.2f%%)", item.label, item.count, item.fraction * 100.f);
                             filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask);
                         }
 
@@ -7281,8 +7281,8 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
-        if (mol.backbone.secondary_structure) {
-            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)mol.backbone.count, mol.backbone.secondary_structure, 0);
+        if (mol.protein_backbone.secondary_structure) {
+            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)mol.protein_backbone.count, mol.protein_backbone.secondary_structure, 0);
         }
     }
 
@@ -7344,18 +7344,18 @@ static void init_trajectory_data(ApplicationState* data) {
         md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
         data->mold.mol.unit_cell = frame_header.unit_cell;
 
-        if (data->mold.mol.backbone.count > 0) {
-            data->trajectory_data.secondary_structure.stride = data->mold.mol.backbone.count;
-            data->trajectory_data.secondary_structure.count = data->mold.mol.backbone.count * num_frames;
-            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.backbone.count * num_frames, persistent_alloc);
+        if (data->mold.mol.protein_backbone.count > 0) {
+            data->trajectory_data.secondary_structure.stride = data->mold.mol.protein_backbone.count;
+            data->trajectory_data.secondary_structure.count = data->mold.mol.protein_backbone.count * num_frames;
+            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.mol.protein_backbone.count * num_frames, persistent_alloc);
             for (size_t i = 0; i < md_array_size(data->trajectory_data.secondary_structure.data); ++i) {
                 data->trajectory_data.secondary_structure.data[i] = MD_SECONDARY_STRUCTURE_COIL;
             }
 //            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_size(data->trajectory_data.secondary_structure.data) * sizeof (md_secondary_structure_t));
 
-            data->trajectory_data.backbone_angles.stride = data->mold.mol.backbone.count;
-            data->trajectory_data.backbone_angles.count = data->mold.mol.backbone.count * num_frames;
-            md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.backbone.count * num_frames, persistent_alloc);
+            data->trajectory_data.backbone_angles.stride = data->mold.mol.protein_backbone.count;
+            data->trajectory_data.backbone_angles.count = data->mold.mol.protein_backbone.count * num_frames;
+            md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.mol.protein_backbone.count * num_frames, persistent_alloc);
             MEMSET(data->trajectory_data.backbone_angles.data, 0, md_array_size(data->trajectory_data.backbone_angles.data) * sizeof (md_backbone_angles_t));
 
             // Launch work to compute the values
@@ -8112,7 +8112,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     case RepresentationType::Ribbons:
     case RepresentationType::Cartoon:
-        rep->type_is_valid = mol.backbone.range.count > 0;
+        rep->type_is_valid = mol.protein_backbone.range.count > 0;
         break;
     case RepresentationType::Orbital: {
         rep->type_is_valid = md_array_size(state->representation.info.molecular_orbitals) > 0;
@@ -8204,17 +8204,9 @@ static void clear_representations(ApplicationState* state) {
     while (md_array_size(state->representation.reps) > 0) {
         remove_representation(state, (int32_t)md_array_size(state->representation.reps) - 1);
     }
-    md_array_free(state->representation.reps, persistent_alloc);
 }
 
 static void create_default_representations(ApplicationState* state) {
-    if (state->mold.mol.atom.count > 4'000'000) {
-        LOG_INFO("Large molecule detected, creating default representation for all atoms");
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
-        snprintf(rep->name, sizeof(rep->name), "default");
-        return;
-    }
-
     bool amino_acid_present = false;
     bool nucleic_present = false;
     bool ion_present = false;
@@ -8222,11 +8214,18 @@ static void create_default_representations(ApplicationState* state) {
     bool ligand_present = false;
     bool orbitals_present = md_array_size(state->representation.info.molecular_orbitals) > 0;
 
+    if (state->mold.mol.atom.count > 4'000'000) {
+        LOG_INFO("Large molecule detected, creating default representation for all atoms");
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+        snprintf(rep->name, sizeof(rep->name), "default");
+        goto done;
+    }
+
     if (state->mold.mol.residue.count == 0) {
         // No residues present
         Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
-        goto no_residue;
+        goto done;
     }
 
     for (size_t i = 0; i < state->mold.mol.atom.count; ++i) {
@@ -8280,7 +8279,7 @@ static void create_default_representations(ApplicationState* state) {
         }
     }
 
-no_residue:
+done:
     if (orbitals_present) {
         Representation* rep = create_representation(state, RepresentationType::Orbital);
         snprintf(rep->name, sizeof(rep->name), "homo");

@@ -44,6 +44,10 @@ struct VeloxChem : viamd::EventHandler {
     // Used for clearing volumes
     uint32_t vol_fbo = 0;
 
+    // GL representations
+    md_gl_mol_t gl_mol = {};
+    md_gl_rep_t gl_rep = {};
+
     int homo_idx = 0;
     int lumo_idx = 0;
 
@@ -94,7 +98,6 @@ struct VeloxChem : viamd::EventHandler {
         float distance_scale = 2.0f;
 
         bool show_coordinate_system_widget = true;
-        md_gl_rep_t gl_rep = {};
     } orb;
 
     struct Nto {
@@ -125,7 +128,6 @@ struct VeloxChem : viamd::EventHandler {
         float distance_scale = 2.0f;
 
         bool show_coordinate_system_widget = true;
-        md_gl_rep_t gl_rep = {};
     } nto;
 
     struct Rsp {
@@ -185,84 +187,11 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdTopologyInit: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
-                str_t ext;
-                str_t top_file = str_from_cstr(state.files.molecule);
-                if (extract_ext(&ext, top_file) && str_eq_ignore_case(ext, STR_LIT("out"))) {
-                    MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(top_file));
-                    md_vlx_data_free(&vlx);
-                    if (md_vlx_data_parse_file(&vlx, top_file, arena)) {
-                        MD_LOG_INFO("Successfully loaded VeloxChem data");
-
-                        if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
-
-                        // Scf
-                        scf.show_window = true;
-
-                        homo_idx = (int)vlx.scf.homo_idx;
-                        lumo_idx = (int)vlx.scf.lumo_idx;
-
-                        vec4_t min_box = vec4_set1( FLT_MAX);
-                        vec4_t max_box = vec4_set1(-FLT_MAX);
-
-                        // Compute the PCA of the provided geometry
-                        // This is used in determining a better fitting volume for the orbitals
-                        vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
-                        for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                            xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
-                            min_box = vec4_min(min_box, xyzw[i]);
-                            max_box = vec4_max(max_box, xyzw[i]);
-                        }
-                        min_aabb = vec3_from_vec4(min_box);
-                        max_aabb = vec3_from_vec4(max_box);
-
-                        vec3_t com =  md_util_com_compute_vec4(xyzw, 0, vlx.geom.num_atoms, 0);
-                        mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
-                        mat3_eigen_t eigen = mat3_eigen(C);
-                        PCA = mat3_extract_rotation(eigen.vectors);
-
-                        uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, state.mold.mol.atom.count * sizeof(uint32_t));
-                        color_atoms_cpk(colors, state.mold.mol.atom.count, state.mold.mol);
-
-                        // NTO
-                        if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
-                            nto.show_window = true;
-                            nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
-                            md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
-                            camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-                        }
-
-                        // RSP
-                        rsp.show_window = true;
-                        rsp.hovered  = -1;
-                        rsp.selected = -1;
-
-                        // ORB
-                        orb.show_window = true;
-                        orb.gl_rep = md_gl_rep_create(state.mold.gl_mol);
-                        md_gl_rep_set_color(orb.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
-                        camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
-                        orb.mo_idx = homo_idx;
-                        orb.scroll_to_idx = homo_idx;
-
-                    } else {
-                        MD_LOG_INFO("Failed to load VeloxChem data");
-                        md_arena_allocator_reset(arena);
-                        vlx = {};
-                        orb = {};
-                        nto = {};
-                        rsp = {};
-                    }
-                }
+                init_from_file(str_from_cstr(state.files.molecule), state);
                 break;
             }
             case viamd::EventType_ViamdTopologyFree:
-                md_gl_rep_destroy(nto.gl_rep);
-
-                md_arena_allocator_reset(arena);
-                vlx = {};
-                orb = {};
-                nto = {};
-                rsp = {};
+                reset_data();
                 break;
 
             case viamd::EventType_RepresentationInfoFill: {
@@ -315,6 +244,87 @@ struct VeloxChem : viamd::EventHandler {
             }
             default:
                 break;
+            }
+        }
+    }
+
+    void reset_data() {
+        md_gl_mol_destroy(gl_mol);
+        md_gl_rep_destroy(gl_rep);
+        md_arena_allocator_reset(arena);
+        vlx = {};
+        orb = {};
+        nto = {};
+        rsp = {};
+    }
+
+    void init_from_file(str_t filename, ApplicationState& state) {
+        str_t ext;
+        if (extract_ext(&ext, filename) && str_eq_ignore_case(ext, STR_LIT("out"))) {
+            MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
+            md_vlx_data_free(&vlx);
+            if (md_vlx_data_parse_file(&vlx, filename, arena)) {
+                MD_LOG_INFO("Successfully loaded VeloxChem data");
+
+                if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
+
+                // Scf
+                scf.show_window = true;
+
+                homo_idx = (int)vlx.scf.homo_idx;
+                lumo_idx = (int)vlx.scf.lumo_idx;
+
+                vec4_t min_box = vec4_set1( FLT_MAX);
+                vec4_t max_box = vec4_set1(-FLT_MAX);
+
+                // Compute the PCA of the provided geometry
+                // This is used in determining a better fitting volume for the orbitals
+                vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
+                for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
+                    xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
+                    min_box = vec4_min(min_box, xyzw[i]);
+                    max_box = vec4_max(max_box, xyzw[i]);
+                }
+                min_aabb = vec3_from_vec4(min_box);
+                max_aabb = vec3_from_vec4(max_box);
+
+                md_molecule_t mol = {0};
+                md_vlx_molecule_init(&mol, &vlx, state.allocator.frame);
+                md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_BOND_BIT);
+                gl_mol = md_gl_mol_create(&mol);
+
+                uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
+                color_atoms_cpk(colors, mol.atom.count, mol);
+
+                gl_rep = md_gl_rep_create(gl_mol);
+                md_gl_rep_set_color(gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+
+                vec3_t com =  md_util_com_compute_vec4(xyzw, 0, vlx.geom.num_atoms, 0);
+                mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
+                mat3_eigen_t eigen = mat3_eigen(C);
+                PCA = mat3_extract_rotation(eigen.vectors);
+
+
+                // NTO
+                if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
+                    nto.show_window = true;
+                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
+                }
+
+                // RSP
+                rsp.show_window = true;
+                rsp.hovered  = -1;
+                rsp.selected = -1;
+
+                // ORB
+                orb.show_window = true;
+                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
+                orb.mo_idx = homo_idx;
+                orb.scroll_to_idx = homo_idx;
+
+            } else {
+                MD_LOG_INFO("Failed to load VeloxChem data");
+                reset_data();
             }
         }
     }
@@ -1239,7 +1249,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::DrawCoordinateSystemWidget(param);
             }
 
-            if (orb.gl_rep.id) {
+            if (gl_rep.id) {
                 const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
                 mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
                 mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
@@ -1267,7 +1277,7 @@ struct VeloxChem : viamd::EventHandler {
                 draw_op.type = MD_GL_REP_BALL_AND_STICK;
                 draw_op.args.ball_and_stick.ball_scale   = 1.0f;
                 draw_op.args.ball_and_stick.stick_radius = 1.0f;
-                draw_op.rep = orb.gl_rep;
+                draw_op.rep = gl_rep;
 
                 md_gl_draw_args_t draw_args = {
                     .shaders = state.mold.gl_shaders,
@@ -1654,7 +1664,7 @@ struct VeloxChem : viamd::EventHandler {
             draw_op.type = MD_GL_REP_BALL_AND_STICK;
             draw_op.args.ball_and_stick.ball_scale   = 1.0f;
             draw_op.args.ball_and_stick.stick_radius = 1.0f;
-            draw_op.rep = nto.gl_rep;
+            draw_op.rep = gl_rep;
 
             md_gl_draw_args_t draw_args = {
                 .shaders = state.mold.gl_shaders,
