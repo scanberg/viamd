@@ -6650,6 +6650,7 @@ static void draw_debug_window(ApplicationState* data) {
                 };
                 viamd::event_system_broadcast_event(HASH_STR_LIT("Secret Sauce"), 0, &payload);
                 update_representation_info(data);
+                update_all_representations(data);
             }
         }
     }
@@ -7714,7 +7715,8 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                     rep->color_mapping = (ColorMapping)mapping;
                 } else if (str_eq(ident, STR_LIT("StaticColor"))) {
                     viamd::extract_flt_vec(rep->uniform_color.elem, 4, arg);
-
+                } else if (str_eq(ident, STR_LIT("Saturation"))) {
+                    viamd::extract_flt(rep->saturation, arg);
                 } else if (str_eq(ident, STR_LIT("Radius"))) {
                     // DEPRECATED
                     viamd::extract_flt(rep->scale.x, arg);
@@ -7728,6 +7730,23 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_flt_vec(rep->scale.elem, 4, arg);
                 } else if (str_eq(ident, STR_LIT("DynamicEval"))) {
                     viamd::extract_bool(rep->dynamic_evaluation, arg);
+                } else if (str_eq(ident, STR_LIT("OrbIdx"))) {
+                    viamd::extract_int(rep->orbital.orbital_idx, arg);
+                } else if (str_eq(ident, STR_LIT("OrbRes"))) {
+                    int res;
+                    viamd::extract_int(res, arg);
+                    rep->orbital.vol.resolution = (VolumeResolution)res;
+                } else if (str_eq(ident, STR_LIT("OrbType"))) {
+                    int type;
+                    viamd::extract_int(type, arg);
+                    rep->orbital.type = (OrbitalType)type;
+                } else if (str_eq(ident, STR_LIT("OrbIso"))) {
+                    viamd::extract_flt(rep->orbital.vol.iso.values[0], arg);
+                    rep->orbital.vol.iso.values[1] = - rep->orbital.vol.iso.values[0];
+                } else if (str_eq(ident, STR_LIT("OrbColPos"))) {
+                    viamd::extract_vec4(rep->orbital.vol.iso.colors[0], arg);
+                } else if (str_eq(ident, STR_LIT("OrbColNeg"))) {
+                    viamd::extract_vec4(rep->orbital.vol.iso.colors[1], arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("AtomElementMapping"))) {
@@ -7860,14 +7879,24 @@ static void save_workspace(ApplicationState* data, str_t filename) {
     for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
         viamd::write_section_header(state, STR_LIT("Representation"));
-        viamd::write_str(state, STR_LIT("Name"), str_from_cstr(rep.name));
-        viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(rep.filt));
+        viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
+        viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filt));
         viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
-        viamd::write_int(state, STR_LIT("Type"), (int)rep.type);
-        viamd::write_int(state, STR_LIT("ColorMapping"), (int)rep.color_mapping);
+        viamd::write_int(state,  STR_LIT("Type"), (int)rep.type);
+        viamd::write_int(state,  STR_LIT("ColorMapping"), (int)rep.color_mapping);
         viamd::write_vec4(state, STR_LIT("StaticColor"), rep.uniform_color);
+        viamd::write_flt(state,  STR_LIT("Saturation"), rep.saturation);
         viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
         viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
+
+        if (rep.type == RepresentationType::Orbital) {
+            viamd::write_int(state,  STR_LIT("OrbIdx"),      rep.orbital.orbital_idx);
+            viamd::write_int(state,  STR_LIT("OrbType"),(int)rep.orbital.type);
+            viamd::write_int(state,  STR_LIT("OrbRes"), (int)rep.orbital.vol.resolution);
+            viamd::write_flt(state,  STR_LIT("OrbIso"),      rep.orbital.vol.iso.values[0]);
+            viamd::write_vec4(state, STR_LIT("OrbColPos"),   rep.orbital.vol.iso.colors[0]);
+            viamd::write_vec4(state, STR_LIT("OrbColNeg"),   rep.orbital.vol.iso.colors[1]);
+        }
     }
 
     for (size_t i = 0; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
@@ -8119,7 +8148,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             break;
     }
 
-    scale_saturation(colors, mol.atom.count, rep->saturation);
+    if (rep->saturation != 1.0f) {
+        scale_saturation(colors, mol.atom.count, rep->saturation);
+    }
 
     switch (rep->type) {
     case RepresentationType::SpaceFill:
@@ -8134,26 +8165,29 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid = mol.protein_backbone.range.count > 0;
         break;
     case RepresentationType::Orbital: {
-        rep->type_is_valid = md_array_size(state->representation.info.molecular_orbitals) > 0;
-        uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.vol.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
-        if (vol_hash != rep->orbital.vol_hash) {
-            const float samples_per_angstrom[(int)VolumeResolution::Count] = {
-                4.0f,
-                8.0f,
-                16.0f,
-            };
-            rep->orbital.vol_hash = vol_hash;
-            ComputeOrbital data = {
-                .type = rep->orbital.type,
-                .orbital_idx = rep->orbital.orbital_idx,
-                .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.vol.resolution],
-                .dst_texture = &rep->orbital.vol.vol_tex,
-            };
-            viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
+        size_t num_mol_orbitals = md_array_size(state->representation.info.molecular_orbitals);
+        rep->type_is_valid = num_mol_orbitals > 0;
+        if (num_mol_orbitals > 0) {
+            uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.vol.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
+            if (vol_hash != rep->orbital.vol_hash) {
+                const float samples_per_angstrom[(int)VolumeResolution::Count] = {
+                    4.0f,
+                    8.0f,
+                    16.0f,
+                };
+                ComputeOrbital data = {
+                    .type = rep->orbital.type,
+                    .orbital_idx = rep->orbital.orbital_idx,
+                    .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.vol.resolution],
+                    .dst_texture = &rep->orbital.vol.vol_tex,
+                };
+                viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
 
-            if (data.output_written) {
-                rep->orbital.vol.tex_mat = data.tex_mat;
-                rep->orbital.vol.voxel_spacing = data.voxel_spacing;
+                if (data.output_written) {
+                    rep->orbital.vol_hash = vol_hash;
+                    rep->orbital.vol.tex_mat = data.tex_mat;
+                    rep->orbital.vol.voxel_spacing = data.voxel_spacing;
+                }
             }
         }
         uint64_t tf_hash = md_hash64(&rep->orbital.vol.dvr.colormap, sizeof(rep->orbital.vol.dvr.colormap), 0);
