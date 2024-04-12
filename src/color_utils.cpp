@@ -143,11 +143,21 @@ void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mas
     }
 }
 
-void desaturate_colors(uint32_t* colors, const md_bitfield_t* mask, float scale) {
+void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale) {
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
         int64_t i = beg_bit - 1;
+        vec4_t rgba = convert_color(colors[i]);
+        vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
+        hsv.y *= scale;
+        rgba = vec4_from_vec3(hsv_to_rgb(hsv), rgba.w);
+        colors[i] = convert_color(rgba);
+    }
+}
+
+void scale_saturation(uint32_t* colors, size_t count, float scale) {
+    for (size_t i = 0; i < count; ++i) {
         vec4_t rgba = convert_color(colors[i]);
         vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
         hsv.y *= scale;

@@ -4221,6 +4221,7 @@ static void draw_representations_window(ApplicationState* state) {
                     update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
                 }
                 ImGui::PushItemWidth(item_width);
+                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
                 switch (rep.type) {
                 case RepresentationType::SpaceFill:
                     update_rep |= ImGui::SliderFloat("scale", &rep.scale[0], 0.1f, 4.f);
@@ -4447,7 +4448,7 @@ static void draw_async_task_window(ApplicationState* data) {
     task_system::ID tasks[256];
     size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
     bool any_task_label_visible = false;
-    for (uint32_t i = 0; i < num_tasks; i++) {
+    for (size_t i = 0; i < num_tasks; i++) {
         str_t label = task_system::task_label(tasks[i]);
         if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
         any_task_label_visible = true;
@@ -6615,7 +6616,7 @@ static void draw_debug_window(ApplicationState* data) {
         size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
         if (num_tasks > 0) {
             ImGui::Text("Running Pool Tasks:");
-            for (size_t i = 0; i < md_array_size(tasks); ++i) {
+            for (size_t i = 0; i < num_tasks; ++i) {
                 str_t lbl = task_system::task_label(tasks[i]);
                 ImGui::Text("[%i]: %.*s", (int)i, (int)lbl.len, lbl.ptr);
             }
@@ -6635,6 +6636,22 @@ static void draw_debug_window(ApplicationState* data) {
         ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
         ImGui::Text("[%g %g %g %g]", P.col[2].x, P.col[2].y, P.col[2].z, P.col[2].w);
         ImGui::Text("[%g %g %g %g]", P.col[3].x, P.col[3].y, P.col[3].z, P.col[3].w);
+
+        if (ImGui::Button("Load Data")) {
+            char buf[2048];
+            if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Open, STR_LIT("out"))) {
+                struct Payload {
+                    ApplicationState* state;
+                    str_t path;
+                };
+                Payload payload = {
+                    .state = data,
+                    .path  = str_from_cstr(buf),
+                };
+                viamd::event_system_broadcast_event(HASH_STR_LIT("Secret Sauce"), 0, &payload);
+                update_representation_info(data);
+            }
+        }
     }
     ImGui::End();
 }
@@ -8102,6 +8119,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             break;
     }
 
+    scale_saturation(colors, mol.atom.count, rep->saturation);
+
     switch (rep->type) {
     case RepresentationType::SpaceFill:
         rep->type_is_valid = true;
@@ -9002,6 +9021,7 @@ static void draw_representations_transparent(ApplicationState* state) {
 
     for (size_t i = 0; i < num_representations; ++i) {
         const Representation& rep = state->representation.reps[i];
+        if (!rep.enabled) continue;
         if (rep.type != RepresentationType::Orbital) continue;
 
         volume::RenderDesc desc = {

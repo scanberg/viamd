@@ -264,6 +264,8 @@ struct Representation {
     // User defined color used in uniform mode
     vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
+    float saturation = 1.0f;
+
     // scaling parameter (radius, width, height, etc depending on type)
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 

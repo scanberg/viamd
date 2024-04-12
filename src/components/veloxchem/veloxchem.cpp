@@ -184,6 +184,15 @@ struct VeloxChem : viamd::EventHandler {
                 //draw_orb_volume(state);
                 break;
             }
+            case HASH_STR_LIT("Secret Sauce"): {
+                struct Payload {
+                    ApplicationState* state;
+                    str_t filename;
+                };
+                Payload* payload = (Payload*)e.payload;
+                init_from_file(payload->filename, *payload->state);
+                break;
+            }
             case viamd::EventType_ViamdTopologyInit: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
