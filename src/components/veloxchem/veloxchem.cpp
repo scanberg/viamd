@@ -44,6 +44,10 @@ struct VeloxChem : viamd::EventHandler {
     // Used for clearing volumes
     uint32_t vol_fbo = 0;
 
+    // GL representations
+    md_gl_mol_t gl_mol = {};
+    md_gl_rep_t gl_rep = {};
+
     int homo_idx = 0;
     int lumo_idx = 0;
 
@@ -94,7 +98,6 @@ struct VeloxChem : viamd::EventHandler {
         float distance_scale = 2.0f;
 
         bool show_coordinate_system_widget = true;
-        md_gl_representation_t gl_rep = {};
     } orb;
 
     struct Nto {
@@ -125,7 +128,6 @@ struct VeloxChem : viamd::EventHandler {
         float distance_scale = 2.0f;
 
         bool show_coordinate_system_widget = true;
-        md_gl_representation_t gl_rep = {};
     } nto;
 
     struct Rsp {
@@ -171,10 +173,10 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdDrawMenu:
-                ImGui::Checkbox("VeloxChem Orbital", &orb.show_window);
-                ImGui::Checkbox("VeloxChem NTO", &nto.show_window);
-                ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
                 ImGui::Checkbox("VeloxChem SCF", &scf.show_window);
+                ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
+                ImGui::Checkbox("VeloxChem ORB", &orb.show_window);
+                ImGui::Checkbox("VeloxChem NTO", &nto.show_window);
                 break;
             case viamd::EventType_ViamdRenderTransparent: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
@@ -182,87 +184,23 @@ struct VeloxChem : viamd::EventHandler {
                 //draw_orb_volume(state);
                 break;
             }
+            case HASH_STR_LIT("Secret Sauce"): {
+                struct Payload {
+                    ApplicationState* state;
+                    str_t filename;
+                };
+                Payload* payload = (Payload*)e.payload;
+                init_from_file(payload->filename, *payload->state);
+                break;
+            }
             case viamd::EventType_ViamdTopologyInit: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
-                str_t ext;
-                str_t top_file = str_from_cstr(state.files.molecule);
-                if (extract_ext(&ext, top_file) && str_eq_ignore_case(ext, STR_LIT("out"))) {
-                    MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(top_file));
-                    md_vlx_data_free(&vlx);
-                    if (md_vlx_data_parse_file(&vlx, top_file, arena)) {
-                        MD_LOG_INFO("Successfully loaded VeloxChem data");
-
-                        if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
-
-                        // Scf
-                        scf.show_window = true;
-
-                        homo_idx = (int)vlx.scf.homo_idx;
-                        lumo_idx = (int)vlx.scf.lumo_idx;
-
-                        vec4_t min_box = vec4_set1( FLT_MAX);
-                        vec4_t max_box = vec4_set1(-FLT_MAX);
-
-                        // Compute the PCA of the provided geometry
-                        // This is used in determining a better fitting volume for the orbitals
-                        vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
-                        for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                            xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
-                            min_box = vec4_min(min_box, xyzw[i]);
-                            max_box = vec4_max(max_box, xyzw[i]);
-                        }
-                        min_aabb = vec3_from_vec4(min_box);
-                        max_aabb = vec3_from_vec4(max_box);
-
-                        vec3_t com = md_util_com_compute_vec4(xyzw, vlx.geom.num_atoms, 0);
-                        mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
-                        mat3_eigen_t eigen = mat3_eigen(C);
-                        PCA = mat3_extract_rotation(eigen.vectors);
-
-                        uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, state.mold.mol.atom.count * sizeof(uint32_t));
-                        color_atoms_cpk(colors, state.mold.mol.atom.count, state.mold.mol);
-
-                        // NTO
-                        if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
-                            nto.show_window = true;
-                            md_gl_representation_init(&nto.gl_rep, &state.mold.gl_mol);
-                            md_gl_representation_set_color(&nto.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
-                            camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-                        }
-
-                        // RSP
-                        rsp.show_window = true;
-                        rsp.hovered  = -1;
-                        rsp.selected = -1;
-
-                        // ORB
-                        orb.show_window = true;
-                        md_gl_representation_init(&orb.gl_rep, &state.mold.gl_mol);
-                        md_gl_representation_set_color(&orb.gl_rep, 0, (uint32_t)state.mold.mol.atom.count, colors, 0);
-                        camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
-                        orb.mo_idx = homo_idx;
-                        orb.scroll_to_idx = homo_idx;
-
-                    } else {
-                        MD_LOG_INFO("Failed to load VeloxChem data");
-                        md_arena_allocator_reset(arena);
-                        vlx = {};
-                        orb = {};
-                        nto = {};
-                        rsp = {};
-                    }
-                }
+                init_from_file(str_from_cstr(state.files.molecule), state);
                 break;
             }
             case viamd::EventType_ViamdTopologyFree:
-                md_gl_representation_free(&nto.gl_rep);
-
-                md_arena_allocator_reset(arena);
-                vlx = {};
-                orb = {};
-                nto = {};
-                rsp = {};
+                reset_data();
                 break;
 
             case viamd::EventType_RepresentationInfoFill: {
@@ -315,6 +253,87 @@ struct VeloxChem : viamd::EventHandler {
             }
             default:
                 break;
+            }
+        }
+    }
+
+    void reset_data() {
+        md_gl_mol_destroy(gl_mol);
+        md_gl_rep_destroy(gl_rep);
+        md_arena_allocator_reset(arena);
+        vlx = {};
+        orb = {};
+        nto = {};
+        rsp = {};
+    }
+
+    void init_from_file(str_t filename, ApplicationState& state) {
+        str_t ext;
+        if (extract_ext(&ext, filename) && str_eq_ignore_case(ext, STR_LIT("out"))) {
+            MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
+            md_vlx_data_free(&vlx);
+            if (md_vlx_data_parse_file(&vlx, filename, arena)) {
+                MD_LOG_INFO("Successfully loaded VeloxChem data");
+
+                if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
+
+                // Scf
+                scf.show_window = true;
+
+                homo_idx = (int)vlx.scf.homo_idx;
+                lumo_idx = (int)vlx.scf.lumo_idx;
+
+                vec4_t min_box = vec4_set1( FLT_MAX);
+                vec4_t max_box = vec4_set1(-FLT_MAX);
+
+                // Compute the PCA of the provided geometry
+                // This is used in determining a better fitting volume for the orbitals
+                vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
+                for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
+                    xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
+                    min_box = vec4_min(min_box, xyzw[i]);
+                    max_box = vec4_max(max_box, xyzw[i]);
+                }
+                min_aabb = vec3_from_vec4(min_box);
+                max_aabb = vec3_from_vec4(max_box);
+
+                md_molecule_t mol = {0};
+                md_vlx_molecule_init(&mol, &vlx, state.allocator.frame);
+                md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_BOND_BIT);
+                gl_mol = md_gl_mol_create(&mol);
+
+                uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
+                color_atoms_cpk(colors, mol.atom.count, mol);
+
+                gl_rep = md_gl_rep_create(gl_mol);
+                md_gl_rep_set_color(gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+
+                vec3_t com =  md_util_com_compute_vec4(xyzw, 0, vlx.geom.num_atoms, 0);
+                mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
+                mat3_eigen_t eigen = mat3_eigen(C);
+                PCA = mat3_extract_rotation(eigen.vectors);
+
+
+                // NTO
+                if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
+                    nto.show_window = true;
+                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
+                }
+
+                // RSP
+                rsp.show_window = true;
+                rsp.hovered  = -1;
+                rsp.selected = -1;
+
+                // ORB
+                orb.show_window = true;
+                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
+                orb.mo_idx = homo_idx;
+                orb.scroll_to_idx = homo_idx;
+
+            } else {
+                MD_LOG_INFO("Failed to load VeloxChem data");
+                reset_data();
             }
         }
     }
@@ -479,7 +498,7 @@ struct VeloxChem : viamd::EventHandler {
 
         MD_LOG_DEBUG("Starting async eval of orbital grid [%i][%i][%i]", dim[0], dim[1], dim[2]);
 
-        task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
             (void)thread_num;
             Payload* data = (Payload*)user_data;
 
@@ -531,7 +550,7 @@ struct VeloxChem : viamd::EventHandler {
         }, payload);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::main_enqueue(STR_LIT("##Update Volume"), [](void* user_data) {
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
             
             // The init here is just to ensure that the volume has not changed its dimensions during the async evaluation
@@ -543,6 +562,7 @@ struct VeloxChem : viamd::EventHandler {
         }, payload);
 
         task_system::set_task_dependency(main_task, async_task);
+        task_system::enqueue_task(async_task);
 
         return async_task;
     }
@@ -785,7 +805,7 @@ struct VeloxChem : viamd::EventHandler {
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
 
-        const char* x_unit_str[] = { "eV", "nm", "cm-1", "hartree"};
+        const char* x_unit_str[] = { "eV", "nm", (const char*)u8"cm⁻¹", "hartree"};
         static x_unit_t x_unit = X_UNIT_EV;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
@@ -810,7 +830,7 @@ struct VeloxChem : viamd::EventHandler {
             cgs_to_ecd(y_ecd_peaks, x_peaks, y_cgs_peaks, num_peaks);
 
             const int num_samples = 1024;
-            double* x_values    = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_cgs_str = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_ecd_str   = (double*)md_temp_push(sizeof(double) * num_samples);
@@ -907,6 +927,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
+                    ImPlot::SetupFinish();
 
                     peaks_to_pixels(pixel_osc_peaks, x_peaks, y_osc_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
@@ -945,6 +966,8 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ECD (L mol−1 cm−1)", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
+                    ImPlot::SetupFinish();
+
                     peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
@@ -995,8 +1018,9 @@ struct VeloxChem : viamd::EventHandler {
 
     void draw_orb_window(const ApplicationState& state) {
         if (!orb.show_window) return;
+        if (num_orbitals() == 0) return;
         ImGui::SetNextWindowSize({600,300}, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("VeloxChem Orbital Viewer", &orb.show_window)) {
+        if (ImGui::Begin("VeloxChem Orbital Grid", &orb.show_window)) {
 #if 0
             if (vlx.geom.num_atoms) {
                 if (ImGui::TreeNode("Geometry")) {
@@ -1280,93 +1304,91 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::DrawCoordinateSystemWidget(param);
             }
 
-            const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
-            mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
-            mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
-            mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(orb.camera, aspect_ratio);
+            if (gl_rep.id) {
+                const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
+                mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
+                mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
+                mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(orb.camera, aspect_ratio);
 
-            clear_gbuffer(&gbuf);
+                clear_gbuffer(&gbuf);
 
-            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+                const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                    GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_BACK);
 
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
-            glEnable(GL_SCISSOR_TEST);
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_LESS);
+                glDepthMask(GL_TRUE);
+                glEnable(GL_SCISSOR_TEST);
 
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-            glViewport(0, 0, gbuf.width, gbuf.height);
-            glScissor(0, 0, gbuf.width, gbuf.height);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+                glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+                glViewport(0, 0, gbuf.width, gbuf.height);
+                glScissor(0, 0, gbuf.width, gbuf.height);
 
-            md_gl_draw_op_t draw_op = {};
-            draw_op.type = MD_GL_REP_BALL_AND_STICK;
-            draw_op.args.ball_and_stick.ball_scale   = 1.0f;
-            draw_op.args.ball_and_stick.stick_radius = 1.0f;
-            draw_op.rep = &orb.gl_rep;
+                md_gl_draw_op_t draw_op = {};
+                draw_op.type = MD_GL_REP_BALL_AND_STICK;
+                draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+                draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                draw_op.rep = gl_rep;
 
-            md_gl_draw_args_t draw_args = {
-                .shaders = &state.mold.gl_shaders,
-                .draw_operations = {
-                    .count = 1,
-                    .ops = &draw_op
-            },
-                .view_transform = {
-                    .view_matrix = (const float*)view_mat.elem,
-                    .proj_matrix = (const float*)proj_mat.elem,
-            },
-            };
+                md_gl_draw_args_t draw_args = {
+                    .shaders = state.mold.gl_shaders,
+                    .draw_operations = {
+                        .count = 1,
+                        .ops = &draw_op
+                    },
+                    .view_transform = {
+                        .view_matrix = (const float*)view_mat.elem,
+                        .proj_matrix = (const float*)proj_mat.elem,
+                    },
+                };
 
-            md_gl_draw(&draw_args);
+                md_gl_draw(&draw_args);
 
-            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-            glClearColor(1, 1, 1, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
+                glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+                glClearColor(1, 1, 1, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
 
-            PUSH_GPU_SECTION("Postprocessing")
-            postprocessing::Descriptor postprocess_desc = {
-                .background = {
-                    .color = {24.f, 24.f, 24.f, 1.0f},
-                },
-                .bloom = {
-                    .enabled = false,
-                },
-                .tonemapping = {
-                    .enabled    = state.visuals.tonemapping.enabled,
-                    .mode       = state.visuals.tonemapping.tonemapper,
-                    .exposure   = state.visuals.tonemapping.exposure,
-                    .gamma      = state.visuals.tonemapping.gamma,
-                },
-                .ambient_occlusion = {
-                    .enabled = false
-                },
-                .depth_of_field = {
-                    .enabled = false,
-                },
-                .fxaa = {
-                    .enabled = true,
-                },
-                .temporal_reprojection = {
-                    .enabled = false,
-                },
-                .sharpen = {
-                    .enabled = true,
-                },
-                .input_textures = {
-                    .depth          = orb.gbuf.tex.depth,
-                    .color          = orb.gbuf.tex.color,
-                    .normal         = orb.gbuf.tex.normal,
-                    .velocity       = orb.gbuf.tex.velocity,
-                }
-            };
+                PUSH_GPU_SECTION("Postprocessing")
+                postprocessing::Descriptor postprocess_desc = {
+                    .background = {
+                        .color = {24.f, 24.f, 24.f},
+                    },
+                    .tonemapping = {
+                        .enabled    = state.visuals.tonemapping.enabled,
+                        .mode       = state.visuals.tonemapping.tonemapper,
+                        .exposure   = state.visuals.tonemapping.exposure,
+                        .gamma      = state.visuals.tonemapping.gamma,
+                    },
+                    .ambient_occlusion = {
+                        .enabled = false
+                    },
+                    .depth_of_field = {
+                        .enabled = false,
+                    },
+                    .fxaa = {
+                        .enabled = true,
+                    },
+                    .temporal_aa = {
+                        .enabled = false,
+                    },
+                    .sharpen = {
+                        .enabled = false,
+                    },
+                    .input_textures = {
+                        .depth          = orb.gbuf.tex.depth,
+                        .color          = orb.gbuf.tex.color,
+                        .normal         = orb.gbuf.tex.normal,
+                        .velocity       = orb.gbuf.tex.velocity,
+                    }
+                };
 
-            ViewParam view_param = {
-                .matrix = {
-                    .curr = {
+                ViewParam view_param = {
+                    .matrix = {
+                        .curr = {
                         .view = view_mat,
                         .proj = proj_mat,
                         .norm = view_mat,
@@ -1374,53 +1396,60 @@ struct VeloxChem : viamd::EventHandler {
                     .inv = {
                         .proj = inv_proj_mat,
                     }
-                },
-                .clip_planes = {
-                    .near = orb.camera.near_plane,
-                    .far  = orb.camera.far_plane,
-                },
-                .resolution = {orb_win_sz.x, orb_win_sz.y},
-                .fov_y = orb.camera.fov_y,
-            };
+                    },
+                    .clip_planes = {
+                        .near = orb.camera.near_plane,
+                        .far  = orb.camera.far_plane,
+                    },
+                    .resolution = {orb_win_sz.x, orb_win_sz.y},
+                    .fov_y = orb.camera.fov_y,
+                };
 
-            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
-            POP_GPU_SECTION()
+                postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+                POP_GPU_SECTION()
 
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glDrawBuffer(GL_BACK);
-            glDisable(GL_SCISSOR_TEST);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+                glDrawBuffer(GL_BACK);
+                glDisable(GL_SCISSOR_TEST);
 
-            if (orb.iso.enabled) {
-                PUSH_GPU_SECTION("ORB GRID RAYCAST")
-                    for (int i = 0; i < num_mos; ++i) {
-                        volume::RenderDesc vol_desc = {
-                            .render_target = {
-                                .depth  = orb.gbuf.tex.depth,
-                                .color  = orb.iso_tex[i],
-                                .width  = orb.gbuf.width,
-                                .height = orb.gbuf.height,
-                                .clear_color = true,
-                        },
-                        .texture = {
-                                .volume = orb.vol[i].tex_id,
-                        },
-                        .matrix = {
-                                .model = orb.vol[i].tex_to_world,
-                                .view  = view_mat,
-                                .proj  = proj_mat,
-                                .inv_proj = inv_proj_mat,
-                        },
-                        .iso = {
-                                .enabled = true,
-                                .count  = (size_t)orb.iso.count,
-                                .values = orb.iso.values,
-                                .colors = orb.iso.colors,
-                        },
-                        .voxel_spacing = orb.vol[i].step_size,
-                        };
-                        volume::render_volume(vol_desc);
-                    }
-                POP_GPU_SECTION();
+                if (orb.iso.enabled) {
+                    PUSH_GPU_SECTION("ORB GRID RAYCAST")
+                        for (int i = 0; i < num_mos; ++i) {
+                            volume::RenderDesc vol_desc = {
+                                .render_target = {
+                                    .depth  = orb.gbuf.tex.depth,
+                                    .color  = orb.iso_tex[i],
+                                    .width  = orb.gbuf.width,
+                                    .height = orb.gbuf.height,
+                                    .clear_color = true,
+                                },
+                                .texture = {
+                                    .volume = orb.vol[i].tex_id,
+                                },
+                                .matrix = {
+                                    .model = orb.vol[i].tex_to_world,
+                                    .view  = view_mat,
+                                    .proj  = proj_mat,
+                                    .inv_proj = inv_proj_mat,
+                                },
+                                .iso = {
+                                    .enabled = true,
+                                    .count  = (size_t)orb.iso.count,
+                                    .values = orb.iso.values,
+                                    .colors = orb.iso.colors,
+                                },
+                                .shading = {
+                                    .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                    .roughness = 0.3f,
+                                    .dir_radiance = {10,10,10},
+                                    .ior = 1.5f,
+                                },
+                                .voxel_spacing = orb.vol[i].step_size,
+                            };
+                            volume::render_volume(vol_desc);
+                        }
+                    POP_GPU_SECTION();
+                }
             }
         }
         ImGui::End();
@@ -1690,10 +1719,10 @@ struct VeloxChem : viamd::EventHandler {
             draw_op.type = MD_GL_REP_BALL_AND_STICK;
             draw_op.args.ball_and_stick.ball_scale   = 1.0f;
             draw_op.args.ball_and_stick.stick_radius = 1.0f;
-            draw_op.rep = &nto.gl_rep;
+            draw_op.rep = gl_rep;
 
             md_gl_draw_args_t draw_args = {
-                .shaders = &state.mold.gl_shaders,
+                .shaders = state.mold.gl_shaders,
                 .draw_operations = {
                     .count = 1,
                     .ops = &draw_op
@@ -1713,10 +1742,7 @@ struct VeloxChem : viamd::EventHandler {
             PUSH_GPU_SECTION("Postprocessing")
             postprocessing::Descriptor postprocess_desc = {
                 .background = {
-                    .color = {24.f, 24.f, 24.f, 1.0f},
-                },
-                .bloom = {
-                    .enabled = false,
+                    .color = {24.f, 24.f, 24.f},
                 },
                 .tonemapping = {
                     .enabled    = state.visuals.tonemapping.enabled,
@@ -1733,11 +1759,11 @@ struct VeloxChem : viamd::EventHandler {
                 .fxaa = {
                     .enabled = true,
                 },
-                .temporal_reprojection = {
+                .temporal_aa = {
                     .enabled = false,
                 },
                 .sharpen = {
-                    .enabled = true,
+                    .enabled = false,
                 },
                 .input_textures = {
                     .depth      = nto.gbuf.tex.depth,
@@ -1774,7 +1800,7 @@ struct VeloxChem : viamd::EventHandler {
             glDisable(GL_SCISSOR_TEST);
 
             if (nto.iso.enabled) {
-                PUSH_GPU_SECTION("ORB GRID RAYCAST")
+                PUSH_GPU_SECTION("NTO RAYCAST")
                     for (int i = 0; i < num_win; ++i) {
                         volume::RenderDesc vol_desc = {
                             .render_target = {
@@ -1798,6 +1824,12 @@ struct VeloxChem : viamd::EventHandler {
                                 .count  = (size_t)nto.iso.count,
                                 .values = nto.iso.values,
                                 .colors = nto.iso.colors,
+                            },
+                            .shading = {
+                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                .roughness = 0.3f,
+                                .dir_radiance = {10,10,10},
+                                .ior = 1.5f,
                             },
                             .voxel_spacing = nto.vol[i].step_size,
                         };

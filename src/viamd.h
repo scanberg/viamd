@@ -102,6 +102,7 @@ enum MolBit_ {
     MolBit_DirtySecondaryStructure  = 0x04,
     MolBit_DirtyFlags               = 0x08,
     MolBit_DirtyBonds               = 0x10,
+    MolBit_ClearVelocity            = 0x20,
 };
 
 struct DisplayProperty;
@@ -248,7 +249,7 @@ struct Representation {
     RepresentationType type = RepresentationType::SpaceFill;
     ColorMapping color_mapping = ColorMapping::Cpk;
     md_bitfield_t atom_mask = {};
-    md_gl_representation_t md_rep = {};
+    md_gl_rep_t md_rep = {};
 #if EXPERIMENTAL_GFX_API
     md_gfx_handle_t gfx_rep = {};
 #endif
@@ -262,6 +263,8 @@ struct Representation {
 
     // User defined color used in uniform mode
     vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    float saturation = 1.0f;
 
     // scaling parameter (radius, width, height, etc depending on type)
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -338,7 +341,7 @@ struct ApplicationState {
         md_allocator_i*     mol_alloc = nullptr;
         md_gl_shaders_t     gl_shaders = {};
         md_gl_shaders_t     gl_shaders_lean_and_mean = {};
-        md_gl_molecule_t    gl_mol = {};
+        md_gl_mol_t         gl_mol = {};
 #if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};
 #endif
@@ -532,7 +535,7 @@ struct ApplicationState {
             vec4_t color = {1,1,1,1};
         } rep;
 
-        md_array(md_gl_representation_t) gl_reps = nullptr;
+        md_array(md_gl_rep_t) gl_reps = nullptr;
         md_array(mat4_t) rep_model_mats = nullptr;
         mat4_t model_mat = {0};        
 
@@ -584,14 +587,14 @@ struct ApplicationState {
         struct {
             bool enabled = true;
             bool jitter = true;
-            float feedback_min = 0.88f;
-            float feedback_max = 0.97f;
+            float feedback_min = 0.80f;
+            float feedback_max = 0.95f;
 
             struct {
                 bool enabled = true;
                 float motion_scale = 1.0f;
             } motion_blur;
-        } temporal_reprojection;
+        } temporal_aa;
 
         struct {
             bool enabled = true;
@@ -614,6 +617,7 @@ struct ApplicationState {
         RepresentationInfo info = {};
         md_array(Representation) reps = 0;
         md_bitfield_t visibility_mask = {0};
+        uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
     } representation;
@@ -634,6 +638,7 @@ struct ApplicationState {
 
     struct {
         bool keep_representations = false;
+        bool prefetch_frames = true;
     } settings;
 
     struct {

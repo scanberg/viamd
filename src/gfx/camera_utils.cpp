@@ -116,7 +116,7 @@ static inline quat_t trackball(vec2_t prev_ndc, vec2_t curr_ndc) {
     float t = CLAMP(vec3_length(p1 - p2) / (2.0f * TRACKBALLSIZE), -1.f, 1.f);
     float angle = 2.f * asinf(t);
 
-    return quat_angle_axis(angle, axis);
+    return quat_axis_angle(axis, angle);
 }
 
 void camera_trackball(Camera* camera, vec2_t prev_ndc, vec2_t curr_ndc) {

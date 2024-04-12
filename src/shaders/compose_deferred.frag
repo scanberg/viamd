@@ -1,12 +1,19 @@
 #version 150 core
 
+layout (std140) uniform UniformData {
+    mat4  u_inv_proj_mat;
+    vec3  u_bg_color;
+    float u_time;
+    vec3  u_env_radiance;
+    float u_roughness;
+    vec3  u_dir_radiance;
+    float u_F0;
+    vec3  u_light_dir;
+};
+
 uniform sampler2D u_texture_depth;
 uniform sampler2D u_texture_color;
 uniform sampler2D u_texture_normal;
-
-uniform mat4 u_inv_proj_mat;
-uniform vec4 u_bg_color;
-uniform float u_time;
 
 in vec2 tc;
 out vec4 out_frag;
@@ -37,41 +44,80 @@ vec4 srand4(vec2 n) {
     return rand4(n) * 2.0 - 1.0;
 }
 
-const vec3 env_radiance = vec3(5.0);
-const vec3 dir_radiance = vec3(10.0);
-const vec3 L = normalize(vec3(1,1,1));
-const float spec_exp = 100.0;
+const float PI = 3.1415926535;
+const float ONE_OVER_PI = 1.0 / 3.1415926535;
 
-vec3 lambert(in vec3 radiance) {
-    const float ONE_OVER_PI = 1.0 / 3.1415926535;
-    return radiance * ONE_OVER_PI;
+// Cook-Torrance model From here:
+// https://learnopengl.com/PBR/Theory
+
+float FresnelSchlick(float cosTheta, float F0) {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
-float fresnel(float cos_theta) {
-    const float n1 = 1.0;
-    const float n2 = 1.5;
-    const float R0 = pow((n1-n2)/(n1+n2), 2);
-    return R0 + (1.0 - R0)*pow(1.0 - cos_theta, 5);
+float FresnelSchlickRoughness(float cosTheta, float F0, float roughness) {
+    return F0 + (max(1.0 - roughness, F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}   
+
+float DistributionGGX(float NdotH, float roughness) {
+    float a      = roughness*roughness;
+    float a2     = a*a;
+    float NdotH2 = NdotH*NdotH;
+    float num   = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+    return num / denom;
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+    float num   = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+    return num / denom;
+}
+
+float GeometrySmith(float NdotV, float NdotL, float roughness) {
+    float ggx2  = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1  = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
 }
 
 vec3 shade(vec3 color, vec3 V, vec3 N) {
-    vec3 H = normalize(L + V);
+    vec3  L = u_light_dir; 
+    vec3  H = normalize(L + V);
     float H_dot_V = clamp(dot(H, V), 0.0, 1.0);
     float N_dot_H = clamp(dot(N, H), 0.0, 1.0);
     float N_dot_L = clamp(dot(N, L), 0.0, 1.0);
-    float N_dot_V = max(0.0, dot(N, V));
-    float fr_H = fresnel(H_dot_V);
-    float fr_N = fresnel(N_dot_V);
+    float N_dot_V = clamp(dot(N, V), 0.0, 1.0);
 
-    vec3 diffuse  = (1.0 - fr_N) * color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
-    vec3 specular = fr_N * env_radiance + fr_H * dir_radiance * pow(N_dot_H, spec_exp);
+    float F0 = u_F0;
+    float roughness = u_roughness;
+    vec3  albedo = color;
 
-    // Old model
-    //float fr = fresnel(H_dot_V);
-    //vec3 diffuse = color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
-    //vec3 specular = fr * (env_radiance + dir_radiance) * pow(N_dot_H, spec_exp);
+    vec3 Lo = vec3(0);
 
-    return diffuse + specular;
+    {
+        // Add contribution from directional light
+        float NDF = DistributionGGX(N_dot_H, roughness);
+        float G   = GeometrySmith(N_dot_V, N_dot_L, roughness);
+        float F   = FresnelSchlick(H_dot_V, F0);
+        float kS = F;
+        float kD = 1.0 - kS;
+        float numerator   = NDF * G * F;
+        float denominator = 4.0 * N_dot_V * N_dot_L + 0.0001;
+        vec3 specular     = vec3(numerator / denominator);
+        Lo += (kD * albedo * ONE_OVER_PI + specular) * u_dir_radiance * N_dot_L;
+    }
+
+    {
+        // Add contribution from environment
+        float F = FresnelSchlickRoughness(N_dot_V, F0, roughness);
+        float kS = F;
+        float kD = 1.0 - kS;
+        Lo += (kD * albedo * ONE_OVER_PI + vec3(kS)) * u_env_radiance; // Multiply with ao here
+    }
+
+    return Lo;
 }
 
 void main() {

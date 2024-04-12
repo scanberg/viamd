@@ -14,7 +14,7 @@ constexpr ID INVALID_ID = 0;
 //using Task = std::function<void()>;
 //using RangeTask = std::function<void(uint32_t range_beg, uint32_t range_end)>;
 
-using Task = void (*)(void* user_data);
+using Task      = void (*)(void* user_data);
 using RangeTask = void (*)(uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num);
 
 /*
@@ -27,17 +27,20 @@ void shutdown();
 
 // Call once per frame at some approriate time, if there are items in the main queue, the main thread will be stalled.
 // Pool tasks will not stall the main thread.
-void execute_queued_tasks();
+//void execute_queued_tasks();
 
-// This is to generate tasks for the main thread ("render" thread)
-ID main_enqueue(str_t label, Task task, void* user_data = 0);
-
-// This is to generate tasks for the thread-pool (async operations)
-ID pool_enqueue(str_t label, Task task, void* user_data = 0);
-ID pool_enqueue(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask task, void* user_data = 0);
+ID create_main_task(str_t label, Task task, void* user_data = 0);
+ID create_pool_task(str_t label, Task task, void* user_data = 0);
+ID create_pool_task(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask task, void* user_data = 0);
 
 // Sets a dependency for a task such that the task will only be executed upon the completion of 'dependency'
 void set_task_dependency(ID task, ID dependency);
+
+// Once the task is created and potential dependencies has been declared, the task is enqueued through this procedure.
+void enqueue_task(ID task);
+
+// Call once per frame at the appropriate time to execute items queued up for the main thread. The main thread will be stalled and the tasks will be performed
+void execute_main_task_queue();
 
 // This signals interruption for all running tasks
 void pool_interrupt_running_tasks();

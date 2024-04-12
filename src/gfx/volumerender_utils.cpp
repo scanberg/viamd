@@ -136,6 +136,11 @@ struct UniformData {
     vec3_t gradient_spacing_world_space;
     float _pad1;
     mat4_t gradient_spacing_tex_space;
+
+    vec3_t env_radiance;
+    float  roughness;
+    vec3_t dir_radiance;
+    float  F0;
 };
 
 void initialize() {
@@ -377,6 +382,10 @@ void render_volume(const RenderDesc& desc) {
     float tf_ext = tf_max - tf_min;
     float inv_tf_ext = tf_ext == 0 ? 1.0f : 1.0f / tf_ext;
 
+    const float n1 = 1.0f;
+    const float n2 = desc.shading.ior;
+    const float F0 = powf((n1-n2)/(n1+n2), 2.0f);
+
     UniformData data;
     data.view_to_model_mat = mat4_inverse(model_to_view_matrix);
     data.model_to_view_mat = model_to_view_matrix;
@@ -390,6 +399,10 @@ void render_volume(const RenderDesc& desc) {
     data.tf_inv_ext = inv_tf_ext;
     data.gradient_spacing_world_space = desc.voxel_spacing;
     data.gradient_spacing_tex_space = data.view_to_model_mat * mat4_scale(desc.voxel_spacing.x, desc.voxel_spacing.y, desc.voxel_spacing.z);
+    data.env_radiance = desc.shading.env_radiance;
+    data.roughness = desc.shading.roughness;
+    data.dir_radiance = desc.shading.dir_radiance;
+    data.F0 = F0;
 
     glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);

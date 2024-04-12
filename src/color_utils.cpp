@@ -119,12 +119,12 @@ void color_atoms_sec_str(uint32_t* colors, size_t count, const md_molecule_t& mo
     const uint32_t color_sheet   = 0xFFDD2222;
 
     set_colors(colors, count, color_unknown);
-    if (mol.backbone.secondary_structure) {
-        for (size_t i = 0; i < mol.backbone.count; i++) {
-            const vec4_t w = convert_color((uint32_t)mol.backbone.secondary_structure[i]);
+    if (mol.protein_backbone.secondary_structure) {
+        for (size_t i = 0; i < mol.protein_backbone.count; i++) {
+            const vec4_t w = convert_color((uint32_t)mol.protein_backbone.secondary_structure[i]);
             const vec4_t rgba = w.x * convert_color(color_coil) + w.y * convert_color(color_helix) + w.z * convert_color(color_sheet);
             const uint32_t color = convert_color(rgba);
-            md_residue_idx_t res_idx = mol.backbone.residue_idx[i];
+            md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[i];
             md_range_t range = md_residue_atom_range(mol.residue, res_idx);
             set_colors(colors + range.beg, range.end - range.beg, color);
         }
@@ -143,11 +143,21 @@ void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mas
     }
 }
 
-void desaturate_colors(uint32_t* colors, const md_bitfield_t* mask, float scale) {
+void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale) {
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
         int64_t i = beg_bit - 1;
+        vec4_t rgba = convert_color(colors[i]);
+        vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
+        hsv.y *= scale;
+        rgba = vec4_from_vec3(hsv_to_rgb(hsv), rgba.w);
+        colors[i] = convert_color(rgba);
+    }
+}
+
+void scale_saturation(uint32_t* colors, size_t count, float scale) {
+    for (size_t i = 0; i < count; ++i) {
         vec4_t rgba = convert_color(colors[i]);
         vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
         hsv.y *= scale;

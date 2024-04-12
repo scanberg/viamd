@@ -135,23 +135,11 @@ static struct {
 
     struct {
         GLuint program = 0;
-    } bloom;
-
-    struct {
-        GLuint program = 0;
         struct {
             GLint mode = -1;
             GLint tex_color = -1;
         } uniform_loc;
     } tonemapping;
-
-    struct {
-        GLuint program = 0;
-        struct {
-            GLint tex_color = -1;
-            GLint bg_color = -1;
-        } uniform_loc;
-    } compose;
 
     struct {
         GLuint program = 0;
@@ -304,7 +292,7 @@ struct HBAOData {
     float radius_to_screen;
     float neg_inv_r2;
     float n_dot_v_bias;
-    unsigned frame;
+    float z_max;
 
     vec2_t inv_full_res;
     float ao_multiplier;
@@ -315,8 +303,8 @@ struct HBAOData {
     vec4_t sample_pattern[32];
 };
 
-void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_res, const mat4_t& proj_mat, float intensity, float radius, float bias, unsigned frame) {
-    ASSERT(ubo);
+void setup_ubo_hbao_data(HBAOData* data, int width, int height, const vec2_t& inv_res, const mat4_t& proj_mat, float intensity, float radius, float bias) {
+    ASSERT(data);
 
     // From intel ASSAO
     static constexpr float SAMPLE_PATTERN[] = {
@@ -332,10 +320,14 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_re
 
     vec4_t proj_info;
     float proj_scl;
+    float z_max;
 
     const float* proj_data = &proj_mat.elem[0][0];
     const bool ortho = is_orthographic_proj_matrix(proj_mat);
+    const float x = proj_mat.elem[2][2];
+    const float y = proj_mat.elem[3][2];
     if (!ortho) {
+        // Persp
         proj_info = {
             2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
             2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
@@ -345,7 +337,9 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_re
 
         // proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
         proj_scl = float(height) * proj_data[4 * 1 + 1] * 0.5f;
+        z_max = (float)(y / (x + 1.0));
     } else {
+        // Ortho
         proj_info = {
             2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
             2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
@@ -353,30 +347,25 @@ void setup_ubo_hbao_data(GLuint ubo, int width, int height, const vec2_t& inv_re
             -(1.0f - proj_data[4 * 3 + 1]) / proj_data[4 * 1 + 1]   // B
         };
         proj_scl = float(height) / proj_info.y;
+        z_max = (float)((-2.0 + y) / x);
     }
 
     float r = radius * METERS_TO_VIEWSPACE;
 
-    HBAOData data;
-    data.radius_to_screen = r * 0.5f * proj_scl;
-    data.neg_inv_r2 = -1.f / (r * r);
-    data.n_dot_v_bias = CLAMP(bias, 0.f, 1.f - FLT_EPSILON);
-    data.frame = frame;
-    data.inv_full_res = inv_res;
-    data.ao_multiplier = 1.f / (1.f - data.n_dot_v_bias);
-    data.pow_exponent = MAX(intensity, 0.f);
-    data.proj_info = proj_info;
-    memcpy(&data.sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
-
-    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(HBAOData), &data);
-    //glBufferData(GL_UNIFORM_BUFFER, sizeof(HBAOData), &data, GL_DYNAMIC_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    data->radius_to_screen = r * 0.5f * proj_scl;
+    data->neg_inv_r2 = -1.f / (r * r);
+    data->n_dot_v_bias = CLAMP(bias, 0.f, 1.f - FLT_EPSILON);
+    data->z_max = z_max * 0.99f;
+    data->inv_full_res = inv_res;
+    data->ao_multiplier = 1.f / (1.f - data->n_dot_v_bias);
+    data->pow_exponent = MAX(intensity, 0.f);
+    data->proj_info = proj_info;
+    MEMCPY(&data->sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
 }
 
 void initialize_rnd_tex(GLuint rnd_tex) {
     const int buffer_size = AO_RANDOM_TEX_SIZE * AO_RANDOM_TEX_SIZE;
-    signed short buffer[buffer_size * 4];
+    int16_t buffer[buffer_size * 4];
 
     for (int i = 0; i < buffer_size; i++) {
 #define SCALE ((1 << 15))
@@ -384,10 +373,10 @@ void initialize_rnd_tex(GLuint rnd_tex) {
         float rand2 = md_halton(i + 1, 3);
         float angle = 2.f * 3.1415926535f * rand1;
 
-        buffer[i * 4 + 0] = (signed short)(SCALE * cosf(angle));
-        buffer[i * 4 + 1] = (signed short)(SCALE * sinf(angle));
-        buffer[i * 4 + 2] = (signed short)(SCALE * rand2);
-        buffer[i * 4 + 3] = (signed short)(SCALE * 0);
+        buffer[i * 4 + 0] = (int16_t)(SCALE * cosf(angle));
+        buffer[i * 4 + 1] = (int16_t)(SCALE * sinf(angle));
+        buffer[i * 4 + 2] = (int16_t)(SCALE * rand2);
+        buffer[i * 4 + 3] = (int16_t)(SCALE * 0);
 #undef SCALE
     }
 
@@ -522,33 +511,49 @@ void shutdown() {
 
 namespace compose {
 
+struct ubo_data_t {
+    mat4_t inv_proj_mat;
+    vec3_t bg_color;
+    float  time;
+    vec3_t env_radiance;
+    float  roughness;
+    vec3_t dir_radiance;
+    float  F0;
+    vec3_t light_dir;
+};
+
 static struct {
     GLuint program = 0;
+    GLuint ubo = 0;
     struct {
+        GLint uniform_data = -1;
         GLint texture_depth = -1;
         GLint texture_color = -1;
         GLint texture_normal = -1;
-        GLint inv_proj_mat = -1;
-        GLint bg_color = -1;
-        GLint time = -1;
     } uniform_loc;
 } compose;
 
 void initialize() {
     compose.program = setup_program_from_source(STR_LIT("compose deferred"), {(const char*)compose_deferred_frag, compose_deferred_frag_size});
+    
+    if (compose.ubo == 0) {
+        glGenBuffers(1, &compose.ubo);
+        glBindBuffer(GL_UNIFORM_BUFFER, compose.ubo);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(ubo_data_t), 0, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    }
 
     compose.uniform_loc.texture_depth       = glGetUniformLocation(compose.program, "u_texture_depth");
     compose.uniform_loc.texture_color       = glGetUniformLocation(compose.program, "u_texture_color");
     compose.uniform_loc.texture_normal      = glGetUniformLocation(compose.program, "u_texture_normal");
-    compose.uniform_loc.inv_proj_mat        = glGetUniformLocation(compose.program, "u_inv_proj_mat");
-    compose.uniform_loc.bg_color            = glGetUniformLocation(compose.program, "u_bg_color");
-    compose.uniform_loc.time                = glGetUniformLocation(compose.program, "u_time");
+    compose.uniform_loc.uniform_data        = glGetUniformBlockIndex(compose.program, "UniformData");
 }
 
 void shutdown() {
-    if (compose.program)   glDeleteProgram(compose.program);
+    if (compose.program)    glDeleteProgram(compose.program);
+    if (compose.ubo)        glDeleteBuffers(1, &compose.ubo);
 }
-}  // namespace deferred
+}  // namespace compose
 
 namespace tonemapping {
 
@@ -1144,7 +1149,7 @@ void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, b
     glBindVertexArray(0);
 }
 
-void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_matrix, float intensity, float radius, float bias, unsigned int frame) {
+void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_matrix, float intensity, float radius, float bias) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(normal_tex));
 
@@ -1166,7 +1171,11 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
 
     glBindVertexArray(gl.vao);
 
-    ssao::setup_ubo_hbao_data(gl.ssao.ubo_hbao_data, width, height, inv_res, proj_matrix, intensity, radius, bias, frame);
+    ssao::HBAOData ubo_data = {};
+    ssao::setup_ubo_hbao_data(&ubo_data, width, height, inv_res, proj_matrix, intensity, radius, bias);
+    glBindBuffer(GL_UNIFORM_BUFFER, gl.ssao.ubo_hbao_data);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(ssao::HBAOData), &ubo_data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.ssao.fbo);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -1202,6 +1211,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
     glUniform1i(glGetUniformLocation(gl.ssao.blur.program, "u_tex_linear_depth"), 0);
     glUniform1i(glGetUniformLocation(gl.ssao.blur.program, "u_tex_ao"), 1);
     glUniform1f(glGetUniformLocation(gl.ssao.blur.program, "u_sharpness"), sharpness);
+    glUniform1f(glGetUniformLocation(gl.ssao.blur.program, "u_zmax"), ubo_data.z_max);
     glUniform2f(glGetUniformLocation(gl.ssao.blur.program, "u_inv_res_dir"), inv_res.x, 0);
 
     glActiveTexture(GL_TEXTURE1);
@@ -1234,10 +1244,31 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
     POP_GPU_SECTION()
 }
 
-static void compose_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4_t& inv_proj_matrix, const vec4_t bg_color, float time) {
+static void compose_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_tex, const mat4_t& inv_proj_matrix, const vec3_t bg_color, float time) {
     ASSERT(glIsTexture(depth_tex));
     ASSERT(glIsTexture(color_tex));
     ASSERT(glIsTexture(normal_tex));
+
+    const vec3_t env_radiance = bg_color * 0.25f;
+    const vec3_t dir_radiance = {10, 10, 10};
+    const float roughness = 0.4f;
+    const float F0 = 0.04f;
+    const vec3_t L = {0.57735026918962576451f, 0.57735026918962576451f, 0.57735026918962576451f}; // 1.0 / sqrt(3)
+
+    compose::ubo_data_t data = {
+        .inv_proj_mat = inv_proj_matrix,
+        .bg_color = bg_color,
+        .time = time,
+        .env_radiance = env_radiance,
+        .roughness = roughness,
+        .dir_radiance = dir_radiance,
+        .F0 = F0,
+        .light_dir = L,
+    };
+
+    glBindBuffer(GL_UNIFORM_BUFFER, compose::compose.ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(data), &data);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_tex);
@@ -1249,13 +1280,12 @@ static void compose_deferred(GLuint depth_tex, GLuint color_tex, GLuint normal_t
     GLuint program = compose::compose.program;
 
     glUseProgram(program);
+
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, compose::compose.ubo);
+    glUniformBlockBinding(program, compose::compose.uniform_loc.uniform_data, 0);
     glUniform1i (compose::compose.uniform_loc.texture_depth, 0);
     glUniform1i (compose::compose.uniform_loc.texture_color, 1);
     glUniform1i (compose::compose.uniform_loc.texture_normal, 2);
-
-    glUniformMatrix4fv(compose::compose.uniform_loc.inv_proj_mat, 1, GL_FALSE, &inv_proj_matrix.elem[0][0]);
-    glUniform4fv(compose::compose.uniform_loc.bg_color, 1, bg_color.elem);
-    glUniform1f(compose::compose.uniform_loc.time, time);
 
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1753,7 +1783,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     ASSERT(glIsTexture(desc.input_textures.depth));
     ASSERT(glIsTexture(desc.input_textures.color));
     ASSERT(glIsTexture(desc.input_textures.normal));
-    if (desc.temporal_reprojection.enabled) {
+    if (desc.temporal_aa.enabled) {
         ASSERT(glIsTexture(desc.input_textures.velocity));
     }
 
@@ -1761,8 +1791,8 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     static float time = 0.f;
     time = time + 0.01f;
     if (time > 100.f) time -= 100.f;
-    static unsigned int frame = 0;
-    frame = frame + 1;
+    //static unsigned int frame = 0;
+    //frame = frame + 1;
 
     const auto near_dist = view_param.clip_planes.near;
     const auto far_dist = view_param.clip_planes.far;
@@ -1806,7 +1836,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         POP_GPU_SECTION()
     }
 
-    if (desc.temporal_reprojection.enabled) {
+    if (desc.temporal_aa.enabled) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.velocity.fbo);
         glViewport(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
         glScissor(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
@@ -1851,14 +1881,14 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("SSAO")
-        compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias, frame);
+        compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias);
         POP_GPU_SECTION()
     }
 
     PUSH_GPU_SECTION("Tonemapping")
     swap_target();
     glDrawBuffer(dst_buffer);
-    const auto tonemapper = desc.tonemapping.enabled ? desc.tonemapping.mode : Tonemapping_Passthrough;
+    Tonemapping tonemapper = desc.tonemapping.enabled ? desc.tonemapping.mode : Tonemapping_Passthrough;
     apply_tonemapping(src_texture, tonemapper, desc.tonemapping.exposure, desc.tonemapping.gamma);
     POP_GPU_SECTION()
 
@@ -1893,12 +1923,12 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         POP_GPU_SECTION()
     }
 
-    if (desc.temporal_reprojection.enabled) {
+    if (desc.temporal_aa.enabled) {
         swap_target();
         glDrawBuffer(dst_buffer);
-        const float feedback_min = desc.temporal_reprojection.feedback_min;
-        const float feedback_max = desc.temporal_reprojection.feedback_max;
-        const float motion_scale = desc.temporal_reprojection.motion_blur.enabled ? desc.temporal_reprojection.motion_blur.motion_scale : 0.f;
+        const float feedback_min = desc.temporal_aa.feedback_min;
+        const float feedback_max = desc.temporal_aa.feedback_max;
+        const float motion_scale = desc.temporal_aa.motion_blur.enabled ? desc.temporal_aa.motion_blur.motion_scale : 0.f;
         if (motion_scale != 0.f)
             PUSH_GPU_SECTION("Temporal AA + Motion Blur")
         else

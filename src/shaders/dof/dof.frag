@@ -46,11 +46,9 @@ vec3 depth_of_field(vec2 tex_coord, float focus_point, float focus_scale) {
 	float center_coc    = get_blur_size(center_depth, focus_point, focus_scale);
 	vec4  color_coc_sum = vec4(center_color, center_coc);
 
-	//vec4 noise = srand4(tex_coord + vec2(u_time, u_time) + 0.6959174) * 3.141259265 * 2.0;
-
 	float contrib_sum   = 1.0;
 	float radius        = RAD_SCALE;
-	float ang           = 0.0; //noise.z * PI;
+	float ang           = 0.0;
 
 	for (; radius < MAX_BLUR_SIZE; ang += GOLDEN_ANGLE)
 	{
@@ -80,7 +78,7 @@ const float HALF_RES_RAD_SCALE = 2.0;
 		vec4 sample_color_coc = texture(u_tex_half_res, tc);
 		sample_color_coc.a *= MAX_BLUR_SIZE;
 		
-		float sample_depth = texture(u_tex_depth, tc).r;
+		float sample_depth = textureLod(u_tex_depth, tc, 1).r;
 		if (sample_depth > center_depth) sample_color_coc.a = min(sample_color_coc.a, center_coc*2.0);
 
 		color_coc_sum     += mix(color_coc_sum / contrib_sum, sample_color_coc, smoothstep(radius-0.5, radius+0.5, sample_color_coc.a));
@@ -98,7 +96,7 @@ void main() {
 	vec3 dof = depth_of_field(tc, u_focus_depth, u_focus_scale);
 
 	// To hide banding artifacts
-	vec4 noise = srand4(tc + u_time) / 25.0;
+	vec4 noise = rand4(tc + u_time) / 20.0;
 	dof += noise.xyz;
 	out_frag = vec4(dof, 1);
 }

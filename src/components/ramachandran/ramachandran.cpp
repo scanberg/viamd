@@ -612,7 +612,7 @@ struct Ramachandran : viamd::EventHandler {
 
     void update(ApplicationState& state) {
         const size_t num_frames = md_trajectory_num_frames(state.mold.traj);
-        if (show_window && state.mold.mol.backbone.count > 0 && num_frames > 0) {
+        if (show_window && state.mold.mol.protein_backbone.count > 0 && num_frames > 0) {
             if (backbone_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
 
                 if (task_system::task_is_running(compute_density_full)) {
@@ -632,8 +632,8 @@ struct Ramachandran : viamd::EventHandler {
                     md_array_shrink(rama_type_indices[2], 0);
                     md_array_shrink(rama_type_indices[3], 0);
 
-                    for (uint32_t i = 0; i < (uint32_t)md_array_size(state.mold.mol.backbone.ramachandran_type); ++i) {
-                        switch (state.mold.mol.backbone.ramachandran_type[i]) {
+                    for (uint32_t i = 0; i < (uint32_t)md_array_size(state.mold.mol.protein_backbone.ramachandran_type); ++i) {
+                        switch (state.mold.mol.protein_backbone.ramachandran_type[i]) {
                         case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
                         case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
                         case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
@@ -844,7 +844,6 @@ struct Ramachandran : viamd::EventHandler {
                         ImPlotPoint mouse_coord = ImPlot::GetPlotMousePos();
 
                         if (is_selecting[plot_idx]) {
-                            state.mold.dirty_buffers |= MolBit_DirtyFlags;
                             selection_rect.X.Max = mouse_coord.x;
                             selection_rect.Y.Max = mouse_coord.y;
                             if (selection_rect.Size().x != 0 && selection_rect.Size().y != 0) {
@@ -865,7 +864,11 @@ struct Ramachandran : viamd::EventHandler {
                         double min_d2 = DBL_MAX;
                         int64_t mouse_hover_idx = -1;
 
-                        if (show_curr && mol.backbone.angle) {
+                        if (hovered) {
+                            md_bitfield_clear(highlight_mask);
+                        }
+
+                        if (show_curr && mol.protein_backbone.angle) {
                             const uint32_t* indices = rama_type_indices[plot_idx];
 
                             double min_x = MIN(selection_rect.X.Min, selection_rect.X.Max);
@@ -882,15 +885,15 @@ struct Ramachandran : viamd::EventHandler {
                             for (size_t i = 0; i < md_array_size(indices); ++i) {
                                 uint32_t idx = indices[i];
 
-                                if (mol.backbone.angle[idx].phi == 0 && mol.backbone.angle[idx].psi == 0) continue;
+                                if (mol.protein_backbone.angle[idx].phi == 0 && mol.protein_backbone.angle[idx].psi == 0) continue;
 
-                                ImPlotPoint coord = ImPlotPoint(RAD_TO_DEG(mol.backbone.angle[idx].phi), RAD_TO_DEG(mol.backbone.angle[idx].psi));
+                                ImPlotPoint coord = ImPlotPoint(RAD_TO_DEG(mol.protein_backbone.angle[idx].phi), RAD_TO_DEG(mol.protein_backbone.angle[idx].psi));
                                 coord.x = deperiodize(coord.x, ref_x, 360.0);
                                 coord.y = deperiodize(coord.y, ref_y, 360.0);
 
                                 if (is_selecting[plot_idx]) {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
-                                        md_residue_idx_t res_idx = mol.backbone.residue_idx[idx];
+                                        md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[idx];
                                         if (res_idx < (int)mol.residue.count) {
                                             md_range_t range = md_residue_atom_range(mol.residue, res_idx);
                                             modify_field(highlight_mask, range, op);
@@ -908,17 +911,15 @@ struct Ramachandran : viamd::EventHandler {
 
                             if (is_selecting[plot_idx]) {
                                 grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, mol);
-                                state.mold.dirty_buffers |= MolBit_DirtyFlags;
                             }
 
                             if (mouse_hover_idx != -1) {
-                                if (mouse_hover_idx < (int64_t)mol.backbone.count) {
-                                    md_residue_idx_t res_idx = mol.backbone.residue_idx[mouse_hover_idx];
+                                if (mouse_hover_idx < (int64_t)mol.protein_backbone.count) {
+                                    md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[mouse_hover_idx];
                                     if (res_idx < (int)mol.residue.count) {
                                         md_range_t range = md_residue_atom_range(mol.residue, res_idx);
                                         modify_field(highlight_mask, range, SelectionOperator::Or);
                                         grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, mol);
-                                        state.mold.dirty_buffers |= MolBit_DirtyFlags;
                                     }
                                     str_t lbl = LBL_TO_STR(mol.residue.name[res_idx]);
                                     ImGui::SetTooltip("res[%d]: %.*s %d", res_idx + 1, (int)lbl.len, lbl.ptr, mol.residue.id[res_idx]);
@@ -930,9 +931,9 @@ struct Ramachandran : viamd::EventHandler {
 
                             for (uint32_t i = 0; i < (uint32_t)md_array_size(indices); ++i) {
                                 uint32_t idx = indices[i];
-                                if (mol.backbone.angle[idx].phi == 0 && mol.backbone.angle[idx].psi == 0) continue;
+                                if (mol.protein_backbone.angle[idx].phi == 0 && mol.protein_backbone.angle[idx].psi == 0) continue;
 
-                                int64_t atom_idx = mol.backbone.atoms[idx].ca;
+                                int64_t atom_idx = mol.protein_backbone.atoms[idx].ca;
                                 if (md_bitfield_test_bit(highlight_mask, atom_idx)) {
                                     md_array_push(highlight_indices, idx, state.allocator.frame);
                                 }
@@ -964,18 +965,18 @@ struct Ramachandran : viamd::EventHandler {
                             ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, style.base_radius, style.base_color, 1.2f, style.border_color);
                             ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1));
                             if (md_array_size(indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(mol.backbone.angle), indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), indices, view_mid };
                                 ImPlot::PlotScatterG("##Current", index_getter, &user_data, (int)md_array_size(indices));
                             }
 
                             if (md_array_size(selection_indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(mol.backbone.angle), selection_indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), selection_indices, view_mid };
                                 ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, style.base_radius + 1, style.selection_color, 2.0f, style.border_color);
                                 ImPlot::PlotScatterG("##Selection", index_getter, &user_data, (int)md_array_size(selection_indices));
                             }
 
                             if (md_array_size(highlight_indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(mol.backbone.angle), highlight_indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), highlight_indices, view_mid };
                                 ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, style.base_radius + 1, style.highlight_color, 2.0f, style.border_color);
                                 ImPlot::PlotScatterG("##Highlight", index_getter, &user_data, (int)md_array_size(highlight_indices));
                             }
@@ -1291,7 +1292,7 @@ struct Ramachandran : viamd::EventHandler {
         user_data->frame_stride = frame_stride;
         user_data->sigma = blur_sigma;
 
-        task_system::ID async_task = task_system::pool_enqueue(STR_LIT("Rama density"), [](void* user_data) {
+        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Rama density"), [](void* user_data) {
             UserData* data = (UserData*)user_data;
             const float angle_to_coord_scale = 1.0f / (2.0f * PI);
             const float angle_to_coord_offset = 0.5f;
@@ -1334,13 +1335,14 @@ struct Ramachandran : viamd::EventHandler {
             data->rep->den_sum[3] = (float)sum[3];
         }, user_data);
 
-        task_system::ID main_task = task_system::main_enqueue(STR_LIT("##Update rama texture"), [](void* user_data) {
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update rama texture"), [](void* user_data) {
             UserData* data = (UserData*)user_data;
             gl::set_texture_2D_data(data->rep->den_tex, data->density_tex, GL_RGBA32F);
             md_free(md_get_heap_allocator(), data, data->alloc_size);
         }, user_data);
 
         task_system::set_task_dependency(main_task, async_task);
+        task_system::enqueue_task(async_task);
 
         return async_task;
     }

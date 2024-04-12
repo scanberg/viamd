@@ -5,6 +5,7 @@
 const float KERNEL_RADIUS = 3;
   
 uniform float u_sharpness;
+uniform float u_zmax;
 uniform vec2  u_inv_res_dir; // either set x to 1/width or y to 1/height
 uniform sampler2D u_tex_ao;
 uniform sampler2D u_tex_linear_depth;
@@ -29,8 +30,10 @@ float blur_function(vec2 uv, float r, float center_c, float center_d, inout floa
 
 void main()
 {
-    float center_c = texture(u_tex_ao, tc).x;
     float center_d = texture(u_tex_linear_depth, tc).x;
+    if (center_d > u_zmax) discard;
+
+    float center_c = texture(u_tex_ao, tc).x;
 
     float c_total = center_c;
     float w_total = 1.0;

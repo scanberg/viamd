@@ -180,4 +180,6 @@ void color_atoms_chain_idx  (uint32_t* colors, size_t count, const md_molecule_t
 void color_atoms_sec_str    (uint32_t* colors, size_t count, const md_molecule_t& mol);
 
 void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask);
-void desaturate_colors(uint32_t* colors, const md_bitfield_t* mask, float scale);
+void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale);
+void scale_saturation(uint32_t* colors, size_t count, float scale);
+

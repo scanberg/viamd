@@ -18,7 +18,7 @@ struct HBAOData {
     float   radius_to_screen;
     float   neg_inv_r2;
     float   n_dot_v_bias;
-    uint    frame;
+    float   z_max;
 
     vec2    inv_full_res;
     float   ao_multiplier;
@@ -169,8 +169,11 @@ float compute_ao(vec2 full_res_uv, float radius_pixels, vec4 jitter, vec3 view_p
 
 //----------------------------------------------------------------------------------
 void main() {
+    float view_z = texelFetch(u_tex_linear_depth, ivec2(gl_FragCoord.xy), 0).x;
+    if (view_z > control.z_max) discard;
+
     vec2 uv = tc;
-    vec3 view_position = fetch_view_pos(uv, 0);
+    vec3 view_position = uv_to_view(uv, view_z);
     vec3 view_normal = fetch_view_normal(uv);
 
   // Compute projection of disk of radius control.R into screen space

@@ -16,8 +16,7 @@ struct IsovalueParameters {
     int count;
 };
 
-layout (std140) uniform UniformData
-{
+layout (std140) uniform UniformData {
     mat4 u_view_to_model_mat;
     mat4 u_model_to_view_mat;
     mat4 u_inv_proj_mat;
@@ -33,6 +32,11 @@ layout (std140) uniform UniformData
 
     vec3 u_gradient_spacing_world_space;
     mat4 u_gradient_spacing_tex_space;
+
+    vec3  u_env_radiance;
+    float u_roughness;
+    vec3  u_dir_radiance;
+    float u_F0;
 };
 
 uniform IsovalueParameters u_iso;
@@ -77,36 +81,91 @@ vec3 getGradient(in vec3 samplePos) {
     return g / (2.0 * u_gradient_spacing_world_space);
 }
 
-const vec3 env_radiance = vec3(5.0);
-const vec3 dir_radiance = vec3(10.0);
 const vec3 L = normalize(vec3(1,1,1));
 const float spec_exp = 100.0;
+const float PI = 3.1415926535;
+const float ONE_OVER_PI = 1.0 / 3.1415926535;
 
-vec3 lambert(in vec3 radiance) {
-    const float ONE_OVER_PI = 1.0 / 3.1415926535;
-    return radiance * ONE_OVER_PI;
+// Cook-Torrance model From here:
+// https://learnopengl.com/PBR/Theory
+
+float FresnelSchlick(float cosTheta, float F0) {
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
-float fresnel(float cos_theta) {
-    const float n1 = 1.0;
-    const float n2 = 1.5;
-    const float R0 = pow((n1-n2)/(n1+n2), 2);
-    return R0 + (1.0 - R0)*pow(1.0 - cos_theta, 5);
+float FresnelSchlickRoughness(float cosTheta, float F0, float roughness) {
+    return F0 + (max(1.0 - roughness, F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}   
+
+float DistributionGGX(float NdotH, float roughness) {
+    float a      = roughness*roughness;
+    float a2     = a*a;
+    float NdotH2 = NdotH*NdotH;
+    float num   = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+    return num / denom;
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+    float num   = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+    return num / denom;
+}
+
+float GeometrySmith(float NdotV, float NdotL, float roughness) {
+    float ggx2  = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1  = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
 }
 
 vec4 shade(vec4 color, vec3 V, vec3 N) {
-    vec3 H = normalize(L + V);
+    vec3  H = normalize(L + V);
     float H_dot_V = max(0.0, dot(H, V));
     float N_dot_H = max(0.0, dot(N, H));
     float N_dot_L = max(0.0, dot(N, L));
     float N_dot_V = max(0.0, dot(N, V));
-    float fr_H = fresnel(H_dot_V);
-    float fr_N = fresnel(N_dot_V);
 
-    vec3 diffuse  = (1.0 - fr_N) * color.rgb * lambert(env_radiance + N_dot_L * dir_radiance);
-    vec3 specular = fr_N * env_radiance + fr_H * dir_radiance * pow(N_dot_H, spec_exp);
+    float F0 = u_F0;
+    float roughness = u_roughness;
+    vec3  dir_radiance = u_dir_radiance;
+    vec3  env_radiance = u_env_radiance;
 
-    return vec4(diffuse * color.a + specular, color.a + fr_N);
+    // Premultiply albedo with the alpha of the surface
+    vec3  albedo = color.rgb * color.a;
+    float alpha = color.a;
+
+    vec3 Lo = vec3(0);
+
+    {
+        // Add contribution from directional light
+        float NDF = DistributionGGX(N_dot_H, roughness);
+        float G   = GeometrySmith(N_dot_V, N_dot_L, roughness);
+        float F   = FresnelSchlick(H_dot_V, F0);
+        float kS = F;
+        float kD = 1.0 - kS;
+        float numerator   = NDF * G * F;
+        float denominator = 4.0 * N_dot_V * N_dot_L + 0.0001;
+        float specular    = numerator / denominator;
+        Lo += (kD * albedo * ONE_OVER_PI + vec3(specular)) * dir_radiance * N_dot_L;
+    }
+
+    {
+        // Add contribution from environment
+        float F = FresnelSchlickRoughness(N_dot_V, F0, roughness);
+        float kS = F;
+        float kD = 1.0 - kS;
+        Lo += (kD * albedo * ONE_OVER_PI + vec3(kS)) * env_radiance; // Multiply with ao here
+
+        // Modify the alpha term to 'approximate' the transmissive component in the reflection occuring at the surface
+        // Only some portion of the energy enters the surface, the other portion reflects off.
+        // We model this by an increase in opacity, which means the consequent contributions will be less
+        alpha += kS;
+    }
+
+    return vec4(Lo, alpha);
 }
 
 vec4 depth_to_view_coord(vec2 tc, float depth) {

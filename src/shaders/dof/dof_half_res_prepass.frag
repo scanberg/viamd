@@ -16,7 +16,7 @@ out vec4 out_frag;
 
 void main() {
 	float depth = textureLod(u_tex_depth, tc, 1).r;
-	vec3  color = textureLod(u_tex_color, tc, 1).rgb;
+	vec3  color = texture(u_tex_color, tc).rgb;
 	float coc   = getBlurSize(depth, u_focus_point, u_focus_scale);
 
 	out_frag = vec4(color, coc);
