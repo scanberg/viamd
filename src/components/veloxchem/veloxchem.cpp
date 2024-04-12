@@ -548,67 +548,6 @@ struct VeloxChem : viamd::EventHandler {
     }
 
 
-    void draw_scf_window() {
-        if (!scf.show_window) { return; }
-        if (vlx.scf.iter.count == 0) { return; }
-
-        size_t temp_pos = md_temp_get_pos();
-        defer {  md_temp_set_pos_back(temp_pos); };
-
-        // We set up iterations as doubles for easier use
-        double* iter = (double*)md_temp_push(sizeof(double) * vlx.scf.iter.count);
-        for (int i = 0; i < vlx.scf.iter.count; ++i) {
-            iter[i] = (double)vlx.scf.iter.iteration[i];
-        }
-        static ImPlotRect lims{ 0,1,0,1 };
-        // The actual plot
-
-
-        double* energy_offsets = (double*)md_temp_push(sizeof(double) * (int)vlx.scf.iter.count);
-        double ref_energy = vlx.scf.iter.energy_total[vlx.scf.iter.count - 1];
-        for (size_t i = 0; i < vlx.scf.iter.count; i++) {
-            energy_offsets[i] = 1 - (vlx.scf.iter.energy_total[i] / ref_energy);
-        }
-
-        double y1_min = vlx.scf.iter.gradient_norm[0];
-        double y1_max = vlx.scf.iter.gradient_norm[0];
-        double y2_min = energy_offsets[0];
-        double y2_max = energy_offsets[0];
-        for (size_t i = 1; i < vlx.scf.iter.count; i++) {
-            y1_min = MIN(y1_min, vlx.scf.iter.gradient_norm[i]);
-            y1_max = MAX(y1_max, vlx.scf.iter.gradient_norm[i]);
-            y2_min = MIN(y2_min, energy_offsets[i]);
-            y2_max = MAX(y2_max, energy_offsets[i]);
-        }
-
-        double y1_dist = fabs(y1_max - y1_min);
-        double y2_dist = fabs(y2_max - y2_min);
-
-        double y1_to_y2_mult = y2_dist / y1_dist;
-        ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("SCF", &scf.show_window)) {
-            if (ImPlot::BeginPlot("SCF")) {
-                ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
-                ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                ImPlot::SetupAxes("Iterations", "eV");
-                // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                ImPlot::SetupAxis(ImAxis_Y2, "Offset from norm", ImPlotAxisFlags_AuxDefault);
-                ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
-                ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
-
-
-                ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
-                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                ImPlot::PlotLine("Energy Total", iter, energy_offsets, (int)vlx.scf.iter.count);
-                lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
-                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
-                ImPlot::EndPlot();
-            }
-        }
-        ImGui::End();
-    }
 
     enum x_unit_t {
         X_UNIT_EV,
@@ -757,7 +696,75 @@ struct VeloxChem : viamd::EventHandler {
         ImPlot::DragRect(id, &x1, &y1, &x2, &y, color, ImPlotDragToolFlags_NoInputs);
     }
 
+    static inline void cgs_to_ecd(double* ecd_out_peaks, const double* x_peaks, const double* cgs_peaks, size_t num_peaks) {
+        double inv = 1 / (22.94 * PI);
+        for (size_t i = 0; i < num_peaks; i++) {
+            ecd_out_peaks[i] = x_peaks[i] * cgs_peaks[i] * inv;
+        }
+    }
+
     
+    void draw_scf_window() {
+        if (!scf.show_window) { return; }
+        if (vlx.scf.iter.count == 0) { return; }
+
+        size_t temp_pos = md_temp_get_pos();
+        defer {  md_temp_set_pos_back(temp_pos); };
+
+        // We set up iterations as doubles for easier use
+        double* iter = (double*)md_temp_push(sizeof(double) * vlx.scf.iter.count);
+        for (int i = 0; i < vlx.scf.iter.count; ++i) {
+            iter[i] = (double)vlx.scf.iter.iteration[i];
+        }
+        static ImPlotRect lims{ 0,1,0,1 };
+        // The actual plot
+
+
+        double* energy_offsets = (double*)md_temp_push(sizeof(double) * (int)vlx.scf.iter.count);
+        double ref_energy = vlx.scf.iter.energy_total[vlx.scf.iter.count - 1];
+        for (size_t i = 0; i < vlx.scf.iter.count; i++) {
+            energy_offsets[i] = 1 - (vlx.scf.iter.energy_total[i] / ref_energy);
+        }
+
+        double y1_min = vlx.scf.iter.gradient_norm[0];
+        double y1_max = vlx.scf.iter.gradient_norm[0];
+        double y2_min = energy_offsets[0];
+        double y2_max = energy_offsets[0];
+        for (size_t i = 1; i < vlx.scf.iter.count; i++) {
+            y1_min = MIN(y1_min, vlx.scf.iter.gradient_norm[i]);
+            y1_max = MAX(y1_max, vlx.scf.iter.gradient_norm[i]);
+            y2_min = MIN(y2_min, energy_offsets[i]);
+            y2_max = MAX(y2_max, energy_offsets[i]);
+        }
+
+        double y1_dist = fabs(y1_max - y1_min);
+        double y2_dist = fabs(y2_max - y2_min);
+
+        double y1_to_y2_mult = y2_dist / y1_dist;
+        ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("SCF", &scf.show_window)) {
+            if (ImPlot::BeginPlot("SCF")) {
+                ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
+                ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                ImPlot::SetupAxes("Iterations", "eV");
+                // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
+                ImPlot::SetupAxis(ImAxis_Y2, "Offset from norm", ImPlotAxisFlags_AuxDefault);
+                ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Log10);
+                ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
+
+
+                ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
+                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                ImPlot::PlotLine("Energy Total", iter, energy_offsets, (int)vlx.scf.iter.count);
+                lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+                //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                ImPlot::EndPlot();
+            }
+        }
+        ImGui::End();
+    }
 
     void draw_rsp_window() {
         if (!rsp.show_window) return;
@@ -793,10 +800,15 @@ struct VeloxChem : viamd::EventHandler {
                 x_peaks[i] = vlx.rsp.absorption_ev[i];
             }
 
+            double* y_ecd_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
+
+            cgs_to_ecd(y_ecd_peaks, x_peaks, y_cgs_peaks, num_peaks);
+
             const int num_samples = 1024;
             double* x_values    = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_cgs_str   = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* y_cgs_str = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* y_ecd_str   = (double*)md_temp_push(sizeof(double) * num_samples);
 
             ImVec2*   pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
             ImVec2*   pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
@@ -814,10 +826,12 @@ struct VeloxChem : viamd::EventHandler {
             case BROADENING_GAUSSIAN:
                 broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, sigma);
                 broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, sigma);
+                broaden_gaussian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, sigma);
                 break;
             case BROADENING_LORENTZIAN:
                 broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, sigma);
                 broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, sigma);
+                broaden_lorentzian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, sigma);
                 break;
             default:
                 ASSERT(false); // Should not happen
@@ -923,6 +937,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (ImPlot::BeginPlot("ECD")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Rotatory Strength");
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ECD (L mol−1 cm−1)", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
                     peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
@@ -937,7 +952,9 @@ struct VeloxChem : viamd::EventHandler {
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                     ImPlot::PlotBars("Exited States", x_peaks, y_cgs_peaks, num_peaks, bar_width);
-                    ImPlot::PlotLine("ECD", x_values, y_cgs_str, num_samples);
+                    ImPlot::PlotLine("CGS", x_values, y_cgs_str, num_samples);
+                    ImPlot::SetAxis(ImAxis_Y2);
+                    ImPlot::PlotLine("ECD", x_values, y_ecd_str, num_samples);
 
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
                         draw_bar(2, x_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
