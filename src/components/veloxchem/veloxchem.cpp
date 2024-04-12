@@ -963,7 +963,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (ImPlot::BeginPlot("ECD")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxes(x_unit_str[x_unit], "Rotatory Strength");
-                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ECD (L mol−1 cm−1)", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ECD (L mol⁻¹ cm⁻¹)", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
                     ImPlot::SetupFinish();
