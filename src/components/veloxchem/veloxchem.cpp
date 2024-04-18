@@ -567,14 +567,16 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t array_size) {
+    static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t y1_array_size, size_t y2_array_size) {
         double y1_min = y1_array[0];
         double y1_max = y1_array[0];
         double y2_min = y2_array[0];
         double y2_max = y2_array[0];
-        for (size_t i = 1; i < array_size; i++) {
+        for (size_t i = 1; i < y1_array_size; i++) {
             y1_min = MIN(y1_min, y1_array[i]);
             y1_max = MAX(y1_max, y1_array[i]);
+        }
+        for (size_t i = 1; i < y2_array_size; i++) {
             y2_min = MIN(y2_min, y2_array[i]);
             y2_max = MAX(y2_max, y2_array[i]);
         }
@@ -622,21 +624,24 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    static inline void broaden_gaussian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double sigma) {
+    static inline void broaden_gaussian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double gamma) {
+        double sigma = gamma / 2.3548;
         for (size_t xi = 0; xi < num_samples; xi++) {
             double tot = 0.0;
             for (size_t pi = 0; pi < num_peaks; pi++) {
-                tot += in_y_peaks[pi] * exp(-(pow(in_x_peaks[pi] - in_x[xi], 2) / (2 * pow(sigma, 2))));
+                tot += in_y_peaks[pi] * (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(in_x_peaks[pi] - in_x[xi], 2) / (2 * pow(sigma, 2))));
             }
             out_y[xi] = tot;
         }
     }
 
-    static inline void broaden_lorentzian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double sigma) {
+    static inline void broaden_lorentzian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double gamma) {
+        double sigma = gamma / 2;
         for (size_t xi = 0; xi < num_samples; xi++) {
             double tot = 0.0;
             for (size_t pi = 0; pi < num_peaks; pi++) {
-                tot += in_y_peaks[pi] / (1 + pow((in_x[xi] - in_x_peaks[pi]) / sigma, 2));
+                //tot += in_y_peaks[pi] / (1 + pow((in_x[xi] - in_x_peaks[pi]) / sigma, 2)); My way
+                tot += in_y_peaks[pi] * (1 / PI) * sigma / (pow((in_x[xi] - in_x_peaks[pi]), 2) + pow(sigma, 2)); //Veloxchem way
             }
             out_y[xi] = tot;
         }
@@ -761,16 +766,16 @@ struct VeloxChem : viamd::EventHandler {
         for (size_t i = 0; i < vlx.scf.iter.count; i++) {
             energy_offsets[i] = fabs(vlx.scf.iter.energy_total[i] - ref_energy);
         }
-        double y1_to_y2_mult = axis_conversion_multiplier(vlx.scf.iter.gradient_norm, energy_offsets, vlx.scf.iter.count);
+        double y1_to_y2_mult = axis_conversion_multiplier(vlx.scf.iter.gradient_norm, energy_offsets, vlx.scf.iter.count, vlx.scf.iter.count);
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("SCF", &scf.show_window)) {
+        if (ImGui::Begin("Summary", &scf.show_window)) {
             if (ImPlot::BeginPlot("SCF")) {
                 ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
                 ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                ImPlot::SetupAxes("Iteration", "Gradient Norm (a.u.)");
+                ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
                 // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                ImPlot::SetupAxis(ImAxis_Y2, "Energy (Hartree)", ImPlotAxisFlags_AuxDefault);
+                ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
 #if 1
                 ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
                 //ImPlot::SetupAxisScale(ImAxis_Y2, ImPlotScale_Log10);
@@ -799,21 +804,21 @@ struct VeloxChem : viamd::EventHandler {
         size_t temp_pos = md_temp_get_pos();
         defer { md_temp_set_pos_back(temp_pos); };
 
-        static float sigma = 0.1;
+        static float gamma = 0.1;
         static ImVec2 mouse_pos = { 0,0 };
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
         static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
 
-        const char* x_unit_str[] = { "eV", "nm", (const char*)u8"cm⁻¹", "hartree"};
+        const char* x_unit_str[] = { "Energy (eV)", "Wavelength (nm)", (const char*)u8"Wavenumber (cm⁻¹)", "Energy (hartree)"};
         static x_unit_t x_unit = X_UNIT_EV;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("RSP", &rsp.show_window)) {
+        if (ImGui::Begin("Spectra", &rsp.show_window)) {
             bool refit = false;
             static bool first_plot = true;
             
-            ImGui::SliderFloat((const char*)u8"Broadening (σ)", &sigma, 0.01f, 1.0f);
+            ImGui::SliderFloat((const char*)u8"Broadening γ FWHM (eV)", &gamma, 0.01f, 1.0f);
             refit |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
             refit |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
             
@@ -849,14 +854,14 @@ struct VeloxChem : viamd::EventHandler {
             // @NOTE: Do broadening in eV
             switch (broadening_mode) {
             case BROADENING_GAUSSIAN:
-                broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, sigma);
-                broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, sigma);
-                broaden_gaussian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, sigma);
+                broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
+                broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
+                broaden_gaussian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
                 break;
             case BROADENING_LORENTZIAN:
-                broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, sigma);
-                broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, sigma);
-                broaden_lorentzian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, sigma);
+                broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
+                broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
+                broaden_lorentzian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
                 break;
             default:
                 ASSERT(false); // Should not happen
@@ -918,13 +923,15 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::BulletText("Peak 0: X = %f, Y = %f", (float)pixel_osc_peaks[0].x, (float)pixel_osc_peaks[0].y);
             ImGui::BulletText("Closest Index = %i", rsp.hovered);
 #endif
+            static ImPlotRect lims = { 0,1,0,1 };
             rsp.focused_plot = -1;
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
                 if (ImPlot::BeginPlot("Absorption")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
+                    ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
+                    ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
                     ImPlot::SetupFinish();
@@ -939,8 +946,8 @@ struct VeloxChem : viamd::EventHandler {
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
-                    ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
-                    ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
+                    ImPlot::PlotLine("Spectrum", x_values, y_osc_str, num_samples);
+                    ImPlot::PlotBars("Oscillator Strength", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     //Check hovered state
                     if (rsp.hovered != -1) {
                         draw_bar(0, x_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
@@ -960,12 +967,16 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Rotatory ECD
+                double y1_to_y2_mult = axis_conversion_multiplier(y_cgs_peaks, y_ecd_str, vlx.rsp.num_excited_states, 1024);
+
                 if (ImPlot::BeginPlot("ECD")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxes(x_unit_str[x_unit], "Rotatory Strength");
-                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ECD (L mol⁻¹ cm⁻¹)", ImPlotAxisFlags_AuxDefault);
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
+                    ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
+                    ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
+                    //ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
+                    //ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
+                    ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
                     ImPlot::SetupFinish();
 
                     peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
@@ -979,10 +990,12 @@ struct VeloxChem : viamd::EventHandler {
 
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
-                    ImPlot::PlotBars("Exited States", x_peaks, y_cgs_peaks, num_peaks, bar_width);
-                    ImPlot::PlotLine("CGS", x_values, y_cgs_str, num_samples);
+                    //ImPlot::PlotLine("CGS", x_values, y_cgs_str, num_samples);
                     ImPlot::SetAxis(ImAxis_Y2);
-                    ImPlot::PlotLine("ECD", x_values, y_ecd_str, num_samples);
+                    ImPlot::PlotLine("Spectrum", x_values, y_ecd_str, num_samples);
+                    ImPlot::SetAxis(ImAxis_Y1);
+                    ImPlot::PlotBars("Rotatory Strength", x_peaks, y_cgs_peaks, num_peaks, bar_width);
+                    //ImPlot::SetAxis(ImAxis_Y1); //Reset because we are comparing mouse pos to Y1
 
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
                         draw_bar(2, x_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
@@ -995,6 +1008,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (rsp.selected != -1) {
                         draw_bar(3, x_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
+                    lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
                     ImPlot::EndPlot();
                 }
                 ImPlot::EndSubplots();
