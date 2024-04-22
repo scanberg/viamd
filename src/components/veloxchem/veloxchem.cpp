@@ -745,6 +745,22 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    static inline void osc_to_eps(double* eps_out, const double* x_peaks, const double* osc_peaks, size_t num_peaks) {
+        double NA = 6.02214076 * pow(10, 23);
+        double ln10 = 2.30258509299;
+        double eps_0 = 8.854188 * pow(10, -12);
+        double c = 2.997925 * pow(10, 8);
+        double me = 9.109383 * pow(10, -31);
+        double sigma = 0;
+        for (size_t i = 0; i < num_peaks; i++) {
+            sigma = ((2 * pow(PI, 2) * exp(2) * x_peaks[i]) / (4 * PI * me * c)) * osc_peaks[i];
+            eps_out[i] = (sigma * NA) / (ln10 * 1000);
+        }
+        //We do the broadening in the next, external step
+    }
+
+    //static inline 
+
     void draw_scf_window() {
         if (!scf.show_window) { return; }
         if (vlx.scf.iter.count == 0) { return; }
@@ -799,7 +815,6 @@ struct VeloxChem : viamd::EventHandler {
     void draw_rsp_window() {
         if (!rsp.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
-
         // Keep track of the temp position so we can reset to it after we are done
         size_t temp_pos = md_temp_get_pos();
         defer { md_temp_set_pos_back(temp_pos); };
@@ -831,14 +846,18 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             double* y_ecd_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
-
             cgs_to_ecd(y_ecd_peaks, x_peaks, y_cgs_peaks, num_peaks);
+
+            double* y_eps_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
+            osc_to_eps(y_eps_peaks, x_peaks, y_osc_peaks, num_peaks);
+
 
             const int num_samples = 1024;
             double* x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_cgs_str = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_ecd_str   = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* y_ecd_str = (double*)md_temp_push(sizeof(double) * num_samples);
+            double* y_eps_str   = (double*)md_temp_push(sizeof(double) * num_samples);
 
             ImVec2*   pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
             ImVec2*   pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
@@ -857,11 +876,13 @@ struct VeloxChem : viamd::EventHandler {
                 broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
                 broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
                 broaden_gaussian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
+                broaden_gaussian(y_eps_str, x_values, num_samples, x_peaks, y_eps_peaks, num_peaks, gamma);
                 break;
             case BROADENING_LORENTZIAN:
                 broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
                 broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
                 broaden_lorentzian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
+                broaden_lorentzian(y_eps_str, x_values, num_samples, x_peaks, y_eps_peaks, num_peaks, gamma);
                 break;
             default:
                 ASSERT(false); // Should not happen
@@ -932,6 +953,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
                     ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε");
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
                     ImPlot::SetupFinish();
@@ -946,6 +968,7 @@ struct VeloxChem : viamd::EventHandler {
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
+                    ImPlot::SetAxis(ImAxis_Y1);
                     ImPlot::PlotLine("Spectrum", x_values, y_osc_str, num_samples);
                     ImPlot::PlotBars("Oscillator Strength", x_peaks, y_osc_peaks, num_peaks, bar_width);
                     //Check hovered state
@@ -961,13 +984,16 @@ struct VeloxChem : viamd::EventHandler {
                     if (rsp.selected != -1) {
                         draw_bar(1, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
+
+                    ImPlot::SetAxis(ImAxis_Y2);
+                    ImPlot::PlotLine("eps", x_values, y_eps_str, num_samples);
                     
                     ImPlot::EndPlot();
                 }
 
                 if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Rotatory ECD
-                double y1_to_y2_mult = axis_conversion_multiplier(y_cgs_peaks, y_ecd_str, vlx.rsp.num_excited_states, 1024);
+                double y1_to_y2_mult = axis_conversion_multiplier(y_cgs_peaks, y_ecd_str, vlx.rsp.num_excited_states, num_samples);
 
                 if (ImPlot::BeginPlot("ECD")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
