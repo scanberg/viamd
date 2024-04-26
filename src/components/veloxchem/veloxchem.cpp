@@ -694,6 +694,20 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    static inline void rot_to_eps_delta(double* eps_out, const double* x, size_t num_samples, const double* rot_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
+        double inv = 1 / (22.94);
+        double eV2au = 1 / 27.211396;
+
+        for (size_t si = 0; si < num_samples; si++) {
+            double sum = 0;
+            for (size_t pi = 0; pi < num_peaks; pi++) {
+                sum += (*distr_func)(x[si], x_peaks[pi], gamma) * rot_peaks[pi] * x_peaks[pi];
+            }
+            
+            eps_out[si] = sum * inv;
+        }
+    }
+
     //converts x and y peaks into pixel points in context of the current plot. Use between BeginPlot() and EndPlot()
     static inline void peaks_to_pixels(ImVec2* pixel_peaks, const double* x_peaks, const double* y_peaks, size_t num_peaks) {
         for (size_t i = 0; i < num_peaks; i++) {
@@ -771,6 +785,8 @@ struct VeloxChem : viamd::EventHandler {
             ecd_out_peaks[i] = x_peaks[i] * cgs_peaks[i] * inv;
         }
     }
+
+
 
     /*
     static inline void osc_to_eps(double* eps_out, const double* x_peaks, const double* osc_peaks, size_t num_peaks) {
@@ -851,7 +867,7 @@ struct VeloxChem : viamd::EventHandler {
         size_t temp_pos = md_temp_get_pos();
         defer { md_temp_set_pos_back(temp_pos); };
 
-        static float gamma = 0.1;
+        static float gamma = 0.246;
         static ImVec2 mouse_pos = { 0,0 };
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
@@ -907,14 +923,14 @@ struct VeloxChem : viamd::EventHandler {
             case BROADENING_GAUSSIAN:
                 broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
                 broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
-                broaden_gaussian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
+                //broaden_gaussian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
                 //broaden_gaussian(y_eps_str, x_values, num_samples, x_peaks, y_eps_peaks, num_peaks, gamma);
                 distr_func = &gaussian;
                 break;
             case BROADENING_LORENTZIAN:
                 broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
                 broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
-                broaden_lorentzian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
+                //broaden_lorentzian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
                 //broaden_lorentzian(y_eps_str, x_values, num_samples, x_peaks, y_eps_peaks, num_peaks, gamma);
                 distr_func = &lorentzian;
                 break;
@@ -924,6 +940,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             osc_to_eps(y_eps_str, x_values, num_samples, y_osc_peaks, x_peaks, num_peaks, distr_func, gamma);
+            rot_to_eps_delta(y_ecd_str, x_values, num_samples, y_cgs_peaks, x_peaks, num_peaks, distr_func, gamma);
 
             // Do conversions
             convert_values(x_peaks,  num_peaks,   x_unit);
