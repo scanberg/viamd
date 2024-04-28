@@ -634,7 +634,7 @@ struct VeloxChem : viamd::EventHandler {
         return (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(x - x_0, 2) / (2 * pow(sigma, 2)))); 
     }
 
-    static inline void broaden_gaussian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double gamma) {
+    /*static inline void broaden_gaussian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double gamma) {
         double sigma = gamma / 2.3548;
         for (size_t xi = 0; xi < num_samples; xi++) {
             double tot = 0.0;
@@ -643,19 +643,19 @@ struct VeloxChem : viamd::EventHandler {
             }
             out_y[xi] = tot;
         }
-    }
+    }*/
 
-    static inline void broaden_lorentzian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double gamma) {
-        double sigma = gamma / 2;
-        for (size_t xi = 0; xi < num_samples; xi++) {
-            double tot = 0.0;
-            for (size_t pi = 0; pi < num_peaks; pi++) {
-                //tot += in_y_peaks[pi] / (1 + pow((in_x[xi] - in_x_peaks[pi]) / sigma, 2)); My way
-                tot += in_y_peaks[pi] * (1 / PI) * sigma / (pow((in_x[xi] - in_x_peaks[pi]), 2) + pow(sigma, 2)); //Veloxchem way
-            }
-            out_y[xi] = tot;
-        }
-    }
+    //static inline void broaden_lorentzian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double gamma) {
+    //    double sigma = gamma / 2;
+    //    for (size_t xi = 0; xi < num_samples; xi++) {
+    //        double tot = 0.0;
+    //        for (size_t pi = 0; pi < num_peaks; pi++) {
+    //            //tot += in_y_peaks[pi] / (1 + pow((in_x[xi] - in_x_peaks[pi]) / sigma, 2)); My way
+    //            tot += in_y_peaks[pi] * (1 / PI) * sigma / (pow((in_x[xi] - in_x_peaks[pi]), 2) + pow(sigma, 2)); //Veloxchem way
+    //        }
+    //        out_y[xi] = tot;
+    //    }
+    //}
     /*
     * We return to this at a later stage
     void save_absorption(str_t filename, md_array(double)* x_values, const char* x_lable, md_array(double)* y_values_osc, md_array(double)* y_values_cgs, int step) {
@@ -705,6 +705,15 @@ struct VeloxChem : viamd::EventHandler {
             }
             
             eps_out[si] = sum * inv;
+        }
+    }
+
+    //Constructs plot limits from peaks
+    static inline ImPlotRect get_plot_limits(double* x_peaks, double* y_peaks, size_t num_peaks, double ext_fac = 0.1) {
+        ImPlotRect lim = { 0,0,0,0 };
+        for (size_t i = 0; i < num_peaks; i++) {
+            //Use Contains to check if values are within the limits, or if they should extend the limits
+            //lim.Y.Contains(y_peaks[i]) ? 
         }
     }
 
@@ -779,12 +788,12 @@ struct VeloxChem : viamd::EventHandler {
         ImPlot::DragRect(id, &x1, &y1, &x2, &y, color, ImPlotDragToolFlags_NoInputs);
     }
 
-    static inline void cgs_to_ecd(double* ecd_out_peaks, const double* x_peaks, const double* cgs_peaks, size_t num_peaks) {
+    /*static inline void cgs_to_ecd(double* ecd_out_peaks, const double* x_peaks, const double* cgs_peaks, size_t num_peaks) {
         double inv = 1 / (22.94 * PI);
         for (size_t i = 0; i < num_peaks; i++) {
             ecd_out_peaks[i] = x_peaks[i] * cgs_peaks[i] * inv;
         }
-    }
+    }*/
 
 
 
@@ -806,8 +815,6 @@ struct VeloxChem : viamd::EventHandler {
         //We do the broadening in the next, external step
     }
     */
-
-    //static inline 
 
     void draw_scf_window() {
         if (!scf.show_window) { return; }
@@ -871,7 +878,7 @@ struct VeloxChem : viamd::EventHandler {
         static ImVec2 mouse_pos = { 0,0 };
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
-        static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
+        static broadening_mode_t broadening_mode = BROADENING_LORENTZIAN;
 
         const char* x_unit_str[] = { "Energy (eV)", "Wavelength (nm)", (const char*)u8"Wavenumber (cm⁻¹)", "Energy (hartree)"};
         static x_unit_t x_unit = X_UNIT_EV;
@@ -893,16 +900,16 @@ struct VeloxChem : viamd::EventHandler {
                 x_peaks[i] = vlx.rsp.absorption_ev[i];
             }
 
-            double* y_ecd_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
-            cgs_to_ecd(y_ecd_peaks, x_peaks, y_cgs_peaks, num_peaks);
+            /*double* y_ecd_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
+            cgs_to_ecd(y_ecd_peaks, x_peaks, y_cgs_peaks, num_peaks);*/
 
-            double* y_eps_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
+            //double* y_eps_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
             //osc_to_eps(y_eps_peaks, x_peaks, y_osc_peaks, num_peaks);
 
 
             const int num_samples = 1024;
             double* x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
+            //double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_cgs_str = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_ecd_str = (double*)md_temp_push(sizeof(double) * num_samples);
             double* y_eps_str   = (double*)md_temp_push(sizeof(double) * num_samples);
@@ -921,15 +928,15 @@ struct VeloxChem : viamd::EventHandler {
             // @NOTE: Do broadening in eV
             switch (broadening_mode) {
             case BROADENING_GAUSSIAN:
-                broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
-                broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
+                //broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
+                //broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
                 //broaden_gaussian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
                 //broaden_gaussian(y_eps_str, x_values, num_samples, x_peaks, y_eps_peaks, num_peaks, gamma);
                 distr_func = &gaussian;
                 break;
             case BROADENING_LORENTZIAN:
-                broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
-                broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
+                //broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
+                //broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
                 //broaden_lorentzian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
                 //broaden_lorentzian(y_eps_str, x_values, num_samples, x_peaks, y_eps_peaks, num_peaks, gamma);
                 distr_func = &lorentzian;
@@ -954,8 +961,8 @@ struct VeloxChem : viamd::EventHandler {
             double x_max_con = x_values[num_samples - 1];
             double x_min_con = x_values[0];
             for (int i = 0; i < num_samples; i++) {
-                y_osc_max_con = MAX(y_osc_max_con, y_osc_str[i]);
-                y_osc_min_con = MIN(y_osc_min_con, y_osc_str[i]);
+                y_osc_max_con = MAX(y_osc_max_con, y_eps_str[i]);
+                y_osc_min_con = MIN(y_osc_min_con, y_eps_str[i]);
                 y_cgs_max_con = MAX(y_cgs_max_con, y_cgs_str[i]);
                 y_cgs_min_con = MIN(y_cgs_min_con, y_cgs_str[i]);
                 x_max_con = MAX(x_max_con, x_values[i]);
