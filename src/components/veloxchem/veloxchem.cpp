@@ -960,14 +960,19 @@ struct VeloxChem : viamd::EventHandler {
             rsp.focused_plot = -1;
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 // Absorption
-                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 double osc_to_eps_mult = axis_conversion_multiplier(y_osc_peaks, y_eps_str, num_peaks, num_samples);
                 static ImPlotRect cur_osc_lims = { 0,1,0,1 };
+                if (refit || first_plot) { ImPlot::SetNextAxisToFit(ImAxis_X1); }
                 if (ImPlot::BeginPlot("Absorption")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
                     ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε");
+                    if (refit || first_plot) {
+                        ImPlot::SetupAxisLimits(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
+                        ImPlot::SetupAxisLimits(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
+                        cur_osc_lims = osc_lim_constraint;
+                    }
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
                     ImPlot::SetupAxisLimits(ImAxis_Y2, cur_osc_lims.Y.Min* osc_to_eps_mult, cur_osc_lims.Y.Max* osc_to_eps_mult, ImPlotCond_Always);
@@ -983,6 +988,8 @@ struct VeloxChem : viamd::EventHandler {
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
+                    ImPlot::SetAxis(ImAxis_Y2);
+                    ImPlot::PlotLine("Spectrum", x_values, y_eps_str, num_samples);
                     ImPlot::SetAxis(ImAxis_Y1);
                     //ImPlot::PlotLine("Spectrum", x_values, y_osc_str, num_samples);
                     ImPlot::PlotBars("Oscillator Strength", x_peaks, y_osc_peaks, num_peaks, bar_width);
@@ -1000,23 +1007,26 @@ struct VeloxChem : viamd::EventHandler {
                         draw_bar(1, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
 
-                    ImPlot::SetAxis(ImAxis_Y2);
-                    ImPlot::PlotLine("eps", x_values, y_eps_str, num_samples);
 
                     cur_osc_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
                     ImPlot::EndPlot();
                 }
 
                 // Rotatory ECD
-                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 double cgs_to_ecd_mult = axis_conversion_multiplier(y_cgs_peaks, y_ecd_str, num_peaks, num_samples);
                 static ImPlotRect cur_cgs_lims = { 0,1,0,1 };
+                if (refit || first_plot) { ImPlot::SetNextAxisToFit(ImAxis_X1); }
 
                 if (ImPlot::BeginPlot("ECD")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
                     ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
+                    if (refit || first_plot) {
+                        ImPlot::SetupAxisLimits(ImAxis_X1, cgs_lim_constraint.X.Min, cgs_lim_constraint.X.Max);
+                        ImPlot::SetupAxisLimits(ImAxis_Y1, cgs_lim_constraint.Y.Min, cgs_lim_constraint.Y.Max);
+                        cur_cgs_lims = cgs_lim_constraint;
+                    }
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, cgs_lim_constraint.X.Min, cgs_lim_constraint.X.Max);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, cgs_lim_constraint.Y.Min, cgs_lim_constraint.Y.Max);
                     ImPlot::SetupAxisLimits(ImAxis_Y2, cur_cgs_lims.Y.Min * cgs_to_ecd_mult, cur_cgs_lims.Y.Max * cgs_to_ecd_mult, ImPlotCond_Always);
