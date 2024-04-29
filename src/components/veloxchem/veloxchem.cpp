@@ -600,22 +600,26 @@ struct VeloxChem : viamd::EventHandler {
         BROADENING_LORENTZIAN,
     };
 
-    static inline void convert_values(double* values, size_t num_values, x_unit_t unit) {
+    static inline void convert_values(double* out_values, const double* in_values, size_t num_values, x_unit_t unit) {
         switch (unit) {
-        case X_UNIT_EV: break; // Do nothing
+        case X_UNIT_EV:
+            for (size_t i = 0; i < num_values; ++i) {
+                out_values[i] = in_values[i];
+            }
+            break;
         case X_UNIT_NM:
             for (size_t i = 0; i < num_values; ++i) {
-                values[i] = 1239.84193 / values[i];
+                out_values[i] = 1239.84193 / in_values[i];
             }
             break;
         case X_UNIT_CM_INVERSE:
             for (size_t i = 0; i < num_values; ++i) {
-                values[i] = values[i] * 8065.73;
+                out_values[i] = in_values[i] * 8065.73;
             }
             break;
         case X_UNIT_HARTREE:
             for (size_t i = 0; i < num_values; ++i) {
-                values[i] = values[i] * 0.0367502;
+                out_values[i] = in_values[i] * 0.0367502;
             }
             break;
         default:
@@ -878,36 +882,42 @@ struct VeloxChem : viamd::EventHandler {
         if (ImGui::Begin("Spectra", &rsp.show_window)) {
             bool refit = false;
             static bool first_plot = true;
+            bool recalculate = false;
             
-            ImGui::SliderFloat((const char*)u8"Broadening γ FWHM (eV)", &gamma, 0.01f, 1.0f);
+            recalculate = ImGui::SliderFloat((const char*)u8"Broadening γ FWHM (eV)", &gamma, 0.01f, 1.0f);
             refit |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
             refit |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
             
             const int   num_peaks = (int)vlx.rsp.num_excited_states;
-            double*       x_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
             const double* y_osc_peaks = vlx.rsp.absorption_osc_str;
             const double* y_cgs_peaks = vlx.rsp.electronic_circular_dichroism_cgs;
-            for (int i = 0; i < num_peaks; ++i) {
-                x_peaks[i] = vlx.rsp.absorption_ev[i];
-            }
 
             const int num_samples = 1024;
-            double* x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
-            //double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_cgs_str = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_ecd_str = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_eps_str   = (double*)md_temp_push(sizeof(double) * num_samples);
+            if (first_plot) {
+                vlx.rsp.x_ev_samples = md_array_create(double, num_samples, arena);
+                vlx.rsp.x_unit_samples = md_array_create(double, num_samples, arena);
+                vlx.rsp.x_unit_peaks = md_array_create(double, num_peaks, arena);
+                vlx.rsp.eps = md_array_create(double, num_samples, arena);
+                vlx.rsp.ecd = md_array_create(double, num_samples, arena);
+            
+                //Populate x_values
+                const double x_min = vlx.rsp.absorption_ev[0] - 1.0;
+                const double x_max = vlx.rsp.absorption_ev[num_peaks - 1] + 1.0;
+                for (int i = 0; i < num_samples; ++i) {
+                    double t = (double)i / (double)(num_samples - 1);
+                    double value = lerp(x_min, x_max, t);
+                    vlx.rsp.x_ev_samples[i] = value;
+                }
+            }
+
+
+            //double* temp_x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
+            //double* y_ecd_str = (double*)md_temp_push(sizeof(double) * num_samples);
+            //double* y_eps_str   = (double*)md_temp_push(sizeof(double) * num_samples);
 
             ImVec2*   pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
             ImVec2*   pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
 
-            const double x_min = vlx.rsp.absorption_ev[0] - 1.0;
-            const double x_max = vlx.rsp.absorption_ev[num_peaks - 1] + 1.0;
-            for (int i = 0; i < num_samples; ++i) {
-                double t = (double)i / (double)(num_samples - 1);
-                double value = lerp(x_min, x_max, t);
-                x_values[i] = value;
-            }
             double (*distr_func)(double x, double x_o, double gamma) = 0;
             // @NOTE: Do broadening in eV
             switch (broadening_mode) {
@@ -922,15 +932,24 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             }
 
-            osc_to_eps(y_eps_str, x_values, num_samples, y_osc_peaks, x_peaks, num_peaks, distr_func, gamma);
-            rot_to_eps_delta(y_ecd_str, x_values, num_samples, y_cgs_peaks, x_peaks, num_peaks, distr_func, gamma);
+            if (recalculate || first_plot) {
+                osc_to_eps(vlx.rsp.eps, vlx.rsp.x_ev_samples, num_samples, y_osc_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma);
+                rot_to_eps_delta(vlx.rsp.ecd, vlx.rsp.x_ev_samples, num_samples, y_cgs_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma);
+            }
 
-            // Do conversions
-            convert_values(x_peaks,  num_peaks,   x_unit);
-            convert_values(x_values, num_samples, x_unit);
+            if (refit || first_plot) {
+                // Do conversions
+                convert_values(vlx.rsp.x_unit_peaks, vlx.rsp.absorption_ev, num_peaks, x_unit);
+                convert_values(vlx.rsp.x_unit_samples, vlx.rsp.x_ev_samples, num_samples, x_unit);
+            }
 
-            ImPlotRect osc_lim_constraint = get_plot_limits(x_peaks, y_osc_peaks, num_peaks);
-            ImPlotRect cgs_lim_constraint = get_plot_limits(x_peaks, y_cgs_peaks, num_peaks);
+            static ImPlotRect osc_lim_constraint = { 0, 0, 0, 0 }; 
+            static ImPlotRect cgs_lim_constraint = { 0, 0, 0, 0 }; 
+            if (first_plot) {
+                osc_lim_constraint = get_plot_limits(vlx.rsp.x_unit_peaks, y_osc_peaks, num_peaks);
+                cgs_lim_constraint = get_plot_limits(vlx.rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
+            }
+            
 
 
 #if 0
@@ -960,7 +979,9 @@ struct VeloxChem : viamd::EventHandler {
             rsp.focused_plot = -1;
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                 // Absorption
-                double osc_to_eps_mult = axis_conversion_multiplier(y_osc_peaks, y_eps_str, num_peaks, num_samples);
+                static double osc_to_eps_mult = 1;
+                if (recalculate || first_plot) { osc_to_eps_mult = axis_conversion_multiplier(y_osc_peaks, vlx.rsp.eps, num_peaks, num_samples); }
+
                 static ImPlotRect cur_osc_lims = { 0,1,0,1 };
                 if (refit || first_plot) { ImPlot::SetNextAxisToFit(ImAxis_X1); }
                 if (ImPlot::BeginPlot("Absorption")) {
@@ -978,7 +999,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxisLimits(ImAxis_Y2, cur_osc_lims.Y.Min* osc_to_eps_mult, cur_osc_lims.Y.Max* osc_to_eps_mult, ImPlotCond_Always);
                     ImPlot::SetupFinish();
 
-                    peaks_to_pixels(pixel_osc_peaks, x_peaks, y_osc_peaks, num_peaks);
+                    peaks_to_pixels(pixel_osc_peaks, vlx.rsp.x_unit_peaks, y_osc_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                     if (ImPlot::IsPlotHovered()) {
                         rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks);
@@ -989,13 +1010,13 @@ struct VeloxChem : viamd::EventHandler {
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                     ImPlot::SetAxis(ImAxis_Y2);
-                    ImPlot::PlotLine("Spectrum", x_values, y_eps_str, num_samples);
+                    ImPlot::PlotLine("Spectrum", vlx.rsp.x_unit_samples, vlx.rsp.eps, num_samples);
                     ImPlot::SetAxis(ImAxis_Y1);
                     //ImPlot::PlotLine("Spectrum", x_values, y_osc_str, num_samples);
-                    ImPlot::PlotBars("Oscillator Strength", x_peaks, y_osc_peaks, num_peaks, bar_width);
+                    ImPlot::PlotBars("Oscillator Strength", vlx.rsp.x_unit_peaks, y_osc_peaks, num_peaks, bar_width);
                     //Check hovered state
                     if (rsp.hovered != -1) {
-                        draw_bar(0, x_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
+                        draw_bar(0, vlx.rsp.x_unit_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
                     }
 
                     // Update selected peak on click
@@ -1004,7 +1025,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     //Check selected state
                     if (rsp.selected != -1) {
-                        draw_bar(1, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
+                        draw_bar(1, vlx.rsp.x_unit_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
 
 
@@ -1013,7 +1034,8 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 // Rotatory ECD
-                double cgs_to_ecd_mult = axis_conversion_multiplier(y_cgs_peaks, y_ecd_str, num_peaks, num_samples);
+                static double cgs_to_ecd_mult = 1;
+                if (recalculate || first_plot) { cgs_to_ecd_mult = axis_conversion_multiplier(y_cgs_peaks, vlx.rsp.ecd, num_peaks, num_samples); }
                 static ImPlotRect cur_cgs_lims = { 0,1,0,1 };
                 if (refit || first_plot) { ImPlot::SetNextAxisToFit(ImAxis_X1); }
 
@@ -1032,7 +1054,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupAxisLimits(ImAxis_Y2, cur_cgs_lims.Y.Min * cgs_to_ecd_mult, cur_cgs_lims.Y.Max * cgs_to_ecd_mult, ImPlotCond_Always);
                     ImPlot::SetupFinish();
 
-                    peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
+                    peaks_to_pixels(pixel_cgs_peaks, vlx.rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
                     if (ImPlot::IsPlotHovered()) { 
@@ -1043,15 +1065,14 @@ struct VeloxChem : viamd::EventHandler {
 
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
-                    //ImPlot::PlotLine("CGS", x_values, y_cgs_str, num_samples);
                     ImPlot::SetAxis(ImAxis_Y2);
-                    ImPlot::PlotLine("Spectrum", x_values, y_ecd_str, num_samples);
+                    ImPlot::PlotLine("Spectrum", vlx.rsp.x_unit_samples, vlx.rsp.ecd, num_samples);
                     ImPlot::SetAxis(ImAxis_Y1);
-                    ImPlot::PlotBars("Rotatory Strength", x_peaks, y_cgs_peaks, num_peaks, bar_width);
+                    ImPlot::PlotBars("Rotatory Strength", vlx.rsp.x_unit_peaks, y_cgs_peaks, num_peaks, bar_width);
                     //ImPlot::SetAxis(ImAxis_Y1); //Reset because we are comparing mouse pos to Y1
 
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
-                        draw_bar(2, x_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
+                        draw_bar(2, vlx.rsp.x_unit_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
                     }
 
                     // Update selected peak on click
@@ -1059,7 +1080,7 @@ struct VeloxChem : viamd::EventHandler {
                         rsp.selected = rsp.hovered;
                     }
                     if (rsp.selected != -1) {
-                        draw_bar(3, x_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
+                        draw_bar(3, vlx.rsp.x_unit_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
                     cur_cgs_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
                     ImPlot::EndPlot();
