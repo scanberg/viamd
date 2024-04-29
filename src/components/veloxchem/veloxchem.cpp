@@ -568,15 +568,15 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t y1_array_size, size_t y2_array_size) {
-        double y1_min = y1_array[0];
-        double y1_max = y1_array[0];
-        double y2_min = y2_array[0];
-        double y2_max = y2_array[0];
-        for (size_t i = 1; i < y1_array_size; i++) {
+        double y1_min = 0;
+        double y1_max = 0;
+        double y2_min = 0;
+        double y2_max = 0;
+        for (size_t i = 0; i < y1_array_size; i++) {
             y1_min = MIN(y1_min, y1_array[i]);
             y1_max = MAX(y1_max, y1_array[i]);
         }
-        for (size_t i = 1; i < y2_array_size; i++) {
+        for (size_t i = 0; i < y2_array_size; i++) {
             y2_min = MIN(y2_min, y2_array[i]);
             y2_max = MAX(y2_max, y2_array[i]);
         }
@@ -634,28 +634,7 @@ struct VeloxChem : viamd::EventHandler {
         return (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(x - x_0, 2) / (2 * pow(sigma, 2)))); 
     }
 
-    /*static inline void broaden_gaussian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double gamma) {
-        double sigma = gamma / 2.3548;
-        for (size_t xi = 0; xi < num_samples; xi++) {
-            double tot = 0.0;
-            for (size_t pi = 0; pi < num_peaks; pi++) {
-                tot += in_y_peaks[pi] * (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(in_x_peaks[pi] - in_x[xi], 2) / (2 * pow(sigma, 2))));
-            }
-            out_y[xi] = tot;
-        }
-    }*/
-
-    //static inline void broaden_lorentzian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double gamma) {
-    //    double sigma = gamma / 2;
-    //    for (size_t xi = 0; xi < num_samples; xi++) {
-    //        double tot = 0.0;
-    //        for (size_t pi = 0; pi < num_peaks; pi++) {
-    //            //tot += in_y_peaks[pi] / (1 + pow((in_x[xi] - in_x_peaks[pi]) / sigma, 2)); My way
-    //            tot += in_y_peaks[pi] * (1 / PI) * sigma / (pow((in_x[xi] - in_x_peaks[pi]), 2) + pow(sigma, 2)); //Veloxchem way
-    //        }
-    //        out_y[xi] = tot;
-    //    }
-    //}
+    
     /*
     * We return to this at a later stage
     void save_absorption(str_t filename, md_array(double)* x_values, const char* x_lable, md_array(double)* y_values_osc, md_array(double)* y_values_cgs, int step) {
@@ -709,12 +688,33 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     //Constructs plot limits from peaks
-    static inline ImPlotRect get_plot_limits(double* x_peaks, double* y_peaks, size_t num_peaks, double ext_fac = 0.1) {
+    static inline ImPlotRect get_plot_limits(const double* x_peaks, const double* y_peaks, size_t num_peaks, double ext_fac = 0.1) {
         ImPlotRect lim = { 0,0,0,0 };
         for (size_t i = 0; i < num_peaks; i++) {
             //Use Contains to check if values are within the limits, or if they should extend the limits
-            //lim.Y.Contains(y_peaks[i]) ? 
+            if (lim.Y.Max < y_peaks[i]) {
+                lim.Y.Max = y_peaks[i];
+            }
+            else if (lim.Y.Min > y_peaks[i]) {
+                lim.Y.Min = y_peaks[i];
+            }
+
+            if (lim.X.Max < x_peaks[i]) {
+                lim.X.Max = x_peaks[i];
+            }
+            else if (lim.X.Min > x_peaks[i]) {
+                lim.X.Min = x_peaks[i];
+            }
         }
+
+        double height = lim.Y.Max - lim.Y.Min;
+        double width = lim.X.Max - lim.X.Min;
+
+        lim.Y.Max += height * ext_fac;
+        lim.Y.Min -= height * ext_fac;
+        lim.X.Max += width * ext_fac;
+        lim.X.Min -= width * ext_fac;
+        return lim;
     }
 
     //converts x and y peaks into pixel points in context of the current plot. Use between BeginPlot() and EndPlot()
@@ -787,15 +787,6 @@ struct VeloxChem : viamd::EventHandler {
         double y1 = 0;
         ImPlot::DragRect(id, &x1, &y1, &x2, &y, color, ImPlotDragToolFlags_NoInputs);
     }
-
-    /*static inline void cgs_to_ecd(double* ecd_out_peaks, const double* x_peaks, const double* cgs_peaks, size_t num_peaks) {
-        double inv = 1 / (22.94 * PI);
-        for (size_t i = 0; i < num_peaks; i++) {
-            ecd_out_peaks[i] = x_peaks[i] * cgs_peaks[i] * inv;
-        }
-    }*/
-
-
 
     /*
     static inline void osc_to_eps(double* eps_out, const double* x_peaks, const double* osc_peaks, size_t num_peaks) {
@@ -900,13 +891,6 @@ struct VeloxChem : viamd::EventHandler {
                 x_peaks[i] = vlx.rsp.absorption_ev[i];
             }
 
-            /*double* y_ecd_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
-            cgs_to_ecd(y_ecd_peaks, x_peaks, y_cgs_peaks, num_peaks);*/
-
-            //double* y_eps_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
-            //osc_to_eps(y_eps_peaks, x_peaks, y_osc_peaks, num_peaks);
-
-
             const int num_samples = 1024;
             double* x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
             //double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
@@ -928,17 +912,9 @@ struct VeloxChem : viamd::EventHandler {
             // @NOTE: Do broadening in eV
             switch (broadening_mode) {
             case BROADENING_GAUSSIAN:
-                //broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
-                //broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
-                //broaden_gaussian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
-                //broaden_gaussian(y_eps_str, x_values, num_samples, x_peaks, y_eps_peaks, num_peaks, gamma);
                 distr_func = &gaussian;
                 break;
             case BROADENING_LORENTZIAN:
-                //broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, gamma);
-                //broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, gamma);
-                //broaden_lorentzian(y_ecd_str, x_values, num_samples, x_peaks, y_ecd_peaks, num_peaks, gamma);
-                //broaden_lorentzian(y_eps_str, x_values, num_samples, x_peaks, y_eps_peaks, num_peaks, gamma);
                 distr_func = &lorentzian;
                 break;
             default:
@@ -953,31 +929,8 @@ struct VeloxChem : viamd::EventHandler {
             convert_values(x_peaks,  num_peaks,   x_unit);
             convert_values(x_values, num_samples, x_unit);
 
-            // Calulate constraint limits for the plot
-            double y_osc_max_con = 0;
-            double y_osc_min_con = 0;
-            double y_cgs_max_con = 0;
-            double y_cgs_min_con = 0;
-            double x_max_con = x_values[num_samples - 1];
-            double x_min_con = x_values[0];
-            for (int i = 0; i < num_samples; i++) {
-                y_osc_max_con = MAX(y_osc_max_con, y_eps_str[i]);
-                y_osc_min_con = MIN(y_osc_min_con, y_eps_str[i]);
-                y_cgs_max_con = MAX(y_cgs_max_con, y_cgs_str[i]);
-                y_cgs_min_con = MIN(y_cgs_min_con, y_cgs_str[i]);
-                x_max_con = MAX(x_max_con, x_values[i]);
-                x_min_con = MIN(x_min_con, x_values[i]);
-            }
-            double con_lim_fac = 0.1;
-            double y_osc_graph_width = y_osc_max_con - y_osc_min_con;
-            double y_cgs_graph_width = y_cgs_max_con - y_cgs_min_con;
-            double x_graph_width = x_max_con - x_min_con;
-            y_osc_max_con += con_lim_fac * y_osc_graph_width;
-            y_osc_min_con -= con_lim_fac * y_osc_graph_width;
-            y_cgs_max_con += con_lim_fac * y_cgs_graph_width;
-            y_cgs_min_con -= con_lim_fac * y_cgs_graph_width;
-            x_max_con += con_lim_fac * x_graph_width;
-            x_min_con -= con_lim_fac * x_graph_width;
+            ImPlotRect osc_lim_constraint = get_plot_limits(x_peaks, y_osc_peaks, num_peaks);
+            ImPlotRect cgs_lim_constraint = get_plot_limits(x_peaks, y_cgs_peaks, num_peaks);
 
 
 #if 0
@@ -1004,18 +957,20 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::BulletText("Peak 0: X = %f, Y = %f", (float)pixel_osc_peaks[0].x, (float)pixel_osc_peaks[0].y);
             ImGui::BulletText("Closest Index = %i", rsp.hovered);
 #endif
-            static ImPlotRect lims = { 0,1,0,1 };
             rsp.focused_plot = -1;
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
-                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
+                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
+                double osc_to_eps_mult = axis_conversion_multiplier(y_osc_peaks, y_eps_str, num_peaks, num_samples);
+                static ImPlotRect cur_osc_lims = { 0,1,0,1 };
                 if (ImPlot::BeginPlot("Absorption")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
                     ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε");
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
+                    ImPlot::SetupAxisLimits(ImAxis_Y2, cur_osc_lims.Y.Min* osc_to_eps_mult, cur_osc_lims.Y.Max* osc_to_eps_mult, ImPlotCond_Always);
                     ImPlot::SetupFinish();
 
                     peaks_to_pixels(pixel_osc_peaks, x_peaks, y_osc_peaks, num_peaks);
@@ -1047,22 +1002,24 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImPlot::SetAxis(ImAxis_Y2);
                     ImPlot::PlotLine("eps", x_values, y_eps_str, num_samples);
-                    
+
+                    cur_osc_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
                     ImPlot::EndPlot();
                 }
 
-                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Rotatory ECD
-                double y1_to_y2_mult = axis_conversion_multiplier(y_cgs_peaks, y_ecd_str, vlx.rsp.num_excited_states, num_samples);
+                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
+                double cgs_to_ecd_mult = axis_conversion_multiplier(y_cgs_peaks, y_ecd_str, num_peaks, num_samples);
+                static ImPlotRect cur_cgs_lims = { 0,1,0,1 };
 
                 if (ImPlot::BeginPlot("ECD")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
                     ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
-                    //ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
-                    //ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
-                    ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, cgs_lim_constraint.X.Min, cgs_lim_constraint.X.Max);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, cgs_lim_constraint.Y.Min, cgs_lim_constraint.Y.Max);
+                    ImPlot::SetupAxisLimits(ImAxis_Y2, cur_cgs_lims.Y.Min * cgs_to_ecd_mult, cur_cgs_lims.Y.Max * cgs_to_ecd_mult, ImPlotCond_Always);
                     ImPlot::SetupFinish();
 
                     peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
@@ -1094,7 +1051,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (rsp.selected != -1) {
                         draw_bar(3, x_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
-                    lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                    cur_cgs_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
                     ImPlot::EndPlot();
                 }
                 ImPlot::EndSubplots();
