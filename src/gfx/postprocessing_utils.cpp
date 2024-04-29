@@ -1892,20 +1892,20 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     apply_tonemapping(src_texture, tonemapper, desc.tonemapping.exposure, desc.tonemapping.gamma);
     POP_GPU_SECTION()
 
-    if (desc.input_textures.transparency) {
-        PUSH_GPU_SECTION("Add Transparency")
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        blit_texture(desc.input_textures.transparency);
-        glDisable(GL_BLEND);
-        POP_GPU_SECTION()
-    }
-
     if (desc.depth_of_field.enabled) {
         swap_target();
         glDrawBuffer(dst_buffer);
         PUSH_GPU_SECTION("DOF")
         apply_dof(gl.linear_depth.texture, src_texture, desc.depth_of_field.focus_depth, desc.depth_of_field.focus_scale, time);
+        POP_GPU_SECTION()
+    }
+
+    if (desc.input_textures.transparency) {
+        PUSH_GPU_SECTION("Add Transparency")
+            glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        blit_texture(desc.input_textures.transparency);
+        glDisable(GL_BLEND);
         POP_GPU_SECTION()
     }
 
