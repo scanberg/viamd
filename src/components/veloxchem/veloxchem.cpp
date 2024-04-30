@@ -869,7 +869,7 @@ struct VeloxChem : viamd::EventHandler {
         size_t temp_pos = md_temp_get_pos();
         defer { md_temp_set_pos_back(temp_pos); };
 
-        static float gamma = 0.246;
+        static float gamma = 0.123;
         static ImVec2 mouse_pos = { 0,0 };
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
@@ -884,7 +884,7 @@ struct VeloxChem : viamd::EventHandler {
             static bool first_plot = true;
             bool recalculate = false;
             
-            recalculate = ImGui::SliderFloat((const char*)u8"Broadening γ FWHM (eV)", &gamma, 0.01f, 1.0f);
+            recalculate = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (eV)", &gamma, 0.01f, 1.0f);
             refit |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
             refit |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
             
@@ -933,28 +933,26 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (recalculate || first_plot) {
-                osc_to_eps(vlx.rsp.eps, vlx.rsp.x_ev_samples, num_samples, y_osc_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma);
-                rot_to_eps_delta(vlx.rsp.ecd, vlx.rsp.x_ev_samples, num_samples, y_cgs_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma);
-            }
-
-            if (refit || first_plot) {
-                // Do conversions
-                convert_values(vlx.rsp.x_unit_peaks, vlx.rsp.absorption_ev, num_peaks, x_unit);
-                convert_values(vlx.rsp.x_unit_samples, vlx.rsp.x_ev_samples, num_samples, x_unit);
+                osc_to_eps(vlx.rsp.eps, vlx.rsp.x_ev_samples, num_samples, y_osc_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma * 2);
+                rot_to_eps_delta(vlx.rsp.ecd, vlx.rsp.x_ev_samples, num_samples, y_cgs_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma * 2);
             }
 
             static ImPlotRect osc_lim_constraint = { 0, 0, 0, 0 }; 
             static ImPlotRect cgs_lim_constraint = { 0, 0, 0, 0 }; 
-            if (first_plot) {
+            if (refit || first_plot) {
+                // Do conversions
+                convert_values(vlx.rsp.x_unit_peaks, vlx.rsp.absorption_ev, num_peaks, x_unit);
+                convert_values(vlx.rsp.x_unit_samples, vlx.rsp.x_ev_samples, num_samples, x_unit);
+            
                 osc_lim_constraint = get_plot_limits(vlx.rsp.x_unit_peaks, y_osc_peaks, num_peaks);
                 cgs_lim_constraint = get_plot_limits(vlx.rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
             }
             
 
 
-#if 0
+#if 1
             //Hovered display text
-            if (rsp.hovered != -1 && rsp.focused_plot == 0) {
+            /*if (rsp.hovered != -1 && rsp.focused_plot == 0) {
                 ImGui::BulletText("Hovered: %s = %f, Y = %f", x_unit_str[x_unit], (float)x_peaks[rsp.hovered], (float)y_osc_peaks[rsp.hovered]);
 
             }
@@ -963,18 +961,15 @@ struct VeloxChem : viamd::EventHandler {
             }
             else {
                 ImGui::BulletText("Hovered:");
-            }
+            }*/
 
             //Selected display text
             if (rsp.selected != -1) {
-                ImGui::BulletText("Selected: %s = %f, Y_OSC = %f, Y_CGS = %f", x_unit_str[x_unit], (float)x_peaks[rsp.selected], (float)y_osc_peaks[rsp.selected], (float)y_osc_peaks[rsp.selected]);
+                ImGui::Text((const char*)u8"Selected: State %i: Energy = %.2f eV, Wavelength = %.0f nm, f = %.3f, R = %.3f 10⁻⁴⁰ cgs", rsp.selected + 1, (float)vlx.rsp.x_unit_peaks[rsp.selected], 1239.84193 / (float)vlx.rsp.x_unit_peaks[rsp.selected], (float)y_osc_peaks[rsp.selected], (float)y_cgs_peaks[rsp.selected]);
             }
             else {
-                ImGui::BulletText("Selected:");
+                ImGui::Text("Selected:");
             }
-            ImGui::BulletText("Mouse: X = %f, Y = %f", mouse_pos.x, mouse_pos.y);
-            ImGui::BulletText("Peak 0: X = %f, Y = %f", (float)pixel_osc_peaks[0].x, (float)pixel_osc_peaks[0].y);
-            ImGui::BulletText("Closest Index = %i", rsp.hovered);
 #endif
             rsp.focused_plot = -1;
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
@@ -988,7 +983,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
                     ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
-                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε");
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε (L mol⁻¹ cm⁻¹)");
                     if (refit || first_plot) {
                         ImPlot::SetupAxisLimits(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
                         ImPlot::SetupAxisLimits(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
