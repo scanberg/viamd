@@ -2248,13 +2248,13 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         tasks[num_tasks++] = pbc_task;
     } 
     if (state->operations.unwrap_structures) {
-        size_t num_structures = md_index_data_count(mol.structures);
+        size_t num_structures = md_index_data_count(mol.structure);
         task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), 0, (uint32_t)num_structures, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
             (void)thread_num;
             Payload* data = (Payload*)user_data;
             for (uint32_t i = range_beg; i < range_end; ++i) {
-                int32_t* s_idx = md_index_range_beg(data->state->mold.mol.structures, i);
-                size_t   s_len = md_index_range_size(data->state->mold.mol.structures, i);
+                int32_t* s_idx = md_index_range_beg(data->state->mold.mol.structure, i);
+                size_t   s_len = md_index_range_size(data->state->mold.mol.structure, i);
                 md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unit_cell);
             }
         }, &payload);
@@ -2881,10 +2881,10 @@ static void draw_main_menu(ApplicationState* data) {
 
                 if (do_unwrap) {
                     md_molecule_t& mol = data->mold.mol;
-                    size_t num_structures = md_index_data_count(mol.structures);
+                    size_t num_structures = md_index_data_count(mol.structure);
                     for (size_t i = 0; i < num_structures; ++i) {
-                        const int32_t* s_idx = md_index_range_beg(mol.structures, i);
-                        const size_t   s_len = md_index_range_size(mol.structures, i);
+                        const int32_t* s_idx = md_index_range_beg(mol.structure, i);
+                        const size_t   s_len = md_index_range_size(mol.structure, i);
                         md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
                     }
                     data->mold.dirty_buffers |= MolBit_DirtyPosition;
@@ -3232,16 +3232,14 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     
     md_array_free(mol->bond.pairs, data->mold.mol_alloc);
     md_array_free(mol->bond.order, data->mold.mol_alloc);
-    md_array_free(mol->bond.flags, data->mold.mol_alloc);
 
-    md_array_free(mol->conn.index, data->mold.mol_alloc);
-    md_array_free(mol->conn.order, data->mold.mol_alloc);
-    md_array_free(mol->conn.flags, data->mold.mol_alloc);
+    md_array_free(mol->bond.conn.atom_idx, data->mold.mol_alloc);
+    md_array_free(mol->bond.conn.bond_idx, data->mold.mol_alloc);
 
-    md_index_data_free(&mol->structures, data->mold.mol_alloc);
-    md_index_data_free(&mol->rings, data->mold.mol_alloc);
+    md_index_data_free(&mol->structure, data->mold.mol_alloc);
+    md_index_data_free(&mol->ring, data->mold.mol_alloc);
     
-    md_util_molecule_postprocess(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
+    md_util_molecule_postprocess(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -4283,14 +4281,15 @@ static void draw_representations_window(ApplicationState* state) {
                 write_lbl(rep.orbital.orbital_idx);
                 if (ImGui::BeginCombo("Orbital Idx", lbl)) {
                     for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
-                        const bool is_selected = (rep.orbital.orbital_idx == n);
+                        int idx = state->representation.info.molecular_orbitals[n].idx;
+                        const bool is_selected = (rep.orbital.orbital_idx == idx);
                         
-                        write_lbl(n);
+                        write_lbl(idx);
                         if (ImGui::Selectable(lbl, is_selected)) {
-                            if (rep.orbital.orbital_idx != n) {
+                            if (rep.orbital.orbital_idx != idx) {
                                 update_rep = true;
                             }
-                            rep.orbital.orbital_idx = n;
+                            rep.orbital.orbital_idx = idx;
                         }
 
                         if (is_selected) {
@@ -4389,17 +4388,36 @@ static void draw_info_window(const ApplicationState& data, uint32_t picking_idx)
         }
 
         // External indices begin with 1 not 0
-        res_idx += 1;
-        chain_idx += 1;
-        atom_idx += 1;
-        local_idx += 1;
-
-        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, STR_ARG(type), STR_ARG(elem), STR_ARG(symbol), pos.x, pos.y, pos.z);
-        if (res_idx) {
-            md_strb_fmt(&sb, "res[%i]: %.*s %i\n", res_idx, STR_ARG(res_name), res_id);
+        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx + 1, local_idx + 1, STR_ARG(type), STR_ARG(elem), STR_ARG(symbol), pos.x, pos.y, pos.z);
+        if (res_idx != -1) {
+            md_strb_fmt(&sb, "res[%i]: %.*s %i\n", res_idx + 1, STR_ARG(res_name), res_id);
         }
-        if (chain_idx) {
-            md_strb_fmt(&sb, "chain[%i]: %.*s\n", chain_idx, STR_ARG(chain_id));
+        if (chain_idx != -1) {
+            md_strb_fmt(&sb, "chain[%i]: %.*s\n", chain_idx + 1, STR_ARG(chain_id));
+        }
+
+        uint32_t flags = mol.atom.flags[atom_idx];
+        if (flags) {
+            sb += "flags: ";
+            if (flags & MD_FLAG_RES_BEG)            { sb += "RES_BEG "; }
+            if (flags & MD_FLAG_RES)                { sb += "RES "; }
+            if (flags & MD_FLAG_RES_END)            { sb += "RES_END "; }
+            if (flags & MD_FLAG_CHAIN_BEG)          { sb += "CHAIN_BEG "; }
+            if (flags & MD_FLAG_CHAIN)              { sb += "CHAIN "; }
+            if (flags & MD_FLAG_CHAIN_END)          { sb += "CHAIN_END "; }
+            if (flags & MD_FLAG_HETATM)             { sb += "HETATM "; }
+            if (flags & MD_FLAG_AMINO_ACID)         { sb += "AMINO "; }
+            if (flags & MD_FLAG_NUCLEOTIDE)         { sb += "NUCLEOTIDE "; }
+            if (flags & MD_FLAG_NUCLEOBASE)         { sb += "NUCLEOBASE "; }
+            if (flags & MD_FLAG_WATER)              { sb += "WATER "; }
+            if (flags & MD_FLAG_ION)                { sb += "ION "; }
+            if (flags & MD_FLAG_PROTEIN_BACKBONE)   { sb += "BB_PROT "; }
+            if (flags & MD_FLAG_NUCLEIC_BACKBONE)   { sb += "BB_NUCL "; }
+            if (flags & MD_FLAG_SP)                 { sb += "SP "; }
+            if (flags & MD_FLAG_SP2)                { sb += "SP2 "; }
+            if (flags & MD_FLAG_SP3)                { sb += "SP3 "; }
+            if (flags & MD_FLAG_AROMATIC)           { sb += "AROMATIC "; }
+            sb += "\n";
         }
         /*
         // @TODO: REIMPLEMENT THIS
@@ -8114,7 +8132,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                         }
                     //}
                     if (result) {
-                        if (dim == (int)md_array_size(vis.structures)) {
+                        if (dim == (int)md_array_size(vis.structure)) {
                             int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
                             int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
                             float frame_fract = fractf((float)state->animation.frame);
@@ -8122,7 +8140,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                             md_bitfield_t mask = {0};
                             md_bitfield_init(&mask, frame_alloc);
                             for (int i = 0; i < dim; ++i) {
-                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structures[i]);
+                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structure[i]);
                                 float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
                                 float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
                                 ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
@@ -8481,11 +8499,11 @@ static void handle_camera_interaction(ApplicationState* data) {
 
                     md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
                     while (md_bitfield_iter_next(&it)) {
-                        const int64_t i = md_bitfield_iter_idx(&it);
+                        const uint64_t i = md_bitfield_iter_idx(&it);
                         const vec4_t p = mat4_mul_vec4(mvp, vec4_set(data->mold.mol.atom.x[i], data->mold.mol.atom.y[i], data->mold.mol.atom.z[i], 1.0f));
                         const vec2_t c = {
-                            (p.x / p.w * 0.5f + 0.5f) * res.x,
-                            (-p.y / p.w * 0.5f + 0.5f) * res.y
+                            ( p.x / p.w * 0.5f + 0.5f) * res.x,
+                            (-p.y / p.w * 0.5f + 0.5f) * res.y,
                         };
 
                         if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
