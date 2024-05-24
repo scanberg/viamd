@@ -35,23 +35,23 @@ option(ENKITS_BUILD_EXAMPLES OFF)
 option(ENKITS_BUILD_SHARED OFF)
 option(ENKITS_INSTALL OFF)
 
-find_package(OpenGL REQUIRED)
-
 # VIAMD OPTIONS
 option(VIAMD_ENABLE_DEFAULT_DATASET "Enable Default Dataset" ON)
 option(VIAMD_IMGUI_ENABLE_VIEWPORTS "Enable ImGui Viewports" OFF)
 option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
-option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ${MD_LINK_STDLIB_STATIC})
+option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
 set(VIAMD_FRAME_CACHE_SIZE_MB "2048" CACHE STRING "Reserved frame cache size in Megabytes")
 set(VIAMD_NUM_WORKER_THREADS "8" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation)")
+
+# MDLIB OPTIONS
+set(MD_LINK_STDLIB_STATIC ${VIAMD_LINK_STDLIB_STATIC} CACHE BOOL "" FORCE)
 
 if (VIAMD_ENABLE_VELOXCHEM)
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
 endif ()
 
-set(OSX_BUNDLE "")
 if (APPLE)
     # Remove once we have proper support for Apple Silicon?
     SET(CMAKE_OSX_ARCHITECTURES "x86_64")
@@ -59,6 +59,8 @@ if (APPLE)
         set(OSX_BUNDLE "MACOSX_BUNDLE")
     endif()
 endif()
+
+find_package(OpenGL REQUIRED)
 
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
@@ -81,7 +83,7 @@ set(VIAMD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB})
 set(VIAMD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL})
 set(VIAMD_DEFINES)
 
-if (MD_LINK_STDLIB_STATIC)
+if (VIAMD_LINK_STDLIB_STATIC)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         set(VIAMD_STDLIBS "-static-libgcc -static-libstdc++")
     endif()
