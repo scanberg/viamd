@@ -37,11 +37,28 @@ option(ENKITS_INSTALL OFF)
 
 find_package(OpenGL REQUIRED)
 
+# VIAMD OPTIONS
+option(VIAMD_ENABLE_DEFAULT_DATASET "Enable Default Dataset" ON)
+option(VIAMD_IMGUI_ENABLE_VIEWPORTS "Enable ImGui Viewports" OFF)
+option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
+option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
+option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ${MD_LINK_STDLIB_STATIC})
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
+set(VIAMD_FRAME_CACHE_SIZE_MB "2048" CACHE STRING "Reserved frame cache size in Megabytes")
+set(VIAMD_NUM_WORKER_THREADS "8" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation)")
 
 if (VIAMD_ENABLE_VELOXCHEM)
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
 endif ()
+
+set(OSX_BUNDLE "")
+if (APPLE)
+    # Remove once we have proper support for Apple Silicon?
+    SET(CMAKE_OSX_ARCHITECTURES "x86_64")
+    if (VIAMD_CREATE_MACOSX_BUNDLE)
+        set(OSX_BUNDLE "MACOSX_BUNDLE")
+    endif()
+endif()
 
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
@@ -53,15 +70,6 @@ add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
-
-# VIAMD OPTIONS
-option(VIAMD_ENABLE_DEFAULT_DATASET "Enable Default Dataset" ON)
-option(VIAMD_IMGUI_ENABLE_VIEWPORTS "Enable ImGui Viewports" OFF)
-option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
-option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
-option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ${MD_LINK_STDLIB_STATIC})
-set(VIAMD_FRAME_CACHE_SIZE_MB "2048" CACHE STRING "Reserved frame cache size in Megabytes")
-set(VIAMD_NUM_WORKER_THREADS "8" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation)")
 
 # Copy many of the fields from mdlib
 set(VIAMD_STDLIBS)
@@ -78,15 +86,6 @@ if (MD_LINK_STDLIB_STATIC)
         set(VIAMD_STDLIBS "-static-libgcc -static-libstdc++")
     endif()
     set(glfw_LIBRARIES ${VIAMD_STDLIBS})
-endif()
-
-set(OSX_BUNDLE "")
-if (APPLE)
-    # Remove once we have proper support for Apple Silicon?
-    SET(CMAKE_OSX_ARCHITECTURES "x86_64")
-    if (VIAMD_CREATE_MACOSX_BUNDLE)
-        set(OSX_BUNDLE "MACOSX_BUNDLE")
-    endif()
 endif()
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
