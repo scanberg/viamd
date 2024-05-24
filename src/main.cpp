@@ -1401,18 +1401,6 @@ int main(int argc, char** argv) {
             }
         }
 
-
-#if 0
-        PUSH_CPU_SECTION("Hydrogen bonds")
-        if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
-            data.hydrogen_bonds.bonds = hydrogen::compute_bonds(
-                {mol.hydrogen.donor.data, mol.hydrogen.donor.count}, {mol.hydrogen.acceptor.data, mol.hydrogen.acceptor.count},
-                mol.atom.position, data.hydrogen_bonds.distance_cutoff, DEG_TO_RAD(data.hydrogen_bonds.angle_cutoff));
-            data.hydrogen_bonds.dirty = false;
-        }
-        POP_CPU_SECTION()
-#endif
-
         // Resize Framebuffer
         if ((data.gbuffer.width != data.app.framebuffer.width || data.gbuffer.height != data.app.framebuffer.height) &&
             (data.app.framebuffer.width != 0 && data.app.framebuffer.height != 0)) {
@@ -2514,7 +2502,7 @@ static void reset_view(ApplicationState* data, bool move_camera, bool smooth_tra
     
     if (0 < popcount && popcount < mol.atom.count) {
         md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-        int32_t* indices = (int32_t*)md_vm_arena_push(frame_alloc, popcount * sizeof(int32_t));
+        int32_t* indices = (int32_t*)md_vm_arena_push_array(frame_alloc, int32_t, popcount);
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(&data->representation.visibility_mask));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
@@ -3544,8 +3532,6 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     return suggestions;
 }
 
-
-
 static int64_t find_identifier(const md_script_ir_t* ir, str_t ident) {
     const int64_t num_ident = md_script_ir_num_identifiers(ir);
     const str_t* idents = md_script_ir_identifiers(ir);
@@ -3875,7 +3861,6 @@ void draw_context_popup(ApplicationState* data) {
         ImGui::EndPopup();
     }
 }
-
 
 static void draw_selection_grow_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(300,150), ImGuiCond_Always);
@@ -4490,22 +4475,6 @@ static void draw_async_task_window(ApplicationState* data) {
             const auto id = tasks[i];
             str_t label = task_system::task_label(id);
             float fract = task_system::task_fraction_complete(id);
-
-            /*
-            if (id == data->tasks.evaluate_filt) {
-                uint32_t completed = md_script_eval_num_frames_completed(data->script.filt_eval);
-                uint32_t total     = md_script_eval_num_frames_total(data->script.filt_eval);
-                if (total > 0) {
-                    fract = (float)completed / (float)total;
-                }
-            }else if (id == data->tasks.evaluate_full) {
-                uint32_t completed = md_script_eval_num_frames_completed(data->script.full_eval);
-                uint32_t total     = md_script_eval_num_frames_total(data->script.full_eval);
-                if (total > 0) {
-                    fract = (float)completed / (float)total;
-                }
-            }
-            */
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
