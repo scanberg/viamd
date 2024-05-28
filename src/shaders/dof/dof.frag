@@ -17,7 +17,7 @@ const float MAX_BLUR_SIZE = 15.0;
 const float RAD_SCALE = 1.5; // Smaller = nicer blur, larger = faster
 const float PI = 3.1415926535;
 
-#define APPROX
+//#define APPROX
 
 float rand(vec2 n) {
 	return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453);
@@ -48,7 +48,7 @@ vec3 depth_of_field(vec2 tex_coord, float focus_point, float focus_scale) {
 
 	float contrib_sum   = 1.0;
 	float radius        = RAD_SCALE;
-	float ang           = 0.0;
+	float ang           = rand(tex_coord + u_time) * 2.0 * PI;
 
 	for (; radius < MAX_BLUR_SIZE; ang += GOLDEN_ANGLE)
 	{

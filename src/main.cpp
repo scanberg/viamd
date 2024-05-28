@@ -1401,18 +1401,6 @@ int main(int argc, char** argv) {
             }
         }
 
-
-#if 0
-        PUSH_CPU_SECTION("Hydrogen bonds")
-        if (data.hydrogen_bonds.enabled && data.hydrogen_bonds.dirty) {
-            data.hydrogen_bonds.bonds = hydrogen::compute_bonds(
-                {mol.hydrogen.donor.data, mol.hydrogen.donor.count}, {mol.hydrogen.acceptor.data, mol.hydrogen.acceptor.count},
-                mol.atom.position, data.hydrogen_bonds.distance_cutoff, DEG_TO_RAD(data.hydrogen_bonds.angle_cutoff));
-            data.hydrogen_bonds.dirty = false;
-        }
-        POP_CPU_SECTION()
-#endif
-
         // Resize Framebuffer
         if ((data.gbuffer.width != data.app.framebuffer.width || data.gbuffer.height != data.app.framebuffer.height) &&
             (data.app.framebuffer.width != 0 && data.app.framebuffer.height != 0)) {
@@ -2248,13 +2236,13 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         tasks[num_tasks++] = pbc_task;
     } 
     if (state->operations.unwrap_structures) {
-        size_t num_structures = md_index_data_count(mol.structures);
+        size_t num_structures = md_index_data_count(mol.structure);
         task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), 0, (uint32_t)num_structures, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
             (void)thread_num;
             Payload* data = (Payload*)user_data;
             for (uint32_t i = range_beg; i < range_end; ++i) {
-                int32_t* s_idx = md_index_range_beg(data->state->mold.mol.structures, i);
-                size_t   s_len = md_index_range_size(data->state->mold.mol.structures, i);
+                int32_t* s_idx = md_index_range_beg(data->state->mold.mol.structure, i);
+                size_t   s_len = md_index_range_size(data->state->mold.mol.structure, i);
                 md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unit_cell);
             }
         }, &payload);
@@ -2514,7 +2502,7 @@ static void reset_view(ApplicationState* data, bool move_camera, bool smooth_tra
     
     if (0 < popcount && popcount < mol.atom.count) {
         md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-        int32_t* indices = (int32_t*)md_vm_arena_push(frame_alloc, popcount * sizeof(int32_t));
+        int32_t* indices = (int32_t*)md_vm_arena_push_array(frame_alloc, int32_t, popcount);
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(&data->representation.visibility_mask));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
@@ -2881,10 +2869,10 @@ static void draw_main_menu(ApplicationState* data) {
 
                 if (do_unwrap) {
                     md_molecule_t& mol = data->mold.mol;
-                    size_t num_structures = md_index_data_count(mol.structures);
+                    size_t num_structures = md_index_data_count(mol.structure);
                     for (size_t i = 0; i < num_structures; ++i) {
-                        const int32_t* s_idx = md_index_range_beg(mol.structures, i);
-                        const size_t   s_len = md_index_range_size(mol.structures, i);
+                        const int32_t* s_idx = md_index_range_beg(mol.structure, i);
+                        const size_t   s_len = md_index_range_size(mol.structure, i);
                         md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
                     }
                     data->mold.dirty_buffers |= MolBit_DirtyPosition;
@@ -3232,16 +3220,14 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     
     md_array_free(mol->bond.pairs, data->mold.mol_alloc);
     md_array_free(mol->bond.order, data->mold.mol_alloc);
-    md_array_free(mol->bond.flags, data->mold.mol_alloc);
 
-    md_array_free(mol->conn.index, data->mold.mol_alloc);
-    md_array_free(mol->conn.order, data->mold.mol_alloc);
-    md_array_free(mol->conn.flags, data->mold.mol_alloc);
+    md_array_free(mol->bond.conn.atom_idx, data->mold.mol_alloc);
+    md_array_free(mol->bond.conn.bond_idx, data->mold.mol_alloc);
 
-    md_index_data_free(&mol->structures, data->mold.mol_alloc);
-    md_index_data_free(&mol->rings, data->mold.mol_alloc);
+    md_index_data_free(&mol->structure, data->mold.mol_alloc);
+    md_index_data_free(&mol->ring, data->mold.mol_alloc);
     
-    md_util_molecule_postprocess(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
+    md_util_molecule_postprocess(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     update_all_representations(data);
@@ -3545,8 +3531,6 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     
     return suggestions;
 }
-
-
 
 static int64_t find_identifier(const md_script_ir_t* ir, str_t ident) {
     const int64_t num_ident = md_script_ir_num_identifiers(ir);
@@ -3877,7 +3861,6 @@ void draw_context_popup(ApplicationState* data) {
         ImGui::EndPopup();
     }
 }
-
 
 static void draw_selection_grow_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(300,150), ImGuiCond_Always);
@@ -4283,14 +4266,15 @@ static void draw_representations_window(ApplicationState* state) {
                 write_lbl(rep.orbital.orbital_idx);
                 if (ImGui::BeginCombo("Orbital Idx", lbl)) {
                     for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
-                        const bool is_selected = (rep.orbital.orbital_idx == n);
+                        int idx = state->representation.info.molecular_orbitals[n].idx;
+                        const bool is_selected = (rep.orbital.orbital_idx == idx);
                         
-                        write_lbl(n);
+                        write_lbl(idx);
                         if (ImGui::Selectable(lbl, is_selected)) {
-                            if (rep.orbital.orbital_idx != n) {
+                            if (rep.orbital.orbital_idx != idx) {
                                 update_rep = true;
                             }
-                            rep.orbital.orbital_idx = n;
+                            rep.orbital.orbital_idx = idx;
                         }
 
                         if (is_selected) {
@@ -4389,17 +4373,36 @@ static void draw_info_window(const ApplicationState& data, uint32_t picking_idx)
         }
 
         // External indices begin with 1 not 0
-        res_idx += 1;
-        chain_idx += 1;
-        atom_idx += 1;
-        local_idx += 1;
-
-        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx, local_idx, STR_ARG(type), STR_ARG(elem), STR_ARG(symbol), pos.x, pos.y, pos.z);
-        if (res_idx) {
-            md_strb_fmt(&sb, "res[%i]: %.*s %i\n", res_idx, STR_ARG(res_name), res_id);
+        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx + 1, local_idx + 1, STR_ARG(type), STR_ARG(elem), STR_ARG(symbol), pos.x, pos.y, pos.z);
+        if (res_idx != -1) {
+            md_strb_fmt(&sb, "res[%i]: %.*s %i\n", res_idx + 1, STR_ARG(res_name), res_id);
         }
-        if (chain_idx) {
-            md_strb_fmt(&sb, "chain[%i]: %.*s\n", chain_idx, STR_ARG(chain_id));
+        if (chain_idx != -1) {
+            md_strb_fmt(&sb, "chain[%i]: %.*s\n", chain_idx + 1, STR_ARG(chain_id));
+        }
+
+        uint32_t flags = mol.atom.flags[atom_idx];
+        if (flags) {
+            sb += "flags: ";
+            if (flags & MD_FLAG_RES_BEG)            { sb += "RES_BEG "; }
+            if (flags & MD_FLAG_RES)                { sb += "RES "; }
+            if (flags & MD_FLAG_RES_END)            { sb += "RES_END "; }
+            if (flags & MD_FLAG_CHAIN_BEG)          { sb += "CHAIN_BEG "; }
+            if (flags & MD_FLAG_CHAIN)              { sb += "CHAIN "; }
+            if (flags & MD_FLAG_CHAIN_END)          { sb += "CHAIN_END "; }
+            if (flags & MD_FLAG_HETATM)             { sb += "HETATM "; }
+            if (flags & MD_FLAG_AMINO_ACID)         { sb += "AMINO "; }
+            if (flags & MD_FLAG_NUCLEOTIDE)         { sb += "NUCLEOTIDE "; }
+            if (flags & MD_FLAG_NUCLEOBASE)         { sb += "NUCLEOBASE "; }
+            if (flags & MD_FLAG_WATER)              { sb += "WATER "; }
+            if (flags & MD_FLAG_ION)                { sb += "ION "; }
+            if (flags & MD_FLAG_PROTEIN_BACKBONE)   { sb += "BB_PROT "; }
+            if (flags & MD_FLAG_NUCLEIC_BACKBONE)   { sb += "BB_NUCL "; }
+            if (flags & MD_FLAG_SP)                 { sb += "SP "; }
+            if (flags & MD_FLAG_SP2)                { sb += "SP2 "; }
+            if (flags & MD_FLAG_SP3)                { sb += "SP3 "; }
+            if (flags & MD_FLAG_AROMATIC)           { sb += "AROMATIC "; }
+            sb += "\n";
         }
         /*
         // @TODO: REIMPLEMENT THIS
@@ -4472,22 +4475,6 @@ static void draw_async_task_window(ApplicationState* data) {
             const auto id = tasks[i];
             str_t label = task_system::task_label(id);
             float fract = task_system::task_fraction_complete(id);
-
-            /*
-            if (id == data->tasks.evaluate_filt) {
-                uint32_t completed = md_script_eval_num_frames_completed(data->script.filt_eval);
-                uint32_t total     = md_script_eval_num_frames_total(data->script.filt_eval);
-                if (total > 0) {
-                    fract = (float)completed / (float)total;
-                }
-            }else if (id == data->tasks.evaluate_full) {
-                uint32_t completed = md_script_eval_num_frames_completed(data->script.full_eval);
-                uint32_t total     = md_script_eval_num_frames_total(data->script.full_eval);
-                if (total > 0) {
-                    fract = (float)completed / (float)total;
-                }
-            }
-            */
 
             if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
 
@@ -6650,6 +6637,7 @@ static void draw_debug_window(ApplicationState* data) {
                 };
                 viamd::event_system_broadcast_event(HASH_STR_LIT("Secret Sauce"), 0, &payload);
                 update_representation_info(data);
+                update_all_representations(data);
             }
         }
     }
@@ -7714,7 +7702,8 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                     rep->color_mapping = (ColorMapping)mapping;
                 } else if (str_eq(ident, STR_LIT("StaticColor"))) {
                     viamd::extract_flt_vec(rep->uniform_color.elem, 4, arg);
-
+                } else if (str_eq(ident, STR_LIT("Saturation"))) {
+                    viamd::extract_flt(rep->saturation, arg);
                 } else if (str_eq(ident, STR_LIT("Radius"))) {
                     // DEPRECATED
                     viamd::extract_flt(rep->scale.x, arg);
@@ -7728,6 +7717,23 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_flt_vec(rep->scale.elem, 4, arg);
                 } else if (str_eq(ident, STR_LIT("DynamicEval"))) {
                     viamd::extract_bool(rep->dynamic_evaluation, arg);
+                } else if (str_eq(ident, STR_LIT("OrbIdx"))) {
+                    viamd::extract_int(rep->orbital.orbital_idx, arg);
+                } else if (str_eq(ident, STR_LIT("OrbRes"))) {
+                    int res;
+                    viamd::extract_int(res, arg);
+                    rep->orbital.vol.resolution = (VolumeResolution)res;
+                } else if (str_eq(ident, STR_LIT("OrbType"))) {
+                    int type;
+                    viamd::extract_int(type, arg);
+                    rep->orbital.type = (OrbitalType)type;
+                } else if (str_eq(ident, STR_LIT("OrbIso"))) {
+                    viamd::extract_flt(rep->orbital.vol.iso.values[0], arg);
+                    rep->orbital.vol.iso.values[1] = - rep->orbital.vol.iso.values[0];
+                } else if (str_eq(ident, STR_LIT("OrbColPos"))) {
+                    viamd::extract_vec4(rep->orbital.vol.iso.colors[0], arg);
+                } else if (str_eq(ident, STR_LIT("OrbColNeg"))) {
+                    viamd::extract_vec4(rep->orbital.vol.iso.colors[1], arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("AtomElementMapping"))) {
@@ -7860,14 +7866,24 @@ static void save_workspace(ApplicationState* data, str_t filename) {
     for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
         const Representation& rep = data->representation.reps[i];
         viamd::write_section_header(state, STR_LIT("Representation"));
-        viamd::write_str(state, STR_LIT("Name"), str_from_cstr(rep.name));
-        viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(rep.filt));
+        viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
+        viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filt));
         viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
-        viamd::write_int(state, STR_LIT("Type"), (int)rep.type);
-        viamd::write_int(state, STR_LIT("ColorMapping"), (int)rep.color_mapping);
+        viamd::write_int(state,  STR_LIT("Type"), (int)rep.type);
+        viamd::write_int(state,  STR_LIT("ColorMapping"), (int)rep.color_mapping);
         viamd::write_vec4(state, STR_LIT("StaticColor"), rep.uniform_color);
+        viamd::write_flt(state,  STR_LIT("Saturation"), rep.saturation);
         viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
         viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
+
+        if (rep.type == RepresentationType::Orbital) {
+            viamd::write_int(state,  STR_LIT("OrbIdx"),      rep.orbital.orbital_idx);
+            viamd::write_int(state,  STR_LIT("OrbType"),(int)rep.orbital.type);
+            viamd::write_int(state,  STR_LIT("OrbRes"), (int)rep.orbital.vol.resolution);
+            viamd::write_flt(state,  STR_LIT("OrbIso"),      rep.orbital.vol.iso.values[0]);
+            viamd::write_vec4(state, STR_LIT("OrbColPos"),   rep.orbital.vol.iso.colors[0]);
+            viamd::write_vec4(state, STR_LIT("OrbColNeg"),   rep.orbital.vol.iso.colors[1]);
+        }
     }
 
     for (size_t i = 0; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
@@ -8085,7 +8101,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                         }
                     //}
                     if (result) {
-                        if (dim == (int)md_array_size(vis.structures)) {
+                        if (dim == (int)md_array_size(vis.structure)) {
                             int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
                             int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
                             float frame_fract = fractf((float)state->animation.frame);
@@ -8093,7 +8109,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                             md_bitfield_t mask = {0};
                             md_bitfield_init(&mask, frame_alloc);
                             for (int i = 0; i < dim; ++i) {
-                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structures[i]);
+                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structure[i]);
                                 float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
                                 float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
                                 ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
@@ -8119,7 +8135,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             break;
     }
 
-    scale_saturation(colors, mol.atom.count, rep->saturation);
+    if (rep->saturation != 1.0f) {
+        scale_saturation(colors, mol.atom.count, rep->saturation);
+    }
 
     switch (rep->type) {
     case RepresentationType::SpaceFill:
@@ -8134,26 +8152,29 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid = mol.protein_backbone.range.count > 0;
         break;
     case RepresentationType::Orbital: {
-        rep->type_is_valid = md_array_size(state->representation.info.molecular_orbitals) > 0;
-        uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.vol.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
-        if (vol_hash != rep->orbital.vol_hash) {
-            const float samples_per_angstrom[(int)VolumeResolution::Count] = {
-                4.0f,
-                8.0f,
-                16.0f,
-            };
-            rep->orbital.vol_hash = vol_hash;
-            ComputeOrbital data = {
-                .type = rep->orbital.type,
-                .orbital_idx = rep->orbital.orbital_idx,
-                .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.vol.resolution],
-                .dst_texture = &rep->orbital.vol.vol_tex,
-            };
-            viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
+        size_t num_mol_orbitals = md_array_size(state->representation.info.molecular_orbitals);
+        rep->type_is_valid = num_mol_orbitals > 0;
+        if (num_mol_orbitals > 0) {
+            uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.vol.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
+            if (vol_hash != rep->orbital.vol_hash) {
+                const float samples_per_angstrom[(int)VolumeResolution::Count] = {
+                    4.0f,
+                    8.0f,
+                    16.0f,
+                };
+                ComputeOrbital data = {
+                    .type = rep->orbital.type,
+                    .orbital_idx = rep->orbital.orbital_idx,
+                    .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.vol.resolution],
+                    .dst_texture = &rep->orbital.vol.vol_tex,
+                };
+                viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
 
-            if (data.output_written) {
-                rep->orbital.vol.tex_mat = data.tex_mat;
-                rep->orbital.vol.voxel_spacing = data.voxel_spacing;
+                if (data.output_written) {
+                    rep->orbital.vol_hash = vol_hash;
+                    rep->orbital.vol.tex_mat = data.tex_mat;
+                    rep->orbital.vol.voxel_spacing = data.voxel_spacing;
+                }
             }
         }
         uint64_t tf_hash = md_hash64(&rep->orbital.vol.dvr.colormap, sizeof(rep->orbital.vol.dvr.colormap), 0);
@@ -8447,11 +8468,11 @@ static void handle_camera_interaction(ApplicationState* data) {
 
                     md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
                     while (md_bitfield_iter_next(&it)) {
-                        const int64_t i = md_bitfield_iter_idx(&it);
+                        const uint64_t i = md_bitfield_iter_idx(&it);
                         const vec4_t p = mat4_mul_vec4(mvp, vec4_set(data->mold.mol.atom.x[i], data->mold.mol.atom.y[i], data->mold.mol.atom.z[i], 1.0f));
                         const vec2_t c = {
-                            (p.x / p.w * 0.5f + 0.5f) * res.x,
-                            (-p.y / p.w * 0.5f + 0.5f) * res.y
+                            ( p.x / p.w * 0.5f + 0.5f) * res.x,
+                            (-p.y / p.w * 0.5f + 0.5f) * res.y,
                         };
 
                         if (min_p.x <= c.x && c.x <= max_p.x && min_p.y <= c.y && c.y <= max_p.y) {
