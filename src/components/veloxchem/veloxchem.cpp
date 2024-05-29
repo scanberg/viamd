@@ -855,14 +855,59 @@ struct VeloxChem : viamd::EventHandler {
                 //ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
 
 
-                ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
-                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                ImPlot::PlotLine("Energy", iter, energy_offsets, (int)vlx.scf.iter.count - 1);
-                lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
-                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
-                ImPlot::EndPlot();
+                    ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
+                    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                    ImPlot::PlotLine("Energy", iter, energy_offsets, (int)vlx.scf.iter.count - 1);
+                    lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                    //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                    //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+                    //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                    ImPlot::EndPlot();
+                }
+                ImGui::TreePop();
+            }
+
+            if (ImGui::TreeNode("Geometry")) {
+                if (vlx.geom.num_atoms) {
+                    ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
+                    ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
+                    ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
+                    ImGui::Text("Molecular Charge:    %6i", vlx.geom.molecular_charge);
+                    ImGui::Text("Spin Multiplicity:   %6i", vlx.geom.spin_multiplicity);
+                    ImGui::Spacing();
+
+                    static int hovered = -1;
+                    ImGui::Text("%i is hovered", hovered);
+                    hovered = -1;
+
+                    if (ImGui::TreeNode("Atoms")) {
+                        ImGui::Text("Atom      Coord X      Coord Y      Coord Z");
+                        for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
+                            char lable[64];
+                            sprintf(lable, "%4s %12.6f %12.6f %12.6f", vlx.geom.atom_symbol[i].buf, vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]);
+                            bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, i); //If atom is selected, mark it as such
+                            if (ImGui::Selectable(lable, is_sel) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                //Item was clicked
+                                if (is_sel) {
+                                    //Unselect
+                                    md_bitfield_clear_bit(&state.selection.selection_mask, i);
+                                } 
+                                else {
+                                    //Select
+                                    md_bitfield_set_bit(&state.selection.selection_mask, i);
+                                }
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                if (state.mold.mol.atom.count > i) {
+                                    md_bitfield_clear(&state.selection.highlight_mask); //FIXME: This leaves the hovered state on the last hovered item
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, i);
+                                }
+                            }
+                        }
+                        ImGui::TreePop();
+                    }
+                }
+                ImGui::TreePop();
             }
         }
         ImGui::End();
