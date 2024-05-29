@@ -868,25 +868,31 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::TreePop();
             }
 
-            if (ImGui::TreeNode("Geometry"))
-            {
-                static bool selected[10] = {};
+            if (ImGui::TreeNode("Geometry")) {
+                if (vlx.geom.num_atoms) {
+                    ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
+                    ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
+                    ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
+                    ImGui::Text("Molecular Charge:    %6i", vlx.geom.molecular_charge);
+                    ImGui::Text("Spin Multiplicity:   %6i", vlx.geom.spin_multiplicity);
+                    ImGui::Spacing();
 
-                if (ImGui::BeginTable("Geometry", 3, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_Borders))
-                {
-                    for (int i = 0; i < 10; i++)
-                    {
-                        char label[32];
-                        sprintf(label, "Item %d", i);
-                        ImGui::TableNextRow();
-                        ImGui::TableNextColumn();
-                        ImGui::Selectable(label, &selected[i], ImGuiSelectableFlags_SpanAllColumns);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("Some other contents");
-                        ImGui::TableNextColumn();
-                        ImGui::Text("123456");
+                    static int hovered = -1;
+                    ImGui::Text("%i is hovered", hovered);
+                    hovered = -1;
+
+                    if (ImGui::TreeNode("Atoms")) {
+                        ImGui::Text("Atom      Coord X      Coord Y      Coord Z");
+                        for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
+                            char lable[64];
+                            sprintf(lable, "%4s %12.6f %12.6f %12.6f", vlx.geom.atom_symbol[i].buf, vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]);
+                            ImGui::Selectable(lable, false);
+                            if (ImGui::IsItemHovered()) {
+                                hovered = i;
+                            }
+                        }
+                        ImGui::TreePop();
                     }
-                    ImGui::EndTable();
                 }
                 ImGui::TreePop();
             }
