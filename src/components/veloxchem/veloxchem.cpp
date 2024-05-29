@@ -842,27 +842,53 @@ struct VeloxChem : viamd::EventHandler {
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &scf.show_window)) {
-            if (ImPlot::BeginPlot("SCF")) {
-                ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
-                ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
-                // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
+            if (ImGui::TreeNode("SCF")) {
+                if (ImPlot::BeginPlot("SCF")) {
+                    ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
+                    ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                    ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
+                    // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
+                    ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
 #if 1
-                ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-                //ImPlot::SetupAxisScale(ImAxis_Y2, ImPlotScale_Log10);
+                    ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+                    //ImPlot::SetupAxisScale(ImAxis_Y2, ImPlotScale_Log10);
 #endif
                 //ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
 
 
-                ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
-                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                ImPlot::PlotLine("Energy", iter, energy_offsets, (int)vlx.scf.iter.count - 1);
-                lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
-                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
-                ImPlot::EndPlot();
+                    ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
+                    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                    ImPlot::PlotLine("Energy", iter, energy_offsets, (int)vlx.scf.iter.count - 1);
+                    lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                    //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                    //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+                    //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                    ImPlot::EndPlot();
+                }
+                ImGui::TreePop();
+            }
+
+            if (ImGui::TreeNode("Geometry"))
+            {
+                static bool selected[10] = {};
+
+                if (ImGui::BeginTable("Geometry", 3, ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_Borders))
+                {
+                    for (int i = 0; i < 10; i++)
+                    {
+                        char label[32];
+                        sprintf(label, "Item %d", i);
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::Selectable(label, &selected[i], ImGuiSelectableFlags_SpanAllColumns);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("Some other contents");
+                        ImGui::TableNextColumn();
+                        ImGui::Text("123456");
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::TreePop();
             }
         }
         ImGui::End();
