@@ -876,9 +876,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::Text("Spin Multiplicity:   %6i", vlx.geom.spin_multiplicity);
                     ImGui::Spacing();
 
-                    static int hovered = -1;
-                    ImGui::Text("%i is hovered", hovered);
-                    hovered = -1;
+                    bool item_hovered = false;
 
                     if (ImGui::TreeNode("Atoms")) {
                         ImGui::Text("Atom      Coord X      Coord Y      Coord Z");
@@ -899,10 +897,15 @@ struct VeloxChem : viamd::EventHandler {
                             }
                             if (ImGui::IsItemHovered()) {
                                 if (state.mold.mol.atom.count > i) {
-                                    md_bitfield_clear(&state.selection.highlight_mask); //FIXME: This leaves the hovered state on the last hovered item
+                                    md_bitfield_clear(&state.selection.highlight_mask);
                                     md_bitfield_set_bit(&state.selection.highlight_mask, i);
+                                    item_hovered = true;
                                 }
                             }
+                        }
+                        if (!item_hovered && ImGui::IsWindowHovered()) {
+                            //Makes sure that we highlight is cleared if we are in this window, but don't hover an item
+                            md_bitfield_clear(&state.selection.highlight_mask);
                         }
                         ImGui::TreePop();
                     }
