@@ -174,7 +174,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 draw_orb_window(state);
                 draw_nto_window(state);
-                draw_scf_window();
+                draw_scf_window(state);
                 draw_rsp_window();
                 break;
             }
@@ -817,7 +817,7 @@ struct VeloxChem : viamd::EventHandler {
     }
     */
 
-    void draw_scf_window() {
+    void draw_scf_window(ApplicationState& state) {
         if (!scf.show_window) { return; }
         if (vlx.scf.iter.count == 0) { return; }
 
@@ -886,9 +886,13 @@ struct VeloxChem : viamd::EventHandler {
                         for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
                             char lable[64];
                             sprintf(lable, "%4s %12.6f %12.6f %12.6f", vlx.geom.atom_symbol[i].buf, vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]);
-                            ImGui::Selectable(lable, false);
+                            bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, i);
+                            ImGui::Selectable(lable, is_sel);
                             if (ImGui::IsItemHovered()) {
-                                hovered = i;
+                                if (state.mold.mol.atom.count > i) {
+                                    md_bitfield_clear(&state.selection.highlight_mask);
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, i);
+                                }
                             }
                         }
                         ImGui::TreePop();
