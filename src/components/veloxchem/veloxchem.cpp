@@ -883,23 +883,23 @@ struct VeloxChem : viamd::EventHandler {
                         for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
                             char lable[64];
                             sprintf(lable, "%4s %12.6f %12.6f %12.6f", vlx.geom.atom_symbol[i].buf, vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]);
+
                             bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, i); //If atom is selected, mark it as such
-                            if (ImGui::Selectable(lable, is_sel) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                //Item was clicked
-                                if (is_sel) {
-                                    //Unselect
-                                    md_bitfield_clear_bit(&state.selection.selection_mask, i);
-                                } 
-                                else {
-                                    //Select
-                                    md_bitfield_set_bit(&state.selection.selection_mask, i);
-                                }
-                            }
+                            ImGui::Selectable(lable, is_sel);
                             if (ImGui::IsItemHovered()) {
                                 if (state.mold.mol.atom.count > i) {
                                     md_bitfield_clear(&state.selection.highlight_mask);
                                     md_bitfield_set_bit(&state.selection.highlight_mask, i);
                                     item_hovered = true;
+
+                                    //Selection
+                                    if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                        md_bitfield_set_bit(&state.selection.selection_mask, i);
+                                    }
+                                    //Deselect
+                                    else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                        md_bitfield_clear_bit(&state.selection.selection_mask, i);
+                                    }
                                 }
                             }
                         }
