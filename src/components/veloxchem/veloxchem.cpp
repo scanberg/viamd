@@ -898,8 +898,8 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::TableHeadersRow();
 
                         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
-                        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(1, 1, 0.5, 0.3));
                         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
+                        //ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(1, 1, 0.5, 0.3));
                         ImGuiListClipper clipper;
                         clipper.Begin((int)vlx.geom.num_atoms);
                         while (clipper.Step()) {
@@ -909,12 +909,21 @@ struct VeloxChem : viamd::EventHandler {
                                 // For the demo purpose we can select among different type of items submitted in the first column
                                 ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                                 bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
+                                bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered, mark it as such
+                                bool hov_col = false;
                                 ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                                 ImGui::TableNextColumn();
 
+                                if (is_hov) {
+                                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(1, 1, 0.5, 0.3));
+                                }
+                                else {
+                                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
+                                }
+
                                 char lable[16];
                                 sprintf(lable, "%i", row_n + 1);
-                                ImGui::Selectable(lable, is_sel, selectable_flags);
+                                ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
                                 if (ImGui::TableGetHoveredRow() == row_n + 1) {
                                     if (state.mold.mol.atom.count > row_n) {
                                         md_bitfield_clear(&state.selection.highlight_mask);
@@ -940,6 +949,8 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::Text("%12.6f", vlx.geom.coord_y[row_n]);
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%12.6f", vlx.geom.coord_z[row_n]);
+
+                                ImGui::PopStyleColor(1);
                                 
                             }
                             if (!item_hovered && ImGui::IsWindowHovered()) {
@@ -948,7 +959,7 @@ struct VeloxChem : viamd::EventHandler {
                             }
                         }
 
-                        ImGui::PopStyleColor(3);
+                        ImGui::PopStyleColor(2);
                         ImGui::EndTable();
                     }
 
