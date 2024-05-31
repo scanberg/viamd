@@ -887,7 +887,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
                     static ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
-                    if (ImGui::BeginTable("table_advanced", 5, flags, ImVec2(500, 216), 0)) {
+                    if (ImGui::BeginTable("table_advanced", 5, flags, ImVec2(500, -1), 0)) {
                         ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f);
@@ -899,63 +899,62 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
                         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
                         //ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(1, 1, 0.5, 0.3));
-                        ImGuiListClipper clipper;
-                        clipper.Begin((int)vlx.geom.num_atoms);
-                        while (clipper.Step()) {
-                            bool item_hovered = false;
-                            for (int row_n = clipper.DisplayStart; row_n < clipper.DisplayEnd; row_n++) {
+                        //ImGuiListClipper clipper;
+                        /*clipper.Begin((int)vlx.geom.num_atoms);
+                        while (clipper.Step()) {*/
+                        bool item_hovered = false;
+                        for (int row_n = 0; row_n < vlx.geom.num_atoms; row_n++) {
 
-                                // For the demo purpose we can select among different type of items submitted in the first column
-                                ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                                bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                                bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered, mark it as such
-                                bool hov_col = false;
-                                ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
-                                ImGui::TableNextColumn();
+                            // For the demo purpose we can select among different type of items submitted in the first column
+                            ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                            bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
+                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered, mark it as such
+                            bool hov_col = false;
+                            ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
+                            ImGui::TableNextColumn();
 
-                                if (is_hov) {
-                                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(1, 1, 0.5, 0.3));
-                                }
-                                else {
-                                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
-                                }
+                            if (is_hov) {
+                                ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(1, 1, 0.5, 0.3));
+                            }
+                            else {
+                                ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
+                            }
 
-                                char lable[16];
-                                sprintf(lable, "%i", row_n + 1);
-                                ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
-                                if (ImGui::TableGetHoveredRow() == row_n + 1) {
-                                    if (state.mold.mol.atom.count > row_n) {
-                                        md_bitfield_clear(&state.selection.highlight_mask);
-                                        md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
-                                        item_hovered = true;
+                            char lable[16];
+                            sprintf(lable, "%i", row_n + 1);
+                            ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
+                            if (ImGui::TableGetHoveredRow() == row_n + 1) {
+                                if (state.mold.mol.atom.count > row_n) {
+                                    md_bitfield_clear(&state.selection.highlight_mask);
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
+                                    item_hovered = true;
 
-                                        //Selection
-                                        if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                            md_bitfield_set_bit(&state.selection.selection_mask, row_n);
-                                        }
-                                        //Deselect
-                                        else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                            md_bitfield_clear_bit(&state.selection.selection_mask, row_n);
-                                        }
+                                    //Selection
+                                    if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                        md_bitfield_set_bit(&state.selection.selection_mask, row_n);
+                                    }
+                                    //Deselect
+                                    else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                        md_bitfield_clear_bit(&state.selection.selection_mask, row_n);
                                     }
                                 }
+                            }
 
-                                ImGui::TableNextColumn();
-                                ImGui::Text(vlx.geom.atom_symbol[row_n].buf);
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%12.6f", vlx.geom.coord_x[row_n]);
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%12.6f", vlx.geom.coord_y[row_n]);
-                                ImGui::TableNextColumn();
-                                ImGui::Text("%12.6f", vlx.geom.coord_z[row_n]);
+                            ImGui::TableNextColumn();
+                            ImGui::Text(vlx.geom.atom_symbol[row_n].buf);
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%12.6f", vlx.geom.coord_x[row_n]);
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%12.6f", vlx.geom.coord_y[row_n]);
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%12.6f", vlx.geom.coord_z[row_n]);
 
-                                ImGui::PopStyleColor(1);
+                            ImGui::PopStyleColor(1);
                                 
-                            }
-                            if (!item_hovered && ImGui::IsWindowHovered()) {
-                                //Makes sure that we highlight is cleared if we are in this window, but don't hover an item
-                                md_bitfield_clear(&state.selection.highlight_mask);
-                            }
+                        }
+                        if (!item_hovered && ImGui::IsWindowHovered()) {
+                            //Makes sure that we highlight is cleared if we are in this window, but don't hover an item
+                            md_bitfield_clear(&state.selection.highlight_mask);
                         }
 
                         ImGui::PopStyleColor(2);
