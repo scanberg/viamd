@@ -842,18 +842,30 @@ struct VeloxChem : viamd::EventHandler {
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &scf.show_window)) {
-            if (ImPlot::BeginPlot("SCF")) {
-                ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
-                ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
-                // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
-#if 1
-                ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-                //ImPlot::SetupAxisScale(ImAxis_Y2, ImPlotScale_Log10);
-#endif
-                //ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
+            if (ImGui::TreeNode("Level of calculation")) {
+                ImGui::Text("Function");
+                ImGui::Text("Basis Set: %s", (const char*)vlx.basis.ident.ptr);
 
+                
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNode("System Information")) {
+                ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
+                ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
+                ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
+                ImGui::Text("Molecular Charge:    %6i", vlx.geom.molecular_charge);
+                ImGui::Text("Spin Multiplicity:   %6i", vlx.geom.spin_multiplicity);
+
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNode("SCF")) {
+                if (ImPlot::BeginPlot("SCF")) {
+                    ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
+                    ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                    ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
+                    // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
+                    ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
 
                     ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
                     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
@@ -864,19 +876,16 @@ struct VeloxChem : viamd::EventHandler {
                     //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
                     ImPlot::EndPlot();
                 }
+                ImGui::Spacing();
+                ImGui::Text("Total energy:              %16.12f a.u.", vlx.scf.total_energy);
+                ImGui::Text("Electronic energy:         %16.12f a.u.", vlx.scf.electronic_energy);
+                ImGui::Text("Nuclear repulsion energy:  %16.12f a.u.", vlx.scf.nuclear_repulsion_energy);
+                ImGui::Text("Gradient norm:             %16.12f a.u.", vlx.scf.gradient_norm);
                 ImGui::TreePop();
             }
 
             if (ImGui::TreeNode("Geometry")) {
                 if (vlx.geom.num_atoms) {
-                    ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
-                    ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
-                    ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
-                    ImGui::Text("Molecular Charge:    %6i", vlx.geom.molecular_charge);
-                    ImGui::Text("Spin Multiplicity:   %6i", vlx.geom.spin_multiplicity);
-                    ImGui::Spacing();
-
-
                     /*static ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
                                                    ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti | ImGuiTableFlags_RowBg |
                                                    ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
