@@ -843,7 +843,7 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &scf.show_window)) {
             if (ImGui::TreeNode("Level of calculation")) {
-                ImGui::Text("Function");
+                ImGui::Text("Method:");
                 ImGui::Text("Basis Set: %s", (const char*)vlx.basis.ident.ptr);
 
                 
