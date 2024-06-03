@@ -887,14 +887,9 @@ struct VeloxChem : viamd::EventHandler {
 
             if (ImGui::TreeNode("Geometry")) {
                 if (vlx.geom.num_atoms) {
-                    /*static ImGuiTableFlags flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
-                                                   ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti | ImGuiTableFlags_RowBg |
-                                                   ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
-                                                   ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;*/
+                    static ImGuiTableFlags flags =  ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
+                                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
 
-                    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg |
-                        ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
-                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
                     static ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                     if (ImGui::BeginTable("table_advanced", 5, flags, ImVec2(500, -1), 0)) {
@@ -908,14 +903,9 @@ struct VeloxChem : viamd::EventHandler {
 
                         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
                         ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
-                        //ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(1, 1, 0.5, 0.3));
-                        //ImGuiListClipper clipper;
-                        /*clipper.Begin((int)vlx.geom.num_atoms);
-                        while (clipper.Step()) {*/
                         bool item_hovered = false;
                         for (int row_n = 0; row_n < vlx.geom.num_atoms; row_n++) {
 
-                            // For the demo purpose we can select among different type of items submitted in the first column
                             ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                             bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
                             bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered, mark it as such
@@ -963,47 +953,13 @@ struct VeloxChem : viamd::EventHandler {
                                 
                         }
                         if (!item_hovered && ImGui::IsWindowHovered()) {
-                            //Makes sure that we highlight is cleared if we are in this window, but don't hover an item
+                            //Makes sure that we clear the highlight if we are in this window, but don't hover an item
                             md_bitfield_clear(&state.selection.highlight_mask);
                         }
 
                         ImGui::PopStyleColor(2);
                         ImGui::EndTable();
                     }
-
-                    //bool item_hovered = false;
-
-                    //if (ImGui::TreeNode("Atoms")) {
-                    //    ImGui::Text("Atom      Coord X      Coord Y      Coord Z");
-                    //    for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                    //        char lable[64];
-                    //        sprintf(lable, "%4s %12.6f %12.6f %12.6f", vlx.geom.atom_symbol[i].buf, vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]);
-
-                    //        bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, i); //If atom is selected, mark it as such
-                    //        ImGui::Selectable(lable, is_sel);
-                    //        if (ImGui::IsItemHovered()) {
-                    //            if (state.mold.mol.atom.count > i) {
-                    //                md_bitfield_clear(&state.selection.highlight_mask);
-                    //                md_bitfield_set_bit(&state.selection.highlight_mask, i);
-                    //                item_hovered = true;
-
-                    //                //Selection
-                    //                if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                    //                    md_bitfield_set_bit(&state.selection.selection_mask, i);
-                    //                }
-                    //                //Deselect
-                    //                else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                    //                    md_bitfield_clear_bit(&state.selection.selection_mask, i);
-                    //                }
-                    //            }
-                    //        }
-                    //    }
-                    //    if (!item_hovered && ImGui::IsWindowHovered()) {
-                    //        //Makes sure that we highlight is cleared if we are in this window, but don't hover an item
-                    //        md_bitfield_clear(&state.selection.highlight_mask);
-                    //    }
-                    //    ImGui::TreePop();
-                    //}
                 }
                 ImGui::TreePop();
             }
