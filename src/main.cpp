@@ -6554,22 +6554,52 @@ static void draw_dataset_window(ApplicationState* data) {
             const size_t count = md_array_size(items[i]);
             if (count) {
                 if (ImGui::CollapsingHeader(lbls[i])) {
+                    bool item_hovered = false;
                     for (size_t j = 0; j < count; ++j) {
                         const DatasetItem& item = items[i][j];
                         const float t = powf(item.fraction, 0.2f) * 0.5f;
-                        ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
+
+                        bool is_sel = md_bitfield_test_bit(&data->selection.selection_mask, j); //If atom is selected, mark it as such
+                        bool is_hov = md_bitfield_test_bit(&data->selection.highlight_mask, j); //If atom is hovered, mark it as such
+
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
+                        if (is_hov) {
+                            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(1, 1, 0.5, 0.3));
+                        }
+                        else if (is_sel) {
+                            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
+                        }
+                        else {
+                            ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
+                        }
                         ImGui::Selectable(item.label, true, 0, item_size);
-                        ImGui::PopStyleColor();
+                        ImGui::PopStyleColor(2);
+
 
                         if (ImGui::IsItemHovered()) {
                             ImGui::SetTooltip("%s: count %d (%.2f%%)", item.label, item.count, item.fraction * 100.f);
                             filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask);
+                            item_hovered = true;
+
+                            //Selection
+                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                md_bitfield_set_bit(&data->selection.selection_mask, j);
+                            }
+                            //Deselect
+                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                md_bitfield_clear_bit(&data->selection.selection_mask, j);
+                            }
                         }
 
                         float last_item_x = ImGui::GetItemRectMax().x;
                         float next_button_x = last_item_x + item_size.x;
                         if (j + 1 < count && next_button_x < window_x_max) {
                             ImGui::SameLine();
+                        }
+
+                        if (!item_hovered && ImGui::IsWindowHovered()) {
+                            //Makes sure that we clear the highlight if we are in this window, but don't hover an item
+                            md_bitfield_clear(&data->selection.highlight_mask);
                         }
                     }
                 }
