@@ -845,7 +845,7 @@ struct VeloxChem : viamd::EventHandler {
             if (ImGui::TreeNode("Level of calculation")) {
                 ImGui::Text("Method:");
                 ImGui::Text("Basis Set: %s", (const char*)vlx.basis.ident.ptr);
-
+                ImGui::Spacing();
                 
                 ImGui::TreePop();
             }
@@ -855,7 +855,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
                 ImGui::Text("Molecular Charge:    %6i", vlx.geom.molecular_charge);
                 ImGui::Text("Spin Multiplicity:   %6i", vlx.geom.spin_multiplicity);
-
+                ImGui::Spacing();
                 ImGui::TreePop();
             }
             if (ImGui::TreeNode("SCF")) {
@@ -877,10 +877,13 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::EndPlot();
                 }
                 ImGui::Spacing();
-                ImGui::Text("Total energy:              %16.12f a.u.", vlx.scf.total_energy);
-                ImGui::Text("Electronic energy:         %16.12f a.u.", vlx.scf.electronic_energy);
-                ImGui::Text("Nuclear repulsion energy:  %16.12f a.u.", vlx.scf.nuclear_repulsion_energy);
-                ImGui::Text("Gradient norm:             %16.12f a.u.", vlx.scf.gradient_norm);
+                ImGui::Text("Converged SCF:");
+                ImGui::Spacing();
+                ImGui::Text("Total energy:              %16.10f a.u.", vlx.scf.total_energy);
+                ImGui::Text("Electronic energy:         %16.10f a.u.", vlx.scf.electronic_energy);
+                ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", vlx.scf.nuclear_repulsion_energy);
+                ImGui::Text("Gradient norm:             %16.10f a.u.", vlx.scf.gradient_norm);
+                ImGui::Spacing();
                 ImGui::TreePop();
             }
 
