@@ -877,8 +877,6 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::EndPlot();
                 }
                 ImGui::Spacing();
-                ImGui::Text("Converged SCF:");
-                ImGui::Spacing();
                 ImGui::Text("Total energy:              %16.10f a.u.", vlx.scf.total_energy);
                 ImGui::Text("Electronic energy:         %16.10f a.u.", vlx.scf.electronic_energy);
                 ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", vlx.scf.nuclear_repulsion_energy);
