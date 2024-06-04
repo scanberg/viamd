@@ -6559,35 +6559,25 @@ static void draw_dataset_window(ApplicationState* data) {
                         const DatasetItem& item = items[i][j];
                         const float t = powf(item.fraction, 0.2f) * 0.5f;
 
-                        bool is_sel = md_bitfield_test_bit(&data->selection.selection_mask, j); //If atom is selected, mark it as such
-                        bool is_hov = md_bitfield_test_bit(&data->selection.highlight_mask, j); //If atom is hovered, mark it as such
-
                         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
-                        if (is_hov) {
-                            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(1, 1, 0.5, 0.3));
-                        }
-                        else if (is_sel) {
-                            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
-                        }
-                        else {
-                            ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
-                        }
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
                         ImGui::Selectable(item.label, true, 0, item_size);
                         ImGui::PopStyleColor(2);
-
+                        //We do not show an item as selected in the UI, as we don't keep track if the whole item group is selected
+                        //Selecting will thus mark the atoms as selected, but not the item. It's a one way selection
 
                         if (ImGui::IsItemHovered()) {
                             ImGui::SetTooltip("%s: count %d (%.2f%%)", item.label, item.count, item.fraction * 100.f);
                             filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask);
                             item_hovered = true;
 
-                            //Selection
+                            //Select
                             if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitfield_set_bit(&data->selection.selection_mask, j);
+                                md_bitfield_or_inplace(&data->selection.selection_mask, &data->selection.highlight_mask);
                             }
                             //Deselect
                             else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitfield_clear_bit(&data->selection.selection_mask, j);
+                                md_bitfield_andnot_inplace(&data->selection.selection_mask, &data->selection.highlight_mask);
                             }
                         }
 
