@@ -1200,6 +1200,36 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }
             */
+
+            //draw the vibrational analysis
+            float har_freqs[3] = { 1562.20, 3663.36, 3677.39 };
+            float irs[3] = { 132.6605f, 14.2605f, 5.8974f };
+
+            ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
+
+             ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * 3);
+
+            if (ImPlot::BeginPlot("Vibrational analysis")) {
+                // @HACK: Compute pixel width of 2 'plot' units
+                ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                ImPlot::SetupAxis(ImAxis_X1, "Harmonic Frequency");
+                ImPlot::SetupAxis(ImAxis_Y1, "IR Intensity", ImPlotAxisFlags_AuxDefault);
+                ImPlot::SetupFinish();
+
+
+                const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
+                ImPlot::PlotBars("IR Intensity", har_freqs, irs, 3, bar_width);
+
+                peaks_to_pixels(pixel_peaks, (double*)har_freqs, (double*)irs, 3);
+                mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
+                if (ImPlot::IsPlotHovered()) {
+                    rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks);
+                    rsp.focused_plot = 0;
+                }
+
+                ImPlot::EndPlot();
+            }
+            
         }
         ImGui::End();
     }
