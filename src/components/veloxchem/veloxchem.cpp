@@ -178,12 +178,12 @@ struct VeloxChem : viamd::EventHandler {
 
                 draw_orb_window(state);
                 draw_nto_window(state);
-                draw_scf_window();
+                draw_summary_window(state);
                 draw_rsp_window();
                 break;
             }
             case viamd::EventType_ViamdDrawMenu:
-                ImGui::Checkbox("VeloxChem SCF", &scf.show_window);
+                ImGui::Checkbox("VeloxChem Summary", &scf.show_window);
                 ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
                 ImGui::Checkbox("VeloxChem ORB", &orb.show_window);
                 ImGui::Checkbox("VeloxChem NTO", &nto.show_window);
@@ -821,7 +821,7 @@ struct VeloxChem : viamd::EventHandler {
     }
     */
 
-    void draw_scf_window() {
+    void draw_summary_window(ApplicationState& state) {
         if (!scf.show_window) { return; }
         if (vlx.scf.iter.count == 0) { return; }
 
@@ -846,27 +846,126 @@ struct VeloxChem : viamd::EventHandler {
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &scf.show_window)) {
-            if (ImPlot::BeginPlot("SCF")) {
-                ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
-                ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
-                // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
-#if 1
-                ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
-                //ImPlot::SetupAxisScale(ImAxis_Y2, ImPlotScale_Log10);
-#endif
-                //ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
+            if (ImGui::TreeNode("Level of calculation")) {
+                ImGui::Text("Method:");
+                ImGui::Text("Basis Set: %s", (const char*)vlx.basis.ident.ptr);
+                ImGui::Spacing();
+                
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNode("System Information")) {
+                ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
+                ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
+                ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
+                ImGui::Text("Molecular Charge:    %6i", vlx.geom.molecular_charge);
+                ImGui::Text("Spin Multiplicity:   %6i", vlx.geom.spin_multiplicity);
+                ImGui::Spacing();
+                ImGui::TreePop();
+            }
+            if (ImGui::TreeNode("SCF")) {
+                if (ImPlot::BeginPlot("SCF")) {
+                    ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
+                    ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                    ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
+                    // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
+                    ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
 
+                    ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
+                    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                    ImPlot::PlotLine("Energy", iter, energy_offsets, (int)vlx.scf.iter.count - 1);
+                    lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                    //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                    //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+                    //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                    ImPlot::EndPlot();
+                }
+                ImGui::Spacing();
+                ImGui::Text("Total energy:              %16.10f a.u.", vlx.scf.total_energy);
+                ImGui::Text("Electronic energy:         %16.10f a.u.", vlx.scf.electronic_energy);
+                ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", vlx.scf.nuclear_repulsion_energy);
+                ImGui::Text("Gradient norm:             %16.10f a.u.", vlx.scf.gradient_norm);
+                ImGui::Spacing();
+                ImGui::TreePop();
+            }
 
-                ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
-                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                ImPlot::PlotLine("Energy", iter, energy_offsets, (int)vlx.scf.iter.count - 1);
-                lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
-                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
-                //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
-                ImPlot::EndPlot();
+            if (ImGui::TreeNode("Geometry")) {
+                if (vlx.geom.num_atoms) {
+                    static ImGuiTableFlags flags =  ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
+                                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
+
+                    static ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
+
+                    if (ImGui::BeginTable("table_advanced", 5, flags, ImVec2(500, -1), 0)) {
+                        ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
+                        ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f);
+                        ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f);
+                        ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
+                        ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
+                        ImGui::TableSetupScrollFreeze(0, 1);
+                        ImGui::TableHeadersRow();
+
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
+                        bool item_hovered = false;
+                        for (int row_n = 0; row_n < vlx.geom.num_atoms; row_n++) {
+
+                            ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                            bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
+                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered, mark it as such
+                            bool hov_col = false;
+                            ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
+                            ImGui::TableNextColumn();
+
+                            if (is_hov) {
+                                ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(1, 1, 0.5, 0.3));
+                            }
+                            else {
+                                ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
+                            }
+
+                            char lable[16];
+                            sprintf(lable, "%i", row_n + 1);
+                            ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
+                            if (ImGui::TableGetHoveredRow() == row_n + 1) {
+                                if (state.mold.mol.atom.count > row_n) {
+                                    md_bitfield_clear(&state.selection.highlight_mask);
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
+                                    item_hovered = true;
+
+                                    //Selection
+                                    if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                        md_bitfield_set_bit(&state.selection.selection_mask, row_n);
+                                    }
+                                    //Deselect
+                                    else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                        md_bitfield_clear_bit(&state.selection.selection_mask, row_n);
+                                    }
+                                }
+                            }
+
+                            ImGui::TableNextColumn();
+                            ImGui::Text(vlx.geom.atom_symbol[row_n].buf);
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%12.6f", vlx.geom.coord_x[row_n]);
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%12.6f", vlx.geom.coord_y[row_n]);
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%12.6f", vlx.geom.coord_z[row_n]);
+
+                            ImGui::PopStyleColor(1);
+                                
+                        }
+                        if (!item_hovered && ImGui::IsWindowHovered()) {
+                            //Makes sure that we clear the highlight if we are in this window, but don't hover an item
+                            md_bitfield_clear(&state.selection.highlight_mask);
+                        }
+
+                        ImGui::PopStyleColor(2);
+                        ImGui::EndTable();
+                    }
+                }
+                ImGui::TreePop();
             }
         }
         ImGui::End();
