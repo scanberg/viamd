@@ -84,6 +84,7 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 2;
             float  values[2] = {0.05f, -0.05};
             vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
+
         } iso;
 
         GBuffer gbuf = {};
@@ -114,6 +115,9 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 2;
             float  values[2] = {0.05f, -0.05};
             vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
+            double vector_length = 1.0f;
+            bool display_vectors = false;
+            bool display_angle = false;
         } iso;
 
         GBuffer gbuf = {};
@@ -1148,6 +1152,8 @@ struct VeloxChem : viamd::EventHandler {
             orb.iso.count = 2;
             orb.iso.enabled = true;
 
+
+
             ImGui::ColorEdit4("##Color Positive", orb.iso.colors[0].elem);
             ImGui::SetItemTooltip("Color Positive");
             ImGui::ColorEdit4("##Color Negative", orb.iso.colors[1].elem);
@@ -1567,6 +1573,23 @@ struct VeloxChem : viamd::EventHandler {
             nto.iso.count = 2;
             nto.iso.enabled = true;
 
+            
+            const double vector_length_min = 1.0;
+            const double vector_length_max = 10.0;
+            double vector_length_input = nto.iso.vector_length;
+            ImGui::SliderScalar("##Vector length", ImGuiDataType_Double, &vector_length_input, &vector_length_min, &vector_length_max, "%.6f",
+                                ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Vector length");
+            nto.iso.vector_length = (float)vector_length_input;
+
+            bool show_vector = nto.iso.display_vectors;
+            ImGui::Checkbox("Display transition dipole moments", &show_vector);
+            nto.iso.display_vectors = show_vector;
+
+            bool show_angle = nto.iso.display_angle;
+            ImGui::Checkbox("Display angle", &show_angle);
+            nto.iso.display_angle = show_angle;
+
             ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
             ImGui::SetItemTooltip("Color Positive");
             ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
@@ -1672,7 +1695,6 @@ struct VeloxChem : viamd::EventHandler {
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
-
             if (rsp.selected != -1) {
                 // Draw P / H orbitals
                 for (int i = 0; i < num_lambdas * 2; ++i) {
@@ -1687,6 +1709,124 @@ struct VeloxChem : viamd::EventHandler {
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
+                    
+                    const float aspect_ratio1 = win_sz.x / win_sz.y;
+                    mat4_t view_mat1 = camera_world_to_view_matrix(nto.camera);
+                    mat4_t proj_mat1 = camera_perspective_projection_matrix(nto.camera, aspect_ratio1);
+                    int number_of_atoms = sizeof(vlx.geom.coord_x);
+                    float middle_x=0;
+                    float middle_y = 0;
+                    float middle_z = 0;
+                    for (int i = 0; i < number_of_atoms; ++i) {
+                        middle_x = middle_x + (float)vlx.geom.coord_x[i];
+                        middle_y = middle_y + (float)vlx.geom.coord_y[i];
+                        middle_z = middle_z + (float)vlx.geom.coord_z[i];
+                    }
+                    middle_x=middle_x/number_of_atoms;
+                    middle_y=middle_y/number_of_atoms;
+                    middle_z=middle_z/number_of_atoms;
+                    const mat4_t mvp = proj_mat1 * view_mat1;
+                    const vec4_t p = mat4_mul_vec4(mvp, {middle_x, middle_y, middle_z, 1.0});
+                    const vec4_t p_electric_target =                
+                        mat4_mul_vec4(mvp, {middle_x + (float)vlx.rsp.electronic_transition_length[rsp.selected].x * (float)nto.iso.vector_length,
+                                            middle_y + (float)vlx.rsp.electronic_transition_length[rsp.selected].y * (float)nto.iso.vector_length,
+                                            middle_z + (float)vlx.rsp.electronic_transition_length[rsp.selected].z * (float)nto.iso.vector_length, 1.0f});
+                    const vec2_t c = {
+                        (p.x / p.w * 0.5f + 0.5f) * win_sz.x,
+                        (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
+                    };
+                    const vec2_t c_electric_target = {
+                        (p_electric_target.x / p_electric_target.w * 0.5f + 0.5f) * win_sz.x,
+                        (-p_electric_target.y / p_electric_target.w * 0.5f + 0.5f) * win_sz.y,
+                    };
+                    float angle_electric = atan2(c.y - c_electric_target.y, c.x - c_electric_target.x);
+
+                    const vec2_t electric_triangle_point1 = {
+                        p0.x + c_electric_target.x + cos(angle_electric + 0.523599) * 5,
+                        p0.y + c_electric_target.y + sin(angle_electric + 0.523599) * 5,
+                    };
+                    const vec2_t electric_triangle_point2 = {
+                        p0.x + c_electric_target.x + cos(angle_electric - 0.523599) * 5,
+                        p0.y + c_electric_target.y + sin(angle_electric - 0.523599) * 5,
+                    };
+                    if (nto.iso.display_vectors) {
+                            draw_list->AddLine({p0.x + c.x, p0.y + c.y}, {p0.x + c_electric_target.x, p0.y + c_electric_target.y},
+                                               IM_COL32(0, 255, 255, 255), 5.0f);
+                            draw_list->AddTriangle({p0.x + c_electric_target.x, p0.y + c_electric_target.y},
+                                                   {electric_triangle_point1.x, electric_triangle_point1.y},
+                                                   {electric_triangle_point2.x, electric_triangle_point2.y}, IM_COL32(0, 255, 255, 255), 5.0f);
+                            draw_list->AddText({p0.x + c_electric_target.x, p0.y + c_electric_target.y}, ImColor(0, 255, 255, 255),
+                                               (const char*)u8"μe");
+                        }
+                    const vec4_t p_magnetic_target =
+                        mat4_mul_vec4(mvp, {middle_x + (float)vlx.rsp.magnetic_transition[rsp.selected].x * (float)nto.iso.vector_length,
+                                            middle_y + (float)vlx.rsp.magnetic_transition[rsp.selected].y * (float)nto.iso.vector_length,
+                                            middle_z + (float)vlx.rsp.magnetic_transition[rsp.selected].z * (float)nto.iso.vector_length, 1.0f});
+                    const vec2_t c_magnetic_target = {
+                        (p_magnetic_target.x / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.x,
+                        (-p_magnetic_target.y / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.y,
+                    };
+                    float angle_magnetic = atan2(c.y - c_magnetic_target.y, c.x - c_magnetic_target.x);
+                    const vec2_t magnetic_triangle_point1 = {
+                        p0.x + c_magnetic_target.x + cos(angle_magnetic + 0.523599) * 5,
+                        p0.y + c_magnetic_target.y + sin(angle_magnetic + 0.523599) * 5,
+                    };
+                    const vec2_t magnetic_triangle_point2 = {
+                        p0.x + c_magnetic_target.x + cos(angle_magnetic - 0.523599) * 5,
+                        p0.y + c_magnetic_target.y + sin(angle_magnetic - 0.523599) * 5,
+                    };
+                    vec3_t magnetic_vector_3d = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
+                    vec3_t electronic_vector_3d = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
+
+                    float el_ma_dot = vec3_dot(magnetic_vector_3d, electronic_vector_3d);
+                    float el_len = vec3_length(electronic_vector_3d);
+                    float ma_len = vec3_length(magnetic_vector_3d);
+                    float angle = acos(el_ma_dot /(el_len * ma_len)) * (180.0 / 3.141592653589793238463);
+                    char bufDPM[32];
+                    const vec2_t magnetic_vector_2d = c_magnetic_target - c;
+                    const vec2_t electric_vector_2d = c_electric_target - c;
+                    if (nto.iso.display_vectors) {
+                        draw_list->AddLine({p0.x + c.x, p0.y + c.y}, {p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
+                                           IM_COL32(255, 0, 255, 255), 5.0f);
+                        draw_list->AddTriangle({p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
+                                               {magnetic_triangle_point1.x, magnetic_triangle_point1.y},
+                                               {magnetic_triangle_point2.x, magnetic_triangle_point2.y}, IM_COL32(255, 0, 255, 255), 5.0f);
+                        draw_list->AddText({p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y}, ImColor(255, 0, 255, 255), (const char*)u8"μm");
+                    }
+                    if (nto.iso.display_angle) {
+                        int num_of_seg = 10;
+                        for (int segment = 0; segment < num_of_seg; segment++) {
+                            vec3_t middle_point_3d0 = vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment) / num_of_seg * 0.1f +
+                                                                    vec3_normalize(electronic_vector_3d)*segment/num_of_seg * 0.1f) *0.03f;
+                            const vec4_t p_middle_point_3d_target0 =
+                                mat4_mul_vec4(mvp, {middle_x + middle_point_3d0.x * (float)nto.iso.vector_length,
+                                                    middle_y + middle_point_3d0.y * (float)nto.iso.vector_length,
+                                                    middle_z + middle_point_3d0.z * (float)nto.iso.vector_length, 1.0f});
+                            const vec2_t c_middle_point_target0 = {
+                                (p_middle_point_3d_target0.x / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.x,
+                                (-p_middle_point_3d_target0.y / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.y,
+                            };
+                            vec3_t middle_point_3d1 =
+                                vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment - 1) / num_of_seg * 0.1f +
+                                                                    vec3_normalize(electronic_vector_3d)*(segment + 1 ) / num_of_seg * 0.1f) *0.03f;
+                            const vec4_t p_middle_point_3d_target1 =
+                                mat4_mul_vec4(mvp, {middle_x + middle_point_3d1.x * (float)nto.iso.vector_length,
+                                                    middle_y + middle_point_3d1.y * (float)nto.iso.vector_length,
+                                                    middle_z + middle_point_3d1.z * (float)nto.iso.vector_length, 1.0f});
+                            const vec2_t c_middle_point_target1 = {
+                                (p_middle_point_3d_target1.x / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.x,
+                                (-p_middle_point_3d_target1.y / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.y,
+                            };
+                            draw_list->AddLine({p0.x + c_middle_point_target0.x, p0.y + c_middle_point_target0.y},
+                                               {p0.x + c_middle_point_target1.x, p0.y + c_middle_point_target1.y}, IM_COL32(255, 255, 0, 255), 5.0f);
+                        }
+
+                        
+                        snprintf(bufDPM, sizeof(bufDPM), (const char*)u8"θ=%.2f°", angle);
+                        draw_list->AddText({p0.x + c.x, p0.y + c.y}, ImColor(0, 0, 0, 255), bufDPM);
+                    }
+                    
+
                 }
                 // @TODO: Draw Sankey Diagram of Transition Matrix
                 {
@@ -1713,7 +1853,7 @@ struct VeloxChem : viamd::EventHandler {
             const bool is_active = ImGui::IsItemActive();
             const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
-
+ 
             int width  = MAX(1, (int)win_sz.x);
             int height = MAX(1, (int)win_sz.y);
 
@@ -1782,9 +1922,12 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             const float aspect_ratio = win_sz.x / win_sz.y;
+
             mat4_t view_mat = camera_world_to_view_matrix(nto.camera);
             mat4_t proj_mat = camera_perspective_projection_matrix(nto.camera, aspect_ratio);
             mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(nto.camera, aspect_ratio);
+
+
 
             clear_gbuffer(&gbuf);
 
