@@ -174,12 +174,12 @@ struct VeloxChem : viamd::EventHandler {
 
                 draw_orb_window(state);
                 draw_nto_window(state);
-                draw_scf_window();
+                draw_summary_window(state);
                 draw_rsp_window();
                 break;
             }
             case viamd::EventType_ViamdDrawMenu:
-                ImGui::Checkbox("VeloxChem SCF", &scf.show_window);
+                ImGui::Checkbox("VeloxChem Summary", &scf.show_window);
                 ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
                 ImGui::Checkbox("VeloxChem ORB", &orb.show_window);
                 ImGui::Checkbox("VeloxChem NTO", &nto.show_window);
@@ -817,7 +817,7 @@ struct VeloxChem : viamd::EventHandler {
     }
     */
 
-    void draw_scf_window() {
+    void draw_summary_window(ApplicationState& state) {
         if (!scf.show_window) { return; }
         if (vlx.scf.iter.count == 0) { return; }
 
