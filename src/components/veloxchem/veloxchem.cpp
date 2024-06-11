@@ -1110,12 +1110,15 @@ struct VeloxChem : viamd::EventHandler {
             */
 
             //draw the vibrational analysis
-            float har_freqs[3] = { 1562.20, 3663.36, 3677.39 };
-            float irs[3] = { 132.6605f, 14.2605f, 5.8974f };
+            double har_freqs[3] = { 1562.20, 3663.36, 3677.39 };
+            double irs[3] = { 132.6605, 14.2605, 5.8974 };
 
             ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
 
              ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * 3);
+
+             int hov = -1;
+             static int sel = -1;
 
             if (ImPlot::BeginPlot("Vibrational analysis")) {
                 // @HACK: Compute pixel width of 2 'plot' units
@@ -1128,14 +1131,29 @@ struct VeloxChem : viamd::EventHandler {
                 const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
                 ImPlot::PlotBars("IR Intensity", har_freqs, irs, 3, bar_width);
 
-                peaks_to_pixels(pixel_peaks, (double*)har_freqs, (double*)irs, 3);
+                peaks_to_pixels(pixel_peaks, har_freqs, irs, 3);
                 mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                 if (ImPlot::IsPlotHovered()) {
-                    rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks);
-                    rsp.focused_plot = 0;
+                    hov = get_hovered_peak(mouse_pos, pixel_peaks, 3);
+                }
+
+                // Check hovered state
+                if (hov != -1) {
+                    draw_bar(0, har_freqs[hov], irs[hov], bar_width, ImVec4{0, 1, 0, 1});
+                }
+
+                // Update selected peak on click
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
+                    sel = hov;
+                }
+                // Check selected state
+                if (sel != -1) {
+                    draw_bar(1, har_freqs[sel], irs[sel], bar_width, ImVec4{1, 0, 0, 1});
                 }
 
                 ImPlot::EndPlot();
+
+                ImGui::Text("%i is hovered", hov);
             }
             
         }
