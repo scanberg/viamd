@@ -6554,42 +6554,22 @@ static void draw_dataset_window(ApplicationState* data) {
             const size_t count = md_array_size(items[i]);
             if (count) {
                 if (ImGui::CollapsingHeader(lbls[i])) {
-                    bool item_hovered = false;
                     for (size_t j = 0; j < count; ++j) {
                         const DatasetItem& item = items[i][j];
                         const float t = powf(item.fraction, 0.2f) * 0.5f;
-
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
                         ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
                         ImGui::Selectable(item.label, true, 0, item_size);
-                        ImGui::PopStyleColor(2);
-                        //We do not show an item as selected in the UI, as we don't keep track if the whole item group is selected
-                        //Selecting will thus mark the atoms as selected, but not the item. It's a one way selection
+                        ImGui::PopStyleColor();
 
                         if (ImGui::IsItemHovered()) {
                             ImGui::SetTooltip("%s: count %d (%.2f%%)", item.label, item.count, item.fraction * 100.f);
                             filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask);
-                            item_hovered = true;
-
-                            //Select
-                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitfield_or_inplace(&data->selection.selection_mask, &data->selection.highlight_mask);
-                            }
-                            //Deselect
-                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitfield_andnot_inplace(&data->selection.selection_mask, &data->selection.highlight_mask);
-                            }
                         }
 
                         float last_item_x = ImGui::GetItemRectMax().x;
                         float next_button_x = last_item_x + item_size.x;
                         if (j + 1 < count && next_button_x < window_x_max) {
                             ImGui::SameLine();
-                        }
-
-                        if (!item_hovered && ImGui::IsWindowHovered()) {
-                            //Makes sure that we clear the highlight if we are in this window, but don't hover an item
-                            md_bitfield_clear(&data->selection.highlight_mask);
                         }
                     }
                 }
