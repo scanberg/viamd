@@ -84,6 +84,7 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 2;
             float  values[2] = {0.05f, -0.05};
             vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
+
         } iso;
 
         GBuffer gbuf = {};
@@ -114,6 +115,12 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 2;
             float  values[2] = {0.05f, -0.05};
             vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
+            vec4_t vectorColors[3] = {{0.f / 255.f, 255.f / 255.f, 255.f / 255.f, 1.f},
+                                              {255.f / 255.f, 0.f / 255.f, 255.f / 255.f, 1.f},
+                                              {255.f / 255.f, 255.f / 255.f, 0.f / 255.f, 1.f}};
+            double vector_length = 1.0f;
+            bool display_vectors = false;
+            bool display_angle = false;
         } iso;
 
         GBuffer gbuf = {};
@@ -135,6 +142,12 @@ struct VeloxChem : viamd::EventHandler {
         int hovered = -1;
         int selected = -1;
         int focused_plot = -1;
+
+        double* x_ev_samples;
+        double* x_unit_samples;
+        double* x_unit_peaks;
+        double* eps;
+        double* ecd;
     } rsp;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
@@ -567,46 +580,26 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    void draw_scf_window() {
-        if (!scf.show_window) { return; }
-        if (vlx.scf.iter.count == 0) { return; }
-
-        size_t temp_pos = md_temp_get_pos();
-        defer {  md_temp_set_pos_back(temp_pos); };
-
-        // We set up iterations as doubles for easier use
-        double* iter = (double*)md_temp_push(sizeof(double) * vlx.scf.iter.count);
-        for (int i = 0; i < vlx.scf.iter.count; ++i) {
-            iter[i] = (double)vlx.scf.iter.iteration[i];
+    static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t y1_array_size, size_t y2_array_size) {
+        double y1_min = 0;
+        double y1_max = 0;
+        double y2_min = 0;
+        double y2_max = 0;
+        for (size_t i = 0; i < y1_array_size; i++) {
+            y1_min = MIN(y1_min, y1_array[i]);
+            y1_max = MAX(y1_max, y1_array[i]);
+        }
+        for (size_t i = 0; i < y2_array_size; i++) {
+            y2_min = MIN(y2_min, y2_array[i]);
+            y2_max = MAX(y2_max, y2_array[i]);
         }
 
-        // The actual plot
-        ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("SCF", &scf.show_window)) {
-            // We draw 2 plots as "Energy total" has values in a different range then the rest of the data
-            if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
-                if (ImPlot::BeginPlot("SCF")) {
-                    ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
-                    ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                    ImPlot::SetupAxes("Iterations", "eV");
+        double y1_dist = fabs(y1_max - y1_min);
+        double y2_dist = fabs(y2_max - y2_min);
 
-                    ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                    ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
-                    ImPlot::PlotLine("Gradient Norm", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
-                    ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
-                    ImPlot::EndPlot();
-                }
-
-                if (ImPlot::BeginPlot("SCF")) {
-                    ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                    ImPlot::PlotLine("Energy Total", iter, vlx.scf.iter.energy_total, (int)vlx.scf.iter.count);
-                    ImPlot::EndPlot();
-                }
-                ImPlot::EndSubplots();
-            }
-        }
-        ImGui::End();
+        return y2_dist / y1_dist;
     }
+
 
     enum x_unit_t {
         X_UNIT_EV,
@@ -620,22 +613,26 @@ struct VeloxChem : viamd::EventHandler {
         BROADENING_LORENTZIAN,
     };
 
-    static inline void convert_values(double* values, size_t num_values, x_unit_t unit) {
+    static inline void convert_values(double* out_values, const double* in_values, size_t num_values, x_unit_t unit) {
         switch (unit) {
-        case X_UNIT_EV: break; // Do nothing
+        case X_UNIT_EV:
+            for (size_t i = 0; i < num_values; ++i) {
+                out_values[i] = in_values[i];
+            }
+            break;
         case X_UNIT_NM:
             for (size_t i = 0; i < num_values; ++i) {
-                values[i] = 1239.84193 / values[i];
+                out_values[i] = 1239.84193 / in_values[i];
             }
             break;
         case X_UNIT_CM_INVERSE:
             for (size_t i = 0; i < num_values; ++i) {
-                values[i] = values[i] * 8065.73;
+                out_values[i] = in_values[i] * 8065.73;
             }
             break;
         case X_UNIT_HARTREE:
             for (size_t i = 0; i < num_values; ++i) {
-                values[i] = values[i] * 0.0367502;
+                out_values[i] = in_values[i] * 0.0367502;
             }
             break;
         default:
@@ -644,25 +641,17 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    static inline void broaden_gaussian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double sigma) {
-        for (size_t xi = 0; xi < num_samples; xi++) {
-            double tot = 0.0;
-            for (size_t pi = 0; pi < num_peaks; pi++) {
-                tot += in_y_peaks[pi] * exp(-(pow(in_x_peaks[pi] - in_x[xi], 2) / (2 * pow(sigma, 2))));
-            }
-            out_y[xi] = tot;
-        }
+    static inline double lorentzian(double x, double x_0, double gamma) {
+        double sigma = gamma / 2;
+        return (1 / PI) * sigma / (pow((x - x_0), 2) + pow(sigma, 2));
     }
 
-    static inline void broaden_lorentzian(double* out_y, const double* in_x, size_t num_samples, const double* in_x_peaks, const double* in_y_peaks, size_t num_peaks, double sigma) {
-        for (size_t xi = 0; xi < num_samples; xi++) {
-            double tot = 0.0;
-            for (size_t pi = 0; pi < num_peaks; pi++) {
-                tot += in_y_peaks[pi] / (1 + pow((in_x[xi] - in_x_peaks[pi]) / sigma, 2));
-            }
-            out_y[xi] = tot;
-        }
+    static inline double gaussian(double x, double x_0, double gamma) {
+        double sigma = gamma / 2.3548;
+        return (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(x - x_0, 2) / (2 * pow(sigma, 2)))); 
     }
+
+    
     /*
     * We return to this at a later stage
     void save_absorption(str_t filename, md_array(double)* x_values, const char* x_lable, md_array(double)* y_values_osc, md_array(double)* y_values_cgs, int step) {
@@ -683,6 +672,67 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
     */
+
+    static inline void osc_to_eps(double* eps_out, const double* x, size_t num_samples, const double* osc_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
+        double c = 137.035999;
+        double a_0 = 5.29177210903e-11;
+        double NA = 6.02214076e23;
+        double eV2au = 1 / 27.211396;
+
+        for (size_t si = 0; si < num_samples; si++) {
+            double sum = 0;
+            for (size_t pi = 0; pi < num_peaks; pi++) {
+                sum += (*distr_func)(x[si] * eV2au, x_peaks[pi] * eV2au, gamma * eV2au) * (osc_peaks[pi] / (x_peaks[pi] * eV2au));
+            }
+            double sigma = 2 * pow(PI, 2) * x[si] * eV2au * sum / c;
+            double sigma_cm2 = sigma * pow(a_0, 2) * 1e4;
+            eps_out[si] = sigma_cm2 * NA / (log(10) * 1e3);
+        }
+    }
+
+    static inline void rot_to_eps_delta(double* eps_out, const double* x, size_t num_samples, const double* rot_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
+        double inv = 1 / (22.94);
+        double eV2au = 1 / 27.211396;
+
+        for (size_t si = 0; si < num_samples; si++) {
+            double sum = 0;
+            for (size_t pi = 0; pi < num_peaks; pi++) {
+                sum += (*distr_func)(x[si], x_peaks[pi], gamma) * rot_peaks[pi] * x_peaks[pi];
+            }
+            
+            eps_out[si] = sum * inv;
+        }
+    }
+
+    //Constructs plot limits from peaks
+    static inline ImPlotRect get_plot_limits(const double* x_peaks, const double* y_peaks, size_t num_peaks, double ext_fac = 0.1) {
+        ImPlotRect lim = { 0,0,0,0 };
+        for (size_t i = 0; i < num_peaks; i++) {
+            //Use Contains to check if values are within the limits, or if they should extend the limits
+            if (lim.Y.Max < y_peaks[i]) {
+                lim.Y.Max = y_peaks[i];
+            }
+            else if (lim.Y.Min > y_peaks[i]) {
+                lim.Y.Min = y_peaks[i];
+            }
+
+            if (lim.X.Max < x_peaks[i]) {
+                lim.X.Max = x_peaks[i];
+            }
+            else if (lim.X.Min > x_peaks[i]) {
+                lim.X.Min = x_peaks[i];
+            }
+        }
+
+        double height = lim.Y.Max - lim.Y.Min;
+        double width = lim.X.Max - lim.X.Min;
+
+        lim.Y.Max += height * ext_fac;
+        lim.Y.Min -= height * ext_fac;
+        lim.X.Max += width * ext_fac;
+        lim.X.Min -= width * ext_fac;
+        return lim;
+    }
 
     //converts x and y peaks into pixel points in context of the current plot. Use between BeginPlot() and EndPlot()
     static inline void peaks_to_pixels(ImVec2* pixel_peaks, const double* x_peaks, const double* y_peaks, size_t num_peaks) {
@@ -755,105 +805,167 @@ struct VeloxChem : viamd::EventHandler {
         ImPlot::DragRect(id, &x1, &y1, &x2, &y, color, ImPlotDragToolFlags_NoInputs);
     }
 
+    /*
+    static inline void osc_to_eps(double* eps_out, const double* x_peaks, const double* osc_peaks, size_t num_peaks) {
+        double NA = 6.02214076e23;
+        double ln10 = 2.30258509299;
+        //double eps_0 = 8.854188e-12;
+        double c = 137.035999; //in au
+        double a_0 = 5.29177210903e-11;
+        // me = 1
+        double sigma = 0;
+        double sigma_cm2 = 0;
+        for (size_t i = 0; i < num_peaks; i++) {
+            sigma = ((2 * pow(PI, 2) * x_peaks[i]) / c) * osc_peaks[i];
+            sigma_cm2 = sigma * pow(a_0, 2) * 1e4;
+            eps_out[i] = (sigma_cm2 * NA) / (ln10 * 1000);
+        }
+        //We do the broadening in the next, external step
+    }
+    */
+
+    void draw_scf_window() {
+        if (!scf.show_window) { return; }
+        if (vlx.scf.iter.count == 0) { return; }
+
+        size_t temp_pos = md_temp_get_pos();
+        defer {  md_temp_set_pos_back(temp_pos); };
+
+        // We set up iterations as doubles for easier use
+        double* iter = (double*)md_temp_push(sizeof(double) * vlx.scf.iter.count);
+        for (int i = 0; i < vlx.scf.iter.count; ++i) {
+            iter[i] = (double)vlx.scf.iter.iteration[i];
+        }
+        static ImPlotRect lims{ 0,1,0,1 };
+        // The actual plot
+
+
+        double* energy_offsets = (double*)md_temp_push(sizeof(double) * (int)vlx.scf.iter.count);
+        double ref_energy = vlx.scf.iter.energy_total[vlx.scf.iter.count - 1];
+        for (size_t i = 0; i < vlx.scf.iter.count; i++) {
+            energy_offsets[i] = fabs(vlx.scf.iter.energy_total[i] - ref_energy);
+        }
+        double y1_to_y2_mult = axis_conversion_multiplier(vlx.scf.iter.gradient_norm, energy_offsets, vlx.scf.iter.count, vlx.scf.iter.count);
+
+        ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Summary", &scf.show_window)) {
+            if (ImPlot::BeginPlot("SCF")) {
+                ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
+                ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
+                // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
+                ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
+#if 1
+                ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+                //ImPlot::SetupAxisScale(ImAxis_Y2, ImPlotScale_Log10);
+#endif
+                //ImPlot::SetupAxisLimits(ImAxis_Y2, lims.Y.Min * y1_to_y2_mult, lims.Y.Max * y1_to_y2_mult, ImPlotCond_Always);
+
+
+                ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
+                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                ImPlot::PlotLine("Energy", iter, energy_offsets, (int)vlx.scf.iter.count - 1);
+                lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+                //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                ImPlot::EndPlot();
+            }
+        }
+        ImGui::End();
+    }
+
     void draw_rsp_window() {
         if (!rsp.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
-
         // Keep track of the temp position so we can reset to it after we are done
         size_t temp_pos = md_temp_get_pos();
         defer { md_temp_set_pos_back(temp_pos); };
 
-        static float sigma = 0.1;
+        static float gamma = 0.123;
         static ImVec2 mouse_pos = { 0,0 };
 
         const char* broadening_str[] = { "Gaussian","Lorentzian" };
-        static broadening_mode_t broadening_mode = BROADENING_GAUSSIAN;
+        static broadening_mode_t broadening_mode = BROADENING_LORENTZIAN;
 
-        const char* x_unit_str[] = { "eV", "nm", (const char*)u8"cm⁻¹", "hartree"};
+        const char* x_unit_str[] = { "Energy (eV)", "Wavelength (nm)", (const char*)u8"Wavenumber (cm⁻¹)", "Energy (hartree)"};
         static x_unit_t x_unit = X_UNIT_EV;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("RSP", &rsp.show_window)) {
+        if (ImGui::Begin("Spectra", &rsp.show_window)) {
             bool refit = false;
             static bool first_plot = true;
+            bool recalculate = false;
             
-            ImGui::SliderFloat((const char*)u8"Broadening (σ)", &sigma, 0.01f, 1.0f);
+            recalculate = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (eV)", &gamma, 0.01f, 1.0f);
             refit |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_str, IM_ARRAYSIZE(broadening_str));
             refit |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
             
             const int   num_peaks = (int)vlx.rsp.num_excited_states;
-            double*       x_peaks = (double*)md_temp_push(sizeof(double) * num_peaks);
             const double* y_osc_peaks = vlx.rsp.absorption_osc_str;
             const double* y_cgs_peaks = vlx.rsp.electronic_circular_dichroism_cgs;
-            for (int i = 0; i < num_peaks; ++i) {
-                x_peaks[i] = vlx.rsp.absorption_ev[i];
-            }
 
             const int num_samples = 1024;
-            double* x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_osc_str = (double*)md_temp_push(sizeof(double) * num_samples);
-            double* y_cgs_str = (double*)md_temp_push(sizeof(double) * num_samples);
+            if (first_plot) {
+                rsp.x_ev_samples = md_array_create(double, num_samples, arena);
+                rsp.x_unit_samples = md_array_create(double, num_samples, arena);
+                rsp.x_unit_peaks = md_array_create(double, num_peaks, arena);
+                rsp.eps = md_array_create(double, num_samples, arena);
+                rsp.ecd = md_array_create(double, num_samples, arena);
+            
+                //Populate x_values
+                const double x_min = vlx.rsp.absorption_ev[0] - 1.0;
+                const double x_max = vlx.rsp.absorption_ev[num_peaks - 1] + 1.0;
+                for (int i = 0; i < num_samples; ++i) {
+                    double t = (double)i / (double)(num_samples - 1);
+                    double value = lerp(x_min, x_max, t);
+                    rsp.x_ev_samples[i] = value;
+                }
+            }
+
+
+            //double* temp_x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
+            //double* y_ecd_str = (double*)md_temp_push(sizeof(double) * num_samples);
+            //double* y_eps_str   = (double*)md_temp_push(sizeof(double) * num_samples);
 
             ImVec2*   pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
             ImVec2*   pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
 
-            const double x_min = vlx.rsp.absorption_ev[0] - 1.0;
-            const double x_max = vlx.rsp.absorption_ev[num_peaks - 1] + 1.0;
-            for (int i = 0; i < num_samples; ++i) {
-                double t = (double)i / (double)(num_samples - 1);
-                double value = lerp(x_min, x_max, t);
-                x_values[i] = value;
-            }
-
+            double (*distr_func)(double x, double x_o, double gamma) = 0;
             // @NOTE: Do broadening in eV
             switch (broadening_mode) {
             case BROADENING_GAUSSIAN:
-                broaden_gaussian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, sigma);
-                broaden_gaussian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, sigma);
+                distr_func = &gaussian;
                 break;
             case BROADENING_LORENTZIAN:
-                broaden_lorentzian(y_osc_str, x_values, num_samples, x_peaks, y_osc_peaks, num_peaks, sigma);
-                broaden_lorentzian(y_cgs_str, x_values, num_samples, x_peaks, y_cgs_peaks, num_peaks, sigma);
+                distr_func = &lorentzian;
                 break;
             default:
                 ASSERT(false); // Should not happen
                 break;
             }
 
-            // Do conversions
-            convert_values(x_peaks,  num_peaks,   x_unit);
-            convert_values(x_values, num_samples, x_unit);
-
-            // Calulate constraint limits for the plot
-            double y_osc_max_con = 0;
-            double y_osc_min_con = 0;
-            double y_cgs_max_con = 0;
-            double y_cgs_min_con = 0;
-            double x_max_con = x_values[num_samples - 1];
-            double x_min_con = x_values[0];
-            for (int i = 0; i < num_samples; i++) {
-                y_osc_max_con = MAX(y_osc_max_con, y_osc_str[i]);
-                y_osc_min_con = MIN(y_osc_min_con, y_osc_str[i]);
-                y_cgs_max_con = MAX(y_cgs_max_con, y_cgs_str[i]);
-                y_cgs_min_con = MIN(y_cgs_min_con, y_cgs_str[i]);
-                x_max_con = MAX(x_max_con, x_values[i]);
-                x_min_con = MIN(x_min_con, x_values[i]);
+            if (recalculate || first_plot) {
+                osc_to_eps(rsp.eps, rsp.x_ev_samples, num_samples, y_osc_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma * 2);
+                rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, num_samples, y_cgs_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma * 2);
             }
-            double con_lim_fac = 0.1;
-            double y_osc_graph_width = y_osc_max_con - y_osc_min_con;
-            double y_cgs_graph_width = y_cgs_max_con - y_cgs_min_con;
-            double x_graph_width = x_max_con - x_min_con;
-            y_osc_max_con += con_lim_fac * y_osc_graph_width;
-            y_osc_min_con -= con_lim_fac * y_osc_graph_width;
-            y_cgs_max_con += con_lim_fac * y_cgs_graph_width;
-            y_cgs_min_con -= con_lim_fac * y_cgs_graph_width;
-            x_max_con += con_lim_fac * x_graph_width;
-            x_min_con -= con_lim_fac * x_graph_width;
+
+            static ImPlotRect osc_lim_constraint = { 0, 0, 0, 0 }; 
+            static ImPlotRect cgs_lim_constraint = { 0, 0, 0, 0 }; 
+            if (refit || first_plot) {
+                // Do conversions
+                convert_values(rsp.x_unit_peaks, vlx.rsp.absorption_ev, num_peaks, x_unit);
+                convert_values(rsp.x_unit_samples, rsp.x_ev_samples, num_samples, x_unit);
+            
+                osc_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_osc_peaks, num_peaks);
+                cgs_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
+            }
+            
 
 
-#if 0
+#if 1
             //Hovered display text
-            if (rsp.hovered != -1 && rsp.focused_plot == 0) {
+            /*if (rsp.hovered != -1 && rsp.focused_plot == 0) {
                 ImGui::BulletText("Hovered: %s = %f, Y = %f", x_unit_str[x_unit], (float)x_peaks[rsp.hovered], (float)y_osc_peaks[rsp.hovered]);
 
             }
@@ -862,31 +974,40 @@ struct VeloxChem : viamd::EventHandler {
             }
             else {
                 ImGui::BulletText("Hovered:");
-            }
+            }*/
 
             //Selected display text
             if (rsp.selected != -1) {
-                ImGui::BulletText("Selected: %s = %f, Y_OSC = %f, Y_CGS = %f", x_unit_str[x_unit], (float)x_peaks[rsp.selected], (float)y_osc_peaks[rsp.selected], (float)y_osc_peaks[rsp.selected]);
+                ImGui::Text((const char*)u8"Selected: State %i: Energy = %.2f eV, Wavelength = %.0f nm, f = %.3f, R = %.3f 10⁻⁴⁰ cgs", rsp.selected + 1, (float)rsp.x_unit_peaks[rsp.selected], 1239.84193 / (float)rsp.x_unit_peaks[rsp.selected], (float)y_osc_peaks[rsp.selected], (float)y_cgs_peaks[rsp.selected]);
             }
             else {
-                ImGui::BulletText("Selected:");
+                ImGui::Text("Selected:");
             }
-            ImGui::BulletText("Mouse: X = %f, Y = %f", mouse_pos.x, mouse_pos.y);
-            ImGui::BulletText("Peak 0: X = %f, Y = %f", (float)pixel_osc_peaks[0].x, (float)pixel_osc_peaks[0].y);
-            ImGui::BulletText("Closest Index = %i", rsp.hovered);
 #endif
             rsp.focused_plot = -1;
             if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
-                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
                 // Absorption
+                static double osc_to_eps_mult = 1;
+                if (recalculate || first_plot) { osc_to_eps_mult = axis_conversion_multiplier(y_osc_peaks, rsp.eps, num_peaks, num_samples); }
+
+                static ImPlotRect cur_osc_lims = { 0,1,0,1 };
+                if (refit || first_plot) { ImPlot::SetNextAxisToFit(ImAxis_X1); }
                 if (ImPlot::BeginPlot("Absorption")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxes(x_unit_str[x_unit], "Oscillator Strength");
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_osc_min_con, y_osc_max_con);
+                    ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
+                    ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε (L mol⁻¹ cm⁻¹)");
+                    if (refit || first_plot) {
+                        ImPlot::SetupAxisLimits(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
+                        ImPlot::SetupAxisLimits(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
+                        cur_osc_lims = osc_lim_constraint;
+                    }
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
+                    ImPlot::SetupAxisLimits(ImAxis_Y2, cur_osc_lims.Y.Min* osc_to_eps_mult, cur_osc_lims.Y.Max* osc_to_eps_mult, ImPlotCond_Always);
                     ImPlot::SetupFinish();
 
-                    peaks_to_pixels(pixel_osc_peaks, x_peaks, y_osc_peaks, num_peaks);
+                    peaks_to_pixels(pixel_osc_peaks, rsp.x_unit_peaks, y_osc_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                     if (ImPlot::IsPlotHovered()) {
                         rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks);
@@ -896,11 +1017,14 @@ struct VeloxChem : viamd::EventHandler {
                     // @HACK: Compute pixel width of 2 'plot' units
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
-                    ImPlot::PlotBars("Exited States", x_peaks, y_osc_peaks, num_peaks, bar_width);
-                    ImPlot::PlotLine("Oscillator Strength", x_values, y_osc_str, num_samples);
+                    ImPlot::SetAxis(ImAxis_Y2);
+                    ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.eps, num_samples);
+                    ImPlot::SetAxis(ImAxis_Y1);
+                    //ImPlot::PlotLine("Spectrum", x_values, y_osc_str, num_samples);
+                    ImPlot::PlotBars("Oscillator Strength", rsp.x_unit_peaks, y_osc_peaks, num_peaks, bar_width);
                     //Check hovered state
                     if (rsp.hovered != -1) {
-                        draw_bar(0, x_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
+                        draw_bar(0, rsp.x_unit_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
                     }
 
                     // Update selected peak on click
@@ -909,22 +1033,36 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     //Check selected state
                     if (rsp.selected != -1) {
-                        draw_bar(1, x_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
+                        draw_bar(1, rsp.x_unit_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
-                    
-                }
-                ImPlot::EndPlot();
 
-                if (refit || first_plot) { ImPlot::SetNextAxesToFit(); }
+
+                    cur_osc_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                    ImPlot::EndPlot();
+                }
+
                 // Rotatory ECD
+                static double cgs_to_ecd_mult = 1;
+                if (recalculate || first_plot) { cgs_to_ecd_mult = axis_conversion_multiplier(y_cgs_peaks, rsp.ecd, num_peaks, num_samples); }
+                static ImPlotRect cur_cgs_lims = { 0,1,0,1 };
+                if (refit || first_plot) { ImPlot::SetNextAxisToFit(ImAxis_X1); }
+
                 if (ImPlot::BeginPlot("ECD")) {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxes(x_unit_str[x_unit], "Rotatory Strength");
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, x_min_con, x_max_con);
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, y_cgs_min_con, y_cgs_max_con);
+                    ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
+                    ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
+                    if (refit || first_plot) {
+                        ImPlot::SetupAxisLimits(ImAxis_X1, cgs_lim_constraint.X.Min, cgs_lim_constraint.X.Max);
+                        ImPlot::SetupAxisLimits(ImAxis_Y1, cgs_lim_constraint.Y.Min, cgs_lim_constraint.Y.Max);
+                        cur_cgs_lims = cgs_lim_constraint;
+                    }
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, cgs_lim_constraint.X.Min, cgs_lim_constraint.X.Max);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, cgs_lim_constraint.Y.Min, cgs_lim_constraint.Y.Max);
+                    ImPlot::SetupAxisLimits(ImAxis_Y2, cur_cgs_lims.Y.Min * cgs_to_ecd_mult, cur_cgs_lims.Y.Max * cgs_to_ecd_mult, ImPlotCond_Always);
                     ImPlot::SetupFinish();
 
-                    peaks_to_pixels(pixel_cgs_peaks, x_peaks, y_cgs_peaks, num_peaks);
+                    peaks_to_pixels(pixel_cgs_peaks, rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
                     if (ImPlot::IsPlotHovered()) { 
@@ -935,11 +1073,14 @@ struct VeloxChem : viamd::EventHandler {
 
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
-                    ImPlot::PlotBars("Exited States", x_peaks, y_cgs_peaks, num_peaks, bar_width);
-                    ImPlot::PlotLine("ECD", x_values, y_cgs_str, num_samples);
+                    ImPlot::SetAxis(ImAxis_Y2);
+                    ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.ecd, num_samples);
+                    ImPlot::SetAxis(ImAxis_Y1);
+                    ImPlot::PlotBars("Rotatory Strength", rsp.x_unit_peaks, y_cgs_peaks, num_peaks, bar_width);
+                    //ImPlot::SetAxis(ImAxis_Y1); //Reset because we are comparing mouse pos to Y1
 
                     if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
-                        draw_bar(2, x_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
+                        draw_bar(2, rsp.x_unit_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{ 0,1,0,1 });
                     }
 
                     // Update selected peak on click
@@ -947,12 +1088,13 @@ struct VeloxChem : viamd::EventHandler {
                         rsp.selected = rsp.hovered;
                     }
                     if (rsp.selected != -1) {
-                        draw_bar(3, x_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
+                        draw_bar(3, rsp.x_unit_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{ 1,0,0,1 });
                     }
+                    cur_cgs_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                    ImPlot::EndPlot();
                 }
-                ImPlot::EndPlot();
+                ImPlot::EndSubplots();
             }
-            ImPlot::EndSubplots();
             first_plot = false;
             /*
             constexpr str_t ABS_FILE_EXTENSION = STR_LIT("abs");
@@ -1012,6 +1154,8 @@ struct VeloxChem : viamd::EventHandler {
             orb.iso.values[1] = -(float)iso_val;
             orb.iso.count = 2;
             orb.iso.enabled = true;
+
+
 
             ImGui::ColorEdit4("##Color Positive", orb.iso.colors[0].elem);
             ImGui::SetItemTooltip("Color Positive");
@@ -1421,22 +1565,7 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::PushItemWidth(outer_size.x);
             ImGui::BeginGroup();
 
-            const double iso_min = 1.0e-4;
-            const double iso_max = 5.0;
-            double iso_val = nto.iso.values[0];
-            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SetItemTooltip("Iso Value");
-
-            nto.iso.values[0] =  (float)iso_val;
-            nto.iso.values[1] = -(float)iso_val;
-            nto.iso.count = 2;
-            nto.iso.enabled = true;
-
-            ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
-            ImGui::SetItemTooltip("Color Positive");
-            ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
-            ImGui::SetItemTooltip("Color Negative");
-
+            ImGui::Text("States");
             if (ImGui::BeginListBox("##NTO Index", outer_size)) {
                 if (ImGui::IsWindowHovered()) {
                     rsp.hovered = -1;
@@ -1461,6 +1590,46 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 ImGui::EndListBox();
             }
+
+            const double iso_min = 1.0e-4;
+            const double iso_max = 5.0;
+            double iso_val = nto.iso.values[0];
+            ImGui::Text("NTO");
+            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Iso Value");
+
+            nto.iso.values[0] = (float)iso_val;
+            nto.iso.values[1] = -(float)iso_val;
+            nto.iso.count = 2;
+            nto.iso.enabled = true;
+
+            ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
+            ImGui::SetItemTooltip("Color Positive");
+            ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
+            ImGui::SetItemTooltip("Color Negative");
+            ImGui::Text("Transition Dipole Moments");
+            const double vector_length_min = 1.0;
+            const double vector_length_max = 10.0;
+            double vector_length_input = nto.iso.vector_length;
+            ImGui::SliderScalar("##Vector length", ImGuiDataType_Double, &vector_length_input, &vector_length_min, &vector_length_max, "%.6f",
+                                ImGuiSliderFlags_Logarithmic);
+            ImGui::SetItemTooltip("Vector length");
+            nto.iso.vector_length = (float)vector_length_input;
+
+            bool show_vector = nto.iso.display_vectors;
+            ImGui::Checkbox("Display transition dipole moments", &show_vector);
+            nto.iso.display_vectors = show_vector;
+
+            bool show_angle = nto.iso.display_angle;
+            ImGui::Checkbox("Display angle", &show_angle);
+            nto.iso.display_angle = show_angle;
+
+            ImGui::ColorEdit4("##Color Electric", nto.iso.vectorColors[0].elem);
+            ImGui::SetItemTooltip("Color Electric");
+            ImGui::ColorEdit4("##Color Magnetic", nto.iso.vectorColors[1].elem);
+            ImGui::SetItemTooltip("Color Magnetic");
+            ImGui::ColorEdit4("##Color Angle", nto.iso.vectorColors[2].elem);
+            ImGui::SetItemTooltip("Color Angle");
 
             // @TODO: Enlist all defined groups here
             if (ImGui::BeginListBox("##Groups", outer_size)) {
@@ -1537,7 +1706,6 @@ struct VeloxChem : viamd::EventHandler {
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
-
             if (rsp.selected != -1) {
                 // Draw P / H orbitals
                 for (int i = 0; i < num_lambdas * 2; ++i) {
@@ -1552,6 +1720,171 @@ struct VeloxChem : viamd::EventHandler {
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
+                    
+                    const float aspect_ratio1 = win_sz.x / win_sz.y;
+                    mat4_t view_mat1 = camera_world_to_view_matrix(nto.camera);
+                    mat4_t proj_mat1 = camera_perspective_projection_matrix(nto.camera, aspect_ratio1);
+                    int number_of_atoms = vlx.geom.num_atoms;
+                    float middle_x=0;
+                    float middle_y = 0;
+                    float middle_z = 0;
+                    for (int i = 0; i < number_of_atoms; ++i) {
+                        middle_x = middle_x + (float)vlx.geom.coord_x[i];
+                        middle_y = middle_y + (float)vlx.geom.coord_y[i];
+                        middle_z = middle_z + (float)vlx.geom.coord_z[i];
+                    }
+
+                    middle_x=middle_x/number_of_atoms;
+                    middle_y=middle_y/number_of_atoms;
+                    middle_z=middle_z/number_of_atoms;
+                    float farthest_x = 0;
+                    float farthest_y = 0;
+                    float farthest_z = 0;
+                    float current_distance_x = 0;
+                    float current_distance_y = 0;
+                    float current_distance_z = 0;
+                    for (int i = 0; i < number_of_atoms; ++i) {
+                        current_distance_x = middle_x - (float)vlx.geom.coord_x[i];
+                        current_distance_y = middle_y - (float)vlx.geom.coord_y[i];
+                        current_distance_z = middle_z - (float)vlx.geom.coord_z[i];
+                        if (vec3_length({current_distance_x, current_distance_y, current_distance_z}) > vec3_length({farthest_x, farthest_y, farthest_z})) {
+                            farthest_x = current_distance_x;
+                            farthest_y = current_distance_y;
+                            farthest_z = current_distance_z;
+                        }
+                    }
+                    float farthest_distance = vec3_length({farthest_x, farthest_y, farthest_z});
+                    float longest_vector = 0;
+                    if (vec3_length({(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z}) > vec3_length({(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z}))
+                    {
+                        longest_vector = vec3_length({(float)vlx.rsp.electronic_transition_length[rsp.selected].x,
+                                                      (float)vlx.rsp.electronic_transition_length[rsp.selected].y,
+                                                      (float)vlx.rsp.electronic_transition_length[rsp.selected].z});
+                    }
+                    else
+                    {
+                        longest_vector = vec3_length({(float)vlx.rsp.magnetic_transition[rsp.selected].x,
+                                                      (float)vlx.rsp.magnetic_transition[rsp.selected].y,
+                                                      (float)vlx.rsp.magnetic_transition[rsp.selected].z});
+                    }
+                    const mat4_t mvp = proj_mat1 * view_mat1;
+                    const vec4_t p = mat4_mul_vec4(mvp, {middle_x, middle_y, middle_z, 1.0});
+                    const vec4_t p_electric_target =                
+                        mat4_mul_vec4(mvp, {middle_x + (float)vlx.rsp.electronic_transition_length[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                            middle_y + (float)vlx.rsp.electronic_transition_length[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                            middle_z + (float)vlx.rsp.electronic_transition_length[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                    const vec2_t c = {
+                        (p.x / p.w * 0.5f + 0.5f) * win_sz.x,
+                        (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
+                    };
+                    const vec2_t c_electric_target = {
+                        (p_electric_target.x / p_electric_target.w * 0.5f + 0.5f) * win_sz.x,
+                        (-p_electric_target.y / p_electric_target.w * 0.5f + 0.5f) * win_sz.y,
+                    };
+                    float angle_electric = atan2(c.y - c_electric_target.y, c.x - c_electric_target.x);
+
+                    const vec2_t electric_triangle_point1 = {
+                        p0.x + c_electric_target.x + cos(angle_electric + 0.523599) * 5,
+                        p0.y + c_electric_target.y + sin(angle_electric + 0.523599) * 5,
+                    };
+                    const vec2_t electric_triangle_point2 = {
+                        p0.x + c_electric_target.x + cos(angle_electric - 0.523599) * 5,
+                        p0.y + c_electric_target.y + sin(angle_electric - 0.523599) * 5,
+                    };
+                    if (nto.iso.display_vectors) {
+                            draw_list->AddLine({p0.x + c.x, p0.y + c.y}, {p0.x + c_electric_target.x, p0.y + c_electric_target.y},
+                                           ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1], nto.iso.vectorColors[0].elem[2],
+                                                    nto.iso.vectorColors[0].elem[3]),
+                                           5.0f);
+                            draw_list->AddTriangle({p0.x + c_electric_target.x, p0.y + c_electric_target.y},
+                                                   {electric_triangle_point1.x, electric_triangle_point1.y},
+                                                   {electric_triangle_point2.x, electric_triangle_point2.y}, ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1],nto.iso.vectorColors[0].elem[2],nto.iso.vectorColors[0].elem[3]), 5.0f);
+                            draw_list->AddText({p0.x + c_electric_target.x, p0.y + c_electric_target.y},
+                                               ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1],
+                                                       nto.iso.vectorColors[0].elem[2], nto.iso.vectorColors[0].elem[3]),
+                                               (const char*)u8"μe");
+                        }
+                    const vec4_t p_magnetic_target =
+                        mat4_mul_vec4(mvp, {middle_x + (float)vlx.rsp.magnetic_transition[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                            middle_y + (float)vlx.rsp.magnetic_transition[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                            middle_z + (float)vlx.rsp.magnetic_transition[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                    const vec2_t c_magnetic_target = {
+                        (p_magnetic_target.x / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.x,
+                        (-p_magnetic_target.y / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.y,
+                    };
+                    float angle_magnetic = atan2(c.y - c_magnetic_target.y, c.x - c_magnetic_target.x);
+                    const vec2_t magnetic_triangle_point1 = {
+                        p0.x + c_magnetic_target.x + cos(angle_magnetic + 0.523599) * 5,
+                        p0.y + c_magnetic_target.y + sin(angle_magnetic + 0.523599) * 5,
+                    };
+                    const vec2_t magnetic_triangle_point2 = {
+                        p0.x + c_magnetic_target.x + cos(angle_magnetic - 0.523599) * 5,
+                        p0.y + c_magnetic_target.y + sin(angle_magnetic - 0.523599) * 5,
+                    };
+                    vec3_t magnetic_vector_3d = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
+                    vec3_t electronic_vector_3d = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
+
+                    float el_ma_dot = vec3_dot(magnetic_vector_3d, electronic_vector_3d);
+                    float el_len = vec3_length(electronic_vector_3d);
+                    float ma_len = vec3_length(magnetic_vector_3d);
+                    float angle = acos(el_ma_dot / (el_len * ma_len)) * (180.0 / 3.141592653589793238463);
+                    char bufDPM[32];
+                    const vec2_t magnetic_vector_2d = c_magnetic_target - c;
+                    const vec2_t electric_vector_2d = c_electric_target - c;
+                    if (nto.iso.display_vectors) {
+                        draw_list->AddLine({p0.x + c.x, p0.y + c.y}, {p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
+                                           ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1], nto.iso.vectorColors[1].elem[2],
+                                                   nto.iso.vectorColors[1].elem[3]),
+                                           5.0f);
+                        draw_list->AddTriangle({p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
+                                               {magnetic_triangle_point1.x, magnetic_triangle_point1.y},
+                                               {magnetic_triangle_point2.x, magnetic_triangle_point2.y}, ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1],
+                                                       nto.iso.vectorColors[1].elem[2], nto.iso.vectorColors[1].elem[3]), 5.0f);
+                        draw_list->AddText({p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
+                                           ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1], nto.iso.vectorColors[1].elem[2],
+                                                   nto.iso.vectorColors[1].elem[3]),
+                                           (const char*)u8"μm");
+                    }
+                    if (nto.iso.display_angle) {
+                        int num_of_seg = 10;
+                        for (int segment = 0; segment < num_of_seg; segment++) {
+                            vec3_t middle_point_3d0 = vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment) / num_of_seg * 0.1f +
+                                                                    vec3_normalize(electronic_vector_3d)*segment/num_of_seg * 0.1f) *0.03f;
+                            const vec4_t p_middle_point_3d_target0 =
+                                mat4_mul_vec4(mvp, {middle_x + middle_point_3d0.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                                    middle_y + middle_point_3d0.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                                    middle_z + middle_point_3d0.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                            const vec2_t c_middle_point_target0 = {
+                                (p_middle_point_3d_target0.x / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.x,
+                                (-p_middle_point_3d_target0.y / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.y,
+                            };
+                            vec3_t middle_point_3d1 =
+                                vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment - 1) / num_of_seg * 0.1f +
+                                                                    vec3_normalize(electronic_vector_3d)*(segment + 1 ) / num_of_seg * 0.1f) *0.03f;
+                            const vec4_t p_middle_point_3d_target1 =
+                                mat4_mul_vec4(mvp, {middle_x + middle_point_3d1.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                                    middle_y + middle_point_3d1.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                                    middle_z + middle_point_3d1.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                            const vec2_t c_middle_point_target1 = {
+                                (p_middle_point_3d_target1.x / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.x,
+                                (-p_middle_point_3d_target1.y / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.y,
+                            };
+                            draw_list->AddLine({p0.x + c_middle_point_target0.x, p0.y + c_middle_point_target0.y},
+                                               {p0.x + c_middle_point_target1.x, p0.y + c_middle_point_target1.y},
+                                               ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1],
+                                                       nto.iso.vectorColors[2].elem[2], nto.iso.vectorColors[2].elem[3]),
+                                               5.0f);
+                        }
+
+                        
+                        snprintf(bufDPM, sizeof(bufDPM), (const char*)u8"θ=%.2f°", angle);
+                        draw_list->AddText({p0.x + c.x, p0.y + c.y},
+                                           ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1], nto.iso.vectorColors[2].elem[2],
+                                                   nto.iso.vectorColors[2].elem[3]),
+                                           bufDPM);
+                    }
+                    
+
                 }
                 // @TODO: Draw Sankey Diagram of Transition Matrix
                 {
@@ -1578,7 +1911,7 @@ struct VeloxChem : viamd::EventHandler {
             const bool is_active = ImGui::IsItemActive();
             const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
-
+ 
             int width  = MAX(1, (int)win_sz.x);
             int height = MAX(1, (int)win_sz.y);
 
@@ -1647,9 +1980,12 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             const float aspect_ratio = win_sz.x / win_sz.y;
+
             mat4_t view_mat = camera_world_to_view_matrix(nto.camera);
             mat4_t proj_mat = camera_perspective_projection_matrix(nto.camera, aspect_ratio);
             mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(nto.camera, aspect_ratio);
+
+
 
             clear_gbuffer(&gbuf);
 
