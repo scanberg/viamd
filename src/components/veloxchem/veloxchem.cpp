@@ -1566,6 +1566,7 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::BeginGroup();
 
             ImGui::Text("States");
+            ImGui::Spacing();
             if (ImGui::BeginListBox("##NTO Index", outer_size)) {
                 if (ImGui::IsWindowHovered()) {
                     rsp.hovered = -1;
@@ -1590,11 +1591,14 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 ImGui::EndListBox();
             }
-
+            ImGui::Spacing();
+            ImGui::Spacing();
             const double iso_min = 1.0e-4;
             const double iso_max = 5.0;
             double iso_val = nto.iso.values[0];
-            ImGui::Text("NTO");
+            ImGui::Text("NTO");                
+            ImGui::Spacing();
+            ImGui::Text("Isovalue"); 
             ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Iso Value");
 
@@ -1602,15 +1606,20 @@ struct VeloxChem : viamd::EventHandler {
             nto.iso.values[1] = -(float)iso_val;
             nto.iso.count = 2;
             nto.iso.enabled = true;
-
+            ImGui::Text("Orbital Colors");
             ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
             ImGui::SetItemTooltip("Color Positive");
             ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
             ImGui::SetItemTooltip("Color Negative");
+            ImGui::Spacing();
+            ImGui::Spacing();
+
             ImGui::Text("Transition Dipole Moments");
+            ImGui::Spacing();
             const double vector_length_min = 1.0;
             const double vector_length_max = 10.0;
             double vector_length_input = nto.iso.vector_length;
+            ImGui::Text("Scaling");
             ImGui::SliderScalar("##Vector length", ImGuiDataType_Double, &vector_length_input, &vector_length_min, &vector_length_max, "%.6f",
                                 ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Vector length");
@@ -1623,7 +1632,7 @@ struct VeloxChem : viamd::EventHandler {
             bool show_angle = nto.iso.display_angle;
             ImGui::Checkbox("Display angle", &show_angle);
             nto.iso.display_angle = show_angle;
-
+            ImGui::Text("Vectors and angle Colors");
             ImGui::ColorEdit4("##Color Electric", nto.iso.vectorColors[0].elem);
             ImGui::SetItemTooltip("Color Electric");
             ImGui::ColorEdit4("##Color Magnetic", nto.iso.vectorColors[1].elem);
