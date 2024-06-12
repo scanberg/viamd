@@ -83,6 +83,13 @@
 #define LOG_ERROR MD_LOG_ERROR
 #define LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
+// Global data for application
+static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
+static md_allocator_i* persistent_alloc = 0;
+
+static TextEditor editor {};
+static bool use_gfx = false;
+
 constexpr str_t header_snippet = STR_LIT(
 R"(#01010110#01001001#01000001#01001101#01000100#01001101#01000001#01001001#01010110#
 #                                                                                #
@@ -419,18 +426,20 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
     ASSERT(mask);
     ASSERT(dim > 0);
 
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(frame_alloc);
+    defer { md_vm_arena_temp_end(temp); };
+
     hist->dim = aggregate ? 1 : dim;
-    md_array_resize(hist->bins, (size_t)(hist->dim * num_bins), hist->alloc);;
+    md_array_resize(hist->bins, (size_t)(hist->dim * num_bins), hist->alloc);
     MEMSET(hist->bins, 0, md_array_bytes(hist->bins));
 
     const size_t num_samples = md_bitfield_popcount(mask) * dim;
     if (num_samples == 0) return;
 
     const float range_ext = value_range_max - value_range_min;
-    const float inv_range = 1.0f / range_ext;
+    const float inv_range = range_ext > 0.0f ? 1.0f / range_ext : 0.0f;
 
-    md_array(int) count = md_array_create(int, hist->dim, md_get_heap_allocator());
-    MEMSET(count, 0, md_array_bytes(count));
+    int* count = (int*)md_vm_arena_push_zero_array(frame_alloc, int, hist->dim);
 
     // We evaluate each frame, one at a time
     md_bitfield_iter_t it = md_bitfield_iter_create(mask);
@@ -451,7 +460,7 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
         }
     }
 
-    float min_bin = FLT_MAX;
+    float min_bin =  FLT_MAX;
     float max_bin = -FLT_MAX;
     const float width = range_ext / num_bins;
     for (int i = 0; i < hist->dim; ++i) {
@@ -469,8 +478,6 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
     hist->x_max = value_range_max;
     hist->y_min = min_bin;
     hist->y_max = max_bin;
-    
-    md_array_free(count, md_get_heap_allocator());
 }
 
 static void downsample_histogram(float* dst_bins, int num_dst_bins, const float* src_bins, const float* src_weights, int num_src_bins) {
@@ -711,13 +718,6 @@ static void set_hovered_property(ApplicationState* data, str_t label, int popula
     data->hovered_display_property_label = label;
     data->hovered_display_property_pop_idx = population_idx;
 }
-
-// Global data for application
-static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
-static md_allocator_i* persistent_alloc = 0;
-
-static TextEditor editor {};
-static bool use_gfx = false;
 
 int main(int argc, char** argv) {
 #if DEBUG
