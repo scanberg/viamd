@@ -8,6 +8,7 @@
 #include <md_gto.h>
 #include <md_vlx.h>
 #include <md_util.h>
+#include <core/md_vec_math.h>
 #include <core/md_log.h>
 #include <core/md_arena_allocator.h>
 
@@ -181,8 +182,8 @@ struct VeloxChem : viamd::EventHandler {
 
                 draw_orb_window(state);
                 draw_nto_window(state);
-                draw_scf_window();
-                draw_rsp_window();
+                draw_summary_window(state);
+                draw_rsp_window(state);
                 break;
             }
             case viamd::EventType_ViamdDrawMenu:
@@ -875,7 +876,17 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::End();
     }
 
-    void draw_rsp_window() {
+    typedef struct {
+        double har_freq;
+        double redu_mass;
+        double force_const;
+        double ir_intens;
+        double* norm_x;
+        double* norm_y;
+        double* norm_z;
+    } vibration_mode;
+
+    void draw_rsp_window(ApplicationState& state) {
         if (!rsp.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
         // Keep track of the temp position so we can reset to it after we are done
@@ -1114,8 +1125,9 @@ struct VeloxChem : viamd::EventHandler {
             double irs[3] = { 132.6605, 14.2605, 5.8974 };
 
             ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
+            size_t num_vib = ARRAY_SIZE(har_freqs);
 
-             ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * 3);
+             ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vib);
 
              int hov = -1;
              static int sel = -1;
@@ -1129,12 +1141,12 @@ struct VeloxChem : viamd::EventHandler {
 
 
                 const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
-                ImPlot::PlotBars("IR Intensity", har_freqs, irs, 3, bar_width);
+                ImPlot::PlotBars("IR Intensity", har_freqs, irs, (int)num_vib, bar_width);
 
-                peaks_to_pixels(pixel_peaks, har_freqs, irs, 3);
+                peaks_to_pixels(pixel_peaks, har_freqs, irs, num_vib);
                 mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                 if (ImPlot::IsPlotHovered()) {
-                    hov = get_hovered_peak(mouse_pos, pixel_peaks, 3);
+                    hov = get_hovered_peak(mouse_pos, pixel_peaks, num_vib);
                 }
 
                 // Check hovered state
@@ -1149,6 +1161,10 @@ struct VeloxChem : viamd::EventHandler {
                 // Check selected state
                 if (sel != -1) {
                     draw_bar(1, har_freqs[sel], irs[sel], bar_width, ImVec4{1, 0, 0, 1});
+                    //TODO: Add animation of vibrations
+                    /*for (size_t vib_i = 0; vib_i < num_vib; vib_i++) {
+                        state.mold.mol.atom.x[vib_i] += state.mold.mol.atom.x[i] + 
+                    }*/
                 }
 
                 ImPlot::EndPlot();
