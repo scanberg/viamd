@@ -1250,6 +1250,11 @@ struct VeloxChem : viamd::EventHandler {
             int hov_vib = -1;
             static int sel_vib = -1;
             static bool coord_modified = false;
+            static float amp_mult = 1;
+            static float speed_mult = 1;
+
+            ImGui::SliderFloat((const char*)"Amplitude", &amp_mult, 0.5f, 2.0f);
+            ImGui::SliderFloat((const char*)"Speed", &speed_mult, 0.1f, 10.0f);
 
             if (ImPlot::BeginPlot("Vibrational analysis")) {
                 // @HACK: Compute pixel width of 2 'plot' units
@@ -1289,9 +1294,9 @@ struct VeloxChem : viamd::EventHandler {
                     // by using this vlx.geom.coord_x
                     // time for sine state.app.timing.total_s
                     for (size_t id = 0; id < num_atoms; id++) {
-                        state.mold.mol.atom.x[id] = vlx.geom.coord_x[id] + vib_modes[sel_vib].x[id] * sin(state.app.timing.total_s);
-                        state.mold.mol.atom.y[id] = vlx.geom.coord_y[id] + vib_modes[sel_vib].y[id] * sin(state.app.timing.total_s);
-                        state.mold.mol.atom.z[id] = vlx.geom.coord_z[id] + vib_modes[sel_vib].z[id] * sin(state.app.timing.total_s);
+                        state.mold.mol.atom.x[id] = vlx.geom.coord_x[id] + amp_mult * vib_modes[sel_vib].x[id] * sin(state.app.timing.total_s * speed_mult);
+                        state.mold.mol.atom.y[id] = vlx.geom.coord_y[id] + amp_mult * vib_modes[sel_vib].y[id] * sin(state.app.timing.total_s * speed_mult);
+                        state.mold.mol.atom.z[id] = vlx.geom.coord_z[id] + amp_mult * vib_modes[sel_vib].z[id] * sin(state.app.timing.total_s * speed_mult);
                     }
                     state.mold.dirty_buffers |= MolBit_DirtyPosition;
                     coord_modified = true;
