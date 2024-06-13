@@ -1221,15 +1221,33 @@ struct VeloxChem : viamd::EventHandler {
 
             //draw the vibrational analysis
             double har_freqs[3] = { 1562.20, 3663.36, 3677.39 };
-            double irs[3] = { 132.6605, 14.2605, 5.8974 };
+            double irs[3] = {132.6605, 14.2605, 5.8974};
+
+            double x0[3] = {0, 0, 0};
+            double y0[3] = {0, 0.4272, -0.4272};
+            double z0[3] = {-0.0707, 0.5612, 0.5612};
+
+            double x1[3] = {0, 0, 0};
+            double y1[3] = {0.0701, -0.5563, -0.5563};
+            double z1[3] = {0, 0.4337, -0.4337};
+
+            double x2[3] = {0, 0, 0};
+            double y2[3] = {0, -0.5851, 0.5851};
+            double z2[3] = {-0.0498, 0.3955, 0.3955};
+
+            vibration_mode vib_modes[3] = { 
+                {1562.20, 0, 0, 132.6605, x0, y0, z0},
+                {3663.36, 0, 0, 14.2605, x1, y1, z1},
+                {3677.39, 0, 0, 5.8974, x2, y2, z2}, 
+            }
 
             ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
             size_t num_vib = ARRAY_SIZE(har_freqs);
 
              ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vib);
 
-             int hov = -1;
-             static int sel = -1;
+             int hov_vib = -1;
+             static int sel_vib = -1;
 
             if (ImPlot::BeginPlot("Vibrational analysis")) {
                 // @HACK: Compute pixel width of 2 'plot' units
@@ -1245,30 +1263,34 @@ struct VeloxChem : viamd::EventHandler {
                 peaks_to_pixels(pixel_peaks, har_freqs, irs, num_vib);
                 mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                 if (ImPlot::IsPlotHovered()) {
-                    hov = get_hovered_peak(mouse_pos, pixel_peaks, num_vib);
+                    hov_vib = get_hovered_peak(mouse_pos, pixel_peaks, num_vib);
                 }
 
                 // Check hovered state
-                if (hov != -1) {
-                    draw_bar(0, har_freqs[hov], irs[hov], bar_width, ImVec4{0, 1, 0, 1});
+                if (hov_vib != -1) {
+                    draw_bar(0, har_freqs[hov_vib], irs[hov_vib], bar_width, ImVec4{0, 1, 0, 1});
                 }
 
                 // Update selected peak on click
                 if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
-                    sel = hov;
+                    sel_vib = hov_vib;
                 }
                 // Check selected state
-                if (sel != -1) {
-                    draw_bar(1, har_freqs[sel], irs[sel], bar_width, ImVec4{1, 0, 0, 1});
+                if (sel_vib != -1) {
+                    draw_bar(1, har_freqs[sel_vib], irs[sel_vib], bar_width, ImVec4{1, 0, 0, 1});
                     //TODO: Add animation of vibrations
                     /*for (size_t vib_i = 0; vib_i < num_vib; vib_i++) {
                         state.mold.mol.atom.x[vib_i] += state.mold.mol.atom.x[i] + 
                     }*/
+
+                    // change this state.mold.mol.atom.x
+                    // by using this vlx.geom.coord_x
+                    // time for sine state.app.timing.total_s
                 }
 
                 ImPlot::EndPlot();
 
-                ImGui::Text("%i is hovered", hov);
+                ImGui::Text("%i is hovered", hov_vib);
             }
             
         }
