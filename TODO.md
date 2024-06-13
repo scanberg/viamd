@@ -2,18 +2,28 @@ VIAMD
 
 ## TODO ##
 
-    [ ] Refactor events into a proper event system (VIAMD | Cleanup)
+    [/] Refactor events into a proper event system (VIAMD | Cleanup)
+        [ ] 
     [ ] Implement Integration Tests (VIAMD | Robustness)
     [/] Color representations by Property (VIAMD | Feature)
         [ ] Current implementation is crappy, only one property for all represensations seem supported? (BUG)
         [ ] Expose text-based query for input instead of fixed drop down (Enhancement)
 
     [ ] Support batched visualization evaluation in script (MDLIB | Enhancement)
-    [ ] Implement util function to find identical structures based on input structure (MDLIB | Feature)
+    [/] Implement util function to find identical structures based on input structure (MDLIB | Feature)
         [ ] Implement util function to compare if two structures are equivalent (MDLIB | Feature)
     [ ] Implement util function to find maximum common supgraph of two input graphs (MDLIB | Feature)
     [ ] Revise script interface (MDLIB | Cleanup)
-        [ ] Property 
+        [ ] Revise Property Interface
+    [ ] Compress atom type into external table. (MDLIB | Cleanup)
+        Referenced by uint8 inside atom fields
+        The type then holds: Label, Element (If applicable), Radii
+        [ ] Revise interfaces of operations in Utils to handle this change
+    [ ] Implement Hashtable. (MDLIB | Feature)
+    [ ] DCD reader (MDLIB | Feature)
+    [ ] Parallelize Postprocessing (VIAMD / MDLIB)
+        [ ] Reformulate operations to support parallel processing (invoked through VIAMD)
+    [ ] Implement Hydrogen Bond Determination
 
 
 ### Old design specification ###
