@@ -980,9 +980,9 @@ struct VeloxChem : viamd::EventHandler {
         double redu_mass;
         double force_const;
         double ir_intens;
-        double* norm_x;
-        double* norm_y;
-        double* norm_z;
+        double* x;
+        double* y;
+        double* z;
     } vibration_mode;
 
     void draw_rsp_window(ApplicationState& state) {
@@ -1235,19 +1235,21 @@ struct VeloxChem : viamd::EventHandler {
             double y2[3] = {0, -0.5851, 0.5851};
             double z2[3] = {-0.0498, 0.3955, 0.3955};
 
-            vibration_mode vib_modes[3] = { 
+            vibration_mode vib_modes[3] = {
                 {1562.20, 0, 0, 132.6605, x0, y0, z0},
                 {3663.36, 0, 0, 14.2605, x1, y1, z1},
-                {3677.39, 0, 0, 5.8974, x2, y2, z2}, 
-            }
+                {3677.39, 0, 0, 5.8974, x2, y2, z2},
+            };
 
-            ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
-            size_t num_vib = ARRAY_SIZE(har_freqs);
+            //ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
+            size_t num_vib = ARRAY_SIZE(vib_modes);
+            size_t num_atoms = 3;
 
-             ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vib);
+            ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vib);
 
-             int hov_vib = -1;
-             static int sel_vib = -1;
+            int hov_vib = -1;
+            static int sel_vib = -1;
+            static bool coord_modified = false;
 
             if (ImPlot::BeginPlot("Vibrational analysis")) {
                 // @HACK: Compute pixel width of 2 'plot' units
@@ -1286,11 +1288,30 @@ struct VeloxChem : viamd::EventHandler {
                     // change this state.mold.mol.atom.x
                     // by using this vlx.geom.coord_x
                     // time for sine state.app.timing.total_s
+                    for (size_t id = 0; id < num_atoms; id++) {
+                        state.mold.mol.atom.x[id] = vlx.geom.coord_x[id] + vib_modes[sel_vib].x[id] * sin(state.app.timing.total_s);
+                        state.mold.mol.atom.y[id] = vlx.geom.coord_y[id] + vib_modes[sel_vib].y[id] * sin(state.app.timing.total_s);
+                        state.mold.mol.atom.z[id] = vlx.geom.coord_z[id] + vib_modes[sel_vib].z[id] * sin(state.app.timing.total_s);
+                    }
+                    state.mold.dirty_buffers |= MolBit_DirtyPosition;
+                    coord_modified = true;
+                } 
+                // If all is deselected, reset coords once
+                else if (coord_modified){
+                    for (size_t id = 0; id < num_atoms; id++) {
+                        state.mold.mol.atom.x[id] = (float)vlx.geom.coord_x[id];
+                        state.mold.mol.atom.y[id] = (float)vlx.geom.coord_y[id];
+                        state.mold.mol.atom.z[id] = (float)vlx.geom.coord_z[id];
+                    }
+                    state.mold.dirty_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+                    coord_modified = false;
                 }
+
 
                 ImPlot::EndPlot();
 
                 ImGui::Text("%i is hovered", hov_vib);
+                ImGui::Text("%f is z coord", (float)state.mold.mol.atom.z[2]);
             }
             
         }
