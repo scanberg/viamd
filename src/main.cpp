@@ -267,10 +267,11 @@ struct DisplayProperty {
     ImPlotGetter getter[2] = {0,0};
     PrintValue   print_value = 0;
 
-    int dim = 1;                // Number of values per sample
     bool aggregate_histogram = false;
 
+    int dim = 1;                // Number of values per sample
     int num_samples = 0;        // Number of samples (length of x)
+    const float* y_values = 0;  // Values (y)
     const float* x_values = 0;  // Corresponding x values
 
     int num_bins = 128;         // Requested number of bins for histogram
@@ -1707,6 +1708,7 @@ static void init_display_properties(ApplicationState* data) {
                 if (!partial_evaluation) {
                     item.num_samples = (int)md_array_size(data->timeline.x_values);
                     item.x_values = data->timeline.x_values;
+                    item.y_values = item.prop_data->values;
 
                     DisplayProperty item_raw = item;
                     item_raw.dim        = prop_data->dim[1];
@@ -1727,23 +1729,25 @@ static void init_display_properties(ApplicationState* data) {
                         DisplayProperty item_mean = item;
                         snprintf(item_mean.label, sizeof(item_mean.label), "%s (mean)", item.label);
                         item_mean.dim = 1;
+                        item_mean.y_values = item_mean.prop_data->aggregate->population_mean;
                         item_mean.plot_type = DisplayProperty::PlotType_Line;
                         item_mean.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
                             DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
                             const float* y_values = data->prop_data->aggregate->population_mean;
                             const float* x_values = data->x_values;
                             return ImPlotPoint(x_values[sample_idx], y_values[sample_idx]);
-                            };
+                        };
                         item_mean.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
                             const float* y_mean = payload->display_prop->prop_data->aggregate->population_mean;
                             return snprintf(buf, cap, "%.2f", y_mean[sample_idx]);
-                            };
+                        };
                         display_property_copy_param_from_old(item_mean, old_items, md_array_size(old_items));
                         md_array_push(new_items, item_mean, frame_alloc);
 
                         DisplayProperty item_var = item;
                         snprintf(item_var.label, sizeof(item_var.label), "%s (var)", item.label);
                         item_var.dim = 1;
+                        item_var.y_values = item_mean.prop_data->aggregate->population_var;
                         item_var.color.w *= 0.4f;
                         item_var.plot_type = DisplayProperty::PlotType_Area;
                         item_var.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
@@ -1769,7 +1773,8 @@ static void init_display_properties(ApplicationState* data) {
 
                         DisplayProperty item_ext = item;
                         snprintf(item_ext.label, sizeof(item_ext.label), "%s (min/max)", item.label);
-                        item_ext.dim = 1;
+                        item_ext.dim = 2;
+                        item_ext.y_values = (const float*)item_mean.prop_data->aggregate->population_ext;
                         item_ext.color.w *= 0.2f;
                         item_ext.plot_type = DisplayProperty::PlotType_Area;
                         item_ext.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
@@ -7157,14 +7162,14 @@ static void draw_property_export_window(ApplicationState* data) {
                                     str_t  legend = str_printf(alloc, "%s[%i]", dp.label, i + 1);
                                     float* values = (float*)md_alloc(alloc, sizeof(float) * num_frames);
                                     for (size_t j = 0; j < num_frames; ++j) {
-                                        values[j] = dp.prop_data->values[j * dp.dim + i];
+                                        values[j] = dp.y_values[j * dp.dim + i];
                                     }
                                     md_array_push(column_data, values, alloc);
                                     md_array_push(legends, legend, alloc);
                                     md_array_push(column_labels, legend, alloc);
                                 }
                             } else {
-                                md_array_push(column_data, dp.prop_data->values, alloc);
+                                md_array_push(column_data, dp.y_values, alloc);
                                 md_array_push(column_labels, y_label, alloc);
                             }
 
