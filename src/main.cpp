@@ -20,6 +20,7 @@
 #include <md_csv.h>
 #include <md_lammps.h>
 
+#include <core/md_platform.h>
 #include <core/md_log.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
@@ -7110,8 +7111,9 @@ static void draw_property_export_window(ApplicationState* data) {
         if (property_idx == -1) ImGui::PopDisabled();
 
         if (export_clicked) {
-            md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-            defer { md_arena_allocator_destroy(alloc); };
+            md_allocator_i* alloc = frame_alloc;
+            md_vm_arena_temp_t temp = md_vm_arena_temp_begin(frame_alloc);
+            defer { md_vm_arena_temp_end(temp); };
 
             ASSERT(property_idx != -1);
             char path_buf[1024];
@@ -8852,7 +8854,10 @@ static void fill_gbuffer(ApplicationState* data) {
 static void handle_picking(ApplicationState* data) {
     PUSH_CPU_SECTION("PICKING") {
         vec2_t mouse_pos = vec_cast(ImGui::GetMousePos() - ImGui::GetMainViewport()->Pos);
-        vec2_t coord = {mouse_pos.x, (float)data->gbuffer.height - mouse_pos.y};
+        vec2_t coord = {mouse_pos.x, ImGui::GetMainViewport()->Size.y - mouse_pos.y};
+#if MD_PLATFORM_OSX
+        coord = coord * vec_cast(ImGui::GetIO().DisplayFramebufferScale);
+#endif
         if (coord.x < 0.f || coord.x >= (float)data->gbuffer.width || coord.y < 0.f || coord.y >= (float)data->gbuffer.height) {
             data->picking.idx = INVALID_PICKING_IDX;
             data->picking.depth = 1.f;
