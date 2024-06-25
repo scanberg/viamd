@@ -1238,9 +1238,9 @@ struct VeloxChem : viamd::EventHandler {
                 bool recalculate2 = false;
                 static bool first_plot2 = true;
                 //FIXME: Set correct cm-1 gamma values
-                static float gamma2 = 0.123 / 8065.56;
+                static float gamma2 = 5.0f;
                 static broadening_mode_t broadening_mode2 = BROADENING_LORENTZIAN;
-                recalculate2 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm-1)", &gamma2, 0.01f / 8065.56, 1.0f / 8065.56);
+                recalculate2 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm-1)", &gamma2, 1.0f, 10.0f);
                 refit2 |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode2), broadening_str, IM_ARRAYSIZE(broadening_str));
 
 
