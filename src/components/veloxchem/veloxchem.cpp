@@ -151,6 +151,7 @@ struct VeloxChem : viamd::EventHandler {
         double* ecd;
         double* vib_y;
         double* vib_x;
+        double* vib_top;
     } rsp;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
@@ -1314,6 +1315,7 @@ struct VeloxChem : viamd::EventHandler {
                     rsp.vib_x = md_array_create(double, num_samples, arena);
                     rsp.vib_y = md_array_create(double, num_samples, arena);
 
+
                     // Populate x_values
                     const double x_min = har_freqs[0] - 100.0;
                     const double x_max = har_freqs[num_vibs - 1] + 100.0;
@@ -1328,9 +1330,19 @@ struct VeloxChem : viamd::EventHandler {
                     general_broadening(rsp.vib_y, rsp.vib_x, num_samples, irs, har_freqs, num_vibs, distr_func, gamma2 * 2);
                 }
 
+                if (first_plot2) {
+                    double y_max = irs[0];
+                    for (size_t i = 0; i < num_vibs; i++) {
+                        y_max = MAX(y_max, irs[i]);
+                    }
+                    rsp.vib_top = md_array_create(double, num_vibs, arena);
+                    double offset = 5;
+                    for (size_t i = 0; i < num_vibs; i++) {
+                        rsp.vib_top[i] = y_max + offset;
+                    }
+                }
                 static bool invert_x = false;
                 static bool invert_y = false;
-
                 ImGui::Checkbox("Invert X", &invert_x); ImGui::SameLine();
                 ImGui::Checkbox("Invert Y", &invert_y);
 
@@ -1360,11 +1372,13 @@ struct VeloxChem : viamd::EventHandler {
 
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
                     ImPlot::PlotBars("IR Intensity", har_freqs, irs, (int)num_vibs, bar_width);
+                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3);
+                    ImPlot::PlotScatter("##Peak markers", har_freqs, rsp.vib_top, (int)num_vibs);
 
                     peaks_to_pixels(pixel_peaks, har_freqs, irs, num_vibs);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                     if (ImPlot::IsPlotHovered()) {
-                        hov_vib = get_hovered_peak(mouse_pos, pixel_peaks, num_vibs);
+                        hov_vib = get_hovered_peak(mouse_pos, pixel_peaks, num_vibs); //TODO: Add peak markers to the hover functionality
                     }
 
                     // Check hovered state
