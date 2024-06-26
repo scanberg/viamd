@@ -740,7 +740,7 @@ struct VeloxChem : viamd::EventHandler {
 
     //Constructs plot limits from peaks
     static inline ImPlotRect get_plot_limits(const double* x_peaks, const double* y_peaks, size_t num_peaks, double ext_fac = 0.1) {
-        ImPlotRect lim = { 0,0,0,0 };
+        ImPlotRect lim = { x_peaks[0],x_peaks[num_peaks - 1],0,0};
         for (size_t i = 0; i < num_peaks; i++) {
             //Use Contains to check if values are within the limits, or if they should extend the limits
             if (lim.Y.Max < y_peaks[i]) {
@@ -1328,11 +1328,32 @@ struct VeloxChem : viamd::EventHandler {
                     general_broadening(rsp.vib_y, rsp.vib_x, num_samples, irs, har_freqs, num_vibs, distr_func, gamma2 * 2);
                 }
 
+                static bool invert_x = false;
+                static bool invert_y = false;
+
+                ImGui::Checkbox("Invert X", &invert_x); ImGui::SameLine();
+                ImGui::Checkbox("Invert Y", &invert_y);
+
+                ImPlotAxisFlags x_flag = invert_x ? ImPlotAxisFlags_Invert : 0;
+                ImPlotAxisFlags y_flag = invert_y ? ImPlotAxisFlags_Invert : 0;
+
+                static ImPlotRect lim_constraint = { 0, 0, 0, 0 };
+                if (refit2 || first_plot2) {
+                    lim_constraint = get_plot_limits(har_freqs, irs, num_vibs);
+                }
+
                 if (ImPlot::BeginPlot("Vibrational analysis")) {
                     // @HACK: Compute pixel width of 2 'plot' units
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)");
-                    ImPlot::SetupAxis(ImAxis_Y1, "IR Intensity (km/mol)");
+                    ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flag);
+                    ImPlot::SetupAxis(ImAxis_Y1, "IR Intensity (km/mol)", y_flag);
+                    if (refit2 || first_plot2) {
+                        ImPlot::SetupAxisLimits(ImAxis_X1, lim_constraint.X.Min, lim_constraint.X.Max);
+                        ImPlot::SetupAxisLimits(ImAxis_Y1, lim_constraint.Y.Min, lim_constraint.Y.Max);
+                    }
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, lim_constraint.X.Min, lim_constraint.X.Max);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, lim_constraint.Y.Min, lim_constraint.Y.Max);
+                    
                     ImPlot::SetupFinish();
 
                     ImPlot::PlotLine("Spectrum", rsp.vib_x, rsp.vib_y, num_samples);
