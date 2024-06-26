@@ -646,12 +646,26 @@ struct VeloxChem : viamd::EventHandler {
 
     static inline double lorentzian(double x, double x_0, double gamma) {
         double sigma = gamma / 2;
-        return (1 / PI) * sigma / (pow((x - x_0), 2) + pow(sigma, 2));
+        double res = (1 / PI) * sigma / (pow((x - x_0), 2) + pow(sigma, 2));
+        return res;
+    }
+
+    static inline double phys_lorentzian(double x, double x_0, double gamma, double intensity) {
+        double sigma = gamma / 2;
+        double res = intensity * pow(sigma, 2) / (pow((x - x_0), 2) + pow(sigma, 2));
+        return res;
     }
 
     static inline double gaussian(double x, double x_0, double gamma) {
         double sigma = gamma / 2.3548;
         return (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(x - x_0, 2) / (2 * pow(sigma, 2)))); 
+    }
+
+    //TODO: Check that this implementation is actually correct
+    static inline double phys_gaussian(double p, double p_0, double gamma, double intensity) {
+        double sigma = gamma / 2;
+        double x = (p - p_0) / sigma;
+        return intensity * exp(-log(2) * pow(x,2));
     }
 
     
@@ -676,16 +690,21 @@ struct VeloxChem : viamd::EventHandler {
     }
     */
 
-    static inline void general_broadening(double* y_out, const double* x, size_t num_samples, const double* y_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
+    static inline void general_broadening(double* y_out, const double* x, size_t num_samples, const double* y_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma, double intensity), double gamma) {
+        double integral = 0;
+        double dist = x[1] - x[0];
         for (size_t si = 0; si < num_samples; si++) {
             double sum = 0;
             double b = 0;
             for (size_t pi = 0; pi < num_peaks; pi++) {
-                b = (*distr_func)(x[si], x_peaks[pi], gamma);
-                sum += b;// * y_peaks[pi];
+                b = (*distr_func)(x[si], x_peaks[pi], gamma, y_peaks[pi]);
+                sum += b;
             }
             y_out[si] = sum;
+            integral += y_out[si] * dist;
         }
+
+        double i_sum = integral;
     }
 
     static inline void osc_to_eps(double* eps_out, const double* x, size_t num_samples, const double* osc_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
@@ -1237,10 +1256,9 @@ struct VeloxChem : viamd::EventHandler {
                 bool refit2 = false;
                 bool recalculate2 = false;
                 static bool first_plot2 = true;
-                //FIXME: Set correct cm-1 gamma values
                 static float gamma2 = 5.0f;
                 static broadening_mode_t broadening_mode2 = BROADENING_LORENTZIAN;
-                recalculate2 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm-1)", &gamma2, 1.0f, 10.0f);
+                recalculate2 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &gamma2, 1.0f, 10.0f);
                 refit2 |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode2), broadening_str, IM_ARRAYSIZE(broadening_str));
 
 
@@ -1279,13 +1297,13 @@ struct VeloxChem : viamd::EventHandler {
                 static float speed_mult = 1;
                 static float time = 0;
 
-                double (*distr_func)(double x, double x_o, double gamma) = 0;
+                double (*distr_func)(double x, double x_o, double gamma, double intensity) = 0;
                 switch (broadening_mode2) {
                     case BROADENING_GAUSSIAN:
-                        distr_func = &gaussian;
+                        distr_func = &phys_gaussian;
                         break;
                     case BROADENING_LORENTZIAN:
-                        distr_func = &lorentzian;
+                        distr_func = &phys_lorentzian;
                         break;
                     default:
                         ASSERT(false);  // Should not happen
@@ -1306,15 +1324,15 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-                if (first_plot2 || recalculate2) {
+                if (first_plot2 || recalculate2 || refit2) {
                     general_broadening(rsp.vib_y, rsp.vib_x, num_samples, irs, har_freqs, num_vibs, distr_func, gamma2 * 2);
                 }
 
                 if (ImPlot::BeginPlot("Vibrational analysis")) {
                     // @HACK: Compute pixel width of 2 'plot' units
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                    ImPlot::SetupAxis(ImAxis_X1, "Harmonic Frequency");
-                    ImPlot::SetupAxis(ImAxis_Y1, "IR Intensity", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)");
+                    ImPlot::SetupAxis(ImAxis_Y1, "IR Intensity (km/mol)");
                     ImPlot::SetupFinish();
 
                     ImPlot::PlotLine("Spectrum", rsp.vib_x, rsp.vib_y, num_samples);
