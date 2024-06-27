@@ -61,6 +61,9 @@ if (APPLE)
     SET(CMAKE_OSX_ARCHITECTURES "x86_64")
     if (VIAMD_CREATE_MACOSX_BUNDLE)
         set(OSX_BUNDLE "MACOSX_BUNDLE")
+        set(MACOSX_BUNDLE_ICON_FILE viamd.icns)
+        set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
+        set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
     endif()
 endif()
 
@@ -144,7 +147,7 @@ source_group("src/gfx" FILES ${GFX_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 source_group("src/component" FILES ${COMP_FILES})
 
-add_executable(viamd ${OSX_BUNDLE} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
+add_executable(viamd ${OSX_BUNDLE} ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
 
 install(TARGETS viamd DESTINATION bin)
 
