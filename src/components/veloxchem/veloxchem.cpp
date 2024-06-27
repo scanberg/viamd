@@ -662,7 +662,7 @@ struct VeloxChem : viamd::EventHandler {
         return (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(x - x_0, 2) / (2 * pow(sigma, 2)))); 
     }
 
-    //TODO: Check that this implementation is actually correct
+    //TODO: Check that phys_gaussian implementation is actually correct
     static inline double phys_gaussian(double p, double p_0, double gamma, double intensity) {
         double sigma = gamma / 2;
         double x = (p - p_0) / sigma;
@@ -776,7 +776,7 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
     // Returns peak index closest to mouse pixel position, assumes that x-values are sorted.
-    static inline int get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, size_t num_peaks, double proxy_distance = 10.0) {
+    static inline int get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, const ImVec2* pixel_points, size_t num_peaks, bool y_flipped = false, double proxy_distance = 10.0) {
         int closest_idx = 0;
         double x = mouse_pos.x;
         double y = mouse_pos.y;
@@ -796,9 +796,15 @@ struct VeloxChem : viamd::EventHandler {
             //Check if the y location is within the range of y_min,ymax
             if (y > y_max) {
                 distance_y = fabs(y - y_max);
+                if (y_flipped) {
+                    distance_y = fabs(y - pixel_points[i].y) < distance_y ? fabs(y - pixel_points[i].y) : distance_y;
+                }
             }
             else if (y < y_min) {
                 distance_y = fabs(y - y_min);
+                if (!y_flipped) {
+                    distance_y = fabs(y - pixel_points[i].y) < distance_y ? fabs(y - pixel_points[i].y) : distance_y;
+                }
             }
             else {
                 distance_y = 0;
@@ -1074,7 +1080,9 @@ struct VeloxChem : viamd::EventHandler {
                 // double* y_eps_str   = (double*)md_temp_push(sizeof(double) * num_samples);
 
                 ImVec2* pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-                ImVec2* pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+                ImVec2* pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks); 
+                ImVec2* pixel_osc_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+                ImVec2* pixel_cgs_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
 
                 double (*distr_func)(double x, double x_o, double gamma) = 0;
                 // @NOTE: Do broadening in eV
@@ -1159,7 +1167,7 @@ struct VeloxChem : viamd::EventHandler {
                         peaks_to_pixels(pixel_osc_peaks, rsp.x_unit_peaks, y_osc_peaks, num_peaks);
                         mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                         if (ImPlot::IsPlotHovered()) {
-                            rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, num_peaks);
+                            rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, pixel_osc_points, num_peaks);
                             rsp.focused_plot = 0;
                         }
 
@@ -1220,7 +1228,7 @@ struct VeloxChem : viamd::EventHandler {
                         mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
                         if (ImPlot::IsPlotHovered()) {
-                            rsp.hovered = get_hovered_peak(mouse_pos, pixel_cgs_peaks, num_peaks);
+                            rsp.hovered = get_hovered_peak(mouse_pos, pixel_cgs_peaks, pixel_cgs_points, num_peaks);
                             rsp.focused_plot = 1;
                         }
                         // @HACK: Compute pixel width of 2 'plot' units
@@ -1290,6 +1298,7 @@ struct VeloxChem : viamd::EventHandler {
                 size_t num_atoms = 3;
 
                 ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vibs);
+                ImVec2* pixel_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vibs);
 
                 int hov_vib = -1;
                 static int sel_vib = -1;
@@ -1376,14 +1385,16 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::PlotScatter("##Peak markers", har_freqs, rsp.vib_top, (int)num_vibs);
 
                     peaks_to_pixels(pixel_peaks, har_freqs, irs, num_vibs);
+                    peaks_to_pixels(pixel_points, har_freqs, rsp.vib_top, num_vibs);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                     if (ImPlot::IsPlotHovered()) {
-                        hov_vib = get_hovered_peak(mouse_pos, pixel_peaks, num_vibs); //TODO: Add peak markers to the hover functionality
+                        hov_vib = get_hovered_peak(mouse_pos, pixel_peaks, pixel_points, num_vibs, invert_y);
                     }
 
                     // Check hovered state
                     if (hov_vib != -1) {
                         draw_bar(0, har_freqs[hov_vib], irs[hov_vib], bar_width, ImVec4{0, 1, 0, 1});
+                        ImPlot::DragPoint(0, &har_freqs[hov_vib], &rsp.vib_top[hov_vib], ImVec4{ 0,1,0,1 }, 4, ImPlotDragToolFlags_NoInputs);
                     }
 
                     // Update selected peak on click
@@ -1393,17 +1404,11 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     // Check selected state
                     if (sel_vib != -1) {
-                        time += state.app.timing.delta_s * speed_mult * 7;
                         draw_bar(1, har_freqs[sel_vib], irs[sel_vib], bar_width, ImVec4{1, 0, 0, 1});
-                        // TODO: Add animation of vibrations
-                        /*for (size_t vib_i = 0; vib_i < num_vib; vib_i++) {
-                            state.mold.mol.atom.x[vib_i] += state.mold.mol.atom.x[i] +
-                        }*/
+                        ImPlot::DragPoint(1, &har_freqs[sel_vib], &rsp.vib_top[sel_vib], ImVec4{ 1,0,0,1 }, 4, ImPlotDragToolFlags_NoInputs);
 
-                        // change this state.mold.mol.atom.x
-                        // by using this vlx.geom.coord_x
-                        // time for sine state.app.timing.total_s
-
+                        //Animation
+                        time += state.app.timing.delta_s * speed_mult * 7;
                         for (size_t id = 0; id < num_atoms; id++) {
                             state.mold.mol.atom.x[id] = vlx.geom.coord_x[id] + amp_mult * 0.5 * vib_modes[sel_vib].x[id] * sin(time);
                             state.mold.mol.atom.y[id] = vlx.geom.coord_y[id] + amp_mult * 0.5 * vib_modes[sel_vib].y[id] * sin(time);
