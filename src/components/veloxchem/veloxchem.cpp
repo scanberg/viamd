@@ -862,6 +862,15 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    static inline bool is_all_zero(const double* array, size_t count) {
+        for (size_t i = 0; i < count; i++) {
+            if (array[i] != 0.0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /*
     static inline void osc_to_eps(double* eps_out, const double* x_peaks, const double* osc_peaks, size_t num_peaks) {
         double NA = 6.02214076e23;
@@ -1128,6 +1137,10 @@ struct VeloxChem : viamd::EventHandler {
 
                     osc_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_osc_peaks, num_peaks);
                     cgs_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
+                    if (is_all_zero(y_cgs_peaks, num_peaks)) {
+                        cgs_lim_constraint.Y.Min = -1;
+                        cgs_lim_constraint.Y.Max = 1;
+                    }
                 }
 
                 if (first_plot1) {
@@ -1229,7 +1242,7 @@ struct VeloxChem : viamd::EventHandler {
                     // Rotatory ECD
                     static double cgs_to_ecd_mult = 1;
                     if (recalculate1 || first_plot1) {
-                        cgs_to_ecd_mult = axis_conversion_multiplier(y_cgs_peaks, rsp.ecd, num_peaks, num_samples);
+                        cgs_to_ecd_mult = is_all_zero(y_cgs_peaks, num_peaks) ? 1 : axis_conversion_multiplier(y_cgs_peaks, rsp.ecd, num_peaks, num_samples);
                     }
                     static ImPlotRect cur_cgs_lims = {0, 1, 0, 1};
                     if (refit1 || first_plot1) {
