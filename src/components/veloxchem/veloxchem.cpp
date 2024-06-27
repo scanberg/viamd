@@ -24,6 +24,9 @@
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
 
+#define IM_GREEN ImVec4{0, 1, 0, 1}
+#define IM_RED ImVec4{1, 0, 0, 1}
+
 enum class VolumeRes {
     Low,
     Mid,
@@ -151,7 +154,9 @@ struct VeloxChem : viamd::EventHandler {
         double* ecd;
         double* vib_y;
         double* vib_x;
-        double* vib_top;
+        double* vib_points;
+        double* osc_points;
+        double* cgs_points;
     } rsp;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
@@ -846,6 +851,17 @@ struct VeloxChem : viamd::EventHandler {
         ImPlot::DragRect(id, &x1, &y1, &x2, &y, color, ImPlotDragToolFlags_NoInputs);
     }
 
+    //Calculates the maximum point and populates out_point with it
+    static inline void max_points(double* out_points, const double* in_peaks, size_t num_peaks, double offset = 0.05) {
+        double y_max = in_peaks[0];
+        for (size_t i = 0; i < num_peaks; i++) {
+            y_max = MAX(y_max, in_peaks[i]);
+        }
+        for (size_t i = 0; i < num_peaks; i++) {
+            out_points[i] = y_max + y_max * offset;
+        }
+    }
+
     /*
     static inline void osc_to_eps(double* eps_out, const double* x_peaks, const double* osc_peaks, size_t num_peaks) {
         double NA = 6.02214076e23;
@@ -1114,6 +1130,13 @@ struct VeloxChem : viamd::EventHandler {
                     cgs_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
                 }
 
+                if (first_plot1) {
+                    rsp.osc_points = md_array_create(double, num_peaks, arena);
+                    rsp.cgs_points = md_array_create(double, num_peaks, arena);
+                    max_points(rsp.osc_points, y_osc_peaks, num_peaks);
+                    max_points(rsp.cgs_points, y_cgs_peaks, num_peaks);
+                }
+
 #if 1
                 // Hovered display text
                 /*if (rsp.hovered != -1 && rsp.focused_plot == 0) {
@@ -1165,6 +1188,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::SetupFinish();
 
                         peaks_to_pixels(pixel_osc_peaks, rsp.x_unit_peaks, y_osc_peaks, num_peaks);
+                        peaks_to_pixels(pixel_osc_points, rsp.x_unit_peaks, rsp.osc_points, num_peaks);
                         mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                         if (ImPlot::IsPlotHovered()) {
                             rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, pixel_osc_points, num_peaks);
@@ -1177,11 +1201,14 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::SetAxis(ImAxis_Y2);
                         ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.eps, num_samples);
                         ImPlot::SetAxis(ImAxis_Y1);
-                        // ImPlot::PlotLine("Spectrum", x_values, y_osc_str, num_samples);
                         ImPlot::PlotBars("Oscillator Strength", rsp.x_unit_peaks, y_osc_peaks, num_peaks, bar_width);
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3);
+                        ImPlot::PlotScatter("##Peak marker", rsp.x_unit_peaks, rsp.osc_points, num_peaks);
+
                         // Check hovered state
                         if (rsp.hovered != -1) {
-                            draw_bar(0, rsp.x_unit_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, ImVec4{0, 1, 0, 1});
+                            draw_bar(0, rsp.x_unit_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, IM_GREEN);
+                            ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.hovered], &rsp.osc_points[rsp.hovered], IM_GREEN, 4, ImPlotDragToolFlags_NoInputs);
                         }
 
                         // Update selected peak on click
@@ -1191,7 +1218,8 @@ struct VeloxChem : viamd::EventHandler {
                         }
                         // Check selected state
                         if (rsp.selected != -1) {
-                            draw_bar(1, rsp.x_unit_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, ImVec4{1, 0, 0, 1});
+                            draw_bar(1, rsp.x_unit_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, IM_RED);
+                            ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.selected], &rsp.osc_points[rsp.selected], IM_RED, 4, ImPlotDragToolFlags_NoInputs);
                         }
 
                         cur_osc_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
@@ -1225,6 +1253,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::SetupFinish();
 
                         peaks_to_pixels(pixel_cgs_peaks, rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
+                        peaks_to_pixels(pixel_cgs_points, rsp.x_unit_peaks, rsp.cgs_points, num_peaks);
                         mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
                         if (ImPlot::IsPlotHovered()) {
@@ -1239,10 +1268,13 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.ecd, num_samples);
                         ImPlot::SetAxis(ImAxis_Y1);
                         ImPlot::PlotBars("Rotatory Strength", rsp.x_unit_peaks, y_cgs_peaks, num_peaks, bar_width);
-                        // ImPlot::SetAxis(ImAxis_Y1); //Reset because we are comparing mouse pos to Y1
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3);
+                        ImPlot::PlotScatter("##Peak marker", rsp.x_unit_peaks, rsp.cgs_points, num_peaks);
 
                         if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
-                            draw_bar(2, rsp.x_unit_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, ImVec4{0, 1, 0, 1});
+                            draw_bar(2, rsp.x_unit_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, IM_GREEN);
+                            ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.hovered], &rsp.cgs_points[rsp.hovered], IM_GREEN, 4, ImPlotDragToolFlags_NoInputs);
+
                         }
 
                         // Update selected peak on click
@@ -1251,7 +1283,9 @@ struct VeloxChem : viamd::EventHandler {
                             rsp.selected = rsp.hovered;
                         }
                         if (rsp.selected != -1) {
-                            draw_bar(3, rsp.x_unit_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, ImVec4{1, 0, 0, 1});
+                            draw_bar(3, rsp.x_unit_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, IM_RED);
+                            ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.selected], &rsp.cgs_points[rsp.selected], IM_RED, 4, ImPlotDragToolFlags_NoInputs);
+
                         }
                         cur_cgs_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
                         ImPlot::EndPlot();
@@ -1340,15 +1374,8 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (first_plot2) {
-                    double y_max = irs[0];
-                    for (size_t i = 0; i < num_vibs; i++) {
-                        y_max = MAX(y_max, irs[i]);
-                    }
-                    rsp.vib_top = md_array_create(double, num_vibs, arena);
-                    double offset = 5;
-                    for (size_t i = 0; i < num_vibs; i++) {
-                        rsp.vib_top[i] = y_max + offset;
-                    }
+                    rsp.vib_points = md_array_create(double, num_vibs, arena);
+                    max_points(rsp.vib_points, irs, num_vibs);
                 }
                 static bool invert_x = false;
                 static bool invert_y = false;
@@ -1374,18 +1401,18 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, lim_constraint.X.Min, lim_constraint.X.Max);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, lim_constraint.Y.Min, lim_constraint.Y.Max);
-                    
                     ImPlot::SetupFinish();
 
                     ImPlot::PlotLine("Spectrum", rsp.vib_x, rsp.vib_y, num_samples);
 
                     const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
                     ImPlot::PlotBars("IR Intensity", har_freqs, irs, (int)num_vibs, bar_width);
+
                     ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3);
-                    ImPlot::PlotScatter("##Peak markers", har_freqs, rsp.vib_top, (int)num_vibs);
+                    ImPlot::PlotScatter("##Peak markers", har_freqs, rsp.vib_points, (int)num_vibs);
 
                     peaks_to_pixels(pixel_peaks, har_freqs, irs, num_vibs);
-                    peaks_to_pixels(pixel_points, har_freqs, rsp.vib_top, num_vibs);
+                    peaks_to_pixels(pixel_points, har_freqs, rsp.vib_points, num_vibs);
                     mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                     if (ImPlot::IsPlotHovered()) {
                         hov_vib = get_hovered_peak(mouse_pos, pixel_peaks, pixel_points, num_vibs, invert_y);
@@ -1393,8 +1420,8 @@ struct VeloxChem : viamd::EventHandler {
 
                     // Check hovered state
                     if (hov_vib != -1) {
-                        draw_bar(0, har_freqs[hov_vib], irs[hov_vib], bar_width, ImVec4{0, 1, 0, 1});
-                        ImPlot::DragPoint(0, &har_freqs[hov_vib], &rsp.vib_top[hov_vib], ImVec4{ 0,1,0,1 }, 4, ImPlotDragToolFlags_NoInputs);
+                        draw_bar(0, har_freqs[hov_vib], irs[hov_vib], bar_width, IM_GREEN);
+                        ImPlot::DragPoint(0, &har_freqs[hov_vib], &rsp.vib_points[hov_vib], IM_GREEN, 4, ImPlotDragToolFlags_NoInputs);
                     }
 
                     // Update selected peak on click
@@ -1404,8 +1431,8 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     // Check selected state
                     if (sel_vib != -1) {
-                        draw_bar(1, har_freqs[sel_vib], irs[sel_vib], bar_width, ImVec4{1, 0, 0, 1});
-                        ImPlot::DragPoint(1, &har_freqs[sel_vib], &rsp.vib_top[sel_vib], ImVec4{ 1,0,0,1 }, 4, ImPlotDragToolFlags_NoInputs);
+                        draw_bar(1, har_freqs[sel_vib], irs[sel_vib], bar_width, IM_RED);
+                        ImPlot::DragPoint(1, &har_freqs[sel_vib], &rsp.vib_points[sel_vib], IM_RED, 4, ImPlotDragToolFlags_NoInputs);
 
                         //Animation
                         time += state.app.timing.delta_s * speed_mult * 7;
