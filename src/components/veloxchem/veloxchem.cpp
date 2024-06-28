@@ -746,7 +746,7 @@ struct VeloxChem : viamd::EventHandler {
 
     //Constructs plot limits from peaks
     static inline ImPlotRect get_plot_limits(const double* x_samples, const double* y_peaks, size_t num_peaks, size_t num_samples, double ext_fac = 0.1) {
-        ImPlotRect lim = { x_samples[0],x_samples[num_samples - 1],0,0};
+        ImPlotRect lim = { MIN(x_samples[0],x_samples[num_samples - 1]), MAX(x_samples[0],x_samples[num_samples - 1]),0,0};
         for (size_t i = 0; i < num_peaks; i++) {
             //Use Contains to check if values are within the limits, or if they should extend the limits
             if (lim.Y.Max < y_peaks[i]) {
