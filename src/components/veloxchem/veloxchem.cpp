@@ -590,23 +590,17 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t y1_array_size, size_t y2_array_size) {
-        double y1_min = 0;
         double y1_max = 0;
-        double y2_min = 0;
         double y2_max = 0;
         for (size_t i = 0; i < y1_array_size; i++) {
-            y1_min = MIN(y1_min, y1_array[i]);
-            y1_max = MAX(y1_max, y1_array[i]);
+            y1_max = MAX(y1_max, fabs(y1_array[i]));
         }
         for (size_t i = 0; i < y2_array_size; i++) {
-            y2_min = MIN(y2_min, y2_array[i]);
-            y2_max = MAX(y2_max, y2_array[i]);
+            y2_max = MAX(y2_max, fabs(y2_array[i]));
         }
 
-        double y1_dist = fabs(y1_max - y1_min);
-        double y2_dist = fabs(y2_max - y2_min);
 
-        return y2_dist / y1_dist;
+        return y2_max / y1_max;
     }
 
 
