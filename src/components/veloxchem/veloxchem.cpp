@@ -1137,6 +1137,10 @@ struct VeloxChem : viamd::EventHandler {
 
                     osc_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_osc_peaks, num_peaks);
                     cgs_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
+                    if (is_all_zero(y_osc_peaks, num_peaks)) {
+                        osc_lim_constraint.Y.Min = -1;
+                        osc_lim_constraint.Y.Max = 1;
+                    }
                     if (is_all_zero(y_cgs_peaks, num_peaks)) {
                         cgs_lim_constraint.Y.Min = -1;
                         cgs_lim_constraint.Y.Max = 1;
@@ -1177,7 +1181,7 @@ struct VeloxChem : viamd::EventHandler {
                     // Absorption
                     static double osc_to_eps_mult = 1;
                     if (recalculate1 || first_plot1) {
-                        osc_to_eps_mult = axis_conversion_multiplier(y_osc_peaks, rsp.eps, num_peaks, num_samples);
+                        osc_to_eps_mult = is_all_zero(y_osc_peaks, num_peaks) ? 1 : axis_conversion_multiplier(y_osc_peaks, rsp.eps, num_peaks, num_samples);
                     }
 
                     static ImPlotRect cur_osc_lims = {0, 1, 0, 1};
