@@ -745,8 +745,8 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     //Constructs plot limits from peaks
-    static inline ImPlotRect get_plot_limits(const double* x_peaks, const double* y_peaks, size_t num_peaks, double ext_fac = 0.1) {
-        ImPlotRect lim = { x_peaks[0],x_peaks[num_peaks - 1],0,0};
+    static inline ImPlotRect get_plot_limits(const double* x_samples, const double* y_peaks, size_t num_peaks, size_t num_samples, double ext_fac = 0.1) {
+        ImPlotRect lim = { x_samples[0],x_samples[num_samples - 1],0,0};
         for (size_t i = 0; i < num_peaks; i++) {
             //Use Contains to check if values are within the limits, or if they should extend the limits
             if (lim.Y.Max < y_peaks[i]) {
@@ -754,13 +754,6 @@ struct VeloxChem : viamd::EventHandler {
             }
             else if (lim.Y.Min > y_peaks[i]) {
                 lim.Y.Min = y_peaks[i];
-            }
-
-            if (lim.X.Max < x_peaks[i]) {
-                lim.X.Max = x_peaks[i];
-            }
-            else if (lim.X.Min > x_peaks[i]) {
-                lim.X.Min = x_peaks[i];
             }
         }
 
@@ -1135,8 +1128,8 @@ struct VeloxChem : viamd::EventHandler {
                     convert_values(rsp.x_unit_peaks, vlx.rsp.absorption_ev, num_peaks, x_unit);
                     convert_values(rsp.x_unit_samples, rsp.x_ev_samples, num_samples, x_unit);
 
-                    osc_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_osc_peaks, num_peaks);
-                    cgs_lim_constraint = get_plot_limits(rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
+                    osc_lim_constraint = get_plot_limits(rsp.x_unit_samples, y_osc_peaks, num_peaks, num_samples);
+                    cgs_lim_constraint = get_plot_limits(rsp.x_unit_samples, y_cgs_peaks, num_peaks, num_samples);
                     if (is_all_zero(y_osc_peaks, num_peaks)) {
                         osc_lim_constraint.Y.Min = -1;
                         osc_lim_constraint.Y.Max = 1;
@@ -1404,7 +1397,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 static ImPlotRect lim_constraint = { 0, 0, 0, 0 };
                 if (refit2 || first_plot2) {
-                    lim_constraint = get_plot_limits(har_freqs, irs, num_vibs);
+                    lim_constraint = get_plot_limits(rsp.vib_x, irs, num_vibs, num_samples);
                 }
 
                 if (ImPlot::BeginPlot("Vibrational analysis")) {
