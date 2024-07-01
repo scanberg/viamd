@@ -1522,7 +1522,6 @@ struct VeloxChem : viamd::EventHandler {
                         if (ImGui::TableGetHoveredRow() == row_n + 1) {
                             if (num_vibs > row_n) {
                                 hov_vib = row_n;
-                                item_hovered = true;
 
                                 //Selection
                                 if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
@@ -1543,8 +1542,9 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::PopStyleColor(1);
 
                     }
-                    if (!item_hovered && ImGui::IsWindowHovered()) {
-                        //Makes sure that we clear the highlight if we are in this window, but don't hover an item
+                    bool iwh = ImGui::IsWindowHovered();
+                    if (!ImGui::IsWindowHovered()) {
+                        //If we don't hover the table we can clear the hov_vib
                         hov_vib = -1;
                     }
 
