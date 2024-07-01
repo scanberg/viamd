@@ -1518,22 +1518,9 @@ struct VeloxChem : viamd::EventHandler {
 
                         char lable[16];
                         sprintf(lable, "%i", row_n + 1);
-                        ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
-                        if (ImGui::TableGetHoveredRow() == row_n + 1) {
-                            if (num_vibs > row_n) {
-                                hov_vib = row_n;
-
-                                //Selection
-                                if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                    sel_vib = hov_vib;
-                                }
-                                //Deselect
-                                else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift) && row_n == sel_vib) {
-                                    sel_vib = -1;
-                                }
-                            }
+                        if (ImGui::Selectable(lable, is_sel || is_hov, selectable_flags)) {
+                            sel_vib = sel_vib == row_n ? -1 : row_n;
                         }
-
                         ImGui::TableNextColumn();
                         ImGui::Text("%12.6f", har_freqs[row_n]);
                         ImGui::TableNextColumn();
@@ -1542,15 +1529,20 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::PopStyleColor(1);
 
                     }
-                    bool iwh = ImGui::IsWindowHovered();
-                    if (!ImGui::IsWindowHovered()) {
-                        //If we don't hover the table we can clear the hov_vib
+                    if (ImGui::IsWindowHovered() && ImGui::TableGetHoveredRow() > 0) {
+                        hov_vib = ImGui::TableGetHoveredRow() - 1;
+                    }
+                    else {
                         hov_vib = -1;
                     }
 
+                    int r = ImGui::TableGetHoveredRow();
+
                     ImGui::PopStyleColor(2);
                     ImGui::EndTable();
+                    ImGui::Text("Row %i", r);
                 }
+
                 ImGui::TreePop();
             }
 
