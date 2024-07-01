@@ -1509,11 +1509,11 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                         ImGui::TableNextColumn();
 
-                        if (is_hov) {
-                            ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
+                        if (is_sel) {
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_BLUE);
                         }
                         else {
-                            ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                         }
 
                         char lable[16];
