@@ -1226,7 +1226,7 @@ struct VeloxChem : viamd::EventHandler {
                         // Update selected peak on click
                         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
                             ImPlot::IsPlotHovered()) {
-                            rsp.selected = rsp.hovered;
+                            rsp.selected = rsp.hovered == rsp.selected ? -1 : rsp.hovered;
                         }
                         // Check selected state
                         if (rsp.selected != -1) {
@@ -1292,7 +1292,7 @@ struct VeloxChem : viamd::EventHandler {
                         // Update selected peak on click
                         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
                             ImPlot::IsPlotHovered()) {
-                            rsp.selected = rsp.hovered;
+                            rsp.selected = rsp.hovered == rsp.selected ? -1 : rsp.hovered;
                         }
                         if (rsp.selected != -1) {
                             draw_bar(3, rsp.x_unit_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, IM_RED);
@@ -1443,7 +1443,7 @@ struct VeloxChem : viamd::EventHandler {
                     // Update selected peak on click
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
                         ImPlot::IsPlotHovered()) {
-                        sel_vib = hov_vib;
+                        sel_vib = hov_vib == sel_vib ? -1 : hov_vib;
                     }
                     // Check selected state
                     if (sel_vib != -1) {
