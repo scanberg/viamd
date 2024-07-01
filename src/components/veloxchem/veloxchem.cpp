@@ -758,6 +758,12 @@ struct VeloxChem : viamd::EventHandler {
         lim.Y.Min -= height * ext_fac;
         lim.X.Max += width * ext_fac;
         lim.X.Min -= width * ext_fac;
+
+        //The y limits needs to be symmetric so that the spectra is not clipped. For example, if the y peak max is a positive value but the y spectra value is negative, we get issues otherwise. This ensures space for all the data.
+        //This is needed because Y2 scaling is based on the maximum peak value
+        double abs_max_y = MAX(fabs(lim.Y.Min), fabs(lim.Y.Max));
+        lim.Y.Min = -abs_max_y;
+        lim.Y.Max = abs_max_y;
         return lim;
     }
 
