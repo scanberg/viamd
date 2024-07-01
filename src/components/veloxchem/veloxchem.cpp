@@ -1281,7 +1281,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3);
                         ImPlot::PlotScatter("##Peak marker", rsp.x_unit_peaks, rsp.cgs_points, num_peaks);
 
-                        if (rsp.hovered != -1 && ImPlot::IsPlotHovered()) {
+                        if (rsp.hovered != -1) {
                             draw_bar(2, rsp.x_unit_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, IM_GREEN);
                             ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.hovered], &rsp.cgs_points[rsp.hovered], IM_GREEN, 4, ImPlotDragToolFlags_NoInputs);
 
