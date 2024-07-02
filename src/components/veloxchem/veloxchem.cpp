@@ -26,6 +26,8 @@
 
 #define IM_GREEN ImVec4{0, 1, 0, 1}
 #define IM_RED ImVec4{1, 0, 0, 1}
+#define IM_YELLOW ImVec4{1, 1, 0.5, 0.3}
+#define IM_BLUE ImVec4{0.5, 0.5, 1, 0.3}
 
 enum class VolumeRes {
     Low,
@@ -967,8 +969,8 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::TableSetupScrollFreeze(0, 1);
                         ImGui::TableHeadersRow();
 
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
-                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                        ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                         bool item_hovered = false;
                         for (int row_n = 0; row_n < vlx.geom.num_atoms; row_n++) {
 
@@ -980,10 +982,10 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::TableNextColumn();
 
                             if (is_hov) {
-                                ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(1, 1, 0.5, 0.3));
+                                ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
                             }
                             else {
-                                ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.5, 0.5, 1, 0.3));
+                                ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                             }
 
                             char lable[16];
@@ -1224,7 +1226,7 @@ struct VeloxChem : viamd::EventHandler {
                         // Update selected peak on click
                         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
                             ImPlot::IsPlotHovered()) {
-                            rsp.selected = rsp.hovered;
+                            rsp.selected = rsp.hovered == rsp.selected ? -1 : rsp.hovered;
                         }
                         // Check selected state
                         if (rsp.selected != -1) {
@@ -1290,7 +1292,7 @@ struct VeloxChem : viamd::EventHandler {
                         // Update selected peak on click
                         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
                             ImPlot::IsPlotHovered()) {
-                            rsp.selected = rsp.hovered;
+                            rsp.selected = rsp.hovered == rsp.selected ? -1 : rsp.hovered;
                         }
                         if (rsp.selected != -1) {
                             draw_bar(3, rsp.x_unit_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, IM_RED);
@@ -1305,16 +1307,10 @@ struct VeloxChem : viamd::EventHandler {
                 first_plot1 = false;
                 ImGui::TreePop();
             }
+
+
+
             if (ImGui::TreeNode("Vibrational Analysis")) {
-                bool refit2 = false;
-                bool recalculate2 = false;
-                static bool first_plot2 = true;
-                static float gamma2 = 5.0f;
-                static broadening_mode_t broadening_mode2 = BROADENING_LORENTZIAN;
-                recalculate2 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &gamma2, 1.0f, 10.0f);
-                refit2 |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode2), broadening_str, IM_ARRAYSIZE(broadening_str));
-
-
                 // draw the vibrational analysis
                 double har_freqs[3] = {1562.20, 3663.36, 3677.39};
                 double irs[3] = {132.6605, 14.2605, 5.8974};
@@ -1340,12 +1336,22 @@ struct VeloxChem : viamd::EventHandler {
                 // ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
                 size_t num_vibs = ARRAY_SIZE(vib_modes);
                 size_t num_atoms = 3;
+                static int hov_vib = -1;
+                static int sel_vib = -1;
+
+                bool refit2 = false;
+                bool recalculate2 = false;
+                static bool first_plot2 = true;
+                static float gamma2 = 5.0f;
+                static broadening_mode_t broadening_mode2 = BROADENING_LORENTZIAN;
+                recalculate2 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &gamma2, 1.0f, 10.0f);
+                refit2 |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode2), broadening_str, IM_ARRAYSIZE(broadening_str));
+
+
 
                 ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vibs);
                 ImVec2* pixel_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vibs);
 
-                int hov_vib = -1;
-                static int sel_vib = -1;
                 static bool coord_modified = false;
                 static float amp_mult = 1;
                 static float speed_mult = 1;
@@ -1437,7 +1443,7 @@ struct VeloxChem : viamd::EventHandler {
                     // Update selected peak on click
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
                         ImPlot::IsPlotHovered()) {
-                        sel_vib = hov_vib;
+                        sel_vib = hov_vib == sel_vib ? -1 : hov_vib;
                     }
                     // Check selected state
                     if (sel_vib != -1) {
@@ -1474,8 +1480,72 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::SliderFloat((const char*)"Amplitude", &amp_mult, 0.2f, 2.0f);
                 ImGui::SliderFloat((const char*)"Speed", &speed_mult, 0.5f, 2.0f);
 
+                //Table
+                static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Sortable;
+
+                static ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_DefaultSort;
+
+                double height = ImGui::GetTextLineHeightWithSpacing();
+
+                if (ImGui::BeginTable("table_advanced", 3, flags, ImVec2(460, height * (num_vibs + 1)), 0)) {
+                    ImGui::TableSetupColumn("Vibration mode", columns_base_flags, 0.0f);
+                    ImGui::TableSetupColumn("Harmonic Frequency", columns_base_flags, 0.0f);
+                    ImGui::TableSetupColumn("IR Intensity", columns_base_flags, 0.0f);
+                    ImGui::TableSetupScrollFreeze(0, 1);
+                    ImGui::TableHeadersRow();
+
+                    //TODO: Add sorting to the table once the vibs data structure is properly defined
+
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                    ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                    bool item_hovered = false;
+                    for (int row_n = 0; row_n < num_vibs; row_n++) {
+
+                        ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                        bool is_sel = row_n == sel_vib; //If atom is selected, mark it as such
+                        bool is_hov = row_n == hov_vib; //If atom is hovered, mark it as such
+                        bool hov_col = false;
+                        ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
+                        ImGui::TableNextColumn();
+
+                        if (is_sel) {
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_BLUE);
+                        }
+                        else {
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                        }
+
+                        char lable[16];
+                        sprintf(lable, "%i", row_n + 1);
+                        if (ImGui::Selectable(lable, is_sel || is_hov, selectable_flags)) {
+                            sel_vib = sel_vib == row_n ? -1 : row_n;
+                        }
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%12.6f", har_freqs[row_n]);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%12.6f", irs[row_n]);
+
+                        ImGui::PopStyleColor(1);
+
+                    }
+                    if (ImGui::IsWindowHovered() && ImGui::TableGetHoveredRow() > 0) {
+                        hov_vib = ImGui::TableGetHoveredRow() - 1;
+                    }
+                    else {
+                        hov_vib = -1;
+                    }
+
+                    int r = ImGui::TableGetHoveredRow();
+
+                    ImGui::PopStyleColor(2);
+                    ImGui::EndTable();
+                    ImGui::Text("Row %i", r);
+                }
+
                 ImGui::TreePop();
             }
+
         }
         ImGui::End();
     }
