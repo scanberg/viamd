@@ -1536,11 +1536,8 @@ struct VeloxChem : viamd::EventHandler {
                         hov_vib = -1;
                     }
 
-                    int r = ImGui::TableGetHoveredRow();
-
                     ImGui::PopStyleColor(2);
                     ImGui::EndTable();
-                    ImGui::Text("Row %i", r);
                 }
 
                 ImGui::TreePop();
