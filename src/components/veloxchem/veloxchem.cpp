@@ -20,6 +20,9 @@
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 
+#include <main.cpp>
+
+
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
@@ -145,6 +148,7 @@ struct VeloxChem : viamd::EventHandler {
 
     struct Rsp {
         bool show_window = false;
+        bool show_export_window = false;
         int hovered = -1;
         int selected = -1;
         int focused_plot = -1;
@@ -1045,6 +1049,63 @@ struct VeloxChem : viamd::EventHandler {
         double* z;
     } vibration_mode;
 
+    static void draw_rsp_spectra_export_window(ApplicationState* state) {
+        ASSERT(state);
+
+        struct ExportFormat {
+            str_t lbl;
+            str_t ext;
+        };
+
+        ExportFormat table_formats[]{
+            {STR_LIT("XVG"), STR_LIT("xvg")},
+            {STR_LIT("CSV"), STR_LIT("csv")}
+        };
+
+        if (ImGui::Begin("Spectra Export", &state->show_spectra_export_window)) {
+            static int table_format = 0;
+
+            //TODO: Add sanity checks
+
+            ImGui::PushItemWidth(200);
+
+            str_t file_extension = {};
+            if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
+                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
+                    if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
+                        table_format = i;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            file_extension = table_formats[table_format].ext;
+
+            bool export_clicked = ImGui::Button("Export");
+            if (export_clicked) {
+                md_allocator_i* alloc = frame_alloc;
+                md_vm_arena_temp_t temp = md_vm_arena_temp_begin(frame_alloc);
+                defer{ md_vm_arena_temp_end(temp); };
+
+                char path_buf[1024];
+                md_array(const float*)  column_data = 0;
+                md_array(const char*)   column_labels = 0;
+                md_array(str_t)         legends = 0;
+
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
+                    str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
+                    if (table_format == 0) {
+                        export_csv(column_data, column_labels, 0, 0, path);
+                    }
+                    else if (table_format == 1) {
+                        export_xvg(column_data, column_labels, 0, 0, path);
+                    }
+                }
+            }
+            ImGui::PopItemWidth();
+        }
+        ImGui::End();
+    }
+
     void draw_rsp_window(ApplicationState& state) {
         if (!rsp.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
@@ -1059,7 +1120,18 @@ struct VeloxChem : viamd::EventHandler {
         const int num_samples = 1024;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Spectra", &rsp.show_window)) {
+        if (ImGui::Begin("Spectra", &rsp.show_window, ImGuiWindowFlags_MenuBar)) {
+            if (ImGui::BeginMenuBar())
+            {
+                if (ImGui::BeginMenu("File")) {
+                    char path_buf[1024] = "";
+                    if (ImGui::MenuItem("Export")) {
+                        state.show_spectra_export_window = true;
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMenuBar();
+            }
             if (ImGui::TreeNode("Absorption & ECD")) {
                 bool refit1 = false;
                 static bool first_plot1 = true;
