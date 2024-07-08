@@ -1065,9 +1065,25 @@ struct VeloxChem : viamd::EventHandler {
             {STR_LIT("XVG"), STR_LIT("xvg")},
             {STR_LIT("CSV"), STR_LIT("csv")}
         };
+
+        struct ExportProperty {
+            double* x = 0;
+            double* y = 0;
+            const char* lable;
+            str_t unit;
+        };
+
+        ExportProperty properties[]{
+            {rsp.x_unit_samples, rsp.eps, "EPS", STR_LIT("UNIT")},
+            {rsp.x_unit_samples, rsp.ecd, "ECD", STR_LIT("UNIT")},
+            {rsp.vib_x, rsp.vib_y, "Vibration", STR_LIT("UNIT")}
+        };
+
+        int num_properties = ARRAY_SIZE(properties);
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
             static int table_format = 1;
+            static int property_idx = 0;
             
             //TODO: Add sanity checks
             
@@ -1083,6 +1099,15 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndCombo();
             }
             file_extension = table_formats[table_format].ext;
+
+            if (ImGui::BeginCombo("Property", properties[property_idx].lable)) {
+                for (int i = 0; i < num_properties; ++i) {
+                    if (ImGui::Selectable(properties[i].lable, property_idx == i)) {
+                        property_idx = i;
+                    }
+                }
+                ImGui::EndCombo();
+            }
 
             static bool export_valid = true;
             bool export_clicked = ImGui::Button("Export");
@@ -1117,6 +1142,7 @@ struct VeloxChem : viamd::EventHandler {
                         str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
                         if (table_format == 0) {
                             //md_xvg_write
+                            //TODO: Implement md_xvg_write_to_file
 
                         }
                         else if (table_format == 1) {
