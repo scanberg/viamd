@@ -20,7 +20,9 @@
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 
-#include <main.cpp>
+#include <md_csv.h>
+#include <md_xvg.h>
+
 
 
 #define BLK_DIM 8
@@ -156,7 +158,9 @@ struct VeloxChem : viamd::EventHandler {
         double* x_ev_samples;
         double* x_unit_samples;
         double* x_unit_peaks;
+        //Spectra Y values, calculated from osc
         double* eps;
+        //Spectra y values, calculated from rot
         double* ecd;
         double* vib_y;
         double* vib_x;
@@ -1049,8 +1053,8 @@ struct VeloxChem : viamd::EventHandler {
         double* z;
     } vibration_mode;
 
-    static void draw_rsp_spectra_export_window(ApplicationState* state) {
-        ASSERT(state);
+    void draw_rsp_spectra_export_window(ApplicationState& state) {
+        ASSERT(&state);
 
         struct ExportFormat {
             str_t lbl;
@@ -1061,12 +1065,12 @@ struct VeloxChem : viamd::EventHandler {
             {STR_LIT("XVG"), STR_LIT("xvg")},
             {STR_LIT("CSV"), STR_LIT("csv")}
         };
-
-        if (ImGui::Begin("Spectra Export", &state->show_spectra_export_window)) {
-            static int table_format = 0;
-
+        
+        if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
+            static int table_format = 1;
+            
             //TODO: Add sanity checks
-
+            
             ImGui::PushItemWidth(200);
 
             str_t file_extension = {};
@@ -1080,28 +1084,50 @@ struct VeloxChem : viamd::EventHandler {
             }
             file_extension = table_formats[table_format].ext;
 
+            static bool export_valid = true;
             bool export_clicked = ImGui::Button("Export");
             if (export_clicked) {
-                md_allocator_i* alloc = frame_alloc;
-                md_vm_arena_temp_t temp = md_vm_arena_temp_begin(frame_alloc);
-                defer{ md_vm_arena_temp_end(temp); };
+                export_valid = rsp.x_unit_samples && rsp.eps && rsp.ecd;
 
-                char path_buf[1024];
-                md_array(const float*)  column_data = 0;
-                md_array(const char*)   column_labels = 0;
-                md_array(str_t)         legends = 0;
+                if (export_valid) {
+                    char path_buf[1024];
+                    md_array(const float*)  column_data = 0;
+                    md_array(str_t)   column_labels = 0;
+                    md_array(str_t)         legends = 0;
 
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
-                    str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
-                    if (table_format == 0) {
-                        export_csv(column_data, column_labels, 0, 0, path);
+                    md_array(float) x_values = md_array_create(float, 1024, arena);
+                    md_array(float) y_values = md_array_create(float, 1024, arena);
+
+                    for (size_t i = 0; i < 1024; i++) {
+                        x_values[i] = (float)rsp.x_unit_samples[i];
+                        y_values[i] = (float)rsp.eps[i];
                     }
-                    else if (table_format == 1) {
-                        export_xvg(column_data, column_labels, 0, 0, path);
+
+                    str_t x_label = str_from_cstr("X");
+                    md_array_push(column_labels, x_label, arena);
+                    str_t y_label = str_from_cstr("Y");
+                    md_array_push(column_labels, y_label, arena);
+
+
+
+                    md_array_push(column_data, x_values, arena);
+                    md_array_push(column_data, y_values, arena);
+
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
+                        str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
+                        if (table_format == 0) {
+                            //md_xvg_write
+
+                        }
+                        else if (table_format == 1) {
+                            //export_csv(column_data, column_labels, 0, 0, path);
+                            md_csv_write_to_file(column_data, column_labels, 2, 1024, path);
+                        }
                     }
                 }
             }
             ImGui::PopItemWidth();
+            if (!export_valid) { ImGui::Text("Values are not valid, make sure that you have opened plot windows once to trigger calculations"); }
         }
         ImGui::End();
     }
@@ -1126,15 +1152,16 @@ struct VeloxChem : viamd::EventHandler {
                 if (ImGui::BeginMenu("File")) {
                     char path_buf[1024] = "";
                     if (ImGui::MenuItem("Export")) {
-                        state.show_spectra_export_window = true;
+                        rsp.show_export_window = true;
                     }
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
             }
+            static bool first_plot1 = true;
+            //if (first_plot1) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Absorption & ECD")) {
                 bool refit1 = false;
-                static bool first_plot1 = true;
                 bool recalculate1 = false;
 
                 static float gamma1 = 0.123;
@@ -1380,8 +1407,8 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::TreePop();
             }
 
-
-
+            static bool first_plot2 = true;
+            //if (first_plot2) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Vibrational Analysis")) {
                 // draw the vibrational analysis
                 double har_freqs[3] = {1562.20, 3663.36, 3677.39};
@@ -1413,7 +1440,6 @@ struct VeloxChem : viamd::EventHandler {
 
                 bool refit2 = false;
                 bool recalculate2 = false;
-                static bool first_plot2 = true;
                 static float gamma2 = 5.0f;
                 static broadening_mode_t broadening_mode2 = BROADENING_LORENTZIAN;
                 recalculate2 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &gamma2, 1.0f, 10.0f);
@@ -1617,6 +1643,8 @@ struct VeloxChem : viamd::EventHandler {
 
         }
         ImGui::End();
+
+        if (rsp.show_export_window) { draw_rsp_spectra_export_window(state); }
     }
 
     void draw_orb_window(const ApplicationState& state) {
