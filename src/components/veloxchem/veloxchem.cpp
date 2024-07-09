@@ -167,6 +167,7 @@ struct VeloxChem : viamd::EventHandler {
         double* vib_points;
         double* osc_points;
         double* cgs_points;
+        const char* x_unit;
     } rsp;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
@@ -1069,14 +1070,14 @@ struct VeloxChem : viamd::EventHandler {
         struct ExportProperty {
             double* x = 0;
             double* y = 0;
-            const char* lable;
-            str_t unit;
+            str_t lable;
+            str_t y_unit;
         };
 
         ExportProperty properties[]{
-            {rsp.x_unit_samples, rsp.eps, "EPS", STR_LIT("UNIT")},
-            {rsp.x_unit_samples, rsp.ecd, "ECD", STR_LIT("UNIT")},
-            {rsp.vib_x, rsp.vib_y, "Vibration", STR_LIT("UNIT")}
+            {rsp.x_unit_samples, rsp.eps, str_from_cstr("EPS"), str_from_cstr((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_unit_samples, rsp.ecd, str_from_cstr("ECD"), str_from_cstr((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
+            {rsp.vib_x, rsp.vib_y, str_from_cstr("Vibration"), str_from_cstr("IR Intensity (km/mol)")}
         };
 
         int num_properties = ARRAY_SIZE(properties);
@@ -1084,6 +1085,7 @@ struct VeloxChem : viamd::EventHandler {
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
             static int table_format = 1;
             static int property_idx = 0;
+            const char* x_unit = "DEBUG";
             
             //TODO: Add sanity checks
             
@@ -1100,13 +1102,20 @@ struct VeloxChem : viamd::EventHandler {
             }
             file_extension = table_formats[table_format].ext;
 
-            if (ImGui::BeginCombo("Property", properties[property_idx].lable)) {
+            if (ImGui::BeginCombo("Property", properties[property_idx].lable.ptr)) {
                 for (int i = 0; i < num_properties; ++i) {
-                    if (ImGui::Selectable(properties[i].lable, property_idx == i)) {
+                    if (ImGui::Selectable(properties[i].lable.ptr, property_idx == i)) {
                         property_idx = i;
                     }
                 }
                 ImGui::EndCombo();
+            }
+
+            if (property_idx == 0 || property_idx == 1) {
+                x_unit = rsp.x_unit;
+            }
+            else if (property_idx == 2) {
+                x_unit = (const char*)u8"Harmonic Frequency (cm⁻¹)";
             }
 
             static bool export_valid = true;
@@ -1124,14 +1133,14 @@ struct VeloxChem : viamd::EventHandler {
                     md_array(float) y_values = md_array_create(float, 1024, arena);
 
                     for (size_t i = 0; i < 1024; i++) {
-                        x_values[i] = (float)rsp.x_unit_samples[i];
-                        y_values[i] = (float)rsp.eps[i];
+                        x_values[i] = (float)properties[property_idx].x[i];
+                        y_values[i] = (float)properties[property_idx].y[i];
                     }
 
-                    str_t x_label = str_from_cstr("X");
-                    md_array_push(column_labels, x_label, arena);
-                    str_t y_label = str_from_cstr("Y");
-                    md_array_push(column_labels, y_label, arena);
+                    //str_t x_label = str_from_cstr(x_unit);
+                    md_array_push(column_labels, str_from_cstr(x_unit), arena);
+                    //str_t y_label = str_from_cstr("Y");
+                    md_array_push(column_labels, properties[property_idx].y_unit, arena);
 
 
 
@@ -1198,6 +1207,7 @@ struct VeloxChem : viamd::EventHandler {
                 recalculate1 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (eV)", &gamma1, 0.01f, 1.0f);
                 refit1 |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode1), broadening_str, IM_ARRAYSIZE(broadening_str));
                 refit1 |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
+                rsp.x_unit = x_unit_str[x_unit];
 
                 const int num_peaks = (int)vlx.rsp.num_excited_states;
                 const double* y_osc_peaks = vlx.rsp.absorption_osc_str;
