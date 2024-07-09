@@ -1075,7 +1075,7 @@ struct VeloxChem : viamd::EventHandler {
         };
 
         ExportProperty properties[]{
-            {rsp.x_unit_samples, rsp.eps, str_from_cstr("EPS"), str_from_cstr((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_unit_samples, rsp.eps, str_from_cstr("Absorption"), str_from_cstr((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
             {rsp.x_unit_samples, rsp.ecd, str_from_cstr("ECD"), str_from_cstr((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
             {rsp.vib_x, rsp.vib_y, str_from_cstr("Vibration"), str_from_cstr("IR Intensity (km/mol)")}
         };
@@ -1093,7 +1093,8 @@ struct VeloxChem : viamd::EventHandler {
 
             str_t file_extension = {};
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
+                //TODO: Start at 0 when XVG is implemented
+                for (int i = 1; i < (int)ARRAY_SIZE(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
                         table_format = i;
                     }
@@ -1162,7 +1163,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }
             ImGui::PopItemWidth();
-            if (!export_valid) { ImGui::Text("Values are not valid, make sure that you have opened plot windows once to trigger calculations"); }
+            if (!export_valid) { ImGui::TextWrapped("Values are not valid, make sure that you have opened plot windows once to trigger calculations"); }
         }
         ImGui::End();
     }
