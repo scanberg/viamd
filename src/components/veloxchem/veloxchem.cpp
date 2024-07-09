@@ -1195,7 +1195,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
             static bool first_plot1 = true;
-            //if (first_plot1) { ImGui::SetNextItemOpen(true); }
+            if (first_plot1) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Absorption & ECD")) {
                 bool refit1 = false;
                 bool recalculate1 = false;
@@ -1445,7 +1445,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             static bool first_plot2 = true;
-            //if (first_plot2) { ImGui::SetNextItemOpen(true); }
+            if (first_plot2) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Vibrational Analysis")) {
                 // draw the vibrational analysis
                 double har_freqs[3] = {1562.20, 3663.36, 3677.39};
