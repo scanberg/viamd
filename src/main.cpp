@@ -4210,9 +4210,20 @@ static void draw_representations_window(ApplicationState* state) {
                     update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
                 }
                 else if (rep.color_mapping == ColorMapping::AtomCharge) {
-                    update_rep |= ImGui::ColorEdit4("color low", (float*)&rep.color1, ImGuiColorEditFlags_NoInputs);
-                    ImGui::SameLine();
-                    update_rep |= ImGui::ColorEdit4("color high", (float*)&rep.color2, ImGuiColorEditFlags_NoInputs);
+                    const ImVec2 button_size = { 160, 0 };
+                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.charge_colormap), button_size, rep.charge_colormap)) {
+                        ImGui::OpenPopup("Colormap Selector");
+                    }
+                    if (ImGui::BeginPopup("Colormap Selector")) {
+                        for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
+                            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
+                                rep.charge_colormap = map;
+                                update_rep |= true;
+                                ImGui::CloseCurrentPopup();
+                            }
+                        }
+                        ImGui::EndPopup();
+                    }
                 }
                 ImGui::PushItemWidth(item_width);
                 update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
@@ -8087,7 +8098,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             color_atoms_sec_str(colors, mol.atom.count, mol);
             break;
         case ColorMapping::AtomCharge:
-            color_atoms_charge(colors, mol.atom.count, mol, rep->color1, rep->color2);
+            color_atoms_charge(colors, mol.atom.count, mol, rep->charge_colormap);
             break;
         case ColorMapping::Property:
             // @TODO: Map colors accordingly

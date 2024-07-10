@@ -28,11 +28,6 @@ static uint32_t u32_to_color(uint32_t u32) {
 	return convert_color({rgb.x, rgb.y, rgb.z, 1.0f});
 }
 
-static uint32_t scale_to_color(float scale, const vec4_t color1, const vec4_t color2) {
-    const vec4_t rgb = lerp(color1, color2, scale);
-    return convert_color(rgb);
-}
-
 void color_atoms_uniform(uint32_t* colors, size_t count, vec4_t color, const md_bitfield_t* mask) {
     if (mask) {
         const uint32_t u32_color = convert_color(color);
@@ -122,7 +117,7 @@ float map(float value, float low1, float high1, float low2, float high2) {
 }
 
 //TODO: Replace uses of y-coordinates with atom charge
-void color_atoms_charge(uint32_t* colors, size_t count, const md_molecule_t& mol, vec4_t color_low, vec4_t color_high) {
+void color_atoms_charge(uint32_t* colors, size_t count, const md_molecule_t& mol, ImPlotColormap colormap) {
     float y_min = mol.atom.y[0];
     float y_max = mol.atom.y[0];
     for (size_t i = 0; i < count; ++i) {
@@ -130,8 +125,10 @@ void color_atoms_charge(uint32_t* colors, size_t count, const md_molecule_t& mol
         y_max = MAX(y_max, mol.atom.y[i]);
     }
     for (size_t i = 0; i < count; ++i) {
-        float scale = map(mol.atom.y[i], y_min, y_max, 0, 1);
-        colors[i] = scale_to_color(scale, color_low, color_high);
+        float t = map(mol.atom.y[i], y_min, y_max, 0, 1);
+        ImVec4 im_color = ImPlot::SampleColormap(t, colormap);
+        vec4_t color = { im_color.x, im_color.y, im_color.z, im_color.w };
+        colors[i] = convert_color(color);
     }
 }
 

@@ -266,8 +266,7 @@ struct Representation {
     // User defined color used in uniform mode
     vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
-    vec4_t color1 = { 0.0f, 0.0f, 1.0f, 1.0f };
-    vec4_t color2 = { 1.0f, 0.0f, 0.0f, 1.0f };
+    ImPlotColormap charge_colormap = ImPlotColormap_Plasma;
 
     float saturation = 1.0f;
 

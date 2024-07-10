@@ -6,6 +6,8 @@
 
 #include <math.h>
 
+#include <implot.h>
+
 // http://lolengine.net/blog/2013/07/27/rgb-to-hsv-in-glsl
 
 inline vec3_t rgb_to_hsv(vec3_t c) {
@@ -178,7 +180,7 @@ void color_atoms_res_idx    (uint32_t* colors, size_t count, const md_molecule_t
 void color_atoms_chain_id   (uint32_t* colors, size_t count, const md_molecule_t& mol);
 void color_atoms_chain_idx  (uint32_t* colors, size_t count, const md_molecule_t& mol);
 void color_atoms_sec_str    (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_charge     (uint32_t* colors, size_t count, const md_molecule_t& mol, vec4_t color_low, vec4_t color_high);
+void color_atoms_charge     (uint32_t* colors, size_t count, const md_molecule_t& mol, ImPlotColormap colormap);
 
 void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask);
 void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale);
