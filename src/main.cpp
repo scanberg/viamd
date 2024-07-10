@@ -4209,6 +4209,11 @@ static void draw_representations_window(ApplicationState* state) {
                 if (rep.color_mapping == ColorMapping::Uniform) {
                     update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
                 }
+                else if (rep.color_mapping == ColorMapping::AtomCharge) {
+                    update_rep |= ImGui::ColorEdit4("color low", (float*)&rep.color1, ImGuiColorEditFlags_NoInputs);
+                    ImGui::SameLine();
+                    update_rep |= ImGui::ColorEdit4("color high", (float*)&rep.color2, ImGuiColorEditFlags_NoInputs);
+                }
                 ImGui::PushItemWidth(item_width);
                 update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
                 switch (rep.type) {
@@ -8080,6 +8085,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             break;
         case ColorMapping::SecondaryStructure:
             color_atoms_sec_str(colors, mol.atom.count, mol);
+            break;
+        case ColorMapping::AtomCharge:
+            color_atoms_charge(colors, mol.atom.count, mol, rep->color1, rep->color2);
             break;
         case ColorMapping::Property:
             // @TODO: Map colors accordingly

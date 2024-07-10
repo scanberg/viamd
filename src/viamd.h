@@ -69,6 +69,7 @@ enum class ColorMapping {
     ChainIndex,
     SecondaryStructure,
     Property,
+    AtomCharge,
     Count
 };
 
@@ -83,6 +84,7 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Chain Idx",
     "Secondary Structure",
     "Property",
+    "Atom Charge"
 };
 
 enum class OrbitalType {
@@ -263,6 +265,9 @@ struct Representation {
 
     // User defined color used in uniform mode
     vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    vec4_t color1 = { 0.0f, 0.0f, 1.0f, 1.0f };
+    vec4_t color2 = { 1.0f, 0.0f, 0.0f, 1.0f };
 
     float saturation = 1.0f;
 
