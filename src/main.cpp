@@ -9140,3 +9140,10 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
 
     md_gl_draw(&args);
 }
+
+static void im_draw_box_wireframe(ImDrawList* draw_list, vec3_t min, vec3_t max, ImU32 col, float thickness = 1.0f) {
+    //draw_list->AddPolyline
+    //draw_list->AddLine
+    //Use either of these to draw the lines
+    //Figure out how to convert the vec3_t to ImVec2 in screen space
+}
