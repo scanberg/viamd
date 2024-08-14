@@ -2712,6 +2712,8 @@ static void draw_main_menu(ApplicationState* data) {
             if (data->simulation_box.enabled) {
                 ImGui::SameLine();
                 ImGui::ColorEdit4Minimal("##Box-Color", data->simulation_box.color.elem);
+                ImGui::SameLine();
+                ImGui::SliderFloat("Thickness", &data->simulation_box.thickness, 0.5, 10);
             }
             ImGui::EndGroup();
             ImGui::EndMenu();
@@ -8614,6 +8616,47 @@ static void handle_camera_interaction(ApplicationState* data) {
     }
 }
 
+static ImVec2 vec3_to_ImVec2(const vec3_t vector3, const mat4_t mvp, ImRect window_rect) {
+    vec4_t p4 = mat4_mul_vec4(mvp, { vector3.x, vector3.y, vector3.z, 1 });
+    const vec2_t p2 = {
+                        (p4.x / p4.w * 0.5f + 0.5f) * window_rect.Max.x,
+                        (-p4.y / p4.w * 0.5f + 0.5f) * window_rect.Max.y,
+    };
+    return { p2.x, p2.y };
+}
+
+static void im_draw_box_wireframe(ApplicationState* data) {
+    ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
+    if (window) {
+        ImDrawList* draw_list = window->DrawList;
+        const mat4_t mvp = data->view.param.matrix.curr.proj * data->view.param.matrix.curr.view;
+        
+        ImU32 col = ImGui::ColorConvertFloat4ToU32(vec_cast(data->simulation_box.color));
+        float thickness = data->simulation_box.thickness;
+        ImRect r = window->Rect();
+        mat3_t basis = data->mold.mol.unit_cell.basis;
+        vec3_t x = basis.col[0];
+        vec3_t y = basis.col[1];
+        vec3_t z = basis.col[2];
+        vec3_t zero = { 0, 0, 0 };
+
+        draw_list->AddLine(vec3_to_ImVec2(zero, mvp, r), vec3_to_ImVec2(x, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(x, mvp, r), vec3_to_ImVec2(x + z, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(x + z, mvp, r), vec3_to_ImVec2(z, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(z, mvp, r), vec3_to_ImVec2(zero, mvp, r), col, thickness); 
+        
+        draw_list->AddLine(vec3_to_ImVec2(zero + y, mvp, r), vec3_to_ImVec2(x + y, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(x + y, mvp, r), vec3_to_ImVec2(x + z + y, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(x + z + y, mvp, r), vec3_to_ImVec2(z + y, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(z + y, mvp, r), vec3_to_ImVec2(zero + y, mvp, r), col, thickness);
+
+        draw_list->AddLine(vec3_to_ImVec2(zero, mvp, r), vec3_to_ImVec2(zero + y, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(x, mvp, r), vec3_to_ImVec2(x + y, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(x + z, mvp, r), vec3_to_ImVec2(x + z + y, mvp, r), col, thickness);
+        draw_list->AddLine(vec3_to_ImVec2(z, mvp, r), vec3_to_ImVec2(z + y, mvp, r), col, thickness);
+    }
+}
+
 static void fill_gbuffer(ApplicationState* data) {
     const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
         GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
@@ -8633,6 +8676,7 @@ static void fill_gbuffer(ApplicationState* data) {
     // Immediate mode graphics
 
     if (data->simulation_box.enabled && data->mold.mol.unit_cell.basis != mat3_t{0}) {
+        im_draw_box_wireframe(data);
         PUSH_GPU_SECTION("Draw Simulation Box")
         const mat4_t model_mat = mat4_from_mat3(data->mold.mol.unit_cell.basis);
         const mat4_t model_view_mat = data->view.param.matrix.curr.view * model_mat;
@@ -9141,9 +9185,4 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
     md_gl_draw(&args);
 }
 
-static void im_draw_box_wireframe(ImDrawList* draw_list, vec3_t min, vec3_t max, ImU32 col, float thickness = 1.0f) {
-    //draw_list->AddPolyline
-    //draw_list->AddLine
-    //Use either of these to draw the lines
-    //Figure out how to convert the vec3_t to ImVec2 in screen space
-}
+

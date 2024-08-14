@@ -610,6 +610,7 @@ struct ApplicationState {
     struct {
         bool enabled = false;
         vec4_t color = {0, 0, 0, 0.5f};
+        float thickness = 1;
     } simulation_box;
 
     // --- REPRESENTATIONS ---
