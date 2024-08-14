@@ -8640,16 +8640,19 @@ static void im_draw_box_wireframe(ApplicationState* data) {
         vec3_t z = basis.col[2];
         vec3_t zero = { 0, 0, 0 };
 
+        //y = 0
         draw_list->AddLine(vec3_to_ImVec2(zero, mvp, r), vec3_to_ImVec2(x, mvp, r), col, thickness);
         draw_list->AddLine(vec3_to_ImVec2(x, mvp, r), vec3_to_ImVec2(x + z, mvp, r), col, thickness);
         draw_list->AddLine(vec3_to_ImVec2(x + z, mvp, r), vec3_to_ImVec2(z, mvp, r), col, thickness);
         draw_list->AddLine(vec3_to_ImVec2(z, mvp, r), vec3_to_ImVec2(zero, mvp, r), col, thickness); 
         
+        //y = 1
         draw_list->AddLine(vec3_to_ImVec2(zero + y, mvp, r), vec3_to_ImVec2(x + y, mvp, r), col, thickness);
         draw_list->AddLine(vec3_to_ImVec2(x + y, mvp, r), vec3_to_ImVec2(x + z + y, mvp, r), col, thickness);
         draw_list->AddLine(vec3_to_ImVec2(x + z + y, mvp, r), vec3_to_ImVec2(z + y, mvp, r), col, thickness);
         draw_list->AddLine(vec3_to_ImVec2(z + y, mvp, r), vec3_to_ImVec2(zero + y, mvp, r), col, thickness);
 
+        //y=0 -> y=1
         draw_list->AddLine(vec3_to_ImVec2(zero, mvp, r), vec3_to_ImVec2(zero + y, mvp, r), col, thickness);
         draw_list->AddLine(vec3_to_ImVec2(x, mvp, r), vec3_to_ImVec2(x + y, mvp, r), col, thickness);
         draw_list->AddLine(vec3_to_ImVec2(x + z, mvp, r), vec3_to_ImVec2(x + z + y, mvp, r), col, thickness);
