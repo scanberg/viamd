@@ -1460,7 +1460,7 @@ struct VeloxChem : viamd::EventHandler {
                 rsp.first_plot_rot_ecd = false;
                 ImGui::TreePop();
             }
-            
+#if 0
             if (rsp.first_plot_vib) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Vibrational Analysis")) {
                 // draw the vibrational analysis
@@ -1693,7 +1693,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 ImGui::TreePop();
             }
-
+#endif
         }
         ImGui::End();
 
