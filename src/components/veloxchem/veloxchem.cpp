@@ -603,6 +603,8 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
+
+
     static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t y1_array_size, size_t y2_array_size) {
         double y1_max = 0;
         double y2_max = 0;
@@ -1086,7 +1088,7 @@ struct VeloxChem : viamd::EventHandler {
         int num_properties = ARRAY_SIZE(properties);
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
-            static int table_format = 1;
+            static int table_format = 0;
             static int property_idx = 0;
             const char* x_unit = "DEBUG";
             
@@ -1097,7 +1099,7 @@ struct VeloxChem : viamd::EventHandler {
             str_t file_extension = {};
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
                 //TODO: Start at 0 when XVG is implemented
-                for (int i = 1; i < (int)ARRAY_SIZE(table_formats); ++i) {
+                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
                         table_format = i;
                     }
@@ -1156,6 +1158,18 @@ struct VeloxChem : viamd::EventHandler {
                         if (table_format == 0) {
                             //md_xvg_write
                             //TODO: Implement md_xvg_write_to_file
+                            str_t header = md_xvg_format_header(properties[property_idx].lable, str_from_cstr(x_unit), properties[property_idx].y_unit, 0, legends, arena);
+                            str_t xvg = md_xvg_format(header, 2, 1024, column_data, arena);
+                            md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
+                            if (file) {
+                                const size_t written_bytes = md_file_write(file, xvg.ptr, xvg.len);
+                                if (written_bytes != xvg.len) {
+                                    MD_LOG_ERROR("CSV: Unexpected error, some bytes were not written");
+                                }
+                            }
+                            else {
+                                MD_LOG_ERROR("CSV: File could not be opened for writing: '%.*s'", (int)path.len, path.ptr);
+                            }
 
                         }
                         else if (table_format == 1) {
