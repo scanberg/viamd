@@ -168,6 +168,9 @@ struct VeloxChem : viamd::EventHandler {
         double* osc_points;
         double* cgs_points;
         const char* x_unit;
+
+        bool first_plot_rot_ecd = true;
+        bool first_plot_vib = true;
     } rsp;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
@@ -599,6 +602,8 @@ struct VeloxChem : viamd::EventHandler {
 
         return async_task;
     }
+
+
 
     static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t y1_array_size, size_t y2_array_size) {
         double y1_max = 0;
@@ -1083,7 +1088,7 @@ struct VeloxChem : viamd::EventHandler {
         int num_properties = ARRAY_SIZE(properties);
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
-            static int table_format = 1;
+            static int table_format = 0;
             static int property_idx = 0;
             const char* x_unit = "DEBUG";
             
@@ -1094,7 +1099,7 @@ struct VeloxChem : viamd::EventHandler {
             str_t file_extension = {};
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
                 //TODO: Start at 0 when XVG is implemented
-                for (int i = 1; i < (int)ARRAY_SIZE(table_formats); ++i) {
+                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
                         table_format = i;
                     }
@@ -1153,6 +1158,18 @@ struct VeloxChem : viamd::EventHandler {
                         if (table_format == 0) {
                             //md_xvg_write
                             //TODO: Implement md_xvg_write_to_file
+                            str_t header = md_xvg_format_header(properties[property_idx].lable, str_from_cstr(x_unit), properties[property_idx].y_unit, 0, legends, arena);
+                            str_t xvg = md_xvg_format(header, 2, 1024, column_data, arena);
+                            md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
+                            if (file) {
+                                const size_t written_bytes = md_file_write(file, xvg.ptr, xvg.len);
+                                if (written_bytes != xvg.len) {
+                                    MD_LOG_ERROR("CSV: Unexpected error, some bytes were not written");
+                                }
+                            }
+                            else {
+                                MD_LOG_ERROR("CSV: File could not be opened for writing: '%.*s'", (int)path.len, path.ptr);
+                            }
 
                         }
                         else if (table_format == 1) {
@@ -1194,8 +1211,8 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 ImGui::EndMenuBar();
             }
-            static bool first_plot1 = true;
-            if (first_plot1) { ImGui::SetNextItemOpen(true); }
+            
+            if (rsp.first_plot_rot_ecd) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Absorption & ECD")) {
                 bool refit1 = false;
                 bool recalculate1 = false;
@@ -1214,7 +1231,7 @@ struct VeloxChem : viamd::EventHandler {
                 const double* y_osc_peaks = vlx.rsp.absorption_osc_str;
                 const double* y_cgs_peaks = vlx.rsp.electronic_circular_dichroism_cgs;
 
-                if (first_plot1) {
+                if (rsp.first_plot_rot_ecd) {
                     rsp.x_ev_samples = md_array_create(double, num_samples, arena);
                     rsp.x_unit_samples = md_array_create(double, num_samples, arena);
                     rsp.x_unit_peaks = md_array_create(double, num_peaks, arena);
@@ -1254,14 +1271,14 @@ struct VeloxChem : viamd::EventHandler {
                         break;
                 }
 
-                if (recalculate1 || first_plot1) {
+                if (recalculate1 || rsp.first_plot_rot_ecd) {
                     osc_to_eps(rsp.eps, rsp.x_ev_samples, num_samples, y_osc_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma1 * 2);
                     rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, num_samples, y_cgs_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma1 * 2);
                 }
 
                 static ImPlotRect osc_lim_constraint = {0, 0, 0, 0};
                 static ImPlotRect cgs_lim_constraint = {0, 0, 0, 0};
-                if (refit1 || first_plot1) {
+                if (refit1 || rsp.first_plot_rot_ecd) {
                     // Do conversions
                     convert_values(rsp.x_unit_peaks, vlx.rsp.absorption_ev, num_peaks, x_unit);
                     convert_values(rsp.x_unit_samples, rsp.x_ev_samples, num_samples, x_unit);
@@ -1278,7 +1295,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-                if (first_plot1) {
+                if (rsp.first_plot_rot_ecd) {
                     rsp.osc_points = md_array_create(double, num_peaks, arena);
                     rsp.cgs_points = md_array_create(double, num_peaks, arena);
                     max_points(rsp.osc_points, y_osc_peaks, num_peaks);
@@ -1311,12 +1328,12 @@ struct VeloxChem : viamd::EventHandler {
                 if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                     // Absorption
                     static double osc_to_eps_mult = 1;
-                    if (recalculate1 || first_plot1) {
+                    if (recalculate1 || rsp.first_plot_rot_ecd) {
                         osc_to_eps_mult = is_all_zero(y_osc_peaks, num_peaks) ? 1 : axis_conversion_multiplier(y_osc_peaks, rsp.eps, num_peaks, num_samples);
                     }
 
                     static ImPlotRect cur_osc_lims = {0, 1, 0, 1};
-                    if (refit1 || first_plot1) {
+                    if (refit1 || rsp.first_plot_rot_ecd) {
                         ImPlot::SetNextAxisToFit(ImAxis_X1);
                     }
                     if (ImPlot::BeginPlot("Absorption")) {
@@ -1324,7 +1341,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
                         ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
                         ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε (L mol⁻¹ cm⁻¹)");
-                        if (refit1 || first_plot1) {
+                        if (refit1 || rsp.first_plot_rot_ecd) {
                             ImPlot::SetupAxisLimits(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
                             ImPlot::SetupAxisLimits(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
                             cur_osc_lims = osc_lim_constraint;
@@ -1376,11 +1393,11 @@ struct VeloxChem : viamd::EventHandler {
 
                     // Rotatory ECD
                     static double cgs_to_ecd_mult = 1;
-                    if (recalculate1 || first_plot1) {
+                    if (recalculate1 || rsp.first_plot_rot_ecd) {
                         cgs_to_ecd_mult = is_all_zero(y_cgs_peaks, num_peaks) ? 1 : axis_conversion_multiplier(y_cgs_peaks, rsp.ecd, num_peaks, num_samples);
                     }
                     static ImPlotRect cur_cgs_lims = {0, 1, 0, 1};
-                    if (refit1 || first_plot1) {
+                    if (refit1 || rsp.first_plot_rot_ecd) {
                         ImPlot::SetNextAxisToFit(ImAxis_X1);
                     }
 
@@ -1389,7 +1406,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
                         ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
                         ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
-                        if (refit1 || first_plot1) {
+                        if (refit1 || rsp.first_plot_rot_ecd) {
                             ImPlot::SetupAxisLimits(ImAxis_X1, cgs_lim_constraint.X.Min, cgs_lim_constraint.X.Max);
                             ImPlot::SetupAxisLimits(ImAxis_Y1, cgs_lim_constraint.Y.Min, cgs_lim_constraint.Y.Max);
                             cur_cgs_lims = cgs_lim_constraint;
@@ -1440,12 +1457,11 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     ImPlot::EndSubplots();
                 }
-                first_plot1 = false;
+                rsp.first_plot_rot_ecd = false;
                 ImGui::TreePop();
             }
-
-            static bool first_plot2 = true;
-            if (first_plot2) { ImGui::SetNextItemOpen(true); }
+            
+            if (rsp.first_plot_vib) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Vibrational Analysis")) {
                 // draw the vibrational analysis
                 double har_freqs[3] = {1562.20, 3663.36, 3677.39};
@@ -1505,7 +1521,7 @@ struct VeloxChem : viamd::EventHandler {
                         break;
                 }
 
-                if (first_plot2) {
+                if (rsp.first_plot_vib) {
                     rsp.vib_x = md_array_create(double, num_samples, arena);
                     rsp.vib_y = md_array_create(double, num_samples, arena);
 
@@ -1520,11 +1536,11 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-                if (first_plot2 || recalculate2 || refit2) {
+                if (rsp.first_plot_vib || recalculate2 || refit2) {
                     general_broadening(rsp.vib_y, rsp.vib_x, num_samples, irs, har_freqs, num_vibs, distr_func, gamma2 * 2);
                 }
 
-                if (first_plot2) {
+                if (rsp.first_plot_vib) {
                     rsp.vib_points = md_array_create(double, num_vibs, arena);
                     max_points(rsp.vib_points, irs, num_vibs);
                 }
@@ -1537,7 +1553,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImPlotAxisFlags y_flag = invert_y ? ImPlotAxisFlags_Invert : 0;
 
                 static ImPlotRect lim_constraint = { 0, 0, 0, 0 };
-                if (refit2 || first_plot2) {
+                if (refit2 || rsp.first_plot_vib) {
                     lim_constraint = get_plot_limits(rsp.vib_x, irs, num_vibs, num_samples);
                 }
 
@@ -1546,7 +1562,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                     ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flag);
                     ImPlot::SetupAxis(ImAxis_Y1, "IR Intensity (km/mol)", y_flag);
-                    if (refit2 || first_plot2) {
+                    if (refit2 || rsp.first_plot_vib) {
                         ImPlot::SetupAxisLimits(ImAxis_X1, lim_constraint.X.Min, lim_constraint.X.Max);
                         ImPlot::SetupAxisLimits(ImAxis_Y1, lim_constraint.Y.Min, lim_constraint.Y.Max);
                     }
@@ -1605,7 +1621,7 @@ struct VeloxChem : viamd::EventHandler {
                         state.mold.dirty_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                         coord_modified = false;
                     }
-                    first_plot2 = false;
+                    rsp.first_plot_vib = false;
                     ImPlot::EndPlot();
                 }
 
