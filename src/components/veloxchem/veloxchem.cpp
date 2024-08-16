@@ -603,6 +603,68 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
+    static inline float calc_distance(ImVec2 p1, ImVec2 p2)
+    {
+        const float dx = p2.x - p1.x;
+        const float dy = p2.y - p1.y;
+
+        return sqrt((dx * dx) + (dy * dy));
+    }
+
+    static inline void draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float node_width, float node_height) {
+        // Get the draw list from the current window
+
+        // Define the control points for the Bezier curve
+        ImVec2 p1 = ImVec2(source_pos.x + node_width / 2, source_pos.y + node_height);  // Start point (bottom-center of source node)
+        ImVec2 p4 = ImVec2(dest_pos.x + node_width / 2, dest_pos.y);  // End point (top-center of destination node)
+
+        float dist = calc_distance(p1, p4);
+        float curve_offset = dist / 4;
+
+        ImVec2 p2 = ImVec2(source_pos.x + node_width / 2, source_pos.y + node_height + curve_offset);  // Control point 1
+        ImVec2 p3 = ImVec2(dest_pos.x + node_width / 2, dest_pos.y - curve_offset);  // Control point 2
+
+
+        // Define the color and thickness for the flow
+        ImU32 flow_color = IM_COL32(100, 149, 237, 255);  // Cornflower Blue
+        // ImBezierCubicCalc Use this for calculating mouse distance to curve
+        // Draw the Bezier curve representing the flow
+        draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, node_width, 100);
+    }
+
+
+    static inline void im_sankey_diagram(ImRect area) {
+        /*
+        * A sankey diagram needs to implement bezier curves, that are connecting two points
+        */
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+        //Draw background
+        draw_list->AddRectFilled(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 1,1,1,1 }));
+        draw_list->AddRect(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }));
+
+        ImRect plot_area = area; //TODO: Find a way to shrink an area. Perhaps expand by -area.width * percentage
+        draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 }));
+
+
+        const char* names[] = { "THIO", "QUIN" };
+        float initial_percentage[] = { 0.5482, 0.4518 };
+        float transitions[2][2] = {
+            {0.3, 0.7},
+            {0.1, 0.9}
+        };
+
+        for (int i = 0; i < 2; i++) {}
+
+        ImVec2 source_pos = area.Min;
+        ImVec2 dest_pos = area.Max;
+        float node_width = 10;
+        float node_height = 2;
+
+        draw_vertical_sankey_flow(draw_list, source_pos, dest_pos, node_width, node_height);
+        //draw_list->AddBezierCubic()
+        //ImPlot::poin
+    }
 
 
     static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t y1_array_size, size_t y2_array_size) {
@@ -2484,6 +2546,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 }
                 // @TODO: Draw Sankey Diagram of Transition Matrix
+                im_sankey_diagram({100,200,500,500});
                 {
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
