@@ -644,6 +644,8 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddRect(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }));
 
         ImRect plot_area = area; //TODO: Find a way to shrink an area. Perhaps expand by -area.width * percentage
+        const float plot_percent = 0.9;
+        plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
         draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 }));
 
 
@@ -654,7 +656,22 @@ struct VeloxChem : viamd::EventHandler {
             {0.1, 0.9}
         };
 
-        for (int i = 0; i < 2; i++) {}
+        ImU32 colors[2] = { ImGui::ColorConvertFloat4ToU32(IM_GREEN), ImGui::ColorConvertFloat4ToU32(IM_BLUE) }; //TODO: Sankey: Add colormap picking to the bar drawing
+
+        //Draw the bars. Before and after
+        const float bar_height = 5;
+        int num_bars = 2;
+        int num_gaps = num_bars - 1;
+        float gap_size = 1.0;
+        float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
+        ImVec2 bottom_bar_pos = { plot_area.Min.x, plot_area.Max.y };
+        for (int i = 0; i < 2; i++) {
+            float bar_width = bars_avail_width * initial_percentage[i];
+            ImVec2 bar_end_pos = bottom_bar_pos + ImVec2{ bar_width, -bar_height };
+            draw_list->AddRectFilled(bottom_bar_pos, bar_end_pos, colors[i]);
+            bottom_bar_pos.x += gap_size + bar_width;
+        }
+
 
         ImVec2 source_pos = area.Min;
         ImVec2 dest_pos = area.Max;
