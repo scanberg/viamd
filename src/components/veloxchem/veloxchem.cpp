@@ -646,7 +646,7 @@ struct VeloxChem : viamd::EventHandler {
         ImRect plot_area = area;
         const float plot_percent = 0.9;
         plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
-        draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 }));
+        //draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 })); //Use this to draw debug of plot area
 
 
 
@@ -699,7 +699,8 @@ struct VeloxChem : viamd::EventHandler {
         }
 
 
-        ImU32 colors[2] = { ImGui::ColorConvertFloat4ToU32({0,1,0,0.3}), ImGui::ColorConvertFloat4ToU32(IM_BLUE) }; //TODO: Sankey: Add colormap picking to the bar drawing
+        ImU32 bar_colors[2] = { ImGui::ColorConvertFloat4ToU32({103.f / 255.f,193.f / 255.f,164.f / 255.f, 1.f}), ImGui::ColorConvertFloat4ToU32({255.f / 255.f, 140.f / 255.f, 100.f / 255.f, 1.f}) }; //TODO: Sankey: Add colormap picking to the bar drawing
+        ImU32 flow_colors[2] = { ImGui::ColorConvertFloat4ToU32({103.f / 255.f,193.f / 255.f,164.f / 255.f, 0.5f}), ImGui::ColorConvertFloat4ToU32({255.f /255.f, 140.f /255.f, 100.f /255.f, 0.5f}) }; //TODO: Sankey: Add colormap picking to the bar drawing
 
 
         //Draw bars
@@ -707,14 +708,14 @@ struct VeloxChem : viamd::EventHandler {
             //Start
             ImVec2 start_p0 = { start_positions[i], plot_area.Max.y };
             ImVec2 start_p1 = { start_positions[i] + bars_avail_width * initial_percentages[i], plot_area.Max.y - bar_height };
-            draw_list->AddRectFilled(start_p0, start_p1, colors[i]);
-            draw_list->AddRect(start_p0, start_p1, colors[i]);
+            draw_list->AddRectFilled(start_p0, start_p1, bar_colors[i]);
+            draw_list->AddRect(start_p0, start_p1, bar_colors[i]);
 
             //End
             ImVec2 end_p0 = { cur_end_positions[i], plot_area.Min.y };
             ImVec2 end_p1 = { cur_end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
-            draw_list->AddRectFilled(end_p0, end_p1, colors[i]);
-            draw_list->AddRect(end_p0, end_p1, colors[i]);
+            draw_list->AddRectFilled(end_p0, end_p1, bar_colors[i]);
+            draw_list->AddRect(end_p0, end_p1, bar_colors[i]);
         }
 
         //Draw curves
@@ -725,7 +726,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (percentage != 0) {
                     float width = bars_avail_width * percentage;
                     ImVec2 end_pos = { cur_end_positions[end_i], plot_area.Min.y + bar_height };
-                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, colors[start_i]);
+                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, flow_colors[start_i]);
                     start_pos.x += width;
                     cur_end_positions[end_i] += width;
                 }
