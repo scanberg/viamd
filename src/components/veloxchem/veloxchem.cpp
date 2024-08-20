@@ -611,25 +611,25 @@ struct VeloxChem : viamd::EventHandler {
         return sqrt((dx * dx) + (dy * dy));
     }
 
-    static inline void draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float node_width, float node_height) {
+    static inline void draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
         // Get the draw list from the current window
 
         // Define the control points for the Bezier curve
-        ImVec2 p1 = ImVec2(source_pos.x + node_width / 2, source_pos.y + node_height);  // Start point (bottom-center of source node)
-        ImVec2 p4 = ImVec2(dest_pos.x + node_width / 2, dest_pos.y);  // End point (top-center of destination node)
+        ImVec2 p1 = ImVec2(source_pos.x + thickness / 2, source_pos.y);  // Start point (bottom-center of source node)
+        ImVec2 p4 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y);  // End point (top-center of destination node)
 
-        float dist = calc_distance(p1, p4);
+        float dist = fabs(p1.y - p4.y);
         float curve_offset = dist / 4;
 
-        ImVec2 p2 = ImVec2(source_pos.x + node_width / 2, source_pos.y + node_height + curve_offset);  // Control point 1
-        ImVec2 p3 = ImVec2(dest_pos.x + node_width / 2, dest_pos.y - curve_offset);  // Control point 2
+        ImVec2 p2 = ImVec2(source_pos.x + thickness / 2, source_pos.y - curve_offset);  // Control point 1
+        ImVec2 p3 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y + curve_offset);  // Control point 2
 
 
         // Define the color and thickness for the flow
-        ImU32 flow_color = IM_COL32(100, 149, 237, 255);  // Cornflower Blue
+        //ImU32 flow_color = IM_COL32(100, 149, 237, 255);  // Cornflower Blue
         // ImBezierCubicCalc Use this for calculating mouse distance to curve
         // Draw the Bezier curve representing the flow
-        draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, node_width, 100);
+        draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, thickness, 100);
     }
 
 
@@ -699,7 +699,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
 
-        ImU32 colors[2] = { ImGui::ColorConvertFloat4ToU32(IM_GREEN), ImGui::ColorConvertFloat4ToU32(IM_BLUE) }; //TODO: Sankey: Add colormap picking to the bar drawing
+        ImU32 colors[2] = { ImGui::ColorConvertFloat4ToU32({0,1,0,0.3}), ImGui::ColorConvertFloat4ToU32(IM_BLUE) }; //TODO: Sankey: Add colormap picking to the bar drawing
 
 
         //Draw bars
@@ -717,13 +717,29 @@ struct VeloxChem : viamd::EventHandler {
             draw_list->AddRect(end_p0, end_p1, colors[i]);
         }
 
+        //Draw curves
+        for (int start_i = 0; start_i < num_bars; start_i++) {
+            ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height };
+            for (int end_i = 0; end_i < num_bars; end_i++) {
+                float percentage = initial_percentages[start_i] * transitions[start_i][end_i];
+                if (percentage != 0) {
+                    float width = bars_avail_width * percentage;
+                    ImVec2 end_pos = { cur_end_positions[end_i], plot_area.Min.y + bar_height };
+                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, colors[start_i]);
+                    start_pos.x += width;
+                    cur_end_positions[end_i] += width;
+                }
+            }
+        }
+
+
 
         ImVec2 source_pos = area.Min;
         ImVec2 dest_pos = area.Max;
         float node_width = 10;
         float node_height = 2;
 
-        draw_vertical_sankey_flow(draw_list, source_pos, dest_pos, node_width, node_height);
+        //draw_vertical_sankey_flow(draw_list, source_pos, dest_pos, node_width, node_height);
         //draw_list->AddBezierCubic()
         //ImPlot::poin
     }
