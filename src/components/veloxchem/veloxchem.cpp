@@ -632,6 +632,11 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, thickness, 100);
     }
 
+    static inline void draw_aligned_text(ImDrawList* draw_list, const char* text, ImVec2 pos, ImVec2 alignment = { 0,0 }) {
+        ImVec2 text_size = ImGui::CalcTextSize(text);
+        ImVec2 text_pos = pos - text_size * alignment;
+        draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
+    }
 
     static inline void im_sankey_diagram(ImRect area) {
         /*
@@ -640,11 +645,11 @@ struct VeloxChem : viamd::EventHandler {
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
         //Draw background
-        draw_list->AddRectFilled(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 1,1,1,1 }));
-        draw_list->AddRect(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }));
+        //draw_list->AddRectFilled(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 1,1,1,1 }));
+        //draw_list->AddRect(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }));
 
         ImRect plot_area = area;
-        const float plot_percent = 0.9;
+        const float plot_percent = 0.8;
         plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
         //draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 })); //Use this to draw debug of plot area
 
@@ -663,7 +668,7 @@ struct VeloxChem : viamd::EventHandler {
             * v
             * row
             */
-            {0.1, 0.9},
+            {0.22, 0.78},
             {0.0, 1.0}
         };
 
@@ -690,18 +695,46 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
-        //The position of each end state we should currently draw at
-        float cur_end_positions[2] = {};
+        //The position of each end bar
+        float end_positions[2] = {};
         float cur_pos = plot_area.Min.x;
         for (int end_i = 0; end_i < num_bars; end_i++) {
-            cur_end_positions[end_i] = cur_pos;
+            end_positions[end_i] = cur_pos;
             cur_pos += bars_avail_width * end_percentages[end_i] + gap_size;
         }
 
+        //The current end position of the curve. Moves as we fill out the space
+        float sub_end_positions[2] = {};
+        for (int i = 0; i < 2; i++) {
+            sub_end_positions[i] = end_positions[i];
+        }
 
         ImU32 bar_colors[2] = { ImGui::ColorConvertFloat4ToU32({103.f / 255.f,193.f / 255.f,164.f / 255.f, 1.f}), ImGui::ColorConvertFloat4ToU32({255.f / 255.f, 140.f / 255.f, 100.f / 255.f, 1.f}) }; //TODO: Sankey: Add colormap picking to the bar drawing
         ImU32 flow_colors[2] = { ImGui::ColorConvertFloat4ToU32({103.f / 255.f,193.f / 255.f,164.f / 255.f, 0.5f}), ImGui::ColorConvertFloat4ToU32({255.f /255.f, 140.f /255.f, 100.f /255.f, 0.5f}) }; //TODO: Sankey: Add colormap picking to the bar drawing
 
+
+        //Draw curves
+        for (int start_i = 0; start_i < num_bars; start_i++) {
+            ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
+            for (int end_i = 0; end_i < num_bars; end_i++) {
+                float percentage = initial_percentages[start_i] * transitions[start_i][end_i];
+                if (percentage != 0) {
+                    float width = bars_avail_width * percentage;
+                    ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
+                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, flow_colors[start_i]);
+
+                    ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{width / 2, 0};
+                    char lable[16];
+                    sprintf(lable, "%3.2f%%", percentage * 100);
+                    if (width > ImGui::CalcTextSize(lable).x) {
+                        draw_aligned_text(draw_list, lable, midpoint, { 0.5, 0.5 });
+                    }
+
+                    start_pos.x += width;
+                    sub_end_positions[end_i] += width;
+                }
+            }
+        }
 
         //Draw bars
         for (int i = 0; i < num_bars; i++) {
@@ -709,29 +742,26 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 start_p0 = { start_positions[i], plot_area.Max.y };
             ImVec2 start_p1 = { start_positions[i] + bars_avail_width * initial_percentages[i], plot_area.Max.y - bar_height };
             draw_list->AddRectFilled(start_p0, start_p1, bar_colors[i]);
-            draw_list->AddRect(start_p0, start_p1, bar_colors[i]);
+            draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
+            ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p0.y };
+            char start_lable[16];
+            sprintf(start_lable, "%3.2f%%", initial_percentages[i] * 100);
+            draw_aligned_text(draw_list, names[i], start_midpoint, {0.5, -0.2});
+            draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
 
             //End
-            ImVec2 end_p0 = { cur_end_positions[i], plot_area.Min.y };
-            ImVec2 end_p1 = { cur_end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
+            ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
+            ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
             draw_list->AddRectFilled(end_p0, end_p1, bar_colors[i]);
-            draw_list->AddRect(end_p0, end_p1, bar_colors[i]);
+            draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
+            ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
+            char end_lable[16];
+            sprintf(end_lable, "%3.2f%%", end_percentages[i] * 100);
+            draw_aligned_text(draw_list, names[i], end_midpoint, {0.5, 1.2});
+            draw_aligned_text(draw_list, end_lable, end_midpoint, { 0.5, 2.2 });
+
         }
 
-        //Draw curves
-        for (int start_i = 0; start_i < num_bars; start_i++) {
-            ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height };
-            for (int end_i = 0; end_i < num_bars; end_i++) {
-                float percentage = initial_percentages[start_i] * transitions[start_i][end_i];
-                if (percentage != 0) {
-                    float width = bars_avail_width * percentage;
-                    ImVec2 end_pos = { cur_end_positions[end_i], plot_area.Min.y + bar_height };
-                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, flow_colors[start_i]);
-                    start_pos.x += width;
-                    cur_end_positions[end_i] += width;
-                }
-            }
-        }
 
 
 
@@ -2625,10 +2655,10 @@ struct VeloxChem : viamd::EventHandler {
 
                 }
                 // @TODO: Draw Sankey Diagram of Transition Matrix
-                im_sankey_diagram({100,200,500,500});
                 {
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
+                    im_sankey_diagram({p0.x, p0.y, p1.x, p1.y});
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
                 }
