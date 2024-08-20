@@ -643,33 +643,78 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddRectFilled(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 1,1,1,1 }));
         draw_list->AddRect(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }));
 
-        ImRect plot_area = area; //TODO: Find a way to shrink an area. Perhaps expand by -area.width * percentage
+        ImRect plot_area = area;
         const float plot_percent = 0.9;
         plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
         draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 }));
 
 
+
+        //The given data
         const char* names[] = { "THIO", "QUIN" };
-        float initial_percentage[] = { 0.5482, 0.4518 };
+        float initial_percentages[2] = { 0.3, 0.7 };
         float transitions[2][2] = {
-            {0.3, 0.7},
-            {0.1, 0.9}
+            /*
+            *   A B   col -->
+            * A
+            * B
+            * |
+            * |
+            * v
+            * row
+            */
+            {0.1, 0.9},
+            {0.0, 1.0}
         };
+
+        //Bar definitions
+        const float bar_height = plot_area.GetHeight() * 0.05;
+        int num_bars = 2;
+        int num_gaps = num_bars - 1;
+        float gap_size = plot_area.GetWidth() * 0.05;
+        float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
+
+        //Calculate start positions
+        float start_positions[2] = {};
+        float cur_bottom_pos = plot_area.Min.x;
+        for (int i = 0; i < num_bars; i++) {
+            start_positions[i] = cur_bottom_pos;
+            cur_bottom_pos += bars_avail_width * initial_percentages[i] + gap_size;
+        }
+
+        //Calculate end percentages
+        float end_percentages[2] = {};
+        for (int start_i = 0; start_i < num_bars; start_i++) {
+            for (int end_i = 0; end_i < num_bars; end_i++) {
+                end_percentages[end_i] += initial_percentages[start_i] * transitions[start_i][end_i];
+            }
+        }
+
+        //The position of each end state we should currently draw at
+        float cur_end_positions[2] = {};
+        float cur_pos = plot_area.Min.x;
+        for (int end_i = 0; end_i < num_bars; end_i++) {
+            cur_end_positions[end_i] = cur_pos;
+            cur_pos += bars_avail_width * end_percentages[end_i] + gap_size;
+        }
+
 
         ImU32 colors[2] = { ImGui::ColorConvertFloat4ToU32(IM_GREEN), ImGui::ColorConvertFloat4ToU32(IM_BLUE) }; //TODO: Sankey: Add colormap picking to the bar drawing
 
-        //Draw the bars. Before and after
-        const float bar_height = 5;
-        int num_bars = 2;
-        int num_gaps = num_bars - 1;
-        float gap_size = 1.0;
-        float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
-        ImVec2 bottom_bar_pos = { plot_area.Min.x, plot_area.Max.y };
-        for (int i = 0; i < 2; i++) {
-            float bar_width = bars_avail_width * initial_percentage[i];
-            ImVec2 bar_end_pos = bottom_bar_pos + ImVec2{ bar_width, -bar_height };
-            draw_list->AddRectFilled(bottom_bar_pos, bar_end_pos, colors[i]);
-            bottom_bar_pos.x += gap_size + bar_width;
+
+        //Draw bars
+        for (int i = 0; i < num_bars; i++) {
+            //Start
+            ImVec2 start_p0 = { start_positions[i], plot_area.Max.y };
+            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * initial_percentages[i], plot_area.Max.y - bar_height };
+            draw_list->AddRectFilled(start_p0, start_p1, colors[i]);
+            draw_list->AddRect(start_p0, start_p1, colors[i]);
+
+            //End
+            ImVec2 end_p0 = { cur_end_positions[i], plot_area.Min.y };
+            ImVec2 end_p1 = { cur_end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
+            draw_list->AddRectFilled(end_p0, end_p1, colors[i]);
+            draw_list->AddRect(end_p0, end_p1, colors[i]);
         }
 
 
