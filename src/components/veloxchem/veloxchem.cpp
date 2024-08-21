@@ -759,13 +759,13 @@ struct VeloxChem : viamd::EventHandler {
             ImVec4 bar_color = ImPlot::GetColormapColor(i);
             ImVec2 mouse_pos = ImGui::GetMousePos();
 
-            //Start
+            //Calculate start
             ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height};
             ImVec2 start_p1 = { start_positions[i] + bars_avail_width * initial_percentages[i], plot_area.Max.y };
             ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
             ImRect start_bar = ImRect{ start_p0, start_p1 };
 
-            //End
+            //Calculate end
             ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
             ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
             ImRect end_bar = ImRect{ end_p0, end_p1 };
@@ -775,7 +775,7 @@ struct VeloxChem : viamd::EventHandler {
                 bar_color = make_highlight_color(bar_color);
             }
 
-
+            //Draw start
             draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
             draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
             char start_lable[16];
@@ -783,6 +783,7 @@ struct VeloxChem : viamd::EventHandler {
             draw_aligned_text(draw_list, names[i], start_midpoint, { 0.5, -0.2 });
             draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
 
+            //Draw end
             draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
             draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
             char end_lable[16];
@@ -790,18 +791,6 @@ struct VeloxChem : viamd::EventHandler {
             draw_aligned_text(draw_list, names[i], end_midpoint, {0.5, 1.2});
             draw_aligned_text(draw_list, end_lable, end_midpoint, { 0.5, 2.2 });
         }
-
-
-
-
-        ImVec2 source_pos = area.Min;
-        ImVec2 dest_pos = area.Max;
-        float node_width = 10;
-        float node_height = 2;
-
-        //draw_vertical_sankey_flow(draw_list, source_pos, dest_pos, node_width, node_height);
-        //draw_list->AddBezierCubic()
-        //ImPlot::poin
     }
 
 
