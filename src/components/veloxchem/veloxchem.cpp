@@ -610,6 +610,24 @@ struct VeloxChem : viamd::EventHandler {
 
         return sqrt((dx * dx) + (dy * dy));
     }
+    static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 1.3f) {
+        // Ensure the factor is not too high, to avoid over-brightening
+        factor = (factor < 1.0f) ? 1.0f : factor;
+
+        // Increase the brightness of each component by the factor
+        float r = color.x * factor;
+        float g = color.y * factor;
+        float b = color.z * factor;
+
+        // Clamp the values to the range [0, 1]
+        r = (r > 1.0f) ? 1.0f : r;
+        g = (g > 1.0f) ? 1.0f : g;
+        b = (b > 1.0f) ? 1.0f : b;
+
+        // Return the new highlighted color with the same alpha
+        return ImVec4(r, g, b, color.w);
+    }
+
 
     static inline void draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
         // Get the draw list from the current window
@@ -739,29 +757,38 @@ struct VeloxChem : viamd::EventHandler {
         //Draw bars
         for (int i = 0; i < num_bars; i++) {
             ImVec4 bar_color = ImPlot::GetColormapColor(i);
+            ImVec2 mouse_pos = ImGui::GetMousePos();
 
             //Start
-            ImVec2 start_p0 = { start_positions[i], plot_area.Max.y };
-            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * initial_percentages[i], plot_area.Max.y - bar_height };
-            draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
-            draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
-            ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p0.y };
-            char start_lable[16];
-            sprintf(start_lable, "%3.2f%%", initial_percentages[i] * 100);
-            draw_aligned_text(draw_list, names[i], start_midpoint, {0.5, -0.2});
-            draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
+            ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height};
+            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * initial_percentages[i], plot_area.Max.y };
+            ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
+            ImRect start_bar = ImRect{ start_p0, start_p1 };
 
             //End
             ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
             ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
+            ImRect end_bar = ImRect{ end_p0, end_p1 };
+            ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
+
+            if (start_bar.Contains(mouse_pos) || end_bar.Contains(mouse_pos)) {
+                bar_color = make_highlight_color(bar_color);
+            }
+
+
+            draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+            draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
+            char start_lable[16];
+            sprintf(start_lable, "%3.2f%%", initial_percentages[i] * 100);
+            draw_aligned_text(draw_list, names[i], start_midpoint, { 0.5, -0.2 });
+            draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
+
             draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
             draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
-            ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
             char end_lable[16];
             sprintf(end_lable, "%3.2f%%", end_percentages[i] * 100);
             draw_aligned_text(draw_list, names[i], end_midpoint, {0.5, 1.2});
             draw_aligned_text(draw_list, end_lable, end_midpoint, { 0.5, 2.2 });
-
         }
 
 
