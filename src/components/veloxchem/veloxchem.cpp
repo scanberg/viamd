@@ -47,9 +47,12 @@ static const float vol_res_scl[3] = {
     16.0f,
 };
 
-void grid_segment_and_attribute(float* out_group_values, const uint8_t* point_group_idx, const vec3_t* point_xyz, size_t num_points, const md_grid_t* grid) {
+// Voronoi segmentation
+void grid_segment_and_attribute(float* out_group_values, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, const md_grid_t* grid) {
     for (int z = 0; z < grid->dim[2]; ++z) {
+        float gz = grid->origin[2] + z * grid->stepsize[2];
         for (int y = 0; y < grid->dim[1]; ++y) {
+            float gy = grid->origin[1] + y * grid->stepsize[1];
             for (int x = 0; x < grid->dim[0]; ++x) {
                 int index = x + y * grid->dim[0] + z * grid->dim[0] * grid->dim[1];
                 float value = grid->data[index];
@@ -58,8 +61,6 @@ void grid_segment_and_attribute(float* out_group_values, const uint8_t* point_gr
                 if (value == 0.0f) continue;
 
                 float gx = grid->origin[0] + x * grid->stepsize[0];
-                float gy = grid->origin[1] + y * grid->stepsize[1];
-                float gz = grid->origin[2] + z * grid->stepsize[2];
 
                 float min_dist = FLT_MAX;
                 int   group_idx = -1;
@@ -69,12 +70,13 @@ void grid_segment_and_attribute(float* out_group_values, const uint8_t* point_gr
                     float px = point_xyz[i].x;
                     float py = point_xyz[i].y;
                     float pz = point_xyz[i].z;
+                    float pr = point_r[i];
 
                     float dx = px - gx;
                     float dy = py - gy;
                     float dz = pz - gz;
 
-                    float dist = dx * dx + dy * dy + dz * dz;
+                    float dist = dx*dx + dy*dy + dz*dz - (pr*pr);
                     if (dist < min_dist) {
                         min_dist = dist;
                         group_idx = point_group_idx[i];
@@ -164,6 +166,7 @@ struct VeloxChem : viamd::EventHandler {
 
         size_t num_atoms = 0;
         vec3_t* atom_xyz = nullptr;
+        float*  atom_r   = nullptr;
         uint8_t* atom_group_idx = nullptr;
 
         // Square transition matrix, should have dim == num_groups
@@ -374,7 +377,8 @@ struct VeloxChem : viamd::EventHandler {
                 vec4_t min_box = vec4_set1( FLT_MAX);
                 vec4_t max_box = vec4_set1(-FLT_MAX);
 
-                nto.atom_xyz = (vec3_t*)md_arena_allocator_push(arena, vlx.geom.num_atoms);
+                nto.atom_xyz = (vec3_t*)md_arena_allocator_push(arena, sizeof(vec3_t) * vlx.geom.num_atoms);
+                nto.atom_r   = (float*) md_arena_allocator_push(arena, sizeof(float)  * vlx.geom.num_atoms);
                 nto.num_atoms = vlx.geom.num_atoms;
 
                 // Compute the PCA of the provided geometry
@@ -382,6 +386,7 @@ struct VeloxChem : viamd::EventHandler {
                 vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
                 for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
                     nto.atom_xyz[i] = { (float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i] };
+                    nto.atom_r[i]   = md_util_element_vdw_radius(vlx.geom.atomic_number[i]);
                     xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
                     min_box = vec4_min(min_box, xyzw[i]);
                     max_box = vec4_max(max_box, xyzw[i]);
@@ -668,7 +673,7 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    task_system::ID compute_nto_group_values(float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, size_t num_points, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
+    task_system::ID compute_nto_group_values(float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
         md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
         md_gto_t* pgtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_pgtos);
@@ -710,6 +715,7 @@ struct VeloxChem : viamd::EventHandler {
 
             const uint8_t* point_group_idx;
             const vec3_t* point_xyz;
+            const float* point_r;
             size_t num_points;
         };
 
@@ -737,6 +743,7 @@ struct VeloxChem : viamd::EventHandler {
             
 			.point_group_idx = point_group_idx,
 			.point_xyz = point_xyz,
+            .point_r = point_r,
 			.num_points = num_points,
         };
 
@@ -746,8 +753,16 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID segment_task = task_system::create_pool_task(STR_LIT("##Segment Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
 
+            double sum = 0.0;
+            size_t len = data->args.grid.dim[0] * data->args.grid.dim[1] * data->args.grid.dim[2];
+            for (size_t i = 0; i < len; ++i) {
+                sum += data->args.grid.data[i];
+            }
+
+            MD_LOG_DEBUG("SUM: %f", sum);
+
             MD_LOG_DEBUG("Starting segmentation of volume");
-            grid_segment_and_attribute(data->dst_group_values, data->point_group_idx, data->point_xyz, data->num_points, &data->args.grid);
+            grid_segment_and_attribute(data->dst_group_values, data->point_group_idx, data->point_xyz, data->point_r, data->num_points, &data->args.grid);
             MD_LOG_DEBUG("Finished segmentation of volume");
 
             md_free(data->alloc, data->args.pgtos, data->args.num_pgtos * sizeof(md_gto_t));
@@ -2549,8 +2564,8 @@ struct VeloxChem : viamd::EventHandler {
 
 					MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * nto.transition_matrix_dim);
 
-                    nto.seg_task[0] = compute_nto_group_values(group_data->part, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
-                    nto.seg_task[1] = compute_nto_group_values(group_data->hole, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
+                    nto.seg_task[0] = compute_nto_group_values(group_data->part, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
+                    nto.seg_task[1] = compute_nto_group_values(group_data->hole, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
 
                     task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
                         GroupData* group_data = (GroupData*)user_data;
