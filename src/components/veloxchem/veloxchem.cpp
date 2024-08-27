@@ -1511,7 +1511,6 @@ struct VeloxChem : viamd::EventHandler {
 
             str_t file_extension = {};
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
-                //TODO: Start at 0 when XVG is implemented
                 for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
                         table_format = i;
