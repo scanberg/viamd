@@ -2578,6 +2578,40 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::End();
     }
 
+    static inline void distribute_charges_heuristic(float* matrix, size_t matrix_size, float* hole_charges, float* particle_charges, size_t num_charges) {
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
+        int* donors = 0;
+        int* acceptors = 0;
+        float* charge_diff = 0;
+
+        for (size_t i = 0; i < num_charges; i++) {
+            float gsCharge = hole_charges[i];
+            float esCharge = particle_charges[i];
+            if (gsCharge > esCharge) {
+                md_array_push(donors, (int)i, temp_alloc);
+            }
+            else {
+                md_array_push(acceptors, (int)i, temp_alloc);
+            }
+            float diff = esCharge - gsCharge;
+            matrix[i * matrix_size + i] = MIN(gsCharge, esCharge);
+            md_array_push(charge_diff, diff, temp_alloc);
+        }
+
+        float total_acceptor_charge = 0;
+        for (size_t i = 0; i < md_array_size(acceptors); i++) {
+            total_acceptor_charge += charge_diff[i];
+        }
+        for (size_t don_i = 0; don_i < md_array_size(donors); don_i++) {
+            float charge_deficit = -charge_diff[don_i];
+            for (size_t acc_i = 0; acc_i < md_array_size(acceptors); acc_i++) {
+                float contrib = charge_deficit * charge_diff[acc_i] / total_acceptor_charge;
+                matrix[acc_i * matrix_size + don_i] = contrib;
+            }
+        }
+
+    }
+
     void draw_nto_window(const ApplicationState& state) {
         if (!nto.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
@@ -2784,6 +2818,9 @@ struct VeloxChem : viamd::EventHandler {
                     task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
                         GroupData* group_data = (GroupData*)user_data;
 						// @TODO: Compute transition matrix here
+                        const size_t matrix_size = group_data->num_groups * group_data->num_groups;
+                        //TODO: Add an accumulate_subgroup_charges function 
+                        distribute_charges_heuristic(group_data->matrix, group_data->matrix_size, group_data->hole, group_data->)
                     }, group_data);
                     
 					task_system::set_task_dependency(compute_matrix_task, nto.seg_task[0]);
