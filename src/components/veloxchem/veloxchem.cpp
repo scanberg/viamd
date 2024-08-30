@@ -2609,6 +2609,26 @@ struct VeloxChem : viamd::EventHandler {
                 matrix[acc_i * matrix_size + don_i] = contrib;
             }
         }
+    }
+
+    static inline void accumulate_subgroup_charges(const float* hole_charges, const float* particle_charges, size_t num_charges, size_t num_subgroups, float* ligandGSCharges, float* ligandESCharges, int* atom_subgroup_map) {
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
+        float sumGSCharges = 0;
+        float sumESCharges = 0;
+        for (size_t i = 0; i < num_charges; i++) {
+            sumGSCharges += hole_charges[i];
+            sumESCharges += particle_charges[i];
+        }
+
+        for (size_t i = 0; i < num_charges; i++) {
+            int subgroup_index = atom_subgroup_map[i];
+            ligandGSCharges[subgroup_index] += hole_charges[i] / sumGSCharges;
+            ligandESCharges[subgroup_index] += particle_charges[i] / sumESCharges;
+        }
+    }
+
+    static inline void compute_subgroup_charges(float* hole_charges, float* particle_charges, size_t num_charges, size_t num_subgroups, float* ligandGSCharges, float* ligandESCharges, int* atom_subgroup_map) {
+        accumulate_subgroup_charges(hole_charges, particle_charges, num_charges, num_subgroups, ligandGSCharges, ligandESCharges, atom_subgroup_map)
 
     }
 
