@@ -18,9 +18,28 @@
 #include <viamd.h>
 #include <serialization_utils.h>
 #include <imgui_widgets.h>
+#include <implot_widgets.h>
 #include <implot_internal.h>
 
-struct ShapeSpace : viamd::EventHandler {
+/*
+    @NOTE:
+    It would be nice to have a colormap applied to the points in the plot where they are graded by t=time
+    However, the current implot api for scatterplot does not currently support that.
+    Bummer!
+*/
+
+enum ColorMode {
+    ColorMode_Uniform,
+    ColorMode_Colormap,
+    ColorMode_Count,
+};
+
+static const char* colormode_lbl[] = {
+    "Uniform",
+    "Colormap",
+};
+
+struct Shapespace : viamd::EventHandler {
     char input[256] = "all";
     char error[256] = "";
 
@@ -44,12 +63,15 @@ struct ShapeSpace : viamd::EventHandler {
     // Settings
     float marker_size = 1.5f;
     bool  use_mass = true;
+    ColorMode mode = ColorMode_Colormap;
+    ImPlotColormap colormap = 0;
+    ImVec4 color = {0.5f,1.0f,0.5f,1.0f};
 
     task_system::ID evaluate_task = 0;
 
     ApplicationState* app_state = 0;
 
-    ShapeSpace() { viamd::event_system_register_handler(*this); }
+    Shapespace() { viamd::event_system_register_handler(*this); }
 
     void process_events(const viamd::Event* events, size_t num_events) final {
         for (size_t i = 0; i < num_events; ++i) {
@@ -111,7 +133,7 @@ struct ShapeSpace : viamd::EventHandler {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
         defer { ImGui::PopStyleVar(1); };
 
-        if (ImGui::Begin("Shape Space", &show_window, ImGuiWindowFlags_MenuBar)) {
+        if (ImGui::Begin("Shapespace", &show_window, ImGuiWindowFlags_MenuBar)) {
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Export")) {
                     if (ImGui::MenuItem("XVG")) {
@@ -125,6 +147,21 @@ struct ShapeSpace : viamd::EventHandler {
                 if (ImGui::BeginMenu("Settings")) {
                     static constexpr float marker_min_size = 0.01f;
                     static constexpr float marker_max_size = 10.0f;
+#if 0
+                    if (ImGui::BeginCombo("Color", colormode_lbl[mode])) {
+                        for (int i = 0; i < (int)ColorMode_Count; ++i) {
+                            if (ImGui::Selectable(colormode_lbl[i], (int)mode == i)) {
+                                mode = (ColorMode)i;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (mode == ColorMode_Colormap) {
+                        ImPlot::ColormapSelection("Colormap Picker", &colormap);
+                    } else if (mode == ColorMode_Uniform) {
+                        ImGui::ColorPicker4("Uniform Color", &color.x);
+                    }
+#endif
                     ImGui::SliderFloat("Marker Size", &marker_size, marker_min_size, marker_max_size);
                     ImGui::Checkbox("Use Mass", &use_mass);
                     ImGui::EndMenu();
@@ -154,7 +191,7 @@ struct ShapeSpace : viamd::EventHandler {
             const float y_reset[2] = {-0.10f, 0.98f};
             const double zoom_constraints[2] = {0.1, 1.5};
 
-            if (ImPlot::BeginPlot("##Shape Space Plot", ImVec2(-1,-1), flags)) {
+            if (ImPlot::BeginPlot("##Shapespace Plot", ImVec2(-1,-1), flags)) {
                 ImPlot::SetupAxesLimits(x_reset[0], x_reset[1], y_reset[0], y_reset[1], ImGuiCond_Appearing);
                 ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -1.0f, 2.0f);
                 ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -1.0f, 2.0f);
@@ -315,7 +352,8 @@ struct ShapeSpace : viamd::EventHandler {
                 num_frames = 0;
                 num_structures = 0;
                 md_arena_allocator_reset(arena);
-                md_bitfield_clear(&joined_bitfield);
+                joined_bitfield = {0};
+                md_bitfield_init(&joined_bitfield, arena);
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
@@ -343,8 +381,8 @@ struct ShapeSpace : viamd::EventHandler {
                     MEMSET(coords,  0, md_array_bytes(coords));
                     evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                         (void)thread_num;
-                        ShapeSpace* shape_space = (ShapeSpace*)user_data;
-                        ApplicationState* app_state = shape_space->app_state;
+                        Shapespace* shapespace = (Shapespace*)user_data;
+                        ApplicationState* app_state = shapespace->app_state;
                         const size_t stride = ALIGN_TO(app_state->mold.mol.atom.count, 8);
                         const size_t bytes = stride * 3 * sizeof(float);
                         float* coords = (float*)md_alloc(md_get_heap_allocator(), bytes);
@@ -352,7 +390,7 @@ struct ShapeSpace : viamd::EventHandler {
                         float* x = coords + stride * 0;
                         float* y = coords + stride * 1;
                         float* z = coords + stride * 2;
-                        const float* w = shape_space->use_mass ? app_state->mold.mol.atom.mass : 0;
+                        const float* w = shapespace->use_mass ? app_state->mold.mol.atom.mass : 0;
 
                         const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
 
@@ -361,8 +399,8 @@ struct ShapeSpace : viamd::EventHandler {
                             md_trajectory_frame_header_t header;
                             md_trajectory_load_frame(app_state->mold.traj, frame_idx, &header, x, y, z);
 
-                            for (size_t i = 0; i < md_array_size(shape_space->bitfields); ++i) {
-                                const md_bitfield_t* bf = &shape_space->bitfields[i];
+                            for (size_t i = 0; i < md_array_size(shapespace->bitfields); ++i) {
+                                const md_bitfield_t* bf = &shapespace->bitfields[i];
                                 size_t count = md_bitfield_popcount(bf);
                                 md_array_resize(xyzw, count, md_get_heap_allocator());
 
@@ -379,9 +417,9 @@ struct ShapeSpace : viamd::EventHandler {
                                 const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                                 const vec3_t weights = md_util_shape_weights(&M);
 
-                                dst_idx = shape_space->num_frames * i + frame_idx;
-                                shape_space->weights[dst_idx] = weights;
-                                shape_space->coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
+                                dst_idx = shapespace->num_frames * i + frame_idx;
+                                shapespace->weights[dst_idx] = weights;
+                                shapespace->coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
                             }
                         }
                         md_array_free(xyzw, md_get_heap_allocator());
@@ -462,4 +500,4 @@ struct ShapeSpace : viamd::EventHandler {
     }
 };
 
-static ShapeSpace instance = {};
+static Shapespace instance = {};
