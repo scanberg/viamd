@@ -2570,6 +2570,7 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::End();
     }
 
+    //Calculates the transition matrix heuristic
     static inline void distribute_charges_heuristic(float* matrix, size_t matrix_size, float* hole_charges, float* particle_charges, size_t num_charges) {
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         int* donors = 0;
@@ -2603,6 +2604,7 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    //Takes the hole and particle charges of all atoms, and calculates the per group charges
     static inline void accumulate_subgroup_charges(const float* hole_charges, const float* particle_charges, size_t num_charges, size_t num_subgroups, float* ligandGSCharges, float* ligandESCharges, int* atom_subgroup_map) {
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         float sumGSCharges = 0;
@@ -2619,11 +2621,15 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    //Calculates the subgroup charges and the transition matrix
     static inline void compute_subgroup_charges(float* hole_charges, float* particle_charges, size_t num_charges, size_t num_subgroups, int* atom_subgroup_map) {
         md_allocator_i* temp_alloc = md_get_temp_allocator();
+
+        //These two arrays are the group charges. They are already defined in the GroupData.
         md_array(float) ligandGSCharges = md_array_create(float, num_subgroups, temp_alloc);
         md_array(float) ligandESCharges = md_array_create(float, num_subgroups, temp_alloc);
         accumulate_subgroup_charges(hole_charges, particle_charges, num_charges, num_subgroups, ligandGSCharges, ligandESCharges, atom_subgroup_map);
+        
 
     }
 
@@ -2843,7 +2849,7 @@ struct VeloxChem : viamd::EventHandler {
 						// @TODO: Compute transition matrix here
                         const size_t matrix_size = group_data->num_groups * group_data->num_groups;
                         //TODO: Add an accumulate_subgroup_charges function 
-                        distribute_charges_heuristic(group_data->matrix, group_data->matrix_size, group_data->hole, group_data->);
+                        distribute_charges_heuristic(group_data->transition_matrix, group_data->num_groups, group_data->hole, group_data->);
                         md_free(group_data->alloc, group_data, group_data->alloc_size);
                     }, group_data);
                     
