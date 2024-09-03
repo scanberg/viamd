@@ -753,22 +753,24 @@ struct VeloxChem : viamd::EventHandler {
 
 
 
-        //The given data
-        const char* names[] = { "THIO", "QUIN" };
-        float initial_percentages[2] = { 0.3, 0.7 };
-        float transitions[2][2] = {
-            /*
-            *   A B   col -->
-            * A
-            * B
-            * |
-            * |
-            * v
-            * row
-            */
-            {0.22, 0.78}, //Read as "Starting from A, 22% of A_Start goes to A_End, and 78% goes to B_End
-            {0.0, 1.0}
-        };
+        ////The given data
+        //const char* names[] = { "THIO", "QUIN" };
+        //float initial_percentages[2] = { 0.3, 0.7 };
+        //float transitions[2][2] = {
+        //    /*
+        //    *   A B   col -->
+        //    * A
+        //    * B
+        //    * |
+        //    * |
+        //    * v
+        //    * row
+        //    */
+        //    {0.22, 0.78}, //Read as "Starting from A, 22% of A_Start goes to A_End, and 78% goes to B_End
+        //    {0.0, 1.0}
+        //};
+
+
 
         //Bar definitions
         const float bar_height = plot_area.GetHeight() * 0.05;
@@ -2571,7 +2573,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     //Calculates the transition matrix heuristic
-    static inline void distribute_charges_heuristic(float* matrix, size_t matrix_size, float* hole_charges, float* particle_charges, size_t num_charges) {
+    static inline void distribute_charges_heuristic(float* out_matrix, const size_t num_charges, const float* hole_charges, const float* particle_charges) {
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         int* donors = 0;
         int* acceptors = 0;
@@ -2587,7 +2589,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_array_push(acceptors, (int)i, temp_alloc);
             }
             float diff = esCharge - gsCharge;
-            matrix[i * matrix_size + i] = MIN(gsCharge, esCharge);
+            out_matrix[i * num_charges + i] = MIN(gsCharge, esCharge);
             md_array_push(charge_diff, diff, temp_alloc);
         }
 
@@ -2599,7 +2601,7 @@ struct VeloxChem : viamd::EventHandler {
             float charge_deficit = -charge_diff[don_i];
             for (size_t acc_i = 0; acc_i < md_array_size(acceptors); acc_i++) {
                 float contrib = charge_deficit * charge_diff[acc_i] / total_acceptor_charge;
-                matrix[acc_i * matrix_size + don_i] = contrib;
+                out_matrix[acc_i * num_charges + don_i] = contrib;
             }
         }
     }
@@ -2626,7 +2628,7 @@ struct VeloxChem : viamd::EventHandler {
         md_allocator_i* temp_alloc = md_get_temp_allocator();
 
         //These two arrays are the group charges. They are already defined in the GroupData.
-        md_array(float) ligandGSCharges = md_array_create(float, num_subgroups, temp_alloc);
+        float* ligandGSCharges = md_array_create(float, num_subgroups, temp_alloc);
         md_array(float) ligandESCharges = md_array_create(float, num_subgroups, temp_alloc);
         accumulate_subgroup_charges(hole_charges, particle_charges, num_charges, num_subgroups, ligandGSCharges, ligandESCharges, atom_subgroup_map);
         
@@ -2847,9 +2849,8 @@ struct VeloxChem : viamd::EventHandler {
                     task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
                         GroupData* group_data = (GroupData*)user_data;
 						// @TODO: Compute transition matrix here
-                        const size_t matrix_size = group_data->num_groups * group_data->num_groups;
                         //TODO: Add an accumulate_subgroup_charges function 
-                        distribute_charges_heuristic(group_data->transition_matrix, group_data->num_groups, group_data->hole, group_data->);
+                        distribute_charges_heuristic(group_data->transition_matrix, group_data->num_groups, group_data->hole, group_data->part);
                         md_free(group_data->alloc, group_data, group_data->alloc_size);
                     }, group_data);
                     
