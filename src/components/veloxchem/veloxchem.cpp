@@ -23,11 +23,10 @@
 #include <md_csv.h>
 #include <md_xvg.h>
 
-
-
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
+#define DEFAULT_SAMPLES_PER_ANGSTROM 6
 
 #define IM_GREEN ImVec4{0, 1, 0, 1}
 #define IM_RED ImVec4{1, 0, 0, 1}
@@ -216,6 +215,8 @@ struct VeloxChem : viamd::EventHandler {
         // Square transition matrix, should have dim == num_groups
         size_t transition_matrix_dim = 0;
         float* transition_matrix = nullptr;
+        float* transition_density_hole = nullptr;
+        float* transition_density_part = nullptr;
 
         size_t num_groups = 0;
         // @TODO: Add group data
@@ -485,7 +486,7 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    task_system::ID compute_nto_async(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
+    task_system::ID compute_nto_async(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
 		md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
         md_gto_t* pgtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_pgtos);
@@ -589,7 +590,7 @@ struct VeloxChem : viamd::EventHandler {
 		md_gto_eval_mode_t mode;
 	};
 
-    task_system::ID compute_mo_async(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
+    task_system::ID compute_mo_async(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
 		md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_pgtos = md_vlx_mol_pgto_count(&vlx);
         md_gto_t* pgtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t)* num_pgtos);
@@ -875,8 +876,7 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
     
-    task_system::ID compute_nto_group_values_async(float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = 8.0f) {
-
+    task_system::ID compute_nto_group_values_async(float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
         md_gto_t* pgtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_pgtos);
@@ -2800,59 +2800,36 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (recompute_transition_matrix) {
                     const float samples_per_angstrom = 6.0f;
-
-                    struct GroupData {
-                        float* hole;
-                        float* part;
-                        float* transition_matrix;
-                        size_t num_groups;
-                        const uint8_t* atom_group_idx;
-                        const vec3_t* atom_xyz;
-                        md_allocator_i* alloc;
-                        size_t alloc_size;
-                    };
-
-                    // Heap allocator is used here since the data will be operated on from different threads
-                    md_allocator_i* alloc = md_get_heap_allocator();
-                    size_t nto_idx = (size_t)rsp.selected;
-					size_t mem_size = sizeof(GroupData) + nto.num_groups * sizeof(float) * 2;
-					void* mem = md_alloc(alloc, mem_size);
-                    MEMSET(mem, 0, mem_size);
-
-                    GroupData* group_data = (GroupData*)mem;
-					*group_data = {
-						.hole = (float*)((char*)mem + sizeof(GroupData)),
-						.part = (float*)((char*)mem + sizeof(GroupData) + nto.num_groups * sizeof(float) * 1),
-                        .transition_matrix = nto.transition_matrix,
-						.num_groups = (size_t)nto.num_groups,
-						.atom_group_idx = nto.atom_group_idx,
-						.atom_xyz = nto.atom_xyz,
-                        .alloc = alloc,
-                        .alloc_size = mem_size,
-                    };
+                    const size_t nto_idx = (size_t)rsp.selected;
 
                     // Resize transition matrix to the correct size
 					if (nto.transition_matrix_dim != nto.num_groups) {
                         if (nto.transition_matrix) {
-                            md_free(arena, nto.transition_matrix, sizeof(float) * nto.transition_matrix_dim * nto.transition_matrix_dim);
+                            // The allocated size contains matrix N*N + 2*N for hole/part arrays
+                            const size_t cur_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
+                            md_free(arena, nto.transition_matrix, cur_mem);
                         }
 
 						nto.transition_matrix_dim = nto.num_groups;
-						nto.transition_matrix = (float*)md_alloc(arena, sizeof(float) * nto.transition_matrix_dim * nto.transition_matrix_dim);
+                        const size_t new_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
+						nto.transition_matrix = (float*)md_alloc(arena, new_mem);
+                        nto.transition_density_hole = nto.transition_matrix + (nto.transition_matrix_dim * nto.transition_matrix_dim);
+                        nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
 					}
 
-					MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * nto.transition_matrix_dim);
+					MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
-                    nto.seg_task[0] = compute_nto_group_values_async(group_data->part, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
-                    nto.seg_task[1] = compute_nto_group_values_async(group_data->hole, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
+                    nto.seg_task[0] = compute_nto_group_values_async(nto.transition_density_part, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
+                    nto.seg_task[1] = compute_nto_group_values_async(nto.transition_density_hole, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
 
                     task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
-                        GroupData* group_data = (GroupData*)user_data;
+                        VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
 						// @TODO: Compute transition matrix here
-                        //TODO: Add an accumulate_subgroup_charges function 
+                        // nto->transition_matrix;
+                        // nto->transition_density_hole
+                        // nto->transition_density_part
                         distribute_charges_heuristic(group_data->transition_matrix, group_data->num_groups, group_data->hole, group_data->part);
-                        md_free(group_data->alloc, group_data, group_data->alloc_size);
-                    }, group_data);
+                    }, &nto);
                     
 					task_system::set_task_dependency(compute_matrix_task, nto.seg_task[0]);
                     task_system::set_task_dependency(compute_matrix_task, nto.seg_task[1]);
