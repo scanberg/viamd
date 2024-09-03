@@ -737,7 +737,8 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
     }
 
-    static inline void im_sankey_diagram(ImRect area) {
+    static inline void im_sankey_diagram(ImRect area, Nto* nto) {
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
         /*
         * A sankey diagram needs to implement bezier curves, that are connecting two points
         */
@@ -752,7 +753,7 @@ struct VeloxChem : viamd::EventHandler {
         plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
         //draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 })); //Use this to draw debug of plot area
 
-
+        
 
         ////The given data
         //const char* names[] = { "THIO", "QUIN" };
@@ -775,39 +776,41 @@ struct VeloxChem : viamd::EventHandler {
 
         //Bar definitions
         const float bar_height = plot_area.GetHeight() * 0.05;
-        int num_bars = 2;
+        int num_bars = nto->num_groups;
         int num_gaps = num_bars - 1;
         float gap_size = plot_area.GetWidth() * 0.05;
         float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
 
+        //Calculate bar percentages
+        float start_sum = 0;
+        float end_sum = 0;
+        for (size_t i = 0; i < num_bars; i++) {
+            start_sum += nto->transition_density_hole[i];
+            end_sum += nto->transition_density_part[i];
+        }
+        md_array(float) start_percentages = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) end_percentages = md_array_create(float, num_bars, temp_alloc);
+        for (size_t i = 0; i < num_bars; i++) {
+            start_percentages[i] = nto->transition_density_hole[i] / start_sum;
+            end_percentages[i] = nto->transition_density_part[i] / end_sum;
+        }
+
         //Calculate start positions
-        float start_positions[2] = {};
+        md_array(float) start_positions = md_array_create(float, num_bars, temp_alloc);
         float cur_bottom_pos = plot_area.Min.x;
         for (int i = 0; i < num_bars; i++) {
             start_positions[i] = cur_bottom_pos;
-            cur_bottom_pos += bars_avail_width * initial_percentages[i] + gap_size;
+            cur_bottom_pos += bars_avail_width * start_percentages[i] + gap_size;
         }
 
-        //Calculate end percentages
-        float end_percentages[2] = {};
-        for (int start_i = 0; start_i < num_bars; start_i++) {
-            for (int end_i = 0; end_i < num_bars; end_i++) {
-                end_percentages[end_i] += initial_percentages[start_i] * transitions[start_i][end_i];
-            }
-        }
-
-        //The position of each end bar
-        float end_positions[2] = {};
+        //Calculate end positions
+        md_array(float) end_positions = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) sub_end_positions = md_array_create(float, num_bars, temp_alloc);
         float cur_pos = plot_area.Min.x;
         for (int end_i = 0; end_i < num_bars; end_i++) {
             end_positions[end_i] = cur_pos;
+            sub_end_positions[end_i] = cur_pos;
             cur_pos += bars_avail_width * end_percentages[end_i] + gap_size;
-        }
-
-        //The current end position of the curve. Moves as we fill out the space
-        float sub_end_positions[2] = {};
-        for (int i = 0; i < 2; i++) {
-            sub_end_positions[i] = end_positions[i];
         }
 
 
@@ -818,7 +821,7 @@ struct VeloxChem : viamd::EventHandler {
             ImVec4 flow_color = ImPlot::GetColormapColor(start_i);
             flow_color.w = 0.5;
             for (int end_i = 0; end_i < num_bars; end_i++) {
-                float percentage = initial_percentages[start_i] * transitions[start_i][end_i];
+                float percentage = nto->transition_matrix[end_i * num_bars + start_i];
                 if (percentage != 0) {
                     float width = bars_avail_width * percentage;
                     ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
@@ -844,7 +847,7 @@ struct VeloxChem : viamd::EventHandler {
 
             //Calculate start
             ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height};
-            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * initial_percentages[i], plot_area.Max.y };
+            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * start_percentages[i], plot_area.Max.y };
             ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
             ImRect start_bar = ImRect{ start_p0, start_p1 };
 
@@ -862,8 +865,8 @@ struct VeloxChem : viamd::EventHandler {
             draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
             draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
             char start_lable[16];
-            sprintf(start_lable, "%3.2f%%", initial_percentages[i] * 100);
-            draw_aligned_text(draw_list, names[i], start_midpoint, { 0.5, -0.2 });
+            sprintf(start_lable, "%3.2f%%", start_percentages[i] * 100);
+            draw_aligned_text(draw_list, "GROUP_NAME", start_midpoint, {0.5, -0.2});
             draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
 
             //Draw end
@@ -871,7 +874,7 @@ struct VeloxChem : viamd::EventHandler {
             draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
             char end_lable[16];
             sprintf(end_lable, "%3.2f%%", end_percentages[i] * 100);
-            draw_aligned_text(draw_list, names[i], end_midpoint, {0.5, 1.2});
+            draw_aligned_text(draw_list, "GROUP_NAME", end_midpoint, {0.5, 1.2});
             draw_aligned_text(draw_list, end_lable, end_midpoint, { 0.5, 2.2 });
         }
     }
@@ -2573,15 +2576,30 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     //Calculates the transition matrix heuristic
-    static inline void distribute_charges_heuristic(float* out_matrix, const size_t num_charges, const float* hole_charges, const float* particle_charges) {
+    static inline void distribute_charges_heuristic(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* particle_charges) {
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         int* donors = 0;
         int* acceptors = 0;
         float* charge_diff = 0;
 
-        for (size_t i = 0; i < num_charges; i++) {
-            float gsCharge = hole_charges[i];
-            float esCharge = particle_charges[i];
+        float hole_sum = 0;
+        float part_sum = 0;
+        for (size_t i = 0; i < num_groups; i++) {
+            hole_sum += hole_charges[i];
+            part_sum += particle_charges[i];
+        }
+
+        md_array(float) hole_percentages = md_array_create(float, num_groups, temp_alloc);
+        md_array(float) particle_percentages = md_array_create(float, num_groups, temp_alloc);
+
+        for (size_t i = 0; i < num_groups; i++) {
+            hole_percentages[i] = hole_charges[i] / hole_sum;
+            particle_percentages[i] = particle_charges[i] / part_sum;
+        }
+
+        for (size_t i = 0; i < num_groups; i++) {
+            float gsCharge = hole_percentages[i];
+            float esCharge = particle_percentages[i];
             if (gsCharge > esCharge) {
                 md_array_push(donors, (int)i, temp_alloc);
             }
@@ -2589,21 +2607,25 @@ struct VeloxChem : viamd::EventHandler {
                 md_array_push(acceptors, (int)i, temp_alloc);
             }
             float diff = esCharge - gsCharge;
-            out_matrix[i * num_charges + i] = MIN(gsCharge, esCharge);
+            out_matrix[i * num_groups + i] = MIN(gsCharge, esCharge);
             md_array_push(charge_diff, diff, temp_alloc);
         }
 
+        int num_donors = md_array_size(donors);
+        int num_acceptors = md_array_size(acceptors);
+
         float total_acceptor_charge = 0;
         for (size_t i = 0; i < md_array_size(acceptors); i++) {
-            total_acceptor_charge += charge_diff[i];
+            total_acceptor_charge += charge_diff[acceptors[i]];
         }
         for (size_t don_i = 0; don_i < md_array_size(donors); don_i++) {
-            float charge_deficit = -charge_diff[don_i];
+            float charge_deficit = -charge_diff[donors[don_i]];
             for (size_t acc_i = 0; acc_i < md_array_size(acceptors); acc_i++) {
-                float contrib = charge_deficit * charge_diff[acc_i] / total_acceptor_charge;
-                out_matrix[acc_i * num_charges + don_i] = contrib;
+                float contrib = charge_deficit * charge_diff[acceptors[acc_i]] / total_acceptor_charge;
+                out_matrix[acceptors[acc_i] * num_groups + donors[don_i]] = contrib;
             }
         }
+        float test = out_matrix[0];
     }
 
     //Takes the hole and particle charges of all atoms, and calculates the per group charges
@@ -2828,7 +2850,13 @@ struct VeloxChem : viamd::EventHandler {
                         // nto->transition_matrix;
                         // nto->transition_density_hole
                         // nto->transition_density_part
-                        distribute_charges_heuristic(group_data->transition_matrix, group_data->num_groups, group_data->hole, group_data->part);
+                        distribute_charges_heuristic(nto->transition_matrix, nto->num_groups, nto->transition_density_hole, nto->transition_density_part);
+                        for (size_t i = 0; i < nto->num_groups; i++) {
+                            MD_LOG_INFO("Hole: %f", nto->transition_density_hole[i]);
+                        }
+                        for (size_t i = 0; i < nto->num_groups; i++) {
+                            MD_LOG_INFO("Part: %f", nto->transition_density_part[i]);
+                        }
                     }, &nto);
                     
 					task_system::set_task_dependency(compute_matrix_task, nto.seg_task[0]);
@@ -3033,7 +3061,7 @@ struct VeloxChem : viamd::EventHandler {
                 {
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
-                    im_sankey_diagram({p0.x, p0.y, p1.x, p1.y});
+                    im_sankey_diagram({p0.x, p0.y, p1.x, p1.y}, &nto);
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
                 }
