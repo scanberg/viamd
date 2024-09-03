@@ -684,6 +684,201 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
+    static inline float calc_distance(ImVec2 p1, ImVec2 p2)
+    {
+        const float dx = p2.x - p1.x;
+        const float dy = p2.y - p1.y;
+
+        return sqrt((dx * dx) + (dy * dy));
+    }
+    static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 1.3f) {
+        // Ensure the factor is not too high, to avoid over-brightening
+        factor = (factor < 1.0f) ? 1.0f : factor;
+
+        // Increase the brightness of each component by the factor
+        float r = color.x * factor;
+        float g = color.y * factor;
+        float b = color.z * factor;
+
+        // Clamp the values to the range [0, 1]
+        r = (r > 1.0f) ? 1.0f : r;
+        g = (g > 1.0f) ? 1.0f : g;
+        b = (b > 1.0f) ? 1.0f : b;
+
+        // Return the new highlighted color with the same alpha
+        return ImVec4(r, g, b, color.w);
+    }
+
+
+    static inline void draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
+        // Get the draw list from the current window
+
+        // Define the control points for the Bezier curve
+        ImVec2 p1 = ImVec2(source_pos.x + thickness / 2, source_pos.y);  // Start point (bottom-center of source node)
+        ImVec2 p4 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y);  // End point (top-center of destination node)
+
+        float dist = fabs(p1.y - p4.y);
+        float curve_offset = dist / 4;
+
+        ImVec2 p2 = ImVec2(source_pos.x + thickness / 2, source_pos.y - curve_offset);  // Control point 1
+        ImVec2 p3 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y + curve_offset);  // Control point 2
+
+
+        // Define the color and thickness for the flow
+        //ImU32 flow_color = IM_COL32(100, 149, 237, 255);  // Cornflower Blue
+        // ImBezierCubicCalc Use this for calculating mouse distance to curve
+        // Draw the Bezier curve representing the flow
+        draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, thickness, 100);
+    }
+
+    static inline void draw_aligned_text(ImDrawList* draw_list, const char* text, ImVec2 pos, ImVec2 alignment = { 0,0 }) {
+        ImVec2 text_size = ImGui::CalcTextSize(text);
+        ImVec2 text_pos = pos - text_size * alignment;
+        draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
+    }
+
+    static inline void im_sankey_diagram(ImRect area, Nto* nto) {
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
+        /*
+        * A sankey diagram needs to implement bezier curves, that are connecting two points
+        */
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+        //Draw background
+        //draw_list->AddRectFilled(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 1,1,1,1 }));
+        //draw_list->AddRect(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }));
+
+        ImRect plot_area = area;
+        const float plot_percent = 0.8;
+        plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
+        //draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 })); //Use this to draw debug of plot area
+
+        
+
+        ////The given data
+        //const char* names[] = { "THIO", "QUIN" };
+        //float initial_percentages[2] = { 0.3, 0.7 };
+        //float transitions[2][2] = {
+        //    /*
+        //    *   A B   col -->
+        //    * A
+        //    * B
+        //    * |
+        //    * |
+        //    * v
+        //    * row
+        //    */
+        //    {0.22, 0.78}, //Read as "Starting from A, 22% of A_Start goes to A_End, and 78% goes to B_End
+        //    {0.0, 1.0}
+        //};
+
+
+
+        //Bar definitions
+        const float bar_height = plot_area.GetHeight() * 0.05;
+        int num_bars = nto->num_groups;
+        int num_gaps = num_bars - 1;
+        float gap_size = plot_area.GetWidth() * 0.05;
+        float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
+
+        //Calculate bar percentages
+        float start_sum = 0;
+        float end_sum = 0;
+        for (size_t i = 0; i < num_bars; i++) {
+            start_sum += nto->transition_density_hole[i];
+            end_sum += nto->transition_density_part[i];
+        }
+        md_array(float) start_percentages = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) end_percentages = md_array_create(float, num_bars, temp_alloc);
+        for (size_t i = 0; i < num_bars; i++) {
+            start_percentages[i] = nto->transition_density_hole[i] / start_sum;
+            end_percentages[i] = nto->transition_density_part[i] / end_sum;
+        }
+
+        //Calculate start positions
+        md_array(float) start_positions = md_array_create(float, num_bars, temp_alloc);
+        float cur_bottom_pos = plot_area.Min.x;
+        for (int i = 0; i < num_bars; i++) {
+            start_positions[i] = cur_bottom_pos;
+            cur_bottom_pos += bars_avail_width * start_percentages[i] + gap_size;
+        }
+
+        //Calculate end positions
+        md_array(float) end_positions = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) sub_end_positions = md_array_create(float, num_bars, temp_alloc);
+        float cur_pos = plot_area.Min.x;
+        for (int end_i = 0; end_i < num_bars; end_i++) {
+            end_positions[end_i] = cur_pos;
+            sub_end_positions[end_i] = cur_pos;
+            cur_pos += bars_avail_width * end_percentages[end_i] + gap_size;
+        }
+
+
+        //Draw curves
+        for (int start_i = 0; start_i < num_bars; start_i++) {
+            ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
+
+            ImVec4 flow_color = ImPlot::GetColormapColor(start_i);
+            flow_color.w = 0.5;
+            for (int end_i = 0; end_i < num_bars; end_i++) {
+                float percentage = nto->transition_matrix[end_i * num_bars + start_i];
+                if (percentage != 0) {
+                    float width = bars_avail_width * percentage;
+                    ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
+                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(flow_color));
+
+                    ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{width / 2, 0};
+                    char lable[16];
+                    sprintf(lable, "%3.2f%%", percentage * 100);
+                    if (width > ImGui::CalcTextSize(lable).x) {
+                        draw_aligned_text(draw_list, lable, midpoint, { 0.5, 0.5 });
+                    }
+
+                    start_pos.x += width;
+                    sub_end_positions[end_i] += width;
+                }
+            }
+        }
+
+        //Draw bars
+        for (int i = 0; i < num_bars; i++) {
+            ImVec4 bar_color = ImPlot::GetColormapColor(i);
+            ImVec2 mouse_pos = ImGui::GetMousePos();
+
+            //Calculate start
+            ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height};
+            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * start_percentages[i], plot_area.Max.y };
+            ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
+            ImRect start_bar = ImRect{ start_p0, start_p1 };
+
+            //Calculate end
+            ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
+            ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
+            ImRect end_bar = ImRect{ end_p0, end_p1 };
+            ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
+
+            if (start_bar.Contains(mouse_pos) || end_bar.Contains(mouse_pos)) {
+                bar_color = make_highlight_color(bar_color);
+            }
+
+            //Draw start
+            draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+            draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
+            char start_lable[16];
+            sprintf(start_lable, "%3.2f%%", start_percentages[i] * 100);
+            draw_aligned_text(draw_list, "GROUP_NAME", start_midpoint, {0.5, -0.2});
+            draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
+
+            //Draw end
+            draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+            draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
+            char end_lable[16];
+            sprintf(end_lable, "%3.2f%%", end_percentages[i] * 100);
+            draw_aligned_text(draw_list, "GROUP_NAME", end_midpoint, {0.5, 1.2});
+            draw_aligned_text(draw_list, end_lable, end_midpoint, { 0.5, 2.2 });
+        }
+    }
+    
     task_system::ID compute_nto_group_values_async(float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
@@ -1338,7 +1533,6 @@ struct VeloxChem : viamd::EventHandler {
 
             str_t file_extension = {};
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
-                //TODO: Start at 0 when XVG is implemented
                 for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
                         table_format = i;
@@ -2381,6 +2575,88 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::End();
     }
 
+    //Calculates the transition matrix heuristic
+    static inline void distribute_charges_heuristic(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* particle_charges) {
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
+        int* donors = 0;
+        int* acceptors = 0;
+        float* charge_diff = 0;
+
+        float hole_sum = 0;
+        float part_sum = 0;
+        for (size_t i = 0; i < num_groups; i++) {
+            hole_sum += hole_charges[i];
+            part_sum += particle_charges[i];
+        }
+
+        md_array(float) hole_percentages = md_array_create(float, num_groups, temp_alloc);
+        md_array(float) particle_percentages = md_array_create(float, num_groups, temp_alloc);
+
+        for (size_t i = 0; i < num_groups; i++) {
+            hole_percentages[i] = hole_charges[i] / hole_sum;
+            particle_percentages[i] = particle_charges[i] / part_sum;
+        }
+
+        for (size_t i = 0; i < num_groups; i++) {
+            float gsCharge = hole_percentages[i];
+            float esCharge = particle_percentages[i];
+            if (gsCharge > esCharge) {
+                md_array_push(donors, (int)i, temp_alloc);
+            }
+            else {
+                md_array_push(acceptors, (int)i, temp_alloc);
+            }
+            float diff = esCharge - gsCharge;
+            out_matrix[i * num_groups + i] = MIN(gsCharge, esCharge);
+            md_array_push(charge_diff, diff, temp_alloc);
+        }
+
+        int num_donors = md_array_size(donors);
+        int num_acceptors = md_array_size(acceptors);
+
+        float total_acceptor_charge = 0;
+        for (size_t i = 0; i < md_array_size(acceptors); i++) {
+            total_acceptor_charge += charge_diff[acceptors[i]];
+        }
+        for (size_t don_i = 0; don_i < md_array_size(donors); don_i++) {
+            float charge_deficit = -charge_diff[donors[don_i]];
+            for (size_t acc_i = 0; acc_i < md_array_size(acceptors); acc_i++) {
+                float contrib = charge_deficit * charge_diff[acceptors[acc_i]] / total_acceptor_charge;
+                out_matrix[acceptors[acc_i] * num_groups + donors[don_i]] = contrib;
+            }
+        }
+        float test = out_matrix[0];
+    }
+
+    //Takes the hole and particle charges of all atoms, and calculates the per group charges
+    static inline void accumulate_subgroup_charges(const float* hole_charges, const float* particle_charges, size_t num_charges, size_t num_subgroups, float* ligandGSCharges, float* ligandESCharges, int* atom_subgroup_map) {
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
+        float sumGSCharges = 0;
+        float sumESCharges = 0;
+        for (size_t i = 0; i < num_charges; i++) {
+            sumGSCharges += hole_charges[i];
+            sumESCharges += particle_charges[i];
+        }
+
+        for (size_t i = 0; i < num_charges; i++) {
+            int subgroup_index = atom_subgroup_map[i];
+            ligandGSCharges[subgroup_index] += hole_charges[i] / sumGSCharges;
+            ligandESCharges[subgroup_index] += particle_charges[i] / sumESCharges;
+        }
+    }
+
+    //Calculates the subgroup charges and the transition matrix
+    static inline void compute_subgroup_charges(float* hole_charges, float* particle_charges, size_t num_charges, size_t num_subgroups, int* atom_subgroup_map) {
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
+
+        //These two arrays are the group charges. They are already defined in the GroupData.
+        float* ligandGSCharges = md_array_create(float, num_subgroups, temp_alloc);
+        md_array(float) ligandESCharges = md_array_create(float, num_subgroups, temp_alloc);
+        accumulate_subgroup_charges(hole_charges, particle_charges, num_charges, num_subgroups, ligandGSCharges, ligandESCharges, atom_subgroup_map);
+        
+
+    }
+
     void draw_nto_window(const ApplicationState& state) {
         if (!nto.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
@@ -2574,6 +2850,13 @@ struct VeloxChem : viamd::EventHandler {
                         // nto->transition_matrix;
                         // nto->transition_density_hole
                         // nto->transition_density_part
+                        distribute_charges_heuristic(nto->transition_matrix, nto->num_groups, nto->transition_density_hole, nto->transition_density_part);
+                        for (size_t i = 0; i < nto->num_groups; i++) {
+                            MD_LOG_INFO("Hole: %f", nto->transition_density_hole[i]);
+                        }
+                        for (size_t i = 0; i < nto->num_groups; i++) {
+                            MD_LOG_INFO("Part: %f", nto->transition_density_part[i]);
+                        }
                     }, &nto);
                     
 					task_system::set_task_dependency(compute_matrix_task, nto.seg_task[0]);
@@ -2778,6 +3061,7 @@ struct VeloxChem : viamd::EventHandler {
                 {
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
+                    im_sankey_diagram({p0.x, p0.y, p1.x, p1.y}, &nto);
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
                 }
