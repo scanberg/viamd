@@ -462,10 +462,21 @@ struct VeloxChem : viamd::EventHandler {
 					nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
 					MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
 
-                    // @TODO: Remove once proper interface is there
-					nto.num_groups = 2;
-					// Assign half of the atoms to group 1
-                    MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
+                    str_t file = {};
+                    extract_file(&file, filename);
+                    if (str_eq_cstr(file, "tq.out")) {
+                        uint8_t index_from_text[23] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+                        //nto.atom_group_idx = index_from_text;
+                        nto.num_groups = 2;
+                        MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
+                    }
+                    else {
+
+                        // @TODO: Remove once proper interface is there
+					    nto.num_groups = 2;
+					    // Assign half of the atoms to group 1
+                        MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
+                    }
                 }
 
                 // RSP
