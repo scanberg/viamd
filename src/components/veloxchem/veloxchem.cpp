@@ -482,8 +482,8 @@ struct VeloxChem : viamd::EventHandler {
 					nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
 					MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
 					
-					for (int i = 0; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
-                        ImVec4 color = ImPlot::GetColormapColor(i, ImPlotColormap_Deep);
+					for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                        ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
                         nto.group.color[i] = vec_cast(color);
                         snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
                     }
@@ -859,7 +859,7 @@ struct VeloxChem : viamd::EventHandler {
         for (int start_i = 0; start_i < num_bars; start_i++) {
             ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
 
-            ImVec4 flow_color = ImPlot::GetColormapColor(start_i);
+            ImVec4 flow_color = vec_cast(nto->group.color[start_i]);
             flow_color.w = 0.5;
             for (int end_i = 0; end_i < num_bars; end_i++) {
                 float percentage = nto->transition_matrix[end_i * num_bars + start_i];
@@ -883,7 +883,7 @@ struct VeloxChem : viamd::EventHandler {
 
         //Draw bars
         for (int i = 0; i < num_bars; i++) {
-            ImVec4 bar_color = ImPlot::GetColormapColor(i);
+            ImVec4 bar_color = vec_cast(nto->group.color[i]);
             ImVec2 mouse_pos = ImGui::GetMousePos();
 
             //Calculate start
@@ -907,7 +907,7 @@ struct VeloxChem : viamd::EventHandler {
             draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
             char start_lable[16];
             sprintf(start_lable, "%3.2f%%", start_percentages[i] * 100);
-            draw_aligned_text(draw_list, "GROUP_NAME", start_midpoint, {0.5, -0.2});
+            draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, {0.5, -0.2});
             draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
 
             //Draw end
@@ -915,7 +915,7 @@ struct VeloxChem : viamd::EventHandler {
             draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
             char end_lable[16];
             sprintf(end_lable, "%3.2f%%", end_percentages[i] * 100);
-            draw_aligned_text(draw_list, "GROUP_NAME", end_midpoint, {0.5, 1.2});
+            draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, {0.5, 1.2});
             draw_aligned_text(draw_list, end_lable, end_midpoint, { 0.5, 2.2 });
         }
     }
@@ -3012,6 +3012,28 @@ struct VeloxChem : viamd::EventHandler {
 
             // @TODO: Enlist all defined groups here
             if (ImGui::BeginListBox("##Groups", outer_size)) {
+                for (size_t i = 0; i < nto.group.count; i++) {
+                    char color_buf[16];
+                    sprintf(color_buf, "##Group-Color%i", (int)i);
+                    ImGui::ColorEdit4Minimal(color_buf, nto.group.color[i].elem); 
+                    ImGui::SameLine(); 
+                    ImGui::InputText(color_buf, nto.group.label[i], 16);
+                    //if (ImGui::Selectable(nto.group.label[i])) {
+                    //    for (size_t j = 0; j < nto.num_atoms; j++) {
+                    //        if (nto.atom_group_idx[j] == i) {
+                    //            md_bitfield_set_bit(&state.selection.selection_mask, j);
+                    //            ////Selection
+                    //            //if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                    //            //    md_bitfield_set_bit(&state.selection.selection_mask, j);
+                    //            //}
+                    //            ////Deselect
+                    //            //else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                    //            //    md_bitfield_clear_bit(&state.selection.selection_mask, j);
+                    //            //}
+                    //        }
+                    //    }
+                    //}
+                }
                 ImGui::EndListBox();
             }
 
