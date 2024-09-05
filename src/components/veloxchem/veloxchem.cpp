@@ -879,7 +879,7 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
     
-    task_system::ID compute_nto_group_values_async(float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+    bool compute_nto_group_values_async(task_system::ID* out_eval_task, task_system::ID* out_segment_task, float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {       
         md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
         md_gto_t* pgtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_pgtos);
@@ -887,7 +887,7 @@ struct VeloxChem : viamd::EventHandler {
         if (!md_vlx_nto_pgto_extract(pgtos, &vlx, nto_idx, lambda_idx, type)) {
             MD_LOG_ERROR("Failed to extract NTO pgtos for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             md_free(alloc, pgtos, sizeof(md_gto_t) * num_pgtos);
-            return task_system::INVALID_ID;
+            return false;
         }
         md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
         OBB obb = compute_pgto_obb(PCA, pgtos, num_pgtos);
@@ -978,7 +978,14 @@ struct VeloxChem : viamd::EventHandler {
 
         task_system::set_task_dependency(segment_task, eval_task);
 
-        return eval_task;
+        if (out_eval_task) {
+            *out_eval_task = eval_task;
+        }
+        if (out_segment_task) {
+            *out_segment_task = segment_task;
+        }
+
+        return true;
     }
 
 	// This sets up and returns a async task which evaluates and orbital data on a grid in parallel
@@ -986,12 +993,11 @@ struct VeloxChem : viamd::EventHandler {
         ASSERT(args);
 
         // We evaluate the in parallel over smaller NxNxN blocks
-        uint32_t num_blocks = (args->grid.dim[0] / BLK_DIM) * (args->grid.dim[1] / BLK_DIM) * (args->grid.dim[2] / BLK_DIM);
-        MD_LOG_DEBUG("Starting async eval of orbital grid [%i][%i][%i]", args->grid.dim[0], args->grid.dim[1], args->grid.dim[2]);
-
+        const uint32_t num_blocks = (args->grid.dim[0] / BLK_DIM) * (args->grid.dim[1] / BLK_DIM) * (args->grid.dim[2] / BLK_DIM);
         task_system::ID async_task = task_system::create_pool_task(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
             (void)thread_num;
             AsyncGridEvalArgs* data = (AsyncGridEvalArgs*)user_data;
+            MD_LOG_DEBUG("Starting async eval of orbital grid [%i][%i][%i]", data->grid.dim[0], data->grid.dim[1], data->grid.dim[2]);
 
             // Number of NxNxN blocks in each dimension
             int num_blk[3] = {
@@ -2577,6 +2583,7 @@ struct VeloxChem : viamd::EventHandler {
 
     //Calculates the transition matrix heuristic
     static inline void distribute_charges_heuristic(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* particle_charges) {
+        size_t temp_pos = md_temp_get_pos();
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         int* donors = 0;
         int* acceptors = 0;
@@ -2589,7 +2596,7 @@ struct VeloxChem : viamd::EventHandler {
             part_sum += particle_charges[i];
         }
 
-        md_array(float) hole_percentages = md_array_create(float, num_groups, temp_alloc);
+        md_array(float) hole_percentages     = md_array_create(float, num_groups, temp_alloc);
         md_array(float) particle_percentages = md_array_create(float, num_groups, temp_alloc);
 
         for (size_t i = 0; i < num_groups; i++) {
@@ -2625,7 +2632,7 @@ struct VeloxChem : viamd::EventHandler {
                 out_matrix[acceptors[acc_i] * num_groups + donors[don_i]] = contrib;
             }
         }
-        float test = out_matrix[0];
+        md_temp_set_pos_back(temp_pos);
     }
 
     //Takes the hole and particle charges of all atoms, and calculates the per group charges
@@ -2665,11 +2672,49 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
 
+            if (ImGui::BeginMenuBar()) {
+                if (ImGui::BeginMenu("Settings")) {
+                    ImGui::Text("Orbital Colors");
+                    ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
+                    ImGui::SetItemTooltip("Color Positive");
+                    ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
+                    ImGui::SetItemTooltip("Color Negative");
+
+                    ImGui::Text("Transition Dipole Moments");
+                    ImGui::Spacing();
+                    const double vector_length_min = 1.0;
+                    const double vector_length_max = 10.0;
+                    double vector_length_input = nto.iso.vector_length;
+                    ImGui::Text("Scaling");
+                    ImGui::SliderScalar("##Vector length", ImGuiDataType_Double, &vector_length_input, &vector_length_min, &vector_length_max, "%.6f",
+                        ImGuiSliderFlags_Logarithmic);
+                    ImGui::SetItemTooltip("Vector length");
+                    nto.iso.vector_length = (float)vector_length_input;
+
+                    bool show_vector = nto.iso.display_vectors;
+                    ImGui::Checkbox("Display transition dipole moments", &show_vector);
+                    nto.iso.display_vectors = show_vector;
+
+                    bool show_angle = nto.iso.display_angle;
+                    ImGui::Checkbox("Display angle", &show_angle);
+                    nto.iso.display_angle = show_angle;
+                    ImGui::Text("Vectors and angle Colors");
+                    ImGui::ColorEdit4("##Color Electric", nto.iso.vectorColors[0].elem);
+                    ImGui::SetItemTooltip("Color Electric");
+                    ImGui::ColorEdit4("##Color Magnetic", nto.iso.vectorColors[1].elem);
+                    ImGui::SetItemTooltip("Color Magnetic");
+                    ImGui::ColorEdit4("##Color Angle", nto.iso.vectorColors[2].elem);
+                    ImGui::SetItemTooltip("Color Angle");
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMenuBar();
+            }
+
             const ImVec2 outer_size = {300.f, 0.f};
             ImGui::PushItemWidth(outer_size.x);
             ImGui::BeginGroup();
 
-            ImGui::Text("States");
+            ImGui::Text("Transition State Index");
             ImGui::Spacing();
             if (ImGui::BeginListBox("##NTO Index", outer_size)) {
                 if (ImGui::IsWindowHovered()) {
@@ -2696,11 +2741,9 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndListBox();
             }
             ImGui::Spacing();
-            ImGui::Spacing();
             const double iso_min = 1.0e-4;
             const double iso_max = 5.0;
-            double iso_val = nto.iso.values[0];
-            ImGui::Text("NTO");                
+            double iso_val = nto.iso.values[0];             
             ImGui::Spacing();
             ImGui::Text("Isovalue"); 
             ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
@@ -2710,39 +2753,8 @@ struct VeloxChem : viamd::EventHandler {
             nto.iso.values[1] = -(float)iso_val;
             nto.iso.count = 2;
             nto.iso.enabled = true;
-            ImGui::Text("Orbital Colors");
-            ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
-            ImGui::SetItemTooltip("Color Positive");
-            ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
-            ImGui::SetItemTooltip("Color Negative");
-            ImGui::Spacing();
-            ImGui::Spacing();
 
-            ImGui::Text("Transition Dipole Moments");
             ImGui::Spacing();
-            const double vector_length_min = 1.0;
-            const double vector_length_max = 10.0;
-            double vector_length_input = nto.iso.vector_length;
-            ImGui::Text("Scaling");
-            ImGui::SliderScalar("##Vector length", ImGuiDataType_Double, &vector_length_input, &vector_length_min, &vector_length_max, "%.6f",
-                                ImGuiSliderFlags_Logarithmic);
-            ImGui::SetItemTooltip("Vector length");
-            nto.iso.vector_length = (float)vector_length_input;
-
-            bool show_vector = nto.iso.display_vectors;
-            ImGui::Checkbox("Display transition dipole moments", &show_vector);
-            nto.iso.display_vectors = show_vector;
-
-            bool show_angle = nto.iso.display_angle;
-            ImGui::Checkbox("Display angle", &show_angle);
-            nto.iso.display_angle = show_angle;
-            ImGui::Text("Vectors and angle Colors");
-            ImGui::ColorEdit4("##Color Electric", nto.iso.vectorColors[0].elem);
-            ImGui::SetItemTooltip("Color Electric");
-            ImGui::ColorEdit4("##Color Magnetic", nto.iso.vectorColors[1].elem);
-            ImGui::SetItemTooltip("Color Magnetic");
-            ImGui::ColorEdit4("##Color Angle", nto.iso.vectorColors[2].elem);
-            ImGui::SetItemTooltip("Color Angle");
 
             // @TODO: Enlist all defined groups here
             if (ImGui::BeginListBox("##Groups", outer_size)) {
@@ -2841,29 +2853,30 @@ struct VeloxChem : viamd::EventHandler {
 
 					MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
-                    nto.seg_task[0] = compute_nto_group_values_async(nto.transition_density_part, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
-                    nto.seg_task[1] = compute_nto_group_values_async(nto.transition_density_hole, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
+                    task_system::ID eval_part = 0;
+                    task_system::ID seg_part  = 0;
+                    task_system::ID eval_hole = 0;
+                    task_system::ID seg_hole  = 0;
 
-                    task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
-                        VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
-						// @TODO: Compute transition matrix here
-                        // nto->transition_matrix;
-                        // nto->transition_density_hole
-                        // nto->transition_density_part
-                        distribute_charges_heuristic(nto->transition_matrix, nto->num_groups, nto->transition_density_hole, nto->transition_density_part);
-                        for (size_t i = 0; i < nto->num_groups; i++) {
-                            MD_LOG_INFO("Hole: %f", nto->transition_density_hole[i]);
-                        }
-                        for (size_t i = 0; i < nto->num_groups; i++) {
-                            MD_LOG_INFO("Part: %f", nto->transition_density_part[i]);
-                        }
-                    }, &nto);
-                    
-					task_system::set_task_dependency(compute_matrix_task, nto.seg_task[0]);
-                    task_system::set_task_dependency(compute_matrix_task, nto.seg_task[1]);
+                    if (compute_nto_group_values_async(&eval_part, &seg_part, nto.transition_density_part, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
+                        compute_nto_group_values_async(&eval_hole, &seg_hole, nto.transition_density_hole, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
+                    {
+                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
+                            VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
+                            distribute_charges_heuristic(nto->transition_matrix, nto->num_groups, nto->transition_density_hole, nto->transition_density_part);
+                        }, &nto);
 
-                    task_system::enqueue_task(nto.seg_task[0]);
-                    task_system::enqueue_task(nto.seg_task[1]);
+                        task_system::set_task_dependency(compute_matrix_task, seg_part);
+                        task_system::set_task_dependency(compute_matrix_task, seg_hole);
+
+                        task_system::enqueue_task(eval_part);
+                        task_system::enqueue_task(eval_hole);
+
+                        nto.seg_task[0] = seg_part;
+                        nto.seg_task[1] = seg_hole;
+                    } else {
+                        MD_LOG_DEBUG("An error occured when computing nto group values");
+                    }
                 }
             }
 
