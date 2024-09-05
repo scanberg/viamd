@@ -184,13 +184,6 @@ enum LegendColorMapMode_ {
     LegendColorMapMode_Split,
 };
 
-// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
-enum AtomBit_ {
-    AtomBit_Highlighted = 1,
-    AtomBit_Selected    = 2,
-    AtomBit_Visible     = 4,
-};
-
 enum RepBit_ {
     RepBit_DirtyColor   = 0x1,
     RepBit_DirtyFilter  = 0x2
@@ -561,67 +554,6 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
     return (double)prev_frame_idx + t;
 }
 
-static void single_selection_sequence_clear(SingleSelectionSequence* seq) {
-    ASSERT(seq);
-    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
-        seq->idx[i] = -1;
-    }
-}
-
-static void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
-    ASSERT(seq);
-    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
-        if (seq->idx[i] == -1) {
-            seq->idx[i] = idx;
-            break;
-        }
-    }
-}
-
-static void single_selection_sequence_pop_idx(SingleSelectionSequence* seq, int32_t idx) {
-    ASSERT(seq);
-    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
-        if (seq->idx[i] == idx) {
-            for (size_t j = i; j < ARRAY_SIZE(seq->idx) - 1; ++j) {
-                seq->idx[j] = seq->idx[j+1];
-            }
-            seq->idx[ARRAY_SIZE(seq->idx)-1] = -1;
-            break;
-        }
-    }
-}
-
-static void single_selection_sequence_pop_back(SingleSelectionSequence* seq) {
-    ASSERT(seq);
-    size_t i = 0;
-    for (; i < ARRAY_SIZE(seq->idx); ++i) {
-        if (seq->idx[i] == -1) break;
-    }
-    if (i > 0) {
-        seq->idx[i-1] = -1;
-    }
-}
-
-static int32_t single_selection_sequence_last(const SingleSelectionSequence* seq) {
-    ASSERT(seq);
-    size_t i = 0;
-    for (; i < ARRAY_SIZE(seq->idx); ++i) {
-        if (seq->idx[i] == -1) break;
-    }
-    if (i > 0) {
-        return seq->idx[i-1];
-    }
-    return -1;
-}
-
-static int64_t single_selection_sequence_count(const SingleSelectionSequence* seq) {
-    int64_t i = 0;
-    for (; i < (int64_t)ARRAY_SIZE(seq->idx); ++i) {
-        if (seq->idx[i] == -1) break;
-    }
-    return i;
-}
-
 //static void launch_prefetch_job(ApplicationState* data);
 
 static void init_dataset_items(ApplicationState* data);
@@ -659,7 +591,6 @@ static void draw_animation_window(ApplicationState* data);
 static void draw_representations_window(ApplicationState* data);
 static void draw_timeline_window(ApplicationState* data);
 static void draw_distribution_window(ApplicationState* data);
-static void draw_info_window(const ApplicationState& data, uint32_t picking_idx);
 static void draw_async_task_window(ApplicationState* data);
 static void draw_density_volume_window(ApplicationState* data);
 static void draw_script_editor_window(ApplicationState* data);
@@ -4343,112 +4274,7 @@ static void draw_representations_window(ApplicationState* state) {
     ImGui::End();
 }
 
-static void draw_info_window(const ApplicationState& data, uint32_t picking_idx) {
-    const auto& mol = data.mold.mol;
 
-    if (picking_idx == INVALID_PICKING_IDX) return;
-
-    md_strb_t sb = md_strb_create(frame_alloc);
-    
-    if (picking_idx < mol.atom.count) {
-        int atom_idx = picking_idx;
-        int local_idx = atom_idx;
-        const vec3_t pos = { mol.atom.x[atom_idx], mol.atom.y[atom_idx], mol.atom.z[atom_idx] };
-        str_t type = mol.atom.type ? mol.atom.type[atom_idx] : str_t{};
-        str_t elem = mol.atom.element ? md_util_element_name(mol.atom.element[atom_idx]) : str_t{};
-        str_t symbol = mol.atom.element ? md_util_element_symbol(mol.atom.element[atom_idx]) : str_t{};
-
-        int res_idx = -1;
-        str_t res_name = {};
-        int res_id = 0;
-        if (mol.residue.count && mol.atom.res_idx) {
-            res_idx = mol.atom.res_idx[atom_idx];
-            res_name = mol.residue.name[res_idx];
-            res_id = mol.residue.id[res_idx];
-            md_range_t range = md_residue_atom_range(mol.residue, res_idx);
-            local_idx = atom_idx - range.beg;
-        }
-
-        int chain_idx = -1;
-        str_t chain_id = {};
-        if (mol.chain.count && mol.atom.chain_idx) {
-            chain_idx = mol.atom.chain_idx[atom_idx];
-            if (0 <= chain_idx && chain_idx < (int)mol.chain.count) {
-                chain_id = mol.chain.id[chain_idx];
-            }
-        }
-
-        // External indices begin with 1 not 0
-        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx + 1, local_idx + 1, STR_ARG(type), STR_ARG(elem), STR_ARG(symbol), pos.x, pos.y, pos.z);
-        if (res_idx != -1) {
-            md_strb_fmt(&sb, "res[%i]: %.*s %i\n", res_idx + 1, STR_ARG(res_name), res_id);
-        }
-        if (chain_idx != -1) {
-            md_strb_fmt(&sb, "chain[%i]: %.*s\n", chain_idx + 1, STR_ARG(chain_id));
-        }
-
-        uint32_t flags = mol.atom.flags[atom_idx];
-        if (flags) {
-            sb += "flags: ";
-            if (flags & MD_FLAG_RES_BEG)            { sb += "RES_BEG "; }
-            if (flags & MD_FLAG_RES)                { sb += "RES "; }
-            if (flags & MD_FLAG_RES_END)            { sb += "RES_END "; }
-            if (flags & MD_FLAG_CHAIN_BEG)          { sb += "CHAIN_BEG "; }
-            if (flags & MD_FLAG_CHAIN)              { sb += "CHAIN "; }
-            if (flags & MD_FLAG_CHAIN_END)          { sb += "CHAIN_END "; }
-            if (flags & MD_FLAG_HETATM)             { sb += "HETATM "; }
-            if (flags & MD_FLAG_AMINO_ACID)         { sb += "AMINO "; }
-            if (flags & MD_FLAG_NUCLEOTIDE)         { sb += "NUCLEOTIDE "; }
-            if (flags & MD_FLAG_NUCLEOBASE)         { sb += "NUCLEOBASE "; }
-            if (flags & MD_FLAG_WATER)              { sb += "WATER "; }
-            if (flags & MD_FLAG_ION)                { sb += "ION "; }
-            if (flags & MD_FLAG_PROTEIN_BACKBONE)   { sb += "BB_PROT "; }
-            if (flags & MD_FLAG_NUCLEIC_BACKBONE)   { sb += "BB_NUCL "; }
-            if (flags & MD_FLAG_SP)                 { sb += "SP "; }
-            if (flags & MD_FLAG_SP2)                { sb += "SP2 "; }
-            if (flags & MD_FLAG_SP3)                { sb += "SP3 "; }
-            if (flags & MD_FLAG_AROMATIC)           { sb += "AROMATIC "; }
-            sb += "\n";
-        }
-        /*
-        // @TODO: REIMPLEMENT THIS
-        if (res_idx < mol.backbone.segment.angleangles.size() && res_idx < mol.backbone.segments.size() && valid_backbone_atoms(mol.backbone.segments[res_idx])) {
-            const auto angles = RAD_TO_DEG((vec2)mol.backbone.angles[res_idx]);
-            len += snprintf(buff + len, 256 - len, u8"\u03C6: %.1f\u00b0, \u03C8: %.1f\u00b0\n", angles.x, angles.y);
-        }
-        */
-    }
-    else if (picking_idx >= 0x80000000) {
-        int bond_idx = picking_idx & 0x7FFFFFFF;
-        if (0 <= bond_idx && bond_idx < (int)mol.bond.count) {
-            md_bond_pair_t b = mol.bond.pairs[bond_idx];
-            char bond_type;
-            switch (mol.bond.order[bond_idx]) {
-            case 1: bond_type = '-'; break;
-            case 2: bond_type = '='; break;
-            case 3: bond_type = '#'; break;
-            case 4: bond_type = '$'; break;
-            default: bond_type = '?'; break;
-            }
-            const float dx = mol.atom.x[b.idx[0]] - mol.atom.x[b.idx[1]];
-            const float dy = mol.atom.y[b.idx[0]] - mol.atom.y[b.idx[1]];
-            const float dz = mol.atom.z[b.idx[0]] - mol.atom.z[b.idx[1]];
-            const float d = sqrtf(dx*dx + dy*dy + dz*dz);
-            md_strb_fmt(&sb, "bond: %s%c%s\n", mol.atom.type[b.idx[0]].buf, bond_type, mol.atom.type[b.idx[1]].buf);
-            md_strb_fmt(&sb, "order: %i\n", mol.bond.order[bond_idx]);
-            md_strb_fmt(&sb, "length: %.3f\n", d);
-        }
-    }
-
-    const ImVec2 offset = { 10.f, 18.f };
-    ImGui::SetNextWindowPos(ImGui::GetMousePos() + offset);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-    ImGui::Begin("##Atom Info", 0,
-                    ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
-    ImGui::Text("%s", md_strb_to_cstr(sb));
-    ImGui::End();
-    ImGui::PopStyleColor();
-}
 
 static void draw_async_task_window(ApplicationState* data) {
     constexpr float WIDTH = 300.f;
@@ -6386,10 +6212,11 @@ static void draw_density_volume_window(ApplicationState* data) {
             md_gl_draw(&draw_args);
 
             if (is_hovered) {
-                vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
-                PickingData pd = read_picking_data(&gbuf, (int)coord.x, (int)coord.y);
-                if (pd.idx != INVALID_PICKING_IDX) {
-                    draw_info_window(*data, pd.idx);
+                const vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
+                uint32_t picking_idx = INVALID_PICKING_IDX;
+                extract_picking_data(&picking_idx, NULL, &gbuf, (int)coord.x, (int)coord.y);
+                if (picking_idx != INVALID_PICKING_IDX) {
+                    draw_info_window(*data, picking_idx);
                 }
             }
             glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
@@ -8415,7 +8242,8 @@ static void handle_camera_interaction(ApplicationState* data) {
             }
 
             CoordSystemWidgetParam param = {
-                .size = ImGui::GetWindowSize(),
+                .pos = ImGui::GetWindowContentRegionMin(),
+                .size = ImGui::GetContentRegionAvail(),
                 .view_matrix = data->view.param.matrix.curr.view,
                 .camera_ori = data->view.animation.target_orientation,
                 .camera_pos = data->view.animation.target_position,
@@ -8852,7 +8680,11 @@ static void fill_gbuffer(ApplicationState* data) {
 }
 
 static void handle_picking(ApplicationState* data) {
-    PUSH_CPU_SECTION("PICKING") {
+    ImGuiContext* ctx = ImGui::GetCurrentContext();
+    ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
+
+    if (ctx && window && ctx->HoveredWindow == window) {
+        PUSH_CPU_SECTION("PICKING")
         vec2_t mouse_pos = vec_cast(ImGui::GetMousePos() - ImGui::GetMainViewport()->Pos);
         vec2_t coord = {mouse_pos.x, ImGui::GetMainViewport()->Size.y - mouse_pos.y};
 #if MD_PLATFORM_OSX
@@ -8865,7 +8697,7 @@ static void handle_picking(ApplicationState* data) {
 #if PICKING_JITTER_HACK
             static uint32_t frame_idx = 0;
             static uint32_t ref_frame = 0;
-            frame_idx = (frame_idx + 1) % 16;
+            frame_idx = (frame_idx + 1) % JITTER_SEQUENCE_SIZE;
             // @NOTE: If we have jittering applied, we cannot? retreive the original pixel value (without the jitter)
             // Solution, pick one reference frame out of the jittering sequence and use that one...
             // Ugly hack but works...
@@ -8882,10 +8714,12 @@ static void handle_picking(ApplicationState* data) {
                 data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inv.view_proj, viewport);
             }
 #else
-            data->picking = read_picking_data(&data->gbuffer, (int)coord.x, (int)coord.y);
+            data->picking = {};
+            extract_picking_data(&data->picking.idx, &data->picking.depth, &data->gbuffer, (int)coord.x, (int)coord.y);
             const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
             const mat4_t inv_VP = data->view.param.matrix.inv.view * data->view.param.matrix.inv.proj;
             data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, inv_VP, viewport);
+            data->picking.screen_coord = coord;
 #endif
         }
         data->selection.atom_idx.hovered = -1;
@@ -8904,9 +8738,10 @@ static void handle_picking(ApplicationState* data) {
             data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;
             data->selection.bond_idx.right_click = data->selection.bond_idx.hovered;
         }
+        POP_CPU_SECTION()
     }
-    POP_CPU_SECTION()
 }
+
 static void apply_postprocessing(const ApplicationState& data) {
     PUSH_GPU_SECTION("Postprocessing")
     postprocessing::Descriptor desc;
