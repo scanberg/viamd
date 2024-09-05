@@ -1591,9 +1591,11 @@ void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint velocit
 void scale_hsv(GLuint color_tex, vec3_t hsv_scale) {
     GLint last_fbo;
     GLint last_viewport[4];
+    GLint last_scissor_box[4];
     GLint last_draw_buffer;
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
     glGetIntegerv(GL_VIEWPORT, last_viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
     glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
 
     GLint w, h;
@@ -1601,12 +1603,13 @@ void scale_hsv(GLuint color_tex, vec3_t hsv_scale) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, color_tex);
 
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &w);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
 
     glBindVertexArray(gl.vao);
 
     glViewport(0, 0, w, h);
+    glScissor(0, 0, w, h);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.tmp.fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tmp.tex_rgba8, 0);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -1628,6 +1631,7 @@ void scale_hsv(GLuint color_tex, vec3_t hsv_scale) {
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
     glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
+    glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
     glDrawBuffer(last_draw_buffer);
 }
 
@@ -2119,12 +2123,14 @@ void destroy_gbuffer(GBuffer* gbuf) {
 }
 
 // #picking
-PickingData read_picking_data(GBuffer* gbuf, int x, int y) {
-    PickingData data{};
+void extract_picking_data(uint32_t* out_idx, float* out_depth, GBuffer* gbuf, int x, int y) {
+    uint32_t idx = 0;
+    float depth = 0;
+
 #if EXPERIMENTAL_GFX_API
     if (use_gfx) {
-        data.idx = md_gfx_get_picking_idx();
-        data.depth = md_gfx_get_picking_depth();
+        idx = md_gfx_get_picking_idx();
+        depth = md_gfx_get_picking_depth();
         md_gfx_query_picking((uint32_t)x, (uint32_t)y);
     }
     else {
@@ -2136,7 +2142,6 @@ PickingData read_picking_data(GBuffer* gbuf, int x, int y) {
         uint32_t read  = (frame + N-1) % N;
 
         uint8_t  color[4];
-        float    depth;
 
         PUSH_GPU_SECTION("READ PICKING DATA")
         glBindFramebuffer(GL_READ_FRAMEBUFFER, gbuf->fbo);
@@ -2161,11 +2166,16 @@ PickingData read_picking_data(GBuffer* gbuf, int x, int y) {
         POP_GPU_SECTION()
 
         // BGRA
-        data.idx   = (color[0] << 16) | (color[1] << 8) | (color[2] << 0) | (color[3] << 24);
-        data.depth = depth;
+        idx = (color[0] << 16) | (color[1] << 8) | (color[2] << 0) | (color[3] << 24);
 
 #if EXPERIMENTAL_GFX_API
     }
 #endif
-    return data;
+
+    if (out_idx) {
+        *out_idx = idx;
+    }
+    if (out_depth) {
+        *out_depth = depth;
+    }
 }

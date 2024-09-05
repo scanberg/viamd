@@ -14,12 +14,11 @@
 #include <gfx/postprocessing_utils.h>
 #include <task_system.h>
 
-#include <implot.h>
-
 #include <stdint.h>
 #include <stddef.h>
 
-#define JITTER_SEQUENCE_SIZE 8
+#define JITTER_SEQUENCE_SIZE 8  // Number of samples for temporal AA
+#define DEFAULT_COLORMAP 5      // This corresponds to plasma colormap (Do not want to include implot.h just for this)
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -31,7 +30,7 @@
 
 enum class PlaybackMode { Stopped, Playing };
 enum class InterpolationMode { Nearest, Linear, CubicSpline };
-enum class SelectionLevel { Atom, Residue, Chain };
+enum class SelectionGranularity { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class TrackingMode { Absolute, Relative };
@@ -46,6 +45,13 @@ enum class RepresentationType {
     Orbital,
     DipoleMoment,
     Count
+};
+
+// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
+enum AtomBit_ {
+    AtomBit_Highlighted = 1,
+    AtomBit_Selected    = 2,
+    AtomBit_Visible     = 4,
 };
 
 static const char* representation_type_str[(int)RepresentationType::Count] = {
@@ -237,7 +243,7 @@ struct RepresentationVolume {
     struct {
         bool enabled = false;
         uint32_t tf_tex = 0;
-        ImPlotColormap colormap = ImPlotColormap_Plasma;
+        int colormap = DEFAULT_COLORMAP;
     } dvr;
 };
 
@@ -278,7 +284,7 @@ struct Representation {
     } orbital;
 
     struct {
-        ImPlotColormap color_map = ImPlotColormap_Plasma;
+        int colormap = DEFAULT_COLORMAP;
         float map_beg = 0.0f;
         float map_end = 1.0f;
         float map_min = 0.0f;
@@ -368,7 +374,7 @@ struct ApplicationState {
 
     // --- ATOM SELECTION ---
     struct {
-        SelectionLevel granularity = SelectionLevel::Atom;
+        SelectionGranularity granularity = SelectionGranularity::Atom;
 
         struct {
             int32_t hovered = -1;
@@ -479,7 +485,7 @@ struct ApplicationState {
             struct {
                 uint32_t id = 0;
                 float alpha_scale = 1.f;
-                ImPlotColormap colormap = ImPlotColormap_Plasma;
+                int colormap = DEFAULT_COLORMAP;
                 bool dirty = true;
                 float min_val = 0.0f;
                 float max_val = 1.0f;
@@ -733,12 +739,12 @@ static inline void modify_field(md_bitfield_t* bf, md_range_t range, SelectionOp
     }
 }
 
-static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, SelectionLevel granularity, const md_molecule_t& mol) {
+static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, SelectionGranularity granularity, const md_molecule_t& mol) {
     ASSERT(mask);
     switch(granularity) {
-    case SelectionLevel::Atom:
+    case SelectionGranularity::Atom:
         break;
-    case SelectionLevel::Residue:
+    case SelectionGranularity::Residue:
         for (size_t i = 0; i < mol.residue.count; ++i) {
             md_range_t range = md_residue_atom_range(mol.residue, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
@@ -746,7 +752,7 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
             }
         }
         break;
-    case SelectionLevel::Chain:
+    case SelectionGranularity::Chain:
         for (size_t i = 0; i < mol.chain.count; ++i) {
             md_range_t range = md_chain_atom_range(mol.chain, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
@@ -758,3 +764,66 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
         ASSERT(false);
     }
 }
+
+static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
+    ASSERT(seq);
+    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+        seq->idx[i] = -1;
+    }
+}
+
+static inline void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
+    ASSERT(seq);
+    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == -1) {
+            seq->idx[i] = idx;
+            break;
+        }
+    }
+}
+
+static inline void single_selection_sequence_pop_idx(SingleSelectionSequence* seq, int32_t idx) {
+    ASSERT(seq);
+    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == idx) {
+            for (size_t j = i; j < ARRAY_SIZE(seq->idx) - 1; ++j) {
+                seq->idx[j] = seq->idx[j+1];
+            }
+            seq->idx[ARRAY_SIZE(seq->idx)-1] = -1;
+            break;
+        }
+    }
+}
+
+static inline void single_selection_sequence_pop_back(SingleSelectionSequence* seq) {
+    ASSERT(seq);
+    size_t i = 0;
+    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == -1) break;
+    }
+    if (i > 0) {
+        seq->idx[i-1] = -1;
+    }
+}
+
+static inline int32_t single_selection_sequence_last(const SingleSelectionSequence* seq) {
+    ASSERT(seq);
+    size_t i = 0;
+    for (; i < ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == -1) break;
+    }
+    if (i > 0) {
+        return seq->idx[i-1];
+    }
+    return -1;
+}
+
+static inline int64_t single_selection_sequence_count(const SingleSelectionSequence* seq) {
+    int64_t i = 0;
+    for (; i < (int64_t)ARRAY_SIZE(seq->idx); ++i) {
+        if (seq->idx[i] == -1) break;
+    }
+    return i;
+}
+
+void draw_info_window(const ApplicationState& data, uint32_t picking_idx);

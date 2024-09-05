@@ -138,4 +138,4 @@ void blur_texture_box(GLuint tex, int num_passes = 1);
 void clear_gbuffer(GBuffer* gbuf);
 void init_gbuffer(GBuffer* gbuf, int width, int height);
 void destroy_gbuffer(GBuffer* gbuf);
-PickingData read_picking_data(GBuffer* fbo, int x, int y);
+void extract_picking_data(uint32_t* out_idx, float* out_depth, GBuffer* fbo, int x, int y);
