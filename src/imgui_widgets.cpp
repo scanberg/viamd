@@ -365,8 +365,8 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
 
     bool is_hovered = ImGui::ItemHoverable(bb, id, g.LastItemData.InFlags);
 
-    const float ext = ImMin(ws.x, ws.y) * 0.75f;
-    const ImVec2 o = {wp.x + ws.x * 0.5f, wp.y + ws.y * 0.5f};
+    const float ext = ImMin(ws.x, ws.y) * 1.0f;
+    const ImVec2 mid = bb.GetCenter();
     const float dist = 5.0f;
     const float fovy = (3.1415926534f / 4.0f);
     const float ar   = 1.0f;
@@ -377,24 +377,31 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
     const float w = ar * h;
     mat4_t P = mat4_ortho(-w, w, -h, h, near, far);
     mat4_t V = param.view_matrix;
+    mat4_t M = mat4_translate(-0.5f * ext, -0.5f * ext, -0.5f * ext);
 
     V.col[3] = vec4_set(0, 0, -dist, 1);
 
-    vec4_t vx = mat4_mul_vec4(V, {1, 0, 0, 1});
-    vec4_t vy = mat4_mul_vec4(V, {0, 1, 0, 1});
-    vec4_t vz = mat4_mul_vec4(V, {0, 0, 1, 1});
+    mat4_t MV = V * M;
+
+    vec4_t vo = mat4_mul_vec4(MV, {0, 0, 0, 1});
+    vec4_t vx = mat4_mul_vec4(V,  {1, 0, 0, 1});
+    vec4_t vy = mat4_mul_vec4(V,  {0, 1, 0, 1});
+    vec4_t vz = mat4_mul_vec4(V,  {0, 0, 1, 1});
 
     // Project
+    vec4_t O = mat4_mul_vec4(P, vo);
     vec4_t x = mat4_mul_vec4(P, vx);
     vec4_t y = mat4_mul_vec4(P, vy);
     vec4_t z = mat4_mul_vec4(P, vz);
 
     // Perspective divide
+    O = vec4_div_f(O, O.w);
     x = vec4_div_f(x, x.w);
     y = vec4_div_f(y, y.w);
     z = vec4_div_f(z, z.w);
 
     // Vector
+    const ImVec2 o = mid + ImVec2(O.x, -O.y);
     const ImVec2 v[3] = { ImVec2(x.x, -x.y) * ext, ImVec2(y.x, -y.y) * ext, ImVec2(z.x, -z.y) * ext };
     // Text
     const char*  t[3] = { "X", "Y", "Z" };
@@ -412,6 +419,9 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
     if (az[idx[0]] > az[idx[1]]) { ImSwap(idx[0], idx[1]); }
     if (az[idx[1]] > az[idx[2]]) { ImSwap(idx[1], idx[2]); }
     if (az[idx[0]] > az[idx[1]]) { ImSwap(idx[0], idx[1]); }
+
+    // For debugging, to show rotation origin
+    // dl.AddCircle(mid, 3.f, IM_COL32(0,0,0,255));
 
     // Draw in z order
     for (int i : idx) {
@@ -447,7 +457,7 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
     int hovered_plane_idx = -1;
     if (is_hovered) {
         for (int i : idx) {
-            // Split the polygon (which is a quad) into two triangles
+            // Split the polygon (quad) into two triangles
             // and check if the mouse is inside any of the triangles
             const ImVec2 mouse_pos = ImGui::GetMousePos();
             if (ImTriangleContainsPoint(p[i][0], p[i][1], p[i][2], mouse_pos) ||

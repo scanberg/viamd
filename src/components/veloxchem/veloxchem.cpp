@@ -27,11 +27,24 @@
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
 #define DEFAULT_SAMPLES_PER_ANGSTROM 6
+#define MAX_GROUPS 16
 
 #define IM_GREEN ImVec4{0, 1, 0, 1}
 #define IM_RED ImVec4{1, 0, 0, 1}
 #define IM_YELLOW ImVec4{1, 1, 0.5, 0.3}
 #define IM_BLUE ImVec4{0.5, 0.5, 1, 0.3}
+
+#define U32_MAGENTA IM_COL32(255, 0, 255, 255)
+
+inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
+inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
+inline const ImVec2& vec_cast(const vec2_t& v) { return *(const ImVec2*)(&v); }
+inline const vec2_t& vec_cast(const ImVec2& v) { return *(const vec2_t*)(&v); }
+
+inline ImVec4& vec_cast(vec4_t& v) { return *(ImVec4*)(&v); }
+inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
+inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
+inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
 enum class VolumeRes {
     Low,
@@ -140,7 +153,7 @@ struct VeloxChem : viamd::EventHandler {
     uint32_t vol_fbo = 0;
 
     // GL representations
-    md_gl_mol_t gl_mol = {};
+    //md_gl_mol_t gl_mol = {};
     md_gl_rep_t gl_rep = {};
 
     int homo_idx = 0;
@@ -212,14 +225,19 @@ struct VeloxChem : viamd::EventHandler {
         float*  atom_r   = nullptr;
         uint8_t* atom_group_idx = nullptr;
 
+        md_gl_rep_t gl_rep = {0};
+
         // Square transition matrix, should have dim == num_groups
         size_t transition_matrix_dim = 0;
         float* transition_matrix = nullptr;
         float* transition_density_hole = nullptr;
         float* transition_density_part = nullptr;
 
-        size_t num_groups = 0;
-        // @TODO: Add group data
+        struct {
+            size_t count = 0;
+            char   label[MAX_GROUPS][64] = {};
+            vec4_t color[MAX_GROUPS] = {};
+        } group;
 
         struct {
             bool enabled = true;
@@ -236,6 +254,7 @@ struct VeloxChem : viamd::EventHandler {
 
         GBuffer gbuf = {};
         Camera camera = {};
+        PickingData picking = {};
 
         struct {
             quat_t ori = {};
@@ -394,7 +413,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void reset_data() {
-        md_gl_mol_destroy(gl_mol);
+        //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
         md_arena_allocator_reset(arena);
         vlx = {};
@@ -442,12 +461,12 @@ struct VeloxChem : viamd::EventHandler {
                 md_molecule_t mol = {0};
                 md_vlx_molecule_init(&mol, &vlx, state.allocator.frame);
                 md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_BOND_BIT);
-                gl_mol = md_gl_mol_create(&mol);
+                //gl_mol = md_gl_mol_create(&mol);
 
                 uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
                 color_atoms_cpk(colors, mol.atom.count, mol);
 
-                gl_rep = md_gl_rep_create(gl_mol);
+                gl_rep = md_gl_rep_create(state.mold.gl_mol);
                 md_gl_rep_set_color(gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);
 
                 com =  md_util_com_compute_vec4(xyzw, 0, vlx.geom.num_atoms, 0);
@@ -457,10 +476,19 @@ struct VeloxChem : viamd::EventHandler {
 
                 // NTO
                 if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
+
                     nto.show_window = true;
                     camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
 					nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
 					MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
+					
+					for (int i = 0; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                        ImVec4 color = ImPlot::GetColormapColor(i, ImPlotColormap_Deep);
+                        nto.group.color[i] = vec_cast(color);
+                        snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
+                    }
+                    snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
+                    nto.group.color[0] = vec4_set(0.5f, 0.5f, 0.5f, 1.0f);
 
                     str_t file = {};
                     extract_file(&file, filename);
@@ -477,6 +505,15 @@ struct VeloxChem : viamd::EventHandler {
 					    // Assign half of the atoms to group 1
                         MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
                     }
+					nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+
+                    for (size_t i = 0; i < mol.atom.count; ++i) {
+                        const size_t group_idx = nto.atom_group_idx[i];
+                        const uint32_t color = group_idx < nto.group.count ? convert_color(nto.group.color[group_idx]) : U32_MAGENTA;
+                        colors[i] = color;
+                    }
+
+                    md_gl_rep_set_color(nto.gl_rep, 0, mol.atom.count, colors, 0);
                 }
 
                 // RSP
@@ -695,13 +732,6 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    static inline float calc_distance(ImVec2 p1, ImVec2 p2)
-    {
-        const float dx = p2.x - p1.x;
-        const float dy = p2.y - p1.y;
-
-        return sqrt((dx * dx) + (dy * dy));
-    }
     static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 1.3f) {
         // Ensure the factor is not too high, to avoid over-brightening
         factor = (factor < 1.0f) ? 1.0f : factor;
@@ -719,7 +749,6 @@ struct VeloxChem : viamd::EventHandler {
         // Return the new highlighted color with the same alpha
         return ImVec4(r, g, b, color.w);
     }
-
 
     static inline void draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
         // Get the draw list from the current window
@@ -749,6 +778,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline void im_sankey_diagram(ImRect area, Nto* nto) {
+        ScopedTemp temp_reset;
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         /*
         * A sankey diagram needs to implement bezier curves, that are connecting two points
@@ -787,7 +817,7 @@ struct VeloxChem : viamd::EventHandler {
 
         //Bar definitions
         const float bar_height = plot_area.GetHeight() * 0.05;
-        int num_bars = nto->num_groups;
+        int num_bars = nto->group.count;
         int num_gaps = num_bars - 1;
         float gap_size = plot_area.GetWidth() * 0.05;
         float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
@@ -800,7 +830,7 @@ struct VeloxChem : viamd::EventHandler {
             end_sum += nto->transition_density_part[i];
         }
         md_array(float) start_percentages = md_array_create(float, num_bars, temp_alloc);
-        md_array(float) end_percentages = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) end_percentages   = md_array_create(float, num_bars, temp_alloc);
         for (size_t i = 0; i < num_bars; i++) {
             start_percentages[i] = nto->transition_density_hole[i] / start_sum;
             end_percentages[i] = nto->transition_density_part[i] / end_sum;
@@ -2675,10 +2705,223 @@ struct VeloxChem : viamd::EventHandler {
 
     }
 
-    void draw_nto_window(const ApplicationState& state) {
+    struct InteractionCanvasState {
+        md_bitfield_t* highlight_mask;
+        md_bitfield_t* selection_mask;
+
+        bool out_canvas_pressed;
+        bool out_open_context_menu;
+    };
+
+    struct SelectionState {
+        int hovered_atom_idx;
+        int hovered_bond_idx;
+        md_bitfield_t* highlight_mask;
+        md_bitfield_t* selection_mask;
+        SingleSelectionSequence* single_selection_sequence;
+        SelectionGranularity granularity;
+    };
+
+    struct ViewState {
+        const Camera& camera;
+        const mat4_t& MVP;
+        const TrackballControllerParam& trackball_param;
+        const vec3_t& picking_world_coord;
+        float picking_depth;
+        quat_t* target_ori;
+        vec3_t* target_pos;
+        float*  target_dist;
+    };
+
+    static void interaction_canvas(ImVec2 size, SelectionState& select, ViewState& view, const md_molecule_t& mol) {
+        enum class RegionMode { Append, Remove };
+
+        bool is_selecting = false;
+
+        ScopedTemp temp_reset;
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
+
+        bool open_context_menu = false;
+
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        if (window) {
+            bool pressed = ImGui::InvisibleButton("canvas", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
+            bool hovered = ImGui::IsItemHovered();
+            bool focused = ImGui::IsItemFocused();
+
+            ImVec2 coord = ImGui::GetMousePos() - ImGui::GetWindowPos();
+
+            ImVec2 canvas_min = ImGui::GetItemRectMin();
+            ImVec2 canvas_max = ImGui::GetItemRectMax();
+            ImVec2 canvas_size = ImGui::GetItemRectSize();
+
+            ImDrawList* dl = window->DrawList;
+            ASSERT(dl);
+
+            ImVec2 win_pos = ImGui::GetWindowPos();
+
+            if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
+                if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
+                    ImGui::ResetMouseDragDelta();
+                }
+
+                if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                    RegionMode mode = RegionMode::Append;
+                    if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                        mode = RegionMode::Append;
+                    }
+                    else if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                        mode = RegionMode::Remove;
+                    }
+
+                    const ImVec2 ext = ImGui::GetMouseDragDelta(mode == RegionMode::Append ? ImGuiMouseButton_Left : ImGuiMouseButton_Right);
+                    const ImVec2 pos = ImGui::GetMousePos() - ext;
+                    const ImU32 fill_col = 0x22222222;
+                    const ImU32 line_col = 0x88888888;
+
+                    // This is relative to the window, clip selection region to canvas
+                    ImVec2 sel_min = ImClamp(ImMin(pos, pos + ext), canvas_min, canvas_max);
+                    ImVec2 sel_max = ImClamp(ImMax(pos, pos + ext), canvas_min, canvas_max);
+
+                    dl->AddRectFilled(sel_min, sel_max, fill_col);
+                    dl->AddRect      (sel_min, sel_max, line_col);
+
+                    // Make it relative to the Canvas
+                    sel_min = sel_min - canvas_min;
+                    sel_max = sel_max - canvas_min;
+
+                    md_bitfield_t mask = md_bitfield_create(temp_alloc);
+
+                    if (sel_min != sel_max) {
+                        md_bitfield_clear(select.highlight_mask);
+                        is_selecting = true;
+
+                        // We probably will not use a visibility mask here to filter out only visible atoms
+                        // But in the case that we will transition back to that, this code snipped is left here
+                        
+                        //md_bitfield_iter_t it = md_bitfield_iter_create(&state.representation.visibility_mask);
+                        //while (md_bitfield_iter_next(&it)) {
+                        //    const uint64_t i = md_bitfield_iter_idx(&it);
+
+                        for (size_t i = 0; i < mol.atom.count; ++i) {
+                            const vec4_t p = mat4_mul_vec4(view.MVP, vec4_set(mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 1.0f));
+                            const vec2_t c = {
+                                ( p.x / p.w * 0.5f + 0.5f) * canvas_size.x,
+                                (-p.y / p.w * 0.5f + 0.5f) * canvas_size.y,
+                            };
+
+                            // Test projected point if within selection region
+                            if (sel_min.x <= c.x && c.x <= sel_max.x && sel_min.y <= c.y && c.y <= sel_max.y) {
+                                md_bitfield_set_bit(&mask, i);
+                            }
+                        }
+                        grow_mask_by_selection_granularity(&mask, select.granularity, mol);
+
+                        if (mode == RegionMode::Append) {
+                            md_bitfield_or(select.highlight_mask, select.selection_mask, &mask);
+                        }
+                        else if (mode == RegionMode::Remove) {
+                            md_bitfield_andnot(select.highlight_mask, select.selection_mask, &mask);
+                        }
+                        if (pressed || ImGui::IsMouseReleased(0)) {
+                            md_bitfield_copy(select.selection_mask, select.highlight_mask);
+                        }
+                    }
+                    else if (pressed) {
+                        if (select.hovered_atom_idx != -1 || select.hovered_bond_idx != -1) {
+                            if (0 <= select.hovered_atom_idx && select.hovered_atom_idx < (int)mol.atom.count) {
+                                if (mode == RegionMode::Append) {
+                                    single_selection_sequence_push_idx(select.single_selection_sequence, select.hovered_atom_idx);
+                                } else {
+                                    single_selection_sequence_pop_idx (select.single_selection_sequence, select.hovered_atom_idx);
+                                }
+                                md_bitfield_set_bit(&mask, select.hovered_atom_idx);
+                            } else if (mol.bond.pairs && 0 <= select.hovered_bond_idx && select.hovered_bond_idx < (int)mol.bond.count) {
+                                md_bond_pair_t pair = mol.bond.pairs[select.hovered_bond_idx];
+                                md_bitfield_set_bit(&mask, pair.idx[0]);
+                                md_bitfield_set_bit(&mask, pair.idx[1]);
+                            }
+                            grow_mask_by_selection_granularity(&mask, select.granularity, mol);
+                            if (mode == RegionMode::Append) {
+                                md_bitfield_or_inplace(select.selection_mask, &mask);
+                            } else {
+                                md_bitfield_andnot_inplace(select.selection_mask, &mask);
+                            }
+                        }
+                        else {
+                            single_selection_sequence_clear(select.single_selection_sequence);
+                            md_bitfield_clear(select.selection_mask);
+                            md_bitfield_clear(select.highlight_mask);
+                        }
+                    }
+                }
+            }
+            else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
+                md_bitfield_clear(select.highlight_mask);
+                if (select.hovered_atom_idx != -1 || select.hovered_bond_idx != -1) {
+                    if (0 <= select.hovered_atom_idx && select.hovered_atom_idx < (int)mol.atom.count) {
+                        md_bitfield_set_bit(select.highlight_mask, select.hovered_atom_idx);
+                    } else if (mol.bond.pairs && 0 <= select.hovered_bond_idx && select.hovered_bond_idx < (int)mol.bond.count) {
+                        md_bond_pair_t pair = mol.bond.pairs[select.hovered_bond_idx];
+                        md_bitfield_set_bit(select.highlight_mask, pair.idx[0]);
+                        md_bitfield_set_bit(select.highlight_mask, pair.idx[1]);
+                    }
+                    grow_mask_by_selection_granularity(select.highlight_mask, select.granularity, mol);
+                    //draw_info_window(state, select.hovered_atom_idx);
+                }
+            }
+
+            if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+                if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !is_selecting) {
+                    const ImVec2 delta = ImGui::GetIO().MouseDelta;
+                    const ImVec2 coord = ImGui::GetMousePos() - canvas_min;
+                    const vec2_t mouse_delta = {delta.x, delta.y};
+                    const vec2_t mouse_coord = {coord.x, coord.y};
+                    const float  scroll_delta = ImGui::GetIO().MouseWheel;
+
+                    TrackballControllerInput input;
+                    input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                    input.pan_button    = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                    input.dolly_button  = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+                    input.mouse_coord_curr = mouse_coord;
+                    input.mouse_coord_prev = mouse_coord - mouse_delta;
+                    input.screen_size = {canvas_size.x, canvas_size.y};
+                    input.dolly_delta = scroll_delta;
+                    input.fov_y = view.camera.fov_y;
+
+                    TrackballFlags flags = TrackballFlags_AnyInteractionReturnsTrue;
+                    if (ImGui::IsItemActive()) {
+                        flags |= TrackballFlags_EnableAllInteractions;
+                    } else {
+                        flags |= TrackballFlags_DollyEnabled;
+                    }
+
+                    camera_controller_trackball(view.target_pos, view.target_ori, view.target_dist, input, view.trackball_param, flags);
+                }
+            }
+        }
+    }
+
+    static void update_picking_data(PickingData& picking, const vec2_t& coord, GBuffer& gbuffer, mat4_t inv_MVP) {
+        picking = {};
+
+#if MD_PLATFORM_OSX
+        coord = coord * vec_cast(ImGui::GetIO().DisplayFramebufferScale);
+#endif
+        if (0.f < coord.x && coord.x < (float)gbuffer.width && 0.f < coord.y && coord.y < (float)gbuffer.height) {
+            extract_picking_data(&picking.idx, &picking.depth, &gbuffer, (int)coord.x, (int)coord.y);
+            const vec4_t viewport = {0, 0, (float)gbuffer.width, (float)gbuffer.height};
+            picking.world_coord = mat4_unproject({coord.x, coord.y, picking.depth}, inv_MVP, viewport);
+            picking.screen_coord = {coord.x, coord.y};
+        }
+    }
+
+    void draw_nto_window(ApplicationState& state) {
         if (!nto.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
         if (vlx.rsp.nto == NULL) return;
+
+        bool open_context_menu = false;
 
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
@@ -2785,8 +3028,9 @@ struct VeloxChem : viamd::EventHandler {
             canvas_sz.x = MAX(canvas_sz.x, 50.0f);
             canvas_sz.y = MAX(canvas_sz.y, 50.0f);
 
-            // This will catch our interactions
-            ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
+            ImGui::Dummy(canvas_sz);
+
+            ImVec2 cursor = ImGui::GetCursorPos();
 
             // Draw border and background color
             ImGuiIO& io = ImGui::GetIO();
@@ -2795,8 +3039,8 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
             double nto_lambda[4] = {};
-
             int num_lambdas = 1;
+            bool reset_view = false;
 
             if (rsp.selected != -1) {
                 // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
@@ -2809,6 +3053,7 @@ struct VeloxChem : viamd::EventHandler {
                         break;
                     }
                 }
+
 
 				// This should be triggered by a change in the selected NTO indxex
                 // And when groups are changed
@@ -2848,14 +3093,14 @@ struct VeloxChem : viamd::EventHandler {
                     const size_t nto_idx = (size_t)rsp.selected;
 
                     // Resize transition matrix to the correct size
-					if (nto.transition_matrix_dim != nto.num_groups) {
+					if (nto.transition_matrix_dim != nto.group.count) {
                         if (nto.transition_matrix) {
                             // The allocated size contains matrix N*N + 2*N for hole/part arrays
                             const size_t cur_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
                             md_free(arena, nto.transition_matrix, cur_mem);
                         }
 
-						nto.transition_matrix_dim = nto.num_groups;
+						nto.transition_matrix_dim = nto.group.count;
                         const size_t new_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
 						nto.transition_matrix = (float*)md_alloc(arena, new_mem);
                         nto.transition_density_hole = nto.transition_matrix + (nto.transition_matrix_dim * nto.transition_matrix_dim);
@@ -2869,12 +3114,12 @@ struct VeloxChem : viamd::EventHandler {
                     task_system::ID eval_hole = 0;
                     task_system::ID seg_hole  = 0;
 
-                    if (compute_nto_group_values_async(&eval_part, &seg_part, nto.transition_density_part, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
-                        compute_nto_group_values_async(&eval_hole, &seg_hole, nto.transition_density_hole, nto.num_groups, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
+                    if (compute_nto_group_values_async(&eval_part, &seg_part, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
+                        compute_nto_group_values_async(&eval_hole, &seg_hole, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
                     {
                         task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
                             VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
-                            distribute_charges_heuristic(nto->transition_matrix, nto->num_groups, nto->transition_density_hole, nto->transition_density_part);
+                            distribute_charges_heuristic(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
                         }, &nto);
 
                         task_system::set_task_dependency(compute_matrix_task, seg_part);
@@ -2900,21 +3145,87 @@ struct VeloxChem : viamd::EventHandler {
             win_sz.y = floorf(win_sz.y);
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            draw_list->ChannelsSplit(2);
+            draw_list->ChannelsSetCurrent(0);
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
+
+            const float aspect_ratio = win_sz.x / win_sz.y;
+
+            mat4_t view_mat     = camera_world_to_view_matrix(nto.camera);
+            mat4_t proj_mat     = camera_perspective_projection_matrix(nto.camera, aspect_ratio);
+            mat4_t inv_view_mat = camera_view_to_world_matrix(nto.camera);
+            mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(nto.camera, aspect_ratio);
+
+            mat4_t MVP      = proj_mat * view_mat;
+            mat4_t inv_MVP  = inv_view_mat * inv_proj_mat;
+
             if (rsp.selected != -1) {
+                SelectionState selection = {
+                    .hovered_atom_idx = state.selection.atom_idx.hovered,
+                    .hovered_bond_idx = state.selection.bond_idx.hovered,
+                    .highlight_mask = &state.selection.highlight_mask,
+                    .selection_mask = &state.selection.selection_mask,
+                    .single_selection_sequence = &state.selection.single_selection_sequence,
+                    .granularity = state.selection.granularity,
+                };
+
+                ViewState view = {
+                    .camera = nto.camera,
+                    .MVP = MVP,
+                    .trackball_param = state.view.trackball_param,
+                    .picking_world_coord = nto.picking.world_coord,
+                    .picking_depth = nto.picking.depth,
+                    .target_ori = &nto.target.ori,
+                    .target_pos = &nto.target.pos,
+                    .target_dist = &nto.target.dist,
+                };
+
+                ImRect hovered_canvas_rect = {};
+
                 // Draw P / H orbitals
                 for (int i = 0; i < num_lambdas * 2; ++i) {
                     ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
                     ImVec2 p1 = grid_p0 + win_sz * ImVec2(1.0f, (float)(i+1));
+                    ImRect rect = {p0, p1};
+                    ImGui::SetCursorScreenPos(p0);
+
+                    draw_list->ChannelsSetCurrent(1);
+                    ImGui::PushID(i);
+                    interaction_canvas(p1-p0, selection, view, state.mold.mol);
+
+                    if (ImGui::IsItemHovered()) {
+                        if (ImGui::GetIO().MouseDoubleClicked[0]) {
+                            if (view.picking_depth < 1.0f) {
+                                const vec3_t forward = view.camera.orientation * vec3_t{0, 0, 1};
+                                nto.target.pos = view.picking_world_coord + forward * *view.target_dist;
+                            } else {
+                                reset_view = true;
+                            }
+                        }
+
+                        if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0)) {
+                            open_context_menu = true;
+                        }
+                        hovered_canvas_rect = rect;
+                    }
+
+                    ImGui::PopID();
+
+                    draw_list->ChannelsSetCurrent(0);
+
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
                     const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
+
+                    char lbls[64];
+                    snprintf(lbls, sizeof(lbls), "hovered_atom_idx: %i, hovered_bond_idx: %i", state.selection.atom_idx.hovered, state.selection.bond_idx.hovered);
+
                     char buf[32];
                     snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
-                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
+                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbls);
                     
                     const float aspect_ratio1 = win_sz.x / win_sz.y;
                     mat4_t view_mat1 = camera_world_to_view_matrix(nto.camera);
@@ -3101,230 +3412,324 @@ struct VeloxChem : viamd::EventHandler {
                     float x1 = floorf(canvas_p0.x + canvas_sz.x * (i & 1 ? 0.5f : 1.0f));
                     draw_list->AddLine({x0, y}, {x1, y}, IM_COL32(0, 0, 0, 255));
                 }
-            }
 
-            const bool is_hovered = ImGui::IsItemHovered();
-            const bool is_active = ImGui::IsItemActive();
-            const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
-            const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
- 
-            int width  = MAX(1, (int)win_sz.x);
-            int height = MAX(1, (int)win_sz.y);
+                // Draw stuff
 
-            int num_win = num_lambdas * 2;
 
-            auto& gbuf = nto.gbuf;
-            if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                init_gbuffer(&gbuf, width, height);
-                for (int i = 0; i < num_win; ++i) {
-                    gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
+                const bool is_hovered = ImGui::IsItemHovered();
+                const bool is_active = ImGui::IsItemActive();
+                const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
+                const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
+
+                int width  = MAX(1, (int)win_sz.x);
+                int height = MAX(1, (int)win_sz.y);
+
+                int num_win = num_lambdas * 2;
+
+                auto& gbuf = nto.gbuf;
+                if ((int)gbuf.width != width || (int)gbuf.height != height) {
+                    init_gbuffer(&gbuf, width, height);
+                    for (int i = 0; i < num_win; ++i) {
+                        gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
+                    }
                 }
-            }
 
-            bool reset_view = false;
-            if (is_hovered) {
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    reset_view = true;
+                if (is_hovered) {
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        reset_view = true;
+                    }
                 }
-            }
 
-            if (reset_view) {
-                camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-            }
+                if (reset_view) {
+                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
+                }
 
-            if (is_active || is_hovered) {
-                static const TrackballControllerParam param = {
-                    .min_distance = 1.0,
-                    .max_distance = 1000.0,
-                };
+                if (nto.show_coordinate_system_widget) {
+                    float  ext = MIN(win_sz.x, win_sz.y) * 0.4f;
+                    float  pad = 20.0f;
 
-                vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
-                vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
-                vec2_t prev = curr - delta;
-                float  wheel_delta = io.MouseWheel;
+                    ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
+                    ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();
 
-                TrackballControllerInput input = {
-                    .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
-                    .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
-                    .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
-                    .dolly_delta   = is_hovered ? wheel_delta : 0.0f,
-                    .mouse_coord_prev = prev,
-                    .mouse_coord_curr = curr,
-                    .screen_size = {canvas_sz.x, canvas_sz.y},
-                    .fov_y = nto.camera.fov_y,
-                };
-                camera_controller_trackball(&nto.target.pos, &nto.target.ori, &nto.target.dist, input, param);
-            }
+                    CoordSystemWidgetParam param = {
+                        .pos = ImVec2(min.x + pad, max.y - ext - pad),
+                        .size = {ext, ext},
+                        .view_matrix = camera_world_to_view_matrix(nto.camera),
+                        .camera_ori  = nto.target.ori,
+                        .camera_pos  = nto.target.pos,
+                        .camera_dist = nto.target.dist,
+                    };
 
-            if (nto.show_coordinate_system_widget) {
-                float  ext = MIN(win_sz.x, win_sz.y) * 0.4f;
-                float  pad = 20.0f;
+                    ImGui::DrawCoordinateSystemWidget(param);
+                }
 
-                ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
-                ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();
+                clear_gbuffer(&gbuf);
 
-                CoordSystemWidgetParam param = {
-                    .pos = ImVec2(min.x + pad, max.y - ext - pad),
-                    .size = {ext, ext},
-                    .view_matrix = camera_world_to_view_matrix(nto.camera),
-                    .camera_ori  = nto.target.ori,
-                    .camera_pos  = nto.target.pos,
-                    .camera_dist = nto.target.dist,
-                };
+                const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                    GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
-                ImGui::DrawCoordinateSystemWidget(param);
-            }
+                glEnable(GL_CULL_FACE);
+                glCullFace(GL_BACK);
 
-            const float aspect_ratio = win_sz.x / win_sz.y;
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_LESS);
+                glDepthMask(GL_TRUE);
+                glEnable(GL_SCISSOR_TEST);
 
-            mat4_t view_mat = camera_world_to_view_matrix(nto.camera);
-            mat4_t proj_mat = camera_perspective_projection_matrix(nto.camera, aspect_ratio);
-            mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(nto.camera, aspect_ratio);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+                glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+                glViewport(0, 0, gbuf.width, gbuf.height);
+                glScissor(0, 0, gbuf.width, gbuf.height);
 
+                auto draw_rep = [](md_gl_rep_t& rep, md_gl_shaders_t& shaders, mat4_t& view_mat, mat4_t& proj_mat, uint32_t atom_mask = 0) {
+                    md_gl_draw_op_t draw_op = {};
+                    draw_op.type = MD_GL_REP_BALL_AND_STICK;
+                    draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+                    draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                    draw_op.rep = rep;
 
+                    md_gl_draw_args_t draw_args = {
+                        .shaders = shaders,
+                        .draw_operations = {
+                            .count = 1,
+                            .ops = &draw_op
+                    },
+                        .view_transform = {
+                            .view_matrix = (const float*)view_mat.elem,
+                            .proj_matrix = (const float*)proj_mat.elem,
+                    },
+                    .atom_mask = atom_mask,
+                    };
 
-            clear_gbuffer(&gbuf);
+                    md_gl_draw(&draw_args);
+                    };
 
-            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+                draw_rep(nto.gl_rep, state.mold.gl_shaders, view_mat, proj_mat);
 
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
+                glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+                glClearColor(1, 1, 1, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
 
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
-            glEnable(GL_SCISSOR_TEST);
+                if (true) {
+                    PUSH_GPU_SECTION("Selection")
+                        const bool atom_selection_empty = md_bitfield_popcount(&state.selection.selection_mask) == 0;
+                    const bool atom_highlight_empty = md_bitfield_popcount(&state.selection.highlight_mask) == 0;
 
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-            glViewport(0, 0, gbuf.width, gbuf.height);
-            glScissor(0, 0, gbuf.width, gbuf.height);
+                    glDepthMask(0);
 
-            md_gl_draw_op_t draw_op = {};
-            draw_op.type = MD_GL_REP_BALL_AND_STICK;
-            draw_op.args.ball_and_stick.ball_scale   = 1.0f;
-            draw_op.args.ball_and_stick.stick_radius = 1.0f;
-            draw_op.rep = gl_rep;
+                    // @NOTE(Robin): This is a b*tch to get right, What we want is to separate in a single pass, the visible selected from the
+                    // non visible selected. In order to achieve this, we start with a cleared stencil of value 1 then either set it to zero selected and not visible
+                    // and to two if it is selected and visible. But the visible atoms should always be able to write over a non visible 0, but not the other way around.
+                    // Hence the GL_GREATER stencil test against the reference value of 2.
 
-            md_gl_draw_args_t draw_args = {
-                .shaders = state.mold.gl_shaders,
-                .draw_operations = {
-                    .count = 1,
-                    .ops = &draw_op
-                },
-                .view_transform = {
-                    .view_matrix = (const float*)view_mat.elem,
-                    .proj_matrix = (const float*)proj_mat.elem,
-                },
-            };
+                    if (!atom_selection_empty) {
+                        glColorMask(0, 0, 0, 0);
 
-            md_gl_draw(&draw_args);
+                        glEnable(GL_DEPTH_TEST);
+                        glDepthFunc(GL_EQUAL);
 
-            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-            glClearColor(1, 1, 1, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
+                        glEnable(GL_STENCIL_TEST);
+                        glStencilMask(0xFF);
 
-            PUSH_GPU_SECTION("Postprocessing")
-            postprocessing::Descriptor postprocess_desc = {
-                .background = {
-                    .color = {24.f, 24.f, 24.f},
+                        glClearStencil(1);
+                        glClear(GL_STENCIL_BUFFER_BIT);
+
+                        glStencilFunc(GL_GREATER, 0x02, 0xFF);
+                        glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
+                        draw_rep(nto.gl_rep, state.mold.gl_shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Selected);
+
+                        glDisable(GL_DEPTH_TEST);
+
+                        glStencilMask(0x0);
+                        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+                        glColorMask(1, 1, 1, 1);
+
+                        glStencilFunc(GL_EQUAL, 2, 0xFF);
+                        postprocessing::blit_color(state.selection.color.selection.visible);
+
+                        glStencilFunc(GL_EQUAL, 0, 0xFF);
+                        postprocessing::blit_color(state.selection.color.selection.hidden);
+                    }
+
+                    if (!atom_highlight_empty) {
+                        glColorMask(0, 0, 0, 0);
+
+                        glEnable(GL_DEPTH_TEST);
+                        glDepthFunc(GL_EQUAL);
+
+                        glEnable(GL_STENCIL_TEST);
+                        glStencilMask(0xFF);
+
+                        glClearStencil(1);
+                        glClear(GL_STENCIL_BUFFER_BIT);
+
+                        glStencilFunc(GL_GREATER, 0x02, 0xFF);
+                        glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
+                        draw_rep(nto.gl_rep, state.mold.gl_shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Highlighted);
+
+                        glDisable(GL_DEPTH_TEST);
+
+                        glStencilMask(0x0);
+                        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+                        glColorMask(1, 1, 1, 1);
+
+                        glStencilFunc(GL_EQUAL, 2, 0xFF);
+                        postprocessing::blit_color(state.selection.color.highlight.visible);
+
+                        glStencilFunc(GL_EQUAL, 0, 0xFF);
+                        postprocessing::blit_color(state.selection.color.highlight.hidden);
+                    }
+
+                    glDisable(GL_STENCIL_TEST);
+
+                    /*
+                    if (!atom_selection_empty) {
+                    PUSH_GPU_SECTION("Desaturate") {
+                    glColorMask(1, 1, 1, 1);
+                    glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
+                    postprocessing::scale_hsv(nto.gbuf.tex.color, vec3_t{1, state.selection.color.saturation, 1});
+                    } POP_GPU_SECTION()
+                    }
+                    */
+
+                    glDepthFunc(GL_LESS);
+                    glDepthMask(0);
+                    glColorMask(1,1,1,1);
+                    POP_GPU_SECTION()
+                }
+
+                PUSH_GPU_SECTION("Postprocessing")
+                    postprocessing::Descriptor postprocess_desc = {
+                    .background = {
+                            .color = {24.f, 24.f, 24.f},
                 },
                 .tonemapping = {
-                    .enabled    = state.visuals.tonemapping.enabled,
-                    .mode       = state.visuals.tonemapping.tonemapper,
-                    .exposure   = state.visuals.tonemapping.exposure,
-                    .gamma      = state.visuals.tonemapping.gamma,
+                            .enabled    = state.visuals.tonemapping.enabled,
+                            .mode       = state.visuals.tonemapping.tonemapper,
+                            .exposure   = state.visuals.tonemapping.exposure,
+                            .gamma      = state.visuals.tonemapping.gamma,
                 },
                 .ambient_occlusion = {
-                    .enabled = false
+                            .enabled = false
                 },
-                .depth_of_field = {
-                    .enabled = false,
+                    .depth_of_field = {
+                            .enabled = false,
                 },
                 .fxaa = {
-                    .enabled = true,
+                            .enabled = true,
                 },
                 .temporal_aa = {
-                    .enabled = false,
+                            .enabled = false,
                 },
                 .sharpen = {
-                    .enabled = false,
+                            .enabled = false,
                 },
                 .input_textures = {
-                    .depth      = nto.gbuf.tex.depth,
-                    .color      = nto.gbuf.tex.color,
-                    .normal     = nto.gbuf.tex.normal,
-                    .velocity   = nto.gbuf.tex.velocity,
+                            .depth          = nto.gbuf.tex.depth,
+                            .color          = nto.gbuf.tex.color,
+                            .normal         = nto.gbuf.tex.normal,
+                            .velocity       = nto.gbuf.tex.velocity,
+                            .transparency   = nto.gbuf.tex.transparency,
                 }
-            };
+                };
 
-            ViewParam view_param = {
-                .matrix = {
-                    .curr = {
+                ViewParam view_param = {
+                    .matrix = {
+                        .curr = {
                         .view = view_mat,
                         .proj = proj_mat,
                         .norm = view_mat,
-                    },
-                    .inv = {
-                        .proj = inv_proj_mat,
-                    }
                 },
-                .clip_planes = {
-                    .near = nto.camera.near_plane,
-                    .far  = nto.camera.far_plane,
+                .inv = {
+                        .proj = inv_proj_mat,
+                }
+                },
+                    .clip_planes = {
+                        .near = nto.camera.near_plane,
+                        .far  = nto.camera.far_plane,
                 },
                 .resolution = {win_sz.x, win_sz.y},
                 .fov_y = nto.camera.fov_y,
-            };
+                };
 
-            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
-            POP_GPU_SECTION()
+                postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+                POP_GPU_SECTION()
 
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glDrawBuffer(GL_BACK);
-            glDisable(GL_SCISSOR_TEST);
-
-            if (nto.iso.enabled) {
-                PUSH_GPU_SECTION("NTO RAYCAST")
-                    for (int i = 0; i < num_win; ++i) {
-                        volume::RenderDesc vol_desc = {
-                            .render_target = {
-                                .depth  = nto.gbuf.tex.depth,
-                                .color  = nto.iso_tex[i],
-                                .width  = nto.gbuf.width,
-                                .height = nto.gbuf.height,
-                                .clear_color = true,
-                            },
-                            .texture = {
-                                .volume = nto.vol[i].tex_id,
-                            },
-                            .matrix = {
-                                .model = nto.vol[i].tex_to_world,
-                                .view  = view_mat,
-                                .proj  = proj_mat,
-                                .inv_proj = inv_proj_mat,
-                            },
-                            .iso = {
-                                .enabled = true,
-                                .count  = (size_t)nto.iso.count,
-                                .values = nto.iso.values,
-                                .colors = nto.iso.colors,
-                            },
-                            .shading = {
-                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
-                                .roughness = 0.3f,
-                                .dir_radiance = {10,10,10},
-                                .ior = 1.5f,
-                            },
-                            .voxel_spacing = nto.vol[i].step_size,
-                        };
-                        volume::render_volume(vol_desc);
+                    if (nto.iso.enabled) {
+                        PUSH_GPU_SECTION("NTO RAYCAST")
+                            for (int i = 0; i < num_win; ++i) {
+                                volume::RenderDesc vol_desc = {
+                                    .render_target = {
+                                        .depth  = nto.gbuf.tex.depth,
+                                        .color  = nto.iso_tex[i],
+                                        .width  = nto.gbuf.width,
+                                        .height = nto.gbuf.height,
+                                        .clear_color = true,
+                                },
+                                .texture = {
+                                        .volume = nto.vol[i].tex_id,
+                                },
+                                .matrix = {
+                                        .model = nto.vol[i].tex_to_world,
+                                        .view  = view_mat,
+                                        .proj  = proj_mat,
+                                        .inv_proj = inv_proj_mat,
+                                },
+                                .iso = {
+                                        .enabled = true,
+                                        .count  = (size_t)nto.iso.count,
+                                        .values = nto.iso.values,
+                                        .colors = nto.iso.colors,
+                                },
+                                .shading = {
+                                        .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                        .roughness = 0.3f,
+                                        .dir_radiance = {10,10,10},
+                                        .ior = 1.5f,
+                                },
+                                .voxel_spacing = nto.vol[i].step_size,
+                                };
+                                volume::render_volume(vol_desc);
+                            }
+                        POP_GPU_SECTION();
                     }
-                POP_GPU_SECTION();
+
+                // Reset state
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+                glDrawBuffer(GL_BACK);
+                glDisable(GL_SCISSOR_TEST);
+
+                if (hovered_canvas_rect.GetArea() > 0) {
+                    ImVec2 coord = ImGui::GetMousePos() - hovered_canvas_rect.Min;
+                    coord.y = hovered_canvas_rect.GetSize().y - coord.y;
+                    update_picking_data(nto.picking, {coord.x, coord.y}, nto.gbuf, inv_MVP);
+
+                    state.selection.atom_idx.hovered = INVALID_PICKING_IDX;
+                    state.selection.bond_idx.hovered = INVALID_PICKING_IDX;
+
+                    if (nto.picking.idx != INVALID_PICKING_IDX) {
+                        // The index space is segmented into two parts, the first half is for atoms and the second half is for bonds
+                        if (nto.picking.idx < 0x80000000) {
+                            state.selection.atom_idx.hovered = nto.picking.idx;
+                        } else {
+                            state.selection.bond_idx.hovered = nto.picking.idx & 0x7FFFFFFF;
+                        }
+                    }
+                }
             }
         }
         ImGui::End();
+
+        if (open_context_menu) {
+            ImGui::OpenPopup("Context Menu");
+        }
+
+        if (ImGui::BeginPopup("Context Menu")) {
+            if (ImGui::MenuItem("Example Button")) {
+
+            }
+            ImGui::EndPopup();
+        }
     }
 };
 static VeloxChem instance = {};
