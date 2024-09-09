@@ -849,15 +849,28 @@ struct VeloxChem : viamd::EventHandler {
         for (int start_i = 0; start_i < num_bars; start_i++) {
             ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
 
-            ImVec4 flow_color = ImPlot::GetColormapColor(start_i);
-            flow_color.w = 0.5;
+            ImVec4 start_col = ImPlot::GetColormapColor(start_i);
+
+            start_col.w = 0.5;
             for (int end_i = 0; end_i < num_bars; end_i++) {
                 float percentage = nto->transition_matrix[end_i * num_bars + start_i];
+                ImVec4 end_col = ImPlot::GetColormapColor(end_i);
+
                 if (percentage != 0) {
                     float width = bars_avail_width * percentage;
                     ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
-                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(flow_color));
 
+                    int vert_beg = draw_list->VtxBuffer.Size;
+                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
+                    int vert_end = draw_list->VtxBuffer.Size;
+
+                    // Apply a gradient based on y-value from start color to end color if they belong to different groups
+                    if (end_i != start_i) {
+                        ImVec2 grad_p0 = {start_pos.x, start_pos.y};
+                        ImVec2 grad_p1 = {start_pos.x, end_pos.y};
+                        ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
+                    }
+                    
                     ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{width / 2, 0};
                     char lable[16];
                     sprintf(lable, "%3.2f%%", percentage * 100);
