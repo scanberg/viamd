@@ -212,19 +212,19 @@ struct Shapespace : viamd::EventHandler {
                 const ImVec2 pos_pla = ImPlot::PlotToPixels(pla);
                 const ImVec2 pos_lin = ImPlot::PlotToPixels(lin);
 
-                static const char* text_iso = "Isotropic";
+                static const char* text_sph = "Spherical";
                 static const char* text_pla = "Planar";
                 static const char* text_lin = "Linear";
 
-                const ImVec2 text_iso_offset = pos_iso + ImGui::CalcTextSize(text_iso) * ImVec2(-0.5f, -1.0f);
-                const ImVec2 text_pla_offset = pos_pla + ImGui::CalcTextSize(text_pla) * ImVec2(-0.5f,  0.0f);
-                const ImVec2 text_lin_offset = pos_lin + ImGui::CalcTextSize(text_lin) * ImVec2(-0.5f,  0.0f);
+                const ImVec2 text_sph_offset = pos_iso + ImGui::CalcTextSize(text_sph) * ImVec2(-0.5f, -1.2f);
+                const ImVec2 text_pla_offset = pos_pla + ImGui::CalcTextSize(text_pla) * ImVec2(-0.5f,  0.2f);
+                const ImVec2 text_lin_offset = pos_lin + ImGui::CalcTextSize(text_lin) * ImVec2(-0.5f,  0.2f);
 
                 ImPlot::PushPlotClipRect();
                 ImPlot::GetPlotDrawList()->AddTriangleFilled(p0, p1, p2, IM_COL32(255,255,255,20));
                 ImPlot::GetPlotDrawList()->AddTriangle(p0, p1, p2, IM_COL32(255,255,255,50));
 
-                ImPlot::GetPlotDrawList()->AddText(text_iso_offset, IM_COL32(255, 255, 255, 255), text_iso);
+                ImPlot::GetPlotDrawList()->AddText(text_sph_offset, IM_COL32(255, 255, 255, 255), text_sph);
                 ImPlot::GetPlotDrawList()->AddText(text_pla_offset, IM_COL32(255, 255, 255, 255), text_pla);
                 ImPlot::GetPlotDrawList()->AddText(text_lin_offset, IM_COL32(255, 255, 255, 255), text_lin);
                 ImPlot::PopPlotClipRect();
