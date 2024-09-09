@@ -1441,12 +1441,12 @@ struct VeloxChem : viamd::EventHandler {
 
             if (ImGui::TreeNode("Geometry")) {
                 if (vlx.geom.num_atoms) {
-                    static ImGuiTableFlags flags =  ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
-                                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
+                    static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
+                                                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
 
-                    static ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
+                    static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
-                    if (ImGui::BeginTable("table_advanced", 5, flags, ImVec2(500, -1), 0)) {
+                    if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
                         ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f);
@@ -3589,38 +3589,38 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 PUSH_GPU_SECTION("Postprocessing")
-                    postprocessing::Descriptor postprocess_desc = {
+                postprocessing::Descriptor postprocess_desc = {
                     .background = {
-                            .color = {24.f, 24.f, 24.f},
-                },
-                .tonemapping = {
-                            .enabled    = state.visuals.tonemapping.enabled,
-                            .mode       = state.visuals.tonemapping.tonemapper,
-                            .exposure   = state.visuals.tonemapping.exposure,
-                            .gamma      = state.visuals.tonemapping.gamma,
-                },
-                .ambient_occlusion = {
-                            .enabled = false
-                },
+                        .color = {24.f, 24.f, 24.f},
+                    },
+                    .tonemapping = {
+                        .enabled    = state.visuals.tonemapping.enabled,
+                        .mode       = state.visuals.tonemapping.tonemapper,
+                        .exposure   = state.visuals.tonemapping.exposure,
+                        .gamma      = state.visuals.tonemapping.gamma,
+                    },
+                    .ambient_occlusion = {
+                        .enabled = false
+                    },
                     .depth_of_field = {
-                            .enabled = false,
-                },
-                .fxaa = {
-                            .enabled = true,
-                },
-                .temporal_aa = {
-                            .enabled = false,
-                },
-                .sharpen = {
-                            .enabled = false,
-                },
-                .input_textures = {
-                            .depth          = nto.gbuf.tex.depth,
-                            .color          = nto.gbuf.tex.color,
-                            .normal         = nto.gbuf.tex.normal,
-                            .velocity       = nto.gbuf.tex.velocity,
-                            .transparency   = nto.gbuf.tex.transparency,
-                }
+                        .enabled = false,
+                    },
+                    .fxaa = {
+                        .enabled = true,
+                    },
+                    .temporal_aa = {
+                        .enabled = false,
+                    },
+                    .sharpen = {
+                        .enabled = false,
+                    },
+                    .input_textures = {
+                        .depth          = nto.gbuf.tex.depth,
+                        .color          = nto.gbuf.tex.color,
+                        .normal         = nto.gbuf.tex.normal,
+                        .velocity       = nto.gbuf.tex.velocity,
+                        .transparency   = nto.gbuf.tex.transparency,
+                    }
                 };
 
                 ViewParam view_param = {
