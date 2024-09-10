@@ -859,12 +859,12 @@ struct VeloxChem : viamd::EventHandler {
         for (int start_i = 0; start_i < num_bars; start_i++) {
             ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
 
-            ImVec4 start_col = ImPlot::GetColormapColor(start_i);
+            ImVec4 start_col = vec_cast(nto->group.color[start_i]);
 
             start_col.w = 0.5;
             for (int end_i = 0; end_i < num_bars; end_i++) {
                 float percentage = nto->transition_matrix[end_i * num_bars + start_i];
-                ImVec4 end_col = ImPlot::GetColormapColor(end_i);
+                ImVec4 end_col = vec_cast(nto->group.color[end_i]);
 
                 if (percentage != 0) {
                     float width = bars_avail_width * percentage;
