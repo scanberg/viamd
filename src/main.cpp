@@ -8955,6 +8955,13 @@ static void draw_representations_transparent(ApplicationState* state) {
         };
 
         volume::render_volume(desc);
+
+#if DEBUG
+        immediate::set_model_view_matrix(state->view.param.matrix.curr.view);
+        immediate::set_proj_matrix(state->view.param.matrix.curr.proj);
+        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, rep.orbital.vol.tex_mat, immediate::COLOR_BLACK);
+        immediate::render();
+#endif
     }
 }
 
