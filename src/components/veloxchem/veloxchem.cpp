@@ -3325,133 +3325,88 @@ struct VeloxChem : viamd::EventHandler {
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
-                    
-                    int number_of_atoms = vlx.geom.num_atoms;
-                    float middle_x=0;
-                    float middle_y = 0;
-                    float middle_z = 0;
-                    for (int i = 0; i < number_of_atoms; ++i) {
-                        middle_x = middle_x + (float)vlx.geom.coord_x[i];
-                        middle_y = middle_y + (float)vlx.geom.coord_y[i];
-                        middle_z = middle_z + (float)vlx.geom.coord_z[i];
-                    }
-
-                    middle_x = middle_x/number_of_atoms;
-                    middle_y = middle_y/number_of_atoms;
-                    middle_z = middle_z/number_of_atoms;
-                    float farthest_x = 0;
-                    float farthest_y = 0;
-                    float farthest_z = 0;
-                    float current_distance_x = 0;
-                    float current_distance_y = 0;
-                    float current_distance_z = 0;
-                    for (int i = 0; i < number_of_atoms; ++i) {
-                        current_distance_x = middle_x - (float)vlx.geom.coord_x[i];
-                        current_distance_y = middle_y - (float)vlx.geom.coord_y[i];
-                        current_distance_z = middle_z - (float)vlx.geom.coord_z[i];
-                        if (vec3_length({current_distance_x, current_distance_y, current_distance_z}) > vec3_length({farthest_x, farthest_y, farthest_z})) {
-                            farthest_x = current_distance_x;
-                            farthest_y = current_distance_y;
-                            farthest_z = current_distance_z;
-                        }
-                    }
-                    float farthest_distance = vec3_length({farthest_x, farthest_y, farthest_z});
-                    float longest_vector = 0;
-                    if (vec3_length({(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z}) > vec3_length({(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z}))
-                    {
-                        longest_vector = vec3_length({(float)vlx.rsp.electronic_transition_length[rsp.selected].x,
-                                                      (float)vlx.rsp.electronic_transition_length[rsp.selected].y,
-                                                      (float)vlx.rsp.electronic_transition_length[rsp.selected].z});
-                    }
-                    else
-                    {
-                        longest_vector = vec3_length({(float)vlx.rsp.magnetic_transition[rsp.selected].x,
-                                                      (float)vlx.rsp.magnetic_transition[rsp.selected].y,
-                                                      (float)vlx.rsp.magnetic_transition[rsp.selected].z});
-                    }
-                    const vec4_t p = mat4_mul_vec4(MVP, {middle_x, middle_y, middle_z, 1.0});
-
-                    const ImVec2 c = {
-                        p0.x + ( p.x / p.w * 0.5f + 0.5f) * win_sz.x,
-                        p0.y + (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
-                    };
-
-                    auto draw_arrow = [draw_list](ImVec2 beg, ImVec2 end, ImU32 color, float thickness) {
-                        float len2 = ImLengthSqr(end-beg);
-                        if (len2 > 1.0e-3f) {
-                            float len = sqrtf(len2);
-                            ImVec2 d = (end - beg) / len;
-                            ImVec2 o = {-d.y, d.x};
-                            float d_scl = ImMin(thickness * 3, len);
-                            float o_scl = 0.57735026918962576451 * d_scl;
-                            draw_list->AddLine(beg, end - d * thickness, color, thickness);
-                            draw_list->AddTriangleFilled(end, end - d * d_scl + o * o_scl, end - d * d_scl - o * o_scl, color);
-                        }
-                    };
 
                     if (nto.iso.display_vectors) {
-                        const vec4_t p_electric_target =                
-                            mat4_mul_vec4(MVP, {middle_x + (float)vlx.rsp.electronic_transition_length[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                middle_y + (float)vlx.rsp.electronic_transition_length[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                middle_z + (float)vlx.rsp.electronic_transition_length[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                        vec3_t mid = vec3_lerp(min_aabb, max_aabb, 0.5f);
+                        vec3_t ext = max_aabb - min_aabb;
 
-                        const ImVec2 c_electric_target = {
-                            p0.x + ( p_electric_target.x / p_electric_target.w * 0.5f + 0.5f) * win_sz.x,
-                            p0.y + (-p_electric_target.y / p_electric_target.w * 0.5f + 0.5f) * win_sz.y,
+                        float farthest_distance = vec3_length(ext * 0.5f);
+                        float longest_vector = 0;
+
+                        const vec3_t magn_vec = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
+                        const vec3_t elec_vec = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
+
+                        if (vec3_length_squared(magn_vec) > vec3_length_squared(elec_vec)) {
+                            longest_vector = vec3_length(magn_vec);
+                        } else {
+                            longest_vector = vec3_length(elec_vec);
+                        }
+
+                        auto proj_point = [MVP, win_sz, p0](vec3_t point) -> ImVec2 {
+                            const vec4_t p = mat4_mul_vec4(MVP, vec4_from_vec3(point, 1.0));
+                            const ImVec2 c = {
+                                p0.x + ( p.x / p.w * 0.5f + 0.5f) * win_sz.x,
+                                p0.y + (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
+                            };
+                            return c;
                         };
 
-                        const float arrow_thickness = 5.0f;
+                        auto draw_arrow = [draw_list](ImVec2 beg, ImVec2 end, ImU32 color, float thickness) {
+                            float len2 = ImLengthSqr(end-beg);
+                            if (len2 > 1.0e-3f) {
+                                float len = sqrtf(len2);
+                                ImVec2 d = (end - beg) / len;
+                                ImVec2 o = {-d.y, d.x};
+                                float d_scl = ImMin(thickness * 3, len);
+                                float o_scl = 0.57735026918962576451 * d_scl;
+                                draw_list->AddLine(beg, end - d * thickness, color, thickness);
+                                draw_list->AddTriangleFilled(end, end - d * d_scl + o * o_scl, end - d * d_scl - o * o_scl, color);
+                            }
+                        };
 
                         const ImU32 elec_color = convert_color(nto.iso.vectorColors[0]);
                         const ImU32 magn_color = convert_color(nto.iso.vectorColors[1]);
                         const ImU32 text_color = IM_COL32_BLACK;
+                        const float arrow_thickness = 3.0f;
+                        const float vec_scl = (float)nto.iso.vector_length * farthest_distance / longest_vector;
 
-                        draw_arrow(c, c_electric_target, elec_color, arrow_thickness);
-                        draw_list->AddText(c_electric_target, text_color, (const char*)u8"μe");
+                        ImVec2 c      = proj_point(mid);
+                        ImVec2 c_elec = proj_point(mid + elec_vec * vec_scl);
+                        ImVec2 c_magn = proj_point(mid + magn_vec * vec_scl);
 
-                        const vec4_t p_magnetic_target =
-                            mat4_mul_vec4(MVP, {middle_x + (float)vlx.rsp.magnetic_transition[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                middle_y + (float)vlx.rsp.magnetic_transition[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                middle_z + (float)vlx.rsp.magnetic_transition[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                        const vec2_t c_magnetic_target = {
-                            ( p_magnetic_target.x / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.x,
-                            (-p_magnetic_target.y / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.y,
-                        };
+                        draw_arrow(c, c_elec, elec_color, arrow_thickness);
+                        draw_list->AddText(c_elec, text_color, (const char*)u8"μe");
 
-                        vec3_t magnetic_vector_3d = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
-                        vec3_t electronic_vector_3d = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
-
-                        float el_ma_dot = vec3_dot(magnetic_vector_3d, electronic_vector_3d);
-                        float el_len = vec3_length(electronic_vector_3d);
-                        float ma_len = vec3_length(magnetic_vector_3d);
-                        
-                        float angle = RAD_TO_DEG(acosf(el_ma_dot / (el_len * ma_len)));
-                        const vec2_t magnetic_vector_2d = c_magnetic_target - c;
-                        const vec2_t electric_vector_2d = c_electric_target - c;
-
-                        draw_arrow(p0 + vec_cast(c), p0 + vec_cast(c_magnetic_target), magn_color, arrow_thickness);
-                        draw_list->AddText(p0 + vec_cast(c_magnetic_target), text_color, (const char*)u8"μm");
+                        draw_arrow(c, c_magn, magn_color, arrow_thickness);
+                        draw_list->AddText(c_magn, text_color, (const char*)u8"μm");
 
                         if (nto.iso.display_angle) {
+                            const float el_ma_dot = vec3_dot(magn_vec, elec_vec);
+                            const float el_len = vec3_length(elec_vec);
+                            const float ma_len = vec3_length(magn_vec);
+
+                            const float angle = RAD_TO_DEG(acosf(el_ma_dot / (el_len * ma_len)));
+                            // This can be greatly simplified
+#if 0
                             const int num_of_seg = 10;
                             for (int segment = 0; segment < num_of_seg; segment++) {
-                                vec3_t middle_point_3d0 = vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment) / num_of_seg * 0.1f +
-                                    vec3_normalize(electronic_vector_3d)*segment/num_of_seg * 0.1f) *0.03f;
+                                vec3_t middle_point_3d0 = vec3_normalize(vec3_normalize(magn_vec) * (num_of_seg - segment) / num_of_seg * 0.1f +
+                                    vec3_normalize(elec_vec)*segment/num_of_seg * 0.1f) *0.03f;
                                 const vec4_t p_middle_point_3d_target0 =
-                                    mat4_mul_vec4(MVP, {middle_x + middle_point_3d0.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                        middle_y + middle_point_3d0.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                        middle_z + middle_point_3d0.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                                    mat4_mul_vec4(MVP, {mid.x + middle_point_3d0.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                        mid.y + middle_point_3d0.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                        mid.z + middle_point_3d0.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
                                 const vec2_t c_middle_point_target0 = {
                                     (p_middle_point_3d_target0.x / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.x,
                                     (-p_middle_point_3d_target0.y / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.y,
                                 };
                                 vec3_t middle_point_3d1 =
-                                    vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment - 1) / num_of_seg * 0.1f +
-                                        vec3_normalize(electronic_vector_3d)*(segment + 1 ) / num_of_seg * 0.1f) *0.03f;
+                                    vec3_normalize(vec3_normalize(magn_vec) * (num_of_seg - segment - 1) / num_of_seg * 0.1f +
+                                        vec3_normalize(elec_vec)*(segment + 1 ) / num_of_seg * 0.1f) *0.03f;
                                 const vec4_t p_middle_point_3d_target1 =
-                                    mat4_mul_vec4(MVP, {middle_x + middle_point_3d1.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                        middle_y + middle_point_3d1.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                        middle_z + middle_point_3d1.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                                    mat4_mul_vec4(MVP, {mid.x + middle_point_3d1.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                        mid.y + middle_point_3d1.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                        mid.z + middle_point_3d1.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
                                 const vec2_t c_middle_point_target1 = {
                                     (p_middle_point_3d_target1.x / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.x,
                                     (-p_middle_point_3d_target1.y / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.y,
@@ -3462,13 +3417,11 @@ struct VeloxChem : viamd::EventHandler {
                                         nto.iso.vectorColors[2].elem[2], nto.iso.vectorColors[2].elem[3]),
                                     5.0f);
                             }
+#endif
 
                             char buf[32];
                             snprintf(buf, sizeof(buf), (const char*)u8"θ=%.2f°", angle);
-                            draw_list->AddText({p0.x + c.x, p0.y + c.y},
-                                ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1], nto.iso.vectorColors[2].elem[2],
-                                    nto.iso.vectorColors[2].elem[3]),
-                                buf);
+                            draw_list->AddText(c, text_color, buf);
                         }
                     }
                 }
