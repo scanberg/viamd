@@ -103,11 +103,9 @@ mat4_t compute_vol_mat(const OBB& obb) {
 }
 
 // Voronoi segmentation
-void grid_segment_and_attribute(float* out_group_values, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, const md_grid_t* grid) {
+void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, const md_grid_t* grid) {
     for (int iz = 0; iz < grid->dim[2]; ++iz) {
-        float z = grid->origin[2] + iz * (grid->step_x[2] + grid->step_y[2] + grid->step_z[2]);
         for (int iy = 0; iy < grid->dim[1]; ++iy) {
-            float y = grid->origin[1] + iy * (grid->step_x[1] + grid->step_y[1] + grid->step_z[1]);
             for (int ix = 0; ix < grid->dim[0]; ++ix) {
                 int index = ix + iy * grid->dim[0] + iz * grid->dim[0] * grid->dim[1];
                 float value = grid->data[index];
@@ -115,10 +113,12 @@ void grid_segment_and_attribute(float* out_group_values, const uint8_t* point_gr
 				// Skip if its does not contribute
                 if (value == 0.0f) continue;
 
-                float x = grid->origin[0] + ix * (grid->step_x[0] + grid->step_y[0] + grid->step_z[0]);
+                float x = grid->origin[0] + ix * grid->step_x[0] + iy * grid->step_y[0] + iz * grid->step_z[0];
+                float y = grid->origin[1] + ix * grid->step_x[1] + iy * grid->step_y[1] + iz * grid->step_z[1];
+                float z = grid->origin[2] + ix * grid->step_x[2] + iy * grid->step_y[2] + iz * grid->step_z[2];
 
-                float min_dist = FLT_MAX;
-                int   group_idx = -1;
+                float  min_dist = FLT_MAX;
+                size_t group_idx = 0;
 
                 // find closest point to grid point
                 for (size_t i = 0; i < num_points; ++i) {
@@ -138,7 +138,9 @@ void grid_segment_and_attribute(float* out_group_values, const uint8_t* point_gr
                     }
                 }
 
-                out_group_values[group_idx] += value;
+                if (group_idx < group_cap) {
+                    out_group_values[group_idx] += value;
+                }
             }
         }
     }
@@ -221,6 +223,7 @@ struct VeloxChem : viamd::EventHandler {
         int vol_nto_idx = -1;
 
         size_t num_atoms = 0;
+        // These are in Atomic Units (Bohr)
         vec3_t* atom_xyz = nullptr;
         float*  atom_r   = nullptr;
         uint8_t* atom_group_idx = nullptr;
@@ -449,8 +452,8 @@ struct VeloxChem : viamd::EventHandler {
                 // This is used in determining a better fitting volume for the orbitals
                 vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
                 for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                    nto.atom_xyz[i] = { (float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i] };
-                    nto.atom_r[i]   = md_util_element_vdw_radius(vlx.geom.atomic_number[i]);
+                    nto.atom_xyz[i] = vec3_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]) * ANGSTROM_TO_BOHR;
+                    nto.atom_r[i]   = md_util_element_vdw_radius(vlx.geom.atomic_number[i]) * ANGSTROM_TO_BOHR;
                     xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
                     min_box = vec4_min(min_box, xyzw[i]);
                     max_box = vec4_max(max_box, xyzw[i]);
@@ -497,6 +500,8 @@ struct VeloxChem : viamd::EventHandler {
                         //nto.atom_group_idx = index_from_text;
                         nto.group.count = 2;
                         MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
+                        snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Thio");
+                        snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Quin");
                     }
                     else {
 
@@ -943,6 +948,7 @@ struct VeloxChem : viamd::EventHandler {
             md_free(alloc, pgtos, sizeof(md_gto_t) * num_pgtos);
             return false;
         }
+
         md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
         OBB obb = compute_pgto_obb(PCA, pgtos, num_pgtos);
         vec3_t extent = obb.max_ext - obb.min_ext;
@@ -1014,16 +1020,17 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID segment_task = task_system::create_pool_task(STR_LIT("##Segment Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
 
+#if DEBUG
             double sum = 0.0;
             size_t len = data->args.grid.dim[0] * data->args.grid.dim[1] * data->args.grid.dim[2];
             for (size_t i = 0; i < len; ++i) {
                 sum += data->args.grid.data[i];
             }
-
-            MD_LOG_DEBUG("SUM: %f", sum);
+            MD_LOG_DEBUG("SUM: %g");
+#endif
 
             MD_LOG_DEBUG("Starting segmentation of volume");
-            grid_segment_and_attribute(data->dst_group_values, data->point_group_idx, data->point_xyz, data->point_r, data->num_points, &data->args.grid);
+            grid_segment_and_attribute(data->dst_group_values, data->num_groups, data->point_group_idx, data->point_xyz, data->point_r, data->num_points, &data->args.grid);
             MD_LOG_DEBUG("Finished segmentation of volume");
 
             md_free(data->alloc, data->args.pgtos, data->args.num_pgtos * sizeof(md_gto_t));
