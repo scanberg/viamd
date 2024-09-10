@@ -3025,12 +3025,51 @@ struct VeloxChem : viamd::EventHandler {
 
             // @TODO: Enlist all defined groups here
             if (ImGui::BeginListBox("##Groups", outer_size)) {
+                bool item_hovered = false;
                 for (size_t i = 0; i < nto.group.count; i++) {
                     char color_buf[16];
                     sprintf(color_buf, "##Group-Color%i", (int)i);
                     ImGui::ColorEdit4Minimal(color_buf, nto.group.color[i].elem); 
                     ImGui::SameLine(); 
-                    ImGui::InputText(color_buf, nto.group.label[i], 16);
+                    if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                        ImGui::Selectable(nto.group.label[i]);
+                        if (ImGui::IsItemHovered()) {
+                            item_hovered = true;
+                            md_bitfield_clear(&state.selection.highlight_mask);
+                            for (size_t j = 0; j < nto.num_atoms; j++) {
+                                if (nto.atom_group_idx[j] == i) {
+                                    //Add j to highlight mask
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, j);
+                                }
+                            }
+                            //Select
+                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
+                                md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                            }
+                            //Deselect
+                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
+                                md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                            }
+                        }
+                        else if (!item_hovered && ImGui::IsWindowHovered()) {
+                            md_bitfield_clear(&state.selection.highlight_mask);
+                        }
+                    }
+                    else if (i == 0) {
+                        ImGui::Text(nto.group.label[i]);
+                    }
+                    else {
+                        ImGui::InputText(color_buf, nto.group.label[i], 16);
+                    }
+
+                    ImGui::SameLine();
+                    int atom_count = 0;
+                    for (size_t k = 0; k < nto.num_atoms; k++) {
+                        if (nto.atom_group_idx[k] == i) {
+                            atom_count++;
+                        }
+                    }
+                    ImGui::Text("Atoms %i", atom_count);
                     //if (ImGui::Selectable(nto.group.label[i])) {
                     //    for (size_t j = 0; j < nto.num_atoms; j++) {
                     //        if (nto.atom_group_idx[j] == i) {
