@@ -2949,6 +2949,10 @@ struct VeloxChem : viamd::EventHandler {
 
         bool open_context_menu = false;
 
+        // This should be triggered by a change in the selected NTO indxex
+        // And when groups are changed
+        static bool recompute_transition_matrix = false;
+
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
 
@@ -3044,7 +3048,7 @@ struct VeloxChem : viamd::EventHandler {
                     sprintf(color_buf, "##Group-Color%i", (int)i);
                     ImGui::ColorEdit4Minimal(color_buf, nto.group.color[i].elem); 
                     ImGui::SameLine(); 
-                    if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                    if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
                         ImGui::Selectable(nto.group.label[i]);
                         if (ImGui::IsItemHovered()) {
                             item_hovered = true;
@@ -3142,9 +3146,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
 
-				// This should be triggered by a change in the selected NTO indxex
-                // And when groups are changed
-                bool recompute_transition_matrix = false;
+				
 
                 if (nto.vol_nto_idx != rsp.selected) {
                     nto.vol_nto_idx = rsp.selected;
@@ -3176,6 +3178,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (recompute_transition_matrix) {
+                    recompute_transition_matrix = false;
                     const float samples_per_angstrom = 6.0f;
                     const size_t nto_idx = (size_t)rsp.selected;
 
@@ -3812,8 +3815,33 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         if (ImGui::BeginPopup("Context Menu")) {
-            if (ImGui::MenuItem("Example Button")) {
-
+            if (ImGui::BeginMenu("Add to group")) {
+                for (size_t i = 0; i < nto.group.count; i++) {
+                    if (ImGui::MenuItem(nto.group.label[i])) {
+                        for (size_t j = 0; j < nto.num_atoms; j++) {
+                            //Is the atom selected?
+                            if (md_bitfield_test_bit(&state.selection.selection_mask, j)) {
+                                //If so, set its group to the selected group index
+                                nto.atom_group_idx[j] = i;
+                            }
+                        }
+                    recompute_transition_matrix = true;
+                    }
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::MenuItem("Add to new group")) {
+                //Create a new group and add an item to it
+                nto.group.count++;
+                uint8_t group_idx = nto.group.count - 1;
+                for (size_t i = 0; i < nto.num_atoms; i++) {
+                    if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
+                        //If so, set its group to the selected group index
+                        nto.atom_group_idx[i] = group_idx;
+                    }
+                }
+                snprintf(nto.group.label[group_idx], sizeof(nto.group.label[group_idx]), "New Group");
+                recompute_transition_matrix = true;
             }
             ImGui::EndPopup();
         }
