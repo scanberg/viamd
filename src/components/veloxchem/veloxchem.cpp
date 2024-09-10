@@ -248,13 +248,15 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 2;
             float  values[2] = {0.05f, -0.05};
             vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-            vec4_t vectorColors[3] = {{0.f / 255.f, 255.f / 255.f, 255.f / 255.f, 1.f},
-                                              {255.f / 255.f, 0.f / 255.f, 255.f / 255.f, 1.f},
-                                              {255.f / 255.f, 255.f / 255.f, 0.f / 255.f, 1.f}};
-            double vector_length = 1.0f;
-            bool display_vectors = false;
-            bool display_angle = false;
         } iso;
+
+        struct {
+            bool enabled = true;
+            vec4_t colors[3] = {{0.f / 255.f, 255.f / 255.f, 255.f / 255.f, 1.f},
+                {255.f / 255.f, 0.f / 255.f, 255.f / 255.f, 1.f}};
+            float vector_scale = 1.0f;
+            bool show_angle = false;
+        } dipole;
 
         GBuffer gbuf = {};
         Camera camera = {};
@@ -3006,30 +3008,13 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::SetItemTooltip("Color Negative");
 
                     ImGui::Text("Transition Dipole Moments");
-                    ImGui::Spacing();
-                    const double vector_length_min = 1.0;
-                    const double vector_length_max = 10.0;
-                    double vector_length_input = nto.iso.vector_length;
-                    ImGui::Text("Scaling");
-                    ImGui::SliderScalar("##Vector length", ImGuiDataType_Double, &vector_length_input, &vector_length_min, &vector_length_max, "%.6f",
-                        ImGuiSliderFlags_Logarithmic);
-                    ImGui::SetItemTooltip("Vector length");
-                    nto.iso.vector_length = (float)vector_length_input;
-
-                    bool show_vector = nto.iso.display_vectors;
-                    ImGui::Checkbox("Display transition dipole moments", &show_vector);
-                    nto.iso.display_vectors = show_vector;
-
-                    bool show_angle = nto.iso.display_angle;
-                    ImGui::Checkbox("Display angle", &show_angle);
-                    nto.iso.display_angle = show_angle;
-                    ImGui::Text("Vectors and angle Colors");
-                    ImGui::ColorEdit4("##Color Electric", nto.iso.vectorColors[0].elem);
+                    ImGui::Checkbox("Enabled", &nto.dipole.enabled);
+                    ImGui::SliderFloat("Scale", &nto.dipole.vector_scale, 1.0f, 10.0f);
+                    ImGui::Checkbox("Show Angle", &nto.dipole.show_angle);
+                    ImGui::ColorEdit4("Color Electric", nto.dipole.colors[0].elem);
                     ImGui::SetItemTooltip("Color Electric");
-                    ImGui::ColorEdit4("##Color Magnetic", nto.iso.vectorColors[1].elem);
+                    ImGui::ColorEdit4("Color Magnetic", nto.dipole.colors[1].elem);
                     ImGui::SetItemTooltip("Color Magnetic");
-                    ImGui::ColorEdit4("##Color Angle", nto.iso.vectorColors[2].elem);
-                    ImGui::SetItemTooltip("Color Angle");
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
@@ -3326,9 +3311,9 @@ struct VeloxChem : viamd::EventHandler {
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
 
-                    if (nto.iso.display_vectors) {
-                        vec3_t mid = vec3_lerp(min_aabb, max_aabb, 0.5f);
-                        vec3_t ext = max_aabb - min_aabb;
+                    if (nto.dipole.enabled) {
+                        const vec3_t mid = vec3_lerp(min_aabb, max_aabb, 0.5f);
+                        const vec3_t ext = max_aabb - min_aabb;
 
                         float farthest_distance = vec3_length(ext * 0.5f);
                         float longest_vector = 0;
@@ -3364,11 +3349,11 @@ struct VeloxChem : viamd::EventHandler {
                             }
                         };
 
-                        const ImU32 elec_color = convert_color(nto.iso.vectorColors[0]);
-                        const ImU32 magn_color = convert_color(nto.iso.vectorColors[1]);
+                        const ImU32 elec_color = convert_color(nto.dipole.colors[0]);
+                        const ImU32 magn_color = convert_color(nto.dipole.colors[1]);
                         const ImU32 text_color = IM_COL32_BLACK;
                         const float arrow_thickness = 3.0f;
-                        const float vec_scl = (float)nto.iso.vector_length * farthest_distance / longest_vector;
+                        const float vec_scl = (float)nto.dipole.vector_scale * farthest_distance / longest_vector;
 
                         ImVec2 c      = proj_point(mid);
                         ImVec2 c_elec = proj_point(mid + elec_vec * vec_scl);
@@ -3380,7 +3365,7 @@ struct VeloxChem : viamd::EventHandler {
                         draw_arrow(c, c_magn, magn_color, arrow_thickness);
                         draw_list->AddText(c_magn, text_color, (const char*)u8"μm");
 
-                        if (nto.iso.display_angle) {
+                        if (nto.dipole.show_angle) {
                             const float el_ma_dot = vec3_dot(magn_vec, elec_vec);
                             const float el_len = vec3_length(elec_vec);
                             const float ma_len = vec3_length(magn_vec);
