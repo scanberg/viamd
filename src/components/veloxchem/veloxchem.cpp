@@ -240,6 +240,7 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 0;
             char   label[MAX_GROUPS][64] = {};
             vec4_t color[MAX_GROUPS] = {};
+            bool edit_mode[MAX_GROUPS] = {};
         } group;
 
         struct {
@@ -3083,7 +3084,8 @@ struct VeloxChem : viamd::EventHandler {
 
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
-            if (ImGui::BeginTable("Group Table", 3, flags, outer_size, 0)) {
+            if (ImGui::BeginTable("Group Table", 4, flags, outer_size, 0)) {
+                ImGui::TableSetupColumn("Edit", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Group", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
@@ -3099,8 +3101,16 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                     ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
-                    ImGui::TableNextColumn();
 
+                    ImGui::TableNextColumn();
+                    const char* s = nto.group.edit_mode[row_n] ? "E" : "L";
+                    char label[16];
+                    sprintf(label, "%s##%i", s, row_n);
+                    if (ImGui::Button(label)) {
+                        nto.group.edit_mode[row_n] = !nto.group.edit_mode[row_n];
+                    }
+
+                    ImGui::TableNextColumn();
                     ImGui::AlignTextToFramePadding();
                     ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
                     if (ImGui::TableGetHoveredRow() == row_n + 1) {
