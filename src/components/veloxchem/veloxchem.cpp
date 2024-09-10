@@ -220,7 +220,7 @@ struct VeloxChem : viamd::EventHandler {
         uint32_t iso_tex[8] = {};
         task_system::ID vol_task[8] = {};
         task_system::ID seg_task[2] = {};
-        int vol_nto_idx = -1;
+        int sel_nto_idx = -1;
 
         size_t num_atoms = 0;
         // These are in Atomic Units (Bohr)
@@ -426,6 +426,18 @@ struct VeloxChem : viamd::EventHandler {
         rsp = {};
     }
 
+    void update_nto_group_colors() {
+        ScopedTemp temp_reset;
+        uint32_t* colors = (uint32_t*)md_temp_push(sizeof(uint32_t) * nto.num_atoms);
+        for (size_t i = 0; i < nto.num_atoms; ++i) {
+            const size_t group_idx = nto.atom_group_idx[i];
+            const uint32_t color = group_idx < nto.group.count ? convert_color(nto.group.color[group_idx]) : U32_MAGENTA;
+            colors[i] = color;
+        }
+
+        md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)nto.num_atoms, colors, 0);
+    }
+
     void init_from_file(str_t filename, ApplicationState& state) {
         str_t ext;
         if (extract_ext(&ext, filename) && str_eq_ignore_case(ext, STR_LIT("out"))) {
@@ -486,16 +498,16 @@ struct VeloxChem : viamd::EventHandler {
 					nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
 					MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
 					
-					for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
-                        ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
+					for (int i = 0; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                        ImVec4 color = ImPlot::GetColormapColor(i, ImPlotColormap_Deep);
                         nto.group.color[i] = vec_cast(color);
                         snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
                     }
                     snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
-                    nto.group.color[0] = vec4_set(0.5f, 0.5f, 0.5f, 1.0f);
 
                     str_t file = {};
                     extract_file(&file, filename);
+
                     if (str_eq_cstr(file, "tq.out")) {
                         uint8_t index_from_text[23] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
                         //nto.atom_group_idx = index_from_text;
@@ -512,14 +524,7 @@ struct VeloxChem : viamd::EventHandler {
                         MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
                     }
 					nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
-
-                    for (size_t i = 0; i < mol.atom.count; ++i) {
-                        const size_t group_idx = nto.atom_group_idx[i];
-                        const uint32_t color = group_idx < nto.group.count ? convert_color(nto.group.color[group_idx]) : U32_MAGENTA;
-                        colors[i] = color;
-                    }
-
-                    md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+                    update_nto_group_colors();
                 }
 
                 // RSP
@@ -2989,10 +2994,6 @@ struct VeloxChem : viamd::EventHandler {
 
         bool open_context_menu = false;
 
-        // This should be triggered by a change in the selected NTO indxex
-        // And when groups are changed
-        static bool recompute_transition_matrix = false;
-
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
 
@@ -3085,7 +3086,7 @@ struct VeloxChem : viamd::EventHandler {
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
             if (ImGui::BeginTable("Group Table", 4, flags, outer_size, 0)) {
-                ImGui::TableSetupColumn("Edit", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn("Edit",  columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Group", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
@@ -3105,7 +3106,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::TableNextColumn();
                     const char* s = nto.group.edit_mode[row_n] ? "E" : "L";
                     char label[16];
-                    sprintf(label, "%s##%i", s, row_n);
+                    snprintf(label, sizeof(label), "%s##%i", s, row_n);
                     if (ImGui::Button(label)) {
                         nto.group.edit_mode[row_n] = !nto.group.edit_mode[row_n];
                     }
@@ -3155,6 +3156,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     ImGui::Text("%i", atom_count);
                 }
+
                 if (!item_hovered && ImGui::IsWindowHovered()) {
                     //Makes sure that we clear the highlight if we are in this window, but don't hover an item
                     md_bitfield_clear(&state.selection.highlight_mask);
@@ -3203,11 +3205,8 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-
-				
-
-                if (nto.vol_nto_idx != rsp.selected) {
-                    nto.vol_nto_idx = rsp.selected;
+                if (nto.sel_nto_idx != rsp.selected) {
+                    nto.sel_nto_idx  = rsp.selected;
                     const float samples_per_angstrom = 6.0f;
                     size_t nto_idx = (size_t)rsp.selected;
                     for (int i = 0; i < num_lambdas; ++i) {
@@ -3230,56 +3229,6 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     if (task_system::task_is_running(nto.seg_task[1])) {
                         task_system::task_interrupt(nto.seg_task[1]);
-                    }
-
-                    recompute_transition_matrix = true;
-                }
-
-                if (recompute_transition_matrix) {
-                    recompute_transition_matrix = false;
-                    const float samples_per_angstrom = 6.0f;
-                    const size_t nto_idx = (size_t)rsp.selected;
-
-                    // Resize transition matrix to the correct size
-					if (nto.transition_matrix_dim != nto.group.count) {
-                        if (nto.transition_matrix) {
-                            // The allocated size contains matrix N*N + 2*N for hole/part arrays
-                            const size_t cur_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
-                            md_free(arena, nto.transition_matrix, cur_mem);
-                        }
-
-						nto.transition_matrix_dim = nto.group.count;
-                        const size_t new_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
-						nto.transition_matrix = (float*)md_alloc(arena, new_mem);
-                        nto.transition_density_hole = nto.transition_matrix + (nto.transition_matrix_dim * nto.transition_matrix_dim);
-                        nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
-					}
-
-					MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
-
-                    task_system::ID eval_part = 0;
-                    task_system::ID seg_part  = 0;
-                    task_system::ID eval_hole = 0;
-                    task_system::ID seg_hole  = 0;
-
-                    if (compute_nto_group_values_async(&eval_part, &seg_part, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
-                        compute_nto_group_values_async(&eval_hole, &seg_hole, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
-                    {
-                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
-                            VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
-                            distribute_charges_heuristic(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
-                        }, &nto);
-
-                        task_system::set_task_dependency(compute_matrix_task, seg_part);
-                        task_system::set_task_dependency(compute_matrix_task, seg_hole);
-
-                        task_system::enqueue_task(eval_part);
-                        task_system::enqueue_task(eval_hole);
-
-                        nto.seg_task[0] = seg_part;
-                        nto.seg_task[1] = seg_hole;
-                    } else {
-                        MD_LOG_DEBUG("An error occured when computing nto group values");
                     }
                 }
             }
@@ -3365,19 +3314,18 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
                     const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
 
+#if 0
                     char lbls[64];
                     snprintf(lbls, sizeof(lbls), "hovered_atom_idx: %i, hovered_bond_idx: %i", state.selection.atom_idx.hovered, state.selection.bond_idx.hovered);
+#endif
 
                     char buf[32];
                     snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
-                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbls);
+                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
                     
-                    const float aspect_ratio1 = win_sz.x / win_sz.y;
-                    mat4_t view_mat1 = camera_world_to_view_matrix(nto.camera);
-                    mat4_t proj_mat1 = camera_perspective_projection_matrix(nto.camera, aspect_ratio1);
                     int number_of_atoms = vlx.geom.num_atoms;
                     float middle_x=0;
                     float middle_y = 0;
@@ -3388,9 +3336,9 @@ struct VeloxChem : viamd::EventHandler {
                         middle_z = middle_z + (float)vlx.geom.coord_z[i];
                     }
 
-                    middle_x=middle_x/number_of_atoms;
-                    middle_y=middle_y/number_of_atoms;
-                    middle_z=middle_z/number_of_atoms;
+                    middle_x = middle_x/number_of_atoms;
+                    middle_y = middle_y/number_of_atoms;
+                    middle_z = middle_z/number_of_atoms;
                     float farthest_x = 0;
                     float farthest_y = 0;
                     float farthest_z = 0;
@@ -3421,124 +3369,108 @@ struct VeloxChem : viamd::EventHandler {
                                                       (float)vlx.rsp.magnetic_transition[rsp.selected].y,
                                                       (float)vlx.rsp.magnetic_transition[rsp.selected].z});
                     }
-                    const mat4_t mvp = proj_mat1 * view_mat1;
-                    const vec4_t p = mat4_mul_vec4(mvp, {middle_x, middle_y, middle_z, 1.0});
-                    const vec4_t p_electric_target =                
-                        mat4_mul_vec4(mvp, {middle_x + (float)vlx.rsp.electronic_transition_length[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                            middle_y + (float)vlx.rsp.electronic_transition_length[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                            middle_z + (float)vlx.rsp.electronic_transition_length[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                    const vec2_t c = {
-                        (p.x / p.w * 0.5f + 0.5f) * win_sz.x,
-                        (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
-                    };
-                    const vec2_t c_electric_target = {
-                        (p_electric_target.x / p_electric_target.w * 0.5f + 0.5f) * win_sz.x,
-                        (-p_electric_target.y / p_electric_target.w * 0.5f + 0.5f) * win_sz.y,
-                    };
-                    float angle_electric = atan2f(c.y - c_electric_target.y, c.x - c_electric_target.x);
+                    const vec4_t p = mat4_mul_vec4(MVP, {middle_x, middle_y, middle_z, 1.0});
 
-                    const vec2_t electric_triangle_point1 = {
-                        p0.x + c_electric_target.x + cosf(angle_electric + 0.523599f) * 5,
-                        p0.y + c_electric_target.y + sinf(angle_electric + 0.523599f) * 5,
+                    const ImVec2 c = {
+                        p0.x + ( p.x / p.w * 0.5f + 0.5f) * win_sz.x,
+                        p0.y + (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
                     };
-                    const vec2_t electric_triangle_point2 = {
-                        p0.x + c_electric_target.x + cosf(angle_electric - 0.523599f) * 5,
-                        p0.y + c_electric_target.y + sinf(angle_electric - 0.523599f) * 5,
-                    };
-                    if (nto.iso.display_vectors) {
-                            draw_list->AddLine({p0.x + c.x, p0.y + c.y}, {p0.x + c_electric_target.x, p0.y + c_electric_target.y},
-                                           ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1], nto.iso.vectorColors[0].elem[2],
-                                                    nto.iso.vectorColors[0].elem[3]),
-                                           5.0f);
-                            draw_list->AddTriangle({p0.x + c_electric_target.x, p0.y + c_electric_target.y},
-                                                   {electric_triangle_point1.x, electric_triangle_point1.y},
-                                                   {electric_triangle_point2.x, electric_triangle_point2.y}, ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1],nto.iso.vectorColors[0].elem[2],nto.iso.vectorColors[0].elem[3]), 5.0f);
-                            draw_list->AddText({p0.x + c_electric_target.x, p0.y + c_electric_target.y},
-                                               ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1],
-                                                       nto.iso.vectorColors[0].elem[2], nto.iso.vectorColors[0].elem[3]),
-                                               (const char*)u8"μe");
+
+                    auto draw_arrow = [draw_list](ImVec2 beg, ImVec2 end, ImU32 color, float thickness) {
+                        float len2 = ImLengthSqr(end-beg);
+                        if (len2 > 1.0e-3f) {
+                            float len = sqrtf(len2);
+                            ImVec2 d = (end - beg) / len;
+                            ImVec2 o = {-d.y, d.x};
+                            float d_scl = ImMin(thickness * 3, len);
+                            float o_scl = 0.57735026918962576451 * d_scl;
+                            draw_list->AddLine(beg, end - d * thickness, color, thickness);
+                            draw_list->AddTriangleFilled(end, end - d * d_scl + o * o_scl, end - d * d_scl - o * o_scl, color);
                         }
-                    const vec4_t p_magnetic_target =
-                        mat4_mul_vec4(mvp, {middle_x + (float)vlx.rsp.magnetic_transition[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                            middle_y + (float)vlx.rsp.magnetic_transition[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                            middle_z + (float)vlx.rsp.magnetic_transition[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                    const vec2_t c_magnetic_target = {
-                        (p_magnetic_target.x / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.x,
-                        (-p_magnetic_target.y / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.y,
                     };
-                    float angle_magnetic = atan2f(c.y - c_magnetic_target.y, c.x - c_magnetic_target.x);
-                    const vec2_t magnetic_triangle_point1 = {
-                        p0.x + c_magnetic_target.x + cosf(angle_magnetic + 0.523599f) * 5.0f,
-                        p0.y + c_magnetic_target.y + sinf(angle_magnetic + 0.523599f) * 5.0f,
-                    };
-                    const vec2_t magnetic_triangle_point2 = {
-                        p0.x + c_magnetic_target.x + cosf(angle_magnetic - 0.523599f) * 5.0f,
-                        p0.y + c_magnetic_target.y + sinf(angle_magnetic - 0.523599f) * 5.0f,
-                    };
-                    vec3_t magnetic_vector_3d = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
-                    vec3_t electronic_vector_3d = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
 
-                    float el_ma_dot = vec3_dot(magnetic_vector_3d, electronic_vector_3d);
-                    float el_len = vec3_length(electronic_vector_3d);
-                    float ma_len = vec3_length(magnetic_vector_3d);
-                    float angle = acosf(el_ma_dot / (el_len * ma_len)) * (180.0 / 3.141592653589793238463);
-                    char bufDPM[32];
-                    const vec2_t magnetic_vector_2d = c_magnetic_target - c;
-                    const vec2_t electric_vector_2d = c_electric_target - c;
                     if (nto.iso.display_vectors) {
-                        draw_list->AddLine({p0.x + c.x, p0.y + c.y}, {p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
-                                           ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1], nto.iso.vectorColors[1].elem[2],
-                                                   nto.iso.vectorColors[1].elem[3]),
-                                           5.0f);
-                        draw_list->AddTriangle({p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
-                                               {magnetic_triangle_point1.x, magnetic_triangle_point1.y},
-                                               {magnetic_triangle_point2.x, magnetic_triangle_point2.y}, ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1],
-                                                       nto.iso.vectorColors[1].elem[2], nto.iso.vectorColors[1].elem[3]), 5.0f);
-                        draw_list->AddText({p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
-                                           ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1], nto.iso.vectorColors[1].elem[2],
-                                                   nto.iso.vectorColors[1].elem[3]),
-                                           (const char*)u8"μm");
-                    }
-                    if (nto.iso.display_angle) {
-                        int num_of_seg = 10;
-                        for (int segment = 0; segment < num_of_seg; segment++) {
-                            vec3_t middle_point_3d0 = vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment) / num_of_seg * 0.1f +
-                                                                    vec3_normalize(electronic_vector_3d)*segment/num_of_seg * 0.1f) *0.03f;
-                            const vec4_t p_middle_point_3d_target0 =
-                                mat4_mul_vec4(mvp, {middle_x + middle_point_3d0.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                    middle_y + middle_point_3d0.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                    middle_z + middle_point_3d0.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                            const vec2_t c_middle_point_target0 = {
-                                (p_middle_point_3d_target0.x / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.x,
-                                (-p_middle_point_3d_target0.y / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.y,
-                            };
-                            vec3_t middle_point_3d1 =
-                                vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment - 1) / num_of_seg * 0.1f +
-                                                                    vec3_normalize(electronic_vector_3d)*(segment + 1 ) / num_of_seg * 0.1f) *0.03f;
-                            const vec4_t p_middle_point_3d_target1 =
-                                mat4_mul_vec4(mvp, {middle_x + middle_point_3d1.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                    middle_y + middle_point_3d1.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                    middle_z + middle_point_3d1.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                            const vec2_t c_middle_point_target1 = {
-                                (p_middle_point_3d_target1.x / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.x,
-                                (-p_middle_point_3d_target1.y / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.y,
-                            };
-                            draw_list->AddLine({p0.x + c_middle_point_target0.x, p0.y + c_middle_point_target0.y},
-                                               {p0.x + c_middle_point_target1.x, p0.y + c_middle_point_target1.y},
-                                               ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1],
-                                                       nto.iso.vectorColors[2].elem[2], nto.iso.vectorColors[2].elem[3]),
-                                               5.0f);
-                        }
+                        const vec4_t p_electric_target =                
+                            mat4_mul_vec4(MVP, {middle_x + (float)vlx.rsp.electronic_transition_length[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                middle_y + (float)vlx.rsp.electronic_transition_length[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                middle_z + (float)vlx.rsp.electronic_transition_length[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
 
+                        const ImVec2 c_electric_target = {
+                            p0.x + ( p_electric_target.x / p_electric_target.w * 0.5f + 0.5f) * win_sz.x,
+                            p0.y + (-p_electric_target.y / p_electric_target.w * 0.5f + 0.5f) * win_sz.y,
+                        };
+
+                        const float arrow_thickness = 5.0f;
+
+                        const ImU32 elec_color = convert_color(nto.iso.vectorColors[0]);
+                        const ImU32 magn_color = convert_color(nto.iso.vectorColors[1]);
+                        const ImU32 text_color = IM_COL32_BLACK;
+
+                        draw_arrow(c, c_electric_target, elec_color, arrow_thickness);
+                        draw_list->AddText(c_electric_target, text_color, (const char*)u8"μe");
+
+                        const vec4_t p_magnetic_target =
+                            mat4_mul_vec4(MVP, {middle_x + (float)vlx.rsp.magnetic_transition[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                                middle_y + (float)vlx.rsp.magnetic_transition[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                                middle_z + (float)vlx.rsp.magnetic_transition[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                        const vec2_t c_magnetic_target = {
+                            ( p_magnetic_target.x / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.x,
+                            (-p_magnetic_target.y / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.y,
+                        };
+
+                        vec3_t magnetic_vector_3d = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
+                        vec3_t electronic_vector_3d = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
+
+                        float el_ma_dot = vec3_dot(magnetic_vector_3d, electronic_vector_3d);
+                        float el_len = vec3_length(electronic_vector_3d);
+                        float ma_len = vec3_length(magnetic_vector_3d);
                         
-                        snprintf(bufDPM, sizeof(bufDPM), (const char*)u8"θ=%.2f°", angle);
-                        draw_list->AddText({p0.x + c.x, p0.y + c.y},
-                                           ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1], nto.iso.vectorColors[2].elem[2],
-                                                   nto.iso.vectorColors[2].elem[3]),
-                                           bufDPM);
-                    }
-                    
+                        float angle = RAD_TO_DEG(acosf(el_ma_dot / (el_len * ma_len)));
+                        const vec2_t magnetic_vector_2d = c_magnetic_target - c;
+                        const vec2_t electric_vector_2d = c_electric_target - c;
 
+                        draw_arrow(p0 + vec_cast(c), p0 + vec_cast(c_magnetic_target), magn_color, arrow_thickness);
+                        draw_list->AddText(p0 + vec_cast(c_magnetic_target), text_color, (const char*)u8"μm");
+
+                        if (nto.iso.display_angle) {
+                            const int num_of_seg = 10;
+                            for (int segment = 0; segment < num_of_seg; segment++) {
+                                vec3_t middle_point_3d0 = vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment) / num_of_seg * 0.1f +
+                                    vec3_normalize(electronic_vector_3d)*segment/num_of_seg * 0.1f) *0.03f;
+                                const vec4_t p_middle_point_3d_target0 =
+                                    mat4_mul_vec4(MVP, {middle_x + middle_point_3d0.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                        middle_y + middle_point_3d0.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                        middle_z + middle_point_3d0.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                                const vec2_t c_middle_point_target0 = {
+                                    (p_middle_point_3d_target0.x / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.x,
+                                    (-p_middle_point_3d_target0.y / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.y,
+                                };
+                                vec3_t middle_point_3d1 =
+                                    vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment - 1) / num_of_seg * 0.1f +
+                                        vec3_normalize(electronic_vector_3d)*(segment + 1 ) / num_of_seg * 0.1f) *0.03f;
+                                const vec4_t p_middle_point_3d_target1 =
+                                    mat4_mul_vec4(MVP, {middle_x + middle_point_3d1.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                        middle_y + middle_point_3d1.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
+                                        middle_z + middle_point_3d1.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
+                                const vec2_t c_middle_point_target1 = {
+                                    (p_middle_point_3d_target1.x / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.x,
+                                    (-p_middle_point_3d_target1.y / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.y,
+                                };
+                                draw_list->AddLine({p0.x + c_middle_point_target0.x, p0.y + c_middle_point_target0.y},
+                                    {p0.x + c_middle_point_target1.x, p0.y + c_middle_point_target1.y},
+                                    ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1],
+                                        nto.iso.vectorColors[2].elem[2], nto.iso.vectorColors[2].elem[3]),
+                                    5.0f);
+                            }
+
+                            char buf[32];
+                            snprintf(buf, sizeof(buf), (const char*)u8"θ=%.2f°", angle);
+                            draw_list->AddText({p0.x + c.x, p0.y + c.y},
+                                ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1], nto.iso.vectorColors[2].elem[2],
+                                    nto.iso.vectorColors[2].elem[3]),
+                                buf);
+                        }
+                    }
                 }
                 // @TODO: Draw Sankey Diagram of Transition Matrix
                 {
@@ -3883,25 +3815,89 @@ struct VeloxChem : viamd::EventHandler {
                                 nto.atom_group_idx[j] = i;
                             }
                         }
-                    recompute_transition_matrix = true;
                     }
                 }
                 ImGui::EndMenu();
             }
-            if (ImGui::MenuItem("Add to new group")) {
-                //Create a new group and add an item to it
-                nto.group.count++;
-                uint8_t group_idx = nto.group.count - 1;
-                for (size_t i = 0; i < nto.num_atoms; i++) {
-                    if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
-                        //If so, set its group to the selected group index
-                        nto.atom_group_idx[i] = group_idx;
+            if (nto.group.count < MAX_GROUPS) {
+                if (ImGui::MenuItem("Add to new group")) {
+                    //Create a new group and add an item to it
+                    uint8_t group_idx = (uint8_t)(nto.group.count++);
+                    for (size_t i = 0; i < nto.num_atoms; i++) {
+                        if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
+                            //If so, set its group to the selected group index
+                            nto.atom_group_idx[i] = group_idx;
+                        }
                     }
+                    snprintf(nto.group.label[group_idx], sizeof(nto.group.label[group_idx]), "New Group");
                 }
-                snprintf(nto.group.label[group_idx], sizeof(nto.group.label[group_idx]), "New Group");
-                recompute_transition_matrix = true;
             }
             ImGui::EndPopup();
+        }
+
+        // Create hash to check for changes to trigger update of colors in gl representation
+        uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, sizeof(uint8_t) * nto.num_atoms, 0);
+        uint64_t color_hash    = md_hash64(nto.group.color, sizeof(nto.group.color), atom_idx_hash);
+
+        static uint64_t old_color_hash = 0;
+        if (color_hash != old_color_hash) {
+            old_color_hash = color_hash;
+            update_nto_group_colors();
+        }
+
+        // Create hash to check for changes to trigger recomputation of transition matrix
+        uint64_t matrix_hash = atom_idx_hash ^ nto.sel_nto_idx;
+        static uint64_t old_matrix_hash = 0;
+
+        if (matrix_hash != old_matrix_hash) {
+            old_matrix_hash = matrix_hash;
+
+            // Resize transition matrix to the correct size
+            if (nto.transition_matrix_dim != nto.group.count) {
+                if (nto.transition_matrix) {
+                    // The allocated size contains matrix N*N + 2*N for hole/part arrays
+                    const size_t cur_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
+                    md_free(arena, nto.transition_matrix, cur_mem);
+                }
+
+                nto.transition_matrix_dim = nto.group.count;
+                const size_t new_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
+                nto.transition_matrix = (float*)md_alloc(arena, new_mem);
+                nto.transition_density_hole = nto.transition_matrix + (nto.transition_matrix_dim * nto.transition_matrix_dim);
+                nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
+            }
+
+            MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
+
+            if (nto.sel_nto_idx != -1) {
+                const float samples_per_angstrom = 6.0f;
+                const size_t nto_idx = (size_t)nto.sel_nto_idx;
+
+                task_system::ID eval_part = 0;
+                task_system::ID seg_part  = 0;
+                task_system::ID eval_hole = 0;
+                task_system::ID seg_hole  = 0;
+
+                if (compute_nto_group_values_async(&eval_part, &seg_part, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
+                    compute_nto_group_values_async(&eval_hole, &seg_hole, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
+                {
+                    task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
+                        VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
+                        distribute_charges_heuristic(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
+                        }, &nto);
+
+                    task_system::set_task_dependency(compute_matrix_task, seg_part);
+                    task_system::set_task_dependency(compute_matrix_task, seg_hole);
+
+                    task_system::enqueue_task(eval_part);
+                    task_system::enqueue_task(eval_hole);
+
+                    nto.seg_task[0] = seg_part;
+                    nto.seg_task[1] = seg_hole;
+                } else {
+                    MD_LOG_DEBUG("An error occured when computing nto group values");
+                }
+            }
         }
     }
 };
