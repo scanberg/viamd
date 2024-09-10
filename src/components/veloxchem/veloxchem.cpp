@@ -755,7 +755,7 @@ struct VeloxChem : viamd::EventHandler {
         return ImVec4(r, g, b, color.w);
     }
 
-    static inline void draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
+    static inline ImVec2 draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
         // Get the draw list from the current window
 
         // Define the control points for the Bezier curve
@@ -768,12 +768,23 @@ struct VeloxChem : viamd::EventHandler {
         ImVec2 p2 = ImVec2(source_pos.x + thickness / 2, source_pos.y - curve_offset);  // Control point 1
         ImVec2 p3 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y + curve_offset);  // Control point 2
 
+        const int num_segments = 50;
 
         // Define the color and thickness for the flow
         //ImU32 flow_color = IM_COL32(100, 149, 237, 255);  // Cornflower Blue
         // ImBezierCubicCalc Use this for calculating mouse distance to curve
         // Draw the Bezier curve representing the flow
-        draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, thickness, 100);
+        draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, thickness, num_segments);
+
+        ImVec2 mouse_pos = ImGui::GetMousePos();
+        float min_y = ImMin(p1.y, p4.y);
+        float max_y = ImMax(p1.y, p4.y);
+        float y = ImClamp(mouse_pos.y, min_y, max_y);
+
+        float t = (max_y - y) / dist;
+        ImVec2 bezier = ImBezierCubicCalc(p1, p2, p3, p4, t);
+        ImVec2 delta = mouse_pos - bezier;
+        return {ImAbs(delta.x), ImAbs(y - mouse_pos.y)};
     }
 
     static inline void draw_aligned_text(ImDrawList* draw_list, const char* text, ImVec2 pos, ImVec2 alignment = { 0,0 }) {
@@ -859,6 +870,10 @@ struct VeloxChem : viamd::EventHandler {
             cur_pos += bars_avail_width * end_percentages[end_i] + gap_size;
         }
 
+        int flow_hover_idx = -1;
+        ImVec2 mouse_pos = ImGui::GetMousePos();
+
+        char mouse_label[16] = {0};
 
         //Draw curves
         for (int start_i = 0; start_i < num_bars; start_i++) {
@@ -876,8 +891,10 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
 
                     int vert_beg = draw_list->VtxBuffer.Size;
-                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
+                    ImVec2 mouse_delta = draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
                     int vert_end = draw_list->VtxBuffer.Size;
+
+                    bool flow_hovered = mouse_delta.x < width * 0.5f && mouse_delta.y < 1.0e-4;
 
                     // Apply a gradient based on y-value from start color to end color if they belong to different groups
                     if (end_i != start_i) {
@@ -885,12 +902,22 @@ struct VeloxChem : viamd::EventHandler {
                         ImVec2 grad_p1 = {start_pos.x, end_pos.y};
                         ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
                     }
-                    
-                    ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{width / 2, 0};
-                    char lable[16];
-                    sprintf(lable, "%3.2f%%", percentage * 100);
-                    if (width > ImGui::CalcTextSize(lable).x) {
-                        draw_aligned_text(draw_list, lable, midpoint, { 0.5, 0.5 });
+
+                    char label[16];
+                    sprintf(label, "%3.2f%%", percentage * 100);
+                    const ImVec2 label_size = ImGui::CalcTextSize(label);
+
+                    if (flow_hovered) {
+                        for (int i = vert_beg; i < vert_end; ++i) {
+                            ImVec4 col = ImColor(draw_list->VtxBuffer[i].col);
+                            draw_list->VtxBuffer[i].col = ImColor(make_highlight_color(col));
+                        }
+                        MEMCPY(mouse_label, label, sizeof(label));
+                    }
+
+                    if (width > label_size.x) {
+                        const ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{width / 2, 0};
+                        draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
                     }
 
                     start_pos.x += width;
@@ -902,7 +929,12 @@ struct VeloxChem : viamd::EventHandler {
         //Draw bars
         for (int i = 0; i < num_bars; i++) {
             ImVec4 bar_color = vec_cast(nto->group.color[i]);
-            ImVec2 mouse_pos = ImGui::GetMousePos();
+
+            char start_label[16];
+            char end_label[16];
+
+            snprintf(start_label, sizeof(start_label), "%3.2f%%", start_percentages[i] * 100);
+            snprintf(end_label,   sizeof(end_label),   "%3.2f%%", end_percentages[i]   * 100);
 
             //Calculate start
             ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height};
@@ -916,25 +948,31 @@ struct VeloxChem : viamd::EventHandler {
             ImRect end_bar = ImRect{ end_p0, end_p1 };
             ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
 
-            if (start_bar.Contains(mouse_pos) || end_bar.Contains(mouse_pos)) {
+            if (start_bar.Contains(mouse_pos)) {
                 bar_color = make_highlight_color(bar_color);
+                MEMCPY(mouse_label, start_label, sizeof(start_label));
+            } else if (end_bar.Contains(mouse_pos)) {
+                bar_color = make_highlight_color(bar_color);
+                MEMCPY(mouse_label, end_label, sizeof(end_label));
             }
 
             //Draw start
             draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
             draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
-            char start_lable[16];
-            sprintf(start_lable, "%3.2f%%", start_percentages[i] * 100);
             draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, {0.5, -0.2});
-            draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
+            draw_aligned_text(draw_list, start_label, start_midpoint, { 0.5, -1.2 });
 
             //Draw end
             draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
             draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
-            char end_lable[16];
-            sprintf(end_lable, "%3.2f%%", end_percentages[i] * 100);
             draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, {0.5, 1.2});
-            draw_aligned_text(draw_list, end_lable, end_midpoint, { 0.5, 2.2 });
+            draw_aligned_text(draw_list, end_label, end_midpoint, { 0.5, 2.2 });
+        }
+
+        if (mouse_label[0] != '\0') {
+            ImVec2 offset = {15, 15};
+            ImVec2 pos = ImGui::GetMousePos() + offset;
+            draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
         }
     }
     
