@@ -3079,70 +3079,79 @@ struct VeloxChem : viamd::EventHandler {
 
             ImGui::Spacing();
 
-            // @TODO: Enlist all defined groups here
-            if (ImGui::BeginListBox("##Groups", outer_size)) {
+            static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_SizingFixedFit;
+
+            static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
+
+            if (ImGui::BeginTable("Group Table", 3, flags, outer_size, 0)) {
+                ImGui::TableSetupColumn("Group", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
+                //ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
+                //ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                 bool item_hovered = false;
-                for (size_t i = 0; i < nto.group.count; i++) {
-                    char color_buf[16];
-                    sprintf(color_buf, "##Group-Color%i", (int)i);
-                    ImGui::ColorEdit4Minimal(color_buf, nto.group.color[i].elem); 
-                    ImGui::SameLine(); 
-                    if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                        ImGui::Selectable(nto.group.label[i]);
-                        if (ImGui::IsItemHovered()) {
-                            item_hovered = true;
-                            md_bitfield_clear(&state.selection.highlight_mask);
-                            for (size_t j = 0; j < nto.num_atoms; j++) {
-                                if (nto.atom_group_idx[j] == i) {
-                                    //Add j to highlight mask
-                                    md_bitfield_set_bit(&state.selection.highlight_mask, j);
-                                }
-                            }
-                            //Select
-                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
-                                md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
-                            }
-                            //Deselect
-                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
-                                md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                for (int row_n = 0; row_n < nto.group.count; row_n++) {
+
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                    ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
+                    ImGui::TableNextColumn();
+
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
+                    if (ImGui::TableGetHoveredRow() == row_n + 1) {
+                        item_hovered = true;
+                        md_bitfield_clear(&state.selection.highlight_mask);
+                        for (size_t j = 0; j < nto.num_atoms; j++) {
+                            if (nto.atom_group_idx[j] == row_n) {
+                                //Add j to highlight mask
+                                md_bitfield_set_bit(&state.selection.highlight_mask, j);
                             }
                         }
-                        else if (!item_hovered && ImGui::IsWindowHovered()) {
-                            md_bitfield_clear(&state.selection.highlight_mask);
+
+                        //Selection
+                        if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                            md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
                         }
-                    }
-                    else if (i == 0) {
-                        ImGui::Text(nto.group.label[i]);
-                    }
-                    else {
-                        ImGui::InputText(color_buf, nto.group.label[i], 16);
+                        //Deselect
+                        else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                            md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                        }
                     }
 
-                    ImGui::SameLine();
+                    ImGui::TableNextColumn();
+                    char color_buf[16];
+                    sprintf(color_buf, "##Group-Color%i", (int)row_n);
+
+                    //Center the color picker
+                    ImVec2 cell_size = ImGui::GetContentRegionAvail();
+                    float color_size = ImGui::GetFrameHeight();
+                    ImVec2 padding((cell_size.x - color_size) * 0.5, 0.0);
+                    ImGui::SetCursorPos(ImGui::GetCursorPos() + padding);
+
+                    ImGui::ColorEdit4Minimal(color_buf, nto.group.color[row_n].elem);
+                    //ImGui::ColorButton(color_buf, vec_cast(nto.group.color[row_n]));
+
+                    ImGui::TableNextColumn();
                     int atom_count = 0;
                     for (size_t k = 0; k < nto.num_atoms; k++) {
-                        if (nto.atom_group_idx[k] == i) {
+                        if (nto.atom_group_idx[k] == row_n) {
                             atom_count++;
                         }
                     }
-                    ImGui::Text("Atoms %i", atom_count);
-                    //if (ImGui::Selectable(nto.group.label[i])) {
-                    //    for (size_t j = 0; j < nto.num_atoms; j++) {
-                    //        if (nto.atom_group_idx[j] == i) {
-                    //            md_bitfield_set_bit(&state.selection.selection_mask, j);
-                    //            ////Selection
-                    //            //if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                    //            //    md_bitfield_set_bit(&state.selection.selection_mask, j);
-                    //            //}
-                    //            ////Deselect
-                    //            //else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                    //            //    md_bitfield_clear_bit(&state.selection.selection_mask, j);
-                    //            //}
-                    //        }
-                    //    }
-                    //}
+                    ImGui::Text("%i", atom_count);
                 }
-                ImGui::EndListBox();
+                if (!item_hovered && ImGui::IsWindowHovered()) {
+                    //Makes sure that we clear the highlight if we are in this window, but don't hover an item
+                    md_bitfield_clear(&state.selection.highlight_mask);
+                }
+
+                ImGui::PopStyleColor(2);
+                ImGui::EndTable();
             }
 
             ImGui::EndGroup();
