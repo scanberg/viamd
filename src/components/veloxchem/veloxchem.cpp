@@ -3084,8 +3084,11 @@ struct VeloxChem : viamd::EventHandler {
 
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
-            if (ImGui::BeginTable("Group Table", 4, flags, outer_size, 0)) {
-                ImGui::TableSetupColumn("Edit", columns_base_flags, 0.0f);
+            static bool edit_mode = false;
+
+            ImGui::Checkbox("Edit mode", &edit_mode);
+
+            if (ImGui::BeginTable("Group Table", 3, flags, outer_size, 0)) {
                 ImGui::TableSetupColumn("Group", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
@@ -3102,34 +3105,44 @@ struct VeloxChem : viamd::EventHandler {
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                     ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
 
-                    ImGui::TableNextColumn();
+                    /*ImGui::TableNextColumn();
                     const char* s = nto.group.edit_mode[row_n] ? "E" : "L";
                     char label[16];
                     sprintf(label, "%s##%i", s, row_n);
                     if (ImGui::Button(label)) {
                         nto.group.edit_mode[row_n] = !nto.group.edit_mode[row_n];
-                    }
+                    }*/
 
                     ImGui::TableNextColumn();
                     ImGui::AlignTextToFramePadding();
-                    ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
-                    if (ImGui::TableGetHoveredRow() == row_n + 1) {
-                        item_hovered = true;
-                        md_bitfield_clear(&state.selection.highlight_mask);
-                        for (size_t j = 0; j < nto.num_atoms; j++) {
-                            if (nto.atom_group_idx[j] == row_n) {
-                                //Add j to highlight mask
-                                md_bitfield_set_bit(&state.selection.highlight_mask, j);
+                    if (edit_mode) {
+                        char label[16];
+                        sprintf(label, "##InputText%i", row_n);
+                        
+                        ImGui::PushItemWidth(ImGui::CalcTextSize(nto.group.label[row_n]).x + ImGui::CalcTextSize("  ").x);
+                        ImGui::InputText(label, nto.group.label[row_n], sizeof(char) * 20);
+                        ImGui::PopItemWidth();
+                    }
+                    else {
+                        ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
+                        if (ImGui::TableGetHoveredRow() == row_n + 1) {
+                            item_hovered = true;
+                            md_bitfield_clear(&state.selection.highlight_mask);
+                            for (size_t j = 0; j < nto.num_atoms; j++) {
+                                if (nto.atom_group_idx[j] == row_n) {
+                                    //Add j to highlight mask
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, j);
+                                }
                             }
-                        }
 
-                        //Selection
-                        if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                            md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
-                        }
-                        //Deselect
-                        else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                            md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                            //Selection
+                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                            }
+                            //Deselect
+                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                            }
                         }
                     }
 
@@ -3143,8 +3156,12 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 padding((cell_size.x - color_size) * 0.5, 0.0);
                     ImGui::SetCursorPos(ImGui::GetCursorPos() + padding);
 
-                    ImGui::ColorEdit4Minimal(color_buf, nto.group.color[row_n].elem);
-                    //ImGui::ColorButton(color_buf, vec_cast(nto.group.color[row_n]));
+                    if (edit_mode && row_n != 0) { //You cannot edit the Unassigned color
+                        ImGui::ColorEdit4Minimal(color_buf, nto.group.color[row_n].elem);
+                    }
+                    else {
+                        ImGui::ColorButton(color_buf, vec_cast(nto.group.color[row_n]));
+                    }
 
                     ImGui::TableNextColumn();
                     int atom_count = 0;
