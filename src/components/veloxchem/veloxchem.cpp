@@ -497,17 +497,17 @@ struct VeloxChem : viamd::EventHandler {
                     str_t file = {};
                     extract_file(&file, filename);
                     if (str_eq_cstr(file, "tq.out")) {
-                        uint8_t index_from_text[23] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+                        uint8_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
                         //nto.atom_group_idx = index_from_text;
-                        nto.group.count = 2;
+                        nto.group.count = 3;
                         MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
-                        snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Thio");
-                        snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Quin");
+                        snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Thio");
+                        snprintf(nto.group.label[2], sizeof(nto.group.label[2]), "Quin");
                     }
                     else {
 
                         // @TODO: Remove once proper interface is there
-					    nto.group.count = 2;
+					    nto.group.count = 3;
 					    // Assign half of the atoms to group 1
                         MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
                     }
