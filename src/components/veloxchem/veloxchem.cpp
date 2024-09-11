@@ -500,12 +500,14 @@ struct VeloxChem : viamd::EventHandler {
                     nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
                     MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
 
-                    for (int i = 0; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
-                        ImVec4 color = ImPlot::GetColormapColor(i, ImPlotColormap_Deep);
+                    snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
+                    nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
+
+                    for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                        ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
                         nto.group.color[i] = vec_cast(color);
                         snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
                     }
-                    snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
 
                     str_t file = {};
                     extract_file(&file, filename);
@@ -3149,7 +3151,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 padding((cell_size.x - color_size) * 0.5, 0.0);
                     ImGui::SetCursorPos(ImGui::GetCursorPos() + padding);
 
-                    if (edit_mode && row_n != 0) { //You cannot edit the Unassigned color
+                    if (edit_mode && row_n != 1) { //You cannot edit the Unassigned color
                         ImGui::ColorEdit4Minimal(color_buf, nto.group.color[row_n].elem);
                     }
                     else {
