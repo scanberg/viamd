@@ -810,7 +810,7 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
     }
 
-    static inline void im_sankey_diagram(ImRect area, Nto* nto) {
+    static inline void im_sankey_diagram(ApplicationState* state, ImRect area, Nto* nto) {
         ScopedTemp temp_reset;
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         /*
@@ -959,6 +959,7 @@ struct VeloxChem : viamd::EventHandler {
 
 
         //Draw bars
+        bool bar_hovered = false;
         for (int i = 0; i < nto->group.count; i++) {
             if (start_percentages[i] != 0.0) {
                 ImVec4 bar_color = vec_cast(nto->group.color[i]);
@@ -981,13 +982,24 @@ struct VeloxChem : viamd::EventHandler {
                 ImRect end_bar = ImRect{ end_p0, end_p1 };
                 ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
 
+                bool index_hovered = false;
                 if (start_bar.Contains(mouse_pos)) {
-                    bar_color = make_highlight_color(bar_color);
                     MEMCPY(mouse_label, start_label, sizeof(start_label));
+                    index_hovered = true;
                 }
                 else if (end_bar.Contains(mouse_pos)) {
-                    bar_color = make_highlight_color(bar_color);
                     MEMCPY(mouse_label, end_label, sizeof(end_label));
+                    index_hovered = true;
+                }
+
+                if (index_hovered) {
+                    bar_hovered = true;
+                    bar_color = make_highlight_color(bar_color);
+                    for (size_t atom_i = 0; atom_i < nto->num_atoms; atom_i++) {
+                        if (nto->atom_group_idx[atom_i] == i) {
+                            md_bitfield_set_bit(&state->selection.highlight_mask, atom_i);
+                        }
+                    }
                 }
 
                 //Draw start
@@ -1008,6 +1020,10 @@ struct VeloxChem : viamd::EventHandler {
                 ImVec2 pos = ImGui::GetMousePos() + offset;
                 draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
             }
+        }
+
+        if (!bar_hovered && ImGui::IsWindowHovered()) {
+            md_bitfield_clear(&state->selection.highlight_mask);
         }
     }
     
@@ -3434,7 +3450,7 @@ struct VeloxChem : viamd::EventHandler {
                 {
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
-                    im_sankey_diagram({p0.x, p0.y, p1.x, p1.y}, &nto);
+                    im_sankey_diagram(&state, {p0.x, p0.y, p1.x, p1.y}, &nto);
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
                 }
