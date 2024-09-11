@@ -240,7 +240,6 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 0;
             char   label[MAX_GROUPS][64] = {};
             vec4_t color[MAX_GROUPS] = {};
-            bool edit_mode[MAX_GROUPS] = {};
         } group;
 
         struct {
@@ -3117,10 +3116,13 @@ struct VeloxChem : viamd::EventHandler {
 
             ImGui::Checkbox("Edit mode", &edit_mode);
 
-            if (ImGui::BeginTable("Group Table", 3, flags, outer_size, 0)) {
+            if (ImGui::BeginTable("Group Table", 3 + edit_mode, flags, outer_size, 0)) {
                 ImGui::TableSetupColumn("Group", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
+                if (edit_mode) {
+                    ImGui::TableSetupColumn("Delete", columns_base_flags, 0.0f);
+                }
                 //ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
                 //ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
                 ImGui::TableSetupScrollFreeze(0, 1);
@@ -3200,6 +3202,21 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
                     ImGui::Text("%i", atom_count);
+                    if (edit_mode) {
+                        ImGui::TableNextColumn();
+                        char delete_label[8];
+                        sprintf(delete_label, "\xef\x80\x8d##%i", row_n);
+                        if (ImGui::DeleteButton(delete_label)) {
+                            nto.group.count--;
+                            for (size_t atom_i = 0; atom_i < nto.num_atoms; atom_i++) {
+                                if (nto.atom_group_idx[atom_i] == row_n) {
+                                    nto.atom_group_idx[atom_i] = 0;
+                                }
+                            }
+                            md_array_swap_back_and_pop(nto.group.color, row_n);
+                            md_array_swap_back_and_pop(nto.group.label, row_n);
+                        }
+                    }
                 }
 
                 if (!item_hovered && ImGui::IsWindowHovered()) {
