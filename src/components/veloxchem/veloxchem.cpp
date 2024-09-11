@@ -850,7 +850,12 @@ struct VeloxChem : viamd::EventHandler {
 
         //Bar definitions
         const float bar_height = plot_area.GetHeight() * 0.05;
-        int num_bars = nto->group.count;
+        int num_bars = 0;
+        for (size_t i = 0; i < nto->group.count; i++) {
+            if (nto->transition_density_hole[i] != 0.0) {
+                num_bars++;
+            }
+        }
         int num_gaps = num_bars - 1;
         float gap_size = plot_area.GetWidth() * 0.05;
         float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
@@ -858,138 +863,151 @@ struct VeloxChem : viamd::EventHandler {
         //Calculate bar percentages
         float start_sum = 0;
         float end_sum = 0;
-        for (size_t i = 0; i < num_bars; i++) {
+        for (size_t i = 0; i < nto->group.count; i++) {
             start_sum += nto->transition_density_hole[i];
             end_sum += nto->transition_density_part[i];
         }
-        md_array(float) start_percentages = md_array_create(float, num_bars, temp_alloc);
-        md_array(float) end_percentages   = md_array_create(float, num_bars, temp_alloc);
-        for (size_t i = 0; i < num_bars; i++) {
+        md_array(float) start_percentages = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(float) end_percentages   = md_array_create(float, nto->group.count, temp_alloc);
+        for (size_t i = 0; i < nto->group.count; i++) {
             start_percentages[i] = nto->transition_density_hole[i] / start_sum;
             end_percentages[i] = nto->transition_density_part[i] / end_sum;
         }
 
         //Calculate start positions
-        md_array(float) start_positions = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) start_positions = md_array_create(float, nto->group.count, temp_alloc);
         float cur_bottom_pos = plot_area.Min.x;
-        for (int i = 0; i < num_bars; i++) {
+        for (int i = 0; i < nto->group.count; i++) {
             start_positions[i] = cur_bottom_pos;
-            cur_bottom_pos += bars_avail_width * start_percentages[i] + gap_size;
+            cur_bottom_pos += bars_avail_width * start_percentages[i];
+            if (start_percentages[i] != 0.0) {
+                cur_bottom_pos += gap_size;
+            }
         }
 
         //Calculate end positions
-        md_array(float) end_positions = md_array_create(float, num_bars, temp_alloc);
-        md_array(float) sub_end_positions = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) end_positions = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(float) sub_end_positions = md_array_create(float, nto->group.count, temp_alloc);
         float cur_pos = plot_area.Min.x;
-        for (int end_i = 0; end_i < num_bars; end_i++) {
+        for (int end_i = 0; end_i < nto->group.count; end_i++) {
             end_positions[end_i] = cur_pos;
             sub_end_positions[end_i] = cur_pos;
-            cur_pos += bars_avail_width * end_percentages[end_i] + gap_size;
+            cur_pos += bars_avail_width * end_percentages[end_i];
+            if (start_percentages[end_i] != 0.0) {
+                cur_pos += gap_size;
+            }
         }
 
         int flow_hover_idx = -1;
         ImVec2 mouse_pos = ImGui::GetMousePos();
 
-        char mouse_label[16] = {0};
+        char mouse_label[16] = { 0 };
 
         //Draw curves
-        for (int start_i = 0; start_i < num_bars; start_i++) {
-            ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
+        for (int start_i = 0; start_i < nto->group.count; start_i++) {
+            if (start_percentages[start_i] != 0.0) {
 
-            ImVec4 start_col = vec_cast(nto->group.color[start_i]);
+                ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
 
-            start_col.w = 0.5;
-            for (int end_i = 0; end_i < num_bars; end_i++) {
-                float percentage = nto->transition_matrix[end_i * num_bars + start_i];
-                ImVec4 end_col = vec_cast(nto->group.color[end_i]);
+                ImVec4 start_col = vec_cast(nto->group.color[start_i]);
 
-                if (percentage != 0) {
-                    float width = bars_avail_width * percentage;
-                    ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
+                start_col.w = 0.5;
+                for (int end_i = 0; end_i < nto->group.count; end_i++) {
+                    float percentage = nto->transition_matrix[end_i * nto->group.count + start_i];
+                    ImVec4 end_col = vec_cast(nto->group.color[end_i]);
 
-                    int vert_beg = draw_list->VtxBuffer.Size;
-                    ImVec2 mouse_delta = draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
-                    int vert_end = draw_list->VtxBuffer.Size;
+                    if (percentage != 0) {
+                        float width = bars_avail_width * percentage;
+                        ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
 
-                    bool flow_hovered = mouse_delta.x < width * 0.5f && mouse_delta.y < 1.0e-4;
+                        int vert_beg = draw_list->VtxBuffer.Size;
+                        ImVec2 mouse_delta = draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
+                        int vert_end = draw_list->VtxBuffer.Size;
 
-                    // Apply a gradient based on y-value from start color to end color if they belong to different groups
-                    if (end_i != start_i) {
-                        ImVec2 grad_p0 = {start_pos.x, start_pos.y};
-                        ImVec2 grad_p1 = {start_pos.x, end_pos.y};
-                        ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
-                    }
+                        bool flow_hovered = mouse_delta.x < width * 0.5f && mouse_delta.y < 1.0e-4;
 
-                    char label[16];
-                    sprintf(label, "%3.2f%%", percentage * 100);
-                    const ImVec2 label_size = ImGui::CalcTextSize(label);
-
-                    if (flow_hovered) {
-                        for (int i = vert_beg; i < vert_end; ++i) {
-                            ImVec4 col = ImColor(draw_list->VtxBuffer[i].col);
-                            draw_list->VtxBuffer[i].col = ImColor(make_highlight_color(col));
+                        // Apply a gradient based on y-value from start color to end color if they belong to different groups
+                        if (end_i != start_i) {
+                            ImVec2 grad_p0 = { start_pos.x, start_pos.y };
+                            ImVec2 grad_p1 = { start_pos.x, end_pos.y };
+                            ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
                         }
-                        MEMCPY(mouse_label, label, sizeof(label));
-                    }
 
-                    if (width > label_size.x) {
-                        const ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{width / 2, 0};
-                        draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
-                    }
+                        char label[16];
+                        sprintf(label, "%3.2f%%", percentage * 100);
+                        const ImVec2 label_size = ImGui::CalcTextSize(label);
 
-                    start_pos.x += width;
-                    sub_end_positions[end_i] += width;
+                        if (flow_hovered) {
+                            for (int i = vert_beg; i < vert_end; ++i) {
+                                ImVec4 col = ImColor(draw_list->VtxBuffer[i].col);
+                                draw_list->VtxBuffer[i].col = ImColor(make_highlight_color(col));
+                            }
+                            MEMCPY(mouse_label, label, sizeof(label));
+                        }
+
+                        if (width > label_size.x) {
+                            const ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
+                            draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
+                        }
+
+                        start_pos.x += width;
+                        sub_end_positions[end_i] += width;
+                    }
                 }
             }
         }
 
+
         //Draw bars
-        for (int i = 0; i < num_bars; i++) {
-            ImVec4 bar_color = vec_cast(nto->group.color[i]);
+        for (int i = 0; i < nto->group.count; i++) {
+            if (start_percentages[i] != 0.0) {
+                ImVec4 bar_color = vec_cast(nto->group.color[i]);
 
-            char start_label[16];
-            char end_label[16];
+                char start_label[16];
+                char end_label[16];
 
-            snprintf(start_label, sizeof(start_label), "%3.2f%%", start_percentages[i] * 100);
-            snprintf(end_label,   sizeof(end_label),   "%3.2f%%", end_percentages[i]   * 100);
+                snprintf(start_label, sizeof(start_label), "%3.2f%%", start_percentages[i] * 100);
+                snprintf(end_label, sizeof(end_label), "%3.2f%%", end_percentages[i] * 100);
 
-            //Calculate start
-            ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height};
-            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * start_percentages[i], plot_area.Max.y };
-            ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
-            ImRect start_bar = ImRect{ start_p0, start_p1 };
+                //Calculate start
+                ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
+                ImVec2 start_p1 = { start_positions[i] + bars_avail_width * start_percentages[i], plot_area.Max.y };
+                ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
+                ImRect start_bar = ImRect{ start_p0, start_p1 };
 
-            //Calculate end
-            ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
-            ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
-            ImRect end_bar = ImRect{ end_p0, end_p1 };
-            ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
+                //Calculate end
+                ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
+                ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
+                ImRect end_bar = ImRect{ end_p0, end_p1 };
+                ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
 
-            if (start_bar.Contains(mouse_pos)) {
-                bar_color = make_highlight_color(bar_color);
-                MEMCPY(mouse_label, start_label, sizeof(start_label));
-            } else if (end_bar.Contains(mouse_pos)) {
-                bar_color = make_highlight_color(bar_color);
-                MEMCPY(mouse_label, end_label, sizeof(end_label));
+                if (start_bar.Contains(mouse_pos)) {
+                    bar_color = make_highlight_color(bar_color);
+                    MEMCPY(mouse_label, start_label, sizeof(start_label));
+                }
+                else if (end_bar.Contains(mouse_pos)) {
+                    bar_color = make_highlight_color(bar_color);
+                    MEMCPY(mouse_label, end_label, sizeof(end_label));
+                }
+
+                //Draw start
+                draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+                draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
+                draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, { 0.5, -0.2 });
+                draw_aligned_text(draw_list, start_label, start_midpoint, { 0.5, -1.2 });
+
+                //Draw end
+                draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+                draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
+                draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, { 0.5, 1.2 });
+                draw_aligned_text(draw_list, end_label, end_midpoint, { 0.5, 2.2 });
             }
 
-            //Draw start
-            draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
-            draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
-            draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, {0.5, -0.2});
-            draw_aligned_text(draw_list, start_label, start_midpoint, { 0.5, -1.2 });
-
-            //Draw end
-            draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
-            draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
-            draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, {0.5, 1.2});
-            draw_aligned_text(draw_list, end_label, end_midpoint, { 0.5, 2.2 });
-        }
-
-        if (mouse_label[0] != '\0') {
-            ImVec2 offset = {15, 15};
-            ImVec2 pos = ImGui::GetMousePos() + offset;
-            draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
+            if (mouse_label[0] != '\0') {
+                ImVec2 offset = { 15, 15 };
+                ImVec2 pos = ImGui::GetMousePos() + offset;
+                draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
+            }
         }
     }
     
