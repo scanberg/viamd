@@ -497,10 +497,10 @@ struct VeloxChem : viamd::EventHandler {
 
                     nto.show_window = true;
                     camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-					nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
-					MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
-					
-					for (int i = 0; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                    nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
+                    MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
+
+                    for (int i = 0; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
                         ImVec4 color = ImPlot::GetColormapColor(i, ImPlotColormap_Deep);
                         nto.group.color[i] = vec_cast(color);
                         snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
@@ -521,12 +521,19 @@ struct VeloxChem : viamd::EventHandler {
                     else {
 
                         // @TODO: Remove once proper interface is there
-					    nto.group.count = 2;
-					    // Assign half of the atoms to group 1
+                        nto.group.count = 2;
+                        // Assign half of the atoms to group 1
                         MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
                     }
-					nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+                    nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     update_nto_group_colors();
+
+                    // Callculate ballpark scaling factor for dipole vectors
+                    vec3_t ext = max_aabb - min_aabb;
+                    float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
+					vec3_t magn_vec = { (float)vlx.rsp.magnetic_transition[0].x, (float)vlx.rsp.magnetic_transition[0].y, (float)vlx.rsp.magnetic_transition[0].z };
+					vec3_t elec_vec = { (float)vlx.rsp.electronic_transition_length[0].x, (float)vlx.rsp.electronic_transition_length[0].y, (float)vlx.rsp.electronic_transition_length[0].z };
+					nto.dipole.vector_scale = (max_ext * 0.75f) / MAX(vec3_length(magn_vec), vec3_length(elec_vec));
                 }
 
                 // RSP
@@ -3271,6 +3278,9 @@ struct VeloxChem : viamd::EventHandler {
                     ImRect rect = {p0, p1};
                     ImGui::SetCursorScreenPos(p0);
 
+                    draw_list->PushClipRect(p0, p1);
+                    defer{ draw_list->PopClipRect(); };
+
                     draw_list->ChannelsSetCurrent(1);
                     ImGui::PushID(i);
                     interaction_canvas(p1-p0, selection, view, state.mold.mol);
@@ -3315,17 +3325,11 @@ struct VeloxChem : viamd::EventHandler {
                         const vec3_t mid = vec3_lerp(min_aabb, max_aabb, 0.5f);
                         const vec3_t ext = max_aabb - min_aabb;
 
-                        float farthest_distance = vec3_length(ext * 0.5f);
-                        float longest_vector = 0;
+                        vec3_t magn_vec = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
+                        vec3_t elec_vec = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
 
-                        const vec3_t magn_vec = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
-                        const vec3_t elec_vec = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
-
-                        if (vec3_length_squared(magn_vec) > vec3_length_squared(elec_vec)) {
-                            longest_vector = vec3_length(magn_vec);
-                        } else {
-                            longest_vector = vec3_length(elec_vec);
-                        }
+						magn_vec *= nto.dipole.vector_scale * BOHR_TO_ANGSTROM;
+						elec_vec *= nto.dipole.vector_scale * BOHR_TO_ANGSTROM;
 
                         auto proj_point = [MVP, win_sz, p0](vec3_t point) -> ImVec2 {
                             const vec4_t p = mat4_mul_vec4(MVP, vec4_from_vec3(point, 1.0));
@@ -3353,11 +3357,10 @@ struct VeloxChem : viamd::EventHandler {
                         const ImU32 magn_color = convert_color(nto.dipole.colors[1]);
                         const ImU32 text_color = IM_COL32_BLACK;
                         const float arrow_thickness = 3.0f;
-                        const float vec_scl = (float)nto.dipole.vector_scale * farthest_distance / longest_vector;
 
                         ImVec2 c      = proj_point(mid);
-                        ImVec2 c_elec = proj_point(mid + elec_vec * vec_scl);
-                        ImVec2 c_magn = proj_point(mid + magn_vec * vec_scl);
+                        ImVec2 c_elec = proj_point(mid + elec_vec);
+                        ImVec2 c_magn = proj_point(mid + magn_vec);
 
                         draw_arrow(c, c_elec, elec_color, arrow_thickness);
                         draw_list->AddText(c_elec, text_color, (const char*)u8"μe");
@@ -3366,46 +3369,26 @@ struct VeloxChem : viamd::EventHandler {
                         draw_list->AddText(c_magn, text_color, (const char*)u8"μm");
 
                         if (nto.dipole.show_angle) {
-                            const float el_ma_dot = vec3_dot(magn_vec, elec_vec);
-                            const float el_len = vec3_length(elec_vec);
-                            const float ma_len = vec3_length(magn_vec);
+							const vec3_t magn_dir = vec3_normalize(magn_vec);
+							const vec3_t elec_dir = vec3_normalize(elec_vec);
+                            const float angle = acosf(vec3_dot(magn_dir, elec_dir));
+                            const ImU32 angle_color = IM_COL32(0, 0, 0, 128);
+                            const float angle_thickness = 1.0f;
+                            const float angle_vec_scale = 0.1f;
 
-                            const float angle = RAD_TO_DEG(acosf(el_ma_dot / (el_len * ma_len)));
-                            // This can be greatly simplified
-#if 0
-                            const int num_of_seg = 10;
-                            for (int segment = 0; segment < num_of_seg; segment++) {
-                                vec3_t middle_point_3d0 = vec3_normalize(vec3_normalize(magn_vec) * (num_of_seg - segment) / num_of_seg * 0.1f +
-                                    vec3_normalize(elec_vec)*segment/num_of_seg * 0.1f) *0.03f;
-                                const vec4_t p_middle_point_3d_target0 =
-                                    mat4_mul_vec4(MVP, {mid.x + middle_point_3d0.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                        mid.y + middle_point_3d0.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                        mid.z + middle_point_3d0.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                                const vec2_t c_middle_point_target0 = {
-                                    (p_middle_point_3d_target0.x / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.x,
-                                    (-p_middle_point_3d_target0.y / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.y,
-                                };
-                                vec3_t middle_point_3d1 =
-                                    vec3_normalize(vec3_normalize(magn_vec) * (num_of_seg - segment - 1) / num_of_seg * 0.1f +
-                                        vec3_normalize(elec_vec)*(segment + 1 ) / num_of_seg * 0.1f) *0.03f;
-                                const vec4_t p_middle_point_3d_target1 =
-                                    mat4_mul_vec4(MVP, {mid.x + middle_point_3d1.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                        mid.y + middle_point_3d1.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                        mid.z + middle_point_3d1.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                                const vec2_t c_middle_point_target1 = {
-                                    (p_middle_point_3d_target1.x / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.x,
-                                    (-p_middle_point_3d_target1.y / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.y,
-                                };
-                                draw_list->AddLine({p0.x + c_middle_point_target0.x, p0.y + c_middle_point_target0.y},
-                                    {p0.x + c_middle_point_target1.x, p0.y + c_middle_point_target1.y},
-                                    ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1],
-                                        nto.iso.vectorColors[2].elem[2], nto.iso.vectorColors[2].elem[3]),
-                                    5.0f);
+                            const size_t num_seg = 20;
+							const vec3_t axis = vec3_normalize(vec3_cross(elec_dir, magn_dir));
+
+                            for (size_t seg = 0; seg <= num_seg; ++seg) {
+								float  t = (float)(seg) / (float)num_seg;
+                                vec3_t v = quat_mul_vec3(quat_axis_angle(axis, angle * t), elec_dir);
+								ImVec2 p = proj_point(mid + v * angle_vec_scale);
+                                draw_list->PathLineTo(p);
                             }
-#endif
+                            draw_list->PathStroke(angle_color, 0, angle_thickness);
 
                             char buf[32];
-                            snprintf(buf, sizeof(buf), (const char*)u8"θ=%.2f°", angle);
+                            snprintf(buf, sizeof(buf), (const char*)u8"%.2f°", RAD_TO_DEG(angle));
                             draw_list->AddText(c, text_color, buf);
                         }
                     }
@@ -3432,7 +3415,6 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 // Draw stuff
-
 
                 const bool is_hovered = ImGui::IsItemHovered();
                 const bool is_active  = ImGui::IsItemActive();
