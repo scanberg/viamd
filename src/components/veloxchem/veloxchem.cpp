@@ -505,7 +505,7 @@ struct VeloxChem : viamd::EventHandler {
                     for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
                         ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
                         nto.group.color[i] = vec_cast(color);
-                        snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
+                        snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
                     }
 
                     str_t file = {};
@@ -524,7 +524,9 @@ struct VeloxChem : viamd::EventHandler {
                         // @TODO: Remove once proper interface is there
 					    nto.group.count = 3;
 					    // Assign half of the atoms to group 1
-                        MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
+                        for (size_t i = 0; i < mol.atom.count; ++i) {
+                            nto.atom_group_idx[i] = i < mol.atom.count / 2 ? 1 : 2;
+                        }
                     }
                     nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     update_nto_group_colors();
@@ -532,9 +534,21 @@ struct VeloxChem : viamd::EventHandler {
                     // Callculate ballpark scaling factor for dipole vectors
                     vec3_t ext = max_aabb - min_aabb;
                     float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
-					vec3_t magn_vec = { (float)vlx.rsp.magnetic_transition[0].x, (float)vlx.rsp.magnetic_transition[0].y, (float)vlx.rsp.magnetic_transition[0].z };
-					vec3_t elec_vec = { (float)vlx.rsp.electronic_transition_length[0].x, (float)vlx.rsp.electronic_transition_length[0].y, (float)vlx.rsp.electronic_transition_length[0].z };
-					nto.dipole.vector_scale = (max_ext * 0.75f) / MAX(vec3_length(magn_vec), vec3_length(elec_vec));
+                    float max_len = 0;
+                    for (int i = 0; i < vlx.rsp.num_excited_states; ++i) {
+                        vec3_t magn_vec = { (float)vlx.rsp.magnetic_transition[i].x, (float)vlx.rsp.magnetic_transition[i].y, (float)vlx.rsp.magnetic_transition[i].z };
+                        vec3_t elec_vec = { (float)vlx.rsp.electronic_transition_length[0].x, (float)vlx.rsp.electronic_transition_length[i].y, (float)vlx.rsp.electronic_transition_length[i].z };
+                        float magn_len = vec3_length(magn_vec);
+                        float elec_len = vec3_length(elec_vec);
+                        if (magn_len > max_len) {
+                            max_len = magn_len;
+                        }
+                        if (elec_len > max_len) {
+                            max_len = elec_len;
+                        }
+                    }
+
+					nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
                 }
 
                 // RSP
