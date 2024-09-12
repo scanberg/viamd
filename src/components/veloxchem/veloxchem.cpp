@@ -440,8 +440,8 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void init_from_file(str_t filename, ApplicationState& state) {
-        str_t ext;
-        if (extract_ext(&ext, filename) && str_eq_ignore_case(ext, STR_LIT("out"))) {
+        str_t file_ext;
+        if (extract_ext(&file_ext, filename) && str_eq_ignore_case(file_ext, STR_LIT("out"))) {
             MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
             md_vlx_data_free(&vlx);
             if (md_vlx_data_parse_file(&vlx, filename, arena)) {
@@ -1589,7 +1589,7 @@ struct VeloxChem : viamd::EventHandler {
 
                             ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                             bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered, mark it as such
+                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
                             bool hov_col = false;
                             ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                             ImGui::TableNextColumn();
@@ -3109,20 +3109,26 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::Spacing();
 
             static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_SizingFixedFit;
-
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
             static bool edit_mode = false;
 
             ImGui::Checkbox("Edit mode", &edit_mode);
 
+            int group_counts[MAX_GROUPS] = {0};
+            for (size_t i = 0; i < nto.num_atoms; ++i) {
+                int group_idx = nto.atom_group_idx[i] < nto.group.count ? nto.atom_group_idx[i] : 0;
+                group_counts[group_idx] += 1;
+            }
+
             if (ImGui::BeginTable("Group Table", 3 + edit_mode, flags, outer_size, 0)) {
-                ImGui::TableSetupColumn("Group", columns_base_flags, 0.0f);
-                ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn("Group", columns_base_flags, 150.f);
                 ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
                 if (edit_mode) {
-                    ImGui::TableSetupColumn("Delete", columns_base_flags, 0.0f);
+                    ImGui::TableSetupColumn("##Delete", columns_base_flags, 100.0f);
                 }
+
                 //ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
                 //ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
                 ImGui::TableSetupScrollFreeze(0, 1);
@@ -3131,27 +3137,21 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                 ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                 bool item_hovered = false;
-                for (int row_n = 0; row_n < nto.group.count; row_n++) {
-
+                int row_n = group_counts[0] > 0 ? 0 : 1;
+                for (; row_n < nto.group.count; row_n++) {
+                    ImGui::PushID(row_n);
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                     ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
-
-                    /*ImGui::TableNextColumn();
-                    const char* s = nto.group.edit_mode[row_n] ? "E" : "L";
-                    char label[16];
-                    snprintf(label, sizeof(label), "%s##%i", s, row_n);
-                    if (ImGui::Button(label)) {
-                        nto.group.edit_mode[row_n] = !nto.group.edit_mode[row_n];
-                    }*/
 
                     ImGui::TableNextColumn();
                     ImGui::AlignTextToFramePadding();
                     if (edit_mode) {
-                        char label[16];
-                        sprintf(label, "##InputText%i", row_n);
-                        
-                        ImGui::PushItemWidth(ImGui::CalcTextSize(nto.group.label[row_n]).x + ImGui::CalcTextSize("  ").x);
-                        ImGui::InputText(label, nto.group.label[row_n], sizeof(char) * 20);
+                        ImGui::PushItemWidth(150.f);
+                        if (row_n > 0) {
+                            ImGui::InputText("##label", nto.group.label[row_n], sizeof(nto.group.label[row_n]));
+                        } else {
+                            ImGui::Text(nto.group.label[0]);
+                        }
                         ImGui::PopItemWidth();
                     }
                     else {
@@ -3177,9 +3177,11 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
 
+
                     ImGui::TableNextColumn();
-                    char color_buf[16];
-                    sprintf(color_buf, "##Group-Color%i", (int)row_n);
+                    ImGui::Text("%i", group_counts[row_n]);
+
+                    ImGui::TableNextColumn();
 
                     //Center the color picker
                     ImVec2 cell_size = ImGui::GetContentRegionAvail();
@@ -3187,36 +3189,34 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 padding((cell_size.x - color_size) * 0.5, 0.0);
                     ImGui::SetCursorPos(ImGui::GetCursorPos() + padding);
 
-                    if (edit_mode && row_n != 1) { //You cannot edit the Unassigned color
-                        ImGui::ColorEdit4Minimal(color_buf, nto.group.color[row_n].elem);
-                    }
-                    else {
-                        ImGui::ColorButton(color_buf, vec_cast(nto.group.color[row_n]));
+                    if (edit_mode && row_n > 0) { //You cannot edit the Unassigned color
+                        ImGui::ColorEdit4Minimal("##color", nto.group.color[row_n].elem);
+                    } else {
+                        ImGui::ColorButton("##color", vec_cast(nto.group.color[row_n]));
                     }
 
-                    ImGui::TableNextColumn();
-                    int atom_count = 0;
-                    for (size_t k = 0; k < nto.num_atoms; k++) {
-                        if (nto.atom_group_idx[k] == row_n) {
-                            atom_count++;
-                        }
-                    }
-                    ImGui::Text("%i", atom_count);
                     if (edit_mode) {
                         ImGui::TableNextColumn();
-                        char delete_label[8];
-                        sprintf(delete_label, "\xef\x80\x8d##%i", row_n);
-                        if (ImGui::DeleteButton(delete_label)) {
-                            nto.group.count--;
-                            for (size_t atom_i = 0; atom_i < nto.num_atoms; atom_i++) {
-                                if (nto.atom_group_idx[atom_i] == row_n) {
-                                    nto.atom_group_idx[atom_i] = 0;
+                        if (row_n > 0) {
+                            ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
+                            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - button_size.x);
+                            if (ImGui::DeleteButton("\xef\x80\x8d", button_size)) {
+                                for (size_t i = 0; i < nto.num_atoms; i++) {
+                                    if (nto.atom_group_idx[i] == row_n) {
+                                        nto.atom_group_idx[i] = 0;
+                                    } else if (nto.atom_group_idx[i] > row_n) {
+                                        nto.atom_group_idx[i] -= 1;
+                                    }
                                 }
+                                for (int i = row_n; i < (int)nto.group.count - 1; ++i) {
+                                    nto.group.color[i] = nto.group.color[i+1];
+                                    MEMCPY(nto.group.label[i], nto.group.label[i+1], sizeof(nto.group.label[i]));
+                                }
+                                nto.group.count--;
                             }
-                            md_array_swap_back_and_pop(nto.group.color, row_n);
-                            md_array_swap_back_and_pop(nto.group.label, row_n);
                         }
                     }
+                    ImGui::PopID();
                 }
 
                 if (!item_hovered && ImGui::IsWindowHovered()) {
