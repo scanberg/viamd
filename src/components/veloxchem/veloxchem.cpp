@@ -240,7 +240,6 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 0;
             char   label[MAX_GROUPS][64] = {};
             vec4_t color[MAX_GROUPS] = {};
-            bool edit_mode[MAX_GROUPS] = {};
         } group;
 
         struct {
@@ -441,8 +440,8 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void init_from_file(str_t filename, ApplicationState& state) {
-        str_t ext;
-        if (extract_ext(&ext, filename) && str_eq_ignore_case(ext, STR_LIT("out"))) {
+        str_t file_ext;
+        if (extract_ext(&file_ext, filename) && str_eq_ignore_case(file_ext, STR_LIT("out"))) {
             MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
             md_vlx_data_free(&vlx);
             if (md_vlx_data_parse_file(&vlx, filename, arena)) {
@@ -500,29 +499,31 @@ struct VeloxChem : viamd::EventHandler {
                     nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
                     MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
 
-                    for (int i = 0; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
-                        ImVec4 color = ImPlot::GetColormapColor(i, ImPlotColormap_Deep);
+                    snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
+                    nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
+
+                    for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                        ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
                         nto.group.color[i] = vec_cast(color);
                         snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
                     }
-                    snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
 
                     str_t file = {};
                     extract_file(&file, filename);
 
                     if (str_eq_cstr(file, "tq.out")) {
-                        uint8_t index_from_text[23] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+                        uint8_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
                         //nto.atom_group_idx = index_from_text;
-                        nto.group.count = 2;
+                        nto.group.count = 3;
                         MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
-                        snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Thio");
-                        snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Quin");
+                        snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Thio");
+                        snprintf(nto.group.label[2], sizeof(nto.group.label[2]), "Quin");
                     }
                     else {
 
                         // @TODO: Remove once proper interface is there
-                        nto.group.count = 2;
-                        // Assign half of the atoms to group 1
+					    nto.group.count = 3;
+					    // Assign half of the atoms to group 1
                         MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
                     }
                     nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
@@ -808,7 +809,7 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
     }
 
-    static inline void im_sankey_diagram(ImRect area, Nto* nto) {
+    static inline void im_sankey_diagram(ApplicationState* state, ImRect area, Nto* nto) {
         ScopedTemp temp_reset;
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         /*
@@ -848,7 +849,12 @@ struct VeloxChem : viamd::EventHandler {
 
         //Bar definitions
         const float bar_height = plot_area.GetHeight() * 0.05;
-        int num_bars = nto->group.count;
+        int num_bars = 0;
+        for (size_t i = 0; i < nto->group.count; i++) {
+            if (nto->transition_density_hole[i] != 0.0) {
+                num_bars++;
+            }
+        }
         int num_gaps = num_bars - 1;
         float gap_size = plot_area.GetWidth() * 0.05;
         float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
@@ -856,138 +862,167 @@ struct VeloxChem : viamd::EventHandler {
         //Calculate bar percentages
         float start_sum = 0;
         float end_sum = 0;
-        for (size_t i = 0; i < num_bars; i++) {
+        for (size_t i = 0; i < nto->group.count; i++) {
             start_sum += nto->transition_density_hole[i];
             end_sum += nto->transition_density_part[i];
         }
-        md_array(float) start_percentages = md_array_create(float, num_bars, temp_alloc);
-        md_array(float) end_percentages   = md_array_create(float, num_bars, temp_alloc);
-        for (size_t i = 0; i < num_bars; i++) {
+        md_array(float) start_percentages = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(float) end_percentages   = md_array_create(float, nto->group.count, temp_alloc);
+        for (size_t i = 0; i < nto->group.count; i++) {
             start_percentages[i] = nto->transition_density_hole[i] / start_sum;
             end_percentages[i] = nto->transition_density_part[i] / end_sum;
         }
 
         //Calculate start positions
-        md_array(float) start_positions = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) start_positions = md_array_create(float, nto->group.count, temp_alloc);
         float cur_bottom_pos = plot_area.Min.x;
-        for (int i = 0; i < num_bars; i++) {
+        for (int i = 0; i < nto->group.count; i++) {
             start_positions[i] = cur_bottom_pos;
-            cur_bottom_pos += bars_avail_width * start_percentages[i] + gap_size;
+            cur_bottom_pos += bars_avail_width * start_percentages[i];
+            if (start_percentages[i] != 0.0) {
+                cur_bottom_pos += gap_size;
+            }
         }
 
         //Calculate end positions
-        md_array(float) end_positions = md_array_create(float, num_bars, temp_alloc);
-        md_array(float) sub_end_positions = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) end_positions = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(float) sub_end_positions = md_array_create(float, nto->group.count, temp_alloc);
         float cur_pos = plot_area.Min.x;
-        for (int end_i = 0; end_i < num_bars; end_i++) {
+        for (int end_i = 0; end_i < nto->group.count; end_i++) {
             end_positions[end_i] = cur_pos;
             sub_end_positions[end_i] = cur_pos;
-            cur_pos += bars_avail_width * end_percentages[end_i] + gap_size;
+            cur_pos += bars_avail_width * end_percentages[end_i];
+            if (start_percentages[end_i] != 0.0) {
+                cur_pos += gap_size;
+            }
         }
 
         int flow_hover_idx = -1;
         ImVec2 mouse_pos = ImGui::GetMousePos();
 
-        char mouse_label[16] = {0};
+        char mouse_label[16] = { 0 };
 
         //Draw curves
-        for (int start_i = 0; start_i < num_bars; start_i++) {
-            ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
+        for (int start_i = 0; start_i < nto->group.count; start_i++) {
+            if (start_percentages[start_i] != 0.0) {
 
-            ImVec4 start_col = vec_cast(nto->group.color[start_i]);
+                ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
 
-            start_col.w = 0.5;
-            for (int end_i = 0; end_i < num_bars; end_i++) {
-                float percentage = nto->transition_matrix[end_i * num_bars + start_i];
-                ImVec4 end_col = vec_cast(nto->group.color[end_i]);
+                ImVec4 start_col = vec_cast(nto->group.color[start_i]);
 
-                if (percentage != 0) {
-                    float width = bars_avail_width * percentage;
-                    ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
+                start_col.w = 0.5;
+                for (int end_i = 0; end_i < nto->group.count; end_i++) {
+                    float percentage = nto->transition_matrix[end_i * nto->group.count + start_i];
+                    ImVec4 end_col = vec_cast(nto->group.color[end_i]);
 
-                    int vert_beg = draw_list->VtxBuffer.Size;
-                    ImVec2 mouse_delta = draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
-                    int vert_end = draw_list->VtxBuffer.Size;
+                    if (percentage != 0) {
+                        float width = bars_avail_width * percentage;
+                        ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
 
-                    bool flow_hovered = mouse_delta.x < width * 0.5f && mouse_delta.y < 1.0e-4;
+                        int vert_beg = draw_list->VtxBuffer.Size;
+                        ImVec2 mouse_delta = draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
+                        int vert_end = draw_list->VtxBuffer.Size;
 
-                    // Apply a gradient based on y-value from start color to end color if they belong to different groups
-                    if (end_i != start_i) {
-                        ImVec2 grad_p0 = {start_pos.x, start_pos.y};
-                        ImVec2 grad_p1 = {start_pos.x, end_pos.y};
-                        ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
-                    }
+                        bool flow_hovered = mouse_delta.x < width * 0.5f && mouse_delta.y < 1.0e-4;
 
-                    char label[16];
-                    sprintf(label, "%3.2f%%", percentage * 100);
-                    const ImVec2 label_size = ImGui::CalcTextSize(label);
-
-                    if (flow_hovered) {
-                        for (int i = vert_beg; i < vert_end; ++i) {
-                            ImVec4 col = ImColor(draw_list->VtxBuffer[i].col);
-                            draw_list->VtxBuffer[i].col = ImColor(make_highlight_color(col));
+                        // Apply a gradient based on y-value from start color to end color if they belong to different groups
+                        if (end_i != start_i) {
+                            ImVec2 grad_p0 = { start_pos.x, start_pos.y };
+                            ImVec2 grad_p1 = { start_pos.x, end_pos.y };
+                            ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
                         }
-                        MEMCPY(mouse_label, label, sizeof(label));
-                    }
 
-                    if (width > label_size.x) {
-                        const ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{width / 2, 0};
-                        draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
-                    }
+                        char label[16];
+                        sprintf(label, "%3.2f%%", percentage * 100);
+                        const ImVec2 label_size = ImGui::CalcTextSize(label);
 
-                    start_pos.x += width;
-                    sub_end_positions[end_i] += width;
+                        if (flow_hovered) {
+                            for (int i = vert_beg; i < vert_end; ++i) {
+                                ImVec4 col = ImColor(draw_list->VtxBuffer[i].col);
+                                draw_list->VtxBuffer[i].col = ImColor(make_highlight_color(col));
+                            }
+                            MEMCPY(mouse_label, label, sizeof(label));
+                        }
+
+                        if (width > label_size.x) {
+                            const ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
+                            draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
+                        }
+
+                        start_pos.x += width;
+                        sub_end_positions[end_i] += width;
+                    }
                 }
             }
         }
 
+
         //Draw bars
-        for (int i = 0; i < num_bars; i++) {
-            ImVec4 bar_color = vec_cast(nto->group.color[i]);
+        bool bar_hovered = false;
+        for (int i = 0; i < nto->group.count; i++) {
+            if (start_percentages[i] != 0.0) {
+                ImVec4 bar_color = vec_cast(nto->group.color[i]);
 
-            char start_label[16];
-            char end_label[16];
+                char start_label[16];
+                char end_label[16];
 
-            snprintf(start_label, sizeof(start_label), "%3.2f%%", start_percentages[i] * 100);
-            snprintf(end_label,   sizeof(end_label),   "%3.2f%%", end_percentages[i]   * 100);
+                snprintf(start_label, sizeof(start_label), "%3.2f%%", start_percentages[i] * 100);
+                snprintf(end_label, sizeof(end_label), "%3.2f%%", end_percentages[i] * 100);
 
-            //Calculate start
-            ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height};
-            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * start_percentages[i], plot_area.Max.y };
-            ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
-            ImRect start_bar = ImRect{ start_p0, start_p1 };
+                //Calculate start
+                ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
+                ImVec2 start_p1 = { start_positions[i] + bars_avail_width * start_percentages[i], plot_area.Max.y };
+                ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
+                ImRect start_bar = ImRect{ start_p0, start_p1 };
 
-            //Calculate end
-            ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
-            ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
-            ImRect end_bar = ImRect{ end_p0, end_p1 };
-            ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
+                //Calculate end
+                ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
+                ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
+                ImRect end_bar = ImRect{ end_p0, end_p1 };
+                ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
 
-            if (start_bar.Contains(mouse_pos)) {
-                bar_color = make_highlight_color(bar_color);
-                MEMCPY(mouse_label, start_label, sizeof(start_label));
-            } else if (end_bar.Contains(mouse_pos)) {
-                bar_color = make_highlight_color(bar_color);
-                MEMCPY(mouse_label, end_label, sizeof(end_label));
+                bool index_hovered = false;
+                if (start_bar.Contains(mouse_pos)) {
+                    MEMCPY(mouse_label, start_label, sizeof(start_label));
+                    index_hovered = true;
+                }
+                else if (end_bar.Contains(mouse_pos)) {
+                    MEMCPY(mouse_label, end_label, sizeof(end_label));
+                    index_hovered = true;
+                }
+
+                if (index_hovered) {
+                    bar_hovered = true;
+                    bar_color = make_highlight_color(bar_color);
+                    for (size_t atom_i = 0; atom_i < nto->num_atoms; atom_i++) {
+                        if (nto->atom_group_idx[atom_i] == i) {
+                            md_bitfield_set_bit(&state->selection.highlight_mask, atom_i);
+                        }
+                    }
+                }
+
+                //Draw start
+                draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+                draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
+                draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, { 0.5, -0.2 });
+                draw_aligned_text(draw_list, start_label, start_midpoint, { 0.5, -1.2 });
+
+                //Draw end
+                draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+                draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
+                draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, { 0.5, 1.2 });
+                draw_aligned_text(draw_list, end_label, end_midpoint, { 0.5, 2.2 });
             }
 
-            //Draw start
-            draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
-            draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
-            draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, {0.5, -0.2});
-            draw_aligned_text(draw_list, start_label, start_midpoint, { 0.5, -1.2 });
-
-            //Draw end
-            draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
-            draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
-            draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, {0.5, 1.2});
-            draw_aligned_text(draw_list, end_label, end_midpoint, { 0.5, 2.2 });
+            if (mouse_label[0] != '\0') {
+                ImVec2 offset = { 15, 15 };
+                ImVec2 pos = ImGui::GetMousePos() + offset;
+                draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
+            }
         }
 
-        if (mouse_label[0] != '\0') {
-            ImVec2 offset = {15, 15};
-            ImVec2 pos = ImGui::GetMousePos() + offset;
-            draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
+        if (!bar_hovered && ImGui::IsWindowHovered()) {
+            md_bitfield_clear(&state->selection.highlight_mask);
         }
     }
     
@@ -1554,7 +1589,7 @@ struct VeloxChem : viamd::EventHandler {
 
                             ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                             bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered, mark it as such
+                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
                             bool hov_col = false;
                             ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                             ImGui::TableNextColumn();
@@ -3074,14 +3109,26 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::Spacing();
 
             static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_SizingFixedFit;
-
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
-            if (ImGui::BeginTable("Group Table", 4, flags, outer_size, 0)) {
-                ImGui::TableSetupColumn("Edit",  columns_base_flags, 0.0f);
-                ImGui::TableSetupColumn("Group", columns_base_flags, 0.0f);
-                ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
+            static bool edit_mode = false;
+
+            ImGui::Checkbox("Edit mode", &edit_mode);
+
+            int group_counts[MAX_GROUPS] = {0};
+            for (size_t i = 0; i < nto.num_atoms; ++i) {
+                int group_idx = nto.atom_group_idx[i] < nto.group.count ? nto.atom_group_idx[i] : 0;
+                group_counts[group_idx] += 1;
+            }
+
+            if (ImGui::BeginTable("Group Table", 3 + edit_mode, flags, outer_size, 0)) {
+                ImGui::TableSetupColumn("Group", columns_base_flags, 150.f);
                 ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
+                if (edit_mode) {
+                    ImGui::TableSetupColumn("##Delete", columns_base_flags, 100.0f);
+                }
+
                 //ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
                 //ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
                 ImGui::TableSetupScrollFreeze(0, 1);
@@ -3090,45 +3137,51 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                 ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                 bool item_hovered = false;
-                for (int row_n = 0; row_n < nto.group.count; row_n++) {
-
+                int row_n = group_counts[0] > 0 ? 0 : 1;
+                for (; row_n < nto.group.count; row_n++) {
+                    ImGui::PushID(row_n);
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                     ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
 
                     ImGui::TableNextColumn();
-                    const char* s = nto.group.edit_mode[row_n] ? "E" : "L";
-                    char label[16];
-                    snprintf(label, sizeof(label), "%s##%i", s, row_n);
-                    if (ImGui::Button(label)) {
-                        nto.group.edit_mode[row_n] = !nto.group.edit_mode[row_n];
-                    }
-
-                    ImGui::TableNextColumn();
                     ImGui::AlignTextToFramePadding();
-                    ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
-                    if (ImGui::TableGetHoveredRow() == row_n + 1) {
-                        item_hovered = true;
-                        md_bitfield_clear(&state.selection.highlight_mask);
-                        for (size_t j = 0; j < nto.num_atoms; j++) {
-                            if (nto.atom_group_idx[j] == row_n) {
-                                //Add j to highlight mask
-                                md_bitfield_set_bit(&state.selection.highlight_mask, j);
+                    if (edit_mode) {
+                        ImGui::PushItemWidth(150.f);
+                        if (row_n > 0) {
+                            ImGui::InputText("##label", nto.group.label[row_n], sizeof(nto.group.label[row_n]));
+                        } else {
+                            ImGui::Text(nto.group.label[0]);
+                        }
+                        ImGui::PopItemWidth();
+                    }
+                    else {
+                        ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
+                        if (ImGui::TableGetHoveredRow() == row_n + 1) {
+                            item_hovered = true;
+                            md_bitfield_clear(&state.selection.highlight_mask);
+                            for (size_t j = 0; j < nto.num_atoms; j++) {
+                                if (nto.atom_group_idx[j] == row_n) {
+                                    //Add j to highlight mask
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, j);
+                                }
+                            }
+
+                            //Selection
+                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                            }
+                            //Deselect
+                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
                             }
                         }
-
-                        //Selection
-                        if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                            md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
-                        }
-                        //Deselect
-                        else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                            md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
-                        }
                     }
 
+
                     ImGui::TableNextColumn();
-                    char color_buf[16];
-                    sprintf(color_buf, "##Group-Color%i", (int)row_n);
+                    ImGui::Text("%i", group_counts[row_n]);
+
+                    ImGui::TableNextColumn();
 
                     //Center the color picker
                     ImVec2 cell_size = ImGui::GetContentRegionAvail();
@@ -3136,17 +3189,34 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 padding((cell_size.x - color_size) * 0.5, 0.0);
                     ImGui::SetCursorPos(ImGui::GetCursorPos() + padding);
 
-                    ImGui::ColorEdit4Minimal(color_buf, nto.group.color[row_n].elem);
-                    //ImGui::ColorButton(color_buf, vec_cast(nto.group.color[row_n]));
+                    if (edit_mode && row_n > 0) { //You cannot edit the Unassigned color
+                        ImGui::ColorEdit4Minimal("##color", nto.group.color[row_n].elem);
+                    } else {
+                        ImGui::ColorButton("##color", vec_cast(nto.group.color[row_n]));
+                    }
 
-                    ImGui::TableNextColumn();
-                    int atom_count = 0;
-                    for (size_t k = 0; k < nto.num_atoms; k++) {
-                        if (nto.atom_group_idx[k] == row_n) {
-                            atom_count++;
+                    if (edit_mode) {
+                        ImGui::TableNextColumn();
+                        if (row_n > 0) {
+                            ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
+                            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - button_size.x);
+                            if (ImGui::DeleteButton("\xef\x80\x8d", button_size)) {
+                                for (size_t i = 0; i < nto.num_atoms; i++) {
+                                    if (nto.atom_group_idx[i] == row_n) {
+                                        nto.atom_group_idx[i] = 0;
+                                    } else if (nto.atom_group_idx[i] > row_n) {
+                                        nto.atom_group_idx[i] -= 1;
+                                    }
+                                }
+                                for (int i = row_n; i < (int)nto.group.count - 1; ++i) {
+                                    nto.group.color[i] = nto.group.color[i+1];
+                                    MEMCPY(nto.group.label[i], nto.group.label[i+1], sizeof(nto.group.label[i]));
+                                }
+                                nto.group.count--;
+                            }
                         }
                     }
-                    ImGui::Text("%i", atom_count);
+                    ImGui::PopID();
                 }
 
                 if (!item_hovered && ImGui::IsWindowHovered()) {
@@ -3397,7 +3467,7 @@ struct VeloxChem : viamd::EventHandler {
                 {
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
-                    im_sankey_diagram({p0.x, p0.y, p1.x, p1.y}, &nto);
+                    im_sankey_diagram(&state, {p0.x, p0.y, p1.x, p1.y}, &nto);
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
                 }
