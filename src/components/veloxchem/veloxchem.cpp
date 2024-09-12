@@ -497,7 +497,7 @@ struct VeloxChem : viamd::EventHandler {
                     nto.show_window = true;
                     camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
                     nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
-                    MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
+                    MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count);
 
                     snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
                     nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
@@ -505,7 +505,7 @@ struct VeloxChem : viamd::EventHandler {
                     for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
                         ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
                         nto.group.color[i] = vec_cast(color);
-                        snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
+                        snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
                     }
 
                     str_t file = {};
@@ -524,7 +524,7 @@ struct VeloxChem : viamd::EventHandler {
                         // @TODO: Remove once proper interface is there
 					    nto.group.count = 3;
 					    // Assign half of the atoms to group 1
-                        MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
+                        MEMSET(nto.atom_group_idx, 2, sizeof(uint8_t) * mol.atom.count / 2);
                     }
                     nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     update_nto_group_colors();
@@ -3163,7 +3163,7 @@ struct VeloxChem : viamd::EventHandler {
                             for (size_t j = 0; j < nto.num_atoms; j++) {
                                 if (nto.atom_group_idx[j] == row_n) {
                                     //Add j to highlight mask
-                                    md_bitfield_set_bit(&state.selection.highlight_mask, j);
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, j); //TODO: Hover only works if you hold leftMouseBtn
                                 }
                             }
 
@@ -3202,6 +3202,7 @@ struct VeloxChem : viamd::EventHandler {
                             ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
                             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - button_size.x);
                             if (ImGui::DeleteButton("\xef\x80\x8d", button_size)) {
+                                vec4_t deleted_color = nto.group.color[row_n];
                                 for (size_t i = 0; i < nto.num_atoms; i++) {
                                     if (nto.atom_group_idx[i] == row_n) {
                                         nto.atom_group_idx[i] = 0;
@@ -3214,6 +3215,8 @@ struct VeloxChem : viamd::EventHandler {
                                     MEMCPY(nto.group.label[i], nto.group.label[i+1], sizeof(nto.group.label[i]));
                                 }
                                 nto.group.count--;
+                                sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
+                                nto.group.color[nto.group.count] = deleted_color;
                             }
                         }
                     }
@@ -3820,7 +3823,6 @@ struct VeloxChem : viamd::EventHandler {
                             nto.atom_group_idx[i] = group_idx;
                         }
                     }
-                    snprintf(nto.group.label[group_idx], sizeof(nto.group.label[group_idx]), "New Group");
                 }
             }
             ImGui::EndPopup();
