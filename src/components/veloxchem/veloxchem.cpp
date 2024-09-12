@@ -3137,7 +3137,8 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                 ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                 bool item_hovered = false;
-                int row_n = group_counts[0] > 0 ? 0 : 1;
+                bool show_unassigned = group_counts[0] > 0;
+                int row_n = show_unassigned ? 0 : 1;
                 for (; row_n < nto.group.count; row_n++) {
                     ImGui::PushID(row_n);
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
@@ -3156,7 +3157,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     else {
                         ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
-                        if (ImGui::TableGetHoveredRow() == row_n + 1) {
+                        if (ImGui::TableGetHoveredRow() == row_n + show_unassigned) {
                             item_hovered = true;
                             md_bitfield_clear(&state.selection.highlight_mask);
                             for (size_t j = 0; j < nto.num_atoms; j++) {
