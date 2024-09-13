@@ -3038,6 +3038,8 @@ struct VeloxChem : viamd::EventHandler {
 
         bool open_context_menu = false;
 
+        uint8_t group_count = nto.group.count; //We use this later to check if group count has been updated
+
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
 
@@ -3230,6 +3232,10 @@ struct VeloxChem : viamd::EventHandler {
 
                 ImGui::PopStyleColor(2);
                 ImGui::EndTable();
+            }
+
+            if (ImGui::Button("Add new group")) {
+                nto.group.count++;
             }
 
             ImGui::EndGroup();
@@ -3797,8 +3803,6 @@ struct VeloxChem : viamd::EventHandler {
         if (open_context_menu) {
             ImGui::OpenPopup("Context Menu");
         }
-
-        uint8_t group_count = nto.group.count;
 
         if (ImGui::BeginPopup("Context Menu")) {
             if (ImGui::BeginMenu("Add to group")) {
