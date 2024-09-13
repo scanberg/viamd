@@ -903,6 +903,17 @@ struct VeloxChem : viamd::EventHandler {
         char mouse_label[16] = { 0 };
 
         //Draw curves
+        md_array(float) curve_widths = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
+        md_array(ImVec2) curve_midpoints = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
+        md_array(ImVec2) curve_directions = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
+        /*for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                curve_widths[start_i * nto->group.count + end_i] = 0.0;
+                curve_midpoints[start_i * nto->group.count + end_i] = ImVec2{};
+                curve_directions[start_i * nto->group.count + end_i] = ImVec2{};
+            }
+        }*/
+
         for (int start_i = 0; start_i < nto->group.count; start_i++) {
             if (start_percentages[start_i] != 0.0) {
 
@@ -945,8 +956,12 @@ struct VeloxChem : viamd::EventHandler {
                         }
 
                         if (width > label_size.x) {
-                            const ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
-                            draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
+                            ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
+                            ImVec2 direction = vec_cast(vec2_normalize(vec_cast(start_pos - end_pos)));
+                            curve_midpoints[start_i * nto->group.count + end_i] = midpoint;
+                            curve_directions[start_i * nto->group.count + end_i] = direction;
+                            curve_widths[start_i * nto->group.count + end_i] = width;
+                            //draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
                         }
 
                         start_pos.x += width;
@@ -955,6 +970,40 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }
         }
+
+        //Draw Curve Text
+        //For every midpoint, we check if another midpoint is to close to that midpoint
+        bool text_overlap = true;
+        while (text_overlap) {
+            text_overlap = false;
+            for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+                for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                    ImVec2 midpoint1 = curve_midpoints[start_i * nto->group.count + end_i];
+                    ImVec2 direction1 = curve_directions[start_i * nto->group.count + end_i];
+
+                    ImVec2 midpoint2 = curve_midpoints[(start_i * nto->group.count + end_i) % (nto->group.count * nto->group.count)];
+                    ImVec2 direction2 = curve_directions[(start_i * nto->group.count + end_i) % (nto->group.count * nto->group.count)] * -1.0;
+
+                    float allowed_dist = ImGui::CalcTextSize("Testnum").y;
+
+                    float dist = fabs(midpoint1.y - midpoint2.y);
+                    if (dist && dist < allowed_dist) {
+                        text_overlap = true;
+                        curve_midpoints[start_i * nto->group.count + end_i] += direction1;
+                        curve_midpoints[(start_i * nto->group.count + end_i) % (nto->group.count * nto->group.count)] += direction2;
+                    }
+
+                }
+            }
+        }
+
+        for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                ImVec2 midpoint = curve_midpoints[start_i * nto->group.count + end_i];
+                draw_aligned_text(draw_list, "test", midpoint, {0.5, 0.5});
+            }
+        }
+
 
 
         //Draw bars
