@@ -3798,6 +3798,8 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::OpenPopup("Context Menu");
         }
 
+        uint8_t group_count = nto.group.count;
+
         if (ImGui::BeginPopup("Context Menu")) {
             if (ImGui::BeginMenu("Add to group")) {
                 for (size_t i = 0; i < nto.group.count; i++) {
@@ -3842,7 +3844,7 @@ struct VeloxChem : viamd::EventHandler {
         uint64_t matrix_hash = atom_idx_hash ^ nto.sel_nto_idx;
         static uint64_t old_matrix_hash = 0;
 
-        if (matrix_hash != old_matrix_hash) {
+        if (matrix_hash != old_matrix_hash || nto.group.count != group_count) {
             old_matrix_hash = matrix_hash;
 
             // Resize transition matrix to the correct size
