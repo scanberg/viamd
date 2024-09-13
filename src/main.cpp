@@ -9,6 +9,8 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
+#define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
+
 #include <md_util.h>
 #include <md_gl.h>
 #include <md_gfx.h>
@@ -4250,10 +4252,17 @@ static void draw_representations_window(ApplicationState* state) {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
                           double iso_val = rep.orbital.vol.iso.values[0];
-                    ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+                    if (rep.orbital.type == OrbitalType::PsiSquared) {
+                        iso_val *= iso_val;
+                    }
+                    if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
+                        if (rep.orbital.type == OrbitalType::PsiSquared) {
+                            iso_val = sqrt(iso_val);
+                        }
+                        rep.orbital.vol.iso.values[0] =  (float)iso_val;
+                        rep.orbital.vol.iso.values[1] = -(float)iso_val;
+                    }
 
-                    rep.orbital.vol.iso.values[0] =  (float)iso_val;
-                    rep.orbital.vol.iso.values[1] = -(float)iso_val;
                     rep.orbital.vol.iso.count = 2;
                     rep.orbital.vol.iso.enabled = true;
 
@@ -7881,6 +7890,16 @@ static void update_all_representations(ApplicationState* state) {
     }
 }
 
+static bool rep_type_uses_colors(RepresentationType type) {
+    switch(type) {
+        case RepresentationType::DipoleMoment:
+        case RepresentationType::Orbital:
+            return false;
+        default:
+            return true;
+    }
+}
+
 static void update_representation(ApplicationState* state, Representation* rep) {
     ASSERT(state);
     ASSERT(rep);
@@ -7890,9 +7909,6 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
     defer { md_vm_arena_temp_end(tmp); };
 
-    const size_t bytes = state->mold.mol.atom.count * sizeof(uint32_t);
-    uint32_t* colors = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
-
     const auto& mol = state->mold.mol;
 
     //md_script_property_t prop = {0};
@@ -7900,93 +7916,100 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.mol, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
     //}
 
-    switch (rep->color_mapping) {
-        case ColorMapping::Uniform:
-            color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
-            break;
-        case ColorMapping::Cpk:
-            color_atoms_cpk(colors, mol.atom.count, mol);
-            break;
-        case ColorMapping::AtomLabel:
-            color_atoms_type(colors, mol.atom.count, mol);
-            break;
-        case ColorMapping::AtomIndex:
-            color_atoms_idx(colors, mol.atom.count, mol);
-            break;
-        case ColorMapping::ResName:
-            color_atoms_res_name(colors, mol.atom.count, mol);
-            break;
-        case ColorMapping::ResId:
-            color_atoms_res_id(colors, mol.atom.count, mol);
-            break;
-        case ColorMapping::ChainId:
-            color_atoms_chain_id(colors, mol.atom.count, mol);
-            break;
-        case ColorMapping::ChainIndex:
-            color_atoms_chain_idx(colors, mol.atom.count, mol);
-            break;
-        case ColorMapping::SecondaryStructure:
-            color_atoms_sec_str(colors, mol.atom.count, mol);
-            break;
-        case ColorMapping::Property:
-            // @TODO: Map colors accordingly
-            //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
-#if 0
-            if (rep->prop) {
-                MEMSET(colors, 0xFFFFFFFF, bytes);
-                md_script_pro
-                const float* values = rep->prop->data.values;
-                if (rep->prop->data.aggregate) {
-                    const int dim = rep->prop->data.dim[0];
-                    md_script_vis_t vis = {0};
-                    bool result = false;
-                    
-                    //if (md_semaphore_aquire(&data->script.ir_semaphore)) {
-                    //    defer { md_semaphore_release(&data->script.ir_semaphore); };
-                        
-                        if (md_script_ir_valid(state->script.eval_ir)) {
-                            md_script_vis_init(&vis, frame_alloc);
-                            md_script_vis_ctx_t ctx = {
-                                .ir = state->script.eval_ir,
-                                .mol = &state->mold.mol,
-                                .traj = state->mold.traj,
-                            };
-                            result = md_script_vis_eval_payload(&vis, rep->prop->vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS);
-                        }
-                    //}
-                    if (result) {
-                        if (dim == (int)md_array_size(vis.structure)) {
-                            int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
-                            int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
-                            float frame_fract = fractf((float)state->animation.frame);
+    bool use_colors = rep_type_uses_colors(rep->type);
+    uint32_t* colors = 0;
 
-                            md_bitfield_t mask = {0};
-                            md_bitfield_init(&mask, frame_alloc);
-                            for (int i = 0; i < dim; ++i) {
-                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structure[i]);
-                                float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
-                                float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
-                                ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
-                                color_atoms_uniform(colors, mol.atom.count, vec_cast(color), &mask);
+    if (use_colors) {
+        colors = (uint32_t*)md_vm_arena_push(frame_alloc, sizeof(uint32_t) * mol.atom.count);
+
+        switch (rep->color_mapping) {
+            case ColorMapping::Uniform:
+                color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+                break;
+            case ColorMapping::Cpk:
+                color_atoms_cpk(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::AtomLabel:
+                color_atoms_type(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::AtomIndex:
+                color_atoms_idx(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::ResName:
+                color_atoms_res_name(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::ResId:
+                color_atoms_res_id(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::ChainId:
+                color_atoms_chain_id(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::ChainIndex:
+                color_atoms_chain_idx(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::SecondaryStructure:
+                color_atoms_sec_str(colors, mol.atom.count, mol);
+                break;
+            case ColorMapping::Property:
+                // @TODO: Map colors accordingly
+                //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+    #if 0
+                if (rep->prop) {
+                    MEMSET(colors, 0xFFFFFFFF, bytes);
+                    md_script_pro
+                    const float* values = rep->prop->data.values;
+                    if (rep->prop->data.aggregate) {
+                        const int dim = rep->prop->data.dim[0];
+                        md_script_vis_t vis = {0};
+                        bool result = false;
+                    
+                        //if (md_semaphore_aquire(&data->script.ir_semaphore)) {
+                        //    defer { md_semaphore_release(&data->script.ir_semaphore); };
+                        
+                            if (md_script_ir_valid(state->script.eval_ir)) {
+                                md_script_vis_init(&vis, frame_alloc);
+                                md_script_vis_ctx_t ctx = {
+                                    .ir = state->script.eval_ir,
+                                    .mol = &state->mold.mol,
+                                    .traj = state->mold.traj,
+                                };
+                                result = md_script_vis_eval_payload(&vis, rep->prop->vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS);
+                            }
+                        //}
+                        if (result) {
+                            if (dim == (int)md_array_size(vis.structure)) {
+                                int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
+                                int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
+                                float frame_fract = fractf((float)state->animation.frame);
+
+                                md_bitfield_t mask = {0};
+                                md_bitfield_init(&mask, frame_alloc);
+                                for (int i = 0; i < dim; ++i) {
+                                    md_bitfield_and(&mask, &rep->atom_mask, &vis.structure[i]);
+                                    float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
+                                    float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
+                                    ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
+                                    color_atoms_uniform(colors, mol.atom.count, vec_cast(color), &mask);
+                                }
                             }
                         }
+                    } else {
+                        int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
+                        int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
+                        float value = lerpf(values[i0], values[i1], fractf((float)state->animation.frame));
+                        float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
+                        ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
+                        color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
                     }
                 } else {
-                    int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
-                    int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
-                    float value = lerpf(values[i0], values[i1], fractf((float)state->animation.frame));
-                    float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
-                    ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
-                    color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
+                    color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
                 }
-            } else {
-                color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
-            }
-#endif
-            break;
-        default:
-            ASSERT(false);
-            break;
+    #endif
+                break;
+            default:
+                ASSERT(false);
+                break;
+        }
     }
 
     if (rep->saturation != 1.0f) {
@@ -8025,7 +8048,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
 
                 if (data.output_written) {
+#if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
                     rep->orbital.vol_hash = vol_hash;
+#endif
                     rep->orbital.vol.tex_mat = data.tex_mat;
                     rep->orbital.vol.voxel_spacing = data.voxel_spacing;
                 }
@@ -8055,7 +8080,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->filt_is_dirty = false;
     }
 
-    if (rep->filt_is_valid) {
+    if (rep->filt_is_valid && colors) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
         state->representation.atom_visibility_mask_dirty = true;
         md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
@@ -8910,6 +8935,20 @@ static void draw_representations_transparent(ApplicationState* state) {
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::Orbital) continue;
 
+        float iso_values[8];
+        STATIC_ASSERT(sizeof(iso_values) == sizeof(rep.orbital.vol.iso.values));
+        MEMCPY(iso_values, rep.orbital.vol.iso.values, sizeof(iso_values));
+
+        if (rep.orbital.type == OrbitalType::PsiSquared) {
+            for (size_t j = 0; j < ARRAY_SIZE(iso_values); ++j) {
+                iso_values[j] *= iso_values[j];
+            }
+        }
+
+#if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
+        update_representation(state, &state->representation.reps[i]);
+#endif
+
         volume::RenderDesc desc = {
             .render_target = {
                 .depth = state->gbuffer.tex.depth,
@@ -8937,7 +8976,7 @@ static void draw_representations_transparent(ApplicationState* state) {
             .iso = {
                 .enabled = rep.orbital.vol.iso.enabled,
                 .count  = (size_t)rep.orbital.vol.iso.count,
-                .values = rep.orbital.vol.iso.values,
+                .values = iso_values,
                 .colors = rep.orbital.vol.iso.colors,
             },
             .dvr = {
