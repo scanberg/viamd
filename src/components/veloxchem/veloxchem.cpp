@@ -3040,6 +3040,8 @@ struct VeloxChem : viamd::EventHandler {
 
         uint8_t group_count = nto.group.count; //We use this later to check if group count has been updated
 
+        bool refresh = false;
+
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
 
@@ -3116,6 +3118,8 @@ struct VeloxChem : viamd::EventHandler {
             static bool edit_mode = false;
 
             ImGui::Checkbox("Edit mode", &edit_mode);
+            ImGui::SameLine();
+            refresh = ImGui::Button("Refresh");
 
             int group_counts[MAX_GROUPS] = {0};
             for (size_t i = 0; i < nto.num_atoms; ++i) {
@@ -3848,7 +3852,7 @@ struct VeloxChem : viamd::EventHandler {
         uint64_t matrix_hash = atom_idx_hash ^ nto.sel_nto_idx;
         static uint64_t old_matrix_hash = 0;
 
-        if (matrix_hash != old_matrix_hash || nto.group.count != group_count) {
+        if (matrix_hash != old_matrix_hash || nto.group.count != group_count || refresh) {
             old_matrix_hash = matrix_hash;
 
             // Resize transition matrix to the correct size
