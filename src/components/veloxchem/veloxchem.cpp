@@ -27,7 +27,8 @@
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
 #define DEFAULT_SAMPLES_PER_ANGSTROM 6
-#define MAX_GROUPS 16
+#define MAX_NTO_GROUPS 16
+#define MAX_NTO_LAMBDAS 3
 
 #define IM_GREEN ImVec4{0, 1, 0, 1}
 #define IM_RED ImVec4{1, 0, 0, 1}
@@ -265,8 +266,8 @@ struct VeloxChem : viamd::EventHandler {
 
         struct {
             size_t count = 0;
-            char   label[MAX_GROUPS][64] = {};
-            vec4_t color[MAX_GROUPS] = {};
+            char   label[MAX_NTO_GROUPS][64] = {};
+            vec4_t color[MAX_NTO_GROUPS] = {};
         } group;
 
         struct {
@@ -3307,7 +3308,7 @@ struct VeloxChem : viamd::EventHandler {
 
             ImGui::Checkbox("Edit mode", &edit_mode);
 
-            int group_counts[MAX_GROUPS] = {0};
+            int group_counts[MAX_NTO_GROUPS] = {0};
             for (size_t i = 0; i < nto.num_atoms; ++i) {
                 int group_idx = nto.atom_group_idx[i] < nto.group.count ? nto.atom_group_idx[i] : 0;
                 group_counts[group_idx] += 1;
@@ -3458,14 +3459,16 @@ struct VeloxChem : viamd::EventHandler {
                         break;
                     }
                 }
+                
+                num_lambdas = MIN(num_lambdas, MAX_NTO_LAMBDAS);
 
                 if (nto.sel_nto_idx != rsp.selected) {
                     nto.sel_nto_idx  = rsp.selected;
                     const float samples_per_angstrom = 6.0f;
                     size_t nto_idx = (size_t)rsp.selected;
                     for (int i = 0; i < num_lambdas; ++i) {
-                        int pi = i * num_lambdas + 0;
-                        int hi = i * num_lambdas + 1;
+                        int pi = i * 2 + 0;
+                        int hi = i * 2 + 1;
                         size_t lambda_idx = (size_t)i;
 
                         if (task_system::task_is_running(nto.vol_task[pi])) {
@@ -4008,7 +4011,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 ImGui::EndMenu();
             }
-            if (nto.group.count < MAX_GROUPS) {
+            if (nto.group.count < MAX_NTO_GROUPS) {
                 if (ImGui::MenuItem("Add to new group")) {
                     //Create a new group and add an item to it
                     uint8_t group_idx = (uint8_t)(nto.group.count++);
