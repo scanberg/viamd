@@ -970,8 +970,6 @@ struct VeloxChem : viamd::EventHandler {
         plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
         //draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 })); //Use this to draw debug of plot area
 
-        
-
         ////The given data
         //const char* names[] = { "THIO", "QUIN" };
         //float initial_percentages[2] = { 0.3, 0.7 };
@@ -1002,17 +1000,22 @@ struct VeloxChem : viamd::EventHandler {
         float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
 
         //Calculate bar percentages
-        float start_sum = 0;
-        float end_sum = 0;
+        float hole_sum = 0;
+        float part_sum = 0;
         for (size_t i = 0; i < nto->group.count; i++) {
-            start_sum += nto->transition_density_hole[i];
-            end_sum += nto->transition_density_part[i];
+            hole_sum += nto->transition_density_hole[i];
+            part_sum += nto->transition_density_part[i];
         }
-        md_array(float) start_percentages = md_array_create(float, nto->group.count, temp_alloc);
-        md_array(float) end_percentages   = md_array_create(float, nto->group.count, temp_alloc);
+
+		// Prevent division by zero
+		hole_sum = MAX(hole_sum, 1.0e-6);
+		part_sum = MAX(part_sum, 1.0e-6);
+
+        md_array(float) hole_percentages = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(float) part_percentages = md_array_create(float, nto->group.count, temp_alloc);
         for (size_t i = 0; i < nto->group.count; i++) {
-            start_percentages[i] = nto->transition_density_hole[i] / start_sum;
-            end_percentages[i] = nto->transition_density_part[i] / end_sum;
+            hole_percentages[i] = nto->transition_density_hole[i] / hole_sum;
+            part_percentages[i] = nto->transition_density_part[i] / part_sum;
         }
 
         //Calculate start positions
@@ -1020,8 +1023,8 @@ struct VeloxChem : viamd::EventHandler {
         float cur_bottom_pos = plot_area.Min.x;
         for (int i = 0; i < nto->group.count; i++) {
             start_positions[i] = cur_bottom_pos;
-            cur_bottom_pos += bars_avail_width * start_percentages[i];
-            if (start_percentages[i] != 0.0) {
+            cur_bottom_pos += bars_avail_width * hole_percentages[i];
+            if (hole_percentages[i] != 0.0) {
                 cur_bottom_pos += gap_size;
             }
         }
@@ -1033,8 +1036,8 @@ struct VeloxChem : viamd::EventHandler {
         for (int end_i = 0; end_i < nto->group.count; end_i++) {
             end_positions[end_i] = cur_pos;
             sub_end_positions[end_i] = cur_pos;
-            cur_pos += bars_avail_width * end_percentages[end_i];
-            if (start_percentages[end_i] != 0.0) {
+            cur_pos += bars_avail_width * part_percentages[end_i];
+            if (hole_percentages[end_i] != 0.0) {
                 cur_pos += gap_size;
             }
         }
@@ -1046,7 +1049,7 @@ struct VeloxChem : viamd::EventHandler {
 
         //Draw curves
         for (int start_i = 0; start_i < nto->group.count; start_i++) {
-            if (start_percentages[start_i] != 0.0) {
+            if (hole_percentages[start_i] != 0.0) {
 
                 ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
 
@@ -1102,24 +1105,24 @@ struct VeloxChem : viamd::EventHandler {
         //Draw bars
         bool bar_hovered = false;
         for (int i = 0; i < nto->group.count; i++) {
-            if (start_percentages[i] != 0.0) {
+            if (hole_percentages[i] != 0.0) {
                 ImVec4 bar_color = vec_cast(nto->group.color[i]);
 
                 char start_label[16];
                 char end_label[16];
 
-                snprintf(start_label, sizeof(start_label), "%3.2f%%", start_percentages[i] * 100);
-                snprintf(end_label, sizeof(end_label), "%3.2f%%", end_percentages[i] * 100);
+                snprintf(start_label, sizeof(start_label), "%3.2f%%", hole_percentages[i] * 100);
+                snprintf(end_label, sizeof(end_label), "%3.2f%%", part_percentages[i] * 100);
 
                 //Calculate start
                 ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
-                ImVec2 start_p1 = { start_positions[i] + bars_avail_width * start_percentages[i], plot_area.Max.y };
+                ImVec2 start_p1 = { start_positions[i] + bars_avail_width * hole_percentages[i], plot_area.Max.y };
                 ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
                 ImRect start_bar = ImRect{ start_p0, start_p1 };
 
                 //Calculate end
                 ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
-                ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
+                ImVec2 end_p1 = { end_positions[i] + bars_avail_width * part_percentages[i], plot_area.Min.y + bar_height };
                 ImRect end_bar = ImRect{ end_p0, end_p1 };
                 ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
 
@@ -1163,7 +1166,8 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
-        if (!bar_hovered && ImGui::IsWindowHovered()) {
+        bool is_hovered = plot_area.Contains(ImGui::GetMousePos());
+        if (!bar_hovered && is_hovered) {
             md_bitfield_clear(&state->selection.highlight_mask);
         }
     }
