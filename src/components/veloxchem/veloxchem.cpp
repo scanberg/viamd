@@ -989,8 +989,6 @@ struct VeloxChem : viamd::EventHandler {
         //    {0.0, 1.0}
         //};
 
-
-
         //Bar definitions
         const float bar_height = plot_area.GetHeight() * 0.05;
         int num_bars = 0;
@@ -1192,8 +1190,10 @@ struct VeloxChem : viamd::EventHandler {
                 return false;
             }
             // Scale the added GTOs with the lambda value
+			// The sqrt is to ensure that the scaling is linear with the lambda value
+			double scale = sqrt(lambda);
             for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
-                gtos[i].coeff *= lambda;
+                gtos[i].coeff *= scale;
             }
             num_gtos += num_gtos_per_lambda;
         }
@@ -2928,7 +2928,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     //Calculates the transition matrix heuristic
-    static inline void distribute_charges_heuristic(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* part_charges) {
+    static inline void compute_transition_matrix(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* part_charges) {
         size_t temp_pos = md_temp_get_pos();
 
         int* donors         = (int*)   md_temp_push_zero(sizeof(int)    * num_groups);
@@ -3657,8 +3657,9 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
                 }
-                // @TODO: Draw Sankey Diagram of Transition Matrix
+                // Draw Sankey Diagram of Transition Matrix
                 {
+                    //compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
                     im_sankey_diagram(&state, {p0.x, p0.y, p1.x, p1.y}, &nto);
@@ -4051,6 +4052,7 @@ struct VeloxChem : viamd::EventHandler {
                 nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
             }
 
+			// Clear all of the values to zero (matrix, group values)
             MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
             if (nto.sel_nto_idx != -1) {
@@ -4067,8 +4069,8 @@ struct VeloxChem : viamd::EventHandler {
                 {
                     task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
                         VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
-                        distribute_charges_heuristic(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
-                        }, &nto);
+                        compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
+                    }, &nto);
 
                     task_system::set_task_dependency(compute_matrix_task, seg_part);
                     task_system::set_task_dependency(compute_matrix_task, seg_hole);
