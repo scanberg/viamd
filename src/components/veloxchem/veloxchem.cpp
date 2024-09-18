@@ -983,6 +983,7 @@ struct VeloxChem : viamd::EventHandler {
         //For every midpoint, we check if another midpoint is to close to that midpoint
         bool text_overlap = true;
         ImVec2 text_size = ImGui::CalcTextSize("99.99%");
+        float text_spacing = 4;
 
         while (text_overlap) {
             text_overlap = false;
@@ -1005,8 +1006,8 @@ struct VeloxChem : viamd::EventHandler {
                                 if ((midpoint1.y != 0 && midpoint2.y != 0)) {
                                     while (rect1.Overlaps(rect2)){
                                         text_overlap = true;
-                                        curve_midpoints[index1] += direction1 * text_size.y * 2;
-                                        curve_midpoints[index2] += direction2 * text_size.y * 2;
+                                        curve_midpoints[index1] += direction1 * text_size.y * text_spacing;
+                                        curve_midpoints[index2] += direction2 * text_size.y * text_spacing;
                                         rect1 = { curve_midpoints[index1] - (text_size / 2), curve_midpoints[index1] + (text_size / 2) };
                                         rect2 = { curve_midpoints[index2] - (text_size / 2), curve_midpoints[index2] + (text_size / 2) };
                                     }
