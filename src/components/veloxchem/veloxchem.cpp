@@ -906,6 +906,13 @@ struct VeloxChem : viamd::EventHandler {
         md_array(float) curve_widths = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
         md_array(ImVec2) curve_midpoints = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
         md_array(ImVec2) curve_directions = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
+        md_array(float) curve_percentages = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
+        for (size_t i = 0; i < nto->group.count * nto->group.count; i++) {
+            curve_widths[i] = 0;
+            curve_midpoints[i] = { 0, 0 };
+            curve_directions[i] = { 0, 0 };
+            curve_percentages[i] = 0;
+        }
         /*for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
             for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
                 curve_widths[start_i * nto->group.count + end_i] = 0.0;
@@ -961,6 +968,7 @@ struct VeloxChem : viamd::EventHandler {
                             curve_midpoints[start_i * nto->group.count + end_i] = midpoint;
                             curve_directions[start_i * nto->group.count + end_i] = direction;
                             curve_widths[start_i * nto->group.count + end_i] = width;
+                            curve_percentages[start_i * nto->group.count + end_i] = percentage;
                             //draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
                         }
 
@@ -974,24 +982,39 @@ struct VeloxChem : viamd::EventHandler {
         //Draw Curve Text
         //For every midpoint, we check if another midpoint is to close to that midpoint
         bool text_overlap = true;
+        ImVec2 text_size = ImGui::CalcTextSize("99.99%");
+
         while (text_overlap) {
             text_overlap = false;
             for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
                 for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                    ImVec2 midpoint1 = curve_midpoints[start_i * nto->group.count + end_i];
-                    ImVec2 direction1 = curve_directions[start_i * nto->group.count + end_i];
+                    size_t index1 = start_i * nto->group.count + end_i;
+                    ImVec2 midpoint1 = curve_midpoints[index1];
+                    ImVec2 direction1 = curve_directions[index1];
+                    ImRect rect1 = { midpoint1 - (text_size / 2), midpoint1 + (text_size / 2) };
 
-                    ImVec2 midpoint2 = curve_midpoints[(start_i * nto->group.count + end_i) % (nto->group.count * nto->group.count)];
-                    ImVec2 direction2 = curve_directions[(start_i * nto->group.count + end_i) % (nto->group.count * nto->group.count)] * -1.0;
+                    for (size_t start_j = 0; start_j < nto->group.count; start_j++) {
+                        for (size_t end_j = 0; end_j < nto->group.count; end_j++) {
+                            size_t index2 = (start_j * nto->group.count + end_j);
+                            if (index1 != index2) {
+                                ImVec2 midpoint2 = curve_midpoints[index2];
+                                ImVec2 direction2 = curve_directions[index2] * -1.0;
+                                ImRect rect2 = { midpoint2 - (text_size / 2), midpoint2 + (text_size / 2) };
 
-                    float allowed_dist = ImGui::CalcTextSize("Testnum").y;
-
-                    float dist = fabs(midpoint1.y - midpoint2.y);
-                    if (dist && dist < allowed_dist) {
-                        text_overlap = true;
-                        curve_midpoints[start_i * nto->group.count + end_i] += direction1;
-                        curve_midpoints[(start_i * nto->group.count + end_i) % (nto->group.count * nto->group.count)] += direction2;
+                    
+                                if ((midpoint1.y != 0 && midpoint2.y != 0)) {
+                                    while (rect1.Overlaps(rect2)){
+                                        text_overlap = true;
+                                        curve_midpoints[index1] += direction1;
+                                        curve_midpoints[index2] += direction2;
+                                        rect1 = { curve_midpoints[index1] - (text_size / 2), curve_midpoints[index1] + (text_size / 2) };
+                                        rect2 = { curve_midpoints[index2] - (text_size / 2), curve_midpoints[index2] + (text_size / 2) };
+                                    }
+                                }
+                            }
+                        }
                     }
+
 
                 }
             }
@@ -999,8 +1022,15 @@ struct VeloxChem : viamd::EventHandler {
 
         for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
             for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                ImVec2 midpoint = curve_midpoints[start_i * nto->group.count + end_i];
-                draw_aligned_text(draw_list, "test", midpoint, {0.5, 0.5});
+                int index = start_i * nto->group.count + end_i;
+                ImVec2 midpoint = curve_midpoints[index];
+                float percentage = curve_percentages[index];
+                if (percentage > 0) {
+                    char label[16];
+                    sprintf(label, "%3.2f%%", curve_percentages[start_i * nto->group.count + end_i] * 100);
+                    const ImVec2 label_size = ImGui::CalcTextSize(label);
+                    draw_aligned_text(draw_list, label, midpoint, {0.5, 0.5});
+                }
             }
         }
 
