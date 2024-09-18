@@ -3121,6 +3121,7 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
             nto.group.hovered_index = -1;
+            bool viewport_hovered = false;
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Settings")) {
@@ -3442,6 +3443,7 @@ struct VeloxChem : viamd::EventHandler {
                     interaction_canvas(p1-p0, selection, view, state.mold.mol);
 
                     if (ImGui::IsItemHovered()) {
+                        viewport_hovered = true;
                         if (ImGui::GetIO().MouseDoubleClicked[0]) {
                             if (view.picking_depth < 1.0f) {
                                 const vec3_t forward = view.camera.orientation * vec3_t{0, 0, 1};
@@ -3873,7 +3875,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
             }
-            if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1) {
+            if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1 && !viewport_hovered) {
                 md_bitfield_clear(&state.selection.highlight_mask);
             }
         }
