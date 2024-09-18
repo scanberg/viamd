@@ -1005,8 +1005,8 @@ struct VeloxChem : viamd::EventHandler {
                                 if ((midpoint1.y != 0 && midpoint2.y != 0)) {
                                     while (rect1.Overlaps(rect2)){
                                         text_overlap = true;
-                                        curve_midpoints[index1] += direction1;
-                                        curve_midpoints[index2] += direction2;
+                                        curve_midpoints[index1] += direction1 * text_size.y * 2;
+                                        curve_midpoints[index2] += direction2 * text_size.y * 2;
                                         rect1 = { curve_midpoints[index1] - (text_size / 2), curve_midpoints[index1] + (text_size / 2) };
                                         rect2 = { curve_midpoints[index2] - (text_size / 2), curve_midpoints[index2] + (text_size / 2) };
                                     }
