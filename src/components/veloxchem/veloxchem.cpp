@@ -1094,11 +1094,11 @@ struct VeloxChem : viamd::EventHandler {
                 draw_aligned_text(draw_list, end_label, end_midpoint, { 0.5, 2.2 });
             }
 
-            if (mouse_label[0] != '\0') {
-                ImVec2 offset = { 15, 15 };
-                ImVec2 pos = ImGui::GetMousePos() + offset;
-                draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
-            }
+        }
+        if (mouse_label[0] != '\0') {
+            ImVec2 offset = { 15, 15 };
+            ImVec2 pos = ImGui::GetMousePos() + offset;
+            draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
         }
 
         if (!bar_hovered && ImGui::IsWindowHovered()) {
