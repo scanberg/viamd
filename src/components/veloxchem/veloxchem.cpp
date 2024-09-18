@@ -240,6 +240,7 @@ struct VeloxChem : viamd::EventHandler {
             size_t count = 0;
             char   label[MAX_GROUPS][64] = {};
             vec4_t color[MAX_GROUPS] = {};
+            int8_t hovered_index = -1;
         } group;
 
         struct {
@@ -1038,7 +1039,6 @@ struct VeloxChem : viamd::EventHandler {
 
 
         //Draw bars
-        bool bar_hovered = false;
         for (int i = 0; i < nto->group.count; i++) {
             if (start_percentages[i] != 0.0) {
                 ImVec4 bar_color = vec_cast(nto->group.color[i]);
@@ -1072,7 +1072,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (index_hovered) {
-                    bar_hovered = true;
+                    nto->group.hovered_index = (int8_t)i;
                     bar_color = make_highlight_color(bar_color);
                     for (size_t atom_i = 0; atom_i < nto->num_atoms; atom_i++) {
                         if (nto->atom_group_idx[atom_i] == i) {
@@ -1099,10 +1099,6 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 offset = { 15, 15 };
             ImVec2 pos = ImGui::GetMousePos() + offset;
             draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
-        }
-
-        if (!bar_hovered && ImGui::IsWindowHovered()) {
-            md_bitfield_clear(&state->selection.highlight_mask);
         }
     }
     
@@ -3124,6 +3120,7 @@ struct VeloxChem : viamd::EventHandler {
 
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
+            nto.group.hovered_index = -1;
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Settings")) {
@@ -3244,7 +3241,7 @@ struct VeloxChem : viamd::EventHandler {
                     else {
                         ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
                         if (ImGui::TableGetHoveredRow() == row_n + show_unassigned) {
-                            item_hovered = true;
+                            nto.group.hovered_index = (int8_t)row_n;
                             md_bitfield_clear(&state.selection.highlight_mask);
                             for (size_t j = 0; j < nto.num_atoms; j++) {
                                 if (nto.atom_group_idx[j] == row_n) {
@@ -3307,11 +3304,6 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
                     ImGui::PopID();
-                }
-
-                if (!item_hovered && ImGui::IsWindowHovered()) {
-                    //Makes sure that we clear the highlight if we are in this window, but don't hover an item
-                    md_bitfield_clear(&state.selection.highlight_mask);
                 }
 
                 ImGui::PopStyleColor(2);
@@ -3880,6 +3872,9 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
                 }
+            }
+            if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1) {
+                md_bitfield_clear(&state.selection.highlight_mask);
             }
         }
         ImGui::End();
