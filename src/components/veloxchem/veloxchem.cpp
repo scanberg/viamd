@@ -266,8 +266,10 @@ struct VeloxChem : viamd::EventHandler {
 
         struct {
             size_t count = 0;
+
             char   label[MAX_NTO_GROUPS][64] = {};
             vec4_t color[MAX_NTO_GROUPS] = {};
+            int8_t hovered_index = -1;
         } group;
 
         struct {
@@ -1049,6 +1051,24 @@ struct VeloxChem : viamd::EventHandler {
         char mouse_label[16] = { 0 };
 
         //Draw curves
+        md_array(float) curve_widths = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
+        md_array(ImVec2) curve_midpoints = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
+        md_array(ImVec2) curve_directions = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
+        md_array(float) curve_percentages = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
+        for (size_t i = 0; i < nto->group.count * nto->group.count; i++) {
+            curve_widths[i] = 0;
+            curve_midpoints[i] = { 0, 0 };
+            curve_directions[i] = { 0, 0 };
+            curve_percentages[i] = 0;
+        }
+        /*for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                curve_widths[start_i * nto->group.count + end_i] = 0.0;
+                curve_midpoints[start_i * nto->group.count + end_i] = ImVec2{};
+                curve_directions[start_i * nto->group.count + end_i] = ImVec2{};
+            }
+        }*/
+
         for (int start_i = 0; start_i < nto->group.count; start_i++) {
             if (hole_percentages[start_i] != 0.0) {
 
@@ -1091,8 +1111,13 @@ struct VeloxChem : viamd::EventHandler {
                         }
 
                         if (width > label_size.x) {
-                            const ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
-                            draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
+                            ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
+                            ImVec2 direction = vec_cast(vec2_normalize(vec_cast(start_pos - end_pos)));
+                            curve_midpoints[start_i * nto->group.count + end_i] = midpoint;
+                            curve_directions[start_i * nto->group.count + end_i] = direction;
+                            curve_widths[start_i * nto->group.count + end_i] = width;
+                            curve_percentages[start_i * nto->group.count + end_i] = percentage;
+                            //draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
                         }
 
                         start_pos.x += width;
@@ -1102,9 +1127,65 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
+        //Draw Curve Text
+        //For every midpoint, we check if another midpoint is to close to that midpoint
+        bool text_overlap = true;
+        ImVec2 text_size = ImGui::CalcTextSize("99.99%");
+        float text_spacing = 4;
+
+        while (text_overlap) {
+            text_overlap = false;
+            for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+                for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                    size_t index1 = start_i * nto->group.count + end_i;
+                    ImVec2 midpoint1 = curve_midpoints[index1];
+                    ImVec2 direction1 = curve_directions[index1];
+                    ImRect rect1 = { midpoint1 - (text_size / 2), midpoint1 + (text_size / 2) };
+
+                    for (size_t start_j = 0; start_j < nto->group.count; start_j++) {
+                        for (size_t end_j = 0; end_j < nto->group.count; end_j++) {
+                            size_t index2 = (start_j * nto->group.count + end_j);
+                            if (index1 != index2) {
+                                ImVec2 midpoint2 = curve_midpoints[index2];
+                                ImVec2 direction2 = curve_directions[index2] * -1.0;
+                                ImRect rect2 = { midpoint2 - (text_size / 2), midpoint2 + (text_size / 2) };
+
+                    
+                                if ((midpoint1.y != 0 && midpoint2.y != 0)) {
+                                    while (rect1.Overlaps(rect2)){
+                                        text_overlap = true;
+                                        curve_midpoints[index1] += direction1 * text_size.y * text_spacing;
+                                        curve_midpoints[index2] += direction2 * text_size.y * text_spacing;
+                                        rect1 = { curve_midpoints[index1] - (text_size / 2), curve_midpoints[index1] + (text_size / 2) };
+                                        rect2 = { curve_midpoints[index2] - (text_size / 2), curve_midpoints[index2] + (text_size / 2) };
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+
+                }
+            }
+        }
+
+        for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                int index = start_i * nto->group.count + end_i;
+                ImVec2 midpoint = curve_midpoints[index];
+                float percentage = curve_percentages[index];
+                if (percentage > 0) {
+                    char label[16];
+                    sprintf(label, "%3.2f%%", curve_percentages[start_i * nto->group.count + end_i] * 100);
+                    const ImVec2 label_size = ImGui::CalcTextSize(label);
+                    draw_aligned_text(draw_list, label, midpoint, {0.5, 0.5});
+                }
+            }
+        }
+
+
 
         //Draw bars
-        bool bar_hovered = false;
         for (int i = 0; i < nto->group.count; i++) {
             if (hole_percentages[i] != 0.0) {
                 ImVec4 bar_color = vec_cast(nto->group.color[i]);
@@ -1138,7 +1219,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (index_hovered) {
-                    bar_hovered = true;
+                    nto->group.hovered_index = (int8_t)i;
                     bar_color = make_highlight_color(bar_color);
                     for (size_t atom_i = 0; atom_i < nto->num_atoms; atom_i++) {
                         if (nto->atom_group_idx[atom_i] == i) {
@@ -1160,16 +1241,11 @@ struct VeloxChem : viamd::EventHandler {
                 draw_aligned_text(draw_list, end_label, end_midpoint, { 0.5, 2.2 });
             }
 
-            if (mouse_label[0] != '\0') {
-                ImVec2 offset = { 15, 15 };
-                ImVec2 pos = ImGui::GetMousePos() + offset;
-                draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
-            }
         }
-
-        bool is_hovered = plot_area.Contains(ImGui::GetMousePos());
-        if (!bar_hovered && is_hovered) {
-            md_bitfield_clear(&state->selection.highlight_mask);
+        if (mouse_label[0] != '\0') {
+            ImVec2 offset = { 15, 15 };
+            ImVec2 pos = ImGui::GetMousePos() + offset;
+            draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
         }
     }
     
@@ -3231,8 +3307,14 @@ struct VeloxChem : viamd::EventHandler {
 
         bool open_context_menu = false;
 
+        uint8_t group_count = nto.group.count; //We use this later to check if group count has been updated
+
+        bool refresh = false;
+
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
+            nto.group.hovered_index = -1;
+            bool viewport_hovered = false;
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Settings")) {
@@ -3307,6 +3389,8 @@ struct VeloxChem : viamd::EventHandler {
             static bool edit_mode = false;
 
             ImGui::Checkbox("Edit mode", &edit_mode);
+            ImGui::SameLine();
+            refresh = ImGui::Button("Refresh");
 
             int group_counts[MAX_NTO_GROUPS] = {0};
             for (size_t i = 0; i < nto.num_atoms; ++i) {
@@ -3330,7 +3414,8 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                 ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                 bool item_hovered = false;
-                int row_n = group_counts[0] > 0 ? 0 : 1;
+                bool show_unassigned = group_counts[0] > 0;
+                int row_n = show_unassigned ? 0 : 1;
                 for (; row_n < nto.group.count; row_n++) {
                     ImGui::PushID(row_n);
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
@@ -3349,13 +3434,13 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     else {
                         ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
-                        if (ImGui::TableGetHoveredRow() == row_n + 1) {
-                            item_hovered = true;
+                        if (ImGui::TableGetHoveredRow() == row_n + show_unassigned) {
+                            nto.group.hovered_index = (int8_t)row_n;
                             md_bitfield_clear(&state.selection.highlight_mask);
                             for (size_t j = 0; j < nto.num_atoms; j++) {
                                 if (nto.atom_group_idx[j] == row_n) {
                                     //Add j to highlight mask
-                                    md_bitfield_set_bit(&state.selection.highlight_mask, j);
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, j); //TODO: Hover only works if you hold leftMouseBtn
                                 }
                             }
 
@@ -3394,6 +3479,7 @@ struct VeloxChem : viamd::EventHandler {
                             ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
                             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - button_size.x);
                             if (ImGui::DeleteButton("\xef\x80\x8d", button_size)) {
+                                vec4_t deleted_color = nto.group.color[row_n];
                                 for (size_t i = 0; i < nto.num_atoms; i++) {
                                     if (nto.atom_group_idx[i] == row_n) {
                                         nto.atom_group_idx[i] = 0;
@@ -3406,19 +3492,20 @@ struct VeloxChem : viamd::EventHandler {
                                     MEMCPY(nto.group.label[i], nto.group.label[i+1], sizeof(nto.group.label[i]));
                                 }
                                 nto.group.count--;
+                                sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
+                                nto.group.color[nto.group.count] = deleted_color;
                             }
                         }
                     }
                     ImGui::PopID();
                 }
 
-                if (!item_hovered && ImGui::IsWindowHovered()) {
-                    //Makes sure that we clear the highlight if we are in this window, but don't hover an item
-                    md_bitfield_clear(&state.selection.highlight_mask);
-                }
-
                 ImGui::PopStyleColor(2);
                 ImGui::EndTable();
+            }
+
+            if (ImGui::Button("Add new group")) {
+                nto.group.count++;
             }
 
             ImGui::EndGroup();
@@ -3557,6 +3644,7 @@ struct VeloxChem : viamd::EventHandler {
                     interaction_canvas(p1-p0, selection, view, state.mold.mol);
 
                     if (ImGui::IsItemHovered()) {
+                        viewport_hovered = true;
                         if (ImGui::GetIO().MouseDoubleClicked[0]) {
                             if (view.picking_depth < 1.0f) {
                                 const vec3_t forward = view.camera.orientation * vec3_t{0, 0, 1};
@@ -3989,6 +4077,9 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
             }
+            if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1 && !viewport_hovered) {
+                md_bitfield_clear(&state.selection.highlight_mask);
+            }
         }
         ImGui::End();
 
@@ -4021,7 +4112,6 @@ struct VeloxChem : viamd::EventHandler {
                             nto.atom_group_idx[i] = group_idx;
                         }
                     }
-                    snprintf(nto.group.label[group_idx], sizeof(nto.group.label[group_idx]), "New Group");
                 }
             }
             ImGui::EndPopup();
@@ -4041,7 +4131,7 @@ struct VeloxChem : viamd::EventHandler {
         uint64_t matrix_hash = atom_idx_hash ^ nto.sel_nto_idx;
         static uint64_t old_matrix_hash = 0;
 
-        if (matrix_hash != old_matrix_hash) {
+        if (matrix_hash != old_matrix_hash || nto.group.count != group_count || refresh) {
             old_matrix_hash = matrix_hash;
 
             // Resize transition matrix to the correct size
