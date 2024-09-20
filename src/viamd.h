@@ -212,6 +212,16 @@ struct RepresentationInfo {
     md_allocator_i* alloc;
 };
 
+struct Volume {
+    mat4_t index_to_world   = {};
+    mat4_t texture_to_world = {};
+    mat4_t world_to_model   = {};
+    int dim[3] = {128, 128, 128};
+    vec3_t step_size = {};
+    vec3_t extent = {};
+    uint32_t tex_id = 0;
+};
+
 // Event Payload when an orbital is to be evaluated
 struct ComputeOrbital {
     // Input information
@@ -221,30 +231,7 @@ struct ComputeOrbital {
 
     // Output information
     bool output_written = false;
-    mat4_t tex_mat = {};
-    vec3_t voxel_spacing = {};
-    uint32_t *dst_texture = 0;
-};
-
-struct RepresentationVolume {
-    uint32_t vol_tex = 0;    
-    mat4_t   tex_mat = mat4_ident();
-    vec3_t   voxel_spacing = {};
-
-    VolumeResolution resolution = VolumeResolution::Mid;
-
-    struct {
-        bool enabled = true;
-        int count = 2;
-        float  values[8] = {0.05f, -0.05};
-        vec4_t colors[8] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-    } iso;
-
-    struct {
-        bool enabled = false;
-        uint32_t tf_tex = 0;
-        int colormap = DEFAULT_COLORMAP;
-    } dvr;
+    Volume* dst_volume = nullptr;
 };
 
 struct Representation {
@@ -276,7 +263,22 @@ struct Representation {
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
     struct {
-        RepresentationVolume vol = {};
+        Volume vol = {};
+        VolumeResolution resolution = VolumeResolution::Mid;
+
+        struct {
+            bool enabled = true;
+            int count = 2;
+            float  values[8] = {0.05f, -0.05};
+            vec4_t colors[8] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
+        } iso;
+
+        struct {
+            bool enabled = false;
+            uint32_t tf_tex = 0;
+            int colormap = DEFAULT_COLORMAP;
+        } dvr;
+
         OrbitalType type = OrbitalType::Psi;
         int orbital_idx = 0;
 		uint64_t vol_hash = 0;
