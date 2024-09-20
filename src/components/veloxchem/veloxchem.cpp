@@ -97,13 +97,6 @@ struct OBB {
     vec3_t max_ext;
 };
 
-struct IsoDesc {
-    bool enabled;
-    size_t count;
-    float values[8];
-    vec4_t colors[8];
-};
-
 // Compute an oriented bounding box (OBB) for the supplied gto
 static inline OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t num_gto) {
     mat4_t Ri  = mat4_from_mat3(PCA);
@@ -318,7 +311,7 @@ struct VeloxChem : viamd::EventHandler {
             .enabled = true,
             .count = 1,
             .values = {0.0025f},
-            .colors = {{0, 0, 0, 20.f/255.f}},
+            .colors = {{0, 0, 0, 0.2f}},
         };
 
         struct {
@@ -3439,15 +3432,15 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndListBox();
             }
             ImGui::Spacing();
-            const double iso_min = 1.0e-4;
+            const double iso_min = 1.0e-8;
             const double iso_max = 5.0;
-            double iso_val = nto.iso_psi.values[0];             
+            double iso_val = nto.iso_psi.values[0];
             ImGui::Spacing();
-            ImGui::Text("Isovalue"); 
+            ImGui::Text("Iso Value (Ψ²)"); 
             ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Iso Value");
 
-            nto.iso_psi.values[0] = (float)iso_val;
+            nto.iso_psi.values[0] =  (float)iso_val;
             nto.iso_psi.values[1] = -(float)iso_val;
             nto.iso_psi.count = 2;
             nto.iso_psi.enabled = true;

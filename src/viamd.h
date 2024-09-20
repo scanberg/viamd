@@ -222,6 +222,14 @@ struct Volume {
     uint32_t tex_id = 0;
 };
 
+// Descriptor for handling iso surfaces
+struct IsoDesc {
+    bool enabled;
+    size_t count;
+    float values[8];
+    vec4_t colors[8];
+};
+
 // Event Payload when an orbital is to be evaluated
 struct ComputeOrbital {
     // Input information
@@ -266,12 +274,19 @@ struct Representation {
         Volume vol = {};
         VolumeResolution resolution = VolumeResolution::Mid;
 
-        struct {
-            bool enabled = true;
-            int count = 2;
-            float  values[8] = {0.05f, -0.05};
-            vec4_t colors[8] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-        } iso;
+        IsoDesc iso_psi {
+            .enabled = true,
+            .count   = 2,
+            .values  = {0.05f, -0.05},
+            .colors  = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}},
+        };
+
+        IsoDesc iso_den {
+            .enabled = true,
+            .count   = 1,
+            .values  = {0.0025f},
+            .colors  = {{0, 0, 0, 0.2f}},
+        };
 
         struct {
             bool enabled = false;

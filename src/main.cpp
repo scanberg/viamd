@@ -4226,7 +4226,7 @@ static void draw_representations_window(ApplicationState* state) {
                 if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
                     update_rep = true;
                 }
-#if 1
+#if 0
                 // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
                 ImGui::Checkbox("Enable DVR", &rep.orbital.dvr.enabled);
                 if (rep.orbital.dvr.enabled) {
@@ -4248,26 +4248,33 @@ static void draw_representations_window(ApplicationState* state) {
 #endif
 
                 //ImGui::Checkbox("Enable Iso-Surface", &rep.orbital.vol.iso.enabled);
-                if (rep.orbital.iso.enabled) {
+
+                if (rep.orbital.type == OrbitalType::Psi) {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
-                          double iso_val = rep.orbital.iso.values[0];
-                    if (rep.orbital.type == OrbitalType::PsiSquared) {
-                        iso_val *= iso_val;
-                    }
+                    double iso_val = rep.orbital.iso_psi.values[0];
                     if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
-                        if (rep.orbital.type == OrbitalType::PsiSquared) {
-                            iso_val = sqrt(iso_val);
-                        }
-                        rep.orbital.iso.values[0] =  (float)iso_val;
-                        rep.orbital.iso.values[1] = -(float)iso_val;
+                        rep.orbital.iso_psi.values[0] =  (float)iso_val;
+                        rep.orbital.iso_psi.values[1] = -(float)iso_val;
+                        rep.orbital.iso_den.values[0] =  (float)(iso_val * iso_val);
                     }
+                } else {
+                    const double iso_min = 1.0e-8;
+                    const double iso_max = 5.0;
+                    double iso_val = rep.orbital.iso_den.values[0];
 
-                    rep.orbital.iso.count = 2;
-                    rep.orbital.iso.enabled = true;
+                    if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
+                        rep.orbital.iso_psi.values[0] =  (float)sqrt(iso_val);
+                        rep.orbital.iso_psi.values[1] = -(float)sqrt(iso_val);
+                        rep.orbital.iso_den.values[0] =  (float)iso_val;
+                    }
+                }
 
-                    ImGui::ColorEdit4("Color Positive", rep.orbital.iso.colors[0].elem);
-                    ImGui::ColorEdit4("Color Negative", rep.orbital.iso.colors[1].elem);
+                if (rep.orbital.type == OrbitalType::Psi) {
+                    ImGui::ColorEdit4("Color Positive", rep.orbital.iso_psi.colors[0].elem);
+                    ImGui::ColorEdit4("Color Negative", rep.orbital.iso_psi.colors[1].elem);
+                } else {
+                    ImGui::ColorEdit4("Color Density",  rep.orbital.iso_den.colors[0].elem);
                 }
             }
             ImGui::TreePop();
@@ -7591,12 +7598,15 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_int(type, arg);
                     rep->orbital.type = (OrbitalType)type;
                 } else if (str_eq(ident, STR_LIT("OrbIso"))) {
-                    viamd::extract_flt(rep->orbital.iso.values[0], arg);
-                    rep->orbital.iso.values[1] = - rep->orbital.iso.values[0];
+                    viamd::extract_flt(rep->orbital.iso_psi.values[0], arg);
+                    rep->orbital.iso_psi.values[1] = - rep->orbital.iso_psi.values[0];
+                    rep->orbital.iso_den.values[0] = rep->orbital.iso_psi.values[0] * rep->orbital.iso_psi.values[0];
                 } else if (str_eq(ident, STR_LIT("OrbColPos"))) {
-                    viamd::extract_vec4(rep->orbital.iso.colors[0], arg);
+                    viamd::extract_vec4(rep->orbital.iso_psi.colors[0], arg);
                 } else if (str_eq(ident, STR_LIT("OrbColNeg"))) {
-                    viamd::extract_vec4(rep->orbital.iso.colors[1], arg);
+                    viamd::extract_vec4(rep->orbital.iso_psi.colors[1], arg);
+                } else if (str_eq(ident, STR_LIT("OrbColDen"))) {
+                    viamd::extract_vec4(rep->orbital.iso_den.colors[0], arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("AtomElementMapping"))) {
@@ -7743,9 +7753,10 @@ static void save_workspace(ApplicationState* data, str_t filename) {
             viamd::write_int(state,  STR_LIT("OrbIdx"),      rep.orbital.orbital_idx);
             viamd::write_int(state,  STR_LIT("OrbType"),(int)rep.orbital.type);
             viamd::write_int(state,  STR_LIT("OrbRes"), (int)rep.orbital.resolution);
-            viamd::write_flt(state,  STR_LIT("OrbIso"),      rep.orbital.iso.values[0]);
-            viamd::write_vec4(state, STR_LIT("OrbColPos"),   rep.orbital.iso.colors[0]);
-            viamd::write_vec4(state, STR_LIT("OrbColNeg"),   rep.orbital.iso.colors[1]);
+            viamd::write_flt(state,  STR_LIT("OrbIso"),      rep.orbital.iso_psi.values[0]);
+            viamd::write_vec4(state, STR_LIT("OrbColPos"),   rep.orbital.iso_psi.colors[0]);
+            viamd::write_vec4(state, STR_LIT("OrbColNeg"),   rep.orbital.iso_psi.colors[1]);
+            viamd::write_vec4(state, STR_LIT("OrbColDen"),   rep.orbital.iso_den.colors[0]);
         }
     }
 
@@ -8933,15 +8944,7 @@ static void draw_representations_transparent(ApplicationState* state) {
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::Orbital) continue;
 
-        float iso_values[8];
-        STATIC_ASSERT(sizeof(iso_values) == sizeof(rep.orbital.iso.values));
-        MEMCPY(iso_values, rep.orbital.iso.values, sizeof(iso_values));
-
-        if (rep.orbital.type == OrbitalType::PsiSquared) {
-            for (size_t j = 0; j < ARRAY_SIZE(iso_values); ++j) {
-                iso_values[j] *= iso_values[j];
-            }
-        }
+        const IsoDesc& iso = (rep.orbital.type == OrbitalType::Psi) ? rep.orbital.iso_psi : rep.orbital.iso_den;
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
         update_representation(state, &state->representation.reps[i]);
@@ -8972,10 +8975,10 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .enabled = state->visuals.temporal_aa.enabled,
             },
             .iso = {
-                .enabled = rep.orbital.iso.enabled,
-                .count  = (size_t)rep.orbital.iso.count,
-                .values = iso_values,
-                .colors = rep.orbital.iso.colors,
+                .enabled = iso.enabled,
+                .count  = iso.count,
+                .values = iso.values,
+                .colors = iso.colors,
             },
             .dvr = {
                 .enabled = rep.orbital.dvr.enabled,
