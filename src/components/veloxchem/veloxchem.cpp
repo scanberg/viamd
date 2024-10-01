@@ -28,9 +28,10 @@
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
-#define DEFAULT_SAMPLES_PER_ANGSTROM 6
+#define DEFAULT_SAMPLES_PER_ANGSTROM 8
 #define MAX_NTO_GROUPS 16
 #define MAX_NTO_LAMBDAS 3
+#define NTO_LAMBDA_CUTOFF_VALUE 0.1
 
 #define IM_GREEN ImVec4{0, 1, 0, 1}
 #define IM_RED ImVec4{1, 0, 0, 1}
@@ -49,6 +50,23 @@ inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
 inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
 inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
+// This is the internal storage order of volumes and textures related to NTOs
+enum NTO {
+    NTO_Attachment,
+    NTO_Part_0,
+    NTO_Part_1,
+    NTO_Part_2,
+    NTO_Detachment,
+    NTO_Hole_0,
+    NTO_Hole_1,
+    NTO_Hole_2,
+};
+
+enum class NtoDensity {
+    Attachment,
+    Detachment,
+};
+
 enum class VolumeRes {
     Low,
     Mid,
@@ -56,6 +74,19 @@ enum class VolumeRes {
     Count,
 };
 
+enum x_unit_t {
+    X_UNIT_EV,
+    X_UNIT_NM,
+    X_UNIT_CM_INVERSE,
+    X_UNIT_HARTREE,
+};
+
+enum broadening_mode_t {
+    BROADENING_GAUSSIAN,
+    BROADENING_LORENTZIAN,
+};
+
+// Predefined samples per Ångström for corresponding VolumeRes
 static const float vol_res_scl[3] = {
     4.0f,
     8.0f,
@@ -69,12 +100,12 @@ struct OBB {
 };
 
 // Compute an oriented bounding box (OBB) for the supplied gto
-OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t num_gto) {
+static inline OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t num_gto) {
     mat4_t Ri  = mat4_from_mat3(PCA);
 
     // Compute min and maximum extent along the PCA axes
-    vec3_t min_ext = { FLT_MAX, FLT_MAX, FLT_MAX};
-    vec3_t max_ext = {-FLT_MAX,-FLT_MAX,-FLT_MAX};        
+    vec3_t min_ext = vec3_set1( FLT_MAX);
+    vec3_t max_ext = vec3_set1(-FLT_MAX);
 
     // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < num_gto; ++i) {
@@ -98,20 +129,20 @@ OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t num_gto) {
     return obb;
 }
 
-mat4_t compute_vol_mat(const OBB& obb) {
+static inline mat4_t compute_texture_to_world_mat(const OBB& obb) {
     mat4_t T = mat4_translate_vec3(obb.basis * obb.min_ext * BOHR_TO_ANGSTROM);
     mat4_t R = mat4_from_mat3(obb.basis);
     mat4_t S = mat4_scale_vec3((obb.max_ext - obb.min_ext) * BOHR_TO_ANGSTROM);
     return T * R * S;
 }
 
-mat4_t compute_world_to_model_mat(const OBB& obb) {
+static inline mat4_t compute_world_to_model_mat(const OBB& obb) {
     vec3_t obb_min = obb.basis * obb.min_ext;
     mat4_t world_to_model = mat4_from_mat3(mat3_transpose(obb.basis)) * mat4_translate_vec3(-obb_min);
     return world_to_model;
 }
 
-mat4_t compute_index_to_world_mat(const OBB& obb, vec3_t stepsize) {
+static inline mat4_t compute_index_to_world_mat(const OBB& obb, vec3_t stepsize) {
     vec3_t step_x = obb.basis.col[0] * stepsize.x;
     vec3_t step_y = obb.basis.col[1] * stepsize.y;
     vec3_t step_z = obb.basis.col[2] * stepsize.z;
@@ -127,8 +158,15 @@ mat4_t compute_index_to_world_mat(const OBB& obb, vec3_t stepsize) {
     return index_to_world;
 }
 
+// Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
+static inline void compute_vol_dim(int out_dim[3], const vec3_t& in_ext, float samples_per_unit_length) {
+    out_dim[0] = CLAMP(ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
+    out_dim[1] = CLAMP(ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
+    out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
+}
+
 // Voronoi segmentation
-void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, const md_grid_t* grid) {
+static void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, const md_grid_t* grid) {
     for (int iz = 0; iz < grid->dim[2]; ++iz) {
         for (int iy = 0; iy < grid->dim[1]; ++iy) {
             for (int ix = 0; ix < grid->dim[0]; ++ix) {
@@ -147,10 +185,10 @@ void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const
 
                 // find closest point to grid point
                 for (size_t i = 0; i < num_points; ++i) {
-                    float px = point_xyz[i].x;
-                    float py = point_xyz[i].y;
-                    float pz = point_xyz[i].z;
-                    float pr = point_r[i];
+                    float px = point_xyzr[i].x;
+                    float py = point_xyzr[i].y;
+                    float pz = point_xyzr[i].z;
+                    float pr = point_xyzr[i].w;
 
                     float dx = px - x;
                     float dy = py - y;
@@ -175,8 +213,8 @@ struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
 
     struct {
-        int major;
-        int minor;
+        int major = 0;
+        int minor = 0;
     } gl_version;
 
     md_vlx_data_t vlx {};
@@ -197,14 +235,6 @@ struct VeloxChem : viamd::EventHandler {
     vec3_t min_aabb = {};
     vec3_t max_aabb = {};
 
-    struct Volume {
-        mat4_t tex_to_world = {};
-        int dim[3] = {128, 128, 128};
-        vec3_t step_size = {};
-        vec3_t extent = {};
-        uint32_t tex_id = 0;
-    };
-
     struct Scf {
         bool show_window = false;
     } scf;
@@ -220,13 +250,12 @@ struct VeloxChem : viamd::EventHandler {
         int mo_idx = -1;
         int scroll_to_idx = -1;
 
-        struct {
-            bool enabled = true;
-            size_t count = 2;
-            float  values[2] = {0.05f, -0.05};
-            vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-
-        } iso;
+        IsoDesc iso = {
+            .enabled = true,
+            .count = 2,
+            .values = {0.05f, -0.05},
+            .colors = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}},
+        };
 
         GBuffer gbuf = {};
         Camera camera = {};
@@ -245,7 +274,7 @@ struct VeloxChem : viamd::EventHandler {
     struct Nto {
         bool show_window = false;
         // We have a maximum of 4 orbital slots for each particle and hole
-        // In practice I don't think more than 2, maybe 3 will be used in practice
+        // A Maximum of 8 will be used in practice, 2 for attachment / detachment + 3*2 for individual lambdas (particle + hole)
         Volume   vol[8] = {};
         uint32_t iso_tex[8] = {};
         task_system::ID vol_task[8] = {};
@@ -254,9 +283,8 @@ struct VeloxChem : viamd::EventHandler {
 
         size_t num_atoms = 0;
         // These are in Atomic Units (Bohr)
-        vec3_t* atom_xyz = nullptr;
-        float*  atom_r   = nullptr;
-        uint8_t* atom_group_idx = nullptr;
+        vec4_t*   atom_xyzr = nullptr;
+        uint32_t* atom_group_idx = nullptr;
 
         md_gl_rep_t gl_rep = {0};
 
@@ -274,12 +302,19 @@ struct VeloxChem : viamd::EventHandler {
             int8_t hovered_index = -1;
         } group;
 
-        struct {
-            bool enabled = true;
-            size_t count = 2;
-            float  values[2] = {0.05f, -0.05};
-            vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-        } iso;
+        IsoDesc iso_psi = {
+            .enabled = true,
+            .count = 2,
+            .values = {0.05f, -0.05},
+            .colors = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}},
+        };
+
+        IsoDesc iso_den = {
+            .enabled = true,
+            .count = 1,
+            .values = {0.0025f},
+            .colors = {{0, 0, 0, 0.2f}},
+        };
 
         struct {
             bool enabled = true;
@@ -439,10 +474,11 @@ struct VeloxChem : viamd::EventHandler {
                     if (data.type == OrbitalType::PsiSquared) {
                        mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
                     }
+
                     if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                        data.output_written = compute_mo_GPU(&data.tex_mat, &data.voxel_spacing, data.dst_texture, data.orbital_idx, mode, data.samples_per_angstrom);
+                        data.output_written = compute_mo_GPU(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom);
                     } else {
-                        data.output_written = (bool)compute_mo_async(&data.tex_mat, &data.voxel_spacing, data.dst_texture, data.orbital_idx, mode, data.samples_per_angstrom);
+                        data.output_written = (compute_mo_async(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
                     }
                 }
 
@@ -495,16 +531,14 @@ struct VeloxChem : viamd::EventHandler {
                 vec4_t min_box = vec4_set1( FLT_MAX);
                 vec4_t max_box = vec4_set1(-FLT_MAX);
 
-                nto.atom_xyz = (vec3_t*)md_arena_allocator_push(arena, sizeof(vec3_t) * vlx.geom.num_atoms);
-                nto.atom_r   = (float*) md_arena_allocator_push(arena, sizeof(float)  * vlx.geom.num_atoms);
+                nto.atom_xyzr = (vec4_t*)md_arena_allocator_push(arena, sizeof(vec4_t) * vlx.geom.num_atoms);
                 nto.num_atoms = vlx.geom.num_atoms;
 
                 // Compute the PCA of the provided geometry
                 // This is used in determining a better fitting volume for the orbitals
                 vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
                 for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                    nto.atom_xyz[i] = vec3_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]) * ANGSTROM_TO_BOHR;
-                    nto.atom_r[i]   = md_util_element_vdw_radius(vlx.geom.atomic_number[i]) * ANGSTROM_TO_BOHR;
+                    nto.atom_xyzr[i] = vec4_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], md_util_element_vdw_radius(vlx.geom.atomic_number[i])) * ANGSTROM_TO_BOHR;
                     xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
                     min_box = vec4_min(min_box, xyzw[i]);
                     max_box = vec4_max(max_box, xyzw[i]);
@@ -534,8 +568,8 @@ struct VeloxChem : viamd::EventHandler {
 
                     nto.show_window = true;
                     camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-                    nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
-                    MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
+                    nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * mol.atom.count);
+                    MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * mol.atom.count);
 
                     snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
                     nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
@@ -550,7 +584,7 @@ struct VeloxChem : viamd::EventHandler {
                     extract_file(&file, filename);
 
                     if (str_eq_cstr(file, "tq.out")) {
-                        uint8_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
+                        uint32_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
                         //nto.atom_group_idx = index_from_text;
                         nto.group.count = 3;
                         MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
@@ -607,11 +641,22 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    void init_volume_from_OBB(Volume* vol, const OBB& obb, float samples_per_unit_length, GLenum format = GL_R16F) {
+        ASSERT(vol);
+        vol->extent = obb.max_ext - obb.min_ext;
+        compute_vol_dim(vol->dim, vol->extent, samples_per_unit_length);
+        vol->step_size        = vec3_div(vol->extent, vec3_set((float)vol->dim[0], (float)vol->dim[1], (float)vol->dim[2]));
+        vol->world_to_model   = compute_world_to_model_mat(obb);
+        vol->index_to_world   = compute_index_to_world_mat(obb, vol->step_size);
+        vol->texture_to_world = compute_texture_to_world_mat(obb);
+
+        gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
+    }
+
     void eval_gtos_GPU(uint32_t vol_tex, const OBB& vol_obb, const int vol_dim[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
         const vec3_t extent = vol_obb.max_ext - vol_obb.min_ext;
         const vec3_t stepsize = vec3_div(extent, vec3_set((float)vol_dim[0], (float)vol_dim[1], (float)vol_dim[2]));
 
-        mat4_t vol_mat = compute_vol_mat(vol_obb);
         mat4_t world_to_model = compute_world_to_model_mat(vol_obb);
         mat4_t index_to_world = compute_index_to_world_mat(vol_obb, stepsize);
 
@@ -619,7 +664,7 @@ struct VeloxChem : viamd::EventHandler {
         md_gto_grid_evaluate_GPU(vol_tex, vol_dim, stepsize.elem, (const float*)world_to_model.elem, (const float*)index_to_world.elem, gtos, num_gtos, mode);
     }
 
-    bool compute_nto_GPU(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+    bool compute_nto_GPU(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ScopedTemp temp_reset;
 
         size_t num_gtos = md_vlx_nto_gto_count(&vlx);
@@ -631,32 +676,156 @@ struct VeloxChem : viamd::EventHandler {
         }
         md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
         OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
-        vec3_t extent = obb.max_ext - obb.min_ext;
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
-        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-        // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
-
-        // Compute required volume dimensions
-        int dim[3] = {
-            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-        };
-
-        // Init and clear volume texture
-        gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
-
-        eval_gtos_GPU(*in_out_vol_tex, obb, dim, gtos, num_gtos, mode);
-
-        // WRITE OUTPUT
-        *out_vol_mat = compute_vol_mat(obb);
-        *out_voxel_spacing = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2])) * BOHR_TO_ANGSTROM;
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, gtos, num_gtos, mode);
 
         return true;
     }
 
-    task_system::ID compute_nto_async(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+    size_t extract_attachment_detachment_gtos(md_gto_t* gtos, size_t cap_gtos, NtoDensity type, size_t nto_idx) {
+        const size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        const md_vlx_nto_type_t nto_type = (type == NtoDensity::Attachment) ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
+
+        size_t num_gtos = 0;
+
+        // Only add GTOs from lambdas that has a contribution more than a certain percentage
+        for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
+            double lambda = vlx.rsp.nto[nto_idx].occupations.data[lumo_idx + lambda_idx];
+            if (lambda < NTO_LAMBDA_CUTOFF_VALUE) {
+                break;
+            }
+            if (!md_vlx_nto_gto_extract(gtos + num_gtos, &vlx, nto_idx, lambda_idx, nto_type)) {
+                MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
+                return false;
+            }
+            // Scale the GTOs with the lambda value
+            // The sqrt is to ensure that the scaling is linear with the lambda value
+            const double scale = sqrt(lambda);
+            for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
+                gtos[i].coeff = (float)(gtos[i].coeff * scale);
+            }
+            num_gtos += num_gtos_per_lambda;
+        }
+
+        return num_gtos;
+    }
+
+    // Compute attachment / detachment density
+    bool compute_nto_density_GPU(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ScopedTemp temp_reset;
+
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        size_t cap_gtos =  num_gtos_per_lambda * 4;
+        md_gto_t* gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * cap_gtos);
+
+        size_t num_gtos = extract_attachment_detachment_gtos(gtos, cap_gtos, type, nto_idx);
+
+        // Compute a cutoff value for the GTOs
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length, GL_R32F);
+
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI_SQUARED);
+
+        return true;
+    }
+
+    // Compute attachment / detachment density
+    task_system::ID compute_nto_density_async(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        md_allocator_i* alloc = md_get_heap_allocator();
+
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        size_t cap_gtos =  num_gtos_per_lambda * 4;
+        md_gto_t* gtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * cap_gtos);
+
+        size_t num_gtos = extract_attachment_detachment_gtos(gtos, cap_gtos, type, nto_idx);
+
+        // Compute a cutoff value for the GTOs
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
+
+        vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
+        vec3_t step_y = obb.basis.col[1] * vol->step_size.y;
+        vec3_t step_z = obb.basis.col[2] * vol->step_size.z;
+        vec3_t origin = obb.basis * (obb.min_ext + vol->step_size * 0.5f);
+
+        const float zero[4] = { 0,0,0,0 };
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, vol->tex_id, 0);
+        glClearBufferfv(GL_COLOR, 0, zero);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+        struct Payload {
+            AsyncGridEvalArgs args;
+            md_allocator_i* alloc;
+            size_t mem_size;
+            void* mem;
+            uint32_t tex;
+        };
+
+        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
+        void* mem = md_alloc(alloc, mem_size);
+        Payload* payload = (Payload*)mem;
+        *payload = {
+            .args = {
+                .world_to_model = vol->world_to_model,
+                .model_step = vol->step_size,
+                .grid = {
+                    .data = (float*)((char*)mem + sizeof(Payload)),
+                    .dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
+                    .origin = {origin.x, origin.y, origin.z},
+                    .step_x = {step_x.x, step_x.y, step_x.z},
+                    .step_y = {step_y.x, step_y.y, step_y.z},
+                    .step_z = {step_z.x, step_z.y, step_z.z},
+                },
+                .gtos = gtos,
+                .num_gtos = num_gtos,
+                .mode = MD_GTO_EVAL_MODE_PSI_SQUARED,
+            },
+            .alloc = alloc,
+            .mem_size = mem_size,
+            .mem = mem,
+            .tex = vol->tex_id,
+        };
+
+        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
+
+        // Launch task for main (render) thread to update the volume texture
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
+            Payload* data = (Payload*)user_data;
+
+            // Ensure that the dimensions of the texture have not changed during evaluation
+            int dim[3];
+            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
+                gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
+            }
+
+            md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
+            md_free(data->alloc, data->mem, data->mem_size);
+        }, payload);
+
+        task_system::set_task_dependency(main_task, async_task);
+        task_system::enqueue_task(async_task);
+
+        return async_task;
+    }
+
+    task_system::ID compute_nto_async(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ASSERT(vol);
+
 		md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_gtos = md_vlx_nto_gto_count(&vlx);
         md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_gtos);
@@ -668,60 +837,40 @@ struct VeloxChem : viamd::EventHandler {
         }
         md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
         OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
-        vec3_t extent = obb.max_ext - obb.min_ext;
+        vec3_t step_x = obb.basis.col[0] * vol->step_size;
+        vec3_t step_y = obb.basis.col[1] * vol->step_size;
+        vec3_t step_z = obb.basis.col[2] * vol->step_size;
+        vec3_t origin = obb.basis * (obb.min_ext + vol->step_size * 0.5f);
 
-        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-        // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
-
-        // Compute required volume dimensions
-        int dim[3] = {
-            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-        };
-
-        const vec3_t stepsize = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
-        mat4_t vol_mat = compute_vol_mat(obb);
-
-        vec3_t step_x = obb.basis.col[0] * stepsize.x;
-        vec3_t step_y = obb.basis.col[1] * stepsize.y;
-        vec3_t step_z = obb.basis.col[2] * stepsize.z;
-        vec3_t origin = obb.basis * (obb.min_ext + stepsize * 0.5f);
-
-        mat4_t world_to_model = compute_world_to_model_mat(obb);
-
-        // Init and clear volume texture
         const float zero[4] = { 0,0,0,0 };
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
-        gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
-        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, *in_out_vol_tex, 0);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, vol->tex_id, 0);
         glClearBufferfv(GL_COLOR, 0, zero);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-
-        // WRITE OUTPUT
-        *out_vol_mat = vol_mat;
-        *out_voxel_spacing = stepsize * BOHR_TO_ANGSTROM;
 
         struct Payload {
             AsyncGridEvalArgs args;
             md_allocator_i* alloc;
             size_t mem_size;
             void* mem;
-            uint32_t* tex_ptr;
+            uint32_t tex;
         };
 
-        size_t mem_size = sizeof(Payload) + sizeof(float) * dim[0] * dim[1] * dim[2];
+        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
         void* mem = md_alloc(alloc, mem_size);
         Payload* payload = (Payload*)mem;
         *payload = {
             .args = {
-                .world_to_model = world_to_model,
-                .model_step = stepsize,
+                .world_to_model = vol->world_to_model,
+                .model_step = vol->step_size,
                 .grid = {
                     .data = (float*)((char*)mem + sizeof(Payload)),
-                    .dim = {dim[0], dim[1], dim[2]},
+                    .dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
                     .origin = {origin.x, origin.y, origin.z},
                     .step_x = {step_x.x, step_x.y, step_x.z},
                     .step_y = {step_y.x, step_y.y, step_y.z},
@@ -734,7 +883,7 @@ struct VeloxChem : viamd::EventHandler {
             .alloc = alloc,
             .mem_size = mem_size,
             .mem = mem,
-            .tex_ptr = in_out_vol_tex,
+            .tex = vol->tex_id,
         };
 
         task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
@@ -743,13 +892,15 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
 
-            // The init here is just to ensure that the volume has not changed its dimensions during the async evaluation
-            gl::init_texture_3D(data->tex_ptr, data->args.grid.dim[0], data->args.grid.dim[1], data->args.grid.dim[2], GL_R16F);
-            gl::set_texture_3D_data(*data->tex_ptr, data->args.grid.data, GL_R32F);
+            // Ensure that the dimensions of the texture have not changed during evaluation
+            int dim[3];
+            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
+                gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
+            }
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data->mem, data->mem_size);
-            }, payload);
+        }, payload);
 
         task_system::set_task_dependency(main_task, async_task);
         task_system::enqueue_task(async_task);
@@ -766,12 +917,11 @@ struct VeloxChem : viamd::EventHandler {
 		md_gto_eval_mode_t mode;
 	};
 
-    bool compute_mo_GPU(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-        md_allocator_i* alloc = md_get_heap_allocator();
+    bool compute_mo_GPU(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ScopedTemp reset_temp;
 
         size_t num_gtos = md_vlx_mol_gto_count(&vlx);
-        md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_gtos);
-        defer { md_free(alloc, gtos, sizeof(md_gto_t) * num_gtos); };
+        md_gto_t* gtos  = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
 
         if (!md_vlx_mol_gto_extract(gtos, &vlx, mo_idx)) {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
@@ -779,32 +929,20 @@ struct VeloxChem : viamd::EventHandler {
         }
         md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
         OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
-        vec3_t extent = obb.max_ext - obb.min_ext;
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
-        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-        // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
-
-        // Compute required volume dimensions
-        int dim[3] = {
-            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-        };
-
-        // Init and clear volume texture
-        gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
-
-        eval_gtos_GPU(*in_out_vol_tex, obb, dim, gtos, num_gtos, mode);
-
-        // WRITE OUTPUT
-        *out_vol_mat = compute_vol_mat(obb);
-        *out_voxel_spacing = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2])) * BOHR_TO_ANGSTROM;
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, gtos, num_gtos, mode);
 
         return true;
     }
 
-    task_system::ID compute_mo_async(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+    task_system::ID compute_mo_async(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ASSERT(vol);
+
 		md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_gtos = md_vlx_mol_gto_count(&vlx);
         md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t)* num_gtos);
@@ -816,58 +954,40 @@ struct VeloxChem : viamd::EventHandler {
         }
         md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
         OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
-        vec3_t extent = obb.max_ext - obb.min_ext;
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
-        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-        // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
+        vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
+        vec3_t step_y = obb.basis.col[1] * vol->step_size.y;
+        vec3_t step_z = obb.basis.col[2] * vol->step_size.z;
+        vec3_t origin = obb.basis * (obb.min_ext + vol->step_size * 0.5f);
 
-        // Compute required volume dimensions
-        int dim[3] = {
-            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-        };
-
-        const vec3_t stepsize = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
-        mat4_t vol_mat = compute_vol_mat(obb);
-
-        vec3_t step_x = obb.basis.col[0] * stepsize.x;
-        vec3_t step_y = obb.basis.col[1] * stepsize.y;
-        vec3_t step_z = obb.basis.col[2] * stepsize.z;
-        vec3_t origin = obb.basis * (obb.min_ext + stepsize * 0.5f);
-
-        mat4_t world_to_model = compute_world_to_model_mat(obb);
-
-        // Init and clear volume texture
+        // Clear volume texture
         const float zero[4] = {0,0,0,0};
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
-        gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
-        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, *in_out_vol_tex, 0);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, vol->tex_id, 0);
         glClearBufferfv(GL_COLOR, 0, zero);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
-        // WRITE OUTPUT
-        *out_vol_mat = vol_mat;
-        *out_voxel_spacing = stepsize * BOHR_TO_ANGSTROM;
-
         struct Payload {
             AsyncGridEvalArgs args;
-            uint32_t* tex_ptr;
+            uint32_t tex;
             md_allocator_i* alloc;
             size_t alloc_size;
         };
 
-		size_t mem_size = sizeof(Payload) + sizeof(float) * dim[0] * dim[1] * dim[2];
+		size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
 		void*       mem = md_alloc(alloc, mem_size);
 		Payload* payload = (Payload*)mem;
 		*payload = {
 			.args = {
-                .world_to_model = world_to_model,
-                .model_step = stepsize,
+                .world_to_model = vol->world_to_model,
+                .model_step = vol->step_size,
 				.grid = {
 					.data = (float*)((char*)mem + sizeof(Payload)),
-					.dim = {dim[0], dim[1], dim[2]},
+					.dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
 					.origin = {origin.x, origin.y, origin.z},
 					.step_x = {step_x.x, step_x.y, step_x.z},
                     .step_y = {step_y.x, step_y.y, step_y.z},
@@ -877,7 +997,7 @@ struct VeloxChem : viamd::EventHandler {
 				.num_gtos = num_gtos,
 				.mode = mode,
 			},
-			.tex_ptr = in_out_vol_tex,
+			.tex = vol->tex_id,
 			.alloc = alloc,
 			.alloc_size = mem_size,
 		};
@@ -888,9 +1008,11 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
 
-            // The init here is just to ensure that the volume has not changed its dimensions during the async evaluation
-            gl::init_texture_3D(data->tex_ptr, data->args.grid.dim[0], data->args.grid.dim[1], data->args.grid.dim[2], GL_R16F);
-            gl::set_texture_3D_data(*data->tex_ptr, data->args.grid.data, GL_R32F);
+            // Ensure that the dimensions of the texture have not changed during evaluation
+            int dim[3];
+            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
+                gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
+            }
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data, data->alloc_size);
@@ -902,19 +1024,19 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 1.3f) {
+    static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 0.2f) {
         // Ensure the factor is not too high, to avoid over-brightening
-        factor = (factor < 1.0f) ? 1.0f : factor;
+        factor = CLAMP(factor, 0.0f, 1.0f);
 
         // Increase the brightness of each component by the factor
-        float r = color.x * factor;
-        float g = color.y * factor;
-        float b = color.z * factor;
+        float r = color.x + factor;
+        float g = color.y + factor;
+        float b = color.z + factor;
 
         // Clamp the values to the range [0, 1]
-        r = (r > 1.0f) ? 1.0f : r;
-        g = (g > 1.0f) ? 1.0f : g;
-        b = (b > 1.0f) ? 1.0f : b;
+        r = ImClamp(r, 0.0f, 1.0f);
+        g = ImClamp(g, 0.0f, 1.0f);
+        b = ImClamp(b, 0.0f, 1.0f);
 
         // Return the new highlighted color with the same alpha
         return ImVec4(r, g, b, color.w);
@@ -926,9 +1048,8 @@ struct VeloxChem : viamd::EventHandler {
             });
     }
 
+    // Draws a vertical flow based on cubic bezier and returns the abs delta from the mouse cursor to this line
     static inline ImVec2 draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
-        // Get the draw list from the current window
-
         // Define the control points for the Bezier curve
         ImVec2 p1 = ImVec2(source_pos.x + thickness / 2, source_pos.y);  // Start point (bottom-center of source node)
         ImVec2 p4 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y);  // End point (top-center of destination node)
@@ -948,14 +1069,11 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, thickness, num_segments);
 
         ImVec2 mouse_pos = ImGui::GetMousePos();
-        float min_y = ImMin(p1.y, p4.y);
-        float max_y = ImMax(p1.y, p4.y);
-        float y = ImClamp(mouse_pos.y, min_y, max_y);
+        float clamped_y = ImClamp(mouse_pos.y, ImMin(p1.y, p4.y), ImMax(p1.y, p4.y));
 
-        float t = (max_y - y) / dist;
-        ImVec2 bezier = ImBezierCubicCalc(p1, p2, p3, p4, t);
-        ImVec2 delta = mouse_pos - bezier;
-        return {ImAbs(delta.x), ImAbs(y - mouse_pos.y)};
+        ImVec2 point_on_bezier = ImBezierCubicClosestPointCasteljau(p1, p2, p3, p4, mouse_pos, 1.0e-3f);
+        ImVec2 delta = mouse_pos - point_on_bezier;
+        return {ImAbs(delta.x), ImAbs(clamped_y - mouse_pos.y)};
     }
 
     static inline void draw_aligned_text(ImDrawList* draw_list, const char* text, ImVec2 pos, ImVec2 alignment = { 0,0 }) {
@@ -977,7 +1095,7 @@ struct VeloxChem : viamd::EventHandler {
         //draw_list->AddRect(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }));
 
         ImRect plot_area = area;
-        const float plot_percent = 0.8;
+        const float plot_percent = 0.8f;
         plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
         //draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 })); //Use this to draw debug of plot area
 
@@ -999,15 +1117,15 @@ struct VeloxChem : viamd::EventHandler {
         //};
 
         //Bar definitions
-        const float bar_height = plot_area.GetHeight() * 0.05;
+        const float bar_height = plot_area.GetHeight() * 0.05f;
         int num_bars = 0;
         for (size_t i = 0; i < nto->group.count; i++) {
-            if (nto->transition_density_hole[i] != 0.0) {
+            if (nto->transition_density_hole[i] != 0.0f) {
                 num_bars++;
             }
         }
         int num_gaps = num_bars - 1;
-        float gap_size = plot_area.GetWidth() * 0.05;
+        float gap_size = plot_area.GetWidth() * 0.05f;
         float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
 
         //Calculate bar percentages
@@ -1019,8 +1137,8 @@ struct VeloxChem : viamd::EventHandler {
         }
 
 		// Prevent division by zero
-		hole_sum = MAX(hole_sum, 1.0e-6);
-		part_sum = MAX(part_sum, 1.0e-6);
+		hole_sum = MAX(hole_sum, 1.0e-6f);
+		part_sum = MAX(part_sum, 1.0e-6f);
 
         md_array(float) hole_percentages = md_array_create(float, nto->group.count, temp_alloc);
         md_array(float) part_percentages = md_array_create(float, nto->group.count, temp_alloc);
@@ -1053,10 +1171,14 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
-        int flow_hover_idx = -1;
+        float  hovered_flow_width = 0.0f;
+        ImVec2 hovered_flow_beg = {};
+        ImVec2 hovered_flow_end = {};
         ImVec2 mouse_pos = ImGui::GetMousePos();
 
-        char mouse_label[16] = { 0 };
+        char mouse_label[32] = { 0 };
+
+        const float min_test_width = 1.0f;
 
         //Draw curves
         md_array(float) curve_widths = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
@@ -1081,7 +1203,6 @@ struct VeloxChem : viamd::EventHandler {
             if (hole_percentages[start_i] != 0.0) {
 
                 ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
-
                 ImVec4 start_col = vec_cast(nto->group.color[start_i]);
 
                 start_col.w = 0.5;
@@ -1097,7 +1218,8 @@ struct VeloxChem : viamd::EventHandler {
                         ImVec2 mouse_delta = draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
                         int vert_end = draw_list->VtxBuffer.Size;
 
-                        bool flow_hovered = mouse_delta.x < width * 0.5f && mouse_delta.y < 1.0e-4;
+                        // The width test here is clamped to be atleast some pixel in width, otherwise it would be impossible to hit thin flows
+                        bool flow_hovered = mouse_delta.x < MAX(width * 0.5f, min_test_width) && mouse_delta.y < 1.0e-4;
 
                         // Apply a gradient based on y-value from start color to end color if they belong to different groups
                         if (end_i != start_i) {
@@ -1106,15 +1228,15 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
                         }
 
-                        char label[16];
-                        sprintf(label, "%3.2f%%", percentage * 100);
+                        char label[32];
+                        snprintf(label, sizeof(label), "%3.2f%%", percentage * 100);
                         const ImVec2 label_size = ImGui::CalcTextSize(label);
 
-                        if (flow_hovered) {
-                            for (int i = vert_beg; i < vert_end; ++i) {
-                                ImVec4 col = ImColor(draw_list->VtxBuffer[i].col);
-                                draw_list->VtxBuffer[i].col = ImColor(make_highlight_color(col));
-                            }
+                        // @NOTE: The comparison for width here is to ensure that the narrowest flow is always the one hovered (when multiple flows are overlapping)
+                        if (flow_hovered && (hovered_flow_width == 0.0f || width < hovered_flow_width)) {
+                            hovered_flow_width = width;
+                            hovered_flow_beg = start_pos;
+                            hovered_flow_end = end_pos;
                             MEMCPY(mouse_label, label, sizeof(label));
                         }
 
@@ -1171,8 +1293,6 @@ struct VeloxChem : viamd::EventHandler {
                             }
                         }
                     }
-
-
                 }
             }
         }
@@ -1191,6 +1311,10 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
+        // Some flow is hovered, So we render a new flow on top of the existing ones to ensure that this is rendered on top
+        if (hovered_flow_width > 0.0f) {
+            draw_vertical_sankey_flow(draw_list, hovered_flow_beg, hovered_flow_end, hovered_flow_width, ImColor(1.0f, 1.0f, 1.0f, 0.2f));
+        }
         //bool next_start_text_visible = true;
         //bool next_end_text_visible = true;
 
@@ -1267,7 +1391,7 @@ struct VeloxChem : viamd::EventHandler {
                     nto->group.hovered_index = (int8_t)i;
                     bar_color = make_highlight_color(bar_color);
                     for (size_t atom_i = 0; atom_i < nto->num_atoms; atom_i++) {
-                        if (nto->atom_group_idx[atom_i] == i) {
+                        if (nto->atom_group_idx[atom_i] == (uint32_t)i) {
                             md_bitfield_set_bit(&state->selection.highlight_mask, atom_i);
                         }
                     }
@@ -1287,8 +1411,8 @@ struct VeloxChem : viamd::EventHandler {
                 draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, { 0.5, 1.2 });
                 draw_aligned_text(draw_list, end_label1, end_midpoint, { 0.5, 2.2 });
             }
-
         }
+
         if (mouse_label[0] != '\0') {
             ImVec2 offset = { 15, 15 };
             ImVec2 pos = ImGui::GetMousePos() + offset;
@@ -1296,7 +1420,7 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
     
-    bool compute_transition_group_values_async(task_system::ID* out_eval_task, task_system::ID* out_segment_task, float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, size_t nto_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {       
+    bool compute_transition_group_values_async(task_system::ID* out_eval_task, task_system::ID* out_segment_task, float* out_group_values, size_t num_groups, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, size_t nto_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {       
         md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
         size_t cap_gto =  num_gtos_per_lambda * 4;
@@ -1319,21 +1443,21 @@ struct VeloxChem : viamd::EventHandler {
             }
             // Scale the added GTOs with the lambda value
 			// The sqrt is to ensure that the scaling is linear with the lambda value
-			double scale = sqrt(lambda);
+			const double scale = sqrt(lambda);
             for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
-                gtos[i].coeff *= scale;
+                gtos[i].coeff = (float)(gtos[i].coeff * scale);
             }
             num_gtos += num_gtos_per_lambda;
         }
 
         md_gto_cutoff_compute(gtos, num_gtos, 1.0e-7);
 
-        vec3_t min_ext = { FLT_MAX,  FLT_MAX,  FLT_MAX};
-        vec3_t max_ext = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+        vec3_t min_ext = vec3_set1( FLT_MAX);
+        vec3_t max_ext = vec3_set1(-FLT_MAX);
 
         for (size_t i = 0; i < nto.num_atoms; ++i) {
-            vec3_t xyz = nto.atom_xyz[i];
-            float    r = nto.atom_r[i] + 2.0f;
+            vec3_t xyz = vec3_from_vec4(nto.atom_xyzr[i]);
+            float    r = nto.atom_xyzr[i].w + 2.0f;
             min_ext = vec3_min(min_ext, xyz - r);
             max_ext = vec3_max(max_ext, xyz + r);
         }
@@ -1344,20 +1468,12 @@ struct VeloxChem : viamd::EventHandler {
         // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
 
         // Compute required volume dimensions
-        int dim[3] = {
-            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-        };
+        int dim[3];
+        compute_vol_dim(dim, extent * BOHR_TO_ANGSTROM, samples_per_angstrom);
 
         const vec3_t stepsize = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
-        //mat4_t vol_mat = compute_vol_mat(obb);
 
-        vec3_t step_x = {stepsize.x, 0, 0};
-        vec3_t step_y = {0, stepsize.y, 0};
-        vec3_t step_z = {0, 0, stepsize.z};
         vec3_t origin = min_ext + stepsize * 0.5f;
-
         mat4_t world_to_model = mat4_translate_vec3(-min_ext);
 
         struct Payload {
@@ -1366,9 +1482,8 @@ struct VeloxChem : viamd::EventHandler {
             float* dst_group_values;
 			size_t num_groups;
 
-            const uint8_t* point_group_idx;
-            const vec3_t* point_xyz;
-            const float* point_r;
+            const uint32_t* point_group_idx;
+            const vec4_t* point_xyzr;
             size_t num_points;
 
             md_allocator_i* alloc;
@@ -1386,9 +1501,9 @@ struct VeloxChem : viamd::EventHandler {
                     .data = (float*)((char*)mem + sizeof(Payload)),
                     .dim = {dim[0], dim[1], dim[2]},
                     .origin = {origin.x, origin.y, origin.z},
-                    .step_x = {step_x.x, step_x.y, step_x.z},
-                    .step_y = {step_y.x, step_y.y, step_y.z},
-                    .step_z = {step_z.x, step_z.y, step_z.z},
+                    .step_x = {stepsize.x, 0, 0},
+                    .step_y = {0, stepsize.y, 0},
+                    .step_z = {0, 0, stepsize.z},
                 },
                 .gtos = gtos,
                 .num_gtos = num_gtos,
@@ -1398,8 +1513,7 @@ struct VeloxChem : viamd::EventHandler {
             .num_groups = num_groups,
             
 			.point_group_idx = point_group_idx,
-			.point_xyz = point_xyz,
-            .point_r = point_r,
+			.point_xyzr = point_xyzr,
 			.num_points = num_points,
             .alloc = alloc,
             .alloc_size = mem_size,
@@ -1421,7 +1535,7 @@ struct VeloxChem : viamd::EventHandler {
 #endif
 
             MD_LOG_DEBUG("Starting segmentation of volume");
-            grid_segment_and_attribute(data->dst_group_values, data->num_groups, data->point_group_idx, data->point_xyz, data->point_r, data->num_points, &data->args.grid);
+            grid_segment_and_attribute(data->dst_group_values, data->num_groups, data->point_group_idx, data->point_xyzr, data->num_points, &data->args.grid);
             MD_LOG_DEBUG("Finished segmentation of volume");
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
@@ -1463,7 +1577,7 @@ struct VeloxChem : viamd::EventHandler {
             size_t temp_pos = md_temp_get_pos();
             md_gto_t* sub_gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * data->num_gtos);
 
-            for (uint32_t blk_idx = range_beg; blk_idx < range_end; ++blk_idx) {
+            for (int blk_idx = (int)range_beg; blk_idx < (int)range_end; ++blk_idx) {
                 // Determine block index from linear input index i
                 int blk[3] = {
                     (blk_idx % num_blk[0]),
@@ -1493,7 +1607,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 size_t num_sub_gtos = 0;
 
-                // Transform GTO xyz into model space of the volume and AABB overlap test
+                // Transform GTO xyz into model space of the volume and perform AABB overlap test
                 for (size_t i = 0; i < data->num_gtos; ++i) {
                     float cutoff = data->gtos[i].cutoff;
                     if (cutoff == 0.0f) continue;
@@ -1526,22 +1640,8 @@ struct VeloxChem : viamd::EventHandler {
             y2_max = MAX(y2_max, fabs(y2_array[i]));
         }
 
-
         return y2_max / y1_max;
     }
-
-
-    enum x_unit_t {
-        X_UNIT_EV,
-        X_UNIT_NM,
-        X_UNIT_CM_INVERSE,
-        X_UNIT_HARTREE,
-    };
-
-    enum broadening_mode_t {
-        BROADENING_GAUSSIAN,
-        BROADENING_LORENTZIAN,
-    };
 
     static inline void convert_values(double* out_values, const double* in_values, size_t num_values, x_unit_t unit) {
         switch (unit) {
@@ -1991,12 +2091,10 @@ struct VeloxChem : viamd::EventHandler {
         };
 
         ExportProperty properties[]{
-            {rsp.x_unit_samples, rsp.eps, str_from_cstr("Absorption"), str_from_cstr((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
-            {rsp.x_unit_samples, rsp.ecd, str_from_cstr("ECD"), str_from_cstr((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
-            {rsp.vib_x, rsp.vib_y, str_from_cstr("Vibration"), str_from_cstr("IR Intensity (km/mol)")}
+            {rsp.x_unit_samples, rsp.eps,   STR_LIT("Absorption"), STR_LIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_unit_samples, rsp.ecd,   STR_LIT("ECD"),        STR_LIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
+            {rsp.vib_x,          rsp.vib_y, STR_LIT("Vibration"),  STR_LIT("IR Intensity (km/mol)")}
         };
-
-        int num_properties = ARRAY_SIZE(properties);
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
             static int table_format = 0;
@@ -2019,7 +2117,7 @@ struct VeloxChem : viamd::EventHandler {
             file_extension = table_formats[table_format].ext;
 
             if (ImGui::BeginCombo("Property", properties[property_idx].lable.ptr)) {
-                for (int i = 0; i < num_properties; ++i) {
+                for (int i = 0; i < ARRAY_SIZE(properties); ++i) {
                     if (ImGui::Selectable(properties[i].lable.ptr, property_idx == i)) {
                         property_idx = i;
                     }
@@ -2773,9 +2871,9 @@ struct VeloxChem : viamd::EventHandler {
                             task_system::task_interrupt(orb.vol_task[slot_idx]);
                         }
                         if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                            compute_mo_GPU(&orb.vol[slot_idx].tex_to_world, &orb.vol[slot_idx].step_size, &orb.vol[slot_idx].tex_id, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            compute_mo_GPU(&orb.vol[slot_idx], mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                         } else {
-                            orb.vol_task[slot_idx] = compute_mo_async(&orb.vol[slot_idx].tex_to_world, &orb.vol[slot_idx].step_size, &orb.vol[slot_idx].tex_id, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            orb.vol_task[slot_idx] = compute_mo_async(&orb.vol[slot_idx], mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                         }
                     }
                 }
@@ -3027,7 +3125,7 @@ struct VeloxChem : viamd::EventHandler {
                                     .volume = orb.vol[i].tex_id,
                                 },
                                 .matrix = {
-                                    .model = orb.vol[i].tex_to_world,
+                                    .model = orb.vol[i].texture_to_world,
                                     .view  = view_mat,
                                     .proj  = proj_mat,
                                     .inv_proj = inv_proj_mat,
@@ -3057,7 +3155,7 @@ struct VeloxChem : viamd::EventHandler {
 
     //Calculates the transition matrix heuristic
     static inline void compute_transition_matrix(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* part_charges) {
-        size_t temp_pos = md_temp_get_pos();
+        ScopedTemp temp_reset;
 
         int* donors         = (int*)   md_temp_push_zero(sizeof(int)    * num_groups);
         int* acceptors      = (int*)   md_temp_push_zero(sizeof(int)    * num_groups);
@@ -3103,37 +3201,6 @@ struct VeloxChem : viamd::EventHandler {
                 out_matrix[acceptor * num_groups + donor] = (float)contrib;
             }
         }
-
-        md_temp_set_pos_back(temp_pos);
-    }
-
-    //Takes the hole and particle charges of all atoms, and calculates the per group charges
-    static inline void accumulate_subgroup_charges(const float* hole_charges, const float* particle_charges, size_t num_charges, size_t num_subgroups, float* ligandGSCharges, float* ligandESCharges, int* atom_subgroup_map) {
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
-        float sumGSCharges = 0;
-        float sumESCharges = 0;
-        for (size_t i = 0; i < num_charges; i++) {
-            sumGSCharges += hole_charges[i];
-            sumESCharges += particle_charges[i];
-        }
-
-        for (size_t i = 0; i < num_charges; i++) {
-            int subgroup_index = atom_subgroup_map[i];
-            ligandGSCharges[subgroup_index] += hole_charges[i] / sumGSCharges;
-            ligandESCharges[subgroup_index] += particle_charges[i] / sumESCharges;
-        }
-    }
-
-    //Calculates the subgroup charges and the transition matrix
-    static inline void compute_subgroup_charges(float* hole_charges, float* particle_charges, size_t num_charges, size_t num_subgroups, int* atom_subgroup_map) {
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
-
-        //These two arrays are the group charges. They are already defined in the GroupData.
-        float* ligandGSCharges = md_array_create(float, num_subgroups, temp_alloc);
-        md_array(float) ligandESCharges = md_array_create(float, num_subgroups, temp_alloc);
-        accumulate_subgroup_charges(hole_charges, particle_charges, num_charges, num_subgroups, ligandGSCharges, ligandESCharges, atom_subgroup_map);
-        
-
     }
 
     struct InteractionCanvasState {
@@ -3354,10 +3421,6 @@ struct VeloxChem : viamd::EventHandler {
 
         bool open_context_menu = false;
 
-        uint8_t group_count = nto.group.count; //We use this later to check if group count has been updated
-
-        bool refresh = false;
-
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
             nto.group.hovered_index = -1;
@@ -3365,10 +3428,12 @@ struct VeloxChem : viamd::EventHandler {
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Settings")) {
-                    ImGui::Text("Orbital Colors");
-                    ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
+                    ImGui::Text("Iso Colors");
+                    ImGui::ColorEdit4("##Color Density", nto.iso_den.colors[0].elem);
+                    ImGui::SetItemTooltip("Color Density");
+                    ImGui::ColorEdit4("##Color Positive", nto.iso_psi.colors[0].elem);
                     ImGui::SetItemTooltip("Color Positive");
-                    ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
+                    ImGui::ColorEdit4("##Color Negative", nto.iso_psi.colors[1].elem);
                     ImGui::SetItemTooltip("Color Negative");
 
                     ImGui::Text("Transition Dipole Moments");
@@ -3415,18 +3480,20 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndListBox();
             }
             ImGui::Spacing();
-            const double iso_min = 1.0e-4;
+            const double iso_min = 1.0e-8;
             const double iso_max = 5.0;
-            double iso_val = nto.iso.values[0];             
+            double iso_val = nto.iso_psi.values[0];
             ImGui::Spacing();
-            ImGui::Text("Isovalue"); 
+            ImGui::Text("Iso Value (Ψ²)"); 
             ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Iso Value");
 
-            nto.iso.values[0] = (float)iso_val;
-            nto.iso.values[1] = -(float)iso_val;
-            nto.iso.count = 2;
-            nto.iso.enabled = true;
+            nto.iso_psi.values[0] =  (float)iso_val;
+            nto.iso_psi.values[1] = -(float)iso_val;
+            nto.iso_psi.count = 2;
+            nto.iso_psi.enabled = true;
+
+            nto.iso_den.values[0] = (float)(iso_val * iso_val);
 
             ImGui::Spacing();
 
@@ -3436,8 +3503,6 @@ struct VeloxChem : viamd::EventHandler {
             static bool edit_mode = false;
 
             ImGui::Checkbox("Edit mode", &edit_mode);
-            ImGui::SameLine();
-            refresh = ImGui::Button("Refresh");
 
             int group_counts[MAX_NTO_GROUPS] = {0};
             for (size_t i = 0; i < nto.num_atoms; ++i) {
@@ -3485,7 +3550,7 @@ struct VeloxChem : viamd::EventHandler {
                             nto.group.hovered_index = (int8_t)row_n;
                             md_bitfield_clear(&state.selection.highlight_mask);
                             for (size_t j = 0; j < nto.num_atoms; j++) {
-                                if (nto.atom_group_idx[j] == row_n) {
+                                if (nto.atom_group_idx[j] == (uint32_t)row_n) {
                                     //Add j to highlight mask
                                     md_bitfield_set_bit(&state.selection.highlight_mask, j); //TODO: Hover only works if you hold leftMouseBtn
                                 }
@@ -3528,9 +3593,9 @@ struct VeloxChem : viamd::EventHandler {
                             if (ImGui::DeleteButton("\xef\x80\x8d", button_size)) {
                                 vec4_t deleted_color = nto.group.color[row_n];
                                 for (size_t i = 0; i < nto.num_atoms; i++) {
-                                    if (nto.atom_group_idx[i] == row_n) {
+                                    if (nto.atom_group_idx[i] == (uint32_t)row_n) {
                                         nto.atom_group_idx[i] = 0;
-                                    } else if (nto.atom_group_idx[i] > row_n) {
+                                    } else if (nto.atom_group_idx[i] > (uint32_t)row_n) {
                                         nto.atom_group_idx[i] -= 1;
                                     }
                                 }
@@ -3585,10 +3650,9 @@ struct VeloxChem : viamd::EventHandler {
             if (rsp.selected != -1) {
                 // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
                 // If the occupation parameter is less than this it will not be displayed
-                const double lambda_cutoff = 0.10f;
                 for (size_t i = 0; i < MIN(ARRAY_SIZE(nto_lambda), vlx.rsp.nto[rsp.selected].occupations.count); ++i) {
                     nto_lambda[i] = vlx.rsp.nto[rsp.selected].occupations.data[lumo_idx + i];
-                    if (nto_lambda[i] < lambda_cutoff) {
+                    if (nto_lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
                         num_lambdas = (int)i;
                         break;
                     }
@@ -3597,27 +3661,36 @@ struct VeloxChem : viamd::EventHandler {
                 num_lambdas = MIN(num_lambdas, MAX_NTO_LAMBDAS);
 
                 if (nto.sel_nto_idx != rsp.selected) {
-                    nto.sel_nto_idx  = rsp.selected;
+                    nto.sel_nto_idx = rsp.selected;
                     const float samples_per_angstrom = 6.0f;
                     size_t nto_idx = (size_t)rsp.selected;
+
+                    if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        compute_nto_density_GPU(&nto.vol[NTO_Attachment], nto_idx, NtoDensity::Attachment, samples_per_angstrom);
+                        compute_nto_density_GPU(&nto.vol[NTO_Detachment], nto_idx, NtoDensity::Detachment, samples_per_angstrom);
+                    } else {
+                        nto.vol_task[NTO_Attachment] = compute_nto_density_async(&nto.vol[NTO_Attachment], nto_idx, NtoDensity::Attachment, samples_per_angstrom);
+                        nto.vol_task[NTO_Detachment] = compute_nto_density_async(&nto.vol[NTO_Detachment], nto_idx, NtoDensity::Detachment, samples_per_angstrom);
+                    }
+
                     for (int i = 0; i < num_lambdas; ++i) {
-                        int pi = i * 2 + 0;
-                        int hi = i * 2 + 1;
+                        int pi = NTO_Part_0 + i;
+                        int hi = NTO_Hole_0 + i;
                         size_t lambda_idx = (size_t)i;
 
                         if (task_system::task_is_running(nto.vol_task[pi])) {
-                            task_system::task_interrupt(nto.vol_task[pi]);
+                            task_system::task_interrupt (nto.vol_task[pi]);
                         }
                         if (task_system::task_is_running(nto.vol_task[hi])) {
-                            task_system::task_interrupt(nto.vol_task[hi]);
+                            task_system::task_interrupt (nto.vol_task[hi]);
                         }
 
                         if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                            compute_nto_GPU(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                            compute_nto_GPU(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            compute_nto_GPU(&nto.vol[pi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            compute_nto_GPU(&nto.vol[hi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                         } else {
-                            nto.vol_task[pi] = compute_nto_async(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                            nto.vol_task[hi] = compute_nto_async(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            nto.vol_task[pi] = compute_nto_async(&nto.vol[pi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            nto.vol_task[hi] = compute_nto_async(&nto.vol[hi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                         }
 
                     }
@@ -3634,7 +3707,7 @@ struct VeloxChem : viamd::EventHandler {
 
             ImVec2 grid_p0 = canvas_p0;
             ImVec2 grid_p1 = canvas_p0 + canvas_sz * ImVec2(0.5f, 1.0f);
-            ImVec2 win_sz = (grid_p1 - grid_p0) / ImVec2(1.0f, (float)(num_lambdas * 2));
+            ImVec2 win_sz = (grid_p1 - grid_p0) / ImVec2(1.0f, 2.0f);
             win_sz.x = floorf(win_sz.x);
             win_sz.y = floorf(win_sz.y);
 
@@ -3676,8 +3749,15 @@ struct VeloxChem : viamd::EventHandler {
 
                 ImRect hovered_canvas_rect = {};
 
-                // Draw P / H orbitals
-                for (int i = 0; i < num_lambdas * 2; ++i) {
+                int nto_target_idx[2] = {
+                    NTO_Attachment,
+                    NTO_Detachment,
+                };
+
+                // Draw Attachment / Detachment
+                for (int i = 0; i < 2; ++i) {
+                    int idx = nto_target_idx[i];
+
                     ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
                     ImVec2 p1 = grid_p0 + win_sz * ImVec2(1.0f, (float)(i+1));
                     ImRect rect = {p0, p1};
@@ -3713,18 +3793,18 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
-                    const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
+                    const char* lbl = ((i & 1) == 0) ? "Attachment" : "Detachment";
 
-#if 0
+#if DEBUG
                     char lbls[64];
                     snprintf(lbls, sizeof(lbls), "hovered_atom_idx: %i, hovered_bond_idx: %i", state.selection.atom_idx.hovered, state.selection.bond_idx.hovered);
 #endif
 
-                    char buf[32];
-                    snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
+                    //char buf[32];
+                    //snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
+                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[idx], p0, p1, { 0,1 }, { 1,0 });
+                    //draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
 
                     if (nto.dipole.enabled) {
@@ -3734,8 +3814,8 @@ struct VeloxChem : viamd::EventHandler {
                         vec3_t magn_vec = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
                         vec3_t elec_vec = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
 
-						magn_vec *= nto.dipole.vector_scale * BOHR_TO_ANGSTROM;
-						elec_vec *= nto.dipole.vector_scale * BOHR_TO_ANGSTROM;
+						magn_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
+						elec_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
 
                         auto proj_point = [MVP, win_sz, p0](vec3_t point) -> ImVec2 {
                             const vec4_t p = mat4_mul_vec4(MVP, vec4_from_vec3(point, 1.0));
@@ -3814,8 +3894,10 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p1.y};
                     draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
                 }
-                for (int i = 1; i < num_lambdas * 2; ++i) {
-                    float y = floorf(canvas_p0.y + canvas_sz.y / ((float)num_lambdas * 2.0f) * i);
+
+                int num_subwindows = 2;
+                for (int i = 1; i < num_subwindows; ++i) {
+                    float y = floorf(canvas_p0.y + canvas_sz.y / ((float)num_subwindows) * i);
                     float x0 = canvas_p0.x;
                     float x1 = floorf(canvas_p0.x + canvas_sz.x * (i & 1 ? 0.5f : 1.0f));
                     draw_list->AddLine({x0, y}, {x1, y}, IM_COL32(0, 0, 0, 255));
@@ -3831,12 +3913,12 @@ struct VeloxChem : viamd::EventHandler {
                 int width  = MAX(1, (int)win_sz.x);
                 int height = MAX(1, (int)win_sz.y);
 
-                int num_win = num_lambdas * 2;
+                const int num_win = 2;
 
                 auto& gbuf = nto.gbuf;
                 if ((int)gbuf.width != width || (int)gbuf.height != height) {
                     init_gbuffer(&gbuf, width, height);
-                    for (int i = 0; i < num_win; ++i) {
+                    for (int i : nto_target_idx) {
                         gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
                     }
                 }
@@ -4046,60 +4128,62 @@ struct VeloxChem : viamd::EventHandler {
                         .view = view_mat,
                         .proj = proj_mat,
                         .norm = view_mat,
-                },
-                .inv = {
+                    },
+                    .inv = {
                         .proj = inv_proj_mat,
-                }
-                },
+                    }
+                    },
                     .clip_planes = {
                         .near = nto.camera.near_plane,
                         .far  = nto.camera.far_plane,
-                },
-                .resolution = {win_sz.x, win_sz.y},
-                .fov_y = nto.camera.fov_y,
+                    },
+                    .resolution = {win_sz.x, win_sz.y},
+                    .fov_y = nto.camera.fov_y,
                 };
 
                 postprocessing::shade_and_postprocess(postprocess_desc, view_param);
                 POP_GPU_SECTION()
 
-                    if (nto.iso.enabled) {
-                        PUSH_GPU_SECTION("NTO RAYCAST")
-                            for (int i = 0; i < num_win; ++i) {
-                                volume::RenderDesc vol_desc = {
-                                    .render_target = {
-                                        .depth  = nto.gbuf.tex.depth,
-                                        .color  = nto.iso_tex[i],
-                                        .width  = nto.gbuf.width,
-                                        .height = nto.gbuf.height,
-                                        .clear_color = true,
-                                },
-                                .texture = {
-                                        .volume = nto.vol[i].tex_id,
-                                },
-                                .matrix = {
-                                        .model = nto.vol[i].tex_to_world,
-                                        .view  = view_mat,
-                                        .proj  = proj_mat,
-                                        .inv_proj = inv_proj_mat,
-                                },
-                                .iso = {
-                                        .enabled = true,
-                                        .count  = (size_t)nto.iso.count,
-                                        .values = nto.iso.values,
-                                        .colors = nto.iso.colors,
-                                },
-                                .shading = {
-                                        .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
-                                        .roughness = 0.3f,
-                                        .dir_radiance = {10,10,10},
-                                        .ior = 1.5f,
-                                },
-                                .voxel_spacing = nto.vol[i].step_size,
-                                };
-                                volume::render_volume(vol_desc);
-                            }
-                        POP_GPU_SECTION();
+                PUSH_GPU_SECTION("NTO RAYCAST")
+                for (int i : nto_target_idx) {
+                    const IsoDesc& iso = (i == NTO_Attachment || i == NTO_Detachment) ? nto.iso_den : nto.iso_psi;
+
+                    if (iso.enabled) {
+                        volume::RenderDesc vol_desc = {
+                            .render_target = {
+                                .depth  = nto.gbuf.tex.depth,
+                                .color  = nto.iso_tex[i],
+                                .width  = nto.gbuf.width,
+                                .height = nto.gbuf.height,
+                                .clear_color = true,
+                            },
+                            .texture = {
+                                .volume = nto.vol[i].tex_id,
+                            },
+                            .matrix = {
+                                .model = nto.vol[i].texture_to_world,
+                                .view  = view_mat,
+                                .proj  = proj_mat,
+                                .inv_proj = inv_proj_mat,
+                            },
+                            .iso = {
+                                .enabled = iso.enabled,
+                                .count   = iso.count,
+                                .values  = iso.values,
+                                .colors  = iso.colors,
+                            },
+                            .shading = {
+                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                .roughness = 0.3f,
+                                .dir_radiance = {10,10,10},
+                                .ior = 1.5f,
+                            },
+                            .voxel_spacing = nto.vol[i].step_size,
+                        };
+                        volume::render_volume(vol_desc);
                     }
+                }
+                POP_GPU_SECTION();
 
                 // Reset state
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -4142,7 +4226,7 @@ struct VeloxChem : viamd::EventHandler {
                             //Is the atom selected?
                             if (md_bitfield_test_bit(&state.selection.selection_mask, j)) {
                                 //If so, set its group to the selected group index
-                                nto.atom_group_idx[j] = (uint8_t)i;
+                                nto.atom_group_idx[j] = (uint32_t)i;
                             }
                         }
                     }
@@ -4152,7 +4236,7 @@ struct VeloxChem : viamd::EventHandler {
             if (nto.group.count < MAX_NTO_GROUPS) {
                 if (ImGui::MenuItem("Add to new group")) {
                     //Create a new group and add an item to it
-                    uint8_t group_idx = (uint8_t)(nto.group.count++);
+                    uint32_t group_idx = (uint32_t)(nto.group.count++);
                     for (size_t i = 0; i < nto.num_atoms; i++) {
                         if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
                             //If so, set its group to the selected group index
@@ -4165,21 +4249,21 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         // Create hash to check for changes to trigger update of colors in gl representation
-        uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, sizeof(uint8_t) * nto.num_atoms, 0);
+        uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, sizeof(uint32_t) * nto.num_atoms, 0);
         uint64_t color_hash    = md_hash64(nto.group.color, sizeof(nto.group.color), atom_idx_hash);
 
-        static uint64_t old_color_hash = 0;
-        if (color_hash != old_color_hash) {
-            old_color_hash = color_hash;
+        static uint64_t cur_color_hash = 0;
+        if (color_hash != cur_color_hash) {
+            cur_color_hash = color_hash;
             update_nto_group_colors();
         }
 
         // Create hash to check for changes to trigger recomputation of transition matrix
-        uint64_t matrix_hash = atom_idx_hash ^ nto.sel_nto_idx;
-        static uint64_t old_matrix_hash = 0;
+        uint64_t matrix_hash = atom_idx_hash ^ nto.sel_nto_idx ^ nto.group.count;
+        static uint64_t cur_matrix_hash = 0;
 
-        if (matrix_hash != old_matrix_hash || nto.group.count != group_count || refresh) {
-            old_matrix_hash = matrix_hash;
+        if (matrix_hash != cur_matrix_hash) {
+            cur_matrix_hash = matrix_hash;
 
             // Resize transition matrix to the correct size
             if (nto.transition_matrix_dim != nto.group.count) {
@@ -4203,29 +4287,35 @@ struct VeloxChem : viamd::EventHandler {
                 const float samples_per_angstrom = 6.0f;
                 const size_t nto_idx = (size_t)nto.sel_nto_idx;
 
-                task_system::ID eval_part = 0;
-                task_system::ID seg_part  = 0;
-                task_system::ID eval_hole = 0;
-                task_system::ID seg_hole  = 0;
-
-                if (compute_transition_group_values_async(&eval_part, &seg_part, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
-                    compute_transition_group_values_async(&eval_hole, &seg_hole, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
-                {
-                    task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
-                        VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
-                        compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
-                    }, &nto);
-
-                    task_system::set_task_dependency(compute_matrix_task, seg_part);
-                    task_system::set_task_dependency(compute_matrix_task, seg_hole);
-
-                    task_system::enqueue_task(eval_part);
-                    task_system::enqueue_task(eval_hole);
-
-                    nto.seg_task[0] = seg_part;
-                    nto.seg_task[1] = seg_hole;
+                if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                    md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_part, nto.group.count, nto.vol[NTO_Attachment].tex_id, nto.vol[NTO_Attachment].dim, nto.vol[NTO_Attachment].step_size.elem, (const float*)nto.vol[NTO_Attachment].world_to_model.elem, (const float*)nto.vol[NTO_Attachment].index_to_world.elem, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
+                    md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_hole, nto.group.count, nto.vol[NTO_Detachment].tex_id, nto.vol[NTO_Detachment].dim, nto.vol[NTO_Detachment].step_size.elem, (const float*)nto.vol[NTO_Detachment].world_to_model.elem, (const float*)nto.vol[NTO_Detachment].index_to_world.elem, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
+                    compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
                 } else {
-                    MD_LOG_DEBUG("An error occured when computing nto group values");
+                    task_system::ID eval_attach = 0;
+                    task_system::ID seg_attach  = 0;
+                    task_system::ID eval_detach = 0;
+                    task_system::ID seg_detach  = 0;
+
+                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
+                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
+                    {
+                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
+                            VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
+                            compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
+                            }, &nto);
+
+                        task_system::set_task_dependency(compute_matrix_task, seg_attach);
+                        task_system::set_task_dependency(compute_matrix_task, seg_detach);
+
+                        task_system::enqueue_task(eval_attach);
+                        task_system::enqueue_task(eval_detach);
+
+                        nto.seg_task[0] = seg_attach;
+                        nto.seg_task[1] = seg_detach;
+                    } else {
+                        MD_LOG_DEBUG("An error occured when computing nto group values");
+                    }
                 }
             }
         }

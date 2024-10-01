@@ -16,6 +16,9 @@ bool init_texture_1D(GLuint* texture, int width, GLenum format);
 bool init_texture_2D(GLuint* texture, int width, int height, GLenum format);
 bool init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format);
 
+bool get_texture_dim(int dim[3], GLuint texture);
+bool get_texture_format(GLenum* format, GLuint texture);
+
 bool free_texture(GLuint* texture);
 
 // We assume you set the entire data for the texture
