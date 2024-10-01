@@ -23,6 +23,8 @@
 #include <md_csv.h>
 #include <md_xvg.h>
 
+#include <algorithm>
+
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
@@ -918,6 +920,12 @@ struct VeloxChem : viamd::EventHandler {
         return ImVec4(r, g, b, color.w);
     }
 
+    static inline void sort_indexes(int8_t* indexes, float* values, size_t size) {
+        std::sort(indexes[0], indexes[size], [&](int8_t a, int8_t b) {
+            return values[a] > values[b];  // Sort in descending order
+            });
+    }
+
     static inline ImVec2 draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
         // Get the draw list from the current window
 
@@ -1183,6 +1191,35 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
+        //bool next_start_text_visible = true;
+        //bool next_end_text_visible = true;
+
+        //Calculate text visibility
+        md_array(bool) show_start_text = md_array_create(bool, nto->group.count, temp_alloc);
+        md_array(bool) show_end_text = md_array_create(bool, nto->group.count, temp_alloc);
+        md_array(int8_t) size_order = md_array_create(int8_t, nto->group.count, temp_alloc);
+        md_array(float) text_sizes = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(ImRect) rectangles = md_array_create(ImRect, nto->group.count, temp_alloc);
+
+        
+
+
+        for (int8_t i = 0; i < nto->group.count; i++) {
+            size_order[i] = i;
+            text_sizes[i] = MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
+            rectangles[i] = { start_positions[i], start_positions[i] + text_sizes[i], 0, 1 };
+        }
+        
+
+        sort_indexes(size_order, text_sizes, nto->group.count);
+        for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
+            for (int8_t j = i - 1; j >= 0 ; j--) {//The bigger ones
+                if (show_start_text[size_order[j]] && rectangles[size_order[i]].Overlaps(rectangles[size_order[j]])) {
+                    show_start_text[i] = false;
+                    break;
+                }
+            }
+        }
 
 
         //Draw bars
@@ -1190,11 +1227,19 @@ struct VeloxChem : viamd::EventHandler {
             if (hole_percentages[i] != 0.0) {
                 ImVec4 bar_color = vec_cast(nto->group.color[i]);
 
-                char start_label[16];
-                char end_label[16];
+                char start_label1[16];
+                char end_label1[16]; 
 
-                snprintf(start_label, sizeof(start_label), "%3.2f%%", hole_percentages[i] * 100);
-                snprintf(end_label, sizeof(end_label), "%3.2f%%", part_percentages[i] * 100);
+                snprintf(start_label1, sizeof(start_label1), "%3.2f%%", hole_percentages[i] * 100);
+                snprintf(end_label1, sizeof(end_label1), "%3.2f%%", part_percentages[i] * 100);
+
+                if (i) {
+
+                }
+                char start_label2[16];
+                char end_label2[16];
+                snprintf(start_label2, sizeof(start_label1), "%3.2f%%", hole_percentages[i + 1] * 100);
+                snprintf(end_label2, sizeof(end_label1), "%3.2f%%", part_percentages[i + 1] * 100);
 
                 //Calculate start
                 ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
@@ -1210,11 +1255,11 @@ struct VeloxChem : viamd::EventHandler {
 
                 bool index_hovered = false;
                 if (start_bar.Contains(mouse_pos)) {
-                    MEMCPY(mouse_label, start_label, sizeof(start_label));
+                    MEMCPY(mouse_label, start_label1, sizeof(start_label1));
                     index_hovered = true;
                 }
                 else if (end_bar.Contains(mouse_pos)) {
-                    MEMCPY(mouse_label, end_label, sizeof(end_label));
+                    MEMCPY(mouse_label, end_label1, sizeof(end_label1));
                     index_hovered = true;
                 }
 
@@ -1231,14 +1276,16 @@ struct VeloxChem : viamd::EventHandler {
                 //Draw start
                 draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
                 draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
-                draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, { 0.5, -0.2 });
-                draw_aligned_text(draw_list, start_label, start_midpoint, { 0.5, -1.2 });
+                if (show_start_text[i]) {
+                    draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, { 0.5, -0.2 });
+                    draw_aligned_text(draw_list, start_label1, start_midpoint, { 0.5, -1.2 });
+                }
 
                 //Draw end
                 draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
                 draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
                 draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, { 0.5, 1.2 });
-                draw_aligned_text(draw_list, end_label, end_midpoint, { 0.5, 2.2 });
+                draw_aligned_text(draw_list, end_label1, end_midpoint, { 0.5, 2.2 });
             }
 
         }
