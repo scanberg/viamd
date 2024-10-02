@@ -1364,7 +1364,7 @@ struct VeloxChem : viamd::EventHandler {
                 rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0, midpoint + text_sizes[i] * 0.5f, 1 };
             }
 
-            sort_indexes(size_order, hole_percentages, nto->group.count);
+            sort_indexes(size_order, part_percentages, nto->group.count);
             for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
                 for (int8_t j = i - 1; j >= 0; j--) {//The bigger ones
                     bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
