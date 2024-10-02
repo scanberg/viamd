@@ -1043,7 +1043,8 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline void sort_indexes(int8_t* indexes, float* values, size_t size) {
-        std::sort(indexes[0], indexes[size], [&](int8_t a, int8_t b) {
+        int8_t* last = indexes + size;
+        std::sort(indexes, last, [&](int8_t a, int8_t b) {
             return values[a] > values[b];  // Sort in descending order
             });
     }
@@ -1082,7 +1083,7 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
     }
 
-    static inline void im_sankey_diagram(ApplicationState* state, ImRect area, Nto* nto) {
+    static inline void im_sankey_diagram(ApplicationState* state, ImRect area, Nto* nto, bool hide_text_overlaps) {
         ScopedTemp temp_reset;
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         /*
@@ -1324,27 +1325,60 @@ struct VeloxChem : viamd::EventHandler {
         md_array(int8_t) size_order = md_array_create(int8_t, nto->group.count, temp_alloc);
         md_array(float) text_sizes = md_array_create(float, nto->group.count, temp_alloc);
         md_array(ImRect) rectangles = md_array_create(ImRect, nto->group.count, temp_alloc);
-
-        
-
-
         for (int8_t i = 0; i < nto->group.count; i++) {
-            size_order[i] = i;
-            text_sizes[i] = MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
-            rectangles[i] = { start_positions[i], start_positions[i] + text_sizes[i], 0, 1 };
+            show_start_text[i] = true;
+            show_end_text[i] = true;
         }
-        
 
-        sort_indexes(size_order, text_sizes, nto->group.count);
-        for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
-            for (int8_t j = i - 1; j >= 0 ; j--) {//The bigger ones
-                if (show_start_text[size_order[j]] && rectangles[size_order[i]].Overlaps(rectangles[size_order[j]])) {
-                    show_start_text[i] = false;
-                    break;
+        
+        if (hide_text_overlaps) {
+            //Start texts
+            for (int8_t i = 0; i < nto->group.count; i++) {
+                size_order[i] = i;
+                text_sizes[i] = MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
+
+                float midpoint = start_positions[i] + bars_avail_width * hole_percentages[i] * 0.5f;
+                rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0, midpoint + text_sizes[i] * 0.5f, 1};
+            }
+        
+            sort_indexes(size_order, hole_percentages, nto->group.count);
+            for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
+                for (int8_t j = i - 1; j >= 0 ; j--) {//The bigger ones
+                    bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
+                    if (hole_percentages[i] == 0.0) {
+                        show_start_text[size_order[i]] = false;
+                        break;
+                    }
+                    else if (show_start_text[size_order[j]] && rectangles[size_order[i]].Overlaps(rectangles[size_order[j]])) {
+                        show_start_text[size_order[i]] = false;
+                        break;
+                    }
+                }
+            }
+
+            //End texts
+            for (int8_t i = 0; i < nto->group.count; i++) {
+                size_order[i] = i;
+
+                float midpoint = end_positions[i] + bars_avail_width * part_percentages[i] * 0.5f;
+                rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0, midpoint + text_sizes[i] * 0.5f, 1 };
+            }
+
+            sort_indexes(size_order, hole_percentages, nto->group.count);
+            for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
+                for (int8_t j = i - 1; j >= 0; j--) {//The bigger ones
+                    bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
+                    if (hole_percentages[i] == 0.0) {
+                        show_end_text[size_order[i]] = false;
+                        break;
+                    }
+                    else if (show_end_text[size_order[j]] && rectangles[size_order[i]].Overlaps(rectangles[size_order[j]])) {
+                        show_end_text[size_order[i]] = false;
+                        break;
+                    }
                 }
             }
         }
-
 
         //Draw bars
         for (int i = 0; i < nto->group.count; i++) {
@@ -1357,9 +1391,6 @@ struct VeloxChem : viamd::EventHandler {
                 snprintf(start_label1, sizeof(start_label1), "%3.2f%%", hole_percentages[i] * 100);
                 snprintf(end_label1, sizeof(end_label1), "%3.2f%%", part_percentages[i] * 100);
 
-                if (i) {
-
-                }
                 char start_label2[16];
                 char end_label2[16];
                 snprintf(start_label2, sizeof(start_label1), "%3.2f%%", hole_percentages[i + 1] * 100);
@@ -1408,8 +1439,10 @@ struct VeloxChem : viamd::EventHandler {
                 //Draw end
                 draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
                 draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
-                draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, { 0.5, 1.2 });
-                draw_aligned_text(draw_list, end_label1, end_midpoint, { 0.5, 2.2 });
+                if (show_end_text[i]) {
+                    draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, { 0.5, 1.2 });
+                    draw_aligned_text(draw_list, end_label1, end_midpoint, { 0.5, 2.2 });
+                }
             }
         }
 
@@ -3501,8 +3534,11 @@ struct VeloxChem : viamd::EventHandler {
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
             static bool edit_mode = false;
+            static bool hide_overlap_text = true;
 
             ImGui::Checkbox("Edit mode", &edit_mode);
+            ImGui::SameLine();
+            ImGui::Checkbox("Hide overlapping text", &hide_overlap_text);
 
             int group_counts[MAX_NTO_GROUPS] = {0};
             for (size_t i = 0; i < nto.num_atoms; ++i) {
@@ -3884,7 +3920,7 @@ struct VeloxChem : viamd::EventHandler {
                     //compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
-                    im_sankey_diagram(&state, {p0.x, p0.y, p1.x, p1.y}, &nto);
+                    im_sankey_diagram(&state, {p0.x, p0.y, p1.x, p1.y}, &nto, hide_overlap_text);
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
                 }
