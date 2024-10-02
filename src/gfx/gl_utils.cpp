@@ -295,6 +295,28 @@ bool gl::init_texture_3D(GLuint* texture, int width, int height, int depth, GLen
     return true;
 }
 
+bool gl::get_texture_dim(int dim[3], GLuint tex) {
+    if (glIsTexture(tex)) {
+        glBindTexture(GL_TEXTURE_3D, tex);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &dim[0]);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &dim[1]);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &dim[2]);
+        glBindTexture(GL_TEXTURE_3D, 0);
+        return true;
+    }
+    return false;
+}
+
+bool gl::get_texture_format(GLenum* format, GLuint tex) {
+    if (glIsTexture(tex)) {
+        glBindTexture(GL_TEXTURE_3D, tex);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+        glBindTexture(GL_TEXTURE_3D, 0);
+        return true;
+    }
+    return false;
+}
+
 bool gl::free_texture(GLuint* texture) {
     if (!glIsTexture(*texture)) return false;
     glDeleteTextures(1, texture);
