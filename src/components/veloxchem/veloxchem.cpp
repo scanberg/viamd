@@ -2326,7 +2326,7 @@ struct VeloxChem : viamd::EventHandler {
                 // Selected display text
                 if (rsp.selected != -1) {
                     ImGui::Text((const char*)u8"Selected: State %i: Energy = %.2f eV, Wavelength = %.0f nm, f = %.3f, R = %.3f 10⁻⁴⁰ cgs",
-                                rsp.selected + 1, (float)rsp.x_unit_peaks[rsp.selected], 1239.84193 / (float)rsp.x_unit_peaks[rsp.selected],
+                                rsp.selected + 1, (float)vlx.rsp.absorption_ev[rsp.selected], 1239.84193 / (float)vlx.rsp.absorption_ev[rsp.selected],
                                 (float)y_osc_peaks[rsp.selected], (float)y_cgs_peaks[rsp.selected]);
                 } else {
                     ImGui::Text("Selected:");
