@@ -3711,7 +3711,7 @@ struct VeloxChem : viamd::EventHandler {
                                 nto.group.color[nto.group.count] = deleted_color;*/
                                 delete_group(row_n);
                             }
-                            imgui_delayed_hover_tooltip("Delete this group (related atoms will be unassigned)");
+                            imgui_delayed_hover_tooltip("Delete group (related atoms will be unassigned)");
 
                             //Down Arrow
                             ImGui::TableNextColumn();
@@ -3725,7 +3725,7 @@ struct VeloxChem : viamd::EventHandler {
                                             swap_groups(i, i + 1);
                                         }
                                     }
-                                    imgui_delayed_hover_tooltip("Move this group to the bottom");
+                                    imgui_delayed_hover_tooltip("Move to bottom");
 
                                 }
                                 else {
@@ -3750,7 +3750,7 @@ struct VeloxChem : viamd::EventHandler {
                                         //}
                                         swap_groups(row_n, row_n + 1);
                                     }
-                                    imgui_delayed_hover_tooltip("Move this group down one step (Ctrl-click to move to bottom)");
+                                    imgui_delayed_hover_tooltip("Move down (Ctrl-click to move to bottom)");
                                 }
                             }
 
@@ -3767,13 +3767,13 @@ struct VeloxChem : viamd::EventHandler {
                                             swap_groups(i, i - 1);
                                         }
                                     }
-                                    imgui_delayed_hover_tooltip("Move this group to the top");
+                                    imgui_delayed_hover_tooltip("Move to top");
                                 }
                                 else {
                                     if (ImGui::Button(ICON_FA_ANGLE_UP, button_size)) {
                                         swap_groups(row_n, row_n - 1);
                                     }
-                                    imgui_delayed_hover_tooltip("Move this group up one step (Ctrl-click to move to top)");
+                                    imgui_delayed_hover_tooltip("Move up (Ctrl-click to move to top)");
                                 }
                             }
 
@@ -3791,7 +3791,7 @@ struct VeloxChem : viamd::EventHandler {
                                     }
                                     delete_group(row_n);
                                 }
-                                imgui_delayed_hover_tooltip("Merge this group with the one above");
+                                imgui_delayed_hover_tooltip("Merge up");
                             }
                         }
                     }
