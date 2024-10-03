@@ -1944,6 +1944,15 @@ struct VeloxChem : viamd::EventHandler {
     }
     */
 
+    enum {
+        SortType_AtomIdx,
+        SortType_AtomSymbol,
+        SortType_X,
+        SortType_Y,
+        SortType_Z,
+        SortType_ValetGroup,
+    };
+
     void draw_summary_window(ApplicationState& state) {
         if (!scf.show_window) { return; }
         if (vlx.scf.iter.count == 0) { return; }
@@ -2020,12 +2029,12 @@ struct VeloxChem : viamd::EventHandler {
                     static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                     if (ImGui::BeginTable("Geometry Table", 6, flags, ImVec2(600, -1), 0)) {
-                        ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Coord Z", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("VALET group", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
+                        ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f, SortType_AtomIdx);
+                        ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f, SortType_AtomSymbol);
+                        ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f, SortType_X);
+                        ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f, SortType_Y);
+                        ImGui::TableSetupColumn("Coord Z", columns_base_flags, 0.0f, SortType_Z);
+                        ImGui::TableSetupColumn("VALET group", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f, SortType_ValetGroup);
                         ImGui::TableSetupScrollFreeze(0, 1);
                         ImGui::TableHeadersRow();
 
