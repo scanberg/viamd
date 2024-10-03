@@ -24,6 +24,7 @@
 #include <md_xvg.h>
 
 #include <algorithm>
+#include <app/IconsFontAwesome6.h>
 
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
@@ -3447,12 +3448,72 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    void delete_group(int index) {
+        vec4_t deleted_color = nto.group.color[index];
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == (uint32_t)index) {
+                nto.atom_group_idx[i] = 0;
+            }
+            else if (nto.atom_group_idx[i] > (uint32_t)index) {
+                nto.atom_group_idx[i] -= 1;
+            }
+        }
+        for (int i = index; i < (int)nto.group.count - 1; ++i) {
+            nto.group.color[i] = nto.group.color[i + 1];
+            MEMCPY(nto.group.label[i], nto.group.label[i + 1], sizeof(nto.group.label[i]));
+        }
+        nto.group.count--;
+        sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
+        nto.group.color[nto.group.count] = deleted_color;
+    }
+
+    void copy_group(int8_t from_idx, int8_t to_idx) {
+        nto.group.color[to_idx] = nto.group.color[from_idx];
+        MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == to_idx) {
+                nto.atom_group_idx[i] = from_idx;
+            }
+        }
+    }
+
+    void swap_groups(int a, int b) {
+        vec4_t color = nto.group.color[a];
+        nto.group.color[a] = nto.group.color[b];
+        nto.group.color[b] = color;
+
+        char label_buf[sizeof(nto.group.label[a])];
+        //sprintf(label_buf, nto.group.label[row_n]);
+        MEMCPY(label_buf, nto.group.label[a], sizeof(nto.group.label[a])); //Current to buf
+        MEMCPY(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
+        MEMCPY(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
+
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == a) {
+                nto.atom_group_idx[i] = b;
+            }
+            else if (nto.atom_group_idx[i] == b) {
+                nto.atom_group_idx[i] = a;
+            }
+        }
+    }
+
+    static inline void imgui_delayed_hover_tooltip(const char* text) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            if (ImGui::BeginTooltip()) {
+                ImGui::Text(text);
+                ImGui::EndTooltip();
+            }
+        }
+    }
+
     void draw_nto_window(ApplicationState& state) {
         if (!nto.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
         if (vlx.rsp.nto == NULL) return;
 
         bool open_context_menu = false;
+        static bool edit_mode = false;
 
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
@@ -3482,7 +3543,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
-            const ImVec2 outer_size = {300.f, 0.f};
+            const ImVec2 outer_size = {300.f + edit_mode * 80, 0.f};
             ImGui::PushItemWidth(outer_size.x);
             ImGui::BeginGroup();
 
@@ -3533,8 +3594,12 @@ struct VeloxChem : viamd::EventHandler {
             static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_SizingFixedFit;
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
-            static bool edit_mode = false;
+            
             static bool hide_overlap_text = true;
+            bool refresh = false;
+            ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
+
+
 
             ImGui::Checkbox("Edit mode", &edit_mode);
             ImGui::SameLine();
@@ -3546,12 +3611,15 @@ struct VeloxChem : viamd::EventHandler {
                 group_counts[group_idx] += 1;
             }
 
-            if (ImGui::BeginTable("Group Table", 3 + edit_mode, flags, outer_size, 0)) {
+            if (ImGui::BeginTable("Group Table", 3 + edit_mode * 4, flags, outer_size, 0)) {
                 ImGui::TableSetupColumn("Group", columns_base_flags, 150.f);
                 ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
                 if (edit_mode) {
-                    ImGui::TableSetupColumn("##Delete", columns_base_flags, 100.0f);
+                    ImGui::TableSetupColumn("##Delete", columns_base_flags, button_size.x);
+                    ImGui::TableSetupColumn("##Move down", columns_base_flags, button_size.x);
+                    ImGui::TableSetupColumn("##Move up", columns_base_flags, button_size.x);
+                    ImGui::TableSetupColumn("##Merge up", columns_base_flags, button_size.x);
                 }
 
                 //ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
@@ -3622,12 +3690,11 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     if (edit_mode) {
-                        ImGui::TableNextColumn();
                         if (row_n > 0) {
-                            ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
+                            ImGui::TableNextColumn();
                             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - button_size.x);
-                            if (ImGui::DeleteButton("\xef\x80\x8d", button_size)) {
-                                vec4_t deleted_color = nto.group.color[row_n];
+                            if (ImGui::DeleteButton(ICON_FA_XMARK, button_size)) {
+                                /*vec4_t deleted_color = nto.group.color[row_n];
                                 for (size_t i = 0; i < nto.num_atoms; i++) {
                                     if (nto.atom_group_idx[i] == (uint32_t)row_n) {
                                         nto.atom_group_idx[i] = 0;
@@ -3641,7 +3708,90 @@ struct VeloxChem : viamd::EventHandler {
                                 }
                                 nto.group.count--;
                                 sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
-                                nto.group.color[nto.group.count] = deleted_color;
+                                nto.group.color[nto.group.count] = deleted_color;*/
+                                delete_group(row_n);
+                            }
+                            imgui_delayed_hover_tooltip("Delete this group (related atoms will be unassigned)");
+
+                            //Down Arrow
+                            ImGui::TableNextColumn();
+                            if (row_n == nto.group.count - 1) {
+                                ImGui::Dummy(button_size);
+                            }
+                            else {
+                                if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                                    if (ImGui::Button(ICON_FA_ANGLES_DOWN, button_size)) {
+                                        for (size_t i = row_n; i < nto.group.count - 1; i++) {
+                                            swap_groups(i, i + 1);
+                                        }
+                                    }
+                                    imgui_delayed_hover_tooltip("Move this group to the bottom");
+
+                                }
+                                else {
+                                    if (ImGui::Button(ICON_FA_ANGLE_DOWN, button_size)) {
+                                        //vec4_t color = nto.group.color[row_n];
+                                        //nto.group.color[row_n] = nto.group.color[row_n + 1];
+                                        //nto.group.color[row_n + 1] = color;
+
+                                        //char label_buf[sizeof(nto.group.label[row_n])];
+                                        ////sprintf(label_buf, nto.group.label[row_n]);
+                                        //MEMCPY(label_buf, nto.group.label[row_n], sizeof(nto.group.label[row_n])); //Current to buf
+                                        //MEMCPY(nto.group.label[row_n], nto.group.label[row_n + 1], sizeof(nto.group.label[row_n + 1])); //Next to current
+                                        //MEMCPY(nto.group.label[row_n + 1], label_buf, sizeof(label_buf)); //Buf to next
+
+                                        //for (size_t i = 0; i < nto.num_atoms; i++) {
+                                        //    if (nto.atom_group_idx[i] == row_n) {
+                                        //        nto.atom_group_idx[i] = row_n + 1;
+                                        //    }
+                                        //    else if (nto.atom_group_idx[i] == row_n + 1) {
+                                        //        nto.atom_group_idx[i] = row_n;
+                                        //    }
+                                        //}
+                                        swap_groups(row_n, row_n + 1);
+                                    }
+                                    imgui_delayed_hover_tooltip("Move this group down one step (Ctrl-click to move to bottom)");
+                                }
+                            }
+
+                            //Up Arrow
+                            ImGui::TableNextColumn();
+                            if (row_n == 1) {
+                                ImGui::Dummy(button_size);
+                            }
+                            else {
+                                if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                                    if (ImGui::Button(ICON_FA_ANGLES_UP, button_size)) {
+                                        int last = nto.group.count - 1;
+                                        for (size_t i = last; i >= (size_t)row_n - 1; i--) {
+                                            swap_groups(i, i - 1);
+                                        }
+                                    }
+                                    imgui_delayed_hover_tooltip("Move this group to the top");
+                                }
+                                else {
+                                    if (ImGui::Button(ICON_FA_ANGLE_UP, button_size)) {
+                                        swap_groups(row_n, row_n - 1);
+                                    }
+                                    imgui_delayed_hover_tooltip("Move this group up one step (Ctrl-click to move to top)");
+                                }
+                            }
+
+                            //Merge with above arrow
+                            ImGui::TableNextColumn();
+                            if (row_n == 1) {
+                                ImGui::Dummy(button_size);
+                            }
+                            else {
+                                if (ImGui::Button(ICON_FA_TRASH_ARROW_UP, button_size)) {
+                                    for (size_t i = 0; i < nto.num_atoms; i++) {
+                                        if (nto.atom_group_idx[i] == row_n) {
+                                            nto.atom_group_idx[i] = row_n - 1;
+                                        }
+                                    }
+                                    delete_group(row_n);
+                                }
+                                imgui_delayed_hover_tooltip("Merge this group with the one above");
                             }
                         }
                     }
