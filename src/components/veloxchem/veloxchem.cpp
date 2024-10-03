@@ -3467,6 +3467,37 @@ struct VeloxChem : viamd::EventHandler {
         nto.group.color[nto.group.count] = deleted_color;
     }
 
+    void copy_group(int8_t from_idx, int8_t to_idx) {
+        nto.group.color[to_idx] = nto.group.color[from_idx];
+        MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == to_idx) {
+                nto.atom_group_idx[i] = from_idx;
+            }
+        }
+    }
+
+    void swap_groups(int a, int b) {
+        vec4_t color = nto.group.color[a];
+        nto.group.color[a] = nto.group.color[b];
+        nto.group.color[b] = color;
+
+        char label_buf[sizeof(nto.group.label[a])];
+        //sprintf(label_buf, nto.group.label[row_n]);
+        MEMCPY(label_buf, nto.group.label[a], sizeof(nto.group.label[a])); //Current to buf
+        MEMCPY(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
+        MEMCPY(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
+
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == a) {
+                nto.atom_group_idx[i] = b;
+            }
+            else if (nto.atom_group_idx[i] == b) {
+                nto.atom_group_idx[i] = a;
+            }
+        }
+    }
+
     void draw_nto_window(ApplicationState& state) {
         if (!nto.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
@@ -3678,24 +3709,35 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::Dummy(button_size);
                             }
                             else {
-                                if (ImGui::Button(ICON_FA_ANGLE_DOWN, button_size)) {
-                                    vec4_t color = nto.group.color[row_n];
-                                    nto.group.color[row_n] = nto.group.color[row_n + 1];
-                                    nto.group.color[row_n + 1] = color;
-
-                                    char label_buf[sizeof(nto.group.label[row_n])];
-                                    //sprintf(label_buf, nto.group.label[row_n]);
-                                    MEMCPY(label_buf, nto.group.label[row_n], sizeof(nto.group.label[row_n])); //Current to buf
-                                    MEMCPY(nto.group.label[row_n], nto.group.label[row_n + 1], sizeof(nto.group.label[row_n + 1])); //Next to current
-                                    MEMCPY(nto.group.label[row_n + 1], label_buf, sizeof(label_buf)); //Buf to next
-
-                                    for (size_t i = 0; i < nto.num_atoms; i++) {
-                                        if (nto.atom_group_idx[i] == row_n) {
-                                            nto.atom_group_idx[i] = row_n + 1;
+                                if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                                    if (ImGui::Button(ICON_FA_ANGLES_DOWN, button_size)) {
+                                        for (size_t i = row_n; i < nto.group.count - 1; i++) {
+                                            swap_groups(i, i + 1);
                                         }
-                                        else if (nto.atom_group_idx[i] == row_n + 1) {
-                                            nto.atom_group_idx[i] = row_n;
-                                        }
+                                    }
+
+                                }
+                                else {
+                                    if (ImGui::Button(ICON_FA_ANGLE_DOWN, button_size)) {
+                                        //vec4_t color = nto.group.color[row_n];
+                                        //nto.group.color[row_n] = nto.group.color[row_n + 1];
+                                        //nto.group.color[row_n + 1] = color;
+
+                                        //char label_buf[sizeof(nto.group.label[row_n])];
+                                        ////sprintf(label_buf, nto.group.label[row_n]);
+                                        //MEMCPY(label_buf, nto.group.label[row_n], sizeof(nto.group.label[row_n])); //Current to buf
+                                        //MEMCPY(nto.group.label[row_n], nto.group.label[row_n + 1], sizeof(nto.group.label[row_n + 1])); //Next to current
+                                        //MEMCPY(nto.group.label[row_n + 1], label_buf, sizeof(label_buf)); //Buf to next
+
+                                        //for (size_t i = 0; i < nto.num_atoms; i++) {
+                                        //    if (nto.atom_group_idx[i] == row_n) {
+                                        //        nto.atom_group_idx[i] = row_n + 1;
+                                        //    }
+                                        //    else if (nto.atom_group_idx[i] == row_n + 1) {
+                                        //        nto.atom_group_idx[i] = row_n;
+                                        //    }
+                                        //}
+                                        swap_groups(row_n, row_n + 1);
                                     }
                                 }
                             }
@@ -3706,25 +3748,17 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::Dummy(button_size);
                             }
                             else {
-                                if (ImGui::Button(ICON_FA_ANGLE_UP, button_size)) {
-                                    vec4_t color = nto.group.color[row_n];
-                                    nto.group.color[row_n] = nto.group.color[row_n - 1];
-                                    nto.group.color[row_n - 1] = color;
-
-                                    char label_buf[sizeof(nto.group.label[row_n])];
-                                    //sprintf(label_buf, nto.group.label[row_n]);
-
-                                    MEMCPY(label_buf, nto.group.label[row_n], sizeof(nto.group.label[row_n])); //Current to buf
-                                    MEMCPY(nto.group.label[row_n], nto.group.label[row_n - 1], sizeof(nto.group.label[row_n - 1])); //Prev to current
-                                    MEMCPY(nto.group.label[row_n - 1], label_buf, sizeof(label_buf)); //Buf to prev
-
-                                    for (size_t i = 0; i < nto.num_atoms; i++) {
-                                        if (nto.atom_group_idx[i] == row_n) {
-                                            nto.atom_group_idx[i] = row_n - 1;
+                                if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                                    if (ImGui::Button(ICON_FA_ANGLES_UP, button_size)) {
+                                        int last = nto.group.count - 1;
+                                        for (size_t i = last; i >= (size_t)row_n - 1; i--) {
+                                            swap_groups(i, i - 1);
                                         }
-                                        else if (nto.atom_group_idx[i] == row_n - 1) {
-                                            nto.atom_group_idx[i] = row_n;
-                                        }
+                                    }
+                                }
+                                else {
+                                    if (ImGui::Button(ICON_FA_ANGLE_UP, button_size)) {
+                                        swap_groups(row_n, row_n - 1);
                                     }
                                 }
                             }
