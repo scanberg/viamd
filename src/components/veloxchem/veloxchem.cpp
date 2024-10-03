@@ -2019,12 +2019,13 @@ struct VeloxChem : viamd::EventHandler {
 
                     static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
-                    if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
+                    if (ImGui::BeginTable("Geometry Table", 6, flags, ImVec2(600, -1), 0)) {
                         ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
+                        ImGui::TableSetupColumn("Coord Z", columns_base_flags, 0.0f);
+                        ImGui::TableSetupColumn("VALET group", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
                         ImGui::TableSetupScrollFreeze(0, 1);
                         ImGui::TableHeadersRow();
 
@@ -2075,6 +2076,11 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::Text("%12.6f", vlx.geom.coord_y[row_n]);
                             ImGui::TableNextColumn();
                             ImGui::Text("%12.6f", vlx.geom.coord_z[row_n]);
+
+                            ImGui::TableNextColumn();
+                            int8_t group_index = nto.atom_group_idx[row_n];
+                            ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(vec_cast(nto.group.color[group_index])));
+                            ImGui::Text(nto.group.label[group_index]);
 
                             ImGui::PopStyleColor(1);
                                 
@@ -3516,7 +3522,7 @@ struct VeloxChem : viamd::EventHandler {
         static bool edit_mode = false;
 
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
+        if (ImGui::Begin("VALET viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
             nto.group.hovered_index = -1;
             bool viewport_hovered = false;
 
