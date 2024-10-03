@@ -24,6 +24,7 @@
 #include <md_xvg.h>
 
 #include <algorithm>
+#include <app/IconsFontAwesome6.h>
 
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
@@ -3447,6 +3448,25 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    void delete_group(int index) {
+        vec4_t deleted_color = nto.group.color[index];
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == (uint32_t)index) {
+                nto.atom_group_idx[i] = 0;
+            }
+            else if (nto.atom_group_idx[i] > (uint32_t)index) {
+                nto.atom_group_idx[i] -= 1;
+            }
+        }
+        for (int i = index; i < (int)nto.group.count - 1; ++i) {
+            nto.group.color[i] = nto.group.color[i + 1];
+            MEMCPY(nto.group.label[i], nto.group.label[i + 1], sizeof(nto.group.label[i]));
+        }
+        nto.group.count--;
+        sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
+        nto.group.color[nto.group.count] = deleted_color;
+    }
+
     void draw_nto_window(ApplicationState& state) {
         if (!nto.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
@@ -3483,7 +3503,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
-            const ImVec2 outer_size = {300.f + edit_mode * 50, 0.f};
+            const ImVec2 outer_size = {300.f + edit_mode * 80, 0.f};
             ImGui::PushItemWidth(outer_size.x);
             ImGui::BeginGroup();
 
@@ -3551,7 +3571,7 @@ struct VeloxChem : viamd::EventHandler {
                 group_counts[group_idx] += 1;
             }
 
-            if (ImGui::BeginTable("Group Table", 3 + edit_mode * 3, flags, outer_size, 0)) {
+            if (ImGui::BeginTable("Group Table", 3 + edit_mode * 4, flags, outer_size, 0)) {
                 ImGui::TableSetupColumn("Group", columns_base_flags, 150.f);
                 ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
                 ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
@@ -3559,6 +3579,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::TableSetupColumn("##Delete", columns_base_flags, button_size.x);
                     ImGui::TableSetupColumn("##Move down", columns_base_flags, button_size.x);
                     ImGui::TableSetupColumn("##Move up", columns_base_flags, button_size.x);
+                    ImGui::TableSetupColumn("##Merge up", columns_base_flags, button_size.x);
                 }
 
                 //ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
@@ -3632,8 +3653,8 @@ struct VeloxChem : viamd::EventHandler {
                         if (row_n > 0) {
                             ImGui::TableNextColumn();
                             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - button_size.x);
-                            if (ImGui::DeleteButton("\xef\x80\x8d", button_size)) {
-                                vec4_t deleted_color = nto.group.color[row_n];
+                            if (ImGui::DeleteButton(ICON_FA_XMARK, button_size)) {
+                                /*vec4_t deleted_color = nto.group.color[row_n];
                                 for (size_t i = 0; i < nto.num_atoms; i++) {
                                     if (nto.atom_group_idx[i] == (uint32_t)row_n) {
                                         nto.atom_group_idx[i] = 0;
@@ -3647,7 +3668,8 @@ struct VeloxChem : viamd::EventHandler {
                                 }
                                 nto.group.count--;
                                 sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
-                                nto.group.color[nto.group.count] = deleted_color;
+                                nto.group.color[nto.group.count] = deleted_color;*/
+                                delete_group(row_n);
                             }
 
                             //Down Arrow
@@ -3656,7 +3678,7 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::Dummy(button_size);
                             }
                             else {
-                                if (ImGui::Button("\xef\x81\xa3", button_size)) {
+                                if (ImGui::Button(ICON_FA_ANGLE_DOWN, button_size)) {
                                     vec4_t color = nto.group.color[row_n];
                                     nto.group.color[row_n] = nto.group.color[row_n + 1];
                                     nto.group.color[row_n + 1] = color;
@@ -3684,7 +3706,7 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::Dummy(button_size);
                             }
                             else {
-                                if (ImGui::Button("\xef\x83\x98", button_size)) {
+                                if (ImGui::Button(ICON_FA_ANGLE_UP, button_size)) {
                                     vec4_t color = nto.group.color[row_n];
                                     nto.group.color[row_n] = nto.group.color[row_n - 1];
                                     nto.group.color[row_n - 1] = color;
@@ -3704,6 +3726,22 @@ struct VeloxChem : viamd::EventHandler {
                                             nto.atom_group_idx[i] = row_n;
                                         }
                                     }
+                                }
+                            }
+
+                            //Merge with above arrow
+                            ImGui::TableNextColumn();
+                            if (row_n == 1) {
+                                ImGui::Dummy(button_size);
+                            }
+                            else {
+                                if (ImGui::Button(ICON_FA_TRASH_ARROW_UP, button_size)) {
+                                    for (size_t i = 0; i < nto.num_atoms; i++) {
+                                        if (nto.atom_group_idx[i] == row_n) {
+                                            nto.atom_group_idx[i] = row_n - 1;
+                                        }
+                                    }
+                                    delete_group(row_n);
                                 }
                             }
                         }
