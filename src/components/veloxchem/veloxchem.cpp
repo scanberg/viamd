@@ -521,6 +521,11 @@ struct VeloxChem : viamd::EventHandler {
             if (md_vlx_data_parse_file(&vlx, filename, arena)) {
                 MD_LOG_INFO("Successfully loaded VeloxChem data");
 
+                md_array_resize(vlx.geom.atom_index, vlx.geom.num_atoms, vlx.alloc);
+                for (size_t i = 0; i < vlx.geom.num_atoms; i++) {
+                    vlx.geom.atom_index[i] = i;
+                }
+
                 if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
 
                 // Scf
@@ -1953,6 +1958,72 @@ struct VeloxChem : viamd::EventHandler {
         SortType_ValetGroup,
     };
 
+    void sort_geometry(ImGuiTableSortSpecs* sort_specs) {
+        bool desc = (sort_specs->Specs->SortDirection == ImGuiSortDirection_Descending);
+        switch (sort_specs->Specs->ColumnIndex) {
+        case SortType_AtomIdx:
+            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+                switch (sort_specs->Specs->SortDirection) {
+                case ImGuiSortDirection_Descending:
+                    return vlx.geom.atom_index[a] > vlx.geom.atom_index[b];
+                case ImGuiSortDirection_Ascending:
+                    return vlx.geom.atom_index[a] < vlx.geom.atom_index[b];
+                }
+                });
+            break;
+        case SortType_AtomSymbol:
+            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+                switch (sort_specs->Specs->SortDirection) {
+                case ImGuiSortDirection_Descending:
+                    return (strcmp(vlx.geom.atom_symbol[a].buf, vlx.geom.atom_symbol[b].buf)) > 0;
+                case ImGuiSortDirection_Ascending:
+                    return (strcmp(vlx.geom.atom_symbol[b].buf, vlx.geom.atom_symbol[a].buf)) > 0;
+                }
+                });
+            break;
+        case SortType_X:
+            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+                switch (sort_specs->Specs->SortDirection) {
+                case ImGuiSortDirection_Descending:
+                    return vlx.geom.coord_x[a] > vlx.geom.coord_x[b];
+                case ImGuiSortDirection_Ascending:
+                    return vlx.geom.coord_x[a] < vlx.geom.coord_x[b];
+                }
+                });
+            break;
+        case SortType_Y:
+            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+                switch (sort_specs->Specs->SortDirection) {
+                case ImGuiSortDirection_Descending:
+                    return vlx.geom.coord_y[a] > vlx.geom.coord_y[b];
+                case ImGuiSortDirection_Ascending:
+                    return vlx.geom.coord_y[a] < vlx.geom.coord_y[b];
+                }
+                });
+            break;
+        case SortType_Z:
+            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+                switch (sort_specs->Specs->SortDirection) {
+                case ImGuiSortDirection_Descending:
+                    return vlx.geom.coord_z[a] > vlx.geom.coord_z[b];
+                case ImGuiSortDirection_Ascending:
+                    return vlx.geom.coord_z[a] < vlx.geom.coord_z[b];
+                }
+                });
+            break;
+        case SortType_ValetGroup:
+            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+                switch (sort_specs->Specs->SortDirection) {
+                case ImGuiSortDirection_Descending:
+                    return (strcmp(nto.group.label[a], nto.group.label[b])) > 0;
+                case ImGuiSortDirection_Ascending:
+                    return (strcmp(nto.group.label[b], nto.group.label[a])) > 0;
+                }
+                });
+            break;
+        }
+    }
+
     void draw_summary_window(ApplicationState& state) {
         if (!scf.show_window) { return; }
         if (vlx.scf.iter.count == 0) { return; }
@@ -2024,9 +2095,9 @@ struct VeloxChem : viamd::EventHandler {
             if (ImGui::TreeNode("Geometry")) {
                 if (vlx.geom.num_atoms) {
                     static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
-                                                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
+                                                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Sortable;
 
-                    static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
+                    static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_DefaultSort;
 
                     if (ImGui::BeginTable("Geometry Table", 6, flags, ImVec2(600, -1), 0)) {
                         ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f, SortType_AtomIdx);
@@ -2038,14 +2109,24 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::TableSetupScrollFreeze(0, 1);
                         ImGui::TableHeadersRow();
 
+                        if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+                            if (sort_specs->SpecsDirty) {
+                                //Update the sorting
+                                sort_geometry(sort_specs);
+                                //Then
+                                sort_specs->SpecsDirty = false;
+                            }
+                        }
+
                         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                         ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                         bool item_hovered = false;
                         for (int row_n = 0; row_n < vlx.geom.num_atoms; row_n++) {
+                            int atom_idx = vlx.geom.atom_index[row_n];
 
                             ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                            bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
+                            bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, atom_idx); //If atom is selected, mark it as such
+                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, atom_idx); //If atom is hovered,  mark it as such
                             bool hov_col = false;
                             ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                             ImGui::TableNextColumn();
@@ -2058,36 +2139,36 @@ struct VeloxChem : viamd::EventHandler {
                             }
 
                             char lable[16];
-                            sprintf(lable, "%i", row_n + 1);
+                            sprintf(lable, "%i", atom_idx + 1);
                             ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
                             if (ImGui::TableGetHoveredRow() == row_n + 1) {
-                                if (state.mold.mol.atom.count > row_n) {
+                                if (state.mold.mol.atom.count > atom_idx) {
                                     md_bitfield_clear(&state.selection.highlight_mask);
-                                    md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, atom_idx);
                                     item_hovered = true;
 
                                     //Selection
                                     if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                        md_bitfield_set_bit(&state.selection.selection_mask, row_n);
+                                        md_bitfield_set_bit(&state.selection.selection_mask, atom_idx);
                                     }
                                     //Deselect
                                     else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                        md_bitfield_clear_bit(&state.selection.selection_mask, row_n);
+                                        md_bitfield_clear_bit(&state.selection.selection_mask, atom_idx);
                                     }
                                 }
                             }
 
                             ImGui::TableNextColumn();
-                            ImGui::Text(vlx.geom.atom_symbol[row_n].buf);
+                            ImGui::Text(vlx.geom.atom_symbol[atom_idx].buf);
                             ImGui::TableNextColumn();
-                            ImGui::Text("%12.6f", vlx.geom.coord_x[row_n]);
+                            ImGui::Text("%12.6f", vlx.geom.coord_x[atom_idx]);
                             ImGui::TableNextColumn();
-                            ImGui::Text("%12.6f", vlx.geom.coord_y[row_n]);
+                            ImGui::Text("%12.6f", vlx.geom.coord_y[atom_idx]);
                             ImGui::TableNextColumn();
-                            ImGui::Text("%12.6f", vlx.geom.coord_z[row_n]);
+                            ImGui::Text("%12.6f", vlx.geom.coord_z[atom_idx]);
 
                             ImGui::TableNextColumn();
-                            int8_t group_index = nto.atom_group_idx[row_n];
+                            int8_t group_index = nto.atom_group_idx[atom_idx];
                             ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, ImGui::ColorConvertFloat4ToU32(vec_cast(nto.group.color[group_index])));
                             ImGui::Text(nto.group.label[group_index]);
 
