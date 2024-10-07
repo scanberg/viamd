@@ -23,11 +23,16 @@
 #include <md_csv.h>
 #include <md_xvg.h>
 
+#include <algorithm>
+#include <app/IconsFontAwesome6.h>
+
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
-#define DEFAULT_SAMPLES_PER_ANGSTROM 6
-#define MAX_GROUPS 16
+#define DEFAULT_SAMPLES_PER_ANGSTROM 8
+#define MAX_NTO_GROUPS 16
+#define MAX_NTO_LAMBDAS 3
+#define NTO_LAMBDA_CUTOFF_VALUE 0.1
 
 #define IM_GREEN ImVec4{0, 1, 0, 1}
 #define IM_RED ImVec4{1, 0, 0, 1}
@@ -46,6 +51,23 @@ inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
 inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
 inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
+// This is the internal storage order of volumes and textures related to NTOs
+enum NTO {
+    NTO_Attachment,
+    NTO_Part_0,
+    NTO_Part_1,
+    NTO_Part_2,
+    NTO_Detachment,
+    NTO_Hole_0,
+    NTO_Hole_1,
+    NTO_Hole_2,
+};
+
+enum class NtoDensity {
+    Attachment,
+    Detachment,
+};
+
 enum class VolumeRes {
     Low,
     Mid,
@@ -53,6 +75,19 @@ enum class VolumeRes {
     Count,
 };
 
+enum x_unit_t {
+    X_UNIT_EV,
+    X_UNIT_NM,
+    X_UNIT_CM_INVERSE,
+    X_UNIT_HARTREE,
+};
+
+enum broadening_mode_t {
+    BROADENING_GAUSSIAN,
+    BROADENING_LORENTZIAN,
+};
+
+// Predefined samples per Ångström for corresponding VolumeRes
 static const float vol_res_scl[3] = {
     4.0f,
     8.0f,
@@ -65,21 +100,21 @@ struct OBB {
     vec3_t max_ext;
 };
 
-// Compute an oriented bounding box (OBB) for the supplied PGTOS
-OBB compute_pgto_obb(const mat3_t& PCA, const md_gto_t* pgtos, size_t num_pgtos) {
+// Compute an oriented bounding box (OBB) for the supplied gto
+static inline OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t num_gto) {
     mat4_t Ri  = mat4_from_mat3(PCA);
 
     // Compute min and maximum extent along the PCA axes
-    vec3_t min_ext = { FLT_MAX, FLT_MAX, FLT_MAX};
-    vec3_t max_ext = {-FLT_MAX,-FLT_MAX,-FLT_MAX};        
+    vec3_t min_ext = vec3_set1( FLT_MAX);
+    vec3_t max_ext = vec3_set1(-FLT_MAX);
 
-    // Transform the pgtos (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
-    for (size_t i = 0; i < num_pgtos; ++i) {
-        vec3_t xyz = { pgtos[i].x, pgtos[i].y, pgtos[i].z };
+    // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
+    for (size_t i = 0; i < num_gto; ++i) {
+        vec3_t xyz = { gto[i].x, gto[i].y, gto[i].z };
 
-        // The 0.9 scaling factor here is a bit arbitrary, but the cutoff-radius is computed on a value which is lower than the rendered iso-value
+        // The scaling factor here is a bit arbitrary, but the cutoff-radius is computed on a value which is lower than the rendered iso-value
         // So the effective radius is a bit overestimated and thus we scale it back a bit
-        float  r = pgtos[i].cutoff * 0.9f;
+        float  r = gto[i].cutoff * 0.85f;
 
         vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
         min_ext = vec3_min(min_ext, vec3_sub_f(p, r));
@@ -95,15 +130,44 @@ OBB compute_pgto_obb(const mat3_t& PCA, const md_gto_t* pgtos, size_t num_pgtos)
     return obb;
 }
 
-mat4_t compute_vol_mat(const OBB& obb) {
+static inline mat4_t compute_texture_to_world_mat(const OBB& obb) {
     mat4_t T = mat4_translate_vec3(obb.basis * obb.min_ext * BOHR_TO_ANGSTROM);
     mat4_t R = mat4_from_mat3(obb.basis);
     mat4_t S = mat4_scale_vec3((obb.max_ext - obb.min_ext) * BOHR_TO_ANGSTROM);
     return T * R * S;
 }
 
+static inline mat4_t compute_world_to_model_mat(const OBB& obb) {
+    vec3_t obb_min = obb.basis * obb.min_ext;
+    mat4_t world_to_model = mat4_from_mat3(mat3_transpose(obb.basis)) * mat4_translate_vec3(-obb_min);
+    return world_to_model;
+}
+
+static inline mat4_t compute_index_to_world_mat(const OBB& obb, vec3_t stepsize) {
+    vec3_t step_x = obb.basis.col[0] * stepsize.x;
+    vec3_t step_y = obb.basis.col[1] * stepsize.y;
+    vec3_t step_z = obb.basis.col[2] * stepsize.z;
+    vec3_t origin = obb.basis * (obb.min_ext + stepsize * 0.5f);
+
+    mat4_t index_to_world = {
+        step_x.x, step_x.y, step_x.z, 0.0f,
+        step_y.x, step_y.y, step_y.z, 0.0f,
+        step_z.x, step_z.y, step_z.z, 0.0f,
+        origin.x, origin.y, origin.z, 1.0f,
+    };
+
+    return index_to_world;
+}
+
+// Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
+static inline void compute_vol_dim(int out_dim[3], const vec3_t& in_ext, float samples_per_unit_length) {
+    out_dim[0] = CLAMP(ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
+    out_dim[1] = CLAMP(ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
+    out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
+}
+
 // Voronoi segmentation
-void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, const md_grid_t* grid) {
+static void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, const md_grid_t* grid) {
     for (int iz = 0; iz < grid->dim[2]; ++iz) {
         for (int iy = 0; iy < grid->dim[1]; ++iy) {
             for (int ix = 0; ix < grid->dim[0]; ++ix) {
@@ -122,10 +186,10 @@ void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const
 
                 // find closest point to grid point
                 for (size_t i = 0; i < num_points; ++i) {
-                    float px = point_xyz[i].x;
-                    float py = point_xyz[i].y;
-                    float pz = point_xyz[i].z;
-                    float pr = point_r[i];
+                    float px = point_xyzr[i].x;
+                    float py = point_xyzr[i].y;
+                    float pz = point_xyzr[i].z;
+                    float pr = point_xyzr[i].w;
 
                     float dx = px - x;
                     float dy = py - y;
@@ -149,6 +213,11 @@ void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
 
+    struct {
+        int major = 0;
+        int minor = 0;
+    } gl_version;
+
     md_vlx_data_t vlx {};
 
     // Used for clearing volumes
@@ -167,14 +236,6 @@ struct VeloxChem : viamd::EventHandler {
     vec3_t min_aabb = {};
     vec3_t max_aabb = {};
 
-    struct Volume {
-        mat4_t tex_to_world = {};
-        int dim[3] = {128, 128, 128};
-        vec3_t step_size = {};
-        vec3_t extent = {};
-        uint32_t tex_id = 0;
-    };
-
     struct Scf {
         bool show_window = false;
     } scf;
@@ -190,13 +251,12 @@ struct VeloxChem : viamd::EventHandler {
         int mo_idx = -1;
         int scroll_to_idx = -1;
 
-        struct {
-            bool enabled = true;
-            size_t count = 2;
-            float  values[2] = {0.05f, -0.05};
-            vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-
-        } iso;
+        IsoDesc iso = {
+            .enabled = true,
+            .count = 2,
+            .values = {0.05f, -0.05},
+            .colors = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}},
+        };
 
         GBuffer gbuf = {};
         Camera camera = {};
@@ -215,18 +275,17 @@ struct VeloxChem : viamd::EventHandler {
     struct Nto {
         bool show_window = false;
         // We have a maximum of 4 orbital slots for each particle and hole
-        // In practice I don't think more than 2, maybe 3 will be used in practice
+        // A Maximum of 8 will be used in practice, 2 for attachment / detachment + 3*2 for individual lambdas (particle + hole)
         Volume   vol[8] = {};
         uint32_t iso_tex[8] = {};
         task_system::ID vol_task[8] = {};
         task_system::ID seg_task[2] = {};
-        int vol_nto_idx = -1;
+        int sel_nto_idx = -1;
 
         size_t num_atoms = 0;
         // These are in Atomic Units (Bohr)
-        vec3_t* atom_xyz = nullptr;
-        float*  atom_r   = nullptr;
-        uint8_t* atom_group_idx = nullptr;
+        vec4_t*   atom_xyzr = nullptr;
+        uint32_t* atom_group_idx = nullptr;
 
         md_gl_rep_t gl_rep = {0};
 
@@ -238,22 +297,33 @@ struct VeloxChem : viamd::EventHandler {
 
         struct {
             size_t count = 0;
-            char   label[MAX_GROUPS][64] = {};
-            vec4_t color[MAX_GROUPS] = {};
+
+            char   label[MAX_NTO_GROUPS][64] = {};
+            vec4_t color[MAX_NTO_GROUPS] = {};
+            int8_t hovered_index = -1;
         } group;
+
+        IsoDesc iso_psi = {
+            .enabled = true,
+            .count = 2,
+            .values = {0.05f, -0.05},
+            .colors = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}},
+        };
+
+        IsoDesc iso_den = {
+            .enabled = true,
+            .count = 1,
+            .values = {0.0025f},
+            .colors = {{0, 0, 0, 0.2f}},
+        };
 
         struct {
             bool enabled = true;
-            size_t count = 2;
-            float  values[2] = {0.05f, -0.05};
-            vec4_t colors[2] = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}};
-            vec4_t vectorColors[3] = {{0.f / 255.f, 255.f / 255.f, 255.f / 255.f, 1.f},
-                                              {255.f / 255.f, 0.f / 255.f, 255.f / 255.f, 1.f},
-                                              {255.f / 255.f, 255.f / 255.f, 0.f / 255.f, 1.f}};
-            double vector_length = 1.0f;
-            bool display_vectors = false;
-            bool display_angle = false;
-        } iso;
+            vec4_t colors[3] = {{0.f / 255.f, 255.f / 255.f, 255.f / 255.f, 1.f},
+                {255.f / 255.f, 0.f / 255.f, 255.f / 255.f, 1.f}};
+            float vector_scale = 1.0f;
+            bool show_angle = false;
+        } dipole;
 
         GBuffer gbuf = {};
         Camera camera = {};
@@ -315,6 +385,8 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(1));
+                glGetIntegerv(GL_MAJOR_VERSION, &gl_version.major);
+                glGetIntegerv(GL_MINOR_VERSION, &gl_version.minor);
                 break;
             }
             case viamd::EventType_ViamdShutdown:
@@ -371,7 +443,7 @@ struct VeloxChem : viamd::EventHandler {
                 for (size_t i = 0; i < num_orbitals(); ++i) {
                     MolecularOrbital mo = {
                         .idx = (int)i,
-                        .occupation = (float)vlx.scf.alpha.energies.data[i],
+                        .occupation = (float)vlx.scf.alpha.occupations.data[i],
                         .energy = (float)vlx.scf.alpha.energies.data[i],
                     };
                     md_array_push(info.molecular_orbitals, mo, info.alloc);
@@ -403,8 +475,12 @@ struct VeloxChem : viamd::EventHandler {
                     if (data.type == OrbitalType::PsiSquared) {
                        mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
                     }
-                    task_system::ID id = compute_mo_async(&data.tex_mat, &data.voxel_spacing, data.dst_texture, data.orbital_idx, mode, data.samples_per_angstrom);
-                    data.output_written = (id != task_system::INVALID_ID);
+
+                    if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        data.output_written = compute_mo_GPU(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom);
+                    } else {
+                        data.output_written = (compute_mo_async(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
+                    }
                 }
 
                 break;
@@ -425,9 +501,21 @@ struct VeloxChem : viamd::EventHandler {
         rsp = {};
     }
 
+    void update_nto_group_colors() {
+        ScopedTemp temp_reset;
+        uint32_t* colors = (uint32_t*)md_temp_push(sizeof(uint32_t) * nto.num_atoms);
+        for (size_t i = 0; i < nto.num_atoms; ++i) {
+            const size_t group_idx = nto.atom_group_idx[i];
+            const uint32_t color = group_idx < nto.group.count ? convert_color(nto.group.color[group_idx]) : U32_MAGENTA;
+            colors[i] = color;
+        }
+
+        md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)nto.num_atoms, colors, 0);
+    }
+
     void init_from_file(str_t filename, ApplicationState& state) {
-        str_t ext;
-        if (extract_ext(&ext, filename) && str_eq_ignore_case(ext, STR_LIT("out"))) {
+        str_t file_ext;
+        if (extract_ext(&file_ext, filename) && str_eq_ignore_case(file_ext, STR_LIT("out"))) {
             MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
             md_vlx_data_free(&vlx);
             if (md_vlx_data_parse_file(&vlx, filename, arena)) {
@@ -444,16 +532,14 @@ struct VeloxChem : viamd::EventHandler {
                 vec4_t min_box = vec4_set1( FLT_MAX);
                 vec4_t max_box = vec4_set1(-FLT_MAX);
 
-                nto.atom_xyz = (vec3_t*)md_arena_allocator_push(arena, sizeof(vec3_t) * vlx.geom.num_atoms);
-                nto.atom_r   = (float*) md_arena_allocator_push(arena, sizeof(float)  * vlx.geom.num_atoms);
+                nto.atom_xyzr = (vec4_t*)md_arena_allocator_push(arena, sizeof(vec4_t) * vlx.geom.num_atoms);
                 nto.num_atoms = vlx.geom.num_atoms;
 
                 // Compute the PCA of the provided geometry
                 // This is used in determining a better fitting volume for the orbitals
                 vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
                 for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                    nto.atom_xyz[i] = vec3_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]) * ANGSTROM_TO_BOHR;
-                    nto.atom_r[i]   = md_util_element_vdw_radius(vlx.geom.atomic_number[i]) * ANGSTROM_TO_BOHR;
+                    nto.atom_xyzr[i] = vec4_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], md_util_element_vdw_radius(vlx.geom.atomic_number[i])) * ANGSTROM_TO_BOHR;
                     xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
                     min_box = vec4_min(min_box, xyzw[i]);
                     max_box = vec4_max(max_box, xyzw[i]);
@@ -476,49 +562,66 @@ struct VeloxChem : viamd::EventHandler {
                 mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
                 mat3_eigen_t eigen = mat3_eigen(C);
                 PCA = mat3_extract_rotation(eigen.vectors);
+                PCA = mat3_orthonormalize(PCA);
 
                 // NTO
                 if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
 
                     nto.show_window = true;
                     camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-					nto.atom_group_idx = (uint8_t*)md_alloc(arena, sizeof(uint8_t) * mol.atom.count);
-					MEMSET(nto.atom_group_idx, 0, sizeof(uint8_t) * mol.atom.count);
-					
-					for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                    nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * mol.atom.count);
+                    MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * mol.atom.count);
+
+                    snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
+                    nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
+
+                    for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
                         ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
                         nto.group.color[i] = vec_cast(color);
-                        snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i + 1);
+                        snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
                     }
-                    snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
-                    nto.group.color[0] = vec4_set(0.5f, 0.5f, 0.5f, 1.0f);
 
                     str_t file = {};
                     extract_file(&file, filename);
+
                     if (str_eq_cstr(file, "tq.out")) {
-                        uint8_t index_from_text[23] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+                        uint32_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
                         //nto.atom_group_idx = index_from_text;
-                        nto.group.count = 2;
+                        nto.group.count = 3;
                         MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
-                        snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Thio");
-                        snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Quin");
+                        snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Thio");
+                        snprintf(nto.group.label[2], sizeof(nto.group.label[2]), "Quin");
                     }
                     else {
 
                         // @TODO: Remove once proper interface is there
-					    nto.group.count = 2;
+					    nto.group.count = 3;
 					    // Assign half of the atoms to group 1
-                        MEMSET(nto.atom_group_idx, 1, sizeof(uint8_t) * mol.atom.count / 2);
+                        for (size_t i = 0; i < mol.atom.count; ++i) {
+                            nto.atom_group_idx[i] = i < mol.atom.count / 2 ? 1 : 2;
+                        }
                     }
-					nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+                    nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+                    update_nto_group_colors();
 
-                    for (size_t i = 0; i < mol.atom.count; ++i) {
-                        const size_t group_idx = nto.atom_group_idx[i];
-                        const uint32_t color = group_idx < nto.group.count ? convert_color(nto.group.color[group_idx]) : U32_MAGENTA;
-                        colors[i] = color;
+                    // Callculate ballpark scaling factor for dipole vectors
+                    vec3_t ext = max_aabb - min_aabb;
+                    float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
+                    float max_len = 0;
+                    for (int i = 0; i < vlx.rsp.num_excited_states; ++i) {
+                        vec3_t magn_vec = { (float)vlx.rsp.magnetic_transition[i].x, (float)vlx.rsp.magnetic_transition[i].y, (float)vlx.rsp.magnetic_transition[i].z };
+                        vec3_t elec_vec = { (float)vlx.rsp.electronic_transition_length[0].x, (float)vlx.rsp.electronic_transition_length[i].y, (float)vlx.rsp.electronic_transition_length[i].z };
+                        float magn_len = vec3_length(magn_vec);
+                        float elec_len = vec3_length(elec_vec);
+                        if (magn_len > max_len) {
+                            max_len = magn_len;
+                        }
+                        if (elec_len > max_len) {
+                            max_len = elec_len;
+                        }
                     }
 
-                    md_gl_rep_set_color(nto.gl_rep, 0, mol.atom.count, colors, 0);
+					nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
                 }
 
                 // RSP
@@ -539,96 +642,266 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    task_system::ID compute_nto_async(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-		md_allocator_i* alloc = md_get_heap_allocator();
-        size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
-        md_gto_t* pgtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_pgtos);
+    void init_volume_from_OBB(Volume* vol, const OBB& obb, float samples_per_unit_length, GLenum format = GL_R16F) {
+        ASSERT(vol);
+        vol->extent = obb.max_ext - obb.min_ext;
+        compute_vol_dim(vol->dim, vol->extent, samples_per_unit_length);
+        vol->step_size        = vec3_div(vol->extent, vec3_set((float)vol->dim[0], (float)vol->dim[1], (float)vol->dim[2]));
+        vol->world_to_model   = compute_world_to_model_mat(obb);
+        vol->index_to_world   = compute_index_to_world_mat(obb, vol->step_size);
+        vol->texture_to_world = compute_texture_to_world_mat(obb);
 
-        if (!md_vlx_nto_pgto_extract(pgtos, &vlx, nto_idx, lambda_idx, type)) {
-            MD_LOG_ERROR("Failed to extract NTO pgtos for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
-            md_free(alloc, pgtos, sizeof(md_gto_t) * num_pgtos);
+        gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
+    }
+
+    void eval_gtos_GPU(uint32_t vol_tex, const OBB& vol_obb, const int vol_dim[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
+        const vec3_t extent = vol_obb.max_ext - vol_obb.min_ext;
+        const vec3_t stepsize = vec3_div(extent, vec3_set((float)vol_dim[0], (float)vol_dim[1], (float)vol_dim[2]));
+
+        mat4_t world_to_model = compute_world_to_model_mat(vol_obb);
+        mat4_t index_to_world = compute_index_to_world_mat(vol_obb, stepsize);
+
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_GPU(vol_tex, vol_dim, stepsize.elem, (const float*)world_to_model.elem, (const float*)index_to_world.elem, gtos, num_gtos, mode);
+    }
+
+    bool compute_nto_GPU(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ScopedTemp temp_reset;
+
+        size_t num_gtos = md_vlx_nto_gto_count(&vlx);
+        md_gto_t* gtos  = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
+
+        if (!md_vlx_nto_gto_extract(gtos, &vlx, nto_idx, lambda_idx, type)) {
+            MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             return task_system::INVALID_ID;
         }
-        md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
-        OBB obb = compute_pgto_obb(PCA, pgtos, num_pgtos);
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        vec3_t extent = obb.max_ext - obb.min_ext;
+        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
-        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-        // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, gtos, num_gtos, mode);
 
-        // Compute required volume dimensions
-        int dim[3] = {
-            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-        };
+        return true;
+    }
 
-        const vec3_t stepsize = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
-        mat4_t vol_mat = compute_vol_mat(obb);
+    size_t extract_attachment_detachment_gtos(md_gto_t* gtos, size_t cap_gtos, NtoDensity type, size_t nto_idx) {
+        const size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        const md_vlx_nto_type_t nto_type = (type == NtoDensity::Attachment) ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
 
-        vec3_t step_x = obb.basis.col[0] * stepsize.x;
-        vec3_t step_y = obb.basis.col[1] * stepsize.y;
-        vec3_t step_z = obb.basis.col[2] * stepsize.z;
-        vec3_t origin = obb.basis * (obb.min_ext + stepsize * 0.5f);
+        size_t num_gtos = 0;
 
-        // Init and clear volume texture
+        // Only add GTOs from lambdas that has a contribution more than a certain percentage
+        for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
+            double lambda = vlx.rsp.nto[nto_idx].occupations.data[lumo_idx + lambda_idx];
+            if (lambda < NTO_LAMBDA_CUTOFF_VALUE) {
+                break;
+            }
+            if (!md_vlx_nto_gto_extract(gtos + num_gtos, &vlx, nto_idx, lambda_idx, nto_type)) {
+                MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
+                return false;
+            }
+            // Scale the GTOs with the lambda value
+            // The sqrt is to ensure that the scaling is linear with the lambda value
+            const double scale = sqrt(lambda);
+            for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
+                gtos[i].coeff = (float)(gtos[i].coeff * scale);
+            }
+            num_gtos += num_gtos_per_lambda;
+        }
+
+        return num_gtos;
+    }
+
+    // Compute attachment / detachment density
+    bool compute_nto_density_GPU(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ScopedTemp temp_reset;
+
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        size_t cap_gtos =  num_gtos_per_lambda * 4;
+        md_gto_t* gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * cap_gtos);
+
+        size_t num_gtos = extract_attachment_detachment_gtos(gtos, cap_gtos, type, nto_idx);
+
+        // Compute a cutoff value for the GTOs
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length, GL_R32F);
+
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI_SQUARED);
+
+        return true;
+    }
+
+    // Compute attachment / detachment density
+    task_system::ID compute_nto_density_async(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        md_allocator_i* alloc = md_get_heap_allocator();
+
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        size_t cap_gtos =  num_gtos_per_lambda * 4;
+        md_gto_t* gtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * cap_gtos);
+
+        size_t num_gtos = extract_attachment_detachment_gtos(gtos, cap_gtos, type, nto_idx);
+
+        // Compute a cutoff value for the GTOs
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
+
+        vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
+        vec3_t step_y = obb.basis.col[1] * vol->step_size.y;
+        vec3_t step_z = obb.basis.col[2] * vol->step_size.z;
+        vec3_t origin = obb.basis * (obb.min_ext + vol->step_size * 0.5f);
+
         const float zero[4] = { 0,0,0,0 };
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
-        gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
-        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, *in_out_vol_tex, 0);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, vol->tex_id, 0);
         glClearBufferfv(GL_COLOR, 0, zero);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-
-        // WRITE OUTPUT
-        *out_vol_mat = vol_mat;
-        *out_voxel_spacing = stepsize * BOHR_TO_ANGSTROM;
 
         struct Payload {
             AsyncGridEvalArgs args;
             md_allocator_i* alloc;
             size_t mem_size;
             void* mem;
-            uint32_t* tex_ptr;
+            uint32_t tex;
         };
 
-        size_t mem_size = sizeof(Payload) + sizeof(float) * dim[0] * dim[1] * dim[2];
+        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
         void* mem = md_alloc(alloc, mem_size);
         Payload* payload = (Payload*)mem;
         *payload = {
             .args = {
+                .world_to_model = vol->world_to_model,
+                .model_step = vol->step_size,
                 .grid = {
                     .data = (float*)((char*)mem + sizeof(Payload)),
-                    .dim = {dim[0], dim[1], dim[2]},
+                    .dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
                     .origin = {origin.x, origin.y, origin.z},
                     .step_x = {step_x.x, step_x.y, step_x.z},
                     .step_y = {step_y.x, step_y.y, step_y.z},
                     .step_z = {step_z.x, step_z.y, step_z.z},
                 },
-                .pgtos = pgtos,
-                .num_pgtos = num_pgtos,
-                .mode = mode,
+                .gtos = gtos,
+                .num_gtos = num_gtos,
+                .mode = MD_GTO_EVAL_MODE_PSI_SQUARED,
             },
             .alloc = alloc,
             .mem_size = mem_size,
             .mem = mem,
-            .tex_ptr = in_out_vol_tex,
+            .tex = vol->tex_id,
         };
 
-        task_system::ID async_task = evaluate_pgtos_on_grid_async(&payload->args);
+        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
 
         // Launch task for main (render) thread to update the volume texture
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
 
-            // The init here is just to ensure that the volume has not changed its dimensions during the async evaluation
-            gl::init_texture_3D(data->tex_ptr, data->args.grid.dim[0], data->args.grid.dim[1], data->args.grid.dim[2], GL_R16F);
-            gl::set_texture_3D_data(*data->tex_ptr, data->args.grid.data, GL_R32F);
+            // Ensure that the dimensions of the texture have not changed during evaluation
+            int dim[3];
+            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
+                gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
+            }
 
-            md_free(data->alloc, data->args.pgtos, data->args.num_pgtos * sizeof(md_gto_t));
+            md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data->mem, data->mem_size);
-            }, payload);
+        }, payload);
+
+        task_system::set_task_dependency(main_task, async_task);
+        task_system::enqueue_task(async_task);
+
+        return async_task;
+    }
+
+    task_system::ID compute_nto_async(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ASSERT(vol);
+
+		md_allocator_i* alloc = md_get_heap_allocator();
+        size_t num_gtos = md_vlx_nto_gto_count(&vlx);
+        md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_gtos);
+
+        if (!md_vlx_nto_gto_extract(gtos, &vlx, nto_idx, lambda_idx, type)) {
+            MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
+            md_free(alloc, gtos, sizeof(md_gto_t) * num_gtos);
+            return task_system::INVALID_ID;
+        }
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
+
+        vec3_t step_x = obb.basis.col[0] * vol->step_size;
+        vec3_t step_y = obb.basis.col[1] * vol->step_size;
+        vec3_t step_z = obb.basis.col[2] * vol->step_size;
+        vec3_t origin = obb.basis * (obb.min_ext + vol->step_size * 0.5f);
+
+        const float zero[4] = { 0,0,0,0 };
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, vol->tex_id, 0);
+        glClearBufferfv(GL_COLOR, 0, zero);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+        struct Payload {
+            AsyncGridEvalArgs args;
+            md_allocator_i* alloc;
+            size_t mem_size;
+            void* mem;
+            uint32_t tex;
+        };
+
+        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
+        void* mem = md_alloc(alloc, mem_size);
+        Payload* payload = (Payload*)mem;
+        *payload = {
+            .args = {
+                .world_to_model = vol->world_to_model,
+                .model_step = vol->step_size,
+                .grid = {
+                    .data = (float*)((char*)mem + sizeof(Payload)),
+                    .dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
+                    .origin = {origin.x, origin.y, origin.z},
+                    .step_x = {step_x.x, step_x.y, step_x.z},
+                    .step_y = {step_y.x, step_y.y, step_y.z},
+                    .step_z = {step_z.x, step_z.y, step_z.z},
+                },
+                .gtos = gtos,
+                .num_gtos = num_gtos,
+                .mode = mode,
+            },
+            .alloc = alloc,
+            .mem_size = mem_size,
+            .mem = mem,
+            .tex = vol->tex_id,
+        };
+
+        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
+
+        // Launch task for main (render) thread to update the volume texture
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
+            Payload* data = (Payload*)user_data;
+
+            // Ensure that the dimensions of the texture have not changed during evaluation
+            int dim[3];
+            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
+                gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
+            }
+
+            md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
+            md_free(data->alloc, data->mem, data->mem_size);
+        }, payload);
 
         task_system::set_task_dependency(main_task, async_task);
         task_system::enqueue_task(async_task);
@@ -637,97 +910,112 @@ struct VeloxChem : viamd::EventHandler {
     }
 
 	struct AsyncGridEvalArgs {
+        mat4_t     world_to_model;
+        vec3_t     model_step;
 		md_grid_t  grid;
-		md_gto_t* pgtos;
-		size_t num_pgtos;
+		md_gto_t*  gtos;
+		size_t num_gtos;
 		md_gto_eval_mode_t mode;
 	};
 
-    task_system::ID compute_mo_async(mat4_t* out_vol_mat, vec3_t* out_voxel_spacing, uint32_t* in_out_vol_tex, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-		md_allocator_i* alloc = md_get_heap_allocator();
-        size_t num_pgtos = md_vlx_mol_pgto_count(&vlx);
-        md_gto_t* pgtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t)* num_pgtos);
+    bool compute_mo_GPU(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ScopedTemp reset_temp;
 
-        if (!md_vlx_mol_pgto_extract(pgtos, &vlx, mo_idx)) {
-            MD_LOG_ERROR("Failed to extract molecular pgtos for orbital index: %zu", mo_idx);
-            md_free(md_get_heap_allocator(), pgtos, sizeof(md_gto_t) * num_pgtos);
+        size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+        md_gto_t* gtos  = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
+
+        if (!md_vlx_mol_gto_extract(gtos, &vlx, mo_idx)) {
+            MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
+            return false;
+        }
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
+
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, gtos, num_gtos, mode);
+
+        return true;
+    }
+
+    task_system::ID compute_mo_async(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ASSERT(vol);
+
+		md_allocator_i* alloc = md_get_heap_allocator();
+        size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+        md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t)* num_gtos);
+
+        if (!md_vlx_mol_gto_extract(gtos, &vlx, mo_idx)) {
+            MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
+            md_free(md_get_heap_allocator(), gtos, sizeof(md_gto_t) * num_gtos);
             return task_system::INVALID_ID;
         }
-        md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
-        OBB obb = compute_pgto_obb(PCA, pgtos, num_pgtos);
-        vec3_t extent = obb.max_ext - obb.min_ext;
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
-        // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
+        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
-        // Compute required volume dimensions
-        int dim[3] = {
-            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-        };
+        vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
+        vec3_t step_y = obb.basis.col[1] * vol->step_size.y;
+        vec3_t step_z = obb.basis.col[2] * vol->step_size.z;
+        vec3_t origin = obb.basis * (obb.min_ext + vol->step_size * 0.5f);
 
-        const vec3_t stepsize = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
-        mat4_t vol_mat = compute_vol_mat(obb);
-
-        vec3_t step_x = obb.basis.col[0] * stepsize.x;
-        vec3_t step_y = obb.basis.col[1] * stepsize.y;
-        vec3_t step_z = obb.basis.col[2] * stepsize.z;
-        vec3_t origin = obb.basis * (obb.min_ext + stepsize * 0.5f);
-
-        // Init and clear volume texture
+        // Clear volume texture
         const float zero[4] = {0,0,0,0};
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
-        gl::init_texture_3D(in_out_vol_tex, dim[0], dim[1], dim[2], GL_R16F);
-        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, *in_out_vol_tex, 0);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, vol->tex_id, 0);
         glClearBufferfv(GL_COLOR, 0, zero);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
-        // WRITE OUTPUT
-        *out_vol_mat = vol_mat;
-        *out_voxel_spacing = stepsize * BOHR_TO_ANGSTROM;
-
         struct Payload {
             AsyncGridEvalArgs args;
-            uint32_t* tex_ptr;
+            uint32_t tex;
             md_allocator_i* alloc;
             size_t alloc_size;
         };
 
-		size_t mem_size = sizeof(Payload) + sizeof(float) * dim[0] * dim[1] * dim[2];
+		size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
 		void*       mem = md_alloc(alloc, mem_size);
 		Payload* payload = (Payload*)mem;
 		*payload = {
 			.args = {
+                .world_to_model = vol->world_to_model,
+                .model_step = vol->step_size,
 				.grid = {
 					.data = (float*)((char*)mem + sizeof(Payload)),
-					.dim = {dim[0], dim[1], dim[2]},
+					.dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
 					.origin = {origin.x, origin.y, origin.z},
 					.step_x = {step_x.x, step_x.y, step_x.z},
                     .step_y = {step_y.x, step_y.y, step_y.z},
                     .step_z = {step_z.x, step_z.y, step_z.z},
 				},
-				.pgtos = pgtos,
-				.num_pgtos = num_pgtos,
+				.gtos = gtos,
+				.num_gtos = num_gtos,
 				.mode = mode,
 			},
-			.tex_ptr = in_out_vol_tex,
+			.tex = vol->tex_id,
 			.alloc = alloc,
 			.alloc_size = mem_size,
 		};
 
-		task_system::ID async_task = evaluate_pgtos_on_grid_async(&payload->args);
+		task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
 
         // Launch task for main (render) thread to update the volume texture
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
             Payload* data = (Payload*)user_data;
 
-            // The init here is just to ensure that the volume has not changed its dimensions during the async evaluation
-            gl::init_texture_3D(data->tex_ptr, data->args.grid.dim[0], data->args.grid.dim[1], data->args.grid.dim[2], GL_R16F);
-            gl::set_texture_3D_data(*data->tex_ptr, data->args.grid.data, GL_R32F);
+            // Ensure that the dimensions of the texture have not changed during evaluation
+            int dim[3];
+            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
+                gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
+            }
 
-            md_free(data->alloc, data->args.pgtos, data->args.num_pgtos * sizeof(md_gto_t));
+            md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data, data->alloc_size);
             }, payload);
 
@@ -737,43 +1025,57 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 1.3f) {
+    static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 0.2f) {
         // Ensure the factor is not too high, to avoid over-brightening
-        factor = (factor < 1.0f) ? 1.0f : factor;
+        factor = CLAMP(factor, 0.0f, 1.0f);
 
         // Increase the brightness of each component by the factor
-        float r = color.x * factor;
-        float g = color.y * factor;
-        float b = color.z * factor;
+        float r = color.x + factor;
+        float g = color.y + factor;
+        float b = color.z + factor;
 
         // Clamp the values to the range [0, 1]
-        r = (r > 1.0f) ? 1.0f : r;
-        g = (g > 1.0f) ? 1.0f : g;
-        b = (b > 1.0f) ? 1.0f : b;
+        r = ImClamp(r, 0.0f, 1.0f);
+        g = ImClamp(g, 0.0f, 1.0f);
+        b = ImClamp(b, 0.0f, 1.0f);
 
         // Return the new highlighted color with the same alpha
         return ImVec4(r, g, b, color.w);
     }
 
-    static inline void draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
-        // Get the draw list from the current window
+    static inline void sort_indexes(int8_t* indexes, float* values, size_t size) {
+        int8_t* last = indexes + size;
+        std::sort(indexes, last, [&](int8_t a, int8_t b) {
+            return values[a] > values[b];  // Sort in descending order
+            });
+    }
 
+    // Draws a vertical flow based on cubic bezier and returns the abs delta from the mouse cursor to this line
+    static inline ImVec2 draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
         // Define the control points for the Bezier curve
         ImVec2 p1 = ImVec2(source_pos.x + thickness / 2, source_pos.y);  // Start point (bottom-center of source node)
         ImVec2 p4 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y);  // End point (top-center of destination node)
 
-        float dist = fabs(p1.y - p4.y);
+        float dist = fabsf(p1.y - p4.y);
         float curve_offset = dist / 4;
 
         ImVec2 p2 = ImVec2(source_pos.x + thickness / 2, source_pos.y - curve_offset);  // Control point 1
         ImVec2 p3 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y + curve_offset);  // Control point 2
 
+        const int num_segments = 50;
 
         // Define the color and thickness for the flow
         //ImU32 flow_color = IM_COL32(100, 149, 237, 255);  // Cornflower Blue
         // ImBezierCubicCalc Use this for calculating mouse distance to curve
         // Draw the Bezier curve representing the flow
-        draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, thickness, 100);
+        draw_list->AddBezierCubic(p1, p2, p3, p4, flow_color, thickness, num_segments);
+
+        ImVec2 mouse_pos = ImGui::GetMousePos();
+        float clamped_y = ImClamp(mouse_pos.y, ImMin(p1.y, p4.y), ImMax(p1.y, p4.y));
+
+        ImVec2 point_on_bezier = ImBezierCubicClosestPointCasteljau(p1, p2, p3, p4, mouse_pos, 1.0e-3f);
+        ImVec2 delta = mouse_pos - point_on_bezier;
+        return {ImAbs(delta.x), ImAbs(clamped_y - mouse_pos.y)};
     }
 
     static inline void draw_aligned_text(ImDrawList* draw_list, const char* text, ImVec2 pos, ImVec2 alignment = { 0,0 }) {
@@ -782,7 +1084,7 @@ struct VeloxChem : viamd::EventHandler {
         draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
     }
 
-    static inline void im_sankey_diagram(ImRect area, Nto* nto) {
+    static inline void im_sankey_diagram(ApplicationState* state, ImRect area, Nto* nto, bool hide_text_overlaps) {
         ScopedTemp temp_reset;
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         /*
@@ -795,11 +1097,9 @@ struct VeloxChem : viamd::EventHandler {
         //draw_list->AddRect(area.Min, area.Max, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }));
 
         ImRect plot_area = area;
-        const float plot_percent = 0.8;
+        const float plot_percent = 0.8f;
         plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
         //draw_list->AddRect(plot_area.Min, plot_area.Max, ImGui::ColorConvertFloat4ToU32({ 1,0,0,1 })); //Use this to draw debug of plot area
-
-        
 
         ////The given data
         //const char* names[] = { "THIO", "QUIN" };
@@ -818,158 +1118,397 @@ struct VeloxChem : viamd::EventHandler {
         //    {0.0, 1.0}
         //};
 
-
-
         //Bar definitions
-        const float bar_height = plot_area.GetHeight() * 0.05;
-        int num_bars = nto->group.count;
+        const float bar_height = plot_area.GetHeight() * 0.05f;
+        int num_bars = 0;
+        for (size_t i = 0; i < nto->group.count; i++) {
+            if (nto->transition_density_hole[i] != 0.0f) {
+                num_bars++;
+            }
+        }
         int num_gaps = num_bars - 1;
-        float gap_size = plot_area.GetWidth() * 0.05;
+        float gap_size = plot_area.GetWidth() * 0.05f;
         float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
 
         //Calculate bar percentages
-        float start_sum = 0;
-        float end_sum = 0;
-        for (size_t i = 0; i < num_bars; i++) {
-            start_sum += nto->transition_density_hole[i];
-            end_sum += nto->transition_density_part[i];
+        float hole_sum = 0;
+        float part_sum = 0;
+        for (size_t i = 0; i < nto->group.count; i++) {
+            hole_sum += nto->transition_density_hole[i];
+            part_sum += nto->transition_density_part[i];
         }
-        md_array(float) start_percentages = md_array_create(float, num_bars, temp_alloc);
-        md_array(float) end_percentages   = md_array_create(float, num_bars, temp_alloc);
-        for (size_t i = 0; i < num_bars; i++) {
-            start_percentages[i] = nto->transition_density_hole[i] / start_sum;
-            end_percentages[i] = nto->transition_density_part[i] / end_sum;
+
+		// Prevent division by zero
+		hole_sum = MAX(hole_sum, 1.0e-6f);
+		part_sum = MAX(part_sum, 1.0e-6f);
+
+        md_array(float) hole_percentages = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(float) part_percentages = md_array_create(float, nto->group.count, temp_alloc);
+        for (size_t i = 0; i < nto->group.count; i++) {
+            hole_percentages[i] = nto->transition_density_hole[i] / hole_sum;
+            part_percentages[i] = nto->transition_density_part[i] / part_sum;
         }
 
         //Calculate start positions
-        md_array(float) start_positions = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) start_positions = md_array_create(float, nto->group.count, temp_alloc);
         float cur_bottom_pos = plot_area.Min.x;
-        for (int i = 0; i < num_bars; i++) {
+        for (int i = 0; i < nto->group.count; i++) {
             start_positions[i] = cur_bottom_pos;
-            cur_bottom_pos += bars_avail_width * start_percentages[i] + gap_size;
+            cur_bottom_pos += bars_avail_width * hole_percentages[i];
+            if (hole_percentages[i] != 0.0) {
+                cur_bottom_pos += gap_size;
+            }
         }
 
         //Calculate end positions
-        md_array(float) end_positions = md_array_create(float, num_bars, temp_alloc);
-        md_array(float) sub_end_positions = md_array_create(float, num_bars, temp_alloc);
+        md_array(float) end_positions = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(float) sub_end_positions = md_array_create(float, nto->group.count, temp_alloc);
         float cur_pos = plot_area.Min.x;
-        for (int end_i = 0; end_i < num_bars; end_i++) {
+        for (int end_i = 0; end_i < nto->group.count; end_i++) {
             end_positions[end_i] = cur_pos;
             sub_end_positions[end_i] = cur_pos;
-            cur_pos += bars_avail_width * end_percentages[end_i] + gap_size;
+            cur_pos += bars_avail_width * part_percentages[end_i];
+            if (hole_percentages[end_i] != 0.0) {
+                cur_pos += gap_size;
+            }
         }
 
+        float  hovered_flow_width = 0.0f;
+        ImVec2 hovered_flow_beg = {};
+        ImVec2 hovered_flow_end = {};
+        ImVec2 mouse_pos = ImGui::GetMousePos();
+
+        char mouse_label[32] = { 0 };
+
+        const float min_test_width = 1.0f;
 
         //Draw curves
-        for (int start_i = 0; start_i < num_bars; start_i++) {
-            ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
+        md_array(float) curve_widths = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
+        md_array(ImVec2) curve_midpoints = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
+        md_array(ImVec2) curve_directions = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
+        md_array(float) curve_percentages = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
+        for (size_t i = 0; i < nto->group.count * nto->group.count; i++) {
+            curve_widths[i] = 0;
+            curve_midpoints[i] = { 0, 0 };
+            curve_directions[i] = { 0, 0 };
+            curve_percentages[i] = 0;
+        }
+        /*for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                curve_widths[start_i * nto->group.count + end_i] = 0.0;
+                curve_midpoints[start_i * nto->group.count + end_i] = ImVec2{};
+                curve_directions[start_i * nto->group.count + end_i] = ImVec2{};
+            }
+        }*/
 
-            ImVec4 start_col = vec_cast(nto->group.color[start_i]);
+        for (int start_i = 0; start_i < nto->group.count; start_i++) {
+            if (hole_percentages[start_i] != 0.0) {
 
-            start_col.w = 0.5;
-            for (int end_i = 0; end_i < num_bars; end_i++) {
-                float percentage = nto->transition_matrix[end_i * num_bars + start_i];
-                ImVec4 end_col = vec_cast(nto->group.color[end_i]);
+                ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
+                ImVec4 start_col = vec_cast(nto->group.color[start_i]);
 
-                if (percentage != 0) {
-                    float width = bars_avail_width * percentage;
-                    ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
+                start_col.w = 0.5;
+                for (int end_i = 0; end_i < nto->group.count; end_i++) {
+                    float percentage = nto->transition_matrix[end_i * nto->group.count + start_i];
+                    ImVec4 end_col = vec_cast(nto->group.color[end_i]);
 
-                    int vert_beg = draw_list->VtxBuffer.Size;
-                    draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
-                    int vert_end = draw_list->VtxBuffer.Size;
+                    if (percentage != 0) {
+                        float width = bars_avail_width * percentage;
+                        ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
 
-                    // Apply a gradient based on y-value from start color to end color if they belong to different groups
-                    if (end_i != start_i) {
-                        ImVec2 grad_p0 = {start_pos.x, start_pos.y};
-                        ImVec2 grad_p1 = {start_pos.x, end_pos.y};
-                        ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
+                        int vert_beg = draw_list->VtxBuffer.Size;
+                        ImVec2 mouse_delta = draw_vertical_sankey_flow(draw_list, start_pos, end_pos, width, ImGui::ColorConvertFloat4ToU32(start_col));
+                        int vert_end = draw_list->VtxBuffer.Size;
+
+                        // The width test here is clamped to be atleast some pixel in width, otherwise it would be impossible to hit thin flows
+                        bool flow_hovered = mouse_delta.x < MAX(width * 0.5f, min_test_width) && mouse_delta.y < 1.0e-4;
+
+                        // Apply a gradient based on y-value from start color to end color if they belong to different groups
+                        if (end_i != start_i) {
+                            ImVec2 grad_p0 = { start_pos.x, start_pos.y };
+                            ImVec2 grad_p1 = { start_pos.x, end_pos.y };
+                            ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
+                        }
+
+                        char label[32];
+                        snprintf(label, sizeof(label), "%3.2f%%", percentage * 100);
+                        const ImVec2 label_size = ImGui::CalcTextSize(label);
+
+                        // @NOTE: The comparison for width here is to ensure that the narrowest flow is always the one hovered (when multiple flows are overlapping)
+                        if (flow_hovered && (hovered_flow_width == 0.0f || width < hovered_flow_width)) {
+                            hovered_flow_width = width;
+                            hovered_flow_beg = start_pos;
+                            hovered_flow_end = end_pos;
+                            MEMCPY(mouse_label, label, sizeof(label));
+                        }
+
+                        if (width > label_size.x) {
+                            ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
+                            ImVec2 direction = vec_cast(vec2_normalize(vec_cast(start_pos - end_pos)));
+                            curve_midpoints[start_i * nto->group.count + end_i] = midpoint;
+                            curve_directions[start_i * nto->group.count + end_i] = direction;
+                            curve_widths[start_i * nto->group.count + end_i] = width;
+                            curve_percentages[start_i * nto->group.count + end_i] = percentage;
+                            //draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
+                        }
+
+                        start_pos.x += width;
+                        sub_end_positions[end_i] += width;
                     }
+                }
+            }
+        }
+
+        //Draw Curve Text
+        //For every midpoint, we check if another midpoint is to close to that midpoint
+        bool text_overlap = true;
+        ImVec2 text_size = ImGui::CalcTextSize("99.99%");
+        float text_spacing = 4;
+
+        while (text_overlap) {
+            text_overlap = false;
+            for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+                for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                    size_t index1 = start_i * nto->group.count + end_i;
+                    ImVec2 midpoint1 = curve_midpoints[index1];
+                    ImVec2 direction1 = curve_directions[index1];
+                    ImRect rect1 = { midpoint1 - (text_size / 2), midpoint1 + (text_size / 2) };
+
+                    for (size_t start_j = 0; start_j < nto->group.count; start_j++) {
+                        for (size_t end_j = 0; end_j < nto->group.count; end_j++) {
+                            size_t index2 = (start_j * nto->group.count + end_j);
+                            if (index1 != index2) {
+                                ImVec2 midpoint2 = curve_midpoints[index2];
+                                ImVec2 direction2 = curve_directions[index2] * -1.0;
+                                ImRect rect2 = { midpoint2 - (text_size / 2), midpoint2 + (text_size / 2) };
+
                     
-                    ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{width / 2, 0};
-                    char lable[16];
-                    sprintf(lable, "%3.2f%%", percentage * 100);
-                    if (width > ImGui::CalcTextSize(lable).x) {
-                        draw_aligned_text(draw_list, lable, midpoint, { 0.5, 0.5 });
+                                if ((midpoint1.y != 0 && midpoint2.y != 0)) {
+                                    while (rect1.Overlaps(rect2)){
+                                        text_overlap = true;
+                                        curve_midpoints[index1] += direction1 * text_size.y * text_spacing;
+                                        curve_midpoints[index2] += direction2 * text_size.y * text_spacing;
+                                        rect1 = { curve_midpoints[index1] - (text_size / 2), curve_midpoints[index1] + (text_size / 2) };
+                                        rect2 = { curve_midpoints[index2] - (text_size / 2), curve_midpoints[index2] + (text_size / 2) };
+                                    }
+                                }
+                            }
+                        }
                     }
+                }
+            }
+        }
 
-                    start_pos.x += width;
-                    sub_end_positions[end_i] += width;
+        for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
+                int index = start_i * nto->group.count + end_i;
+                ImVec2 midpoint = curve_midpoints[index];
+                float percentage = curve_percentages[index];
+                if (percentage > 0) {
+                    char label[16];
+                    sprintf(label, "%3.2f%%", curve_percentages[start_i * nto->group.count + end_i] * 100);
+                    const ImVec2 label_size = ImGui::CalcTextSize(label);
+                    draw_aligned_text(draw_list, label, midpoint, {0.5, 0.5});
+                }
+            }
+        }
+
+        // Some flow is hovered, So we render a new flow on top of the existing ones to ensure that this is rendered on top
+        if (hovered_flow_width > 0.0f) {
+            draw_vertical_sankey_flow(draw_list, hovered_flow_beg, hovered_flow_end, hovered_flow_width, ImColor(1.0f, 1.0f, 1.0f, 0.2f));
+        }
+        //bool next_start_text_visible = true;
+        //bool next_end_text_visible = true;
+
+        //Calculate text visibility
+        md_array(bool) show_start_text = md_array_create(bool, nto->group.count, temp_alloc);
+        md_array(bool) show_end_text = md_array_create(bool, nto->group.count, temp_alloc);
+        md_array(int8_t) size_order = md_array_create(int8_t, nto->group.count, temp_alloc);
+        md_array(float) text_sizes = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(ImRect) rectangles = md_array_create(ImRect, nto->group.count, temp_alloc);
+        for (int8_t i = 0; i < nto->group.count; i++) {
+            show_start_text[i] = true;
+            show_end_text[i] = true;
+        }
+
+        
+        if (hide_text_overlaps) {
+            //Start texts
+            for (int8_t i = 0; i < nto->group.count; i++) {
+                size_order[i] = i;
+                text_sizes[i] = MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
+
+                float midpoint = start_positions[i] + bars_avail_width * hole_percentages[i] * 0.5f;
+                rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0, midpoint + text_sizes[i] * 0.5f, 1};
+            }
+        
+            sort_indexes(size_order, hole_percentages, nto->group.count);
+            for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
+                for (int8_t j = i - 1; j >= 0 ; j--) {//The bigger ones
+                    bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
+                    if (hole_percentages[i] == 0.0) {
+                        show_start_text[size_order[i]] = false;
+                        break;
+                    }
+                    else if (show_start_text[size_order[j]] && rectangles[size_order[i]].Overlaps(rectangles[size_order[j]])) {
+                        show_start_text[size_order[i]] = false;
+                        break;
+                    }
+                }
+            }
+
+            //End texts
+            for (int8_t i = 0; i < nto->group.count; i++) {
+                size_order[i] = i;
+
+                float midpoint = end_positions[i] + bars_avail_width * part_percentages[i] * 0.5f;
+                rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0, midpoint + text_sizes[i] * 0.5f, 1 };
+            }
+
+            sort_indexes(size_order, part_percentages, nto->group.count);
+            for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
+                for (int8_t j = i - 1; j >= 0; j--) {//The bigger ones
+                    bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
+                    if (hole_percentages[i] == 0.0) {
+                        show_end_text[size_order[i]] = false;
+                        break;
+                    }
+                    else if (show_end_text[size_order[j]] && rectangles[size_order[i]].Overlaps(rectangles[size_order[j]])) {
+                        show_end_text[size_order[i]] = false;
+                        break;
+                    }
                 }
             }
         }
 
         //Draw bars
-        for (int i = 0; i < num_bars; i++) {
-            ImVec4 bar_color = vec_cast(nto->group.color[i]);
-            ImVec2 mouse_pos = ImGui::GetMousePos();
+        for (int i = 0; i < nto->group.count; i++) {
+            if (hole_percentages[i] != 0.0) {
+                ImVec4 bar_color = vec_cast(nto->group.color[i]);
 
-            //Calculate start
-            ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height};
-            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * start_percentages[i], plot_area.Max.y };
-            ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
-            ImRect start_bar = ImRect{ start_p0, start_p1 };
+                char start_label1[16];
+                char end_label1[16]; 
 
-            //Calculate end
-            ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
-            ImVec2 end_p1 = { end_positions[i] + bars_avail_width * end_percentages[i], plot_area.Min.y + bar_height };
-            ImRect end_bar = ImRect{ end_p0, end_p1 };
-            ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
+                snprintf(start_label1, sizeof(start_label1), "%3.2f%%", hole_percentages[i] * 100);
+                snprintf(end_label1, sizeof(end_label1), "%3.2f%%", part_percentages[i] * 100);
 
-            if (start_bar.Contains(mouse_pos) || end_bar.Contains(mouse_pos)) {
-                bar_color = make_highlight_color(bar_color);
+                char start_label2[16];
+                char end_label2[16];
+                snprintf(start_label2, sizeof(start_label1), "%3.2f%%", hole_percentages[i + 1] * 100);
+                snprintf(end_label2, sizeof(end_label1), "%3.2f%%", part_percentages[i + 1] * 100);
+
+                //Calculate start
+                ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
+                ImVec2 start_p1 = { start_positions[i] + bars_avail_width * hole_percentages[i], plot_area.Max.y };
+                ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
+                ImRect start_bar = ImRect{ start_p0, start_p1 };
+
+                //Calculate end
+                ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
+                ImVec2 end_p1 = { end_positions[i] + bars_avail_width * part_percentages[i], plot_area.Min.y + bar_height };
+                ImRect end_bar = ImRect{ end_p0, end_p1 };
+                ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
+
+                bool index_hovered = false;
+                if (start_bar.Contains(mouse_pos)) {
+                    MEMCPY(mouse_label, start_label1, sizeof(start_label1));
+                    index_hovered = true;
+                }
+                else if (end_bar.Contains(mouse_pos)) {
+                    MEMCPY(mouse_label, end_label1, sizeof(end_label1));
+                    index_hovered = true;
+                }
+
+                if (index_hovered) {
+                    nto->group.hovered_index = (int8_t)i;
+                    bar_color = make_highlight_color(bar_color);
+                    for (size_t atom_i = 0; atom_i < nto->num_atoms; atom_i++) {
+                        if (nto->atom_group_idx[atom_i] == (uint32_t)i) {
+                            md_bitfield_set_bit(&state->selection.highlight_mask, atom_i);
+                        }
+                    }
+                }
+
+                //Draw start
+                draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+                draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
+                if (show_start_text[i]) {
+                    draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, { 0.5, -0.2 });
+                    draw_aligned_text(draw_list, start_label1, start_midpoint, { 0.5, -1.2 });
+                }
+
+                //Draw end
+                draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
+                draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
+                if (show_end_text[i]) {
+                    draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, { 0.5, 1.2 });
+                    draw_aligned_text(draw_list, end_label1, end_midpoint, { 0.5, 2.2 });
+                }
             }
+        }
 
-            //Draw start
-            draw_list->AddRectFilled(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
-            draw_list->AddRect(start_p0, start_p1, ImGui::ColorConvertFloat4ToU32({0,0,0,0.5}));
-            char start_lable[16];
-            sprintf(start_lable, "%3.2f%%", start_percentages[i] * 100);
-            draw_aligned_text(draw_list, nto->group.label[i], start_midpoint, {0.5, -0.2});
-            draw_aligned_text(draw_list, start_lable, start_midpoint, { 0.5, -1.2 });
-
-            //Draw end
-            draw_list->AddRectFilled(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32(bar_color));
-            draw_list->AddRect(end_p0, end_p1, ImGui::ColorConvertFloat4ToU32({ 0,0,0,0.5 }));
-            char end_lable[16];
-            sprintf(end_lable, "%3.2f%%", end_percentages[i] * 100);
-            draw_aligned_text(draw_list, nto->group.label[i], end_midpoint, {0.5, 1.2});
-            draw_aligned_text(draw_list, end_lable, end_midpoint, { 0.5, 2.2 });
+        if (mouse_label[0] != '\0') {
+            ImVec2 offset = { 15, 15 };
+            ImVec2 pos = ImGui::GetMousePos() + offset;
+            draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
         }
     }
     
-    bool compute_nto_group_values_async(task_system::ID* out_eval_task, task_system::ID* out_segment_task, float* out_group_values, size_t num_groups, const uint8_t* point_group_idx, const vec3_t* point_xyz, const float* point_r, size_t num_points, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {       
+    bool compute_transition_group_values_async(task_system::ID* out_eval_task, task_system::ID* out_segment_task, float* out_group_values, size_t num_groups, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, size_t nto_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {       
         md_allocator_i* alloc = md_get_heap_allocator();
-        size_t num_pgtos = md_vlx_nto_pgto_count(&vlx);
-        md_gto_t* pgtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_pgtos);
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        size_t cap_gto =  num_gtos_per_lambda * 4;
+        md_gto_t* gtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * cap_gto);
 
-        if (!md_vlx_nto_pgto_extract(pgtos, &vlx, nto_idx, lambda_idx, type)) {
-            MD_LOG_ERROR("Failed to extract NTO pgtos for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
-            md_free(alloc, pgtos, sizeof(md_gto_t) * num_pgtos);
-            return false;
+        const double lambda_cutoff = 0.10;
+
+        size_t num_gtos = 0;
+
+        // Only add GTOs from lambdas that has a contribution more than a certain percentage
+        for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
+            double lambda = vlx.rsp.nto[nto_idx].occupations.data[lumo_idx + lambda_idx];
+            if (lambda < lambda_cutoff) {
+                break;
+            }
+            if (!md_vlx_nto_gto_extract(gtos + num_gtos, &vlx, nto_idx, lambda_idx, type)) {
+                MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
+                md_free(alloc, gtos, sizeof(md_gto_t) * cap_gto);
+                return false;
+            }
+            // Scale the added GTOs with the lambda value
+			// The sqrt is to ensure that the scaling is linear with the lambda value
+			const double scale = sqrt(lambda);
+            for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
+                gtos[i].coeff = (float)(gtos[i].coeff * scale);
+            }
+            num_gtos += num_gtos_per_lambda;
         }
 
-        md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
-        OBB obb = compute_pgto_obb(PCA, pgtos, num_pgtos);
-        vec3_t extent = obb.max_ext - obb.min_ext;
+        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-7);
+
+        vec3_t min_ext = vec3_set1( FLT_MAX);
+        vec3_t max_ext = vec3_set1(-FLT_MAX);
+
+        for (size_t i = 0; i < nto.num_atoms; ++i) {
+            vec3_t xyz = vec3_from_vec4(nto.atom_xyzr[i]);
+            float    r = nto.atom_xyzr[i].w + 2.0f;
+            min_ext = vec3_min(min_ext, xyz - r);
+            max_ext = vec3_max(max_ext, xyz + r);
+        }
+
+        vec3_t extent = max_ext - min_ext;
 
         // Target resolution per spatial unit (We want this number of samples per Ångström in each dimension)
         // Round up to some multiple of 8 -> 8x8x8 is the chunksize we process in parallel
 
         // Compute required volume dimensions
-        int dim[3] = {
-            CLAMP(ALIGN_TO((int)(extent.x * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.y * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-            CLAMP(ALIGN_TO((int)(extent.z * samples_per_angstrom * BOHR_TO_ANGSTROM), 8), 8, 512),
-        };
+        int dim[3];
+        compute_vol_dim(dim, extent * BOHR_TO_ANGSTROM, samples_per_angstrom);
 
         const vec3_t stepsize = vec3_div(extent, vec3_set((float)dim[0], (float)dim[1], (float)dim[2]));
-        mat4_t vol_mat = compute_vol_mat(obb);
 
-        vec3_t step_x = obb.basis.col[0] * stepsize.x;
-        vec3_t step_y = obb.basis.col[1] * stepsize.y;
-        vec3_t step_z = obb.basis.col[2] * stepsize.z;
-        vec3_t origin = obb.basis * (obb.min_ext + stepsize * 0.5f);
+        vec3_t origin = min_ext + stepsize * 0.5f;
+        mat4_t world_to_model = mat4_translate_vec3(-min_ext);
 
         struct Payload {
             AsyncGridEvalArgs args;
@@ -977,9 +1516,8 @@ struct VeloxChem : viamd::EventHandler {
             float* dst_group_values;
 			size_t num_groups;
 
-            const uint8_t* point_group_idx;
-            const vec3_t* point_xyz;
-            const float* point_r;
+            const uint32_t* point_group_idx;
+            const vec4_t* point_xyzr;
             size_t num_points;
 
             md_allocator_i* alloc;
@@ -991,30 +1529,31 @@ struct VeloxChem : viamd::EventHandler {
         Payload* payload = (Payload*)mem;
         *payload = {
             .args = {
+                .world_to_model = world_to_model,
+                .model_step = stepsize,
                 .grid = {
                     .data = (float*)((char*)mem + sizeof(Payload)),
                     .dim = {dim[0], dim[1], dim[2]},
                     .origin = {origin.x, origin.y, origin.z},
-                    .step_x = {step_x.x, step_x.y, step_x.z},
-                    .step_y = {step_y.x, step_y.y, step_y.z},
-                    .step_z = {step_z.x, step_z.y, step_z.z},
+                    .step_x = {stepsize.x, 0, 0},
+                    .step_y = {0, stepsize.y, 0},
+                    .step_z = {0, 0, stepsize.z},
                 },
-                .pgtos = pgtos,
-                .num_pgtos = num_pgtos,
+                .gtos = gtos,
+                .num_gtos = num_gtos,
                 .mode = mode,
             },
 			.dst_group_values = out_group_values,
             .num_groups = num_groups,
             
 			.point_group_idx = point_group_idx,
-			.point_xyz = point_xyz,
-            .point_r = point_r,
+			.point_xyzr = point_xyzr,
 			.num_points = num_points,
             .alloc = alloc,
             .alloc_size = mem_size,
         };
 
-        task_system::ID eval_task = evaluate_pgtos_on_grid_async(&payload->args);
+        task_system::ID eval_task = evaluate_gto_on_grid_async(&payload->args);
 
         // @TODO: This should be performed as a range task in parallel
         task_system::ID segment_task = task_system::create_pool_task(STR_LIT("##Segment Volume"), [](void* user_data) {
@@ -1026,14 +1565,14 @@ struct VeloxChem : viamd::EventHandler {
             for (size_t i = 0; i < len; ++i) {
                 sum += data->args.grid.data[i];
             }
-            MD_LOG_DEBUG("SUM: %g");
+            MD_LOG_DEBUG("SUM: %g", sum);
 #endif
 
             MD_LOG_DEBUG("Starting segmentation of volume");
-            grid_segment_and_attribute(data->dst_group_values, data->num_groups, data->point_group_idx, data->point_xyz, data->point_r, data->num_points, &data->args.grid);
+            grid_segment_and_attribute(data->dst_group_values, data->num_groups, data->point_group_idx, data->point_xyzr, data->num_points, &data->args.grid);
             MD_LOG_DEBUG("Finished segmentation of volume");
 
-            md_free(data->alloc, data->args.pgtos, data->args.num_pgtos * sizeof(md_gto_t));
+            md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data, data->alloc_size);
         }, payload);
 
@@ -1050,7 +1589,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
 	// This sets up and returns a async task which evaluates and orbital data on a grid in parallel
-    task_system::ID evaluate_pgtos_on_grid_async(AsyncGridEvalArgs* args) {
+    task_system::ID evaluate_gto_on_grid_async(AsyncGridEvalArgs* args) {
         ASSERT(args);
 
         // We evaluate the in parallel over smaller NxNxN blocks
@@ -1070,35 +1609,53 @@ struct VeloxChem : viamd::EventHandler {
 			md_grid_t* grid = &data->grid;
 
             size_t temp_pos = md_temp_get_pos();
-            md_gto_t* sub_pgtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * data->num_pgtos);
+            md_gto_t* sub_gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * data->num_gtos);
 
-            for (uint32_t i = range_beg; i < range_end; ++i) {
+            for (int blk_idx = (int)range_beg; blk_idx < (int)range_end; ++blk_idx) {
                 // Determine block index from linear input index i
-                int blk_x = i % num_blk[0];
-                int blk_y = (i / num_blk[0]) % num_blk[1];
-                int blk_z = i / (num_blk[0] * num_blk[1]);
+                int blk[3] = {
+                    (blk_idx % num_blk[0]),
+                    (blk_idx / num_blk[0]) % num_blk[1],
+                    (blk_idx / (num_blk[0] * num_blk[1])),
+                };
 
-                int off_idx[3] = { blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM };
+                int off_idx[3] = { blk[0] * BLK_DIM, blk[1] * BLK_DIM, blk[2] * BLK_DIM };
                 int len_idx[3] = { BLK_DIM, BLK_DIM, BLK_DIM };
 
                 int beg_idx[3] = {off_idx[0], off_idx[1], off_idx[2]};
                 int end_idx[3] = {off_idx[0] + len_idx[0], off_idx[1] + len_idx[1], off_idx[2] + len_idx[2]};
 
-                // @TODO: This filtering of PGTOs can be improved by transforming the PGTO x,y,z,radius into the OBB that defines the region
-
-                float aabb_min[3] = {
-                    grid->origin[0] + beg_idx[0] * grid->step_x[0] + beg_idx[1] * grid->step_y[0] + beg_idx[2] * grid->step_z[0],
-                    grid->origin[1] + beg_idx[0] * grid->step_x[1] + beg_idx[1] * grid->step_y[1] + beg_idx[2] * grid->step_z[1],
-                    grid->origin[2] + beg_idx[0] * grid->step_x[2] + beg_idx[1] * grid->step_y[2] + beg_idx[2] * grid->step_z[2],
+                // The aabb is in model space
+                vec4_t aabb_min = {
+                    beg_idx[0] * data->model_step.x,
+                    beg_idx[1] * data->model_step.y,
+                    beg_idx[2] * data->model_step.z,
+                    0
                 };
-                float aabb_max[3] = {
-                    grid->origin[0] + end_idx[0] * grid->step_x[0] + end_idx[1] * grid->step_y[0] + end_idx[2] * grid->step_z[0],
-                    grid->origin[1] + end_idx[0] * grid->step_x[1] + end_idx[1] * grid->step_y[1] + end_idx[2] * grid->step_z[1],
-                    grid->origin[2] + end_idx[0] * grid->step_x[2] + end_idx[1] * grid->step_y[2] + end_idx[2] * grid->step_z[2],
+                vec4_t aabb_max = {
+                    end_idx[0] * data->model_step.x,
+                    end_idx[1] * data->model_step.y,
+                    end_idx[2] * data->model_step.z,
+                    0
                 };
 
-                size_t num_sub_pgtos = md_gto_aabb_test(sub_pgtos, aabb_min, aabb_max, data->pgtos, data->num_pgtos);
-                md_gto_grid_evaluate_sub(grid, off_idx, len_idx, sub_pgtos, num_sub_pgtos, data->mode);
+                size_t num_sub_gtos = 0;
+
+                // Transform GTO xyz into model space of the volume and perform AABB overlap test
+                for (size_t i = 0; i < data->num_gtos; ++i) {
+                    float cutoff = data->gtos[i].cutoff;
+                    if (cutoff == 0.0f) continue;
+
+                    vec4_t coord = data->world_to_model * vec4_set(data->gtos[i].x, data->gtos[i].y, data->gtos[i].z, 1.0f);
+                    coord.w = 0.f;
+                    vec4_t clamped = vec4_clamp(coord, aabb_min, aabb_max);
+                    float  r2 = vec4_distance_squared(coord, clamped);
+                    if (r2 < cutoff * cutoff) {
+                        sub_gtos[num_sub_gtos++] = data->gtos[i];
+                    }
+                }
+
+                md_gto_grid_evaluate_sub(grid, off_idx, len_idx, sub_gtos, num_sub_gtos, data->mode);
             }
 
             md_temp_set_pos_back(temp_pos);
@@ -1117,22 +1674,8 @@ struct VeloxChem : viamd::EventHandler {
             y2_max = MAX(y2_max, fabs(y2_array[i]));
         }
 
-
         return y2_max / y1_max;
     }
-
-
-    enum x_unit_t {
-        X_UNIT_EV,
-        X_UNIT_NM,
-        X_UNIT_CM_INVERSE,
-        X_UNIT_HARTREE,
-    };
-
-    enum broadening_mode_t {
-        BROADENING_GAUSSIAN,
-        BROADENING_LORENTZIAN,
-    };
 
     static inline void convert_values(double* out_values, const double* in_values, size_t num_values, x_unit_t unit) {
         switch (unit) {
@@ -1492,7 +2035,7 @@ struct VeloxChem : viamd::EventHandler {
 
                             ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                             bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered, mark it as such
+                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
                             bool hov_col = false;
                             ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                             ImGui::TableNextColumn();
@@ -1582,12 +2125,10 @@ struct VeloxChem : viamd::EventHandler {
         };
 
         ExportProperty properties[]{
-            {rsp.x_unit_samples, rsp.eps, str_from_cstr("Absorption"), str_from_cstr((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
-            {rsp.x_unit_samples, rsp.ecd, str_from_cstr("ECD"), str_from_cstr((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
-            {rsp.vib_x, rsp.vib_y, str_from_cstr("Vibration"), str_from_cstr("IR Intensity (km/mol)")}
+            {rsp.x_unit_samples, rsp.eps,   STR_LIT("Absorption"), STR_LIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_unit_samples, rsp.ecd,   STR_LIT("ECD"),        STR_LIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
+            {rsp.vib_x,          rsp.vib_y, STR_LIT("Vibration"),  STR_LIT("IR Intensity (km/mol)")}
         };
-
-        int num_properties = ARRAY_SIZE(properties);
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
             static int table_format = 0;
@@ -1610,7 +2151,7 @@ struct VeloxChem : viamd::EventHandler {
             file_extension = table_formats[table_format].ext;
 
             if (ImGui::BeginCombo("Property", properties[property_idx].lable.ptr)) {
-                for (int i = 0; i < num_properties; ++i) {
+                for (int i = 0; i < ARRAY_SIZE(properties); ++i) {
                     if (ImGui::Selectable(properties[i].lable.ptr, property_idx == i)) {
                         property_idx = i;
                     }
@@ -1819,7 +2360,7 @@ struct VeloxChem : viamd::EventHandler {
                 // Selected display text
                 if (rsp.selected != -1) {
                     ImGui::Text((const char*)u8"Selected: State %i: Energy = %.2f eV, Wavelength = %.0f nm, f = %.3f, R = %.3f 10⁻⁴⁰ cgs",
-                                rsp.selected + 1, (float)rsp.x_unit_peaks[rsp.selected], 1239.84193 / (float)rsp.x_unit_peaks[rsp.selected],
+                                rsp.selected + 1, (float)vlx.rsp.absorption_ev[rsp.selected], 1239.84193 / (float)vlx.rsp.absorption_ev[rsp.selected],
                                 (float)y_osc_peaks[rsp.selected], (float)y_cgs_peaks[rsp.selected]);
                 } else {
                     ImGui::Text("Selected:");
@@ -2363,7 +2904,11 @@ struct VeloxChem : viamd::EventHandler {
                         if (task_system::task_is_running(orb.vol_task[slot_idx])) {
                             task_system::task_interrupt(orb.vol_task[slot_idx]);
                         }
-                        orb.vol_task[slot_idx] = compute_mo_async(&orb.vol[slot_idx].tex_to_world, &orb.vol[slot_idx].step_size, &orb.vol[slot_idx].tex_id, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                            compute_mo_GPU(&orb.vol[slot_idx], mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        } else {
+                            orb.vol_task[slot_idx] = compute_mo_async(&orb.vol[slot_idx], mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        }
                     }
                 }
             }
@@ -2614,7 +3159,7 @@ struct VeloxChem : viamd::EventHandler {
                                     .volume = orb.vol[i].tex_id,
                                 },
                                 .matrix = {
-                                    .model = orb.vol[i].tex_to_world,
+                                    .model = orb.vol[i].texture_to_world,
                                     .view  = view_mat,
                                     .proj  = proj_mat,
                                     .inv_proj = inv_proj_mat,
@@ -2643,86 +3188,53 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     //Calculates the transition matrix heuristic
-    static inline void distribute_charges_heuristic(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* particle_charges) {
-        size_t temp_pos = md_temp_get_pos();
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
-        int* donors = 0;
-        int* acceptors = 0;
-        float* charge_diff = 0;
+    static inline void compute_transition_matrix(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* part_charges) {
+        ScopedTemp temp_reset;
 
-        float hole_sum = 0;
-        float part_sum = 0;
+        int* donors         = (int*)   md_temp_push_zero(sizeof(int)    * num_groups);
+        int* acceptors      = (int*)   md_temp_push_zero(sizeof(int)    * num_groups);
+        double* charge_diff = (double*)md_temp_push_zero(sizeof(double) * num_groups);
+
+        int num_donors = 0;
+        int num_acceptors = 0;
+
+        double hole_sum = 0;
+        double part_sum = 0;
+
         for (size_t i = 0; i < num_groups; i++) {
             hole_sum += hole_charges[i];
-            part_sum += particle_charges[i];
-        }
-
-        md_array(float) hole_percentages     = md_array_create(float, num_groups, temp_alloc);
-        md_array(float) particle_percentages = md_array_create(float, num_groups, temp_alloc);
-
-        for (size_t i = 0; i < num_groups; i++) {
-            hole_percentages[i] = hole_charges[i] / hole_sum;
-            particle_percentages[i] = particle_charges[i] / part_sum;
+            part_sum += part_charges[i];
         }
 
         for (size_t i = 0; i < num_groups; i++) {
-            float gsCharge = hole_percentages[i];
-            float esCharge = particle_percentages[i];
+            // percentages
+            double gsCharge = hole_charges[i] / hole_sum;
+            double esCharge = part_charges[i] / part_sum;
+
             if (gsCharge > esCharge) {
-                md_array_push(donors, (int)i, temp_alloc);
+                donors[num_donors++] = (int)i;
+            } else {
+                acceptors[num_acceptors++] = (int)i;
             }
-            else {
-                md_array_push(acceptors, (int)i, temp_alloc);
-            }
-            float diff = esCharge - gsCharge;
+
             out_matrix[i * num_groups + i] = MIN(gsCharge, esCharge);
-            md_array_push(charge_diff, diff, temp_alloc);
+            charge_diff[i] = esCharge - gsCharge;
         }
 
-        int num_donors = md_array_size(donors);
-        int num_acceptors = md_array_size(acceptors);
-
-        float total_acceptor_charge = 0;
-        for (size_t i = 0; i < md_array_size(acceptors); i++) {
+        double total_acceptor_charge = 0;
+        for (int i = 0; i < num_acceptors; i++) {
             total_acceptor_charge += charge_diff[acceptors[i]];
         }
-        for (size_t don_i = 0; don_i < md_array_size(donors); don_i++) {
-            float charge_deficit = -charge_diff[donors[don_i]];
-            for (size_t acc_i = 0; acc_i < md_array_size(acceptors); acc_i++) {
-                float contrib = charge_deficit * charge_diff[acceptors[acc_i]] / total_acceptor_charge;
-                out_matrix[acceptors[acc_i] * num_groups + donors[don_i]] = contrib;
+
+        for (int i = 0; i < num_donors; i++) {
+            int donor = donors[i];
+            double charge_deficit = -charge_diff[donor];
+            for (int j = 0; j < num_acceptors; j++) {
+                int acceptor = acceptors[j];
+                double contrib = charge_deficit * charge_diff[acceptor] / total_acceptor_charge;
+                out_matrix[acceptor * num_groups + donor] = (float)contrib;
             }
         }
-        md_temp_set_pos_back(temp_pos);
-    }
-
-    //Takes the hole and particle charges of all atoms, and calculates the per group charges
-    static inline void accumulate_subgroup_charges(const float* hole_charges, const float* particle_charges, size_t num_charges, size_t num_subgroups, float* ligandGSCharges, float* ligandESCharges, int* atom_subgroup_map) {
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
-        float sumGSCharges = 0;
-        float sumESCharges = 0;
-        for (size_t i = 0; i < num_charges; i++) {
-            sumGSCharges += hole_charges[i];
-            sumESCharges += particle_charges[i];
-        }
-
-        for (size_t i = 0; i < num_charges; i++) {
-            int subgroup_index = atom_subgroup_map[i];
-            ligandGSCharges[subgroup_index] += hole_charges[i] / sumGSCharges;
-            ligandESCharges[subgroup_index] += particle_charges[i] / sumESCharges;
-        }
-    }
-
-    //Calculates the subgroup charges and the transition matrix
-    static inline void compute_subgroup_charges(float* hole_charges, float* particle_charges, size_t num_charges, size_t num_subgroups, int* atom_subgroup_map) {
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
-
-        //These two arrays are the group charges. They are already defined in the GroupData.
-        float* ligandGSCharges = md_array_create(float, num_subgroups, temp_alloc);
-        md_array(float) ligandESCharges = md_array_create(float, num_subgroups, temp_alloc);
-        accumulate_subgroup_charges(hole_charges, particle_charges, num_charges, num_subgroups, ligandGSCharges, ligandESCharges, atom_subgroup_map);
-        
-
     }
 
     struct InteractionCanvasState {
@@ -2936,55 +3448,102 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    void delete_group(int index) {
+        vec4_t deleted_color = nto.group.color[index];
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == (uint32_t)index) {
+                nto.atom_group_idx[i] = 0;
+            }
+            else if (nto.atom_group_idx[i] > (uint32_t)index) {
+                nto.atom_group_idx[i] -= 1;
+            }
+        }
+        for (int i = index; i < (int)nto.group.count - 1; ++i) {
+            nto.group.color[i] = nto.group.color[i + 1];
+            MEMCPY(nto.group.label[i], nto.group.label[i + 1], sizeof(nto.group.label[i]));
+        }
+        nto.group.count--;
+        sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
+        nto.group.color[nto.group.count] = deleted_color;
+    }
+
+    void copy_group(int8_t from_idx, int8_t to_idx) {
+        nto.group.color[to_idx] = nto.group.color[from_idx];
+        MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == to_idx) {
+                nto.atom_group_idx[i] = from_idx;
+            }
+        }
+    }
+
+    void swap_groups(int a, int b) {
+        vec4_t color = nto.group.color[a];
+        nto.group.color[a] = nto.group.color[b];
+        nto.group.color[b] = color;
+
+        char label_buf[sizeof(nto.group.label[a])];
+        //sprintf(label_buf, nto.group.label[row_n]);
+        MEMCPY(label_buf, nto.group.label[a], sizeof(nto.group.label[a])); //Current to buf
+        MEMCPY(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
+        MEMCPY(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
+
+        for (size_t i = 0; i < nto.num_atoms; i++) {
+            if (nto.atom_group_idx[i] == a) {
+                nto.atom_group_idx[i] = b;
+            }
+            else if (nto.atom_group_idx[i] == b) {
+                nto.atom_group_idx[i] = a;
+            }
+        }
+    }
+
+    static inline void imgui_delayed_hover_tooltip(const char* text) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            if (ImGui::BeginTooltip()) {
+                ImGui::Text(text);
+                ImGui::EndTooltip();
+            }
+        }
+    }
+
     void draw_nto_window(ApplicationState& state) {
         if (!nto.show_window) return;
         if (vlx.rsp.num_excited_states == 0) return;
         if (vlx.rsp.nto == NULL) return;
 
         bool open_context_menu = false;
+        static bool edit_mode = false;
 
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar)) {
+            nto.group.hovered_index = -1;
+            bool viewport_hovered = false;
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Settings")) {
-                    ImGui::Text("Orbital Colors");
-                    ImGui::ColorEdit4("##Color Positive", nto.iso.colors[0].elem);
+                    ImGui::Text("Iso Colors");
+                    ImGui::ColorEdit4("##Color Density", nto.iso_den.colors[0].elem);
+                    ImGui::SetItemTooltip("Color Density");
+                    ImGui::ColorEdit4("##Color Positive", nto.iso_psi.colors[0].elem);
                     ImGui::SetItemTooltip("Color Positive");
-                    ImGui::ColorEdit4("##Color Negative", nto.iso.colors[1].elem);
+                    ImGui::ColorEdit4("##Color Negative", nto.iso_psi.colors[1].elem);
                     ImGui::SetItemTooltip("Color Negative");
 
                     ImGui::Text("Transition Dipole Moments");
-                    ImGui::Spacing();
-                    const double vector_length_min = 1.0;
-                    const double vector_length_max = 10.0;
-                    double vector_length_input = nto.iso.vector_length;
-                    ImGui::Text("Scaling");
-                    ImGui::SliderScalar("##Vector length", ImGuiDataType_Double, &vector_length_input, &vector_length_min, &vector_length_max, "%.6f",
-                        ImGuiSliderFlags_Logarithmic);
-                    ImGui::SetItemTooltip("Vector length");
-                    nto.iso.vector_length = (float)vector_length_input;
-
-                    bool show_vector = nto.iso.display_vectors;
-                    ImGui::Checkbox("Display transition dipole moments", &show_vector);
-                    nto.iso.display_vectors = show_vector;
-
-                    bool show_angle = nto.iso.display_angle;
-                    ImGui::Checkbox("Display angle", &show_angle);
-                    nto.iso.display_angle = show_angle;
-                    ImGui::Text("Vectors and angle Colors");
-                    ImGui::ColorEdit4("##Color Electric", nto.iso.vectorColors[0].elem);
+                    ImGui::Checkbox("Enabled", &nto.dipole.enabled);
+                    ImGui::SliderFloat("Scale", &nto.dipole.vector_scale, 1.0f, 10.0f);
+                    ImGui::Checkbox("Show Angle", &nto.dipole.show_angle);
+                    ImGui::ColorEdit4("Color Electric", nto.dipole.colors[0].elem);
                     ImGui::SetItemTooltip("Color Electric");
-                    ImGui::ColorEdit4("##Color Magnetic", nto.iso.vectorColors[1].elem);
+                    ImGui::ColorEdit4("Color Magnetic", nto.dipole.colors[1].elem);
                     ImGui::SetItemTooltip("Color Magnetic");
-                    ImGui::ColorEdit4("##Color Angle", nto.iso.vectorColors[2].elem);
-                    ImGui::SetItemTooltip("Color Angle");
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
             }
 
-            const ImVec2 outer_size = {300.f, 0.f};
+            const ImVec2 outer_size = {300.f + edit_mode * 80, 0.f};
             ImGui::PushItemWidth(outer_size.x);
             ImGui::BeginGroup();
 
@@ -3015,85 +3574,236 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndListBox();
             }
             ImGui::Spacing();
-            const double iso_min = 1.0e-4;
+            const double iso_min = 1.0e-8;
             const double iso_max = 5.0;
-            double iso_val = nto.iso.values[0];             
+            double iso_val = nto.iso_psi.values[0];
             ImGui::Spacing();
-            ImGui::Text("Isovalue"); 
+            ImGui::Text("Iso Value (Ψ²)"); 
             ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Iso Value");
 
-            nto.iso.values[0] = (float)iso_val;
-            nto.iso.values[1] = -(float)iso_val;
-            nto.iso.count = 2;
-            nto.iso.enabled = true;
+            nto.iso_psi.values[0] =  (float)iso_val;
+            nto.iso_psi.values[1] = -(float)iso_val;
+            nto.iso_psi.count = 2;
+            nto.iso_psi.enabled = true;
+
+            nto.iso_den.values[0] = (float)(iso_val * iso_val);
 
             ImGui::Spacing();
 
-            // @TODO: Enlist all defined groups here
-            if (ImGui::BeginListBox("##Groups", outer_size)) {
+            static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_SizingFixedFit;
+            static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
+
+            
+            static bool hide_overlap_text = true;
+            bool refresh = false;
+            ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
+
+
+
+            ImGui::Checkbox("Edit mode", &edit_mode);
+            ImGui::SameLine();
+            ImGui::Checkbox("Hide overlapping text", &hide_overlap_text);
+
+            int group_counts[MAX_NTO_GROUPS] = {0};
+            for (size_t i = 0; i < nto.num_atoms; ++i) {
+                int group_idx = nto.atom_group_idx[i] < nto.group.count ? nto.atom_group_idx[i] : 0;
+                group_counts[group_idx] += 1;
+            }
+
+            if (ImGui::BeginTable("Group Table", 3 + edit_mode * 4, flags, outer_size, 0)) {
+                ImGui::TableSetupColumn("Group", columns_base_flags, 150.f);
+                ImGui::TableSetupColumn("Count", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn("Color", columns_base_flags, 0.0f);
+                if (edit_mode) {
+                    ImGui::TableSetupColumn("##Delete", columns_base_flags, button_size.x);
+                    ImGui::TableSetupColumn("##Move down", columns_base_flags, button_size.x);
+                    ImGui::TableSetupColumn("##Move up", columns_base_flags, button_size.x);
+                    ImGui::TableSetupColumn("##Merge up", columns_base_flags, button_size.x);
+                }
+
+                //ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
+                //ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                 bool item_hovered = false;
-                for (size_t i = 0; i < nto.group.count; i++) {
-                    char color_buf[16];
-                    sprintf(color_buf, "##Group-Color%i", (int)i);
-                    ImGui::ColorEdit4Minimal(color_buf, nto.group.color[i].elem); 
-                    ImGui::SameLine(); 
-                    if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
-                        ImGui::Selectable(nto.group.label[i]);
-                        if (ImGui::IsItemHovered()) {
-                            item_hovered = true;
+                bool show_unassigned = group_counts[0] > 0;
+                int row_n = show_unassigned ? 0 : 1;
+                for (; row_n < nto.group.count; row_n++) {
+                    ImGui::PushID(row_n);
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                    ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
+
+                    ImGui::TableNextColumn();
+                    ImGui::AlignTextToFramePadding();
+                    if (edit_mode) {
+                        ImGui::PushItemWidth(150.f);
+                        if (row_n > 0) {
+                            ImGui::InputText("##label", nto.group.label[row_n], sizeof(nto.group.label[row_n]));
+                        } else {
+                            ImGui::Text(nto.group.label[0]);
+                        }
+                        ImGui::PopItemWidth();
+                    }
+                    else {
+                        ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
+                        if (ImGui::TableGetHoveredRow() == row_n + show_unassigned) {
+                            nto.group.hovered_index = (int8_t)row_n;
                             md_bitfield_clear(&state.selection.highlight_mask);
                             for (size_t j = 0; j < nto.num_atoms; j++) {
-                                if (nto.atom_group_idx[j] == i) {
+                                if (nto.atom_group_idx[j] == (uint32_t)row_n) {
                                     //Add j to highlight mask
-                                    md_bitfield_set_bit(&state.selection.highlight_mask, j);
+                                    md_bitfield_set_bit(&state.selection.highlight_mask, j); //TODO: Hover only works if you hold leftMouseBtn
                                 }
                             }
-                            //Select
-                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
+
+                            //Selection
+                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
                                 md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
                             }
                             //Deselect
-                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
+                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
                                 md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
                             }
                         }
-                        else if (!item_hovered && ImGui::IsWindowHovered()) {
-                            md_bitfield_clear(&state.selection.highlight_mask);
-                        }
-                    }
-                    else if (i == 0) {
-                        ImGui::Text(nto.group.label[i]);
-                    }
-                    else {
-                        ImGui::InputText(color_buf, nto.group.label[i], 16);
                     }
 
-                    ImGui::SameLine();
-                    int atom_count = 0;
-                    for (size_t k = 0; k < nto.num_atoms; k++) {
-                        if (nto.atom_group_idx[k] == i) {
-                            atom_count++;
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%i", group_counts[row_n]);
+
+                    ImGui::TableNextColumn();
+
+                    //Center the color picker
+                    ImVec2 cell_size = ImGui::GetContentRegionAvail();
+                    float color_size = ImGui::GetFrameHeight();
+                    ImVec2 padding((cell_size.x - color_size) * 0.5, 0.0);
+                    ImGui::SetCursorPos(ImGui::GetCursorPos() + padding);
+
+                    if (edit_mode && row_n > 0) { //You cannot edit the Unassigned color
+                        ImGui::ColorEdit4Minimal("##color", nto.group.color[row_n].elem);
+                    } else {
+                        ImGui::ColorButton("##color", vec_cast(nto.group.color[row_n]));
+                    }
+
+                    if (edit_mode) {
+                        if (row_n > 0) {
+                            ImGui::TableNextColumn();
+                            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - button_size.x);
+                            if (ImGui::DeleteButton(ICON_FA_XMARK, button_size)) {
+                                /*vec4_t deleted_color = nto.group.color[row_n];
+                                for (size_t i = 0; i < nto.num_atoms; i++) {
+                                    if (nto.atom_group_idx[i] == (uint32_t)row_n) {
+                                        nto.atom_group_idx[i] = 0;
+                                    } else if (nto.atom_group_idx[i] > (uint32_t)row_n) {
+                                        nto.atom_group_idx[i] -= 1;
+                                    }
+                                }
+                                for (int i = row_n; i < (int)nto.group.count - 1; ++i) {
+                                    nto.group.color[i] = nto.group.color[i+1];
+                                    MEMCPY(nto.group.label[i], nto.group.label[i+1], sizeof(nto.group.label[i]));
+                                }
+                                nto.group.count--;
+                                sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
+                                nto.group.color[nto.group.count] = deleted_color;*/
+                                delete_group(row_n);
+                            }
+                            imgui_delayed_hover_tooltip("Delete this group (related atoms will be unassigned)");
+
+                            //Down Arrow
+                            ImGui::TableNextColumn();
+                            if (row_n == nto.group.count - 1) {
+                                ImGui::Dummy(button_size);
+                            }
+                            else {
+                                if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                                    if (ImGui::Button(ICON_FA_ANGLES_DOWN, button_size)) {
+                                        for (size_t i = row_n; i < nto.group.count - 1; i++) {
+                                            swap_groups(i, i + 1);
+                                        }
+                                    }
+                                    imgui_delayed_hover_tooltip("Move this group to the bottom");
+
+                                }
+                                else {
+                                    if (ImGui::Button(ICON_FA_ANGLE_DOWN, button_size)) {
+                                        //vec4_t color = nto.group.color[row_n];
+                                        //nto.group.color[row_n] = nto.group.color[row_n + 1];
+                                        //nto.group.color[row_n + 1] = color;
+
+                                        //char label_buf[sizeof(nto.group.label[row_n])];
+                                        ////sprintf(label_buf, nto.group.label[row_n]);
+                                        //MEMCPY(label_buf, nto.group.label[row_n], sizeof(nto.group.label[row_n])); //Current to buf
+                                        //MEMCPY(nto.group.label[row_n], nto.group.label[row_n + 1], sizeof(nto.group.label[row_n + 1])); //Next to current
+                                        //MEMCPY(nto.group.label[row_n + 1], label_buf, sizeof(label_buf)); //Buf to next
+
+                                        //for (size_t i = 0; i < nto.num_atoms; i++) {
+                                        //    if (nto.atom_group_idx[i] == row_n) {
+                                        //        nto.atom_group_idx[i] = row_n + 1;
+                                        //    }
+                                        //    else if (nto.atom_group_idx[i] == row_n + 1) {
+                                        //        nto.atom_group_idx[i] = row_n;
+                                        //    }
+                                        //}
+                                        swap_groups(row_n, row_n + 1);
+                                    }
+                                    imgui_delayed_hover_tooltip("Move this group down one step (Ctrl-click to move to bottom)");
+                                }
+                            }
+
+                            //Up Arrow
+                            ImGui::TableNextColumn();
+                            if (row_n == 1) {
+                                ImGui::Dummy(button_size);
+                            }
+                            else {
+                                if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                                    if (ImGui::Button(ICON_FA_ANGLES_UP, button_size)) {
+                                        int last = nto.group.count - 1;
+                                        for (size_t i = last; i >= (size_t)row_n - 1; i--) {
+                                            swap_groups(i, i - 1);
+                                        }
+                                    }
+                                    imgui_delayed_hover_tooltip("Move this group to the top");
+                                }
+                                else {
+                                    if (ImGui::Button(ICON_FA_ANGLE_UP, button_size)) {
+                                        swap_groups(row_n, row_n - 1);
+                                    }
+                                    imgui_delayed_hover_tooltip("Move this group up one step (Ctrl-click to move to top)");
+                                }
+                            }
+
+                            //Merge with above arrow
+                            ImGui::TableNextColumn();
+                            if (row_n == 1) {
+                                ImGui::Dummy(button_size);
+                            }
+                            else {
+                                if (ImGui::Button(ICON_FA_TRASH_ARROW_UP, button_size)) {
+                                    for (size_t i = 0; i < nto.num_atoms; i++) {
+                                        if (nto.atom_group_idx[i] == row_n) {
+                                            nto.atom_group_idx[i] = row_n - 1;
+                                        }
+                                    }
+                                    delete_group(row_n);
+                                }
+                                imgui_delayed_hover_tooltip("Merge this group with the one above");
+                            }
                         }
                     }
-                    ImGui::Text("Atoms %i", atom_count);
-                    //if (ImGui::Selectable(nto.group.label[i])) {
-                    //    for (size_t j = 0; j < nto.num_atoms; j++) {
-                    //        if (nto.atom_group_idx[j] == i) {
-                    //            md_bitfield_set_bit(&state.selection.selection_mask, j);
-                    //            ////Selection
-                    //            //if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                    //            //    md_bitfield_set_bit(&state.selection.selection_mask, j);
-                    //            //}
-                    //            ////Deselect
-                    //            //else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                    //            //    md_bitfield_clear_bit(&state.selection.selection_mask, j);
-                    //            //}
-                    //        }
-                    //    }
-                    //}
+                    ImGui::PopID();
                 }
-                ImGui::EndListBox();
+
+                ImGui::PopStyleColor(2);
+                ImGui::EndTable();
+            }
+
+            if (ImGui::Button("Add new group")) {
+                nto.group.count++;
             }
 
             ImGui::EndGroup();
@@ -3126,93 +3836,55 @@ struct VeloxChem : viamd::EventHandler {
             if (rsp.selected != -1) {
                 // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
                 // If the occupation parameter is less than this it will not be displayed
-                const double lambda_cutoff = 0.10f;
                 for (size_t i = 0; i < MIN(ARRAY_SIZE(nto_lambda), vlx.rsp.nto[rsp.selected].occupations.count); ++i) {
                     nto_lambda[i] = vlx.rsp.nto[rsp.selected].occupations.data[lumo_idx + i];
-                    if (nto_lambda[i] < lambda_cutoff) {
+                    if (nto_lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
                         num_lambdas = (int)i;
                         break;
                     }
                 }
+                
+                num_lambdas = MIN(num_lambdas, MAX_NTO_LAMBDAS);
 
-
-				// This should be triggered by a change in the selected NTO indxex
-                // And when groups are changed
-                bool recompute_transition_matrix = false;
-
-                if (nto.vol_nto_idx != rsp.selected) {
-                    nto.vol_nto_idx = rsp.selected;
+                if (nto.sel_nto_idx != rsp.selected) {
+                    nto.sel_nto_idx = rsp.selected;
                     const float samples_per_angstrom = 6.0f;
                     size_t nto_idx = (size_t)rsp.selected;
+
+                    if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        compute_nto_density_GPU(&nto.vol[NTO_Attachment], nto_idx, NtoDensity::Attachment, samples_per_angstrom);
+                        compute_nto_density_GPU(&nto.vol[NTO_Detachment], nto_idx, NtoDensity::Detachment, samples_per_angstrom);
+                    } else {
+                        nto.vol_task[NTO_Attachment] = compute_nto_density_async(&nto.vol[NTO_Attachment], nto_idx, NtoDensity::Attachment, samples_per_angstrom);
+                        nto.vol_task[NTO_Detachment] = compute_nto_density_async(&nto.vol[NTO_Detachment], nto_idx, NtoDensity::Detachment, samples_per_angstrom);
+                    }
+
                     for (int i = 0; i < num_lambdas; ++i) {
-                        int pi = i * num_lambdas + 0;
-                        int hi = i * num_lambdas + 1;
+                        int pi = NTO_Part_0 + i;
+                        int hi = NTO_Hole_0 + i;
                         size_t lambda_idx = (size_t)i;
 
                         if (task_system::task_is_running(nto.vol_task[pi])) {
-                            task_system::task_interrupt(nto.vol_task[pi]);
+                            task_system::task_interrupt (nto.vol_task[pi]);
                         }
                         if (task_system::task_is_running(nto.vol_task[hi])) {
-                            task_system::task_interrupt(nto.vol_task[hi]);
+                            task_system::task_interrupt (nto.vol_task[hi]);
                         }
 
-                        nto.vol_task[pi] = compute_nto_async(&nto.vol[pi].tex_to_world, &nto.vol[pi].step_size, &nto.vol[pi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                        nto.vol_task[hi] = compute_nto_async(&nto.vol[hi].tex_to_world, &nto.vol[hi].step_size, &nto.vol[hi].tex_id, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                            compute_nto_GPU(&nto.vol[pi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            compute_nto_GPU(&nto.vol[hi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        } else {
+                            nto.vol_task[pi] = compute_nto_async(&nto.vol[pi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            nto.vol_task[hi] = compute_nto_async(&nto.vol[hi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                        }
+
                     }
                     if (task_system::task_is_running(nto.seg_task[0])) {
                         task_system::task_interrupt(nto.seg_task[0]);
                     }
                     if (task_system::task_is_running(nto.seg_task[1])) {
                         task_system::task_interrupt(nto.seg_task[1]);
-                    }
-
-                    recompute_transition_matrix = true;
-                }
-
-                if (recompute_transition_matrix) {
-                    const float samples_per_angstrom = 6.0f;
-                    const size_t nto_idx = (size_t)rsp.selected;
-
-                    // Resize transition matrix to the correct size
-					if (nto.transition_matrix_dim != nto.group.count) {
-                        if (nto.transition_matrix) {
-                            // The allocated size contains matrix N*N + 2*N for hole/part arrays
-                            const size_t cur_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
-                            md_free(arena, nto.transition_matrix, cur_mem);
-                        }
-
-						nto.transition_matrix_dim = nto.group.count;
-                        const size_t new_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
-						nto.transition_matrix = (float*)md_alloc(arena, new_mem);
-                        nto.transition_density_hole = nto.transition_matrix + (nto.transition_matrix_dim * nto.transition_matrix_dim);
-                        nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
-					}
-
-					MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
-
-                    task_system::ID eval_part = 0;
-                    task_system::ID seg_part  = 0;
-                    task_system::ID eval_hole = 0;
-                    task_system::ID seg_hole  = 0;
-
-                    if (compute_nto_group_values_async(&eval_part, &seg_part, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
-                        compute_nto_group_values_async(&eval_hole, &seg_hole, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyz, nto.atom_r, nto.num_atoms, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
-                    {
-                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
-                            VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
-                            distribute_charges_heuristic(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
-                        }, &nto);
-
-                        task_system::set_task_dependency(compute_matrix_task, seg_part);
-                        task_system::set_task_dependency(compute_matrix_task, seg_hole);
-
-                        task_system::enqueue_task(eval_part);
-                        task_system::enqueue_task(eval_hole);
-
-                        nto.seg_task[0] = seg_part;
-                        nto.seg_task[1] = seg_hole;
-                    } else {
-                        MD_LOG_DEBUG("An error occured when computing nto group values");
                     }
                 }
             }
@@ -3221,7 +3893,7 @@ struct VeloxChem : viamd::EventHandler {
 
             ImVec2 grid_p0 = canvas_p0;
             ImVec2 grid_p1 = canvas_p0 + canvas_sz * ImVec2(0.5f, 1.0f);
-            ImVec2 win_sz = (grid_p1 - grid_p0) / ImVec2(1.0f, (float)(num_lambdas * 2));
+            ImVec2 win_sz = (grid_p1 - grid_p0) / ImVec2(1.0f, 2.0f);
             win_sz.x = floorf(win_sz.x);
             win_sz.y = floorf(win_sz.y);
 
@@ -3263,18 +3935,29 @@ struct VeloxChem : viamd::EventHandler {
 
                 ImRect hovered_canvas_rect = {};
 
-                // Draw P / H orbitals
-                for (int i = 0; i < num_lambdas * 2; ++i) {
+                int nto_target_idx[2] = {
+                    NTO_Attachment,
+                    NTO_Detachment,
+                };
+
+                // Draw Attachment / Detachment
+                for (int i = 0; i < 2; ++i) {
+                    int idx = nto_target_idx[i];
+
                     ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
                     ImVec2 p1 = grid_p0 + win_sz * ImVec2(1.0f, (float)(i+1));
                     ImRect rect = {p0, p1};
                     ImGui::SetCursorScreenPos(p0);
+
+                    draw_list->PushClipRect(p0, p1);
+                    defer{ draw_list->PopClipRect(); };
 
                     draw_list->ChannelsSetCurrent(1);
                     ImGui::PushID(i);
                     interaction_canvas(p1-p0, selection, view, state.mold.mol);
 
                     if (ImGui::IsItemHovered()) {
+                        viewport_hovered = true;
                         if (ImGui::GetIO().MouseDoubleClicked[0]) {
                             if (view.picking_depth < 1.0f) {
                                 const vec3_t forward = view.camera.orientation * vec3_t{0, 0, 1};
@@ -3296,188 +3979,98 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
-                    const char* lbl = ((i & 1) == 0) ? "Particle" : "Hole";
+                    const char* lbl = ((i & 1) == 0) ? "Attachment" : "Detachment";
 
+#if DEBUG
                     char lbls[64];
                     snprintf(lbls, sizeof(lbls), "hovered_atom_idx: %i, hovered_bond_idx: %i", state.selection.atom_idx.hovered, state.selection.bond_idx.hovered);
+#endif
 
-                    char buf[32];
-                    snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
+                    //char buf[32];
+                    //snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
                     draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
-                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbls);
-                    
-                    const float aspect_ratio1 = win_sz.x / win_sz.y;
-                    mat4_t view_mat1 = camera_world_to_view_matrix(nto.camera);
-                    mat4_t proj_mat1 = camera_perspective_projection_matrix(nto.camera, aspect_ratio1);
-                    int number_of_atoms = vlx.geom.num_atoms;
-                    float middle_x=0;
-                    float middle_y = 0;
-                    float middle_z = 0;
-                    for (int i = 0; i < number_of_atoms; ++i) {
-                        middle_x = middle_x + (float)vlx.geom.coord_x[i];
-                        middle_y = middle_y + (float)vlx.geom.coord_y[i];
-                        middle_z = middle_z + (float)vlx.geom.coord_z[i];
-                    }
+                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[idx], p0, p1, { 0,1 }, { 1,0 });
+                    //draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
+                    draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
 
-                    middle_x=middle_x/number_of_atoms;
-                    middle_y=middle_y/number_of_atoms;
-                    middle_z=middle_z/number_of_atoms;
-                    float farthest_x = 0;
-                    float farthest_y = 0;
-                    float farthest_z = 0;
-                    float current_distance_x = 0;
-                    float current_distance_y = 0;
-                    float current_distance_z = 0;
-                    for (int i = 0; i < number_of_atoms; ++i) {
-                        current_distance_x = middle_x - (float)vlx.geom.coord_x[i];
-                        current_distance_y = middle_y - (float)vlx.geom.coord_y[i];
-                        current_distance_z = middle_z - (float)vlx.geom.coord_z[i];
-                        if (vec3_length({current_distance_x, current_distance_y, current_distance_z}) > vec3_length({farthest_x, farthest_y, farthest_z})) {
-                            farthest_x = current_distance_x;
-                            farthest_y = current_distance_y;
-                            farthest_z = current_distance_z;
-                        }
-                    }
-                    float farthest_distance = vec3_length({farthest_x, farthest_y, farthest_z});
-                    float longest_vector = 0;
-                    if (vec3_length({(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z}) > vec3_length({(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z}))
-                    {
-                        longest_vector = vec3_length({(float)vlx.rsp.electronic_transition_length[rsp.selected].x,
-                                                      (float)vlx.rsp.electronic_transition_length[rsp.selected].y,
-                                                      (float)vlx.rsp.electronic_transition_length[rsp.selected].z});
-                    }
-                    else
-                    {
-                        longest_vector = vec3_length({(float)vlx.rsp.magnetic_transition[rsp.selected].x,
-                                                      (float)vlx.rsp.magnetic_transition[rsp.selected].y,
-                                                      (float)vlx.rsp.magnetic_transition[rsp.selected].z});
-                    }
-                    const mat4_t mvp = proj_mat1 * view_mat1;
-                    const vec4_t p = mat4_mul_vec4(mvp, {middle_x, middle_y, middle_z, 1.0});
-                    const vec4_t p_electric_target =                
-                        mat4_mul_vec4(mvp, {middle_x + (float)vlx.rsp.electronic_transition_length[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                            middle_y + (float)vlx.rsp.electronic_transition_length[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                            middle_z + (float)vlx.rsp.electronic_transition_length[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                    const vec2_t c = {
-                        (p.x / p.w * 0.5f + 0.5f) * win_sz.x,
-                        (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
-                    };
-                    const vec2_t c_electric_target = {
-                        (p_electric_target.x / p_electric_target.w * 0.5f + 0.5f) * win_sz.x,
-                        (-p_electric_target.y / p_electric_target.w * 0.5f + 0.5f) * win_sz.y,
-                    };
-                    float angle_electric = atan2f(c.y - c_electric_target.y, c.x - c_electric_target.x);
+                    if (nto.dipole.enabled) {
+                        const vec3_t mid = vec3_lerp(min_aabb, max_aabb, 0.5f);
+                        const vec3_t ext = max_aabb - min_aabb;
 
-                    const vec2_t electric_triangle_point1 = {
-                        p0.x + c_electric_target.x + cosf(angle_electric + 0.523599f) * 5,
-                        p0.y + c_electric_target.y + sinf(angle_electric + 0.523599f) * 5,
-                    };
-                    const vec2_t electric_triangle_point2 = {
-                        p0.x + c_electric_target.x + cosf(angle_electric - 0.523599f) * 5,
-                        p0.y + c_electric_target.y + sinf(angle_electric - 0.523599f) * 5,
-                    };
-                    if (nto.iso.display_vectors) {
-                            draw_list->AddLine({p0.x + c.x, p0.y + c.y}, {p0.x + c_electric_target.x, p0.y + c_electric_target.y},
-                                           ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1], nto.iso.vectorColors[0].elem[2],
-                                                    nto.iso.vectorColors[0].elem[3]),
-                                           5.0f);
-                            draw_list->AddTriangle({p0.x + c_electric_target.x, p0.y + c_electric_target.y},
-                                                   {electric_triangle_point1.x, electric_triangle_point1.y},
-                                                   {electric_triangle_point2.x, electric_triangle_point2.y}, ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1],nto.iso.vectorColors[0].elem[2],nto.iso.vectorColors[0].elem[3]), 5.0f);
-                            draw_list->AddText({p0.x + c_electric_target.x, p0.y + c_electric_target.y},
-                                               ImColor(nto.iso.vectorColors[0].elem[0], nto.iso.vectorColors[0].elem[1],
-                                                       nto.iso.vectorColors[0].elem[2], nto.iso.vectorColors[0].elem[3]),
-                                               (const char*)u8"μe");
-                        }
-                    const vec4_t p_magnetic_target =
-                        mat4_mul_vec4(mvp, {middle_x + (float)vlx.rsp.magnetic_transition[rsp.selected].x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                            middle_y + (float)vlx.rsp.magnetic_transition[rsp.selected].y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                            middle_z + (float)vlx.rsp.magnetic_transition[rsp.selected].z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                    const vec2_t c_magnetic_target = {
-                        (p_magnetic_target.x / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.x,
-                        (-p_magnetic_target.y / p_magnetic_target.w * 0.5f + 0.5f) * win_sz.y,
-                    };
-                    float angle_magnetic = atan2f(c.y - c_magnetic_target.y, c.x - c_magnetic_target.x);
-                    const vec2_t magnetic_triangle_point1 = {
-                        p0.x + c_magnetic_target.x + cosf(angle_magnetic + 0.523599f) * 5.0f,
-                        p0.y + c_magnetic_target.y + sinf(angle_magnetic + 0.523599f) * 5.0f,
-                    };
-                    const vec2_t magnetic_triangle_point2 = {
-                        p0.x + c_magnetic_target.x + cosf(angle_magnetic - 0.523599f) * 5.0f,
-                        p0.y + c_magnetic_target.y + sinf(angle_magnetic - 0.523599f) * 5.0f,
-                    };
-                    vec3_t magnetic_vector_3d = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
-                    vec3_t electronic_vector_3d = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
+                        vec3_t magn_vec = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
+                        vec3_t elec_vec = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
 
-                    float el_ma_dot = vec3_dot(magnetic_vector_3d, electronic_vector_3d);
-                    float el_len = vec3_length(electronic_vector_3d);
-                    float ma_len = vec3_length(magnetic_vector_3d);
-                    float angle = acosf(el_ma_dot / (el_len * ma_len)) * (180.0 / 3.141592653589793238463);
-                    char bufDPM[32];
-                    const vec2_t magnetic_vector_2d = c_magnetic_target - c;
-                    const vec2_t electric_vector_2d = c_electric_target - c;
-                    if (nto.iso.display_vectors) {
-                        draw_list->AddLine({p0.x + c.x, p0.y + c.y}, {p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
-                                           ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1], nto.iso.vectorColors[1].elem[2],
-                                                   nto.iso.vectorColors[1].elem[3]),
-                                           5.0f);
-                        draw_list->AddTriangle({p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
-                                               {magnetic_triangle_point1.x, magnetic_triangle_point1.y},
-                                               {magnetic_triangle_point2.x, magnetic_triangle_point2.y}, ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1],
-                                                       nto.iso.vectorColors[1].elem[2], nto.iso.vectorColors[1].elem[3]), 5.0f);
-                        draw_list->AddText({p0.x + c_magnetic_target.x, p0.y + c_magnetic_target.y},
-                                           ImColor(nto.iso.vectorColors[1].elem[0], nto.iso.vectorColors[1].elem[1], nto.iso.vectorColors[1].elem[2],
-                                                   nto.iso.vectorColors[1].elem[3]),
-                                           (const char*)u8"μm");
-                    }
-                    if (nto.iso.display_angle) {
-                        int num_of_seg = 10;
-                        for (int segment = 0; segment < num_of_seg; segment++) {
-                            vec3_t middle_point_3d0 = vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment) / num_of_seg * 0.1f +
-                                                                    vec3_normalize(electronic_vector_3d)*segment/num_of_seg * 0.1f) *0.03f;
-                            const vec4_t p_middle_point_3d_target0 =
-                                mat4_mul_vec4(mvp, {middle_x + middle_point_3d0.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                    middle_y + middle_point_3d0.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                    middle_z + middle_point_3d0.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                            const vec2_t c_middle_point_target0 = {
-                                (p_middle_point_3d_target0.x / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.x,
-                                (-p_middle_point_3d_target0.y / p_middle_point_3d_target0.w * 0.5f + 0.5f) * win_sz.y,
+						magn_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
+						elec_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
+
+                        auto proj_point = [MVP, win_sz, p0](vec3_t point) -> ImVec2 {
+                            const vec4_t p = mat4_mul_vec4(MVP, vec4_from_vec3(point, 1.0));
+                            const ImVec2 c = {
+                                p0.x + ( p.x / p.w * 0.5f + 0.5f) * win_sz.x,
+                                p0.y + (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
                             };
-                            vec3_t middle_point_3d1 =
-                                vec3_normalize(vec3_normalize(magnetic_vector_3d) * (num_of_seg - segment - 1) / num_of_seg * 0.1f +
-                                                                    vec3_normalize(electronic_vector_3d)*(segment + 1 ) / num_of_seg * 0.1f) *0.03f;
-                            const vec4_t p_middle_point_3d_target1 =
-                                mat4_mul_vec4(mvp, {middle_x + middle_point_3d1.x * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                    middle_y + middle_point_3d1.y * (float)nto.iso.vector_length*farthest_distance/longest_vector,
-                                                    middle_z + middle_point_3d1.z * (float)nto.iso.vector_length*farthest_distance/longest_vector, 1.0f});
-                            const vec2_t c_middle_point_target1 = {
-                                (p_middle_point_3d_target1.x / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.x,
-                                (-p_middle_point_3d_target1.y / p_middle_point_3d_target1.w * 0.5f + 0.5f) * win_sz.y,
-                            };
-                            draw_list->AddLine({p0.x + c_middle_point_target0.x, p0.y + c_middle_point_target0.y},
-                                               {p0.x + c_middle_point_target1.x, p0.y + c_middle_point_target1.y},
-                                               ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1],
-                                                       nto.iso.vectorColors[2].elem[2], nto.iso.vectorColors[2].elem[3]),
-                                               5.0f);
+                            return c;
+                        };
+
+                        auto draw_arrow = [draw_list](ImVec2 beg, ImVec2 end, ImU32 color, float thickness) {
+                            float len2 = ImLengthSqr(end-beg);
+                            if (len2 > 1.0e-3f) {
+                                float len = sqrtf(len2);
+                                ImVec2 d = (end - beg) / len;
+                                ImVec2 o = {-d.y, d.x};
+                                float d_scl = ImMin(thickness * 3, len);
+                                float o_scl = 0.57735026918962576451 * d_scl;
+                                draw_list->AddLine(beg, end - d * thickness, color, thickness);
+                                draw_list->AddTriangleFilled(end, end - d * d_scl + o * o_scl, end - d * d_scl - o * o_scl, color);
+                            }
+                        };
+
+                        const ImU32 elec_color = convert_color(nto.dipole.colors[0]);
+                        const ImU32 magn_color = convert_color(nto.dipole.colors[1]);
+                        const ImU32 text_color = IM_COL32_BLACK;
+                        const float arrow_thickness = 3.0f;
+
+                        ImVec2 c      = proj_point(mid);
+                        ImVec2 c_elec = proj_point(mid + elec_vec);
+                        ImVec2 c_magn = proj_point(mid + magn_vec);
+
+                        draw_arrow(c, c_elec, elec_color, arrow_thickness);
+                        draw_list->AddText(c_elec, text_color, (const char*)u8"μe");
+
+                        draw_arrow(c, c_magn, magn_color, arrow_thickness);
+                        draw_list->AddText(c_magn, text_color, (const char*)u8"μm");
+
+                        if (nto.dipole.show_angle) {
+							const vec3_t magn_dir = vec3_normalize(magn_vec);
+							const vec3_t elec_dir = vec3_normalize(elec_vec);
+                            const float angle = acosf(vec3_dot(magn_dir, elec_dir));
+                            const ImU32 angle_color = IM_COL32(0, 0, 0, 128);
+                            const float angle_thickness = 1.0f;
+                            const float angle_vec_scale = 0.1f;
+
+                            const size_t num_seg = 20;
+							const vec3_t axis = vec3_normalize(vec3_cross(elec_dir, magn_dir));
+
+                            for (size_t seg = 0; seg <= num_seg; ++seg) {
+								float  t = (float)(seg) / (float)num_seg;
+                                vec3_t v = quat_mul_vec3(quat_axis_angle(axis, angle * t), elec_dir);
+								ImVec2 p = proj_point(mid + v * angle_vec_scale);
+                                draw_list->PathLineTo(p);
+                            }
+                            draw_list->PathStroke(angle_color, 0, angle_thickness);
+
+                            char buf[32];
+                            snprintf(buf, sizeof(buf), (const char*)u8"%.2f°", RAD_TO_DEG(angle));
+                            draw_list->AddText(c, text_color, buf);
                         }
-
-                        
-                        snprintf(bufDPM, sizeof(bufDPM), (const char*)u8"θ=%.2f°", angle);
-                        draw_list->AddText({p0.x + c.x, p0.y + c.y},
-                                           ImColor(nto.iso.vectorColors[2].elem[0], nto.iso.vectorColors[2].elem[1], nto.iso.vectorColors[2].elem[2],
-                                                   nto.iso.vectorColors[2].elem[3]),
-                                           bufDPM);
                     }
-                    
-
                 }
-                // @TODO: Draw Sankey Diagram of Transition Matrix
+                // Draw Sankey Diagram of Transition Matrix
                 {
+                    //compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
-                    im_sankey_diagram({p0.x, p0.y, p1.x, p1.y}, &nto);
+                    im_sankey_diagram(&state, {p0.x, p0.y, p1.x, p1.y}, &nto, hide_overlap_text);
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
                 }
@@ -3487,8 +4080,10 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 p1 = {floorf(canvas_p0.x + canvas_sz.x * 0.5f), canvas_p1.y};
                     draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
                 }
-                for (int i = 1; i < num_lambdas * 2; ++i) {
-                    float y = floorf(canvas_p0.y + canvas_sz.y / ((float)num_lambdas * 2.0f) * i);
+
+                int num_subwindows = 2;
+                for (int i = 1; i < num_subwindows; ++i) {
+                    float y = floorf(canvas_p0.y + canvas_sz.y / ((float)num_subwindows) * i);
                     float x0 = canvas_p0.x;
                     float x1 = floorf(canvas_p0.x + canvas_sz.x * (i & 1 ? 0.5f : 1.0f));
                     draw_list->AddLine({x0, y}, {x1, y}, IM_COL32(0, 0, 0, 255));
@@ -3496,21 +4091,20 @@ struct VeloxChem : viamd::EventHandler {
 
                 // Draw stuff
 
-
                 const bool is_hovered = ImGui::IsItemHovered();
-                const bool is_active = ImGui::IsItemActive();
+                const bool is_active  = ImGui::IsItemActive();
                 const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
                 const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
                 int width  = MAX(1, (int)win_sz.x);
                 int height = MAX(1, (int)win_sz.y);
 
-                int num_win = num_lambdas * 2;
+                const int num_win = 2;
 
                 auto& gbuf = nto.gbuf;
                 if ((int)gbuf.width != width || (int)gbuf.height != height) {
                     init_gbuffer(&gbuf, width, height);
-                    for (int i = 0; i < num_win; ++i) {
+                    for (int i : nto_target_idx) {
                         gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
                     }
                 }
@@ -3720,60 +4314,62 @@ struct VeloxChem : viamd::EventHandler {
                         .view = view_mat,
                         .proj = proj_mat,
                         .norm = view_mat,
-                },
-                .inv = {
+                    },
+                    .inv = {
                         .proj = inv_proj_mat,
-                }
-                },
+                    }
+                    },
                     .clip_planes = {
                         .near = nto.camera.near_plane,
                         .far  = nto.camera.far_plane,
-                },
-                .resolution = {win_sz.x, win_sz.y},
-                .fov_y = nto.camera.fov_y,
+                    },
+                    .resolution = {win_sz.x, win_sz.y},
+                    .fov_y = nto.camera.fov_y,
                 };
 
                 postprocessing::shade_and_postprocess(postprocess_desc, view_param);
                 POP_GPU_SECTION()
 
-                    if (nto.iso.enabled) {
-                        PUSH_GPU_SECTION("NTO RAYCAST")
-                            for (int i = 0; i < num_win; ++i) {
-                                volume::RenderDesc vol_desc = {
-                                    .render_target = {
-                                        .depth  = nto.gbuf.tex.depth,
-                                        .color  = nto.iso_tex[i],
-                                        .width  = nto.gbuf.width,
-                                        .height = nto.gbuf.height,
-                                        .clear_color = true,
-                                },
-                                .texture = {
-                                        .volume = nto.vol[i].tex_id,
-                                },
-                                .matrix = {
-                                        .model = nto.vol[i].tex_to_world,
-                                        .view  = view_mat,
-                                        .proj  = proj_mat,
-                                        .inv_proj = inv_proj_mat,
-                                },
-                                .iso = {
-                                        .enabled = true,
-                                        .count  = (size_t)nto.iso.count,
-                                        .values = nto.iso.values,
-                                        .colors = nto.iso.colors,
-                                },
-                                .shading = {
-                                        .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
-                                        .roughness = 0.3f,
-                                        .dir_radiance = {10,10,10},
-                                        .ior = 1.5f,
-                                },
-                                .voxel_spacing = nto.vol[i].step_size,
-                                };
-                                volume::render_volume(vol_desc);
-                            }
-                        POP_GPU_SECTION();
+                PUSH_GPU_SECTION("NTO RAYCAST")
+                for (int i : nto_target_idx) {
+                    const IsoDesc& iso = (i == NTO_Attachment || i == NTO_Detachment) ? nto.iso_den : nto.iso_psi;
+
+                    if (iso.enabled) {
+                        volume::RenderDesc vol_desc = {
+                            .render_target = {
+                                .depth  = nto.gbuf.tex.depth,
+                                .color  = nto.iso_tex[i],
+                                .width  = nto.gbuf.width,
+                                .height = nto.gbuf.height,
+                                .clear_color = true,
+                            },
+                            .texture = {
+                                .volume = nto.vol[i].tex_id,
+                            },
+                            .matrix = {
+                                .model = nto.vol[i].texture_to_world,
+                                .view  = view_mat,
+                                .proj  = proj_mat,
+                                .inv_proj = inv_proj_mat,
+                            },
+                            .iso = {
+                                .enabled = iso.enabled,
+                                .count   = iso.count,
+                                .values  = iso.values,
+                                .colors  = iso.colors,
+                            },
+                            .shading = {
+                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                .roughness = 0.3f,
+                                .dir_radiance = {10,10,10},
+                                .ior = 1.5f,
+                            },
+                            .voxel_spacing = nto.vol[i].step_size,
+                        };
+                        volume::render_volume(vol_desc);
                     }
+                }
+                POP_GPU_SECTION();
 
                 // Reset state
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -3798,6 +4394,9 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
             }
+            if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1 && !viewport_hovered) {
+                md_bitfield_clear(&state.selection.highlight_mask);
+            }
         }
         ImGui::End();
 
@@ -3806,10 +4405,105 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         if (ImGui::BeginPopup("Context Menu")) {
-            if (ImGui::MenuItem("Example Button")) {
-
+            if (ImGui::BeginMenu("Add to group")) {
+                for (size_t i = 0; i < nto.group.count; i++) {
+                    if (ImGui::MenuItem(nto.group.label[i])) {
+                        for (size_t j = 0; j < nto.num_atoms; j++) {
+                            //Is the atom selected?
+                            if (md_bitfield_test_bit(&state.selection.selection_mask, j)) {
+                                //If so, set its group to the selected group index
+                                nto.atom_group_idx[j] = (uint32_t)i;
+                            }
+                        }
+                    }
+                }
+                ImGui::EndMenu();
+            }
+            if (nto.group.count < MAX_NTO_GROUPS) {
+                if (ImGui::MenuItem("Add to new group")) {
+                    //Create a new group and add an item to it
+                    uint32_t group_idx = (uint32_t)(nto.group.count++);
+                    for (size_t i = 0; i < nto.num_atoms; i++) {
+                        if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
+                            //If so, set its group to the selected group index
+                            nto.atom_group_idx[i] = group_idx;
+                        }
+                    }
+                }
             }
             ImGui::EndPopup();
+        }
+
+        // Create hash to check for changes to trigger update of colors in gl representation
+        uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, sizeof(uint32_t) * nto.num_atoms, 0);
+        uint64_t color_hash    = md_hash64(nto.group.color, sizeof(nto.group.color), atom_idx_hash);
+
+        static uint64_t cur_color_hash = 0;
+        if (color_hash != cur_color_hash) {
+            cur_color_hash = color_hash;
+            update_nto_group_colors();
+        }
+
+        // Create hash to check for changes to trigger recomputation of transition matrix
+        uint64_t matrix_hash = atom_idx_hash ^ nto.sel_nto_idx ^ nto.group.count;
+        static uint64_t cur_matrix_hash = 0;
+
+        if (matrix_hash != cur_matrix_hash) {
+            cur_matrix_hash = matrix_hash;
+
+            // Resize transition matrix to the correct size
+            if (nto.transition_matrix_dim != nto.group.count) {
+                if (nto.transition_matrix) {
+                    // The allocated size contains matrix N*N + 2*N for hole/part arrays
+                    const size_t cur_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
+                    md_free(arena, nto.transition_matrix, cur_mem);
+                }
+
+                nto.transition_matrix_dim = nto.group.count;
+                const size_t new_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
+                nto.transition_matrix = (float*)md_alloc(arena, new_mem);
+                nto.transition_density_hole = nto.transition_matrix + (nto.transition_matrix_dim * nto.transition_matrix_dim);
+                nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
+            }
+
+			// Clear all of the values to zero (matrix, group values)
+            MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
+
+            if (nto.sel_nto_idx != -1) {
+                const float samples_per_angstrom = 6.0f;
+                const size_t nto_idx = (size_t)nto.sel_nto_idx;
+
+                if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                    md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_part, nto.group.count, nto.vol[NTO_Attachment].tex_id, nto.vol[NTO_Attachment].dim, nto.vol[NTO_Attachment].step_size.elem, (const float*)nto.vol[NTO_Attachment].world_to_model.elem, (const float*)nto.vol[NTO_Attachment].index_to_world.elem, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
+                    md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_hole, nto.group.count, nto.vol[NTO_Detachment].tex_id, nto.vol[NTO_Detachment].dim, nto.vol[NTO_Detachment].step_size.elem, (const float*)nto.vol[NTO_Detachment].world_to_model.elem, (const float*)nto.vol[NTO_Detachment].index_to_world.elem, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
+                    compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
+                } else {
+                    task_system::ID eval_attach = 0;
+                    task_system::ID seg_attach  = 0;
+                    task_system::ID eval_detach = 0;
+                    task_system::ID seg_detach  = 0;
+
+                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
+                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
+                    {
+                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
+                            VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
+                            compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
+                            }, &nto);
+
+                        task_system::set_task_dependency(compute_matrix_task, seg_attach);
+                        task_system::set_task_dependency(compute_matrix_task, seg_detach);
+
+                        task_system::enqueue_task(eval_attach);
+                        task_system::enqueue_task(eval_detach);
+
+                        nto.seg_task[0] = seg_attach;
+                        nto.seg_task[1] = seg_detach;
+                    } else {
+                        MD_LOG_DEBUG("An error occured when computing nto group values");
+                    }
+                }
+            }
         }
     }
 };

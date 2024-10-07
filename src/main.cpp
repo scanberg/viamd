@@ -9,6 +9,8 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
+#define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
+
 #include <md_util.h>
 #include <md_gl.h>
 #include <md_gfx.h>
@@ -4239,21 +4241,21 @@ static void draw_representations_window(ApplicationState* state) {
                     ImGui::EndCombo();
                 }
 
-                if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.vol.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
+                if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
                     update_rep = true;
                 }
-#if 1
+#if 0
                 // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
-                ImGui::Checkbox("Enable DVR", &rep.orbital.vol.dvr.enabled);
-                if (rep.orbital.vol.dvr.enabled) {
+                ImGui::Checkbox("Enable DVR", &rep.orbital.dvr.enabled);
+                if (rep.orbital.dvr.enabled) {
                     const ImVec2 button_size = {160, 0};
-                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.orbital.vol.dvr.colormap), button_size, rep.orbital.vol.dvr.colormap)) {
+                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.orbital.dvr.colormap), button_size, rep.orbital.dvr.colormap)) {
                         ImGui::OpenPopup("Colormap Selector");
                     }
                     if (ImGui::BeginPopup("Colormap Selector")) {
                         for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
                             if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
-                                rep.orbital.vol.dvr.colormap = map;
+                                rep.orbital.dvr.colormap = map;
                                 update_rep = true;
                                 ImGui::CloseCurrentPopup();
                             }
@@ -4264,19 +4266,33 @@ static void draw_representations_window(ApplicationState* state) {
 #endif
 
                 //ImGui::Checkbox("Enable Iso-Surface", &rep.orbital.vol.iso.enabled);
-                if (rep.orbital.vol.iso.enabled) {
+
+                if (rep.orbital.type == OrbitalType::Psi) {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
-                          double iso_val = rep.orbital.vol.iso.values[0];
-                    ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+                    double iso_val = rep.orbital.iso_psi.values[0];
+                    if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
+                        rep.orbital.iso_psi.values[0] =  (float)iso_val;
+                        rep.orbital.iso_psi.values[1] = -(float)iso_val;
+                        rep.orbital.iso_den.values[0] =  (float)(iso_val * iso_val);
+                    }
+                } else {
+                    const double iso_min = 1.0e-8;
+                    const double iso_max = 5.0;
+                    double iso_val = rep.orbital.iso_den.values[0];
 
-                    rep.orbital.vol.iso.values[0] =  (float)iso_val;
-                    rep.orbital.vol.iso.values[1] = -(float)iso_val;
-                    rep.orbital.vol.iso.count = 2;
-                    rep.orbital.vol.iso.enabled = true;
+                    if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
+                        rep.orbital.iso_psi.values[0] =  (float)sqrt(iso_val);
+                        rep.orbital.iso_psi.values[1] = -(float)sqrt(iso_val);
+                        rep.orbital.iso_den.values[0] =  (float)iso_val;
+                    }
+                }
 
-                    ImGui::ColorEdit4("Color Positive", rep.orbital.vol.iso.colors[0].elem);
-                    ImGui::ColorEdit4("Color Negative", rep.orbital.vol.iso.colors[1].elem);
+                if (rep.orbital.type == OrbitalType::Psi) {
+                    ImGui::ColorEdit4("Color Positive", rep.orbital.iso_psi.colors[0].elem);
+                    ImGui::ColorEdit4("Color Negative", rep.orbital.iso_psi.colors[1].elem);
+                } else {
+                    ImGui::ColorEdit4("Color Density",  rep.orbital.iso_den.colors[0].elem);
                 }
             }
             ImGui::TreePop();
@@ -7625,18 +7641,21 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                 } else if (str_eq(ident, STR_LIT("OrbRes"))) {
                     int res;
                     viamd::extract_int(res, arg);
-                    rep->orbital.vol.resolution = (VolumeResolution)res;
+                    rep->orbital.resolution = (VolumeResolution)res;
                 } else if (str_eq(ident, STR_LIT("OrbType"))) {
                     int type;
                     viamd::extract_int(type, arg);
                     rep->orbital.type = (OrbitalType)type;
                 } else if (str_eq(ident, STR_LIT("OrbIso"))) {
-                    viamd::extract_flt(rep->orbital.vol.iso.values[0], arg);
-                    rep->orbital.vol.iso.values[1] = - rep->orbital.vol.iso.values[0];
+                    viamd::extract_flt(rep->orbital.iso_psi.values[0], arg);
+                    rep->orbital.iso_psi.values[1] = - rep->orbital.iso_psi.values[0];
+                    rep->orbital.iso_den.values[0] = rep->orbital.iso_psi.values[0] * rep->orbital.iso_psi.values[0];
                 } else if (str_eq(ident, STR_LIT("OrbColPos"))) {
-                    viamd::extract_vec4(rep->orbital.vol.iso.colors[0], arg);
+                    viamd::extract_vec4(rep->orbital.iso_psi.colors[0], arg);
                 } else if (str_eq(ident, STR_LIT("OrbColNeg"))) {
-                    viamd::extract_vec4(rep->orbital.vol.iso.colors[1], arg);
+                    viamd::extract_vec4(rep->orbital.iso_psi.colors[1], arg);
+                } else if (str_eq(ident, STR_LIT("OrbColDen"))) {
+                    viamd::extract_vec4(rep->orbital.iso_den.colors[0], arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("AtomElementMapping"))) {
@@ -7782,10 +7801,11 @@ static void save_workspace(ApplicationState* data, str_t filename) {
         if (rep.type == RepresentationType::Orbital) {
             viamd::write_int(state,  STR_LIT("OrbIdx"),      rep.orbital.orbital_idx);
             viamd::write_int(state,  STR_LIT("OrbType"),(int)rep.orbital.type);
-            viamd::write_int(state,  STR_LIT("OrbRes"), (int)rep.orbital.vol.resolution);
-            viamd::write_flt(state,  STR_LIT("OrbIso"),      rep.orbital.vol.iso.values[0]);
-            viamd::write_vec4(state, STR_LIT("OrbColPos"),   rep.orbital.vol.iso.colors[0]);
-            viamd::write_vec4(state, STR_LIT("OrbColNeg"),   rep.orbital.vol.iso.colors[1]);
+            viamd::write_int(state,  STR_LIT("OrbRes"), (int)rep.orbital.resolution);
+            viamd::write_flt(state,  STR_LIT("OrbIso"),      rep.orbital.iso_psi.values[0]);
+            viamd::write_vec4(state, STR_LIT("OrbColPos"),   rep.orbital.iso_psi.colors[0]);
+            viamd::write_vec4(state, STR_LIT("OrbColNeg"),   rep.orbital.iso_psi.colors[1]);
+            viamd::write_vec4(state, STR_LIT("OrbColDen"),   rep.orbital.iso_den.colors[0]);
         }
     }
 
@@ -7903,8 +7923,8 @@ static void remove_representation(ApplicationState* state, int idx) {
     auto& rep = state->representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_rep_destroy(rep.md_rep);
-    if (rep.orbital.vol.vol_tex != 0) gl::free_texture(&rep.orbital.vol.vol_tex);
-    if (rep.orbital.vol.dvr.tf_tex != 0) gl::free_texture(&rep.orbital.vol.dvr.tf_tex);
+    if (rep.orbital.vol.tex_id != 0) gl::free_texture(&rep.orbital.vol.tex_id);
+    if (rep.orbital.dvr.tf_tex != 0) gl::free_texture(&rep.orbital.dvr.tf_tex);
     md_array_swap_back_and_pop(state->representation.reps, idx);
 }
 
@@ -7927,6 +7947,16 @@ static void update_all_representations(ApplicationState* state) {
         auto& rep = state->representation.reps[i];
         rep.filt_is_dirty = true;
         update_representation(state, &rep);
+    }
+}
+
+static bool rep_type_uses_colors(RepresentationType type) {
+    switch(type) {
+        case RepresentationType::DipoleMoment:
+        case RepresentationType::Orbital:
+            return false;
+        default:
+            return true;
     }
 }
 
@@ -8064,7 +8094,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         size_t num_mol_orbitals = md_array_size(state->representation.info.molecular_orbitals);
         rep->type_is_valid = num_mol_orbitals > 0;
         if (num_mol_orbitals > 0) {
-            uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.vol.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
+            uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
             if (vol_hash != rep->orbital.vol_hash) {
                 const float samples_per_angstrom[(int)VolumeResolution::Count] = {
                     4.0f,
@@ -8074,22 +8104,22 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 ComputeOrbital data = {
                     .type = rep->orbital.type,
                     .orbital_idx = rep->orbital.orbital_idx,
-                    .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.vol.resolution],
-                    .dst_texture = &rep->orbital.vol.vol_tex,
+                    .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.resolution],
+                    .dst_volume = &rep->orbital.vol,
                 };
                 viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
 
                 if (data.output_written) {
+#if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
                     rep->orbital.vol_hash = vol_hash;
-                    rep->orbital.vol.tex_mat = data.tex_mat;
-                    rep->orbital.vol.voxel_spacing = data.voxel_spacing;
+#endif
                 }
             }
         }
-        uint64_t tf_hash = md_hash64(&rep->orbital.vol.dvr.colormap, sizeof(rep->orbital.vol.dvr.colormap), 0);
+        uint64_t tf_hash = md_hash64(&rep->orbital.dvr.colormap, sizeof(rep->orbital.dvr.colormap), 0);
         if (tf_hash != rep->orbital.tf_hash) {
             rep->orbital.tf_hash = tf_hash;
-            volume::compute_transfer_function_texture(&rep->orbital.vol.dvr.tf_tex, rep->orbital.vol.dvr.colormap, volume::RAMP_TYPE_SAWTOOTH);
+            volume::compute_transfer_function_texture(&rep->orbital.dvr.tf_tex, rep->orbital.dvr.colormap, volume::RAMP_TYPE_SAWTOOTH);
         }
         break;
     }
@@ -8965,6 +8995,12 @@ static void draw_representations_transparent(ApplicationState* state) {
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::Orbital) continue;
 
+        const IsoDesc& iso = (rep.orbital.type == OrbitalType::Psi) ? rep.orbital.iso_psi : rep.orbital.iso_den;
+
+#if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
+        update_representation(state, &state->representation.reps[i]);
+#endif
+
         volume::RenderDesc desc = {
             .render_target = {
                 .depth = state->gbuffer.tex.depth,
@@ -8973,11 +9009,11 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .height = state->gbuffer.height,
             },
             .texture = {
-                .volume = rep.orbital.vol.vol_tex,
-                .transfer_function = rep.orbital.vol.dvr.tf_tex,
+                .volume = rep.orbital.vol.tex_id,
+                .transfer_function = rep.orbital.dvr.tf_tex,
             },
             .matrix = {
-                .model = rep.orbital.vol.tex_mat,
+                .model = rep.orbital.vol.texture_to_world,
                 .view  = state->view.param.matrix.curr.view,
                 .proj  = state->view.param.matrix.curr.proj,
                 .inv_proj = state->view.param.matrix.inv.proj,
@@ -8990,13 +9026,13 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .enabled = state->visuals.temporal_aa.enabled,
             },
             .iso = {
-                .enabled = rep.orbital.vol.iso.enabled,
-                .count  = (size_t)rep.orbital.vol.iso.count,
-                .values = rep.orbital.vol.iso.values,
-                .colors = rep.orbital.vol.iso.colors,
+                .enabled = iso.enabled,
+                .count  = iso.count,
+                .values = iso.values,
+                .colors = iso.colors,
             },
             .dvr = {
-                .enabled = rep.orbital.vol.dvr.enabled,
+                .enabled = rep.orbital.dvr.enabled,
                 .min_tf_value = -1.0f,
                 .max_tf_value =  1.0f,
             },
@@ -9006,10 +9042,17 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .dir_radiance = {10,10,10},
                 .ior = 1.5f,
         },
-            .voxel_spacing = rep.orbital.vol.voxel_spacing,
+            .voxel_spacing = rep.orbital.vol.step_size,
         };
 
         volume::render_volume(desc);
+
+#if DEBUG
+        immediate::set_model_view_matrix(state->view.param.matrix.curr.view);
+        immediate::set_proj_matrix(state->view.param.matrix.curr.proj);
+        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, rep.orbital.vol.texture_to_world, immediate::COLOR_BLACK);
+        immediate::render();
+#endif
     }
 }
 
