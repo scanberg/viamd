@@ -230,6 +230,8 @@ struct VeloxChem : viamd::EventHandler {
     int homo_idx = 0;
     int lumo_idx = 0;
 
+    int* atom_index_order = nullptr;
+
     // Principal Component Axes of the geometry
     mat3_t PCA = mat3_ident();
     vec3_t com = {};
@@ -521,9 +523,9 @@ struct VeloxChem : viamd::EventHandler {
             if (md_vlx_data_parse_file(&vlx, filename, arena)) {
                 MD_LOG_INFO("Successfully loaded VeloxChem data");
 
-                md_array_resize(vlx.geom.atom_index, vlx.geom.num_atoms, vlx.alloc);
+                md_array_resize(atom_index_order, vlx.geom.num_atoms, vlx.alloc);
                 for (size_t i = 0; i < vlx.geom.num_atoms; i++) {
-                    vlx.geom.atom_index[i] = i;
+                    atom_index_order[i] = i;
                 }
 
                 if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
@@ -1962,7 +1964,7 @@ struct VeloxChem : viamd::EventHandler {
         bool desc = (sort_specs->Specs->SortDirection == ImGuiSortDirection_Descending);
         switch (sort_specs->Specs->ColumnIndex) {
         case SortType_AtomIdx:
-            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+            std::sort(atom_index_order, atom_index_order + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
                     return a > b;
@@ -1972,7 +1974,7 @@ struct VeloxChem : viamd::EventHandler {
                 });
             break;
         case SortType_AtomSymbol:
-            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+            std::sort(atom_index_order, atom_index_order + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
                     return (str_cmp_lex(vlx.geom.atom_symbol[a], vlx.geom.atom_symbol[b])) > 0;
@@ -1982,7 +1984,7 @@ struct VeloxChem : viamd::EventHandler {
                 });
             break;
         case SortType_X:
-            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+            std::sort(atom_index_order, atom_index_order + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
                     return vlx.geom.coord_x[a] > vlx.geom.coord_x[b];
@@ -1992,7 +1994,7 @@ struct VeloxChem : viamd::EventHandler {
                 });
             break;
         case SortType_Y:
-            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+            std::sort(atom_index_order, atom_index_order + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
                     return vlx.geom.coord_y[a] > vlx.geom.coord_y[b];
@@ -2002,7 +2004,7 @@ struct VeloxChem : viamd::EventHandler {
                 });
             break;
         case SortType_Z:
-            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+            std::sort(atom_index_order, atom_index_order + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
                     return vlx.geom.coord_z[a] > vlx.geom.coord_z[b];
@@ -2012,7 +2014,7 @@ struct VeloxChem : viamd::EventHandler {
                 });
             break;
         case SortType_ValetGroup:
-            std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
+            std::sort(atom_index_order, atom_index_order + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
                     return nto.atom_group_idx[a] > nto.atom_group_idx[b];
@@ -2122,7 +2124,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                         bool item_hovered = false;
                         for (int row_n = 0; row_n < vlx.geom.num_atoms; row_n++) {
-                            int atom_idx = vlx.geom.atom_index[row_n];
+                            int atom_idx = atom_index_order[row_n];
 
                             ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                             bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, atom_idx); //If atom is selected, mark it as such
