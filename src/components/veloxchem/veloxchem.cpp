@@ -1965,9 +1965,9 @@ struct VeloxChem : viamd::EventHandler {
             std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
-                    return vlx.geom.atom_index[a] > vlx.geom.atom_index[b];
+                    return a > b;
                 case ImGuiSortDirection_Ascending:
-                    return vlx.geom.atom_index[a] < vlx.geom.atom_index[b];
+                    return a < b;
                 }
                 });
             break;
@@ -1975,9 +1975,9 @@ struct VeloxChem : viamd::EventHandler {
             std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
-                    return (strcmp(vlx.geom.atom_symbol[a].buf, vlx.geom.atom_symbol[b].buf)) > 0;
+                    return (str_cmp_lex(vlx.geom.atom_symbol[a], vlx.geom.atom_symbol[b])) > 0;
                 case ImGuiSortDirection_Ascending:
-                    return (strcmp(vlx.geom.atom_symbol[b].buf, vlx.geom.atom_symbol[a].buf)) > 0;
+                    return (str_cmp_lex(vlx.geom.atom_symbol[a], vlx.geom.atom_symbol[b])) < 0;
                 }
                 });
             break;
@@ -2015,9 +2015,9 @@ struct VeloxChem : viamd::EventHandler {
             std::sort(vlx.geom.atom_index, vlx.geom.atom_index + vlx.geom.num_atoms, [&](int a, int b) {
                 switch (sort_specs->Specs->SortDirection) {
                 case ImGuiSortDirection_Descending:
-                    return (strcmp(nto.group.label[a], nto.group.label[b])) > 0;
+                    return nto.atom_group_idx[a] > nto.atom_group_idx[b];
                 case ImGuiSortDirection_Ascending:
-                    return (strcmp(nto.group.label[b], nto.group.label[a])) > 0;
+                    return nto.atom_group_idx[a] < nto.atom_group_idx[b];
                 }
                 });
             break;
@@ -2097,15 +2097,15 @@ struct VeloxChem : viamd::EventHandler {
                     static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
                                                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Sortable;
 
-                    static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_DefaultSort;
+                    //static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_DefaultSort;
 
                     if (ImGui::BeginTable("Geometry Table", 6, flags, ImVec2(600, -1), 0)) {
-                        ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f, SortType_AtomIdx);
-                        ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f, SortType_AtomSymbol);
-                        ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f, SortType_X);
-                        ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f, SortType_Y);
-                        ImGui::TableSetupColumn("Coord Z", columns_base_flags, 0.0f, SortType_Z);
-                        ImGui::TableSetupColumn("VALET group", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f, SortType_ValetGroup);
+                        ImGui::TableSetupColumn("Atom", ImGuiTableColumnFlags_PreferSortAscending, 0.0f, SortType_AtomIdx);
+                        ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_PreferSortAscending, 0.0f, SortType_AtomSymbol);
+                        ImGui::TableSetupColumn("Coord X", ImGuiTableColumnFlags_PreferSortDescending, 0.0f, SortType_X);
+                        ImGui::TableSetupColumn("Coord Y", ImGuiTableColumnFlags_PreferSortDescending, 0.0f, SortType_Y);
+                        ImGui::TableSetupColumn("Coord Z", ImGuiTableColumnFlags_PreferSortDescending, 0.0f, SortType_Z);
+                        ImGui::TableSetupColumn("VALET group", ImGuiTableColumnFlags_PreferSortAscending | ImGuiTableColumnFlags_WidthFixed, 0.0f, SortType_ValetGroup);
                         ImGui::TableSetupScrollFreeze(0, 1);
                         ImGui::TableHeadersRow();
 
