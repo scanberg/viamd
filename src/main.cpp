@@ -7970,7 +7970,6 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     defer { md_vm_arena_temp_end(tmp); };
 
     const size_t bytes = state->mold.mol.atom.count * sizeof(uint32_t);
-    uint32_t* colors = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
 
     const auto& mol = state->mold.mol;
 
@@ -8072,6 +8071,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         default:
             ASSERT(false);
             break;
+        }
     }
 
     if (rep->saturation != 1.0f) {
