@@ -8140,7 +8140,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->filt_is_dirty = false;
     }
 
-    if (rep->filt_is_valid) {
+    if (use_colors && rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
         state->representation.atom_visibility_mask_dirty = true;
         md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
