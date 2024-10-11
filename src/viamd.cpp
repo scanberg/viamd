@@ -63,12 +63,13 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
             if (flags & MD_FLAG_CHAIN_END)          { sb += "CHAIN_END "; }
             if (flags & MD_FLAG_HETATM)             { sb += "HETATM "; }
             if (flags & MD_FLAG_AMINO_ACID)         { sb += "AMINO "; }
+            //if (flags & MD_FLAG_SIDE_CHAIN)         { sb += "SIDE_CHAIN "; }
             if (flags & MD_FLAG_NUCLEOTIDE)         { sb += "NUCLEOTIDE "; }
             if (flags & MD_FLAG_NUCLEOBASE)         { sb += "NUCLEOBASE "; }
+            //if (flags & MD_FLAG_NUCLEOSIDE)         { sb += "NUCLEOSIDE "; }
             if (flags & MD_FLAG_WATER)              { sb += "WATER "; }
             if (flags & MD_FLAG_ION)                { sb += "ION "; }
-            if (flags & MD_FLAG_PROTEIN_BACKBONE)   { sb += "BB_PROT "; }
-            if (flags & MD_FLAG_NUCLEIC_BACKBONE)   { sb += "BB_NUCL "; }
+            //if (flags & MD_FLAG_BACKBONE)           { sb += "BACKBONE "; }
             if (flags & MD_FLAG_SP)                 { sb += "SP "; }
             if (flags & MD_FLAG_SP2)                { sb += "SP2 "; }
             if (flags & MD_FLAG_SP3)                { sb += "SP3 "; }

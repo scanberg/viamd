@@ -36,6 +36,13 @@ enum class SelectionGrowth { CovalentBond, Radial };
 enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
 
+// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
+enum AtomBit_ {
+    AtomBit_Highlighted = 1,
+    AtomBit_Selected    = 2,
+    AtomBit_Visible     = 4,
+};
+
 enum class RepresentationType {
     SpaceFill = MD_GL_REP_SPACE_FILL,
     Licorice = MD_GL_REP_LICORICE,
@@ -45,13 +52,6 @@ enum class RepresentationType {
     Orbital,
     DipoleMoment,
     Count
-};
-
-// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
-enum AtomBit_ {
-    AtomBit_Highlighted = 1,
-    AtomBit_Selected    = 2,
-    AtomBit_Visible     = 4,
 };
 
 static const char* representation_type_str[(int)RepresentationType::Count] = {
@@ -70,7 +70,7 @@ enum class ColorMapping {
     AtomLabel,
     AtomIndex,
     ResName,
-    ResId,
+    ResIndex,
     ChainId,
     ChainIndex,
     SecondaryStructure,

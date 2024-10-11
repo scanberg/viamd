@@ -15,9 +15,9 @@ static void set_colors(uint32_t* colors, size_t count, uint32_t color) {
 }
 
 static float u32_to_hue(uint32_t u32) {
-    const float scl = 1.618033988749f / 21.0f;
-    const float hue = (float)u32 * scl;
-    return fractf(hue);
+    const uint32_t mod = 24;
+    // The u32 is assumed to be random between [0, UINT_MAX[
+    return (float)(u32 % mod) / (float)mod;
 }
 
 static uint32_t u32_to_color(uint32_t u32) {
