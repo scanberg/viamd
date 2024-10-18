@@ -1928,7 +1928,7 @@ static void update_density_volume(ApplicationState* data) {
             case ColorMapping::ResName:
                 color_atoms_res_name(colors, mol.atom.count, mol);
                 break;
-            case ColorMapping::ResId:
+            case ColorMapping::ResIndex:
                 color_atoms_res_id(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::ChainId:
@@ -2016,6 +2016,8 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         md_trajectory_frame_header_t headers[4];
         md_unit_cell_t unit_cell;
 
+        size_t count;
+
         float* src_x[4];
         float* src_y[4];
         float* src_z[4];
@@ -2037,6 +2039,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         .mode = mode,
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
+        .count = mol.atom.count,
         .src_x = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2,  (float*)mem + stride * 3 },
         .src_y = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6,  (float*)mem + stride * 7 },
         .src_z = { (float*)mem + stride * 8, (float*)mem + stride * 9, (float*)mem + stride * 10, (float*)mem + stride * 11},
@@ -2086,20 +2089,27 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 }
             }, &payload);
 
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
-                (void)thread_num;
-                Payload* data = (Payload*)user_data;
-                size_t count = range_end - range_beg;
-                float* dst_x = data->dst_x + range_beg;
-                float* dst_y = data->dst_y + range_beg;
-                float* dst_z = data->dst_z + range_beg;
-                const float* src_x[2] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg};
-                const float* src_y[2] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg};
-                const float* src_z[2] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg};
+            task_system::ID interp_coord_task = 0;
+            if (mol.atom.count > 128) {
+                interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                    (void)thread_num;
+                    Payload* data = (Payload*)user_data;
+                    size_t count = range_end - range_beg;
+                    float* dst_x = data->dst_x + range_beg;
+                    float* dst_y = data->dst_y + range_beg;
+                    float* dst_z = data->dst_z + range_beg;
+                    const float* src_x[2] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg};
+                    const float* src_y[2] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg};
+                    const float* src_z[2] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg};
 
-                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t);
-            }, &payload);
-
+                    md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t);
+                    }, &payload);
+            } else {
+                interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), [](void* user_data) {
+                    Payload* data = (Payload*)user_data;
+                    md_util_interpolate_linear(data->dst_x, data->dst_y, data->dst_z, data->src_x, data->src_y, data->src_z, data->count, &data->unit_cell, data->t);
+                    }, &payload);
+            }
             tasks[num_tasks++] = load_task;
             tasks[num_tasks++] = interp_unit_cell_task;
             tasks[num_tasks++] = interp_coord_task;
@@ -2137,19 +2147,27 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 }
             }, &payload);
 
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
-                (void)thread_num;
-                Payload* data = (Payload*)user_data;
-                size_t count = range_end - range_beg;
-                float* dst_x = data->dst_x + range_beg;
-                float* dst_y = data->dst_y + range_beg;
-                float* dst_z = data->dst_z + range_beg;
-                const float* src_x[4] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg, data->src_x[2] + range_beg, data->src_x[3] + range_beg};
-                const float* src_y[4] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg, data->src_y[2] + range_beg, data->src_y[3] + range_beg};
-                const float* src_z[4] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg, data->src_z[2] + range_beg, data->src_z[3] + range_beg};
+            task_system::ID interp_coord_task = 0;
+            if (mol.atom.count > 128) {
+                interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                    (void)thread_num;
+                    Payload* data = (Payload*)user_data;
+                    size_t count = range_end - range_beg;
+                    float* dst_x = data->dst_x + range_beg;
+                    float* dst_y = data->dst_y + range_beg;
+                    float* dst_z = data->dst_z + range_beg;
+                    const float* src_x[4] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg, data->src_x[2] + range_beg, data->src_x[3] + range_beg};
+                    const float* src_y[4] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg, data->src_y[2] + range_beg, data->src_y[3] + range_beg};
+                    const float* src_z[4] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg, data->src_z[2] + range_beg, data->src_z[3] + range_beg};
 
-                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t, data->s);
-            }, &payload);
+                    md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t, data->s);
+                }, &payload);
+            } else {
+                interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), [](void* user_data) {
+                    Payload* data = (Payload*)user_data;
+                    md_util_interpolate_cubic_spline(data->dst_x, data->dst_y, data->dst_z, data->src_x, data->src_y, data->src_z, data->count, &data->unit_cell, data->t, data->s);
+                }, &payload);
+            }
 
             tasks[num_tasks++] = load_task;
             tasks[num_tasks++] = interp_unit_cell_task;
@@ -2175,7 +2193,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         tasks[num_tasks++] = pbc_task;
     } 
     if (state->operations.unwrap_structures) {
-        size_t num_structures = md_index_data_count(mol.structure);
+        size_t num_structures = md_index_data_num_ranges(mol.structure);
         task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), 0, (uint32_t)num_structures, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
             (void)thread_num;
             Payload* data = (Payload*)user_data;
@@ -2808,7 +2826,7 @@ static void draw_main_menu(ApplicationState* data) {
 
                 if (do_unwrap) {
                     md_molecule_t& mol = data->mold.mol;
-                    size_t num_structures = md_index_data_count(mol.structure);
+                    size_t num_structures = md_index_data_num_ranges(mol.structure);
                     for (size_t i = 0; i < num_structures; ++i) {
                         const int32_t* s_idx = md_index_range_beg(mol.structure, i);
                         const size_t   s_len = md_index_range_size(mol.structure, i);
@@ -3163,8 +3181,8 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_array_free(mol->bond.conn.atom_idx, data->mold.mol_alloc);
     md_array_free(mol->bond.conn.bond_idx, data->mold.mol_alloc);
 
-    md_index_data_free(&mol->structure, data->mold.mol_alloc);
-    md_index_data_free(&mol->ring, data->mold.mol_alloc);
+    md_index_data_free(&mol->structure);
+    md_index_data_free(&mol->ring);
     
     md_util_molecule_postprocess(mol, data->mold.mol_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
@@ -4677,10 +4695,13 @@ static void draw_timeline_window(ApplicationState* data) {
         double pre_filter_min = data->timeline.filter.beg_frame;
         double pre_filter_max = data->timeline.filter.end_frame;
 
-        const float* x_values = data->timeline.x_values;
-        const int num_x_values = (int)md_array_size(data->timeline.x_values);
+        const float* x_values   = data->timeline.x_values;
+        const int num_x_values  = (int)md_array_size(data->timeline.x_values);
         const float min_x_value = num_x_values > 0 ? x_values[0] : 0.0f;
         const float max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0f;
+
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 2));
+        defer { ImPlot::PopStyleVar(); };
 
         if (ImGui::BeginMenuBar()) {
             DisplayProperty* props = data->display_properties;
@@ -4837,6 +4858,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     bool print_timeline_tooltip = false;
                    
                     if (ImPlot::IsPlotHovered()) {
+                        md_bitfield_clear(&data->selection.highlight_mask);
                         set_hovered_property(data,  STR_LIT(""));
 
                         print_timeline_tooltip = true;
@@ -5965,12 +5987,27 @@ static void draw_density_volume_window(ApplicationState* data) {
                     ImGui::Indent();
                     auto& rep = data->density_volume.rep;
                     ImGui::Checkbox("Show Superimposed Structures", &data->density_volume.show_reference_ensemble);
-                    if (ImGui::Combo("type", (int*)(&rep.type), "Space Fill\0Licorice\0Ball & Stick\0Ribbons\0Cartoon\0")) {
-                        data->density_volume.dirty_rep = true;
+
+                    if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
+                        for (int i = 0; i < (int)RepresentationType::Orbital; ++i) {
+                            if (ImGui::Selectable(representation_type_str[i], (int)rep.type == i)) {
+                                rep.type = (RepresentationType)i;
+                                data->density_volume.dirty_rep = true;
+                            }
+                        }
+                        ImGui::EndCombo();
                     }
-                    if (ImGui::Combo("color", (int*)(&rep.colormap), "Uniform Color\0CPK\0Atom Label\0Atom Idx\0Res Id\0Res Idx\0Chain Id\0Chain Idx\0Secondary Structure\0")) {
-                        data->density_volume.dirty_rep = true;
+
+                    if (ImGui::BeginCombo("color", color_mapping_str[(int)rep.colormap])) {
+                        for (int i = 0; i < (int)ColorMapping::Property; ++i) {
+                            if (ImGui::Selectable(color_mapping_str[i], (int)rep.type == i)) {
+                                rep.colormap = (ColorMapping)i;
+                                data->density_volume.dirty_rep = true;
+                            }
+                        }
+                        ImGui::EndCombo();
                     }
+
                     if (rep.colormap == ColorMapping::Uniform) {
                         data->density_volume.dirty_rep |= ImGui::ColorEdit4("color", rep.color.elem, ImGuiColorEditFlags_NoInputs);
                     }
@@ -6642,6 +6679,9 @@ static void draw_script_editor_window(ApplicationState* data) {
                     md_bitfield_copy(&data->selection.highlight_mask, bf);
                 }
                 else if (hovered_marker->type == MarkerType_Visualization) {
+                    // Clear hovered property
+                    set_hovered_property(data, STR_LIT(""));
+
                     if (md_script_ir_valid(data->script.ir)) {
                         data->script.vis = {0};
                         md_script_vis_init(&data->script.vis, frame_alloc);
@@ -6652,12 +6692,21 @@ static void draw_script_editor_window(ApplicationState* data) {
                         };
                         const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
 
+                        //str_t payload_ident = md_script_payload_ident(payload);
+                        //set_hovered_property(data, payload_ident);
                         md_script_vis_eval_payload(&data->script.vis, payload, -1, &ctx, 0);
                     
                         if (!md_bitfield_empty(&data->script.vis.atom_mask)) {
                             md_bitfield_copy(&data->selection.highlight_mask, &data->script.vis.atom_mask);
                         }
                     }
+                }
+
+                bool lm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
+                    SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
+                    modify_selection(data, &data->selection.highlight_mask, op);
                 }
             }
         }
@@ -7949,8 +7998,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             case ColorMapping::ResName:
                 color_atoms_res_name(colors, mol.atom.count, mol);
                 break;
-            case ColorMapping::ResId:
-                color_atoms_res_id(colors, mol.atom.count, mol);
+            case ColorMapping::ResIndex:
+                color_atoms_res_idx(colors, mol.atom.count, mol);
                 break;
             case ColorMapping::ChainId:
                 color_atoms_chain_id(colors, mol.atom.count, mol);
@@ -8015,11 +8064,14 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 } else {
                     color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
                 }
-    #endif
-                break;
-            default:
-                ASSERT(false);
-                break;
+            } else {
+                color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+            }
+#endif
+            break;
+        default:
+            ASSERT(false);
+            break;
         }
     }
 
@@ -8080,26 +8132,28 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     }
 
-    if (rep->dynamic_evaluation) {
-        rep->filt_is_dirty = true;
-    }
+    if (use_colors) {
+        if (rep->dynamic_evaluation) {
+            rep->filt_is_dirty = true;
+        }
 
-    if (rep->filt_is_dirty) {
-        rep->filt_is_valid = filter_expression(state, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
-        rep->filt_is_dirty = false;
-    }
+        if (rep->filt_is_dirty) {
+            rep->filt_is_valid = filter_expression(state, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+            rep->filt_is_dirty = false;
+        }
 
-    if (rep->filt_is_valid && colors) {
-        filter_colors(colors, mol.atom.count, &rep->atom_mask);
-        state->representation.atom_visibility_mask_dirty = true;
-        md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+        if (rep->filt_is_valid) {
+            filter_colors(colors, mol.atom.count, &rep->atom_mask);
+            state->representation.atom_visibility_mask_dirty = true;
+            md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
 
-#if EXPERIMENTAL_GFX_API
-        md_gfx_rep_attr_t attributes = {};
-        attributes.spacefill.radius_scale = 1.0f;
-        md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
-        md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
+ #if EXPERIMENTAL_GFX_API
+            md_gfx_rep_attr_t attributes = {};
+            attributes.spacefill.radius_scale = 1.0f;
+            md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
+            md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
 #endif
+        }
     }
 }
 
