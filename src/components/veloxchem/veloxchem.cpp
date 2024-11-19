@@ -805,8 +805,7 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
-            Payload* data = (Payload*)user_data;
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
 
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
@@ -816,7 +815,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data->mem, data->mem_size);
-        }, payload);
+        });
 
         task_system::set_task_dependency(main_task, async_task);
         task_system::enqueue_task(async_task);
@@ -890,9 +889,7 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
-            Payload* data = (Payload*)user_data;
-
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
             if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
@@ -901,7 +898,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data->mem, data->mem_size);
-        }, payload);
+        });
 
         task_system::set_task_dependency(main_task, async_task);
         task_system::enqueue_task(async_task);
@@ -1006,9 +1003,7 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
-            Payload* data = (Payload*)user_data;
-
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
             if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
@@ -1017,7 +1012,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data, data->alloc_size);
-            }, payload);
+        });
 
         task_system::set_task_dependency(main_task, async_task);
         task_system::enqueue_task(async_task);
@@ -1554,9 +1549,7 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID eval_task = evaluate_gto_on_grid_async(&payload->args);
 
         // @TODO: This should be performed as a range task in parallel
-        task_system::ID segment_task = task_system::create_pool_task(STR_LIT("##Segment Volume"), [](void* user_data) {
-            Payload* data = (Payload*)user_data;
-
+        task_system::ID segment_task = task_system::create_pool_task(STR_LIT("##Segment Volume"), [data = payload]() {
 #if DEBUG
             double sum = 0.0;
             size_t len = data->args.grid.dim[0] * data->args.grid.dim[1] * data->args.grid.dim[2];
@@ -1572,7 +1565,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data, data->alloc_size);
-        }, payload);
+        });
 
         task_system::set_task_dependency(segment_task, eval_task);
 
@@ -1592,9 +1585,8 @@ struct VeloxChem : viamd::EventHandler {
 
         // We evaluate the in parallel over smaller NxNxN blocks
         const uint32_t num_blocks = (args->grid.dim[0] / BLK_DIM) * (args->grid.dim[1] / BLK_DIM) * (args->grid.dim[2] / BLK_DIM);
-        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Evaluate Orbital"), num_blocks, [data = args](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
-            AsyncGridEvalArgs* data = (AsyncGridEvalArgs*)user_data;
             MD_LOG_DEBUG("Starting async eval of orbital grid [%i][%i][%i]", data->grid.dim[0], data->grid.dim[1], data->grid.dim[2]);
 
             // Number of NxNxN blocks in each dimension
@@ -1657,7 +1649,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             md_temp_set_pos_back(temp_pos);
-        }, args);
+        });
 
         return async_task;
     }
@@ -2500,7 +2492,7 @@ struct VeloxChem : viamd::EventHandler {
                 rsp.first_plot_rot_ecd = false;
                 ImGui::TreePop();
             }
-#if 0
+#if 1
             if (rsp.first_plot_vib) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Vibrational Analysis")) {
                 // draw the vibrational analysis
@@ -4484,10 +4476,9 @@ struct VeloxChem : viamd::EventHandler {
                     if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
                         compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
                     {
-                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
-                            VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
+                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
-                            }, &nto);
+                            });
 
                         task_system::set_task_dependency(compute_matrix_task, seg_attach);
                         task_system::set_task_dependency(compute_matrix_task, seg_detach);

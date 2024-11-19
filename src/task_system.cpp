@@ -54,17 +54,17 @@ public:
 class AsyncTask : public enki::ITaskSet {
 public:
     AsyncTask() = default;
-    AsyncTask(uint32_t set_beg_, uint32_t set_end_, RangeTask set_func_, void* user_data_, str_t lbl_ = {}, ID id = INVALID_ID)
-        : ITaskSet(set_end_-set_beg_), m_set_func(set_func_), m_user_data(user_data_), m_range_offset(set_beg_), m_set_complete(0), m_interrupt(false), m_dependency(), m_id(id) {
-        size_t len = str_copy_to_char_buf(m_buf, sizeof(m_buf), lbl_);
+    AsyncTask(uint32_t set_size, RangeTask set_func, str_t lbl = {}, ID id = INVALID_ID, uint32_t grain_size = 1)
+        : ITaskSet(set_size, grain_size), m_set_func(set_func), m_set_complete(0), m_interrupt(false), m_dependency(), m_id(id), m_grain_size(grain_size) {
+        size_t len = str_copy_to_char_buf(m_buf, sizeof(m_buf), lbl);
         m_label = {m_buf, len};
         m_completion_action.m_slot_idx = get_slot_idx(id);
         m_completion_action.SetDependency(m_completion_action.m_dependency, this);
     }
 
-    AsyncTask(Task func_, void* user_data_, str_t lbl_ = {}, ID id = INVALID_ID)
-        : ITaskSet(1), m_func(func_), m_user_data(user_data_), m_set_complete(0), m_interrupt(false), m_dependency(), m_id(id) {
-        size_t len = str_copy_to_char_buf(m_buf, sizeof(m_buf), lbl_);
+    AsyncTask(Task func, str_t lbl = {}, ID id = INVALID_ID)
+        : ITaskSet(1), m_func(func), m_set_complete(0), m_interrupt(false), m_dependency(), m_id(id) {
+        size_t len = str_copy_to_char_buf(m_buf, sizeof(m_buf), lbl);
         m_label = {m_buf, len};
         m_completion_action.m_slot_idx = get_slot_idx(id);
         m_completion_action.SetDependency(m_completion_action.m_dependency, this);
@@ -74,11 +74,11 @@ public:
         (void)threadnum;
         if (!m_interrupt) {
             if (m_set_func) {
-                m_set_func(m_range_offset + range.start, m_range_offset + range.end, m_user_data, threadnum);
+                m_set_func(range.start, range.end, threadnum);
                 m_set_complete += (range.end - range.start);
             }
             else if (m_func) {
-                m_func(m_user_data);
+                m_func();
                 m_set_complete += 1;
             }
         }
@@ -90,8 +90,8 @@ public:
 
     RangeTask  m_set_func = nullptr;  // either of these two are executed
     Task       m_func     = nullptr;
-    void*      m_user_data = nullptr;
     uint32_t   m_range_offset = 0;
+    uint32_t   m_grain_size = 1;
     std::atomic_uint32_t m_set_complete = 0;
     std::atomic_bool m_interrupt = false;
     enki::Dependency m_dependency = {};
@@ -104,18 +104,18 @@ public:
 class MainTask : public enki::IPinnedTask {
 public:
     MainTask() = default;
-    MainTask(Task func, void* user_data, str_t lbl = {}, ID id = INVALID_ID) :
-        IPinnedTask(0), m_function(func), m_user_data(user_data), m_id(id) {
+    MainTask(Task func, str_t lbl = {}, ID id = INVALID_ID) :
+        IPinnedTask(0), m_function(func), m_id(id) {
         size_t len = MIN(lbl.len, LABEL_SIZE-1);
         m_label = {strncpy(m_buf, lbl.ptr, len), len};
     }
+
     void Execute() final {
-        m_function(m_user_data);
+        m_function();
         main::free_slots.push(get_slot_idx(m_id));
     }
 
     Task m_function = nullptr;
-    void* m_user_data = nullptr;
     enki::Dependency m_dependency = {};
     char m_buf[LABEL_SIZE] = "";
     str_t m_label = {};
@@ -153,27 +153,27 @@ void initialize(size_t num_threads = 0) {
 
 void shutdown() { ts.WaitforAllAndShutdown(); }
 
-ID create_main_task(str_t label, Task func, void* user_data) {
+ID create_main_task(str_t label, Task func) {
     const uint32_t idx = main::free_slots.pop();
     ID id = generate_id(idx);
     MainTask* task = &main::task_data[idx];
-    PLACEMENT_NEW(task) MainTask(func, user_data, label, id);
+    PLACEMENT_NEW(task) MainTask(func, label, id);
     return id;
 }
 
-ID create_pool_task(str_t label, Task func, void* user_data) {
+ID create_pool_task(str_t label, Task func) {
     const uint32_t idx = pool::free_slots.pop();
     ID id = generate_id(idx);
     AsyncTask* task = &pool::task_data[idx];
-    PLACEMENT_NEW(task) AsyncTask(func, user_data, label, id);
+    PLACEMENT_NEW(task) AsyncTask(func, label, id);
     return id;
 }
 
-ID create_pool_task(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask func, void* user_data) {
+ID create_pool_task(str_t label, uint32_t range_size, RangeTask func) {
     const uint32_t idx = pool::free_slots.pop();
     ID id = generate_id(idx);
     AsyncTask* task = &pool::task_data[idx];
-    PLACEMENT_NEW(task) AsyncTask(range_beg, range_end, func, user_data, label, id);
+    PLACEMENT_NEW(task) AsyncTask(range_size, func, label, id);
     return id;
 }
 
