@@ -1029,13 +1029,13 @@ int main(int argc, char** argv) {
                             frame_end = (uint32_t)CLAMP((int)data.animation.frame             , 0, (int)traj_frames);
                         }
                         if (frame_beg != frame_end) {
-                            data.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_beg, frame_end, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
-                                (void)thread_num;
-                                ApplicationState* data = (ApplicationState*)user_data;
-                                for (uint32_t i = frame_beg; i < frame_end; ++i) {
-                                    md_trajectory_load_frame(data->mold.traj, i, 0, 0, 0, 0);
+                            uint32_t frame_count = frame_end - frame_beg;
+                            data.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_count, [&data, frame_offset = frame_beg](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
+                                (void)thread_num;                                
+                                for (uint32_t i = frame_offset + frame_beg; i < frame_offset + frame_end; ++i) {
+                                    md_trajectory_load_frame(data.mold.traj, i, 0, 0, 0, 0);
                                 }
-                            }, &data);
+                            });
                             task_system::enqueue_task(data.tasks.prefetch_frames);
                         }
                     }
@@ -1275,20 +1275,18 @@ int main(int argc, char** argv) {
                         md_script_eval_clear_data(data.script.full_eval);
 
                         if (md_script_ir_property_count(data.script.eval_ir) > 0) {
-                            data.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), 0, (uint32_t)num_frames, [](uint32_t frame_beg, uint32_t frame_end, void* user_data, uint32_t thread_num) {
+                            data.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&data](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;
-                                ApplicationState* data = (ApplicationState*)user_data;
-                                md_script_eval_frame_range(data->script.full_eval, data->script.eval_ir, &data->mold.mol, data->mold.traj, frame_beg, frame_end);
-                            }, &data);
+                                md_script_eval_frame_range(data.script.full_eval, data.script.eval_ir, &data.mold.mol, data.mold.traj, frame_beg, frame_end);
+                            });
                             
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_time_current();
-                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [](void* user_data) {
+                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [t0 = time]() {
                                 uint64_t t1 = md_time_current();
-                                uint64_t t0 = (uint64_t)user_data;
                                 double s = md_time_as_seconds(t1 - t0);
                                 LOG_INFO("Evaluation completed in: %.3fs", s);
-                            }, (void*)time);
+                            });
 #endif
                             task_system::set_task_dependency(time_task, data.tasks.evaluate_full);
                             task_system::enqueue_task(data.tasks.evaluate_full);
@@ -1312,12 +1310,14 @@ int main(int argc, char** argv) {
                                 const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
                                 const uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
                                 const uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                                data.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), beg_frame, end_frame, [](uint32_t beg, uint32_t end, void* user_data, uint32_t thread_num) {
-                                    (void)thread_num;
-                                    ApplicationState* data = (ApplicationState*)user_data;
-                                    md_script_eval_frame_range(data->script.filt_eval, data->script.eval_ir, &data->mold.mol, data->mold.traj, beg, end);
-                                }, &data);
-                                task_system::enqueue_task(data.tasks.evaluate_filt);
+                                uint32_t num_frames = end_frame - beg_frame;
+                                if (num_frames > 0) {
+                                    data.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), num_frames, [offset = beg_frame, &data](uint32_t beg, uint32_t end, uint32_t thread_num) {
+                                        (void)thread_num;
+                                        md_script_eval_frame_range(data.script.filt_eval, data.script.eval_ir, &data.mold.mol, data.mold.traj, offset + beg, offset + end);
+                                    });
+                                    task_system::enqueue_task(data.tasks.evaluate_filt);
+                                }
                             }
                             
                             /*
@@ -1999,6 +1999,10 @@ static void interpolate_atomic_properties(ApplicationState* state) {
 
     const size_t stride = ALIGN_TO(mol.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     const size_t bytes = stride * sizeof(float) * 3 * 4;
+    
+    // The number of atoms to be processed per thread
+    const size_t chunk_size = 128;
+    const size_t num_chunks = DIV_UP(mol.atom.count, chunk_size);
 
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
     defer { md_vm_arena_temp_end(tmp); };
@@ -2016,6 +2020,10 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         md_trajectory_frame_header_t headers[4];
         md_unit_cell_t unit_cell;
 
+<<<<<<< HEAD
+=======
+        size_t chunk_size;
+>>>>>>> veloxchem
         size_t count;
 
         float* src_x[4];
@@ -2039,6 +2047,10 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         .mode = mode,
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
+<<<<<<< HEAD
+=======
+        .chunk_size = chunk_size,
+>>>>>>> veloxchem
         .count = mol.atom.count,
         .src_x = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2,  (float*)mem + stride * 3 },
         .src_y = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6,  (float*)mem + stride * 7 },
@@ -2056,28 +2068,24 @@ static void interpolate_atomic_properties(ApplicationState* state) {
 
     switch (mode) {
         case InterpolationMode::Nearest: {
-            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"),[](void* user_data) {
-                Payload* data = (Payload*)user_data;
+            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"),[data = &payload]() {
                 md_trajectory_frame_header_t header;
                 md_trajectory_load_frame(data->state->mold.traj, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
-                data->unit_cell = header.unit_cell;
-            }, &payload);
+                MEMCPY(&data->unit_cell, &header.unit_cell, sizeof(md_unit_cell_t));
+            });
 
             tasks[num_tasks++] = load_task;
             break;
         }
         case InterpolationMode::Linear: {
-            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 0, 2, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 2, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
-                Payload* data = (Payload*)user_data;
                 for (uint32_t i = range_beg; i < range_end; ++i) {
                     md_trajectory_load_frame(data->state->mold.traj, data->frames[i+1], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
                 }
-            }, &payload);
+            });
 
-            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [](void* user_data) {
-                Payload* data = (Payload*)user_data;
-
+            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
                 if ((data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) && (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO)) {
                     double ext_x = lerp(data->headers[0].unit_cell.basis[0][0], data->headers[1].unit_cell.basis[0][0], data->t);
                     double ext_y = lerp(data->headers[0].unit_cell.basis[1][1], data->headers[1].unit_cell.basis[1][1], data->t);
@@ -2087,9 +2095,10 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                     data->unit_cell.basis = lerp(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->t);
                     data->unit_cell.inv_basis = mat3_inverse(data->state->mold.mol.unit_cell.basis);
                 }
-            }, &payload);
+            });
 
             task_system::ID interp_coord_task = 0;
+<<<<<<< HEAD
             if (mol.atom.count > 128) {
                 interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                     (void)thread_num;
@@ -2110,6 +2119,22 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                     md_util_interpolate_linear(data->dst_x, data->dst_y, data->dst_z, data->src_x, data->src_y, data->src_z, data->count, &data->unit_cell, data->t);
                     }, &payload);
             }
+=======
+            interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_chunks, [data = &payload](uint32_t chunk_beg, uint32_t chunk_end, uint32_t thread_num) {
+                (void)thread_num;
+                size_t range_beg = chunk_beg * data->chunk_size;
+                size_t range_end = MIN(chunk_end * data->chunk_size, data->count);
+                size_t count = range_end - range_beg;
+                float* dst_x = data->dst_x + range_beg;
+                float* dst_y = data->dst_y + range_beg;
+                float* dst_z = data->dst_z + range_beg;
+                const float* src_x[2] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg};
+                const float* src_y[2] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg};
+                const float* src_z[2] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg};
+
+                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t);
+            });
+>>>>>>> veloxchem
             tasks[num_tasks++] = load_task;
             tasks[num_tasks++] = interp_unit_cell_task;
             tasks[num_tasks++] = interp_coord_task;
@@ -2117,17 +2142,14 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             break;
         }
         case InterpolationMode::CubicSpline: {
-            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 0, 4, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 4, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
-                Payload* data = (Payload*)user_data;
                 for (uint32_t i = range_beg; i < range_end; ++i) {
                     md_trajectory_load_frame(data->state->mold.traj, data->frames[i], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
                 }
-            }, &payload);
+            });
 
-            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [](void* user_data) {
-                Payload* data = (Payload*)user_data;
-
+            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
                 if ((data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
                     (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
                     (data->headers[2].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
@@ -2145,9 +2167,10 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                     data->unit_cell.basis = cubic_spline(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->headers[2].unit_cell.basis, data->headers[3].unit_cell.basis, data->t, data->s);
                     data->unit_cell.inv_basis = mat3_inverse(data->state->mold.mol.unit_cell.basis);
                 }
-            }, &payload);
+            });
 
             task_system::ID interp_coord_task = 0;
+<<<<<<< HEAD
             if (mol.atom.count > 128) {
                 interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
                     (void)thread_num;
@@ -2168,6 +2191,22 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                     md_util_interpolate_cubic_spline(data->dst_x, data->dst_y, data->dst_z, data->src_x, data->src_y, data->src_z, data->count, &data->unit_cell, data->t, data->s);
                 }, &payload);
             }
+=======
+            interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_chunks, [data = &payload](uint32_t chunk_beg, uint32_t chunk_end, uint32_t thread_num) {
+                (void)thread_num;
+                size_t range_beg = chunk_beg * chunk_size;
+                size_t range_end = MIN(chunk_end * chunk_size, data->count);
+                size_t count = range_end - range_beg;
+                float* dst_x = data->dst_x + range_beg;
+                float* dst_y = data->dst_y + range_beg;
+                float* dst_z = data->dst_z + range_beg;
+                const float* src_x[4] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg, data->src_x[2] + range_beg, data->src_x[3] + range_beg};
+                const float* src_y[4] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg, data->src_y[2] + range_beg, data->src_y[3] + range_beg};
+                const float* src_z[4] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg, data->src_z[2] + range_beg, data->src_z[3] + range_beg};
+
+                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t, data->s);
+            });
+>>>>>>> veloxchem
 
             tasks[num_tasks++] = load_task;
             tasks[num_tasks++] = interp_unit_cell_task;
@@ -2181,35 +2220,35 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
 
     if (state->operations.apply_pbc) {
-        task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+        task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)mol.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
-            Payload* data = (Payload*)user_data;
             size_t count = range_end - range_beg;
             float* x = data->dst_x + range_beg;
             float* y = data->dst_y + range_beg;
             float* z = data->dst_z + range_beg;
             md_util_pbc(x, y, z, 0, count, &data->unit_cell);
-        }, &payload);
+        });
         tasks[num_tasks++] = pbc_task;
     } 
     if (state->operations.unwrap_structures) {
         size_t num_structures = md_index_data_num_ranges(mol.structure);
+<<<<<<< HEAD
         task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), 0, (uint32_t)num_structures, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+=======
+        task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+>>>>>>> veloxchem
             (void)thread_num;
-            Payload* data = (Payload*)user_data;
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int32_t* s_idx = md_index_range_beg(data->state->mold.mol.structure, i);
                 size_t   s_len = md_index_range_size(data->state->mold.mol.structure, i);
                 md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unit_cell);
             }
-        }, &payload);
+        });
         tasks[num_tasks++] = unwrap_task;
     }
 
     {
-        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), 0, (uint32_t)mol.atom.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
-            Payload* data = (Payload*)user_data;
-
+        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)mol.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             size_t count = range_end - range_beg;
             const float* x = data->state->mold.mol.atom.x + range_beg;
             const float* y = data->state->mold.mol.atom.y + range_beg;
@@ -2222,32 +2261,28 @@ static void interpolate_atomic_properties(ApplicationState* state) {
 
             data->aabb_min[thread_num] = aabb_min;
             data->aabb_max[thread_num] = aabb_max;
-        }, &payload);
-
+        });
         tasks[num_tasks++] = aabb_task;
-        // md_util_aabb_compute(state->mold.mol_aabb_min.elem, state->mold.mol_aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, 0, mol.atom.count);
     }
 
     if (mol.protein_backbone.angle) {
         switch (mode) {
             case InterpolationMode::Nearest: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [](void* user_data) {
-                    Payload* data = (Payload*)user_data;
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [data = &payload]() {
                     const md_backbone_angles_t* src_angles[2] = {
                         data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
                         data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
                     MEMCPY(data->state->mold.mol.protein_backbone.angle, src_angle, data->state->mold.mol.protein_backbone.count * sizeof(md_backbone_angles_t));
-                }, &payload);
+                });
 
                 tasks[num_tasks++] = angle_task;
                 break;
             }
             case InterpolationMode::Linear: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), 0, (uint32_t)mol.protein_backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), (uint32_t)mol.protein_backbone.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
-                    Payload* data = (Payload*)user_data;
                     const md_backbone_angles_t* src_angles[2] = {
                         data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
                         data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
@@ -2264,15 +2299,14 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         float final_psi = lerp(psi[0], psi[1], data->t);
                         mol.protein_backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
                     }
-                }, &payload);
+                });
 
                 tasks[num_tasks++] = angle_task;
                 break;
             }
             case InterpolationMode::CubicSpline: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), 0, (uint32_t)mol.protein_backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), (uint32_t)mol.protein_backbone.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
-                    Payload* data = (Payload*)user_data;
                     const md_backbone_angles_t* src_angles[4] = {
                         data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[0],
                         data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
@@ -2296,7 +2330,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], data->t, data->s);
                         mol.protein_backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
                     }
-                }, &payload);
+                });
 
                 tasks[num_tasks++] = angle_task;
                 break;
@@ -2310,23 +2344,21 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     if (mol.protein_backbone.secondary_structure) {
         switch (mode) {
             case InterpolationMode::Nearest: {
-                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [](void* user_data) {
-                    Payload* data = (Payload*)user_data;
+                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [data = &payload]() {
                     const md_secondary_structure_t* src_ss[2] = {
                         (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
                         (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
                     };
                     const md_secondary_structure_t* ss = data->t < 0.5f ? src_ss[0] : src_ss[1];
                     MEMCPY(data->state->mold.mol.protein_backbone.secondary_structure, ss, data->state->mold.mol.protein_backbone.count * sizeof(md_secondary_structure_t));
-                }, &payload);
+                });
 
                 tasks[num_tasks++] = ss_task;
                 break;
             }
             case InterpolationMode::Linear: {
-                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), 0, (uint32_t)mol.protein_backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)mol.protein_backbone.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
-                    Payload* data = (Payload*)user_data;
                     const md_secondary_structure_t* src_ss[2] = {
                         (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
                         (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
@@ -2339,15 +2371,14 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         const vec4_t ss_res = vec4_lerp(ss_f[0], ss_f[1], data->t);
                         data->state->mold.mol.protein_backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
                     }
-                }, &payload);
+                });
 
                 tasks[num_tasks++] = ss_task;
                 break;
             }
             case InterpolationMode::CubicSpline: {
-                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), 0, (uint32_t)mol.protein_backbone.count, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)mol.protein_backbone.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
-                    Payload* data = (Payload*)user_data;
                     const md_secondary_structure_t* src_ss[4] = {
                         (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
                         (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
@@ -2364,7 +2395,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         const vec4_t ss_res = cubic_spline(ss_f[0], ss_f[1], ss_f[2], ss_f[3], data->t, data->s);
                         data->state->mold.mol.protein_backbone.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
                     }
-                }, &payload);
+                });
 
                 tasks[num_tasks++] = ss_task;
                 break;
@@ -7285,10 +7316,8 @@ static void init_trajectory_data(ApplicationState* data) {
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
 
-            data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), 0, (uint32_t)num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+            data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
-                ApplicationState* data = (ApplicationState*)user_data;
-                
                 // Create copy here of molecule since we use the full structure as input
                 md_molecule_t mol = data->mold.mol;
 
@@ -7306,10 +7335,9 @@ static void init_trajectory_data(ApplicationState* data) {
                     md_util_backbone_angles_compute(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &mol);
                     md_util_backbone_secondary_structure_compute(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &mol);
                 }
-            }, data);
+            });
 
-            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [](void* user_data) {
-                ApplicationState* data = (ApplicationState*)user_data;
+            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data]() {
                 data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
                 
@@ -7317,7 +7345,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 data->mold.dirty_buffers |= MolBit_ClearVelocity;
                 update_all_representations(data);
 
-            }, data);
+            });
 
             task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
             task_system::enqueue_task(data->tasks.backbone_computations);
@@ -7424,20 +7452,18 @@ static void launch_prefetch_job(ApplicationState* data) {
     if (!num_frames) return;
 
     task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("Prefetch Frames"), 0, num_frames, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+    data->tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("Prefetch Frames"), num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
         (void)thread_num;
-        ApplicationState* data = (ApplicationState*)user_data;
         for (uint32_t i = range_beg; i < range_end; ++i) {
             md_trajectory_frame_header_t header;
             md_trajectory_load_frame(data->mold.traj, i, &header, 0, 0, 0);
         }
-    }, data);
+    });
 
-    task_system::ID main_task = task_system::create_main_task(STR_LIT("Prefetch Complete"), [](void* user_data) {
-        ApplicationState* data = (ApplicationState*)user_data;
+    task_system::ID main_task = task_system::create_main_task(STR_LIT("Prefetch Complete"), [data]() {
         interpolate_atomic_properties(data);
         data->mold.dirty_buffers |= MolBit_ClearVelocity;
-    }, data);
+    });
 
     task_system::set_task_dependency(main_task, data->tasks.prefetch_frames);
     task_system::enqueue_task(data->tasks.prefetch_frames);
@@ -8131,26 +8157,35 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     }
 
-    if (rep->dynamic_evaluation) {
-        rep->filt_is_dirty = true;
-    }
+    if (use_colors) {
+        if (rep->dynamic_evaluation) {
+            rep->filt_is_dirty = true;
+        }
 
-    if (rep->filt_is_dirty) {
-        rep->filt_is_valid = filter_expression(state, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
-        rep->filt_is_dirty = false;
-    }
+        if (rep->filt_is_dirty) {
+            rep->filt_is_valid = filter_expression(state, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+            rep->filt_is_dirty = false;
+        }
 
+<<<<<<< HEAD
     if (use_colors && rep->filt_is_valid) {
         filter_colors(colors, mol.atom.count, &rep->atom_mask);
         state->representation.atom_visibility_mask_dirty = true;
         md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+=======
+        if (rep->filt_is_valid) {
+            filter_colors(colors, mol.atom.count, &rep->atom_mask);
+            state->representation.atom_visibility_mask_dirty = true;
+            md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+>>>>>>> veloxchem
 
-#if EXPERIMENTAL_GFX_API
-        md_gfx_rep_attr_t attributes = {};
-        attributes.spacefill.radius_scale = 1.0f;
-        md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
-        md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
+ #if EXPERIMENTAL_GFX_API
+            md_gfx_rep_attr_t attributes = {};
+            attributes.spacefill.radius_scale = 1.0f;
+            md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
+            md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
 #endif
+        }
     }
 }
 

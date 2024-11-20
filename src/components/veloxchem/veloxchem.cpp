@@ -174,7 +174,7 @@ static void grid_segment_and_attribute(float* out_group_values, size_t group_cap
                 int index = ix + iy * grid->dim[0] + iz * grid->dim[0] * grid->dim[1];
                 float value = grid->data[index];
 
-				// Skip if its does not contribute
+                // Skip if its does not contribute
                 if (value == 0.0f) continue;
 
                 float x = grid->origin[0] + ix * grid->step_x[0] + iy * grid->step_y[0] + iz * grid->step_z[0];
@@ -595,8 +595,8 @@ struct VeloxChem : viamd::EventHandler {
                     else {
 
                         // @TODO: Remove once proper interface is there
-					    nto.group.count = 3;
-					    // Assign half of the atoms to group 1
+                        nto.group.count = 3;
+                        // Assign half of the atoms to group 1
                         for (size_t i = 0; i < mol.atom.count; ++i) {
                             nto.atom_group_idx[i] = i < mol.atom.count / 2 ? 1 : 2;
                         }
@@ -621,7 +621,7 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
 
-					nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
+                    nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
                 }
 
                 // RSP
@@ -805,8 +805,7 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
-            Payload* data = (Payload*)user_data;
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
 
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
@@ -816,7 +815,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data->mem, data->mem_size);
-        }, payload);
+        });
 
         task_system::set_task_dependency(main_task, async_task);
         task_system::enqueue_task(async_task);
@@ -827,7 +826,7 @@ struct VeloxChem : viamd::EventHandler {
     task_system::ID compute_nto_async(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ASSERT(vol);
 
-		md_allocator_i* alloc = md_get_heap_allocator();
+        md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_gtos = md_vlx_nto_gto_count(&vlx);
         md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_gtos);
 
@@ -890,9 +889,7 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
-            Payload* data = (Payload*)user_data;
-
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
             if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
@@ -901,7 +898,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data->mem, data->mem_size);
-        }, payload);
+        });
 
         task_system::set_task_dependency(main_task, async_task);
         task_system::enqueue_task(async_task);
@@ -909,14 +906,14 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-	struct AsyncGridEvalArgs {
+    struct AsyncGridEvalArgs {
         mat4_t     world_to_model;
         vec3_t     model_step;
-		md_grid_t  grid;
-		md_gto_t*  gtos;
-		size_t num_gtos;
-		md_gto_eval_mode_t mode;
-	};
+        md_grid_t  grid;
+        md_gto_t*  gtos;
+        size_t num_gtos;
+        md_gto_eval_mode_t mode;
+    };
 
     bool compute_mo_GPU(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ScopedTemp reset_temp;
@@ -944,7 +941,7 @@ struct VeloxChem : viamd::EventHandler {
     task_system::ID compute_mo_async(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ASSERT(vol);
 
-		md_allocator_i* alloc = md_get_heap_allocator();
+        md_allocator_i* alloc = md_get_heap_allocator();
         size_t num_gtos = md_vlx_mol_gto_count(&vlx);
         md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t)* num_gtos);
 
@@ -979,36 +976,34 @@ struct VeloxChem : viamd::EventHandler {
             size_t alloc_size;
         };
 
-		size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
-		void*       mem = md_alloc(alloc, mem_size);
-		Payload* payload = (Payload*)mem;
-		*payload = {
-			.args = {
+        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
+        void*       mem = md_alloc(alloc, mem_size);
+        Payload* payload = (Payload*)mem;
+        *payload = {
+            .args = {
                 .world_to_model = vol->world_to_model,
                 .model_step = vol->step_size,
-				.grid = {
-					.data = (float*)((char*)mem + sizeof(Payload)),
-					.dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
-					.origin = {origin.x, origin.y, origin.z},
-					.step_x = {step_x.x, step_x.y, step_x.z},
+                .grid = {
+                    .data = (float*)((char*)mem + sizeof(Payload)),
+                    .dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
+                    .origin = {origin.x, origin.y, origin.z},
+                    .step_x = {step_x.x, step_x.y, step_x.z},
                     .step_y = {step_y.x, step_y.y, step_y.z},
                     .step_z = {step_z.x, step_z.y, step_z.z},
-				},
-				.gtos = gtos,
-				.num_gtos = num_gtos,
-				.mode = mode,
-			},
-			.tex = vol->tex_id,
-			.alloc = alloc,
-			.alloc_size = mem_size,
-		};
+                },
+                .gtos = gtos,
+                .num_gtos = num_gtos,
+                .mode = mode,
+            },
+            .tex = vol->tex_id,
+            .alloc = alloc,
+            .alloc_size = mem_size,
+        };
 
-		task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
+        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
 
         // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [](void* user_data) {
-            Payload* data = (Payload*)user_data;
-
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
             if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
@@ -1017,7 +1012,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data, data->alloc_size);
-            }, payload);
+        });
 
         task_system::set_task_dependency(main_task, async_task);
         task_system::enqueue_task(async_task);
@@ -1041,13 +1036,6 @@ struct VeloxChem : viamd::EventHandler {
 
         // Return the new highlighted color with the same alpha
         return ImVec4(r, g, b, color.w);
-    }
-
-    static inline void sort_indexes(int8_t* indexes, float* values, size_t size) {
-        int8_t* last = indexes + size;
-        std::sort(indexes, last, [&](int8_t a, int8_t b) {
-            return values[a] > values[b];  // Sort in descending order
-            });
     }
 
     // Draws a vertical flow based on cubic bezier and returns the abs delta from the mouse cursor to this line
@@ -1138,9 +1126,9 @@ struct VeloxChem : viamd::EventHandler {
             part_sum += nto->transition_density_part[i];
         }
 
-		// Prevent division by zero
-		hole_sum = MAX(hole_sum, 1.0e-6f);
-		part_sum = MAX(part_sum, 1.0e-6f);
+        // Prevent division by zero
+        hole_sum = MAX(hole_sum, 1.0e-6f);
+        part_sum = MAX(part_sum, 1.0e-6f);
 
         md_array(float) hole_percentages = md_array_create(float, nto->group.count, temp_alloc);
         md_array(float) part_percentages = md_array_create(float, nto->group.count, temp_alloc);
@@ -1301,7 +1289,7 @@ struct VeloxChem : viamd::EventHandler {
 
         for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
             for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                int index = start_i * nto->group.count + end_i;
+                size_t index = start_i * nto->group.count + end_i;
                 ImVec2 midpoint = curve_midpoints[index];
                 float percentage = curve_percentages[index];
                 if (percentage > 0) {
@@ -1321,12 +1309,12 @@ struct VeloxChem : viamd::EventHandler {
         //bool next_end_text_visible = true;
 
         //Calculate text visibility
-        md_array(bool) show_start_text = md_array_create(bool, nto->group.count, temp_alloc);
-        md_array(bool) show_end_text = md_array_create(bool, nto->group.count, temp_alloc);
-        md_array(int8_t) size_order = md_array_create(int8_t, nto->group.count, temp_alloc);
-        md_array(float) text_sizes = md_array_create(float, nto->group.count, temp_alloc);
-        md_array(ImRect) rectangles = md_array_create(ImRect, nto->group.count, temp_alloc);
-        for (int8_t i = 0; i < nto->group.count; i++) {
+        md_array(bool) show_start_text  = md_array_create(bool,   nto->group.count, temp_alloc);
+        md_array(bool) show_end_text    = md_array_create(bool,   nto->group.count, temp_alloc);
+        md_array(int)  size_order       = md_array_create(int,    nto->group.count, temp_alloc);
+        md_array(float) text_sizes      = md_array_create(float,  nto->group.count, temp_alloc);
+        md_array(ImRect) rectangles     = md_array_create(ImRect, nto->group.count, temp_alloc);
+        for (size_t i = 0; i < nto->group.count; i++) {
             show_start_text[i] = true;
             show_end_text[i] = true;
         }
@@ -1334,7 +1322,7 @@ struct VeloxChem : viamd::EventHandler {
         
         if (hide_text_overlaps) {
             //Start texts
-            for (int8_t i = 0; i < nto->group.count; i++) {
+            for (int i = 0; i < (int)nto->group.count; i++) {
                 size_order[i] = i;
                 text_sizes[i] = MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
 
@@ -1342,9 +1330,12 @@ struct VeloxChem : viamd::EventHandler {
                 rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0, midpoint + text_sizes[i] * 0.5f, 1};
             }
         
-            sort_indexes(size_order, hole_percentages, nto->group.count);
-            for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
-                for (int8_t j = i - 1; j >= 0 ; j--) {//The bigger ones
+            std::sort(size_order, size_order + nto->group.count, [values = hole_percentages](int a, int b) {
+                return values[a] > values[b];  // Sort in descending order
+            });
+
+            for (int i = 1; i < nto->group.count; i++) { //First one is always drawn
+                for (int j = i - 1; j >= 0 ; j--) {//The bigger ones
                     bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
                     if (hole_percentages[i] == 0.0) {
                         show_start_text[size_order[i]] = false;
@@ -1358,16 +1349,18 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             //End texts
-            for (int8_t i = 0; i < nto->group.count; i++) {
+            for (int i = 0; i < (int)nto->group.count; i++) {
                 size_order[i] = i;
 
                 float midpoint = end_positions[i] + bars_avail_width * part_percentages[i] * 0.5f;
                 rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0, midpoint + text_sizes[i] * 0.5f, 1 };
             }
 
-            sort_indexes(size_order, part_percentages, nto->group.count);
-            for (int8_t i = 1; i < nto->group.count; i++) { //First one is always drawn
-                for (int8_t j = i - 1; j >= 0; j--) {//The bigger ones
+            std::sort(size_order, size_order + nto->group.count, [values = part_percentages](int a, int b) {
+                return values[a] > values[b];  // Sort in descending order
+            });
+            for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
+                for (int j = i - 1; j >= 0; j--) {//The bigger ones
                     bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
                     if (hole_percentages[i] == 0.0) {
                         show_end_text[size_order[i]] = false;
@@ -1476,8 +1469,8 @@ struct VeloxChem : viamd::EventHandler {
                 return false;
             }
             // Scale the added GTOs with the lambda value
-			// The sqrt is to ensure that the scaling is linear with the lambda value
-			const double scale = sqrt(lambda);
+            // The sqrt is to ensure that the scaling is linear with the lambda value
+            const double scale = sqrt(lambda);
             for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
                 gtos[i].coeff = (float)(gtos[i].coeff * scale);
             }
@@ -1514,7 +1507,7 @@ struct VeloxChem : viamd::EventHandler {
             AsyncGridEvalArgs args;
 
             float* dst_group_values;
-			size_t num_groups;
+            size_t num_groups;
 
             const uint32_t* point_group_idx;
             const vec4_t* point_xyzr;
@@ -1543,12 +1536,12 @@ struct VeloxChem : viamd::EventHandler {
                 .num_gtos = num_gtos,
                 .mode = mode,
             },
-			.dst_group_values = out_group_values,
+            .dst_group_values = out_group_values,
             .num_groups = num_groups,
             
-			.point_group_idx = point_group_idx,
-			.point_xyzr = point_xyzr,
-			.num_points = num_points,
+            .point_group_idx = point_group_idx,
+            .point_xyzr = point_xyzr,
+            .num_points = num_points,
             .alloc = alloc,
             .alloc_size = mem_size,
         };
@@ -1556,9 +1549,7 @@ struct VeloxChem : viamd::EventHandler {
         task_system::ID eval_task = evaluate_gto_on_grid_async(&payload->args);
 
         // @TODO: This should be performed as a range task in parallel
-        task_system::ID segment_task = task_system::create_pool_task(STR_LIT("##Segment Volume"), [](void* user_data) {
-            Payload* data = (Payload*)user_data;
-
+        task_system::ID segment_task = task_system::create_pool_task(STR_LIT("##Segment Volume"), [data = payload]() {
 #if DEBUG
             double sum = 0.0;
             size_t len = data->args.grid.dim[0] * data->args.grid.dim[1] * data->args.grid.dim[2];
@@ -1574,7 +1565,7 @@ struct VeloxChem : viamd::EventHandler {
 
             md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
             md_free(data->alloc, data, data->alloc_size);
-        }, payload);
+        });
 
         task_system::set_task_dependency(segment_task, eval_task);
 
@@ -1588,15 +1579,14 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-	// This sets up and returns a async task which evaluates and orbital data on a grid in parallel
+    // This sets up and returns a async task which evaluates and orbital data on a grid in parallel
     task_system::ID evaluate_gto_on_grid_async(AsyncGridEvalArgs* args) {
         ASSERT(args);
 
         // We evaluate the in parallel over smaller NxNxN blocks
         const uint32_t num_blocks = (args->grid.dim[0] / BLK_DIM) * (args->grid.dim[1] / BLK_DIM) * (args->grid.dim[2] / BLK_DIM);
-        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Evaluate Orbital"), 0, num_blocks, [](uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num) {
+        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Evaluate Orbital"), num_blocks, [data = args](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
-            AsyncGridEvalArgs* data = (AsyncGridEvalArgs*)user_data;
             MD_LOG_DEBUG("Starting async eval of orbital grid [%i][%i][%i]", data->grid.dim[0], data->grid.dim[1], data->grid.dim[2]);
 
             // Number of NxNxN blocks in each dimension
@@ -1606,7 +1596,7 @@ struct VeloxChem : viamd::EventHandler {
                 data->grid.dim[2] / BLK_DIM,
             };
 
-			md_grid_t* grid = &data->grid;
+            md_grid_t* grid = &data->grid;
 
             size_t temp_pos = md_temp_get_pos();
             md_gto_t* sub_gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * data->num_gtos);
@@ -1659,7 +1649,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             md_temp_set_pos_back(temp_pos);
-        }, args);
+        });
 
         return async_task;
     }
@@ -2502,7 +2492,7 @@ struct VeloxChem : viamd::EventHandler {
                 rsp.first_plot_rot_ecd = false;
                 ImGui::TreePop();
             }
-#if 0
+#if 1
             if (rsp.first_plot_vib) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Vibrational Analysis")) {
                 // draw the vibrational analysis
@@ -3467,7 +3457,7 @@ struct VeloxChem : viamd::EventHandler {
         nto.group.color[nto.group.count] = deleted_color;
     }
 
-    void copy_group(int8_t from_idx, int8_t to_idx) {
+    void copy_group(int from_idx, int to_idx) {
         nto.group.color[to_idx] = nto.group.color[from_idx];
         MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
         for (size_t i = 0; i < nto.num_atoms; i++) {
@@ -3578,7 +3568,7 @@ struct VeloxChem : viamd::EventHandler {
             const double iso_max = 5.0;
             double iso_val = nto.iso_psi.values[0];
             ImGui::Spacing();
-            ImGui::Text("Iso Value (Ψ²)"); 
+            ImGui::Text((const char*)u8"Iso Value (Ψ²)"); 
             ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Iso Value");
 
@@ -3680,7 +3670,7 @@ struct VeloxChem : viamd::EventHandler {
                     //Center the color picker
                     ImVec2 cell_size = ImGui::GetContentRegionAvail();
                     float color_size = ImGui::GetFrameHeight();
-                    ImVec2 padding((cell_size.x - color_size) * 0.5, 0.0);
+                    ImVec2 padding((cell_size.x - color_size) * 0.5f, 0.0f);
                     ImGui::SetCursorPos(ImGui::GetCursorPos() + padding);
 
                     if (edit_mode && row_n > 0) { //You cannot edit the Unassigned color
@@ -3721,11 +3711,11 @@ struct VeloxChem : viamd::EventHandler {
                             else {
                                 if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
                                     if (ImGui::Button(ICON_FA_ANGLES_DOWN, button_size)) {
-                                        for (size_t i = row_n; i < nto.group.count - 1; i++) {
+                                        for (int i = row_n; i < (int)nto.group.count - 1; i++) {
                                             swap_groups(i, i + 1);
                                         }
                                     }
-                                    imgui_delayed_hover_tooltip("Move this group to the bottom");
+                                    imgui_delayed_hover_tooltip("Move to bottom");
 
                                 }
                                 else {
@@ -3750,7 +3740,7 @@ struct VeloxChem : viamd::EventHandler {
                                         //}
                                         swap_groups(row_n, row_n + 1);
                                     }
-                                    imgui_delayed_hover_tooltip("Move this group down one step (Ctrl-click to move to bottom)");
+                                    imgui_delayed_hover_tooltip("Move down (Ctrl-click to move to bottom)");
                                 }
                             }
 
@@ -3762,18 +3752,18 @@ struct VeloxChem : viamd::EventHandler {
                             else {
                                 if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
                                     if (ImGui::Button(ICON_FA_ANGLES_UP, button_size)) {
-                                        int last = nto.group.count - 1;
-                                        for (size_t i = last; i >= (size_t)row_n - 1; i--) {
+                                        int last = (int)nto.group.count - 1;
+                                        for (int i = last; i >= row_n - 1; i--) {
                                             swap_groups(i, i - 1);
                                         }
                                     }
-                                    imgui_delayed_hover_tooltip("Move this group to the top");
+                                    imgui_delayed_hover_tooltip("Move to top");
                                 }
                                 else {
                                     if (ImGui::Button(ICON_FA_ANGLE_UP, button_size)) {
                                         swap_groups(row_n, row_n - 1);
                                     }
-                                    imgui_delayed_hover_tooltip("Move this group up one step (Ctrl-click to move to top)");
+                                    imgui_delayed_hover_tooltip("Move up (Ctrl-click to move to top)");
                                 }
                             }
 
@@ -3791,7 +3781,7 @@ struct VeloxChem : viamd::EventHandler {
                                     }
                                     delete_group(row_n);
                                 }
-                                imgui_delayed_hover_tooltip("Merge this group with the one above");
+                                imgui_delayed_hover_tooltip("Merge with above");
                             }
                         }
                     }
@@ -4000,8 +3990,8 @@ struct VeloxChem : viamd::EventHandler {
                         vec3_t magn_vec = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
                         vec3_t elec_vec = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
 
-						magn_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
-						elec_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
+                        magn_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
+                        elec_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
 
                         auto proj_point = [MVP, win_sz, p0](vec3_t point) -> ImVec2 {
                             const vec4_t p = mat4_mul_vec4(MVP, vec4_from_vec3(point, 1.0));
@@ -4041,20 +4031,20 @@ struct VeloxChem : viamd::EventHandler {
                         draw_list->AddText(c_magn, text_color, (const char*)u8"μm");
 
                         if (nto.dipole.show_angle) {
-							const vec3_t magn_dir = vec3_normalize(magn_vec);
-							const vec3_t elec_dir = vec3_normalize(elec_vec);
+                            const vec3_t magn_dir = vec3_normalize(magn_vec);
+                            const vec3_t elec_dir = vec3_normalize(elec_vec);
                             const float angle = acosf(vec3_dot(magn_dir, elec_dir));
                             const ImU32 angle_color = IM_COL32(0, 0, 0, 128);
                             const float angle_thickness = 1.0f;
                             const float angle_vec_scale = 0.1f;
 
                             const size_t num_seg = 20;
-							const vec3_t axis = vec3_normalize(vec3_cross(elec_dir, magn_dir));
+                            const vec3_t axis = vec3_normalize(vec3_cross(elec_dir, magn_dir));
 
                             for (size_t seg = 0; seg <= num_seg; ++seg) {
-								float  t = (float)(seg) / (float)num_seg;
+                                float  t = (float)(seg) / (float)num_seg;
                                 vec3_t v = quat_mul_vec3(quat_axis_angle(axis, angle * t), elec_dir);
-								ImVec2 p = proj_point(mid + v * angle_vec_scale);
+                                ImVec2 p = proj_point(mid + v * angle_vec_scale);
                                 draw_list->PathLineTo(p);
                             }
                             draw_list->PathStroke(angle_color, 0, angle_thickness);
@@ -4466,7 +4456,7 @@ struct VeloxChem : viamd::EventHandler {
                 nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
             }
 
-			// Clear all of the values to zero (matrix, group values)
+            // Clear all of the values to zero (matrix, group values)
             MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
             if (nto.sel_nto_idx != -1) {
@@ -4486,10 +4476,9 @@ struct VeloxChem : viamd::EventHandler {
                     if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
                         compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
                     {
-                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [](void* user_data) {
-                            VeloxChem::Nto* nto = (VeloxChem::Nto*)user_data;
+                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
-                            }, &nto);
+                            });
 
                         task_system::set_task_dependency(compute_matrix_task, seg_attach);
                         task_system::set_task_dependency(compute_matrix_task, seg_detach);

@@ -4,22 +4,19 @@
 
 #include <stdint.h>
 #include <stddef.h>
-//#include <functional>
+#include <functional>
 
 namespace task_system {
 
 typedef uint64_t ID;
 constexpr ID INVALID_ID = 0;
 
-//using Task = std::function<void()>;
-//using RangeTask = std::function<void(uint32_t range_beg, uint32_t range_end)>;
-
-using Task      = void (*)(void* user_data);
-using RangeTask = void (*)(uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num);
+using Task = std::function<void()>;
+using RangeTask = std::function<void(uint32_t range_beg, uint32_t range_end, uint32_t thread_num)>;
 
 /*
-typedef void (*Task) (void* user_data);
-typedef void (*RangeTask)(uint32_t range_beg, uint32_t range_end, void *user_data);
+using Task      = void (*)(void* user_data);
+using RangeTask = void (*)(uint32_t range_beg, uint32_t range_end, void* user_data, uint32_t thread_num);
 */
 
 void initialize(size_t num_threads);
@@ -29,9 +26,9 @@ void shutdown();
 // Pool tasks will not stall the main thread.
 //void execute_queued_tasks();
 
-ID create_main_task(str_t label, Task task, void* user_data = 0);
-ID create_pool_task(str_t label, Task task, void* user_data = 0);
-ID create_pool_task(str_t label, uint32_t range_beg, uint32_t range_end, RangeTask task, void* user_data = 0);
+ID create_main_task(str_t label, Task task);
+ID create_pool_task(str_t label, Task task);
+ID create_pool_task(str_t label, uint32_t range_size, RangeTask task);
 
 // Sets a dependency for a task such that the task will only be executed upon the completion of 'dependency'
 void set_task_dependency(ID task, ID dependency);
