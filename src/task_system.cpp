@@ -55,7 +55,7 @@ class AsyncTask : public enki::ITaskSet {
 public:
     AsyncTask() = default;
     AsyncTask(uint32_t set_size, RangeTask set_func, str_t lbl = {}, ID id = INVALID_ID, uint32_t grain_size = 1)
-        : ITaskSet(set_size, grain_size), m_set_func(set_func), m_set_complete(0), m_interrupt(false), m_dependency(), m_id(id), m_grain_size(grain_size) {
+        : ITaskSet(DIV_UP(set_size, grain_size)), m_set_func(set_func), m_set_size(set_size), m_grain_size(grain_size), m_set_complete(0), m_interrupt(false), m_dependency(), m_id(id) {
         size_t len = str_copy_to_char_buf(m_buf, sizeof(m_buf), lbl);
         m_label = {m_buf, len};
         m_completion_action.m_slot_idx = get_slot_idx(id);
@@ -74,7 +74,9 @@ public:
         (void)threadnum;
         if (!m_interrupt) {
             if (m_set_func) {
-                m_set_func(range.start, range.end, threadnum);
+                uint32_t beg = range.start * m_grain_size;
+                uint32_t end = MIN(m_set_size, range.end * m_grain_size);
+                m_set_func(beg, end, threadnum);
                 m_set_complete += (range.end - range.start);
             }
             else if (m_func) {
@@ -90,7 +92,7 @@ public:
 
     RangeTask  m_set_func = nullptr;  // either of these two are executed
     Task       m_func     = nullptr;
-    uint32_t   m_range_offset = 0;
+    uint32_t   m_set_size = 0;
     uint32_t   m_grain_size = 1;
     std::atomic_uint32_t m_set_complete = 0;
     std::atomic_bool m_interrupt = false;
@@ -169,11 +171,11 @@ ID create_pool_task(str_t label, Task func) {
     return id;
 }
 
-ID create_pool_task(str_t label, uint32_t range_size, RangeTask func) {
+ID create_pool_task(str_t label, uint32_t range_size, RangeTask func, uint32_t grain_size) {
     const uint32_t idx = pool::free_slots.pop();
     ID id = generate_id(idx);
     AsyncTask* task = &pool::task_data[idx];
-    PLACEMENT_NEW(task) AsyncTask(range_size, func, label, id);
+    PLACEMENT_NEW(task) AsyncTask(range_size, func, label, id, grain_size);
     return id;
 }
 

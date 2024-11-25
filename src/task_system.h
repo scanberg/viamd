@@ -28,7 +28,7 @@ void shutdown();
 
 ID create_main_task(str_t label, Task task);
 ID create_pool_task(str_t label, Task task);
-ID create_pool_task(str_t label, uint32_t range_size, RangeTask task);
+ID create_pool_task(str_t label, uint32_t range_size, RangeTask task, uint32_t grain_size = 1);
 
 // Sets a dependency for a task such that the task will only be executed upon the completion of 'dependency'
 void set_task_dependency(ID task, ID dependency);

@@ -1999,9 +1999,8 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     const size_t stride = ALIGN_TO(mol.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
     const size_t bytes = stride * sizeof(float) * 3 * 4;
     
-    // The number of atoms to be processed per thread
-    const size_t chunk_size = 128;
-    const size_t num_chunks = DIV_UP(mol.atom.count, chunk_size);
+    // The number of atoms to be processed per thread when divided into chunks
+    const uint32_t grain_size = 1024;
 
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
     defer { md_vm_arena_temp_end(tmp); };
@@ -2019,7 +2018,6 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         md_trajectory_frame_header_t headers[4];
         md_unit_cell_t unit_cell;
 
-        size_t chunk_size;
         size_t count;
 
         float* src_x[4];
@@ -2043,7 +2041,6 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         .mode = mode,
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
-        .chunk_size = chunk_size,
         .count = mol.atom.count,
         .src_x = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2,  (float*)mem + stride * 3 },
         .src_y = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6,  (float*)mem + stride * 7 },
@@ -2090,10 +2087,8 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 }
             });
 
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_chunks, [data = &payload](uint32_t chunk_beg, uint32_t chunk_end, uint32_t thread_num) {
+            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)mol.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
-                size_t range_beg = chunk_beg * data->chunk_size;
-                size_t range_end = MIN(chunk_end * data->chunk_size, data->count);
                 size_t count = range_end - range_beg;
                 float* dst_x = data->dst_x + range_beg;
                 float* dst_y = data->dst_y + range_beg;
@@ -2103,7 +2098,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 const float* src_z[2] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg};
 
                 md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t);
-            });
+            }, grain_size);
 
             tasks[num_tasks++] = load_task;
             tasks[num_tasks++] = interp_unit_cell_task;
@@ -2134,15 +2129,14 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                             (data->headers[2].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
                             (data->headers[3].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC))
                 {
+                    data->unit_cell.flags = data->headers[0].unit_cell.flags;
                     data->unit_cell.basis = cubic_spline(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->headers[2].unit_cell.basis, data->headers[3].unit_cell.basis, data->t, data->s);
                     data->unit_cell.inv_basis = mat3_inverse(data->state->mold.mol.unit_cell.basis);
                 }
             });
 
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_chunks, [data = &payload](uint32_t chunk_beg, uint32_t chunk_end, uint32_t thread_num) {
+            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)mol.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
-                size_t range_beg = chunk_beg * chunk_size;
-                size_t range_end = MIN(chunk_end * chunk_size, data->count);
                 size_t count = range_end - range_beg;
                 float* dst_x = data->dst_x + range_beg;
                 float* dst_y = data->dst_y + range_beg;
@@ -2152,7 +2146,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 const float* src_z[4] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg, data->src_z[2] + range_beg, data->src_z[3] + range_beg};
 
                 md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t, data->s);
-            });
+            }, grain_size);
 
             tasks[num_tasks++] = load_task;
             tasks[num_tasks++] = interp_unit_cell_task;
