@@ -274,6 +274,34 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
     return mat4_ident();
 }
 
+void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float alpha_scale, int res) {
+    ASSERT(tex);
+    if (res <= 0) {
+        MD_LOG_ERROR("Bad input resolution");
+        return;
+    }
+
+    size_t temp_pos = md_temp_get_pos();
+    size_t bytes = sizeof(uint32_t) * res;
+    uint32_t* pixel_data = (uint32_t*)md_temp_push(bytes);
+
+    // Update colormap texture
+    for (int i = 0; i < res; ++i) {
+        float t = CLAMP((float)i / (float)(res - 1), 0.0f, 1.0f);
+        ImVec4 col = ImPlot::SampleColormap(t, colormap);
+
+        col.w = MIN(160 * t*t, 0.341176f) * alpha_scale;
+        col.w = CLAMP(col.w, 0.0f, 1.0f);
+
+        pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
+    }
+
+    gl::init_texture_2D(tex, res, 1, GL_RGBA8);
+    gl::set_texture_2D_data(*tex, pixel_data, GL_RGBA8);
+
+    md_temp_set_pos_back(temp_pos);
+}
+
 void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t type, float ramp_scale, float ramp_period, int res) {
     ASSERT(tex);
     if (res <= 0) {
@@ -307,9 +335,8 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
         }
 
         t = CLAMP(t, 0.0f, 1.0f);
+        col.w = t;
 
-        col.w = MIN(160 * t*t, 0.341176f);
-        col.w = CLAMP(col.w, 0.0f, 1.0f);
         pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
     }
 

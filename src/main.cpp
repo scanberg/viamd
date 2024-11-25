@@ -1809,7 +1809,7 @@ static void update_density_volume(ApplicationState* data) {
     if (data->density_volume.dvr.tf.dirty) {
         data->density_volume.dvr.tf.dirty = false;
         // Update colormap texture
-        volume::compute_transfer_function_texture(&data->density_volume.dvr.tf.id, data->density_volume.dvr.tf.colormap, volume::RAMP_TYPE_SAWTOOTH, data->density_volume.dvr.tf.alpha_scale);
+        volume::compute_transfer_function_texture_simple(&data->density_volume.dvr.tf.id, data->density_volume.dvr.tf.colormap, data->density_volume.dvr.tf.alpha_scale);
     }
 
     int64_t selected_property = -1;
@@ -8084,7 +8084,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         uint64_t tf_hash = md_hash64(&rep->orbital.dvr.colormap, sizeof(rep->orbital.dvr.colormap), 0);
         if (tf_hash != rep->orbital.tf_hash) {
             rep->orbital.tf_hash = tf_hash;
-            volume::compute_transfer_function_texture(&rep->orbital.dvr.tf_tex, rep->orbital.dvr.colormap, volume::RAMP_TYPE_SAWTOOTH);
+            volume::compute_transfer_function_texture_simple(&rep->orbital.dvr.tf_tex, rep->orbital.dvr.colormap);
         }
         break;
     }
