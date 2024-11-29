@@ -4115,7 +4115,7 @@ static void draw_representations_window(ApplicationState* state) {
                 }
 #endif
                 if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
-                    ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
+                    update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
                     if (!rep.dynamic_evaluation) {
                         ImGui::SameLine();
                         if (ImGui::Button("update")) {
@@ -6662,8 +6662,8 @@ static void draw_script_editor_window(ApplicationState* data) {
                         };
                         const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
 
-                        //str_t payload_ident = md_script_payload_ident(payload);
-                        //set_hovered_property(data, payload_ident);
+                        str_t payload_ident = md_script_payload_ident(payload);
+                        set_hovered_property(data, payload_ident);
                         md_script_vis_eval_payload(&data->script.vis, payload, -1, &ctx, 0);
                     
                         if (!md_bitfield_empty(&data->script.vis.atom_mask)) {
