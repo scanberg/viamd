@@ -21,7 +21,7 @@ jobs:
           github-binarycache: true
       - name: cmake
         run: |
-          cmake -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-release -DVCPKG_MANIFEST_MODE=OFF -DBUILD_SHARED_LIBS=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_VELOXCHEM=ON -DMD_UNITTEST=OFF -MD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF . 
+          cmake -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-release -DVCPKG_MANIFEST_MODE=OFF -DBUILD_SHARED_LIBS=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_VELOXCHEM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF . 
       - name: build
         run: |
           cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
