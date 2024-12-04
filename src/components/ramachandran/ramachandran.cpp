@@ -477,10 +477,10 @@ struct Ramachandran : viamd::EventHandler {
     md_array(uint32_t) rama_type_indices[4] = {};
 
     struct {
-        ImVec4 border_color     = {0.0f, 0.0f, 0.0f, 1.0f};
+        ImVec4 border_color     = {0.0f, 0.0f, 0.0f, 0.0f};
         ImVec4 base_color       = {0.9f, 0.9f, 0.9f, 0.9f};
-        ImVec4 selection_color  = {0.5f, 0.5f, 0.8f, 0.9f};
-        ImVec4 highlight_color  = {0.8f, 0.8f, 0.5f, 0.9f};
+        ImVec4 selection_color  = {0.3f, 0.3f, 0.8f, 0.9f};
+        ImVec4 highlight_color  = {0.8f, 0.8f, 0.3f, 0.9f};
         float base_radius       = 4.5f;
         float selected_radius   = 6.5f;
     } style;
@@ -611,8 +611,7 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void update(ApplicationState& state) {
-        const size_t num_frames = md_trajectory_num_frames(state.mold.traj);
-        if (show_window && state.mold.mol.protein_backbone.count > 0 && num_frames > 0) {
+        if (show_window && state.mold.mol.protein_backbone.count > 0) {
             if (backbone_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
 
                 if (task_system::task_is_running(compute_density_full)) {
@@ -647,32 +646,35 @@ struct Ramachandran : viamd::EventHandler {
                 }
             }
 
-            if (full_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
-                if (!task_system::task_is_running(compute_density_full)) {
-                    full_fingerprint = state.trajectory_data.backbone_angles.fingerprint;
+            const size_t num_frames = md_trajectory_num_frames(state.mold.traj);
+            if (num_frames > 0) {
+                if (full_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
+                    if (!task_system::task_is_running(compute_density_full)) {
+                        full_fingerprint = state.trajectory_data.backbone_angles.fingerprint;
 
-                    const uint32_t frame_beg = 0;
-                    const uint32_t frame_end = (uint32_t)num_frames;
-                    const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
+                        const uint32_t frame_beg = 0;
+                        const uint32_t frame_end = (uint32_t)num_frames;
+                        const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
 
-                    compute_density_full = rama_rep_compute_density(&rama_data.full, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
-                } else {
-                    task_system::task_interrupt(compute_density_full);
+                        compute_density_full = rama_rep_compute_density(&rama_data.full, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
+                    } else {
+                        task_system::task_interrupt(compute_density_full);
+                    }
                 }
-            }
 
-            if (filt_fingerprint != state.timeline.filter.fingerprint) {
-                if (!task_system::task_is_running(compute_density_filt)) {
-                    filt_fingerprint = state.timeline.filter.fingerprint;
+                if (filt_fingerprint != state.timeline.filter.fingerprint) {
+                    if (!task_system::task_is_running(compute_density_filt)) {
+                        filt_fingerprint = state.timeline.filter.fingerprint;
 
-                    const uint32_t frame_beg = MIN((uint32_t)state.timeline.filter.beg_frame, (uint32_t)num_frames - 1);
-                    const uint32_t frame_end = MIN((uint32_t)state.timeline.filter.end_frame + 1, (uint32_t)num_frames);
-                    const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
+                        const uint32_t frame_beg = MIN((uint32_t)state.timeline.filter.beg_frame, (uint32_t)num_frames - 1);
+                        const uint32_t frame_end = MIN((uint32_t)state.timeline.filter.end_frame + 1, (uint32_t)num_frames);
+                        const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
 
-                    compute_density_filt = rama_rep_compute_density(&rama_data.filt, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
-                }
-                else {
-                    task_system::task_interrupt(compute_density_filt);
+                        compute_density_filt = rama_rep_compute_density(&rama_data.filt, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
+                    }
+                    else {
+                        task_system::task_interrupt(compute_density_filt);
+                    }
                 }
             }
         }
@@ -1272,6 +1274,7 @@ struct Ramachandran : viamd::EventHandler {
             uint32_t frame_stride;
             float sigma;
             md_allocator_i* alloc;
+            uint32_t complete;
         };
 
         md_allocator_i* alloc = md_get_heap_allocator();
@@ -1295,6 +1298,7 @@ struct Ramachandran : viamd::EventHandler {
         user_data->frame_stride = frame_stride;
         user_data->sigma = blur_sigma;
         user_data->alloc = alloc;
+        user_data->complete = 0;
 
         task_system::ID async_task = task_system::create_pool_task(STR_LIT("Rama density"), [data = user_data]() {
             const float angle_to_coord_scale = 1.0f / (2.0f * PI);
@@ -1336,10 +1340,14 @@ struct Ramachandran : viamd::EventHandler {
             data->rep->den_sum[1] = (float)sum[1];
             data->rep->den_sum[2] = (float)sum[2];
             data->rep->den_sum[3] = (float)sum[3];
+
+            data->complete = 1;
         });
 
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update rama texture"), [data = user_data]() {
-            gl::set_texture_2D_data(data->rep->den_tex, data->density_tex, GL_RGBA32F);
+            if (data->complete) {
+                gl::set_texture_2D_data(data->rep->den_tex, data->density_tex, GL_RGBA32F);
+            }
             md_free(data->alloc, data, data->alloc_size);
         });
 

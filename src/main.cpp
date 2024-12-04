@@ -164,6 +164,7 @@ constexpr ImGuiKey KEY_RECOMPILE_SHADERS   = ImGuiKey_F5;
 constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW   = ImGuiKey_F11;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE     = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD = ImGuiMod_Shift;
+constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT = ImGuiKey_F1;
 
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
 
@@ -569,7 +570,7 @@ static void clear_density_volume(ApplicationState* data);
 
 static void interpolate_atomic_properties(ApplicationState* data);
 static void update_view_param(ApplicationState* data);
-static void reset_view(ApplicationState* data, bool move_camera = false, bool smooth_transition = false);
+static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera = false, bool smooth_transition = false);
 
 static void handle_camera_interaction(ApplicationState* data);
 
@@ -897,7 +898,7 @@ int main(int argc, char** argv) {
                             }
                             interpolate_atomic_properties(&data);
                             data.mold.dirty_buffers |= MolBit_ClearVelocity;
-                            reset_view(&data, true, false);
+                            reset_view(&data, &data.representation.visibility_mask, true, false);
                         }
                     }
                 }
@@ -1333,6 +1334,10 @@ int main(int argc, char** argv) {
                     //}
                 }
             }
+        }
+
+        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
+            reset_view(&data, &data.selection.highlight_mask, true, true);
         }
 
         // Resize Framebuffer
@@ -2416,18 +2421,22 @@ static void update_view_param(ApplicationState* data) {
     param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
 }
 
-static void reset_view(ApplicationState* data, bool move_camera, bool smooth_transition) {
+static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera, bool smooth_transition) {
     ASSERT(data);
     if (!data->mold.mol.atom.count) return;
     const auto& mol = data->mold.mol;
 
-    const size_t popcount = md_bitfield_popcount(&data->representation.visibility_mask);
-    vec3_t aabb_min, aabb_max;
+    size_t popcount = 0;
+    if (target) {
+        popcount = md_bitfield_popcount(target);
+    }
+    vec3_t aabb_min = {};
+    vec3_t aabb_max = {};
     
     if (0 < popcount && popcount < mol.atom.count) {
         md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
         int32_t* indices = (int32_t*)md_vm_arena_push_array(frame_alloc, int32_t, popcount);
-        size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(&data->representation.visibility_mask));
+        size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(target));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
@@ -2532,7 +2541,7 @@ static void draw_main_menu(ApplicationState* data) {
         */
         if (ImGui::BeginMenu("Visuals")) {
             if (ImGui::Button("Reset View")) {
-                reset_view(data, true, true);
+                reset_view(data, &data->representation.visibility_mask, true, true);
             }
             ImGui::Separator();
             ImGui::Checkbox("Vsync", &data->app.window.vsync);
@@ -3082,7 +3091,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                     create_default_representations(data);
                 }
                 data->animation = {};
-                reset_view(data, true, true);
+                reset_view(data, &data->representation.visibility_mask, true, true);
             }
         }
             [[fallthrough]];
@@ -7479,7 +7488,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
     data->files.workspace[0]  = '\0';
 
     data->animation = {};
-    reset_view(data, false, true);
+    reset_view(data, &data->representation.visibility_mask, false, true);
 
     str_t new_molecule_file   = {};
     str_t new_trajectory_file = {};
@@ -8492,7 +8501,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                         const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
                         data->view.animation.target_position = data->picking.world_coord + forward * dist;
                     } else {
-                        reset_view(data, true, true);
+                        reset_view(data, &data->representation.visibility_mask, true, true);
                     }
                 }
 
