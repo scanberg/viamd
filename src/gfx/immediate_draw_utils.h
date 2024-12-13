@@ -4,6 +4,11 @@
 
 namespace immediate {
 
+struct Vertex {
+    vec3_t   coord;
+    uint32_t color;
+};
+
 void initialize();
 void shutdown();
 
@@ -27,6 +32,10 @@ constexpr uint32_t DEFAULT_COLOR = COLOR_BLACK;
 void draw_point(vec3_t pos, uint32_t color = DEFAULT_COLOR);
 void draw_line(vec3_t from, vec3_t to, uint32_t color = DEFAULT_COLOR);
 void draw_triangle(vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color = DEFAULT_COLOR);
+
+void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
+void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
+void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
 
 /*
          __________________

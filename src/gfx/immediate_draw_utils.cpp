@@ -12,13 +12,6 @@
 
 namespace immediate {
 
-struct Vertex {
-    vec3_t position = {0, 0, 0};
-    vec3_t normal = {0, 0, 1};
-    vec2_t uv = {0, 0};
-    uint32_t color = DEFAULT_COLOR;
-};
-
 using Index = uint32_t;
 
 struct DrawCommand {
@@ -55,24 +48,18 @@ static const char* v_shader_src = R"(
 #extension GL_ARB_explicit_attrib_location : enable
 
 uniform mat4 u_mvp_matrix;
-uniform mat3 u_normal_matrix;
-uniform vec2 u_uv_scale = vec2(1,1);
+//uniform mat3 u_normal_matrix;
+//uniform vec2 u_uv_scale = vec2(1,1);
 uniform float u_point_size = 1.f;
 
 layout(location = 0) in vec3 in_position;
-layout(location = 1) in vec3 in_normal;
-layout(location = 2) in vec2 in_uv;
-layout(location = 3) in vec4 in_color;
+layout(location = 1) in vec4 in_color;
 
-out vec3 normal;
-out vec2 uv;
 out vec4 color;
 
 void main() {
 	gl_Position = u_mvp_matrix * vec4(in_position, 1);
     gl_PointSize = max(u_point_size, 200.f / gl_Position.w);
-	normal = u_normal_matrix * in_normal;
-	uv = in_uv * u_uv_scale;
 	color = in_color;
 }
 )";
@@ -81,10 +68,6 @@ static const char* f_shader_src = R"(
 #version 150 core
 #extension GL_ARB_explicit_attrib_location : enable
 
-uniform sampler2D u_base_color_texture;
-
-in vec3 normal;
-in vec2 uv;
 in vec4 color;
 
 layout(location = 0) out vec4 out_color_alpha;
@@ -96,8 +79,8 @@ vec4 encode_normal (vec3 n) {
 }
 
 void main() {
-	out_color_alpha = texture(u_base_color_texture, uv) * color;
-	out_normal = encode_normal(normalize(normal));
+	out_color_alpha = color;
+	out_normal = encode_normal(vec3(0,0,1));
 }
 )";
 
@@ -174,16 +157,10 @@ void initialize() {
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)offsetof(Vertex, position));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)offsetof(Vertex, coord));
 
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)offsetof(Vertex, normal));
-
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const GLvoid*)offsetof(Vertex, uv));
-
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)offsetof(Vertex, color));
+    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)offsetof(Vertex, color));
 
     glBindVertexArray(0);
 
@@ -292,19 +269,39 @@ void render() {
 void draw_point(vec3_t pos, uint32_t color) {
     const Index idx = (Index)md_array_size(vertices);
 
-    Vertex v = {pos, {0, 0, 1}, {0, 0}, color};
-    md_array_push(vertices, v, md_get_heap_allocator());
+    Vertex v = {pos, color};
+    md_array_push(vertices, v,  md_get_heap_allocator());
     md_array_push(indices, idx, md_get_heap_allocator());
 
     append_draw_command(1, GL_POINTS);
+}
+
+void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult) {
+    const Index idx = (Index)md_array_size(vertices);
+    md_array_resize(vertices, md_array_size(vertices) + count, md_get_heap_allocator());
+    Vertex* v = md_array_end(vertices) - count;
+
+    ASSERT(v);
+
+    for (size_t i = 0; i < count; ++i) {
+        vec4_t c = convert_color(verts[i].color) * color_mult;
+        v[i].coord = verts[i].coord;
+        v[i].color = convert_color(c);
+    }
+
+    for (size_t i = idx; i < idx + count; i += 1) {
+        md_array_push(indices, i, md_get_heap_allocator());
+    }
+
+    append_draw_command(count, GL_POINTS);
 }
 
 void draw_line(vec3_t from, vec3_t to, uint32_t color) {
     const Index idx = (Index)md_array_size(vertices);
 
     Vertex v[2] = {
-        {from, {0, 0, 1}, {0, 0}, color},
-        {to,   {0, 0, 1}, {0, 0}, color}
+        {from, color},
+        {to,   color}
     };
     md_array_push_array(vertices, v, 2, md_get_heap_allocator());
 
@@ -314,14 +311,42 @@ void draw_line(vec3_t from, vec3_t to, uint32_t color) {
     append_draw_command(2, GL_LINES);
 }
 
+void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult) {
+    if ((count & 1) == 1) {
+        MD_LOG_DEBUG("Expected even number of vertices as in function %s", __FUNCTION__);
+    }
+
+    // Make sure count is an even number
+    count = count - (count & 1);
+
+    const Index idx = (Index)md_array_size(vertices);
+    md_array_resize(vertices, md_array_size(vertices) + count, md_get_heap_allocator());
+    Vertex* v = md_array_end(vertices) - count;
+
+    ASSERT(v);
+
+    for (size_t i = 0; i < count; ++i) {
+        vec4_t c = convert_color(verts[i].color) * color_mult;
+        v[i].coord = verts[i].coord;
+        v[i].color = convert_color(c);
+    }
+
+    for (size_t i = idx; i < idx + count; i += 2) {
+        md_array_push(indices, i + 0, md_get_heap_allocator());
+        md_array_push(indices, i + 1, md_get_heap_allocator());
+    }
+
+    append_draw_command(count, GL_LINES);
+}
+
 void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color) {
     const Index idx = (Index)md_array_size(vertices);
-    const vec3_t normal = vec3_normalize(vec3_cross(vec3_sub(p1, p0), vec3_sub(p2, p0)));
+    //const vec3_t normal = vec3_normalize(vec3_cross(vec3_sub(p1, p0), vec3_sub(p2, p0)));
 
     Vertex v[3] = {
-        {p0, normal, {0, 0}, color},
-        {p1, normal, {0, 0}, color},
-        {p2, normal, {0, 0}, color},
+        {p0, color},
+        {p1, color},
+        {p2, color},
     };
     md_array_push_array(vertices, v, 3, md_get_heap_allocator());
 
@@ -332,15 +357,44 @@ void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color) {
     append_draw_command(3, GL_TRIANGLES);
 }
 
+void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult) {
+    if ((count % 3) != 0) {
+        MD_LOG_DEBUG("Expected number of vertices to be divisible by 3 in function %s", __FUNCTION__);
+    }
+
+    // Make sure count is a correct number here
+    count = count - (count % 3);
+
+    const Index idx = (Index)md_array_size(vertices);
+    md_array_resize(vertices, md_array_size(vertices) + count, md_get_heap_allocator());
+    Vertex* v = md_array_end(vertices) - count;
+
+    ASSERT(v);
+
+    for (size_t i = 0; i < count; ++i) {
+        vec4_t c = convert_color(verts[i].color) * color_mult;
+        v[i].coord = verts[i].coord;
+        v[i].color = convert_color(c);
+    }
+
+    for (size_t i = idx; i < idx + count; i += 3) {
+        md_array_push(indices, i + 0, md_get_heap_allocator());
+        md_array_push(indices, i + 1, md_get_heap_allocator());
+        md_array_push(indices, i + 2, md_get_heap_allocator());
+    }
+
+    append_draw_command(count, GL_TRIANGLES);
+}
+
 void draw_plane(vec3_t center, vec3_t u, vec3_t v, uint32_t color) {
     const Index idx = (Index)md_array_size(vertices);
-    const vec3_t normal = vec3_normalize(vec3_cross(u, v));
+    //const vec3_t normal = vec3_normalize(vec3_cross(u, v));
 
     Vertex vert[4] = {
-        {vec3_sub(center, vec3_add(u, v)), normal, {0, 1}, color},
-        {vec3_sub(center, vec3_sub(u, v)), normal, {0, 0}, color},
-        {vec3_add(center, vec3_add(u, v)), normal, {1, 1}, color},
-        {vec3_add(center, vec3_sub(u, v)), normal, {1, 0}, color},
+        {vec3_sub(center, vec3_add(u, v)), color},
+        {vec3_sub(center, vec3_sub(u, v)), color},
+        {vec3_add(center, vec3_add(u, v)), color},
+        {vec3_add(center, vec3_sub(u, v)), color},
     };
     md_array_push_array(vertices, vert, 4, md_get_heap_allocator());
 

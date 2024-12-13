@@ -8716,17 +8716,21 @@ static void fill_gbuffer(ApplicationState* data) {
         }
     }
 
-    for (size_t i = 0; i < md_array_size(vis.triangles); i += 3) {
-        immediate::draw_triangle(vis.triangles[i+0].pos, vis.triangles[i+1].pos, vis.triangles[i+2].pos, triangle_color);
+    if (vis.points) {
+        immediate::draw_points_v((immediate::Vertex*)vis.points, md_array_size(vis.points), data->script.point_color);
     }
 
-    for (size_t i = 0; i < md_array_size(vis.lines); i += 2) {
-        immediate::draw_line(vis.lines[i+0].pos, vis.lines[i+1].pos, line_color);
+    if (vis.triangles) {
+        immediate::draw_triangles_v((immediate::Vertex*)vis.triangles, md_array_size(vis.triangles), data->script.triangle_color);
     }
 
-    for (size_t i = 0; i < md_array_size(vis.points); ++i) {
-        immediate::draw_point(vis.points[i].pos, point_color);
+    if (vis.lines) {
+        immediate::draw_lines_v((immediate::Vertex*)vis.lines, md_array_size(vis.lines), data->script.line_color);
     }
+
+    
+
+    
 
     const vec4_t col_x = {1, 0, 0, 0.7f};
     const vec4_t col_y = {0, 1, 0, 0.7f};
