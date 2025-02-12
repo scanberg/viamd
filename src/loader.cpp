@@ -47,7 +47,8 @@ static const str_t mol_loader_name[] {
     STR_LIT("PDBx/mmCIF (cif)"),
     STR_LIT("LAMMPS (data)"),
 #if MD_VLX
-    STR_LIT("Veloxchem (out)"),
+    STR_LIT("VeloxChem (out)"),
+    STR_LIT("VeloxChem (h5)"),
 #endif
 };
 
@@ -60,6 +61,7 @@ static const str_t mol_loader_ext[] {
     STR_LIT("data"),
 #if MD_VLX
     STR_LIT("out"),
+    STR_LIT("h5"),
 #endif
 };
 
@@ -71,6 +73,7 @@ static md_molecule_loader_i* mol_loader_api[] = {
     md_mmcif_molecule_api(),
     md_lammps_molecule_api(),
 #if MD_VLX
+    md_vlx_molecule_api(),
     md_vlx_molecule_api(),
 #endif
 };
@@ -215,7 +218,7 @@ static void traj_loader_preload_check(load::LoaderState*, traj_loader_t, str_t, 
 
 namespace load {
 
-#define NUM_ENTRIES 11
+#define NUM_ENTRIES 12
 struct table_entry_t {
     str_t name[NUM_ENTRIES];
     str_t ext[NUM_ENTRIES];
@@ -243,7 +246,8 @@ static const table_entry_t table = {
         STR_LIT("LAMMPS Trajectory (lammpstrj)"),
         //STR_LIT("DCD Trajectory (dcd)"),
 #if MD_VLX
-        STR_LIT("Veloxchem (out)")
+        STR_LIT("VeloxChem (out)"),
+        STR_LIT("VeloxChem (h5)")
 #endif
     },
     {
@@ -259,7 +263,8 @@ static const table_entry_t table = {
         STR_LIT("lammpstrj"),
         //STR_LIT("dcd"),
 #if MD_VLX
-        STR_LIT("out")
+        STR_LIT("out"),
+        STR_LIT("h5")
 #endif
     },
     { 
@@ -275,6 +280,7 @@ static const table_entry_t table = {
         NULL,
         //NULL,
 #if MD_VLX
+        md_vlx_molecule_api(),
         md_vlx_molecule_api(),
 #endif
     },

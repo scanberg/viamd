@@ -112,8 +112,8 @@ static inline OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t
     for (size_t i = 0; i < num_gto; ++i) {
         vec3_t xyz = { gto[i].x, gto[i].y, gto[i].z };
 
-        // The scaling factor here is a bit arbitrary, but the cutoff-radius is computed on a value which is lower than the rendered iso-value
-        // So the effective radius is a bit overestimated and thus we scale it back a bit
+        // The cutoff-radius is computed for a value which is lower than the range of rendered iso-values
+        // So the effective radius is a bit overestimated, thus we scale it back a bit
         float  r = gto[i].cutoff * 0.85f;
 
         vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
@@ -218,7 +218,7 @@ struct VeloxChem : viamd::EventHandler {
         int minor = 0;
     } gl_version;
 
-    md_vlx_data_t vlx {};
+    md_vlx_t* vlx = nullptr;
 
     // Used for clearing volumes
     uint32_t vol_fbo = 0;
@@ -369,11 +369,7 @@ struct VeloxChem : viamd::EventHandler {
     md_allocator_i* arena = 0;
 
     size_t num_orbitals() const {
-        return vlx.scf.alpha.orbitals.dim[1];
-    }
-
-    size_t num_cgtos() const {
-        return vlx.scf.alpha.orbitals.dim[0];
+        return md_vlx_scf_number_of_molecular_orbitals(vlx);
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final {
@@ -440,30 +436,55 @@ struct VeloxChem : viamd::EventHandler {
                 info.mo_homo_idx = homo_idx;
                 info.mo_lumo_idx = lumo_idx;
 
-                for (size_t i = 0; i < num_orbitals(); ++i) {
-                    MolecularOrbital mo = {
-                        .idx = (int)i,
-                        .occupation = (float)vlx.scf.alpha.occupations.data[i],
-                        .energy = (float)vlx.scf.alpha.energies.data[i],
-                    };
-                    md_array_push(info.molecular_orbitals, mo, info.alloc);
+                size_t num_orb = num_orbitals();
+                const double* occ = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
+                const double* ene = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_ALPHA);
+
+                if (occ && ene) {
+                    for (size_t i = 0; i < num_orb; ++i) {
+                        MolecularOrbital mo = {
+                            .idx = (int)i,
+                            .occupation = (float)occ[i],
+                            .energy = (float)ene[i],
+                        };
+                        md_array_push(info.molecular_orbitals, mo, info.alloc);
+                    }
                 }
-                
-                auto push_dipole = [&info](md_vlx_dipole_moment_t vlx_dp) {
+
+                auto push_dipole = [&info](dvec3_t vec, str_t lbl) {
                     DipoleMoment dp = {
-                        .label = str_copy(vlx_dp.ident, info.alloc),
-                        .vector = vec3_set((float)vlx_dp.x, (float)vlx_dp.y, (float)vlx_dp.z),
+                        .label = str_copy(lbl, info.alloc),
+                        .vector = vec3_set((float)vec.x, (float)vec.y, (float)vec.z),
                     };
                     md_array_push(info.dipole_moments, dp, info.alloc);
-                };
+                    };
 
-                push_dipole(vlx.scf.ground_state_dipole_moment);
-                for (size_t i = 0; i < vlx.rsp.num_excited_states; ++i)
-                    push_dipole(vlx.rsp.electronic_transition_length[i]);
-                for (size_t i = 0; i < vlx.rsp.num_excited_states; ++i)
-                    push_dipole(vlx.rsp.electronic_transition_velocity[i]);
-                for (size_t i = 0; i < vlx.rsp.num_excited_states; ++i)
-                    push_dipole(vlx.rsp.magnetic_transition[i]);
+                push_dipole(md_vlx_scf_ground_state_dipole_moment(vlx), STR_LIT("Ground State"));
+
+                char buf[64];
+                const dvec3_t* electric = md_vlx_rsp_electric_transition_dipole_moments(vlx);
+                const dvec3_t* magnetic = md_vlx_rsp_magnetic_transition_dipole_moments(vlx);
+                const dvec3_t* velocity = md_vlx_rsp_velocity_transition_dipole_moments(vlx);
+                size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
+
+                if (electric) {
+                    for (size_t i = 0; i < num_excited_states; ++i) {
+                        snprintf(buf, sizeof(buf), "Electric Transition %i", (int)(i + 1));
+                        push_dipole(electric[i], str_from_cstr(buf));
+                    }
+                }
+                if (magnetic) {
+                    for (size_t i = 0; i < num_excited_states; ++i) {
+                        snprintf(buf, sizeof(buf), "Magnetic Transition %i", (int)(i + 1));
+                        push_dipole(magnetic[i], str_from_cstr(buf));
+                    }
+                }
+                if (velocity) {
+                    for (size_t i = 0; i < num_excited_states; ++i) {
+                        snprintf(buf, sizeof(buf), "Velocity Transition %i", (int)(i + 1));
+                        push_dipole(velocity[i], str_from_cstr(buf));
+                    }
+                }
                 break;
             }
             case viamd::EventType_RepresentationComputeOrbital: {
@@ -473,12 +494,13 @@ struct VeloxChem : viamd::EventHandler {
                 if (!data.output_written) {
                     md_gto_eval_mode_t mode = MD_GTO_EVAL_MODE_PSI;
                     if (data.type == OrbitalType::PsiSquared) {
-                       mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
+                        mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
                     }
 
                     if (gl_version.major >= 4 && gl_version.minor >= 3) {
                         data.output_written = compute_mo_GPU(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom);
-                    } else {
+                    }
+                    else {
                         data.output_written = (compute_mo_async(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
                     }
                 }
@@ -495,7 +517,8 @@ struct VeloxChem : viamd::EventHandler {
         //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
         md_arena_allocator_reset(arena);
-        vlx = {};
+        md_vlx_destroy(vlx);
+        vlx = nullptr;
         orb = {};
         nto = {};
         rsp = {};
@@ -514,130 +537,137 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void init_from_file(str_t filename, ApplicationState& state) {
-        str_t file_ext;
-        if (extract_ext(&file_ext, filename) && str_eq_ignore_case(file_ext, STR_LIT("out"))) {
-            MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
-            md_vlx_data_free(&vlx);
-            if (md_vlx_data_parse_file(&vlx, filename, arena)) {
-                MD_LOG_INFO("Successfully loaded VeloxChem data");
-
-                if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
-
-                // Scf
-                scf.show_window = true;
-
-                homo_idx = (int)vlx.scf.homo_idx;
-                lumo_idx = (int)vlx.scf.lumo_idx;
-
-                vec4_t min_box = vec4_set1( FLT_MAX);
-                vec4_t max_box = vec4_set1(-FLT_MAX);
-
-                nto.atom_xyzr = (vec4_t*)md_arena_allocator_push(arena, sizeof(vec4_t) * vlx.geom.num_atoms);
-                nto.num_atoms = vlx.geom.num_atoms;
-
-                // Compute the PCA of the provided geometry
-                // This is used in determining a better fitting volume for the orbitals
-                vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * vlx.geom.num_atoms);
-                for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                    nto.atom_xyzr[i] = vec4_set((float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], md_util_element_vdw_radius(vlx.geom.atomic_number[i])) * ANGSTROM_TO_BOHR;
-                    xyzw[i] = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i], 1.0f};
-                    min_box = vec4_min(min_box, xyzw[i]);
-                    max_box = vec4_max(max_box, xyzw[i]);
+        str_t ext;
+        if (extract_ext(&ext, filename)) {
+            if (str_eq_ignore_case(ext, STR_LIT("out")) || str_eq_ignore_case(ext, STR_LIT("h5"))) {
+                MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
+                if (vlx) {
+                    md_vlx_destroy(vlx);
+                    vlx = nullptr;
                 }
-                min_aabb = vec3_from_vec4(min_box);
-                max_aabb = vec3_from_vec4(max_box);
+                vlx = md_vlx_create(arena);
+                if (md_vlx_parse_file(vlx, filename)) {
+                    MD_LOG_INFO("Successfully loaded VeloxChem data");
 
-                md_molecule_t mol = {0};
-                md_vlx_molecule_init(&mol, &vlx, state.allocator.frame);
-                md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_BOND_BIT);
-                //gl_mol = md_gl_mol_create(&mol);
+                    if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
 
-                uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
-                color_atoms_cpk(colors, mol.atom.count, mol);
+                    // Scf
+                    scf.show_window = true;
 
-                gl_rep = md_gl_rep_create(state.mold.gl_mol);
-                md_gl_rep_set_color(gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+                    homo_idx = (int)md_vlx_scf_homo_idx(vlx);
+                    lumo_idx = (int)md_vlx_scf_lumo_idx(vlx);
 
-                com =  md_util_com_compute_vec4(xyzw, 0, vlx.geom.num_atoms, 0);
-                mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, vlx.geom.num_atoms, com);
-                mat3_eigen_t eigen = mat3_eigen(C);
-                PCA = mat3_extract_rotation(eigen.vectors);
-                PCA = mat3_orthonormalize(PCA);
+                    vec4_t min_box = vec4_set1( FLT_MAX);
+                    vec4_t max_box = vec4_set1(-FLT_MAX);
 
-                // NTO
-                if (vlx.rsp.num_excited_states > 0 && vlx.rsp.nto) {
+                    size_t num_atoms = md_vlx_number_of_atoms(vlx);
+                    const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+                    const uint8_t* atomic_numbers = md_vlx_atomic_numbers(vlx);
 
-                    nto.show_window = true;
-                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
-                    nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * mol.atom.count);
-                    MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * mol.atom.count);
+                    nto.atom_xyzr = (vec4_t*)md_arena_allocator_push(arena, sizeof(vec4_t) * num_atoms);
+                    nto.num_atoms = num_atoms;
 
-                    snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
-                    nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
-
-                    for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
-                        ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
-                        nto.group.color[i] = vec_cast(color);
-                        snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
+                    // Compute the PCA of the provided geometry
+                    // This is used in determining a better fitting volume for the orbitals
+                    vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * num_atoms);
+                    for (size_t i = 0; i < num_atoms; ++i) {
+                        nto.atom_xyzr[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, md_util_element_vdw_radius(atomic_numbers[i])) * ANGSTROM_TO_BOHR;
+                        xyzw[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, 1.0f);
+                        min_box = vec4_min(min_box, xyzw[i]);
+                        max_box = vec4_max(max_box, xyzw[i]);
                     }
+                    min_aabb = vec3_from_vec4(min_box);
+                    max_aabb = vec3_from_vec4(max_box);
 
-                    str_t file = {};
-                    extract_file(&file, filename);
+                    md_molecule_t mol = { 0 };
+                    md_vlx_molecule_init(&mol, vlx, state.allocator.frame);
+                    md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_BOND_BIT);
+                    //gl_mol = md_gl_mol_create(&mol);
 
-                    if (str_eq_cstr(file, "tq.out")) {
-                        uint32_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
-                        //nto.atom_group_idx = index_from_text;
-                        nto.group.count = 3;
-                        MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
-                        snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Thio");
-                        snprintf(nto.group.label[2], sizeof(nto.group.label[2]), "Quin");
-                    }
-                    else {
+                    uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
+                    color_atoms_cpk(colors, mol.atom.count, mol);
 
-                        // @TODO: Remove once proper interface is there
-                        nto.group.count = 3;
-                        // Assign half of the atoms to group 1
-                        for (size_t i = 0; i < mol.atom.count; ++i) {
-                            nto.atom_group_idx[i] = i < mol.atom.count / 2 ? 1 : 2;
+                    gl_rep = md_gl_rep_create(state.mold.gl_mol);
+                    md_gl_rep_set_color(gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+
+                    com = md_util_com_compute_vec4(xyzw, 0, num_atoms, 0);
+                    mat3_t C = mat3_covariance_matrix_vec4(xyzw, 0, num_atoms, com);
+                    mat3_eigen_t eigen = mat3_eigen(C);
+                    PCA = mat3_extract_rotation(eigen.vectors);
+                    PCA = mat3_orthonormalize(PCA);
+
+                    // NTO
+                    size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
+                    if (num_excited_states > 0) {
+
+                        nto.show_window = true;
+                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
+                        nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * mol.atom.count);
+                        MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * mol.atom.count);
+
+                        snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
+                        nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
+
+                        for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                            ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
+                            nto.group.color[i] = vec_cast(color);
+                            snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
                         }
-                    }
-                    nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
-                    update_nto_group_colors();
 
-                    // Callculate ballpark scaling factor for dipole vectors
-                    vec3_t ext = max_aabb - min_aabb;
-                    float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
-                    float max_len = 0;
-                    for (int i = 0; i < vlx.rsp.num_excited_states; ++i) {
-                        vec3_t magn_vec = { (float)vlx.rsp.magnetic_transition[i].x, (float)vlx.rsp.magnetic_transition[i].y, (float)vlx.rsp.magnetic_transition[i].z };
-                        vec3_t elec_vec = { (float)vlx.rsp.electronic_transition_length[0].x, (float)vlx.rsp.electronic_transition_length[i].y, (float)vlx.rsp.electronic_transition_length[i].z };
-                        float magn_len = vec3_length(magn_vec);
-                        float elec_len = vec3_length(elec_vec);
-                        if (magn_len > max_len) {
-                            max_len = magn_len;
+                        str_t file = {};
+                        extract_file(&file, filename);
+
+                        if (str_eq_cstr(file, "tq.out")) {
+                            uint32_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
+                            //nto.atom_group_idx = index_from_text;
+                            nto.group.count = 3;
+                            MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
+                            snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Thio");
+                            snprintf(nto.group.label[2], sizeof(nto.group.label[2]), "Quin");
                         }
-                        if (elec_len > max_len) {
-                            max_len = elec_len;
+                        else {
+
+                            // @TODO: Remove once proper interface is there
+                            nto.group.count = 3;
+                            // Assign half of the atoms to group 1
+                            for (size_t i = 0; i < mol.atom.count; ++i) {
+                                nto.atom_group_idx[i] = i < mol.atom.count / 2 ? 1 : 2;
+                            }
                         }
+                        nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+                        update_nto_group_colors();
+
+                        // Callculate ballpark scaling factor for dipole vectors
+                        vec3_t extent = max_aabb - min_aabb;
+                        float max_ext = MAX(extent.x, MAX(extent.y, extent.z));
+                        float max_len = 0;
+                        const dvec3_t* electric_dp = md_vlx_rsp_electric_transition_dipole_moments(vlx);
+                        const dvec3_t* magnetic_dp = md_vlx_rsp_magnetic_transition_dipole_moments(vlx);
+                        ASSERT(electric_dp);
+                        ASSERT(magnetic_dp);
+                        for (int i = 0; i < num_excited_states; ++i) {
+                            max_len = MAX(max_len, (float)dvec3_length(electric_dp[i]));
+                            max_len = MAX(max_len, (float)dvec3_length(magnetic_dp[i]));
+                        }
+                        nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
                     }
 
-                    nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
+                    // RSP
+                    rsp.show_window = true;
+                    rsp.hovered = -1;
+                    rsp.selected = -1;
+
+                    // ORB
+                    orb.show_window = true;
+                    camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
+                    orb.mo_idx = homo_idx;
+                    orb.scroll_to_idx = homo_idx;
+
                 }
-
-                // RSP
-                rsp.show_window = true;
-                rsp.hovered  = -1;
-                rsp.selected = -1;
-
-                // ORB
-                orb.show_window = true;
-                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
-                orb.mo_idx = homo_idx;
-                orb.scroll_to_idx = homo_idx;
-
-            } else {
-                MD_LOG_INFO("Failed to load VeloxChem data");
-                reset_data();
+                else {
+                    MD_LOG_INFO("Failed to load VeloxChem data");
+                    reset_data();
+                }
             }
         }
     }
@@ -668,10 +698,10 @@ struct VeloxChem : viamd::EventHandler {
     bool compute_nto_GPU(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ScopedTemp temp_reset;
 
-        size_t num_gtos = md_vlx_nto_gto_count(&vlx);
+        size_t num_gtos = md_vlx_nto_gto_count(vlx);
         md_gto_t* gtos  = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
 
-        if (!md_vlx_nto_gto_extract(gtos, &vlx, nto_idx, lambda_idx, type)) {
+        if (!md_vlx_nto_gto_extract(gtos, vlx, nto_idx, lambda_idx, type)) {
             MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             return task_system::INVALID_ID;
         }
@@ -689,28 +719,31 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     size_t extract_attachment_detachment_gtos(md_gto_t* gtos, size_t cap_gtos, NtoDensity type, size_t nto_idx) {
-        const size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        const size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
         const md_vlx_nto_type_t nto_type = (type == NtoDensity::Attachment) ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
 
         size_t num_gtos = 0;
 
         // Only add GTOs from lambdas that has a contribution more than a certain percentage
-        for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
-            double lambda = vlx.rsp.nto[nto_idx].occupations.data[lumo_idx + lambda_idx];
-            if (lambda < NTO_LAMBDA_CUTOFF_VALUE) {
-                break;
+        const double* occ = md_vlx_rsp_nto_occupancy(vlx, nto_idx);
+        if (occ) {
+            for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
+                double lambda = occ[lumo_idx + lambda_idx];
+                if (lambda < NTO_LAMBDA_CUTOFF_VALUE) {
+                    break;
+                }
+                if (!md_vlx_nto_gto_extract(gtos + num_gtos, vlx, nto_idx, lambda_idx, nto_type)) {
+                    MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
+                    return false;
+                }
+                // Scale the GTOs with the lambda value
+                // The sqrt is to ensure that the scaling is linear with the lambda value
+                const double scale = sqrt(lambda);
+                for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
+                    gtos[i].coeff = (float)(gtos[i].coeff * scale);
+                }
+                num_gtos += num_gtos_per_lambda;
             }
-            if (!md_vlx_nto_gto_extract(gtos + num_gtos, &vlx, nto_idx, lambda_idx, nto_type)) {
-                MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
-                return false;
-            }
-            // Scale the GTOs with the lambda value
-            // The sqrt is to ensure that the scaling is linear with the lambda value
-            const double scale = sqrt(lambda);
-            for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
-                gtos[i].coeff = (float)(gtos[i].coeff * scale);
-            }
-            num_gtos += num_gtos_per_lambda;
         }
 
         return num_gtos;
@@ -720,7 +753,7 @@ struct VeloxChem : viamd::EventHandler {
     bool compute_nto_density_GPU(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ScopedTemp temp_reset;
 
-        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
         size_t cap_gtos =  num_gtos_per_lambda * 4;
         md_gto_t* gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * cap_gtos);
 
@@ -744,7 +777,7 @@ struct VeloxChem : viamd::EventHandler {
     task_system::ID compute_nto_density_async(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         md_allocator_i* alloc = md_get_heap_allocator();
 
-        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
         size_t cap_gtos =  num_gtos_per_lambda * 4;
         md_gto_t* gtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * cap_gtos);
 
@@ -827,10 +860,10 @@ struct VeloxChem : viamd::EventHandler {
         ASSERT(vol);
 
         md_allocator_i* alloc = md_get_heap_allocator();
-        size_t num_gtos = md_vlx_nto_gto_count(&vlx);
+        size_t num_gtos = md_vlx_nto_gto_count(vlx);
         md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_gtos);
 
-        if (!md_vlx_nto_gto_extract(gtos, &vlx, nto_idx, lambda_idx, type)) {
+        if (!md_vlx_nto_gto_extract(gtos, vlx, nto_idx, lambda_idx, type)) {
             MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             md_free(alloc, gtos, sizeof(md_gto_t) * num_gtos);
             return task_system::INVALID_ID;
@@ -918,10 +951,10 @@ struct VeloxChem : viamd::EventHandler {
     bool compute_mo_GPU(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ScopedTemp reset_temp;
 
-        size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+        size_t num_gtos = md_vlx_mo_gto_count(vlx);
         md_gto_t* gtos  = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
 
-        if (!md_vlx_mol_gto_extract(gtos, &vlx, mo_idx)) {
+        if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA)) {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
             return false;
         }
@@ -942,10 +975,10 @@ struct VeloxChem : viamd::EventHandler {
         ASSERT(vol);
 
         md_allocator_i* alloc = md_get_heap_allocator();
-        size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+        size_t num_gtos = md_vlx_mo_gto_count(vlx);
         md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t)* num_gtos);
 
-        if (!md_vlx_mol_gto_extract(gtos, &vlx, mo_idx)) {
+        if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA)) {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
             md_free(md_get_heap_allocator(), gtos, sizeof(md_gto_t) * num_gtos);
             return task_system::INVALID_ID;
@@ -1449,7 +1482,7 @@ struct VeloxChem : viamd::EventHandler {
     
     bool compute_transition_group_values_async(task_system::ID* out_eval_task, task_system::ID* out_segment_task, float* out_group_values, size_t num_groups, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, size_t nto_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {       
         md_allocator_i* alloc = md_get_heap_allocator();
-        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(&vlx);
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
         size_t cap_gto =  num_gtos_per_lambda * 4;
         md_gto_t* gtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * cap_gto);
 
@@ -1458,23 +1491,26 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_gtos = 0;
 
         // Only add GTOs from lambdas that has a contribution more than a certain percentage
-        for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
-            double lambda = vlx.rsp.nto[nto_idx].occupations.data[lumo_idx + lambda_idx];
-            if (lambda < lambda_cutoff) {
-                break;
+        const double* occ = md_vlx_rsp_nto_occupancy(vlx, nto_idx);
+        if (occ) {
+            for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
+                double lambda = occ[lumo_idx + lambda_idx];
+                if (lambda < lambda_cutoff) {
+                    break;
+                }
+                if (!md_vlx_nto_gto_extract(gtos + num_gtos, vlx, nto_idx, lambda_idx, type)) {
+                    MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
+                    md_free(alloc, gtos, sizeof(md_gto_t) * cap_gto);
+                    return false;
+                }
+                // Scale the added GTOs with the lambda value
+                // The sqrt is to ensure that the scaling is linear with the lambda value
+                const double scale = sqrt(lambda);
+                for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
+                    gtos[i].coeff = (float)(gtos[i].coeff * scale);
+                }
+                num_gtos += num_gtos_per_lambda;
             }
-            if (!md_vlx_nto_gto_extract(gtos + num_gtos, &vlx, nto_idx, lambda_idx, type)) {
-                MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
-                md_free(alloc, gtos, sizeof(md_gto_t) * cap_gto);
-                return false;
-            }
-            // Scale the added GTOs with the lambda value
-            // The sqrt is to ensure that the scaling is linear with the lambda value
-            const double scale = sqrt(lambda);
-            for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
-                gtos[i].coeff = (float)(gtos[i].coeff * scale);
-            }
-            num_gtos += num_gtos_per_lambda;
         }
 
         md_gto_cutoff_compute(gtos, num_gtos, 1.0e-7);
@@ -1936,57 +1972,65 @@ struct VeloxChem : viamd::EventHandler {
 
     void draw_summary_window(ApplicationState& state) {
         if (!scf.show_window) { return; }
-        if (vlx.scf.iter.count == 0) { return; }
+
+        static ImPlotRect lims{ 0,1,0,1 };
 
         size_t temp_pos = md_temp_get_pos();
         defer {  md_temp_set_pos_back(temp_pos); };
 
+        size_t num_iter = md_vlx_scf_history_size(vlx);
+        const double* grad_norm = md_vlx_scf_history_gradient_norm(vlx);
+        const double* energy = md_vlx_scf_history_energy(vlx);
+        double* energy_offsets = nullptr;
+        double ref_energy = 0.0;
+        double y1_to_y2_mult = 1.0;
+
         // We set up iterations as doubles for easier use
-        double* iter = (double*)md_temp_push(sizeof(double) * vlx.scf.iter.count);
-        for (int i = 0; i < vlx.scf.iter.count; ++i) {
-            iter[i] = (double)vlx.scf.iter.iteration[i];
+        if (num_iter) {
+            ASSERT(energy);
+            ASSERT(grad_norm);
+
+            energy_offsets = (double*)md_temp_push(sizeof(double) * num_iter);
+            ref_energy = energy[num_iter - 1];
+            for (size_t i = 0; i < num_iter; i++) {
+                energy_offsets[i] = fabs(energy[i] - ref_energy);
+            }
+            y1_to_y2_mult = axis_conversion_multiplier(grad_norm, energy_offsets, num_iter, num_iter);
         }
-        static ImPlotRect lims{ 0,1,0,1 };
+
         // The actual plot
-
-
-        double* energy_offsets = (double*)md_temp_push(sizeof(double) * (int)vlx.scf.iter.count);
-        double ref_energy = vlx.scf.iter.energy_total[vlx.scf.iter.count - 1];
-        for (size_t i = 0; i < vlx.scf.iter.count; i++) {
-            energy_offsets[i] = fabs(vlx.scf.iter.energy_total[i] - ref_energy);
-        }
-        double y1_to_y2_mult = axis_conversion_multiplier(vlx.scf.iter.gradient_norm, energy_offsets, vlx.scf.iter.count, vlx.scf.iter.count);
-
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &scf.show_window)) {
             if (ImGui::TreeNode("Level of calculation")) {
+                str_t basis_set = md_vlx_basis_set_ident(vlx);
                 ImGui::Text("Method:");
-                ImGui::Text("Basis Set: %s", (const char*)vlx.basis.ident.ptr);
+                ImGui::Text("Basis Set: %s", str_ptr(basis_set));
                 ImGui::Spacing();
                 
                 ImGui::TreePop();
             }
             if (ImGui::TreeNode("System Information")) {
-                ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
-                ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
-                ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
-                ImGui::Text("Molecular Charge:    %6i", vlx.geom.molecular_charge);
-                ImGui::Text("Spin Multiplicity:   %6i", vlx.geom.spin_multiplicity);
+                ImGui::Text("Num Atoms:           %6zu", md_vlx_number_of_atoms(vlx));
+                ImGui::Text("Num Alpha Electrons: %6zu", md_vlx_number_of_alpha_electrons(vlx));
+                ImGui::Text("Num Beta Electrons:  %6zu", md_vlx_number_of_beta_electrons(vlx));
+                ImGui::Text("Molecular Charge:    %6i",  md_vlx_molecular_charge(vlx));
+                ImGui::Text("Spin Multiplicity:   %6i",  md_vlx_spin_multiplicity(vlx));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
-            if (ImGui::TreeNode("SCF")) {
+
+            if (num_iter > 0 && ImGui::TreeNode("SCF")) {
                 if (ImPlot::BeginPlot("SCF")) {
-                    ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)vlx.scf.iter.count);
+                    ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)num_iter);
                     ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
                     ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
                     // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
                     ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
                     ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
 
-                    ImPlot::PlotLine("Gradient", iter, vlx.scf.iter.gradient_norm, (int)vlx.scf.iter.count);
+                    ImPlot::PlotLine("Gradient", grad_norm, (int)num_iter, 1.0, 1.0);
                     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                    ImPlot::PlotLine("Energy", iter, energy_offsets, (int)vlx.scf.iter.count - 1);
+                    ImPlot::PlotLine("Energy", energy_offsets, (int)num_iter - 1, 1.0, 1.0);
                     lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
                     //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
                     //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
@@ -1994,89 +2038,92 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlot::EndPlot();
                 }
                 ImGui::Spacing();
-                ImGui::Text("Total energy:              %16.10f a.u.", vlx.scf.total_energy);
-                ImGui::Text("Electronic energy:         %16.10f a.u.", vlx.scf.electronic_energy);
-                ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", vlx.scf.nuclear_repulsion_energy);
-                ImGui::Text("Gradient norm:             %16.10f a.u.", vlx.scf.gradient_norm);
+                ImGui::Text("Total energy:              %16.10f a.u.", energy[num_iter - 1]);
+                //ImGui::Text("Electronic energy:         %16.10f a.u.", vlx.scf.electronic_energy);
+                ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", md_vlx_nuclear_repulsion(vlx));
+                ImGui::Text("Gradient norm:             %16.10f a.u.", grad_norm[num_iter - 1]);
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
 
-            if (ImGui::TreeNode("Geometry")) {
-                if (vlx.geom.num_atoms) {
-                    static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
-                                                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
+            size_t num_atoms = md_vlx_number_of_atoms(vlx);
+            if (num_atoms > 0 && ImGui::TreeNode("Geometry")) {
+                static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
+                                                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
 
-                    static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
+                static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
-                    if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                        ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
-                        ImGui::TableSetupScrollFreeze(0, 1);
-                        ImGui::TableHeadersRow();
+                if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
+                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx);
+                    const uint8_t* atom_nr    = md_vlx_atomic_numbers(vlx);
 
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                        ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                        bool item_hovered = false;
-                        for (int row_n = 0; row_n < vlx.geom.num_atoms; row_n++) {
+                    ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
+                    ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f);
+                    ImGui::TableSetupColumn("Coord X", columns_base_flags, 0.0f);
+                    ImGui::TableSetupColumn("Coord Y", columns_base_flags, 0.0f);
+                    ImGui::TableSetupColumn("Coord Z", columns_base_flags | ImGuiTableColumnFlags_WidthFixed, 0.0f);
+                    ImGui::TableSetupScrollFreeze(0, 1);
+                    ImGui::TableHeadersRow();
 
-                            ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                            bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                            bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
-                            bool hov_col = false;
-                            ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
-                            ImGui::TableNextColumn();
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                    ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                    bool item_hovered = false;
+                    for (int row_n = 0; row_n < num_atoms; row_n++) {
 
-                            if (is_hov) {
-                                ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
-                            }
-                            else {
-                                ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                            }
+                        ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                        bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
+                        bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
+                        bool hov_col = false;
+                        ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
+                        ImGui::TableNextColumn();
 
-                            char lable[16];
-                            sprintf(lable, "%i", row_n + 1);
-                            ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
-                            if (ImGui::TableGetHoveredRow() == row_n + 1) {
-                                if (state.mold.mol.atom.count > row_n) {
-                                    md_bitfield_clear(&state.selection.highlight_mask);
-                                    md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
-                                    item_hovered = true;
+                        if (is_hov) {
+                            ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
+                        }
+                        else {
+                            ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                        }
 
-                                    //Selection
-                                    if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                        md_bitfield_set_bit(&state.selection.selection_mask, row_n);
-                                    }
-                                    //Deselect
-                                    else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                        md_bitfield_clear_bit(&state.selection.selection_mask, row_n);
-                                    }
+                        char lable[16];
+                        sprintf(lable, "%i", row_n + 1);
+                        ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
+                        if (ImGui::TableGetHoveredRow() == row_n + 1) {
+                            if (state.mold.mol.atom.count > row_n) {
+                                md_bitfield_clear(&state.selection.highlight_mask);
+                                md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
+                                item_hovered = true;
+
+                                //Selection
+                                if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                    md_bitfield_set_bit(&state.selection.selection_mask, row_n);
+                                }
+                                //Deselect
+                                else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                    md_bitfield_clear_bit(&state.selection.selection_mask, row_n);
                                 }
                             }
+                        }
 
-                            ImGui::TableNextColumn();
-                            ImGui::Text(vlx.geom.atom_symbol[row_n].buf);
-                            ImGui::TableNextColumn();
-                            ImGui::Text("%12.6f", vlx.geom.coord_x[row_n]);
-                            ImGui::TableNextColumn();
-                            ImGui::Text("%12.6f", vlx.geom.coord_y[row_n]);
-                            ImGui::TableNextColumn();
-                            ImGui::Text("%12.6f", vlx.geom.coord_z[row_n]);
+                        ImGui::TableNextColumn();
+                        str_t sym = md_util_element_symbol(atom_nr[row_n]);
+                        ImGui::Text(STR_FMT, STR_ARG(sym));
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%12.6f", atom_coord[row_n].x);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%12.6f", atom_coord[row_n].y);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%12.6f", atom_coord[row_n].z);
 
-                            ImGui::PopStyleColor(1);
+                        ImGui::PopStyleColor(1);
                                 
-                        }
-                        if (!item_hovered && ImGui::IsWindowHovered()) {
-                            //Makes sure that we clear the highlight if we are in this window, but don't hover an item
-                            md_bitfield_clear(&state.selection.highlight_mask);
-                        }
-
-                        ImGui::PopStyleColor(2);
-                        ImGui::EndTable();
                     }
+                    if (!item_hovered && ImGui::IsWindowHovered()) {
+                        //Makes sure that we clear the highlight if we are in this window, but don't hover an item
+                        md_bitfield_clear(&state.selection.highlight_mask);
+                    }
+
+                    ImGui::PopStyleColor(2);
+                    ImGui::EndTable();
                 }
                 ImGui::TreePop();
             }
@@ -2219,7 +2266,8 @@ struct VeloxChem : viamd::EventHandler {
 
     void draw_rsp_window(ApplicationState& state) {
         if (!rsp.show_window) return;
-        if (vlx.rsp.num_excited_states == 0) return;
+        size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
+        if (num_excited_states == 0) return;
         // Keep track of the temp position so we can reset to it after we are done
         size_t temp_pos = md_temp_get_pos();
         defer { md_temp_set_pos_back(temp_pos); };
@@ -2259,20 +2307,22 @@ struct VeloxChem : viamd::EventHandler {
                 refit1 |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
                 rsp.x_unit = x_unit_str[x_unit];
 
-                const int num_peaks = (int)vlx.rsp.num_excited_states;
-                const double* y_osc_peaks = vlx.rsp.absorption_osc_str;
-                const double* y_cgs_peaks = vlx.rsp.electronic_circular_dichroism_cgs;
+                const int num_peaks = (int)num_excited_states;
+
+                const double* y_osc_peaks = md_vlx_rsp_oscillator_strengths(vlx);
+                const double* y_cgs_peaks = md_vlx_rsp_rotatory_strengths(vlx);
+                const double* x_abs_ev    = md_vlx_rsp_absorption_ev(vlx);
 
                 if (rsp.first_plot_rot_ecd) {
-                    rsp.x_ev_samples = md_array_create(double, num_samples, arena);
+                    rsp.x_ev_samples   = md_array_create(double, num_samples, arena);
                     rsp.x_unit_samples = md_array_create(double, num_samples, arena);
-                    rsp.x_unit_peaks = md_array_create(double, num_peaks, arena);
+                    rsp.x_unit_peaks   = md_array_create(double, num_peaks,   arena);
                     rsp.eps = md_array_create(double, num_samples, arena);
                     rsp.ecd = md_array_create(double, num_samples, arena);
 
                     // Populate x_values
-                    const double x_min = vlx.rsp.absorption_ev[0] - 1.0;
-                    const double x_max = vlx.rsp.absorption_ev[num_peaks - 1] + 1.0;
+                    const double x_min = x_abs_ev[0] - 1.0;
+                    const double x_max = x_abs_ev[num_peaks - 1] + 1.0;
                     for (int i = 0; i < num_samples; ++i) {
                         double t = (double)i / (double)(num_samples - 1);
                         double value = lerp(x_min, x_max, t);
@@ -2280,12 +2330,8 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-                // double* temp_x_values  = (double*)md_temp_push(sizeof(double) * num_samples);
-                // double* y_ecd_str = (double*)md_temp_push(sizeof(double) * num_samples);
-                // double* y_eps_str   = (double*)md_temp_push(sizeof(double) * num_samples);
-
-                ImVec2* pixel_osc_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-                ImVec2* pixel_cgs_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks); 
+                ImVec2* pixel_osc_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+                ImVec2* pixel_cgs_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks); 
                 ImVec2* pixel_osc_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
                 ImVec2* pixel_cgs_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
 
@@ -2304,16 +2350,16 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (recalculate1 || rsp.first_plot_rot_ecd) {
-                    osc_to_eps(rsp.eps, rsp.x_ev_samples, num_samples, y_osc_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma1 * 2);
-                    rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, num_samples, y_cgs_peaks, vlx.rsp.absorption_ev, num_peaks, distr_func, gamma1 * 2);
+                    osc_to_eps(rsp.eps, rsp.x_ev_samples, num_samples, y_osc_peaks, x_abs_ev, num_peaks, distr_func, gamma1 * 2);
+                    rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, num_samples, y_cgs_peaks, x_abs_ev, num_peaks, distr_func, gamma1 * 2);
                 }
 
                 static ImPlotRect osc_lim_constraint = {0, 0, 0, 0};
                 static ImPlotRect cgs_lim_constraint = {0, 0, 0, 0};
                 if (refit1 || rsp.first_plot_rot_ecd) {
                     // Do conversions
-                    convert_values(rsp.x_unit_peaks, vlx.rsp.absorption_ev, num_peaks, x_unit);
-                    convert_values(rsp.x_unit_samples, rsp.x_ev_samples, num_samples, x_unit);
+                    convert_values(rsp.x_unit_peaks, x_abs_ev, num_peaks, x_unit);
+                    convert_values(rsp.x_unit_samples, rsp.x_ev_samples,  num_samples, x_unit);
 
                     osc_lim_constraint = get_plot_limits(rsp.x_unit_samples, y_osc_peaks, num_peaks, num_samples);
                     cgs_lim_constraint = get_plot_limits(rsp.x_unit_samples, y_cgs_peaks, num_peaks, num_samples);
@@ -2349,9 +2395,11 @@ struct VeloxChem : viamd::EventHandler {
 
                 // Selected display text
                 if (rsp.selected != -1) {
+                    const double* abs_ev = md_vlx_rsp_absorption_ev(vlx);
+                    double ev = abs_ev[rsp.selected];
+                    double nm = 1239.84193 / ev;
                     ImGui::Text((const char*)u8"Selected: State %i: Energy = %.2f eV, Wavelength = %.0f nm, f = %.3f, R = %.3f 10⁻⁴⁰ cgs",
-                                rsp.selected + 1, (float)vlx.rsp.absorption_ev[rsp.selected], 1239.84193 / (float)vlx.rsp.absorption_ev[rsp.selected],
-                                (float)y_osc_peaks[rsp.selected], (float)y_cgs_peaks[rsp.selected]);
+                                rsp.selected + 1, ev, nm, y_osc_peaks[rsp.selected], y_cgs_peaks[rsp.selected]);
                 } else {
                     ImGui::Text("Selected:");
                 }
@@ -2530,9 +2578,7 @@ struct VeloxChem : viamd::EventHandler {
                 recalculate2 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &gamma2, 1.0f, 10.0f);
                 refit2 |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode2), broadening_str, IM_ARRAYSIZE(broadening_str));
 
-
-
-                ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vibs);
+                ImVec2* pixel_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vibs);
                 ImVec2* pixel_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_vibs);
 
                 static bool coord_modified = false;
@@ -2628,6 +2674,9 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::IsPlotHovered()) {
                         sel_vib = hov_vib == sel_vib ? -1 : hov_vib;
                     }
+
+                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx);
+
                     // Check selected state
                     if (sel_vib != -1) {
                         draw_bar(1, har_freqs[sel_vib], irs[sel_vib], bar_width, IM_RED);
@@ -2635,20 +2684,20 @@ struct VeloxChem : viamd::EventHandler {
 
                         //Animation
                         time += state.app.timing.delta_s * speed_mult * 7;
-                        for (size_t id = 0; id < num_atoms; id++) {
-                            state.mold.mol.atom.x[id] = vlx.geom.coord_x[id] + amp_mult * 0.5 * vib_modes[sel_vib].x[id] * sin(time);
-                            state.mold.mol.atom.y[id] = vlx.geom.coord_y[id] + amp_mult * 0.5 * vib_modes[sel_vib].y[id] * sin(time);
-                            state.mold.mol.atom.z[id] = vlx.geom.coord_z[id] + amp_mult * 0.5 * vib_modes[sel_vib].z[id] * sin(time);
+                        for (size_t i = 0; i < num_atoms; i++) {
+                            state.mold.mol.atom.x[i] = (float)(atom_coord[i].x + amp_mult * 0.5 * vib_modes[sel_vib].x[i] * sin(time));
+                            state.mold.mol.atom.y[i] = (float)(atom_coord[i].y + amp_mult * 0.5 * vib_modes[sel_vib].y[i] * sin(time));
+                            state.mold.mol.atom.z[i] = (float)(atom_coord[i].z + amp_mult * 0.5 * vib_modes[sel_vib].z[i] * sin(time));
                         }
                         state.mold.dirty_buffers |= MolBit_DirtyPosition;
                         coord_modified = true;
                     }
                     // If all is deselected, reset coords once
                     else if (coord_modified) {
-                        for (size_t id = 0; id < num_atoms; id++) {
-                            state.mold.mol.atom.x[id] = (float)vlx.geom.coord_x[id];
-                            state.mold.mol.atom.y[id] = (float)vlx.geom.coord_y[id];
-                            state.mold.mol.atom.z[id] = (float)vlx.geom.coord_z[id];
+                        for (size_t i = 0; i < num_atoms; i++) {
+                            state.mold.mol.atom.x[i] = (float)atom_coord[i].x;
+                            state.mold.mol.atom.y[i] = (float)atom_coord[i].y;
+                            state.mold.mol.atom.z[i] = (float)atom_coord[i].z;
                         }
                         state.mold.dirty_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                         coord_modified = false;
@@ -2801,6 +2850,9 @@ struct VeloxChem : viamd::EventHandler {
                 ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
             if (ImGui::BeginTable("Molecular Orbitals", 3, flags, outer_size))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
             {
+                const double* occupancy = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
+                const double* energy    = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_BETA);
+
                 // Declare columns
                 // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
                 // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
@@ -2833,9 +2885,9 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
                     ImGui::TableNextColumn();
-                    ImGui::Text("%.1f", vlx.scf.alpha.occupations.data[n]);
+                    ImGui::Text("%.1f", occupancy[n]);
                     ImGui::TableNextColumn();
-                    ImGui::Text("%.4f", vlx.scf.alpha.energies.data[n]);
+                    ImGui::Text("%.4f", energy[n]);
                     ImGui::PopID();
                 }
 
@@ -3499,8 +3551,10 @@ struct VeloxChem : viamd::EventHandler {
 
     void draw_nto_window(ApplicationState& state) {
         if (!nto.show_window) return;
-        if (vlx.rsp.num_excited_states == 0) return;
-        if (vlx.rsp.nto == NULL) return;
+
+        size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
+
+        if (num_excited_states == 0) return;
 
         bool open_context_menu = false;
         static bool edit_mode = false;
@@ -3543,7 +3597,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (ImGui::IsWindowHovered()) {
                     rsp.hovered = -1;
                 }
-                for (int i = 0; i < (int)vlx.rsp.num_excited_states; ++i) {
+                for (int i = 0; i < (int)num_excited_states; ++i) {
                     bool is_selected = rsp.selected == i;
                     bool is_hovered  = rsp.hovered  == i;
                     char buf[32];
@@ -3819,22 +3873,21 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
-            double nto_lambda[4] = {};
+            double nto_lambda[MAX_NTO_LAMBDAS] = {};
             int num_lambdas = 1;
             bool reset_view = false;
 
             if (rsp.selected != -1) {
                 // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
                 // If the occupation parameter is less than this it will not be displayed
-                for (size_t i = 0; i < MIN(ARRAY_SIZE(nto_lambda), vlx.rsp.nto[rsp.selected].occupations.count); ++i) {
-                    nto_lambda[i] = vlx.rsp.nto[rsp.selected].occupations.data[lumo_idx + i];
+                const double* occ = md_vlx_rsp_nto_occupancy(vlx, rsp.selected);
+                for (size_t i = 0; i < ARRAY_SIZE(nto_lambda); ++i) {
+                    nto_lambda[i] = occ[lumo_idx + i];
                     if (nto_lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
                         num_lambdas = (int)i;
                         break;
                     }
                 }
-                
-                num_lambdas = MIN(num_lambdas, MAX_NTO_LAMBDAS);
 
                 if (nto.sel_nto_idx != rsp.selected) {
                     nto.sel_nto_idx = rsp.selected;
@@ -3987,8 +4040,11 @@ struct VeloxChem : viamd::EventHandler {
                         const vec3_t mid = vec3_lerp(min_aabb, max_aabb, 0.5f);
                         const vec3_t ext = max_aabb - min_aabb;
 
-                        vec3_t magn_vec = {(float)vlx.rsp.magnetic_transition[rsp.selected].x, (float)vlx.rsp.magnetic_transition[rsp.selected].y, (float)vlx.rsp.magnetic_transition[rsp.selected].z};
-                        vec3_t elec_vec = {(float)vlx.rsp.electronic_transition_length[rsp.selected].x, (float)vlx.rsp.electronic_transition_length[rsp.selected].y, (float)vlx.rsp.electronic_transition_length[rsp.selected].z};
+                        const dvec3_t* magnetic_dp = md_vlx_rsp_magnetic_transition_dipole_moments(vlx);
+                        const dvec3_t* electric_dp = md_vlx_rsp_electric_transition_dipole_moments(vlx);
+
+                        vec3_t magn_vec = {(float)magnetic_dp[rsp.selected].x, (float)magnetic_dp[rsp.selected].y, (float)magnetic_dp[rsp.selected].z};
+                        vec3_t elec_vec = {(float)electric_dp[rsp.selected].x, (float)electric_dp[rsp.selected].y, (float)electric_dp[rsp.selected].z};
 
                         magn_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
                         elec_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
