@@ -75,6 +75,7 @@ enum class ColorMapping {
     ChainIndex,
     SecondaryStructure,
     Property,
+    Volume,
     Count
 };
 
@@ -89,6 +90,7 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Chain Idx",
     "Secondary Structure",
     "Property",
+    "Volume",
 };
 
 enum class OrbitalType {
@@ -235,6 +237,16 @@ struct ComputeOrbital {
     // Input information
     OrbitalType type = OrbitalType::Psi;
     int orbital_idx = 0;
+    float samples_per_angstrom = 4.0f;
+
+    // Output information
+    bool output_written = false;
+    Volume* dst_volume = nullptr;
+};
+
+// Event Payload for evaluating a volume to be used for mapping colors
+struct ComputeVolume {
+
     float samples_per_angstrom = 4.0f;
 
     // Output information

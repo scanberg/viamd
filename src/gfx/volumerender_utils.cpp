@@ -115,6 +115,7 @@ static struct {
         GLuint iso_only = 0;
         GLuint dvr_and_iso = 0;
         GLuint median = 0;
+        GLuint map_volume_to_surface = 0;
     } program;
 } gl;
 
@@ -153,15 +154,18 @@ void initialize() {
     GLuint f_shader_iso_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO"));
     GLuint f_shader_dvr_and_iso         = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
 
+    GLuint f_shader_map_vol_to_surf     = gl::compile_shader_from_source({(const char*)map_vol_to_surf_frag, map_vol_to_surf_frag_size}, GL_FRAGMENT_SHADER);
+
     defer {
         glDeleteShader(v_shader_vol);
         glDeleteShader(f_shader_entry_exit);
         glDeleteShader(f_shader_dvr_only);
         glDeleteShader(f_shader_iso_only);
         glDeleteShader(f_shader_dvr_and_iso);
+        glDeleteShader(f_shader_map_vol_to_surf);
     };
 
-    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_dvr_and_iso == 0) {
+    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_dvr_and_iso == 0 || f_shader_map_vol_to_surf == 0) {
         MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
@@ -171,6 +175,7 @@ void initialize() {
     if (!gl.program.dvr_only) gl.program.dvr_only = glCreateProgram();
     if (!gl.program.iso_only) gl.program.iso_only = glCreateProgram();
     if (!gl.program.dvr_and_iso) gl.program.dvr_and_iso = glCreateProgram();
+    if (!gl.program.map_volume_to_surface) gl.program.map_volume_to_surface = glCreateProgram();
 
     {
         const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit};
@@ -191,6 +196,10 @@ void initialize() {
     {
         const GLuint shaders[] = {v_shader_vol, f_shader_dvr_and_iso};
         gl::attach_link_detach(gl.program.dvr_and_iso, shaders, (int)ARRAY_SIZE(shaders));
+    }
+    {
+        const GLuint shaders[] = {v_shader_vol, f_shader_map_vol_to_surf};
+        gl::attach_link_detach(gl.program.map_volume_to_surface, shaders, (int)ARRAY_SIZE(shaders));
     }
 
     if (!gl.vbo) {
@@ -555,6 +564,93 @@ void render_volume(const RenderDesc& desc) {
             glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
     }
 
+}
+
+void map_volume_to_surface(const MapVolumeToSurfaceDesc& desc) {
+    GLint bound_fbo;
+    GLint bound_viewport[4];
+    GLint bound_draw_buffer[8] = {0};
+    GLint bound_draw_buffer_count = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &bound_fbo);
+    glGetIntegerv(GL_VIEWPORT, bound_viewport);
+    for (int i = 0; i < 8; ++i) {
+        glGetIntegerv(GL_DRAW_BUFFER0 + i, &bound_draw_buffer[i]);
+        // @NOTE: Assume that its tightly packed and if we stumple upon a zero draw buffer index, we enterpret that as the 'end'
+        if (bound_draw_buffer[i] == GL_NONE) {
+            bound_draw_buffer_count = i;
+            break;
+        }
+    }
+
+    float tf_min = desc.tf.min_value;
+    float tf_max = desc.tf.max_value;
+    float tf_ext = tf_max - tf_min;
+    float inv_tf_ext = tf_ext == 0 ? 1.0f : 1.0f / tf_ext;
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
+
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
+    glBindVertexArray(gl.vao);
+
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_3D, desc.volume.texture_id);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, desc.tf.texture_id);
+
+    ASSERT(glIsTexture(desc.render_target.color));
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+
+    PUSH_GPU_SECTION("MAP VOLUME TO SURFACE")
+    {
+        const GLuint prog = gl.program.map_volume_to_surface;
+
+        const GLint uniform_loc_tex_depth        = glGetUniformLocation(prog, "u_tex_depth");
+        const GLint uniform_loc_tex_volume       = glGetUniformLocation(prog, "u_tex_volume");
+        const GLint uniform_loc_tex_tf           = glGetUniformLocation(prog, "u_tex_tf");
+        const GLint uniform_loc_world_to_tex_mat = glGetUniformLocation(prog, "u_world_to_tex_mat");
+        const GLint uniform_loc_inv_proj_mat     = glGetUniformLocation(prog, "u_inv_proj_mat");
+        const GLint uniform_loc_tf_min           = glGetUniformLocation(prog, "u_tf_min");
+        const GLint uniform_loc_tf_inv_ext       = glGetUniformLocation(prog, "u_tf_inv_ext");
+
+        glUseProgram(prog);
+
+        glUniform1i(uniform_loc_tex_depth, 0);
+        glUniform1i(uniform_loc_tex_volume, 1);
+        glUniform1i(uniform_loc_tex_tf, 2);
+        glUniform1f(uniform_loc_tf_min, tf_min);
+        glUniform1f(uniform_loc_tf_inv_ext, inv_tf_ext);
+        glUniformMatrix4fv(uniform_loc_world_to_tex_mat, 1, false, (const float*)desc.volume.world_to_tex.elem);
+        glUniformMatrix4fv(uniform_loc_inv_proj_mat,     1, false, (const float*)desc.matrix.inv_proj.elem);
+
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glBindVertexArray(0);
+        glUseProgram(0);
+    }
+    POP_GPU_SECTION()
+
+    glEnable(GL_DEPTH_TEST);
+    glCullFace(GL_BACK);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
+    glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
+    if (bound_draw_buffer_count == 1)
+        glDrawBuffer(bound_draw_buffer[0]);
+    else
+        glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
 }
 
 }  // namespace volume

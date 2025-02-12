@@ -134,6 +134,7 @@ set(SHADER_FILES
     src/shaders/volume/entryexit.vert
     src/shaders/volume/entryexit.frag
     src/shaders/volume/raycaster.frag
+    src/shaders/volume/map_vol_to_surf.frag
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/blur.frag
 )

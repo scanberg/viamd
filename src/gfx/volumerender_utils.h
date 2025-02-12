@@ -110,4 +110,35 @@ struct RenderDesc {
 void render_volume(const RenderDesc& desc);
 
 
+
+struct MapVolumeToSurfaceDesc {
+    struct {
+        uint32_t depth = 0;
+        uint32_t color = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    } render_target;
+
+    struct {
+        mat4_t inv_proj;
+    } matrix;
+
+    struct {
+        mat4_t world_to_tex = {};
+        uint32_t texture_id = 0;
+    } volume;
+
+    struct {
+        uint32_t texture_id = 0;
+        float min_value = 0.0f;
+        float max_value = 1.0f;
+    } tf;
+};
+
+// This is a wierd function.
+// It samples the surface points provided as input depth, samples the corresponding points in the supplied volume
+// Then maps the sampled volume value through the supplied transfer function and outputs the color to the supplied render target.
+void map_volume_to_surface(const MapVolumeToSurfaceDesc& desc);
+
+
 }  // namespace volume
