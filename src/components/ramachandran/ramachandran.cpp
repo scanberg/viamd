@@ -477,12 +477,15 @@ struct Ramachandran : viamd::EventHandler {
     md_array(uint32_t) rama_type_indices[4] = {};
 
     struct {
-        ImVec4 border_color     = {0.0f, 0.0f, 0.0f, 0.0f};
-        ImVec4 base_color       = {0.9f, 0.9f, 0.9f, 0.9f};
-        ImVec4 selection_color  = {0.3f, 0.3f, 0.8f, 0.9f};
-        ImVec4 highlight_color  = {0.8f, 0.8f, 0.3f, 0.9f};
-        float base_radius       = 4.5f;
-        float selected_radius   = 6.5f;
+        ImVec4 base_outline         = {1.0f, 1.0f, 1.0f, 1.0f};
+        ImVec4 base_fill            = {1.0f, 1.0f, 1.0f, 1.0f};
+        ImVec4 selection_outline    = {0.3f, 0.3f, 0.8f, 0.9f};
+        ImVec4 selection_fill       = {0.3f, 0.3f, 0.8f, 0.9f};
+        ImVec4 highlight_outline    = {0.8f, 0.8f, 0.3f, 0.9f};
+        ImVec4 highlight_fill       = {0.8f, 0.8f, 0.3f, 0.9f};
+        float base_size             = 3.0f;
+        float interaction_size      = 5.0f; // Size of points that are subjected to selection and highlight
+        float interaction_weight    = 2.0f;
     } style;
 
     float blur_sigma = 5.0f;
@@ -735,8 +738,9 @@ struct Ramachandran : viamd::EventHandler {
                     }
                     ImGui::Checkbox("Current", &show_layer[3]);
                     if (show_layer[3]) {
-                        ImGui::SliderFloat("Point Size", &style.base_radius, 1.0f, 10.0f);
-                        ImGui::ColorEdit4Minimal("Point Color", &style.base_color.x);
+                        ImGui::SliderFloat("Point Size", &style.base_size, 1.0f, 10.0f);
+                        ImGui::ColorEdit4Minimal("Point Outline", &style.base_outline.x);
+                        ImGui::ColorEdit4Minimal("Point Fill",    &style.base_fill.x);
                     }
                     ImGui::Separator();
                     if (ImGui::SliderFloat("Density Blur Sigma", &blur_sigma, 0.1f, 10.0f)) {
@@ -964,7 +968,9 @@ struct Ramachandran : viamd::EventHandler {
                                 return { x, y };
                             };
 
-                            ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, style.base_radius, style.base_color, 1.2f, style.border_color);
+                            const ImPlotMarker marker = ImPlotMarker_Plus;
+
+                            ImPlot::SetNextMarkerStyle(marker, style.base_size, style.base_fill, 1.0f, style.base_outline);
                             ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1));
                             if (md_array_size(indices) > 0) {
                                 UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), indices, view_mid };
@@ -973,13 +979,13 @@ struct Ramachandran : viamd::EventHandler {
 
                             if (md_array_size(selection_indices) > 0) {
                                 UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), selection_indices, view_mid };
-                                ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, style.base_radius + 1, style.selection_color, 2.0f, style.border_color);
+                                ImPlot::SetNextMarkerStyle(marker, style.interaction_size, style.selection_fill, style.interaction_weight, style.selection_outline);
                                 ImPlot::PlotScatterG("##Selection", index_getter, &user_data, (int)md_array_size(selection_indices));
                             }
 
                             if (md_array_size(highlight_indices) > 0) {
                                 UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), highlight_indices, view_mid };
-                                ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, style.base_radius + 1, style.highlight_color, 2.0f, style.border_color);
+                                ImPlot::SetNextMarkerStyle(marker, style.interaction_size, style.highlight_fill, style.interaction_weight, style.highlight_outline);
                                 ImPlot::PlotScatterG("##Highlight", index_getter, &user_data, (int)md_array_size(highlight_indices));
                             }
                         }
