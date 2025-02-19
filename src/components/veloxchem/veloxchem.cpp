@@ -114,7 +114,9 @@ static inline OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t
 
         // The cutoff-radius is computed for a value which is lower than the range of rendered iso-values
         // So the effective radius is a bit overestimated, thus we scale it back a bit
-        float  r = gto[i].cutoff * 0.85f;
+        // The quirk here is that the cutoff can be 'Infinite' meaning the GTO should contribute across the entire space
+        // In such case, we need to limit the extent to something, otherwise the box becomes infinite
+        float  r = MIN(gto[i].cutoff * 0.85f, 10.f);
 
         vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
         min_ext = vec3_min(min_ext, vec3_sub_f(p, r));
@@ -492,16 +494,23 @@ struct VeloxChem : viamd::EventHandler {
                 ComputeOrbital& data = *(ComputeOrbital*)e.payload;
 
                 if (!data.output_written) {
-                    md_gto_eval_mode_t mode = MD_GTO_EVAL_MODE_PSI;
-                    if (data.type == OrbitalType::PsiSquared) {
-                        mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
-                    }
-
-                    if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                        data.output_written = compute_mo_GPU(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom);
-                    }
-                    else {
-                        data.output_written = (compute_mo_async(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
+                    if (data.type == OrbitalType::MolecularOrbitalPsi || data.type == OrbitalType::MolecularOrbitalPsiSquared) {
+                        md_gto_eval_mode_t mode = (data.type == OrbitalType::MolecularOrbitalPsi) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
+                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                            data.output_written = compute_mo_GPU(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom);
+                        }
+                        else {
+                            data.output_written = (compute_mo_async(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
+                        }
+                    } else if (data.type == OrbitalType::ElectronDensity) {
+                        md_gto_eval_mode_t mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
+                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                            data.output_written = compute_electron_density_GPU(data.dst_volume, mode, data.samples_per_angstrom);
+                        } else {
+                            data.output_written = (compute_electron_density_async(data.dst_volume, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
+                        }
+                    } else {
+                        MD_LOG_ERROR("Invalid Orbital Type supplied to Compute Orbital Event");
                     }
                 }
 
@@ -516,8 +525,8 @@ struct VeloxChem : viamd::EventHandler {
     void reset_data() {
         //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
-        md_arena_allocator_reset(arena);
         md_vlx_destroy(vlx);
+        md_arena_allocator_reset(arena);
         vlx = nullptr;
         orb = {};
         nto = {};
@@ -541,11 +550,13 @@ struct VeloxChem : viamd::EventHandler {
         if (extract_ext(&ext, filename)) {
             if (str_eq_ignore_case(ext, STR_LIT("out")) || str_eq_ignore_case(ext, STR_LIT("h5"))) {
                 MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
-                if (vlx) {
-                    md_vlx_destroy(vlx);
-                    vlx = nullptr;
+                
+                if (!vlx) {
+                    vlx = md_vlx_create(arena);
+                } else {
+                    md_vlx_reset(vlx);
                 }
-                vlx = md_vlx_create(arena);
+                
                 if (md_vlx_parse_file(vlx, filename)) {
                     MD_LOG_INFO("Successfully loaded VeloxChem data");
 
@@ -705,7 +716,7 @@ struct VeloxChem : viamd::EventHandler {
             MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             return task_system::INVALID_ID;
         }
-        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
@@ -749,6 +760,79 @@ struct VeloxChem : viamd::EventHandler {
         return num_gtos;
     }
 
+    struct OrbData {
+        md_gto_t* gtos;
+        uint32_t* orb_offsets;
+        float*    orb_scaling;
+    };
+
+    OrbData extract_electron_density_orb_data(double cutoff, md_allocator_i* alloc) {
+        size_t num_gtos = 0;
+
+        size_t num_mo = md_vlx_scf_homo_idx(vlx);
+        size_t num_gtos_per_mo = md_vlx_mo_gto_count(vlx);
+
+        md_gto_t* temp_gtos = (md_gto_t*)md_temp_push(num_gtos_per_mo * sizeof(md_gto_t));
+        size_t num_temp_gtos = num_gtos_per_mo;
+
+        const double* occ_a = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
+        const double* occ_b = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
+        md_vlx_scf_type_t scf_type = md_vlx_scf_type(vlx);
+
+        md_gto_t* gtos = 0;
+        md_array_ensure(gtos, num_gtos_per_mo * num_mo, alloc);
+
+        uint32_t* orb_offsets = md_array_create(uint32_t, num_mo + 1, alloc);
+        MEMSET(orb_offsets, 0, md_array_bytes(orb_offsets));
+
+        float* orb_scaling = md_array_create(float, num_mo, alloc);
+        MEMSET(orb_scaling, 0, md_array_bytes(orb_scaling));
+
+        if (scf_type == MD_VLX_SCF_TYPE_RESTRICTED || scf_type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+            for (size_t mo_idx = 0; mo_idx < num_mo; ++mo_idx) {
+                double occ = occ_a[mo_idx] + occ_b[mo_idx];
+                md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
+                size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+                md_array_push_array(gtos, temp_gtos, num_pruned, alloc);
+                orb_offsets[mo_idx + 1] = (uint32_t)md_array_size(gtos);
+                orb_scaling[mo_idx] = occ;
+            }
+        }
+        else if (scf_type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+            for (size_t mo_idx = 0; mo_idx < num_mo; ++mo_idx) {
+                if (occ_a[mo_idx] == 0.0 && occ_b[mo_idx] == 0.0) {
+                    break;
+                }
+
+                if (occ_a[mo_idx] > 0.0) {
+                    double occ = occ_a[mo_idx];
+                    md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
+                    size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+                    md_array_push_array(gtos, temp_gtos, num_pruned, alloc);
+                    orb_offsets[mo_idx + 1] = (uint32_t)md_array_size(gtos);
+                    orb_scaling[mo_idx] = occ;
+                }
+
+                if (occ_b[mo_idx] > 0.0) {
+                    double occ = occ_b[mo_idx];
+                    md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_BETA);
+                    size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+                    md_array_push_array(gtos, temp_gtos, num_pruned, alloc);
+                    orb_offsets[mo_idx + 1] = (uint32_t)md_array_size(gtos);
+                    orb_scaling[mo_idx] = occ;
+                }
+            }
+        }
+
+        OrbData orb = {
+            .gtos = gtos,
+            .orb_offsets = orb_offsets,
+            .orb_scaling = orb_scaling,
+        };
+
+        return orb;
+    }
+
     // Compute attachment / detachment density
     bool compute_nto_density_GPU(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ScopedTemp temp_reset;
@@ -760,7 +844,7 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_gtos = extract_attachment_detachment_gtos(gtos, cap_gtos, type, nto_idx);
 
         // Compute a cutoff value for the GTOs
-        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
@@ -784,7 +868,7 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_gtos = extract_attachment_detachment_gtos(gtos, cap_gtos, type, nto_idx);
 
         // Compute a cutoff value for the GTOs
-        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
@@ -868,7 +952,7 @@ struct VeloxChem : viamd::EventHandler {
             md_free(alloc, gtos, sizeof(md_gto_t) * num_gtos);
             return task_system::INVALID_ID;
         }
-        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
@@ -958,7 +1042,7 @@ struct VeloxChem : viamd::EventHandler {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
             return false;
         }
-        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
@@ -969,6 +1053,108 @@ struct VeloxChem : viamd::EventHandler {
         md_gto_grid_evaluate_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, gtos, num_gtos, mode);
 
         return true;
+    }
+
+    // The full electron density that includes all orbitals weighted by their occupancy
+    bool compute_electron_density_GPU(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+        defer { md_vm_arena_destroy(alloc); };
+
+        OrbData orb = extract_electron_density_orb_data(1.0e-6, alloc);
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, orb.gtos, md_array_size(orb.gtos));
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
+
+        md_orbital_data_t gto_orb {
+            .num_gtos = md_array_size(orb.gtos),
+            .gtos = orb.gtos,
+            .num_orbs = md_array_size(orb.orb_scaling),
+            .orb_offsets = orb.orb_offsets,
+            .orb_scaling = orb.orb_scaling,
+        };
+
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_orb_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, &gto_orb, mode);
+
+        return true;
+    }
+
+    task_system::ID compute_electron_density_async(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        ASSERT(vol);
+
+        md_allocator_i* alloc = md_get_heap_allocator();
+
+        OrbData orb = extract_electron_density_orb_data(1.0e-6, alloc);
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, orb.gtos, md_array_size(orb.gtos));
+        init_volume_from_OBB(vol, obb, samples_per_unit_length);
+
+        vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
+        vec3_t step_y = obb.basis.col[1] * vol->step_size.y;
+        vec3_t step_z = obb.basis.col[2] * vol->step_size.z;
+        vec3_t origin = obb.basis * (obb.min_ext + vol->step_size * 0.5f);
+
+        // Clear volume texture
+        const float zero[4] = {0,0,0,0};
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
+        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, vol->tex_id, 0);
+        glClearBufferfv(GL_COLOR, 0, zero);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+        struct Payload {
+            AsyncGridEvalArgs args;
+            uint32_t tex;
+            md_allocator_i* alloc;
+            size_t alloc_size;
+        };
+
+        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
+        void*       mem = md_alloc(alloc, mem_size);
+        MEMSET(mem, 0, mem_size);
+        Payload* payload = (Payload*)mem;
+        *payload = {
+            .args = {
+                .world_to_model = vol->world_to_model,
+                .model_step = vol->step_size,
+                .grid = {
+                    .data = (float*)((char*)mem + sizeof(Payload)),
+                    .dim = {vol->dim[0], vol->dim[1], vol->dim[2]},
+                    .origin = {origin.x, origin.y, origin.z},
+                    .step_x = {step_x.x, step_x.y, step_x.z},
+                    .step_y = {step_y.x, step_y.y, step_y.z},
+                    .step_z = {step_z.x, step_z.y, step_z.z},
+                },
+                .gtos = orb.gtos,
+                .num_gtos = md_array_size(orb.gtos),
+                .mode = mode,
+             },
+            .tex = vol->tex_id,
+            .alloc = alloc,
+            .alloc_size = mem_size,
+        };
+
+        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
+
+        // Launch task for main (render) thread to update the volume texture
+        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
+            // Ensure that the dimensions of the texture have not changed during evaluation
+            int dim[3];
+            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
+                gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
+            }
+
+            md_array_free(data->args.gtos, data->alloc);
+            md_free(data->alloc, data, data->alloc_size);
+        });
+
+        task_system::set_task_dependency(main_task, async_task);
+        task_system::enqueue_task(async_task);
+
+        return async_task;
     }
 
     task_system::ID compute_mo_async(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
@@ -983,7 +1169,8 @@ struct VeloxChem : viamd::EventHandler {
             md_free(md_get_heap_allocator(), gtos, sizeof(md_gto_t) * num_gtos);
             return task_system::INVALID_ID;
         }
-        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+
+        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
@@ -1513,7 +1700,7 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
-        md_gto_cutoff_compute(gtos, num_gtos, 1.0e-7);
+        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-7);
 
         vec3_t min_ext = vec3_set1( FLT_MAX);
         vec3_t max_ext = vec3_set1(-FLT_MAX);
@@ -2851,7 +3038,7 @@ struct VeloxChem : viamd::EventHandler {
             if (ImGui::BeginTable("Molecular Orbitals", 3, flags, outer_size))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
             {
                 const double* occupancy = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
-                const double* energy    = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_BETA);
+                const double* energy    = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_ALPHA);
 
                 // Declare columns
                 // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
@@ -2861,7 +3048,7 @@ struct VeloxChem : viamd::EventHandler {
                 // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
                 // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
                 ImGui::TableSetupColumn("Index",        ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
-                ImGui::TableSetupColumn("Occupation",   ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ);
+                ImGui::TableSetupColumn("Occupancy",    ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ);
                 ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene);
                 ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
                 ImGui::TableHeadersRow();
@@ -2885,9 +3072,17 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
                     ImGui::TableNextColumn();
-                    ImGui::Text("%.1f", occupancy[n]);
+                    if (occupancy) {
+                        ImGui::Text("%.1f", occupancy[n]);
+                    } else {
+                        ImGui::Text("-");
+                    }
                     ImGui::TableNextColumn();
-                    ImGui::Text("%.4f", energy[n]);
+                    if (energy) {
+                        ImGui::Text("%.4f", energy[n]);
+                    } else {
+                        ImGui::Text("-");
+                    }
                     ImGui::PopID();
                 }
 

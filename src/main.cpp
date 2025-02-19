@@ -875,7 +875,7 @@ int main(int argc, char** argv) {
                 load::LoaderState state = {};
                 bool success = load::init_loader_state(&state, e.path, frame_alloc);
 
-                if (success == false || (e.flags & FileFlags_ShowDialogue) || (state.flags & LoaderStateFlag_RequiresDialogue)) {
+                if (!success || (e.flags & FileFlags_ShowDialogue) || (state.flags & LoaderStateFlag_RequiresDialogue)) {
                     data.load_dataset = LoadDatasetWindowState();
                     str_copy_to_char_buf(data.load_dataset.path_buf, sizeof(data.load_dataset.path_buf), e.path);
                     data.load_dataset.path_changed = true;
@@ -4187,37 +4187,39 @@ static void draw_representations_window(ApplicationState* state) {
                     ImGui::EndCombo();
                 }
 
-                char lbl[32];
-                auto write_lbl = [&rep_info = state->representation.info, &lbl](int idx) -> const char* {
-                    const char* suffix = "";
-                    if (idx == rep_info.mo_homo_idx) {
-                        suffix = "(HOMO)";
-                    } else if (idx == rep_info.mo_lumo_idx) {
-                        suffix = "(LUMO)";
-                    }
-                    snprintf(lbl, sizeof(lbl), "%i %s", idx + 1, suffix);
-                    return lbl;
-                };
+                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi || rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared) {
+                    char lbl[32];
+                    auto write_lbl = [&rep_info = state->representation.info, &lbl](int idx) -> const char* {
+                        const char* suffix = "";
+                        if (idx == rep_info.mo_homo_idx) {
+                            suffix = "(HOMO)";
+                        } else if (idx == rep_info.mo_lumo_idx) {
+                            suffix = "(LUMO)";
+                        }
+                        snprintf(lbl, sizeof(lbl), "%i %s", idx + 1, suffix);
+                        return lbl;
+                    };
 
-                write_lbl(rep.orbital.orbital_idx);
-                if (ImGui::BeginCombo("Orbital Idx", lbl)) {
-                    for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
-                        int idx = state->representation.info.molecular_orbitals[n].idx;
-                        const bool is_selected = (rep.orbital.orbital_idx == idx);
+                    write_lbl(rep.orbital.orbital_idx);
+                    if (ImGui::BeginCombo("Orbital Idx", lbl)) {
+                        for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
+                            int idx = state->representation.info.molecular_orbitals[n].idx;
+                            const bool is_selected = (rep.orbital.orbital_idx == idx);
                         
-                        write_lbl(idx);
-                        if (ImGui::Selectable(lbl, is_selected)) {
-                            if (rep.orbital.orbital_idx != idx) {
-                                update_rep = true;
+                            write_lbl(idx);
+                            if (ImGui::Selectable(lbl, is_selected)) {
+                                if (rep.orbital.orbital_idx != idx) {
+                                    update_rep = true;
+                                }
+                                rep.orbital.orbital_idx = idx;
                             }
-                            rep.orbital.orbital_idx = idx;
-                        }
 
-                        if (is_selected) {
-                            ImGui::SetItemDefaultFocus();
+                            if (is_selected) {
+                                ImGui::SetItemDefaultFocus();
+                            }
                         }
+                        ImGui::EndCombo();
                     }
-                    ImGui::EndCombo();
                 }
 
                 if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
@@ -4246,7 +4248,7 @@ static void draw_representations_window(ApplicationState* state) {
 
                 //ImGui::Checkbox("Enable Iso-Surface", &rep.orbital.vol.iso.enabled);
 
-                if (rep.orbital.type == OrbitalType::Psi) {
+                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
                     double iso_val = rep.orbital.iso_psi.values[0];
@@ -4255,7 +4257,7 @@ static void draw_representations_window(ApplicationState* state) {
                         rep.orbital.iso_psi.values[1] = -(float)iso_val;
                         rep.orbital.iso_den.values[0] =  (float)(iso_val * iso_val);
                     }
-                } else {
+                } else if (rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared || rep.orbital.type == OrbitalType::ElectronDensity) {
                     const double iso_min = 1.0e-8;
                     const double iso_max = 5.0;
                     double iso_val = rep.orbital.iso_den.values[0];
@@ -4264,14 +4266,16 @@ static void draw_representations_window(ApplicationState* state) {
                         rep.orbital.iso_psi.values[0] =  (float)sqrt(iso_val);
                         rep.orbital.iso_psi.values[1] = -(float)sqrt(iso_val);
                         rep.orbital.iso_den.values[0] =  (float)iso_val;
+                        rep.orbital.iso_den.values[1] =  (float)iso_val;
                     }
                 }
 
-                if (rep.orbital.type == OrbitalType::Psi) {
+                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) {
                     ImGui::ColorEdit4("Color Positive", rep.orbital.iso_psi.colors[0].elem);
                     ImGui::ColorEdit4("Color Negative", rep.orbital.iso_psi.colors[1].elem);
                 } else {
                     ImGui::ColorEdit4("Color Density",  rep.orbital.iso_den.colors[0].elem);
+                    rep.orbital.iso_den.colors[1] = rep.orbital.iso_den.colors[0];
                 }
             }
             ImGui::TreePop();
@@ -8054,11 +8058,13 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 
     switch (rep->type) {
     case RepresentationType::SpaceFill:
-        rep->type_is_valid = true;
+        rep->type_is_valid = mol.atom.count > 0;
         break;
     case RepresentationType::Licorice:
-    case RepresentationType::BallAndStick:
         rep->type_is_valid = mol.bond.count > 0;
+        break;
+    case RepresentationType::BallAndStick:
+        rep->type_is_valid = mol.atom.count > 0;
         break;
     case RepresentationType::Ribbons:
     case RepresentationType::Cartoon:
@@ -8237,7 +8243,7 @@ static void create_default_representations(ApplicationState* state) {
 done:
     if (orbitals_present) {
         Representation* rep = create_representation(state, RepresentationType::Orbital);
-        snprintf(rep->name, sizeof(rep->name), "homo");
+        snprintf(rep->name, sizeof(rep->name), "orbital");
         rep->enabled = true;
     }
 
@@ -8975,7 +8981,7 @@ static void draw_representations_transparent(ApplicationState* state) {
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::Orbital) continue;
 
-        const IsoDesc& iso = (rep.orbital.type == OrbitalType::Psi) ? rep.orbital.iso_psi : rep.orbital.iso_den;
+        const IsoDesc& iso = (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) ? rep.orbital.iso_psi : rep.orbital.iso_den;
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
         update_representation(state, &state->representation.reps[i]);
@@ -9007,9 +9013,9 @@ static void draw_representations_transparent(ApplicationState* state) {
             },
             .iso = {
                 .enabled = iso.enabled,
-                .count  = iso.count,
-                .values = iso.values,
-                .colors = iso.colors,
+                .count   = iso.count,
+                .values  = iso.values,
+                .colors  = iso.colors,
             },
             .dvr = {
                 .enabled = rep.orbital.dvr.enabled,
