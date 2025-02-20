@@ -92,14 +92,16 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
 };
 
 enum class OrbitalType {
-    Psi,
-    PsiSquared,
+    MolecularOrbitalPsi,
+    MolecularOrbitalPsiSquared,
+    ElectronDensity,
     Count
 };
 
 static const char* orbital_type_str[(int)OrbitalType::Count] = {
-    (const char*)u8"Orbital (Ψ)",
-    (const char*)u8"Density (Ψ²)",
+    (const char*)u8"Molecular Orbital (Ψ)",
+    (const char*)u8"Molecular Orbital Density (Ψ²)",
+    (const char*)u8"Electron Density (ρ)",
 };
 
 enum MolBit_ {
@@ -233,7 +235,7 @@ struct IsoDesc {
 // Event Payload when an orbital is to be evaluated
 struct ComputeOrbital {
     // Input information
-    OrbitalType type = OrbitalType::Psi;
+    OrbitalType type = OrbitalType::MolecularOrbitalPsi;
     int orbital_idx = 0;
     float samples_per_angstrom = 4.0f;
 
@@ -294,7 +296,7 @@ struct Representation {
             int colormap = DEFAULT_COLORMAP;
         } dvr;
 
-        OrbitalType type = OrbitalType::Psi;
+        OrbitalType type = OrbitalType::MolecularOrbitalPsi;
         int orbital_idx = 0;
 		uint64_t vol_hash = 0;
         uint64_t tf_hash = 0;

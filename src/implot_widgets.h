@@ -24,4 +24,6 @@ IMPLOT_API bool ColormapSelection(const char* id, ImPlotColormap* idx, ImVec2 si
 
 IMPLOT_API bool ColormapQualitative(ImPlotColormap idx);
 
+IMPLOT_API void SyncAxesY();
+
 }  // namespace ImPlot
