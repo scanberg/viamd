@@ -859,7 +859,7 @@ struct VeloxChem : viamd::EventHandler {
                     size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
                     md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
                     md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
-                    md_array_push(orb_data->orb_scaling, occ, alloc);
+                    md_array_push(orb_data->orb_scaling, (float)occ, alloc);
                 }
 
                 if (occ_b[mo_idx] > 0.0) {
@@ -868,7 +868,7 @@ struct VeloxChem : viamd::EventHandler {
                     size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
                     md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
                     md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
-                    md_array_push(orb_data->orb_scaling, occ, alloc);
+                    md_array_push(orb_data->orb_scaling, (float)occ, alloc);
                 }
             }
         }
@@ -3433,7 +3433,7 @@ struct VeloxChem : viamd::EventHandler {
                 acceptors[num_acceptors++] = (int)i;
             }
 
-            out_matrix[i * num_groups + i] = MIN(gsCharge, esCharge);
+            out_matrix[i * num_groups + i] = (float)MIN(gsCharge, esCharge);
             charge_diff[i] = esCharge - gsCharge;
         }
 
@@ -4629,7 +4629,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         if (ImGui::BeginPopup("Context Menu")) {
-            if (ImGui::BeginMenu("Add to group")) {
+            if (ImGui::BeginMenu("Assign to group")) {
                 for (size_t i = 0; i < nto.group.count; i++) {
                     if (ImGui::MenuItem(nto.group.label[i])) {
                         for (size_t j = 0; j < nto.num_atoms; j++) {
@@ -4644,7 +4644,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndMenu();
             }
             if (nto.group.count < MAX_NTO_GROUPS) {
-                if (ImGui::MenuItem("Add to new group")) {
+                if (ImGui::MenuItem("Assign to new group")) {
                     //Create a new group and add an item to it
                     uint32_t group_idx = (uint32_t)(nto.group.count++);
                     for (size_t i = 0; i < nto.num_atoms; i++) {

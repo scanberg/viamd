@@ -1475,7 +1475,8 @@ static void init_dataset_items(ApplicationState* data) {
                 snprintf(it.query, sizeof(it.query), "resname('%.*s')", (int)resname.len, resname.ptr);
                 it.count = 0;
                 it.fraction = 0;
-                item = md_array_push(data->dataset.residue_names, it, persistent_alloc);
+                md_array_push(data->dataset.residue_names, it, persistent_alloc);
+                item = md_array_last(data->dataset.residue_names);
             }
             item->count += 1;
             item->fraction += fraction_size;
@@ -1499,7 +1500,8 @@ static void init_dataset_items(ApplicationState* data) {
                 snprintf(it.query, sizeof(it.query), "type('%.*s')", (int)label.len, label.ptr);
                 it.count = 0;
                 it.fraction = 0;
-                item = md_array_push(data->dataset.atom_types, it, persistent_alloc);
+                md_array_push(data->dataset.atom_types, it, persistent_alloc);
+                item = md_array_last(data->dataset.atom_types);
             }
             item->count += 1;
         }
@@ -3124,7 +3126,8 @@ AtomElementMapping* add_atom_elem_mapping(ApplicationState* data, str_t lbl, md_
             .elem = elem,
         };
         str_copy_to_char_buf(mapping.lbl, sizeof(mapping.lbl), lbl);
-        return md_array_push(data->dataset.atom_element_remappings, mapping, persistent_alloc);
+        md_array_push(data->dataset.atom_element_remappings, mapping, persistent_alloc);
+        return md_array_last(data->dataset.atom_element_remappings);
     } else {
         data->dataset.atom_element_remappings[i].elem = elem;
         return &data->dataset.atom_element_remappings[i];
@@ -7873,7 +7876,8 @@ void create_screenshot(ApplicationState* data) {
 // #representation
 static Representation* create_representation(ApplicationState* data, RepresentationType type, ColorMapping color_mapping, str_t filter) {
     ASSERT(data);
-    Representation* rep = md_array_push(data->representation.reps, Representation(), persistent_alloc);
+    md_array_push(data->representation.reps, Representation(), persistent_alloc);
+    Representation* rep = md_array_last(data->representation.reps);
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
@@ -7887,7 +7891,8 @@ static Representation* create_representation(ApplicationState* data, Representat
 
 static Representation* clone_representation(ApplicationState* state, const Representation& rep) {
     ASSERT(state);
-    Representation* clone = md_array_push(state->representation.reps, rep, persistent_alloc);
+    md_array_push(state->representation.reps, rep, persistent_alloc);
+    Representation* clone = md_array_last(state->representation.reps);
     clone->md_rep = {0};
     clone->atom_mask = {0};
     init_representation(state, clone);
@@ -8259,7 +8264,8 @@ static Selection* create_selection(ApplicationState* state, str_t name, md_bitfi
     if (atom_mask) {
         md_bitfield_copy(&sel.atom_mask, atom_mask);
     }
-    return md_array_push(state->selection.stored_selections, sel, persistent_alloc);
+    md_array_push(state->selection.stored_selections, sel, persistent_alloc);
+    return md_array_last(state->selection.stored_selections);
 }
 
 static void clear_selections(ApplicationState* state) {
