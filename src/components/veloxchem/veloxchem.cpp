@@ -34,12 +34,19 @@
 #define MAX_NTO_LAMBDAS 3
 #define NTO_LAMBDA_CUTOFF_VALUE 0.1
 
+// Resolution for broadened plots
+#define NUM_SAMPLES 1024
+
 #define IM_GREEN ImVec4{0, 1, 0, 1}
 #define IM_RED ImVec4{1, 0, 0, 1}
 #define IM_YELLOW ImVec4{1, 1, 0.5, 0.3}
 #define IM_BLUE ImVec4{0.5, 0.5, 1, 0.3}
 
 #define U32_MAGENTA IM_COL32(255, 0, 255, 255)
+
+// Broadening min max values
+static const double gamma_min = 0.1;
+static const double gamma_max = 1.0;
 
 inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
 inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
@@ -80,12 +87,18 @@ enum x_unit_t {
     X_UNIT_NM,
     X_UNIT_CM_INVERSE,
     X_UNIT_HARTREE,
+    X_UNIT_COUNT,
 };
 
+static const char* x_unit_str[] = {"Energy (eV)", "Wavelength (nm)", (const char*)u8"Wavenumber (cm⁻¹)", "Energy (hartree)"};
+
 enum broadening_mode_t {
-    BROADENING_GAUSSIAN,
-    BROADENING_LORENTZIAN,
+    BROADENING_MODE_GAUSSIAN,
+    BROADENING_MODE_LORENTZIAN,
+    BROADENING_MODE_COUNT,
 };
+
+static const char* broadening_mode_str[] = { "Gaussian", "Lorentzian" };
 
 // Predefined samples per Ångström for corresponding VolumeRes
 static const float vol_res_scl[3] = {
@@ -349,23 +362,33 @@ struct VeloxChem : viamd::EventHandler {
         int selected = -1;
         int focused_plot = -1;
 
-        double* x_ev_samples;
-        double* x_unit_samples;
+        double x_ev_samples[NUM_SAMPLES];
+        double x_unit_samples[NUM_SAMPLES];
         double* x_unit_peaks;
+
         //Spectra Y values, calculated from osc
-        double* eps;
+        double eps[NUM_SAMPLES];
         //Spectra y values, calculated from rot
-        double* ecd;
+        double ecd[NUM_SAMPLES];
+        
+        //double* osc_points;
+        //double* cgs_points;
+
+        // Broadening gamma parameter
+        double broadening_gamma = 0.123;
+        broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
+        x_unit_t x_unit;
+
+        bool first_plot_rot_ecd = true;
+    } rsp;
+
+    struct Vib {
         double* vib_y;
         double* vib_x;
         double* vib_points;
-        double* osc_points;
-        double* cgs_points;
-        const char* x_unit;
 
-        bool first_plot_rot_ecd = true;
         bool first_plot_vib = true;
-    } rsp;
+    };
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
     md_allocator_i* arena = 0;
@@ -664,9 +687,26 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     // RSP
-                    rsp.show_window = true;
-                    rsp.hovered = -1;
-                    rsp.selected = -1;
+                    {
+                        rsp.show_window = true;
+                        rsp.hovered = -1;
+                        rsp.selected = -1;
+
+                        size_t num_peaks = md_vlx_rsp_number_of_excited_states(vlx);
+                        md_array_resize(rsp.x_unit_peaks, num_peaks, arena);
+
+                        // Populate x values
+                        const double* abs_ev = md_vlx_rsp_absorption_ev(vlx);
+                        if (abs_ev) {
+                            const double x_min = abs_ev[0] - 1.0;
+                            const double x_max = abs_ev[num_peaks - 1] + 1.0;
+                            for (int i = 0; i < NUM_SAMPLES; ++i) {
+                                double t = (double)i / (double)(NUM_SAMPLES - 1);
+                                double value = lerp(x_min, x_max, t);
+                                rsp.x_ev_samples[i] = value;
+                            }
+                        }
+                    }
 
                     // ORB
                     orb.show_window = true;
@@ -729,13 +769,13 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    size_t extract_attachment_detachment_gtos(md_gto_t* gtos, size_t cap_gtos, NtoDensity type, size_t nto_idx) {
-        const size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
-        const md_vlx_nto_type_t nto_type = (type == NtoDensity::Attachment) ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
+    bool extract_attachment_detachment_orb_data(md_orbital_data_t* orb_data, double cutoff, NtoDensity type, size_t nto_idx, md_allocator_i* alloc) {
+        ASSERT(orb_data);
 
-        size_t num_gtos = 0;
+        md_vlx_nto_type_t nto_type = (type == NtoDensity::Attachment) ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
+        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
 
-        // Only add GTOs from lambdas that has a contribution more than a certain percentage
+        size_t num_lambdas = 0;
         const double* occ = md_vlx_rsp_nto_occupancy(vlx, nto_idx);
         if (occ) {
             for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
@@ -743,59 +783,68 @@ struct VeloxChem : viamd::EventHandler {
                 if (lambda < NTO_LAMBDA_CUTOFF_VALUE) {
                     break;
                 }
-                if (!md_vlx_nto_gto_extract(gtos + num_gtos, vlx, nto_idx, lambda_idx, nto_type)) {
-                    MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
-                    return false;
-                }
-                // Scale the GTOs with the lambda value
-                // The sqrt is to ensure that the scaling is linear with the lambda value
-                const double scale = sqrt(lambda);
-                for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
-                    gtos[i].coeff = (float)(gtos[i].coeff * scale);
-                }
-                num_gtos += num_gtos_per_lambda;
+                num_lambdas += 1;
             }
         }
 
-        return num_gtos;
+        md_array_ensure(orb_data->gtos, num_gtos_per_lambda * num_lambdas, alloc);
+        md_array_ensure(orb_data->orb_offsets, num_lambdas + 1, alloc);
+        md_array_ensure(orb_data->orb_scaling, num_lambdas, alloc);
+
+        size_t temp_pos = md_temp_get_pos();
+        defer { md_temp_set_pos_back(temp_pos); };
+
+        md_gto_t* temp_gtos = (md_gto_t*)md_temp_push(num_gtos_per_lambda * sizeof(md_gto_t));
+        size_t num_temp_gtos = num_gtos_per_lambda;
+
+        md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+
+        for (size_t i = 0; i < num_lambdas; ++i) {
+            double lambda = occ[lumo_idx + i];
+            if (!md_vlx_nto_gto_extract(temp_gtos, vlx, nto_idx, i, nto_type)) {
+                MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, i);
+                return false;
+            }
+            size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+            md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+            md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+            md_array_push(orb_data->orb_scaling, (float)lambda, alloc);
+        }
+
+        orb_data->num_gtos = md_array_size(orb_data->gtos);
+        orb_data->num_orbs = md_array_size(orb_data->orb_scaling);
+
+        return true;
     }
 
-    struct OrbData {
-        md_gto_t* gtos;
-        uint32_t* orb_offsets;
-        float*    orb_scaling;
-    };
-
-    OrbData extract_electron_density_orb_data(double cutoff, md_allocator_i* alloc) {
-        size_t num_gtos = 0;
-
+    bool extract_electron_density_orb_data(md_orbital_data_t* orb_data, double cutoff, md_allocator_i* alloc) {
         size_t num_mo = md_vlx_scf_homo_idx(vlx);
         size_t num_gtos_per_mo = md_vlx_mo_gto_count(vlx);
-
-        md_gto_t* temp_gtos = (md_gto_t*)md_temp_push(num_gtos_per_mo * sizeof(md_gto_t));
-        size_t num_temp_gtos = num_gtos_per_mo;
 
         const double* occ_a = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
         const double* occ_b = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
         md_vlx_scf_type_t scf_type = md_vlx_scf_type(vlx);
 
-        md_gto_t* gtos = 0;
-        md_array_ensure(gtos, num_gtos_per_mo * num_mo, alloc);
+        md_array_ensure(orb_data->gtos, num_gtos_per_mo * num_mo, alloc);
+        md_array_ensure(orb_data->orb_offsets, num_mo + 1, alloc);
+        md_array_ensure(orb_data->orb_scaling, num_mo, alloc);
 
-        uint32_t* orb_offsets = md_array_create(uint32_t, num_mo + 1, alloc);
-        MEMSET(orb_offsets, 0, md_array_bytes(orb_offsets));
+        size_t temp_pos = md_temp_get_pos();
+        defer { md_temp_set_pos_back(temp_pos); };
 
-        float* orb_scaling = md_array_create(float, num_mo, alloc);
-        MEMSET(orb_scaling, 0, md_array_bytes(orb_scaling));
+        md_gto_t* temp_gtos = (md_gto_t*)md_temp_push(num_gtos_per_mo * sizeof(md_gto_t));
+        size_t num_temp_gtos = num_gtos_per_mo;
+
+        md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
 
         if (scf_type == MD_VLX_SCF_TYPE_RESTRICTED || scf_type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
             for (size_t mo_idx = 0; mo_idx < num_mo; ++mo_idx) {
                 double occ = occ_a[mo_idx] + occ_b[mo_idx];
                 md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
                 size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
-                md_array_push_array(gtos, temp_gtos, num_pruned, alloc);
-                orb_offsets[mo_idx + 1] = (uint32_t)md_array_size(gtos);
-                orb_scaling[mo_idx] = occ;
+                md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+                md_array_push(orb_data->orb_scaling, (float)occ, alloc);
             }
         }
         else if (scf_type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
@@ -808,71 +857,68 @@ struct VeloxChem : viamd::EventHandler {
                     double occ = occ_a[mo_idx];
                     md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
                     size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
-                    md_array_push_array(gtos, temp_gtos, num_pruned, alloc);
-                    orb_offsets[mo_idx + 1] = (uint32_t)md_array_size(gtos);
-                    orb_scaling[mo_idx] = occ;
+                    md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                    md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+                    md_array_push(orb_data->orb_scaling, occ, alloc);
                 }
 
                 if (occ_b[mo_idx] > 0.0) {
                     double occ = occ_b[mo_idx];
                     md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_BETA);
                     size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
-                    md_array_push_array(gtos, temp_gtos, num_pruned, alloc);
-                    orb_offsets[mo_idx + 1] = (uint32_t)md_array_size(gtos);
-                    orb_scaling[mo_idx] = occ;
+                    md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                    md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+                    md_array_push(orb_data->orb_scaling, occ, alloc);
                 }
             }
         }
 
-        OrbData orb = {
-            .gtos = gtos,
-            .orb_offsets = orb_offsets,
-            .orb_scaling = orb_scaling,
-        };
+        orb_data->num_gtos = md_array_size(orb_data->gtos);
+        orb_data->num_orbs = md_array_size(orb_data->orb_scaling);
 
-        return orb;
+        return true;
     }
 
     // Compute attachment / detachment density
     bool compute_nto_density_GPU(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-        ScopedTemp temp_reset;
+        md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+        defer { md_vm_arena_destroy(alloc); };
 
-        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
-        size_t cap_gtos =  num_gtos_per_lambda * 4;
-        md_gto_t* gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * cap_gtos);
+        md_orbital_data_t orb_data = {0};
 
-        size_t num_gtos = extract_attachment_detachment_gtos(gtos, cap_gtos, type, nto_idx);
-
-        // Compute a cutoff value for the GTOs
-        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+        if (!extract_attachment_detachment_orb_data(&orb_data, 1.0e-6, type, nto_idx, alloc)) {
+            return false;
+        }
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        OBB obb = compute_gto_obb(PCA, orb_data.gtos,orb_data.num_gtos);
         init_volume_from_OBB(vol, obb, samples_per_unit_length, GL_R32F);
 
         // Dispatch Compute shader evaluation
-        md_gto_grid_evaluate_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI_SQUARED);
+        md_gto_grid_evaluate_orb_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, &orb_data, MD_GTO_EVAL_MODE_PSI_SQUARED);
 
         return true;
     }
 
     // Compute attachment / detachment density
     task_system::ID compute_nto_density_async(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-        md_allocator_i* alloc = md_get_heap_allocator();
+        if (!vol) {
+            MD_LOG_ERROR("No volume object supplied");
+            return task_system::INVALID_ID;
+        }
 
-        size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
-        size_t cap_gtos =  num_gtos_per_lambda * 4;
-        md_gto_t* gtos = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * cap_gtos);
+        md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
 
-        size_t num_gtos = extract_attachment_detachment_gtos(gtos, cap_gtos, type, nto_idx);
-
-        // Compute a cutoff value for the GTOs
-        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+        md_orbital_data_t orb_data = {0};
+        if (!extract_attachment_detachment_orb_data(&orb_data, 1.0e-6, type, nto_idx, alloc)) {
+            md_vm_arena_destroy(alloc);
+            return task_system::INVALID_ID;
+        }
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        OBB obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
         vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
@@ -888,14 +934,14 @@ struct VeloxChem : viamd::EventHandler {
 
         struct Payload {
             AsyncGridEvalArgs args;
-            md_allocator_i* alloc;
+            md_allocator_i* arena;
             size_t mem_size;
             void* mem;
             uint32_t tex;
         };
 
-        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
-        void* mem = md_alloc(alloc, mem_size);
+        // Allocate data for payload struct + volume
+        void* mem = md_vm_arena_push(alloc, sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2]);
         Payload* payload = (Payload*)mem;
         *payload = {
             .args = {
@@ -909,13 +955,11 @@ struct VeloxChem : viamd::EventHandler {
                     .step_y = {step_y.x, step_y.y, step_y.z},
                     .step_z = {step_z.x, step_z.y, step_z.z},
                 },
-                .gtos = gtos,
-                .num_gtos = num_gtos,
+                .gtos = orb_data.gtos,
+                .num_gtos = orb_data.num_gtos,
                 .mode = MD_GTO_EVAL_MODE_PSI_SQUARED,
             },
-            .alloc = alloc,
-            .mem_size = mem_size,
-            .mem = mem,
+            .arena = alloc,
             .tex = vol->tex_id,
         };
 
@@ -930,8 +974,7 @@ struct VeloxChem : viamd::EventHandler {
                 gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
             }
 
-            md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
-            md_free(data->alloc, data->mem, data->mem_size);
+            md_vm_arena_destroy(data->arena);
         });
 
         task_system::set_task_dependency(main_task, async_task);
@@ -941,15 +984,19 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     task_system::ID compute_nto_async(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-        ASSERT(vol);
+        if (!vol) {
+            MD_LOG_ERROR("No volume object supplied");
+            return task_system::INVALID_ID;
+        }
 
-        md_allocator_i* alloc = md_get_heap_allocator();
+        md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
+
         size_t num_gtos = md_vlx_nto_gto_count(vlx);
-        md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t) * num_gtos);
+        md_gto_t* gtos  = (md_gto_t*)md_vm_arena_push(alloc, sizeof(md_gto_t) * num_gtos);
 
         if (!md_vlx_nto_gto_extract(gtos, vlx, nto_idx, lambda_idx, type)) {
             MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
-            md_free(alloc, gtos, sizeof(md_gto_t) * num_gtos);
+            md_vm_arena_destroy(alloc);
             return task_system::INVALID_ID;
         }
         num_gtos = md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
@@ -1057,40 +1104,47 @@ struct VeloxChem : viamd::EventHandler {
 
     // The full electron density that includes all orbitals weighted by their occupancy
     bool compute_electron_density_GPU(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+        if (!vol) {
+            MD_LOG_ERROR("No volume object supplied");
+            return false;
+        }
+
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
         defer { md_vm_arena_destroy(alloc); };
 
-        OrbData orb = extract_electron_density_orb_data(1.0e-6, alloc);
+        md_orbital_data_t orb_data = {0};
+        if (!extract_electron_density_orb_data(&orb_data, 1.0e-6, alloc)) {
+            return false;
+        }
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, orb.gtos, md_array_size(orb.gtos));
+        OBB obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
-        md_orbital_data_t gto_orb {
-            .num_gtos = md_array_size(orb.gtos),
-            .gtos = orb.gtos,
-            .num_orbs = md_array_size(orb.orb_scaling),
-            .orb_offsets = orb.orb_offsets,
-            .orb_scaling = orb.orb_scaling,
-        };
-
         // Dispatch Compute shader evaluation
-        md_gto_grid_evaluate_orb_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, &gto_orb, mode);
+        md_gto_grid_evaluate_orb_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, &orb_data, mode);
 
         return true;
     }
 
     task_system::ID compute_electron_density_async(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-        ASSERT(vol);
+        if (!vol) {
+            MD_LOG_ERROR("No volume object supplied");
+            return task_system::INVALID_ID;
+        }
 
-        md_allocator_i* alloc = md_get_heap_allocator();
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
-        OrbData orb = extract_electron_density_orb_data(1.0e-6, alloc);
+        md_orbital_data_t orb_data = {0};
+        if (!extract_electron_density_orb_data(&orb_data, 1.0e-6, alloc)) {
+            md_vm_arena_destroy(alloc);
+            return task_system::INVALID_ID;
+        }
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, orb.gtos, md_array_size(orb.gtos));
+        OBB obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
         vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
@@ -1108,13 +1162,10 @@ struct VeloxChem : viamd::EventHandler {
         struct Payload {
             AsyncGridEvalArgs args;
             uint32_t tex;
-            md_allocator_i* alloc;
-            size_t alloc_size;
+            md_allocator_i* arena;
         };
 
-        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
-        void*       mem = md_alloc(alloc, mem_size);
-        MEMSET(mem, 0, mem_size);
+        void* mem = md_vm_arena_push(alloc, sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2]);
         Payload* payload = (Payload*)mem;
         *payload = {
             .args = {
@@ -1128,13 +1179,12 @@ struct VeloxChem : viamd::EventHandler {
                     .step_y = {step_y.x, step_y.y, step_y.z},
                     .step_z = {step_z.x, step_z.y, step_z.z},
                 },
-                .gtos = orb.gtos,
-                .num_gtos = md_array_size(orb.gtos),
+                .gtos = orb_data.gtos,
+                .num_gtos = orb_data.num_gtos,
                 .mode = mode,
              },
             .tex = vol->tex_id,
-            .alloc = alloc,
-            .alloc_size = mem_size,
+            .arena = alloc,
         };
 
         task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
@@ -1147,8 +1197,7 @@ struct VeloxChem : viamd::EventHandler {
                 gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
             }
 
-            md_array_free(data->args.gtos, data->alloc);
-            md_free(data->alloc, data, data->alloc_size);
+            md_vm_arena_destroy(data->arena);
         });
 
         task_system::set_task_dependency(main_task, async_task);
@@ -1158,15 +1207,18 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     task_system::ID compute_mo_async(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
-        ASSERT(vol);
+        if (!vol) {
+            MD_LOG_ERROR("No volume object supplied");
+            return task_system::INVALID_ID;
+        }
 
-        md_allocator_i* alloc = md_get_heap_allocator();
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
         size_t num_gtos = md_vlx_mo_gto_count(vlx);
-        md_gto_t* gtos  = (md_gto_t*)md_alloc(alloc, sizeof(md_gto_t)* num_gtos);
+        md_gto_t* gtos  = (md_gto_t*)md_vm_arena_push(alloc, sizeof(md_gto_t)* num_gtos);
 
         if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA)) {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
-            md_free(md_get_heap_allocator(), gtos, sizeof(md_gto_t) * num_gtos);
+            md_vm_arena_destroy(alloc);
             return task_system::INVALID_ID;
         }
 
@@ -1192,12 +1244,10 @@ struct VeloxChem : viamd::EventHandler {
         struct Payload {
             AsyncGridEvalArgs args;
             uint32_t tex;
-            md_allocator_i* alloc;
-            size_t alloc_size;
+            md_allocator_i* arena;
         };
 
-        size_t mem_size = sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2];
-        void*       mem = md_alloc(alloc, mem_size);
+        void* mem = md_vm_arena_push(alloc,  sizeof(Payload) + sizeof(float) * vol->dim[0] * vol->dim[1] * vol->dim[2]);
         Payload* payload = (Payload*)mem;
         *payload = {
             .args = {
@@ -1216,8 +1266,7 @@ struct VeloxChem : viamd::EventHandler {
                 .mode = mode,
             },
             .tex = vol->tex_id,
-            .alloc = alloc,
-            .alloc_size = mem_size,
+            .arena = alloc,
         };
 
         task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
@@ -1230,8 +1279,7 @@ struct VeloxChem : viamd::EventHandler {
                 gl::set_texture_3D_data(data->tex, data->args.grid.data, GL_R32F);
             }
 
-            md_free(data->alloc, data->args.gtos, data->args.num_gtos * sizeof(md_gto_t));
-            md_free(data->alloc, data, data->alloc_size);
+            md_vm_arena_destroy(data->arena);
         });
 
         task_system::set_task_dependency(main_task, async_task);
@@ -2047,6 +2095,7 @@ struct VeloxChem : viamd::EventHandler {
             pixel_peaks[i] = ImPlot::PlotToPixels(ImPlotPoint{ x_peaks[i], y_peaks[i] });
         }
     }
+
     // Returns peak index closest to mouse pixel position, assumes that x-values are sorted.
     static inline int get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, const ImVec2* pixel_points, size_t num_peaks, bool y_flipped = false, double proxy_distance = 10.0) {
         int closest_idx = 0;
@@ -2115,7 +2164,9 @@ struct VeloxChem : viamd::EventHandler {
         double x1 = x - width / 2;
         double x2 = x + width / 2;
         double y1 = 0;
+
         ImPlot::DragRect(id, &x1, &y1, &x2, &y, color, ImPlotDragToolFlags_NoInputs);
+        ImPlot::DragPoint(0, &x, &y, color, 4, ImPlotDragToolFlags_NoInputs);
     }
 
     //Calculates the maximum point and populates out_point with it
@@ -2173,7 +2224,7 @@ struct VeloxChem : viamd::EventHandler {
         double y1_to_y2_mult = 1.0;
 
         // We set up iterations as doubles for easier use
-        if (num_iter) {
+        if (num_iter > 0) {
             ASSERT(energy);
             ASSERT(grad_norm);
 
@@ -2206,29 +2257,34 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::TreePop();
             }
 
-            if (num_iter > 0 && ImGui::TreeNode("SCF")) {
-                if (ImPlot::BeginPlot("SCF")) {
-                    ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)num_iter);
-                    ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
-                    ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
-                    // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                    ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
-                    ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+            if (ImGui::TreeNode("SCF")) {
+                if (num_iter > 1) {
+                    if (ImPlot::BeginPlot("SCF")) {
+                        ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)num_iter);
+                        ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                        ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
+                        // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
+                        ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
+                        ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
 
-                    ImPlot::PlotLine("Gradient", grad_norm, (int)num_iter, 1.0, 1.0);
-                    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                    ImPlot::PlotLine("Energy", energy_offsets, (int)num_iter - 1, 1.0, 1.0);
-                    lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
-                    //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                    //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
-                    //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
-                    ImPlot::EndPlot();
+                        ImPlot::PlotLine("Gradient", grad_norm, (int)num_iter, 1.0, 1.0);
+                        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                        ImPlot::PlotLine("Energy", energy_offsets, (int)num_iter, 1.0, 1.0);
+                        lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                        //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                        //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+                        //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                        ImPlot::EndPlot();
+                    }
+                } else {
+                    ImGui::Text("There is no history in the supplied veloxchem data");
                 }
                 ImGui::Spacing();
-                ImGui::Text("Total energy:              %16.10f a.u.", energy[num_iter - 1]);
-                //ImGui::Text("Electronic energy:         %16.10f a.u.", vlx.scf.electronic_energy);
+                if (num_iter > 0) {
+                    ImGui::Text("Total energy:              %16.10f a.u.", energy[num_iter - 1]);
+                    ImGui::Text("Gradient norm:             %16.10f a.u.", grad_norm[num_iter - 1]);
+                }
                 ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", md_vlx_nuclear_repulsion(vlx));
-                ImGui::Text("Gradient norm:             %16.10f a.u.", grad_norm[num_iter - 1]);
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
@@ -2351,7 +2407,9 @@ struct VeloxChem : viamd::EventHandler {
         ExportProperty properties[]{
             {rsp.x_unit_samples, rsp.eps,   STR_LIT("Absorption"), STR_LIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
             {rsp.x_unit_samples, rsp.ecd,   STR_LIT("ECD"),        STR_LIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
+#if 0
             {rsp.vib_x,          rsp.vib_y, STR_LIT("Vibration"),  STR_LIT("IR Intensity (km/mol)")}
+#endif
         };
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
@@ -2384,7 +2442,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (property_idx == 0 || property_idx == 1) {
-                x_unit = rsp.x_unit;
+                x_unit = x_unit_str[rsp.x_unit];
             }
             else if (property_idx == 2) {
                 x_unit = (const char*)u8"Harmonic Frequency (cm⁻¹)";
@@ -2452,18 +2510,11 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void draw_rsp_window(ApplicationState& state) {
+        ScopedTemp temp_reset;
+
         if (!rsp.show_window) return;
         size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
         if (num_excited_states == 0) return;
-        // Keep track of the temp position so we can reset to it after we are done
-        size_t temp_pos = md_temp_get_pos();
-        defer { md_temp_set_pos_back(temp_pos); };
-
-        static ImVec2 mouse_pos = { 0,0 };
-
-        const char* broadening_str[] = { "Gaussian","Lorentzian" };
-
-        const int num_samples = 1024;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Spectra", &rsp.show_window, ImGuiWindowFlags_MenuBar)) {
@@ -2481,41 +2532,20 @@ struct VeloxChem : viamd::EventHandler {
             
             if (rsp.first_plot_rot_ecd) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Absorption & ECD")) {
-                bool refit1 = false;
-                bool recalculate1 = false;
+                bool refit = false;
+                bool recalc = false;
 
-                static float gamma1 = 0.123;
-                static x_unit_t x_unit = X_UNIT_EV;
-                static broadening_mode_t broadening_mode1 = BROADENING_LORENTZIAN;
-                const char* x_unit_str[] = {"Energy (eV)", "Wavelength (nm)", (const char*)u8"Wavenumber (cm⁻¹)", "Energy (hartree)"};
+                recalc |= ImGui::SliderScalar((const char*)u8"Broadening γ HWHM (eV)", ImGuiDataType_Double, &rsp.broadening_gamma, &gamma_min, &gamma_max);
+                recalc |= ImGui::Combo("Broadening mode", (int*)(&rsp.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
+                refit |= ImGui::Combo("X unit", (int*)(&rsp.x_unit), x_unit_str, X_UNIT_COUNT);
 
-                recalculate1 = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (eV)", &gamma1, 0.01f, 1.0f);
-                refit1 |= ImGui::Combo("Broadening mode", (int*)(&broadening_mode1), broadening_str, IM_ARRAYSIZE(broadening_str));
-                refit1 |= ImGui::Combo("X unit", (int*)(&x_unit), x_unit_str, IM_ARRAYSIZE(x_unit_str));
-                rsp.x_unit = x_unit_str[x_unit];
+                refit |= recalc;
 
                 const int num_peaks = (int)num_excited_states;
 
                 const double* y_osc_peaks = md_vlx_rsp_oscillator_strengths(vlx);
                 const double* y_cgs_peaks = md_vlx_rsp_rotatory_strengths(vlx);
                 const double* x_abs_ev    = md_vlx_rsp_absorption_ev(vlx);
-
-                if (rsp.first_plot_rot_ecd) {
-                    rsp.x_ev_samples   = md_array_create(double, num_samples, arena);
-                    rsp.x_unit_samples = md_array_create(double, num_samples, arena);
-                    rsp.x_unit_peaks   = md_array_create(double, num_peaks,   arena);
-                    rsp.eps = md_array_create(double, num_samples, arena);
-                    rsp.ecd = md_array_create(double, num_samples, arena);
-
-                    // Populate x_values
-                    const double x_min = x_abs_ev[0] - 1.0;
-                    const double x_max = x_abs_ev[num_peaks - 1] + 1.0;
-                    for (int i = 0; i < num_samples; ++i) {
-                        double t = (double)i / (double)(num_samples - 1);
-                        double value = lerp(x_min, x_max, t);
-                        rsp.x_ev_samples[i] = value;
-                    }
-                }
 
                 ImVec2* pixel_osc_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
                 ImVec2* pixel_cgs_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks); 
@@ -2524,11 +2554,11 @@ struct VeloxChem : viamd::EventHandler {
 
                 double (*distr_func)(double x, double x_o, double gamma) = 0;
                 // @NOTE: Do broadening in eV
-                switch (broadening_mode1) {
-                    case BROADENING_GAUSSIAN:
+                switch (rsp.broadening_mode) {
+                    case BROADENING_MODE_GAUSSIAN:
                         distr_func = &gaussian;
                         break;
-                    case BROADENING_LORENTZIAN:
+                    case BROADENING_MODE_LORENTZIAN:
                         distr_func = &lorentzian;
                         break;
                     default:
@@ -2536,35 +2566,15 @@ struct VeloxChem : viamd::EventHandler {
                         break;
                 }
 
-                if (recalculate1 || rsp.first_plot_rot_ecd) {
-                    osc_to_eps(rsp.eps, rsp.x_ev_samples, num_samples, y_osc_peaks, x_abs_ev, num_peaks, distr_func, gamma1 * 2);
-                    rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, num_samples, y_cgs_peaks, x_abs_ev, num_peaks, distr_func, gamma1 * 2);
+                if (recalc || rsp.first_plot_rot_ecd) {
+                    osc_to_eps(rsp.eps, rsp.x_ev_samples, NUM_SAMPLES, y_osc_peaks, x_abs_ev, num_peaks, distr_func, rsp.broadening_gamma * 2);
+                    rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, NUM_SAMPLES, y_cgs_peaks, x_abs_ev, num_peaks, distr_func, rsp.broadening_gamma * 2);
                 }
 
-                static ImPlotRect osc_lim_constraint = {0, 0, 0, 0};
-                static ImPlotRect cgs_lim_constraint = {0, 0, 0, 0};
-                if (refit1 || rsp.first_plot_rot_ecd) {
+                if (refit || rsp.first_plot_rot_ecd) {
                     // Do conversions
-                    convert_values(rsp.x_unit_peaks, x_abs_ev, num_peaks, x_unit);
-                    convert_values(rsp.x_unit_samples, rsp.x_ev_samples,  num_samples, x_unit);
-
-                    osc_lim_constraint = get_plot_limits(rsp.x_unit_samples, y_osc_peaks, num_peaks, num_samples);
-                    cgs_lim_constraint = get_plot_limits(rsp.x_unit_samples, y_cgs_peaks, num_peaks, num_samples);
-                    if (is_all_zero(y_osc_peaks, num_peaks)) {
-                        osc_lim_constraint.Y.Min = -1;
-                        osc_lim_constraint.Y.Max = 1;
-                    }
-                    if (is_all_zero(y_cgs_peaks, num_peaks)) {
-                        cgs_lim_constraint.Y.Min = -1;
-                        cgs_lim_constraint.Y.Max = 1;
-                    }
-                }
-
-                if (rsp.first_plot_rot_ecd) {
-                    rsp.osc_points = md_array_create(double, num_peaks, arena);
-                    rsp.cgs_points = md_array_create(double, num_peaks, arena);
-                    max_points(rsp.osc_points, y_osc_peaks, num_peaks);
-                    max_points(rsp.cgs_points, y_cgs_peaks, num_peaks);
+                    convert_values(rsp.x_unit_peaks, x_abs_ev, num_peaks, rsp.x_unit);
+                    convert_values(rsp.x_unit_samples, rsp.x_ev_samples,  NUM_SAMPLES, rsp.x_unit);
                 }
 
 #if 1
@@ -2594,34 +2604,20 @@ struct VeloxChem : viamd::EventHandler {
                 rsp.focused_plot = -1;
                 if (ImPlot::BeginSubplots("##AxisLinking", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkCols)) {
                     // Absorption
-                    static double osc_to_eps_mult = 1;
-                    if (recalculate1 || rsp.first_plot_rot_ecd) {
-                        osc_to_eps_mult = is_all_zero(y_osc_peaks, num_peaks) ? 1 : axis_conversion_multiplier(y_osc_peaks, rsp.eps, num_peaks, num_samples);
-                    }
-
-                    static ImPlotRect cur_osc_lims = {0, 1, 0, 1};
-                    if (refit1 || rsp.first_plot_rot_ecd) {
-                        ImPlot::SetNextAxisToFit(ImAxis_X1);
+                    if (refit || rsp.first_plot_rot_ecd) {
+                        ImPlot::SetNextAxesToFit();
                     }
                     if (ImPlot::BeginPlot("Absorption")) {
                         ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                        ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
+                        ImPlot::SetupAxis(ImAxis_X1, x_unit_str[rsp.x_unit]);
                         ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
                         ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε (L mol⁻¹ cm⁻¹)");
-                        if (refit1 || rsp.first_plot_rot_ecd) {
-                            ImPlot::SetupAxisLimits(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
-                            ImPlot::SetupAxisLimits(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
-                            cur_osc_lims = osc_lim_constraint;
-                        }
-                        ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, osc_lim_constraint.X.Min, osc_lim_constraint.X.Max);
-                        ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, osc_lim_constraint.Y.Min, osc_lim_constraint.Y.Max);
-                        ImPlot::SetupAxisLimits(ImAxis_Y2, cur_osc_lims.Y.Min * osc_to_eps_mult, cur_osc_lims.Y.Max * osc_to_eps_mult,
-                                                ImPlotCond_Always);
+
                         ImPlot::SetupFinish();
 
-                        peaks_to_pixels(pixel_osc_peaks, rsp.x_unit_peaks, y_osc_peaks, num_peaks);
-                        peaks_to_pixels(pixel_osc_points, rsp.x_unit_peaks, rsp.osc_points, num_peaks);
-                        mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
+                        peaks_to_pixels(pixel_osc_peaks,  rsp.x_unit_peaks, y_osc_peaks, num_peaks);
+                        peaks_to_pixels(pixel_osc_points, rsp.x_unit_peaks, y_osc_peaks, num_peaks);
+                        ImVec2 mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
                         if (ImPlot::IsPlotHovered()) {
                             rsp.hovered = get_hovered_peak(mouse_pos, pixel_osc_peaks, pixel_osc_points, num_peaks);
                             rsp.focused_plot = 0;
@@ -2631,16 +2627,15 @@ struct VeloxChem : viamd::EventHandler {
                         const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                         ImPlot::SetAxis(ImAxis_Y2);
-                        ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.eps, num_samples);
+                        ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.eps, NUM_SAMPLES);
                         ImPlot::SetAxis(ImAxis_Y1);
                         ImPlot::PlotBars("Oscillator Strength", rsp.x_unit_peaks, y_osc_peaks, num_peaks, bar_width);
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3);
-                        ImPlot::PlotScatter("##Peak marker", rsp.x_unit_peaks, rsp.osc_points, num_peaks);
+                        ImPlot::PlotScatter("##Peak marker", rsp.x_unit_peaks, y_osc_peaks, num_peaks);
 
                         // Check hovered state
                         if (rsp.hovered != -1) {
                             draw_bar(0, rsp.x_unit_peaks[rsp.hovered], y_osc_peaks[rsp.hovered], bar_width, IM_GREEN);
-                            ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.hovered], &rsp.osc_points[rsp.hovered], IM_GREEN, 4, ImPlotDragToolFlags_NoInputs);
                         }
 
                         // Update selected peak on click
@@ -2651,42 +2646,29 @@ struct VeloxChem : viamd::EventHandler {
                         // Check selected state
                         if (rsp.selected != -1) {
                             draw_bar(1, rsp.x_unit_peaks[rsp.selected], y_osc_peaks[rsp.selected], bar_width, IM_RED);
-                            ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.selected], &rsp.osc_points[rsp.selected], IM_RED, 4, ImPlotDragToolFlags_NoInputs);
                         }
 
-                        cur_osc_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                        ImPlot::SyncAxesY();
+
                         ImPlot::EndPlot();
                     }
 
                     // Rotatory ECD
-                    static double cgs_to_ecd_mult = 1;
-                    if (recalculate1 || rsp.first_plot_rot_ecd) {
-                        cgs_to_ecd_mult = is_all_zero(y_cgs_peaks, num_peaks) ? 1 : axis_conversion_multiplier(y_cgs_peaks, rsp.ecd, num_peaks, num_samples);
-                    }
-                    static ImPlotRect cur_cgs_lims = {0, 1, 0, 1};
-                    if (refit1 || rsp.first_plot_rot_ecd) {
-                        ImPlot::SetNextAxisToFit(ImAxis_X1);
+                    if (refit || rsp.first_plot_rot_ecd) {
+                        ImPlot::SetNextAxesToFit();
                     }
 
                     if (ImPlot::BeginPlot("ECD")) {
                         ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                        ImPlot::SetupAxis(ImAxis_X1, x_unit_str[x_unit]);
+                        ImPlot::SetupAxis(ImAxis_X1, x_unit_str[rsp.x_unit]);
                         ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
                         ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
-                        if (refit1 || rsp.first_plot_rot_ecd) {
-                            ImPlot::SetupAxisLimits(ImAxis_X1, cgs_lim_constraint.X.Min, cgs_lim_constraint.X.Max);
-                            ImPlot::SetupAxisLimits(ImAxis_Y1, cgs_lim_constraint.Y.Min, cgs_lim_constraint.Y.Max);
-                            cur_cgs_lims = cgs_lim_constraint;
-                        }
-                        ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, cgs_lim_constraint.X.Min, cgs_lim_constraint.X.Max);
-                        ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, cgs_lim_constraint.Y.Min, cgs_lim_constraint.Y.Max);
-                        ImPlot::SetupAxisLimits(ImAxis_Y2, cur_cgs_lims.Y.Min * cgs_to_ecd_mult, cur_cgs_lims.Y.Max * cgs_to_ecd_mult,
-                                                ImPlotCond_Always);
+
                         ImPlot::SetupFinish();
 
-                        peaks_to_pixels(pixel_cgs_peaks, rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
-                        peaks_to_pixels(pixel_cgs_points, rsp.x_unit_peaks, rsp.cgs_points, num_peaks);
-                        mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
+                        peaks_to_pixels(pixel_cgs_peaks,  rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
+                        peaks_to_pixels(pixel_cgs_points, rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
+                        ImVec2 mouse_pos = ImPlot::PlotToPixels(ImPlot::GetPlotMousePos(IMPLOT_AUTO));
 
                         if (ImPlot::IsPlotHovered()) {
                             rsp.hovered = get_hovered_peak(mouse_pos, pixel_cgs_peaks, pixel_cgs_points, num_peaks);
@@ -2697,16 +2679,14 @@ struct VeloxChem : viamd::EventHandler {
                         const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                         ImPlot::SetAxis(ImAxis_Y2);
-                        ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.ecd, num_samples);
+                        ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.ecd, NUM_SAMPLES);
                         ImPlot::SetAxis(ImAxis_Y1);
                         ImPlot::PlotBars("Rotatory Strength", rsp.x_unit_peaks, y_cgs_peaks, num_peaks, bar_width);
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3);
-                        ImPlot::PlotScatter("##Peak marker", rsp.x_unit_peaks, rsp.cgs_points, num_peaks);
+                        ImPlot::PlotScatter("##Peak marker", rsp.x_unit_peaks, y_cgs_peaks, num_peaks);
 
                         if (rsp.hovered != -1) {
                             draw_bar(2, rsp.x_unit_peaks[rsp.hovered], y_cgs_peaks[rsp.hovered], bar_width, IM_GREEN);
-                            ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.hovered], &rsp.cgs_points[rsp.hovered], IM_GREEN, 4, ImPlotDragToolFlags_NoInputs);
-
                         }
 
                         // Update selected peak on click
@@ -2716,10 +2696,11 @@ struct VeloxChem : viamd::EventHandler {
                         }
                         if (rsp.selected != -1) {
                             draw_bar(3, rsp.x_unit_peaks[rsp.selected], y_cgs_peaks[rsp.selected], bar_width, IM_RED);
-                            ImPlot::DragPoint(0, &rsp.x_unit_peaks[rsp.selected], &rsp.cgs_points[rsp.selected], IM_RED, 4, ImPlotDragToolFlags_NoInputs);
-
                         }
-                        cur_cgs_lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+
+                        // adjust plot axes before endplot, to keep zeros aligned
+                        ImPlot::SyncAxesY();
+
                         ImPlot::EndPlot();
                     }
                     ImPlot::EndSubplots();
@@ -2727,7 +2708,7 @@ struct VeloxChem : viamd::EventHandler {
                 rsp.first_plot_rot_ecd = false;
                 ImGui::TreePop();
             }
-#if 1
+#if 0
             if (rsp.first_plot_vib) { ImGui::SetNextItemOpen(true); }
             if (ImGui::TreeNode("Vibrational Analysis")) {
                 // draw the vibrational analysis
@@ -2853,7 +2834,6 @@ struct VeloxChem : viamd::EventHandler {
                     // Check hovered state
                     if (hov_vib != -1) {
                         draw_bar(0, har_freqs[hov_vib], irs[hov_vib], bar_width, IM_GREEN);
-                        ImPlot::DragPoint(0, &har_freqs[hov_vib], &rsp.vib_points[hov_vib], IM_GREEN, 4, ImPlotDragToolFlags_NoInputs);
                     }
 
                     // Update selected peak on click
@@ -2867,7 +2847,6 @@ struct VeloxChem : viamd::EventHandler {
                     // Check selected state
                     if (sel_vib != -1) {
                         draw_bar(1, har_freqs[sel_vib], irs[sel_vib], bar_width, IM_RED);
-                        ImPlot::DragPoint(1, &har_freqs[sel_vib], &rsp.vib_points[sel_vib], IM_RED, 4, ImPlotDragToolFlags_NoInputs);
 
                         //Animation
                         time += state.app.timing.delta_s * speed_mult * 7;
@@ -4076,53 +4055,57 @@ struct VeloxChem : viamd::EventHandler {
                 // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
                 // If the occupation parameter is less than this it will not be displayed
                 const double* occ = md_vlx_rsp_nto_occupancy(vlx, rsp.selected);
-                for (size_t i = 0; i < ARRAY_SIZE(nto_lambda); ++i) {
-                    nto_lambda[i] = occ[lumo_idx + i];
-                    if (nto_lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
-                        num_lambdas = (int)i;
-                        break;
-                    }
-                }
-
-                if (nto.sel_nto_idx != rsp.selected) {
-                    nto.sel_nto_idx = rsp.selected;
-                    const float samples_per_angstrom = 6.0f;
-                    size_t nto_idx = (size_t)rsp.selected;
-
-                    if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                        compute_nto_density_GPU(&nto.vol[NTO_Attachment], nto_idx, NtoDensity::Attachment, samples_per_angstrom);
-                        compute_nto_density_GPU(&nto.vol[NTO_Detachment], nto_idx, NtoDensity::Detachment, samples_per_angstrom);
-                    } else {
-                        nto.vol_task[NTO_Attachment] = compute_nto_density_async(&nto.vol[NTO_Attachment], nto_idx, NtoDensity::Attachment, samples_per_angstrom);
-                        nto.vol_task[NTO_Detachment] = compute_nto_density_async(&nto.vol[NTO_Detachment], nto_idx, NtoDensity::Detachment, samples_per_angstrom);
+                if (!occ) {
+                    MD_LOG_ERROR("No occupancy information available for NTOs in veloxchem object");
+                } else {
+                    for (size_t i = 0; i < ARRAY_SIZE(nto_lambda); ++i) {
+                        nto_lambda[i] = occ[lumo_idx + i];
+                        if (nto_lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
+                            num_lambdas = (int)i;
+                            break;
+                        }
                     }
 
-                    for (int i = 0; i < num_lambdas; ++i) {
-                        int pi = NTO_Part_0 + i;
-                        int hi = NTO_Hole_0 + i;
-                        size_t lambda_idx = (size_t)i;
-
-                        if (task_system::task_is_running(nto.vol_task[pi])) {
-                            task_system::task_interrupt (nto.vol_task[pi]);
-                        }
-                        if (task_system::task_is_running(nto.vol_task[hi])) {
-                            task_system::task_interrupt (nto.vol_task[hi]);
-                        }
+                    if (nto.sel_nto_idx != rsp.selected) {
+                        nto.sel_nto_idx = rsp.selected;
+                        const float samples_per_angstrom = 6.0f;
+                        size_t nto_idx = (size_t)rsp.selected;
 
                         if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                            compute_nto_GPU(&nto.vol[pi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                            compute_nto_GPU(&nto.vol[hi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            compute_nto_density_GPU(&nto.vol[NTO_Attachment], nto_idx, NtoDensity::Attachment, samples_per_angstrom);
+                            compute_nto_density_GPU(&nto.vol[NTO_Detachment], nto_idx, NtoDensity::Detachment, samples_per_angstrom);
                         } else {
-                            nto.vol_task[pi] = compute_nto_async(&nto.vol[pi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                            nto.vol_task[hi] = compute_nto_async(&nto.vol[hi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            nto.vol_task[NTO_Attachment] = compute_nto_density_async(&nto.vol[NTO_Attachment], nto_idx, NtoDensity::Attachment, samples_per_angstrom);
+                            nto.vol_task[NTO_Detachment] = compute_nto_density_async(&nto.vol[NTO_Detachment], nto_idx, NtoDensity::Detachment, samples_per_angstrom);
                         }
 
-                    }
-                    if (task_system::task_is_running(nto.seg_task[0])) {
-                        task_system::task_interrupt(nto.seg_task[0]);
-                    }
-                    if (task_system::task_is_running(nto.seg_task[1])) {
-                        task_system::task_interrupt(nto.seg_task[1]);
+                        for (int i = 0; i < num_lambdas; ++i) {
+                            int pi = NTO_Part_0 + i;
+                            int hi = NTO_Hole_0 + i;
+                            size_t lambda_idx = (size_t)i;
+
+                            if (task_system::task_is_running(nto.vol_task[pi])) {
+                                task_system::task_interrupt (nto.vol_task[pi]);
+                            }
+                            if (task_system::task_is_running(nto.vol_task[hi])) {
+                                task_system::task_interrupt (nto.vol_task[hi]);
+                            }
+
+                            if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                                compute_nto_GPU(&nto.vol[pi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                                compute_nto_GPU(&nto.vol[hi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            } else {
+                                nto.vol_task[pi] = compute_nto_async(&nto.vol[pi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                                nto.vol_task[hi] = compute_nto_async(&nto.vol[hi], nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            }
+
+                        }
+                        if (task_system::task_is_running(nto.seg_task[0])) {
+                            task_system::task_interrupt(nto.seg_task[0]);
+                        }
+                        if (task_system::task_is_running(nto.seg_task[1])) {
+                            task_system::task_interrupt(nto.seg_task[1]);
+                        }
                     }
                 }
             }
