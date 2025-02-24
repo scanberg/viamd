@@ -12,8 +12,8 @@ struct Vertex {
 void initialize();
 void shutdown();
 
-void set_model_view_matrix(mat4_t model_view_mat);
-void set_proj_matrix(mat4_t proj_mat);
+void set_model_view_matrix(const mat4_t& model_view_mat);
+void set_proj_matrix(const mat4_t& proj_mat);
 
 void render();
 

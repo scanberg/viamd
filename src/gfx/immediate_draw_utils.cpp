@@ -5,7 +5,7 @@
 
 #include <core/md_common.h>
 #include <core/md_array.h>
-#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 
 #include <stddef.h>
@@ -22,11 +22,13 @@ struct DrawCommand {
     GLenum primitive_type;
 };
 
-static mat4_t* matrix_stack;
+static md_array(mat4_t) matrix_stack;
 
-static DrawCommand* commands;
-static Vertex* vertices;
-static Index* indices;
+static md_array(DrawCommand) commands;
+static md_array(Vertex) vertices;
+static md_array(Index) indices;
+
+static md_allocator_i* arena;
 
 static GLuint vbo = 0;
 static GLuint ibo = 0;
@@ -84,7 +86,7 @@ void main() {
 }
 )";
 
-static inline void append_draw_command(uint32_t count, GLenum primitive_type) {
+static inline void append_draw_command(size_t count, GLenum primitive_type) {
     const uint32_t max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
     ASSERT(md_array_size(indices) + count < max_size);
     // Can we append data to previous draw command?
@@ -93,24 +95,24 @@ static inline void append_draw_command(uint32_t count, GLenum primitive_type) {
         last_cmd->primitive_type == primitive_type &&
         last_cmd->view_matrix_idx == curr_view_matrix_idx &&
         last_cmd->proj_matrix_idx == curr_proj_matrix_idx) {
-        uint32_t capacity = max_size - last_cmd->count;
+        size_t capacity = max_size - last_cmd->count;
 
         if (count < capacity) {
-            last_cmd->count += count;
+            last_cmd->count += (uint32_t)count;
             return;
         }
         else {
-            last_cmd->count += capacity;
+            last_cmd->count += (uint32_t)capacity;
             count -= capacity;
         }
     }
     ASSERT(curr_view_matrix_idx > -1 && "Immediate Mode View Matrix not set!");
     ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
 
-    const uint32_t offset = (uint32_t)md_array_size(indices) - count;
-    DrawCommand cmd {offset, count, curr_view_matrix_idx, curr_proj_matrix_idx, primitive_type};
+    const size_t offset = md_array_size(indices) - count;
+    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, curr_view_matrix_idx, curr_proj_matrix_idx, primitive_type};
     
-    md_array_push(commands, cmd, md_get_heap_allocator());
+    md_array_push(commands, cmd, arena);
 }
 
 void initialize() {
@@ -174,8 +176,13 @@ void initialize() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    md_array_ensure(vertices, 100000, md_get_heap_allocator());
-    md_array_ensure(indices,  100000, md_get_heap_allocator());
+    if (!arena) {
+        arena = md_vm_arena_create(GIGABYTES(1));
+    }
+
+    md_array_ensure(vertices, 100000, arena);
+    md_array_ensure(indices,  100000, arena);
+    md_array_ensure(matrix_stack, 10, arena);
 }
 
 void shutdown() {
@@ -183,16 +190,17 @@ void shutdown() {
     if (ibo) glDeleteBuffers(1, &ibo);
     if (vao) glDeleteVertexArrays(1, &vao);
     if (program) glDeleteProgram(program);
+    md_vm_arena_destroy(arena);
 }
 
-void set_model_view_matrix(mat4_t model_view_matrix) {
+void set_model_view_matrix(const mat4_t& model_view_matrix) {
     curr_view_matrix_idx = (int)md_array_size(matrix_stack);
-    md_array_push(matrix_stack, model_view_matrix, md_get_heap_allocator());
+    md_array_push(matrix_stack, model_view_matrix, arena);
 }
 
-void set_proj_matrix(mat4_t proj_matrix) {
+void set_proj_matrix(const mat4_t& proj_matrix) {
     curr_proj_matrix_idx = (int)md_array_size(matrix_stack);
-    md_array_push(matrix_stack, proj_matrix, md_get_heap_allocator());
+    md_array_push(matrix_stack, proj_matrix, arena);
 }
 
 void render() {
@@ -270,15 +278,15 @@ void draw_point(vec3_t pos, uint32_t color) {
     const Index idx = (Index)md_array_size(vertices);
 
     Vertex v = {pos, color};
-    md_array_push(vertices, v,  md_get_heap_allocator());
-    md_array_push(indices, idx, md_get_heap_allocator());
+    md_array_push(vertices, v,  arena);
+    md_array_push(indices, idx, arena);
 
     append_draw_command(1, GL_POINTS);
 }
 
 void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult) {
     const Index idx = (Index)md_array_size(vertices);
-    md_array_resize(vertices, md_array_size(vertices) + count, md_get_heap_allocator());
+    md_array_resize(vertices, md_array_size(vertices) + count, arena);
     Vertex* v = md_array_end(vertices) - count;
 
     ASSERT(v);
@@ -289,8 +297,8 @@ void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         v[i].color = convert_color(c);
     }
 
-    for (size_t i = idx; i < idx + count; i += 1) {
-        md_array_push(indices, i, md_get_heap_allocator());
+    for (Index i = idx; i < idx + count; i += 1) {
+        md_array_push(indices, i, arena);
     }
 
     append_draw_command(count, GL_POINTS);
@@ -303,10 +311,10 @@ void draw_line(vec3_t from, vec3_t to, uint32_t color) {
         {from, color},
         {to,   color}
     };
-    md_array_push_array(vertices, v, 2, md_get_heap_allocator());
+    md_array_push_array(vertices, v, 2, arena);
 
-    md_array_push(indices, idx + 0, md_get_heap_allocator());
-    md_array_push(indices, idx + 1, md_get_heap_allocator());
+    md_array_push(indices, idx + 0, arena);
+    md_array_push(indices, idx + 1, arena);
 
     append_draw_command(2, GL_LINES);
 }
@@ -320,7 +328,7 @@ void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult) {
     count = count - (count & 1);
 
     const Index idx = (Index)md_array_size(vertices);
-    md_array_resize(vertices, md_array_size(vertices) + count, md_get_heap_allocator());
+    md_array_resize(vertices, md_array_size(vertices) + count, arena);
     Vertex* v = md_array_end(vertices) - count;
 
     ASSERT(v);
@@ -331,9 +339,9 @@ void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         v[i].color = convert_color(c);
     }
 
-    for (size_t i = idx; i < idx + count; i += 2) {
-        md_array_push(indices, i + 0, md_get_heap_allocator());
-        md_array_push(indices, i + 1, md_get_heap_allocator());
+    for (Index i = idx; i < idx + count; i += 2) {
+        md_array_push(indices, i + 0, arena);
+        md_array_push(indices, i + 1, arena);
     }
 
     append_draw_command(count, GL_LINES);
@@ -348,11 +356,11 @@ void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color) {
         {p1, color},
         {p2, color},
     };
-    md_array_push_array(vertices, v, 3, md_get_heap_allocator());
+    md_array_push_array(vertices, v, 3, arena);
 
-    md_array_push(indices, idx + 0, md_get_heap_allocator());
-    md_array_push(indices, idx + 1, md_get_heap_allocator());
-    md_array_push(indices, idx + 2, md_get_heap_allocator());
+    md_array_push(indices, idx + 0, arena);
+    md_array_push(indices, idx + 1, arena);
+    md_array_push(indices, idx + 2, arena);
 
     append_draw_command(3, GL_TRIANGLES);
 }
@@ -366,7 +374,7 @@ void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult) {
     count = count - (count % 3);
 
     const Index idx = (Index)md_array_size(vertices);
-    md_array_resize(vertices, md_array_size(vertices) + count, md_get_heap_allocator());
+    md_array_resize(vertices, md_array_size(vertices) + count, arena);
     Vertex* v = md_array_end(vertices) - count;
 
     ASSERT(v);
@@ -377,10 +385,10 @@ void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         v[i].color = convert_color(c);
     }
 
-    for (size_t i = idx; i < idx + count; i += 3) {
-        md_array_push(indices, i + 0, md_get_heap_allocator());
-        md_array_push(indices, i + 1, md_get_heap_allocator());
-        md_array_push(indices, i + 2, md_get_heap_allocator());
+    for (Index i = idx; i < idx + count; i += 3) {
+        md_array_push(indices, i + 0, arena);
+        md_array_push(indices, i + 1, arena);
+        md_array_push(indices, i + 2, arena);
     }
 
     append_draw_command(count, GL_TRIANGLES);
@@ -396,14 +404,14 @@ void draw_plane(vec3_t center, vec3_t u, vec3_t v, uint32_t color) {
         {vec3_add(center, vec3_add(u, v)), color},
         {vec3_add(center, vec3_sub(u, v)), color},
     };
-    md_array_push_array(vertices, vert, 4, md_get_heap_allocator());
+    md_array_push_array(vertices, vert, 4, arena);
 
-    md_array_push(indices, idx + 0, md_get_heap_allocator());
-    md_array_push(indices, idx + 1, md_get_heap_allocator());
-    md_array_push(indices, idx + 2, md_get_heap_allocator());
-    md_array_push(indices, idx + 2, md_get_heap_allocator());
-    md_array_push(indices, idx + 1, md_get_heap_allocator());
-    md_array_push(indices, idx + 3, md_get_heap_allocator());
+    md_array_push(indices, idx + 0, arena);
+    md_array_push(indices, idx + 1, arena);
+    md_array_push(indices, idx + 2, arena);
+    md_array_push(indices, idx + 2, arena);
+    md_array_push(indices, idx + 1, arena);
+    md_array_push(indices, idx + 3, arena);
 
     append_draw_command(6, GL_TRIANGLES);
 }
