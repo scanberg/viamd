@@ -99,8 +99,8 @@ bool RangeSliderBehavior(const ImRect& frame_bb, const char* str_id, float* v1, 
         const float wheel_delta = GetIO().MouseWheel;
         if (wheel_delta) {
             float t[2] = {
-                ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, *values[0], v_min, v_max, is_logarithmic, 0.0f, 0.0f),
-                ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, *values[1], v_min, v_max, is_logarithmic, 0.0f, 0.0f),
+                ImClamp(ScaleRatioFromValueT<float, float, float>(ImGuiDataType_Float, *values[0], v_min, v_max, is_logarithmic, 0.0f, 0.0f), 0.0f, 1.0f),
+                ImClamp(ScaleRatioFromValueT<float, float, float>(ImGuiDataType_Float, *values[1], v_min, v_max, is_logarithmic, 0.0f, 0.0f), 0.0f, 1.0f),
             };
 
             const float delta = wheel_delta * (v_max - v_min) * 0.025f;
@@ -121,8 +121,8 @@ bool RangeSliderBehavior(const ImRect& frame_bb, const char* str_id, float* v1, 
         // This is a bit cumbersome, but we want to make sure we don't squash the range when we go past min or max with the range
 
         float t[2] = {
-            ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, *values[0], v_min, v_max, is_logarithmic, 0.0f, 0.0f),
-            ScaleValueFromRatioT<float, float, float>(ImGuiDataType_Float, *values[1], v_min, v_max, is_logarithmic, 0.0f, 0.0f),
+            ImClamp(ScaleRatioFromValueT<float, float, float>(ImGuiDataType_Float, *values[0], v_min, v_max, is_logarithmic, 0.0f, 0.0f), 0.0f, 1.0f),
+            ImClamp(ScaleRatioFromValueT<float, float, float>(ImGuiDataType_Float, *values[1], v_min, v_max, is_logarithmic, 0.0f, 0.0f), 0.0f, 1.0f),
         };
 
         const float t_diff = t[1] - t[0];

@@ -168,11 +168,8 @@ IMPLOT_API void SyncAxesY() {
     for (int s = ImAxis_Y1; s < ImAxis_COUNT; ++s)
     {
         ImPlotAxis& axis = plot.Axes[s];
-        auto v = fabs(axis.FitExtents.Min);
-        auto v2 = fabs(axis.FitExtents.Max);
-        if (v2 > v) {
-            v = v2;
-        }
+        double v = ImMax(fabs(axis.FitExtents.Min), fabs(axis.FitExtents.Max));
+        v *= 1.10; // Padding
         axis.FitExtents.Min = -v;
         axis.FitExtents.Max = v;
     }
