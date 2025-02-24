@@ -259,6 +259,7 @@ struct VeloxChem : viamd::EventHandler {
         bool show_window = false;
         Volume   vol[16] = {};
         int      vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+        md_vlx_mo_type_t vol_mo_type[16] = {};
         uint32_t iso_tex[16] = {};
         task_system::ID vol_task[16] = {};
         int num_x  = 3;
@@ -520,10 +521,10 @@ struct VeloxChem : viamd::EventHandler {
                     if (data.type == OrbitalType::MolecularOrbitalPsi || data.type == OrbitalType::MolecularOrbitalPsiSquared) {
                         md_gto_eval_mode_t mode = (data.type == OrbitalType::MolecularOrbitalPsi) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
                         if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                            data.output_written = compute_mo_GPU(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom);
+                            data.output_written = compute_mo_GPU(data.dst_volume, MD_VLX_MO_TYPE_ALPHA, data.orbital_idx, mode, data.samples_per_angstrom);
                         }
                         else {
-                            data.output_written = (compute_mo_async(data.dst_volume, data.orbital_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
+                            data.output_written = (compute_mo_async(data.dst_volume, MD_VLX_MO_TYPE_ALPHA, data.orbital_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
                         }
                     } else if (data.type == OrbitalType::ElectronDensity) {
                         md_gto_eval_mode_t mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
@@ -1079,13 +1080,13 @@ struct VeloxChem : viamd::EventHandler {
         md_gto_eval_mode_t mode;
     };
 
-    bool compute_mo_GPU(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+    bool compute_mo_GPU(Volume* vol, md_vlx_mo_type_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         ScopedTemp reset_temp;
 
         size_t num_gtos = md_vlx_mo_gto_count(vlx);
         md_gto_t* gtos  = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
 
-        if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA)) {
+        if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, mo_type)) {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
             return false;
         }
@@ -1206,7 +1207,7 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    task_system::ID compute_mo_async(Volume* vol, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+    task_system::ID compute_mo_async(Volume* vol, md_vlx_mo_type_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
         if (!vol) {
             MD_LOG_ERROR("No volume object supplied");
             return task_system::INVALID_ID;
@@ -1216,7 +1217,7 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_gtos = md_vlx_mo_gto_count(vlx);
         md_gto_t* gtos  = (md_gto_t*)md_vm_arena_push(alloc, sizeof(md_gto_t)* num_gtos);
 
-        if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA)) {
+        if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, mo_type)) {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
             md_vm_arena_destroy(alloc);
             return task_system::INVALID_ID;
@@ -2952,133 +2953,177 @@ struct VeloxChem : viamd::EventHandler {
         if (num_orbitals() == 0) return;
         ImGui::SetNextWindowSize({600,300}, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("VeloxChem Orbital Grid", &orb.show_window)) {
-#if 0
-            if (vlx.geom.num_atoms) {
-                if (ImGui::TreeNode("Geometry")) {
-                    ImGui::Text("Num Atoms:           %6zu", vlx.geom.num_atoms);
-                    ImGui::Text("Num Alpha Electrons: %6zu", vlx.geom.num_alpha_electrons);
-                    ImGui::Text("Num Beta Electrons:  %6zu", vlx.geom.num_beta_electrons);
-                    ImGui::Text("Molecular Charge:    %6i",  vlx.geom.molecular_charge);
-                    ImGui::Text("Spin Multiplicity:   %6i",  vlx.geom.spin_multiplicity);
-                    ImGui::Spacing();
-                    ImGui::Text("Atom      Coord X      Coord Y      Coord Z");
-                    for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-                        ImGui::Text("%4s %12.6f %12.6f %12.6f", vlx.geom.atom_symbol[i].buf, vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]);
-                    }
-                    ImGui::TreePop();
-                }
-            }
-#endif
-            const ImVec2 outer_size = {300.f, 0.f};
-            ImGui::PushItemWidth(outer_size.x);
-            ImGui::BeginGroup();
 
-            ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
-            ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
-
-            const int num_mos = orb.num_x * orb.num_y;
-            const int beg_mo_idx = orb.mo_idx - num_mos / 2 + (num_mos % 2 == 0 ? 1 : 0);
-
-            const double iso_min = 1.0e-4;
-            const double iso_max = 5.0;
-            double iso_val = orb.iso.values[0];
-            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SetItemTooltip("Iso Value");
-
-            orb.iso.values[0] =  (float)iso_val;
-            orb.iso.values[1] = -(float)iso_val;
-            orb.iso.count = 2;
-            orb.iso.enabled = true;
-
-
-
-            ImGui::ColorEdit4("##Color Positive", orb.iso.colors[0].elem);
-            ImGui::SetItemTooltip("Color Positive");
-            ImGui::ColorEdit4("##Color Negative", orb.iso.colors[1].elem);
-            ImGui::SetItemTooltip("Color Negative");
+            const double* occ_alpha = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
+            const double* occ_beta  = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
+            const double* ene_alpha = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_ALPHA);
+            const double* ene_beta  = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_BETA);
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
-            enum {
-                Col_Idx,
-                Col_Occ,
-                Col_Ene,
-            };
+            md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
 
-            if (ImGui::IsWindowAppearing()) {
-                orb.scroll_to_idx = orb.mo_idx;
-            }
-            if (ImGui::Button("Goto HOMO", ImVec2(outer_size.x,0))) {
-                orb.scroll_to_idx = homo_idx;
+            int num_x = (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ? 2 : orb.num_x;
+            int num_y = orb.num_y;
+
+            int num_mos = num_x * num_y;
+            int beg_mo_idx = orb.mo_idx - num_mos / 2 + (num_mos % 2 == 0 ? 1 : 0);
+            int window_size = num_mos;
+            if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                beg_mo_idx = orb.mo_idx - num_y / 2 + (num_y % 2 == 0 ? 1 : 0);
+                window_size = num_y;
             }
 
-            const ImGuiTableFlags flags =
-                ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
-                ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
-            if (ImGui::BeginTable("Molecular Orbitals", 3, flags, outer_size))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
+            // LEFT PANE
             {
-                const double* occupancy = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
-                const double* energy    = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_ALPHA);
+                ImGui::BeginChild("left pane", ImVec2(300, 0), ImGuiChildFlags_Border | ImGuiChildFlags_ResizeX);
 
-                // Declare columns
-                // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
-                // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
-                // Demonstrate using a mixture of flags among available sort-related flags:
-                // - ImGuiTableColumnFlags_DefaultSort
-                // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
-                // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
-                ImGui::TableSetupColumn("Index",        ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
-                ImGui::TableSetupColumn("Occupancy",    ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ);
-                ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene);
-                ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
-                ImGui::TableHeadersRow();
+                ImGui::SameLine();
 
-                for (int n = (int)num_orbitals() - 1; n >= 0; n--) {
-                    ImGui::PushID(n + 1);
-                    ImGui::TableNextRow();
-                    bool is_selected = (beg_mo_idx <= n && n < beg_mo_idx + num_mos);
-                    ImGui::TableNextColumn();
-                    if (orb.scroll_to_idx != -1 && n == orb.scroll_to_idx) {
-                        orb.scroll_to_idx = -1;
-                        ImGui::SetScrollHereY();
-                    }
-                    char buf[32];
-                    const char* lbl = (n == homo_idx) ? " (HOMO)" : (n == lumo_idx) ? " (LUMO)" : "";
-                    snprintf(buf, sizeof(buf), "%i%s", n + 1, lbl);
-                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                    if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
-                        if (orb.mo_idx != n) {
-                            orb.mo_idx = n;
-                        }
-                    }
-                    ImGui::TableNextColumn();
-                    if (occupancy) {
-                        ImGui::Text("%.1f", occupancy[n]);
-                    } else {
-                        ImGui::Text("-");
-                    }
-                    ImGui::TableNextColumn();
-                    if (energy) {
-                        ImGui::Text("%.4f", energy[n]);
-                    } else {
-                        ImGui::Text("-");
-                    }
-                    ImGui::PopID();
+                const ImVec2 outer_size = {300.f, 0.f};
+                ImGui::PushItemWidth(-1);
+                ImGui::BeginGroup();
+
+                ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
+                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                    ImGui::PushDisabled();
+                }
+                ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
+                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                    ImGui::PopDisabled();
                 }
 
-                ImGui::EndTable();
-            }
+                const double iso_min = 1.0e-4;
+                const double iso_max = 5.0;
+                double iso_val = orb.iso.values[0];
+                ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+                ImGui::SetItemTooltip("Iso Value");
 
-            ImGui::EndGroup();
-            ImGui::PopItemWidth();
+                orb.iso.values[0] =  (float)iso_val;
+                orb.iso.values[1] = -(float)iso_val;
+                orb.iso.count = 2;
+                orb.iso.enabled = true;
+
+                ImGui::ColorEdit4("##Color Positive", orb.iso.colors[0].elem);
+                ImGui::SetItemTooltip("Color Positive");
+                ImGui::ColorEdit4("##Color Negative", orb.iso.colors[1].elem);
+                ImGui::SetItemTooltip("Color Negative");
+
+                enum {
+                    Col_Idx,
+                    Col_Occ_Alpha,
+                    Col_Occ_Beta,
+                    Col_Ene_Alpha,
+                    Col_Ene_Beta,
+                };
+
+                if (ImGui::IsWindowAppearing()) {
+                    orb.scroll_to_idx = orb.mo_idx;
+                }
+                if (ImGui::Button("Goto HOMO", ImVec2(-1,0))) {
+                    orb.scroll_to_idx = homo_idx;
+                }
+
+                int num_cols = (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ? 5 : 3;
+
+                const ImGuiTableFlags flags =
+                    ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
+                if (ImGui::BeginTable("Molecular Orbitals", num_cols, flags))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
+                {
+                    // Declare columns
+                    // We use the "user_id" parameter of TableSetupColumn() to specify a user id that will be stored in the sort specifications.
+                    // This is so our sort function can identify a column given our own identifier. We could also identify them based on their index!
+                    // Demonstrate using a mixture of flags among available sort-related flags:
+                    // - ImGuiTableColumnFlags_DefaultSort
+                    // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
+                    // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
+                    if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                        ImGui::TableSetupColumn("MO",                       ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed,         0.0f, Col_Idx);
+                        ImGui::TableSetupColumn((const char*)u8"Occ. α",  ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,  0.0f, Col_Occ_Alpha);
+                        ImGui::TableSetupColumn((const char*)u8"Occ. β",  ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,  0.0f, Col_Occ_Beta);
+                        ImGui::TableSetupColumn((const char*)u8"Ene. α",  ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,  0.0f, Col_Ene_Alpha);
+                        ImGui::TableSetupColumn((const char*)u8"Ene. β",  ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,  0.0f, Col_Ene_Beta);
+                    } else {
+                        ImGui::TableSetupColumn("MO",           ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
+                        ImGui::TableSetupColumn("Occupancy",    ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ_Alpha);
+                        ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene_Alpha);
+                    }
+                    ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
+                    ImGui::TableHeadersRow();
+
+                    for (int n = (int)num_orbitals() - 1; n >= 0; n--) {
+                        ImGui::PushID(n + 1);
+                        ImGui::TableNextRow();
+                        bool is_selected = (beg_mo_idx <= n && n < beg_mo_idx + window_size);
+                        ImGui::TableNextColumn();
+                        if (orb.scroll_to_idx != -1 && n == orb.scroll_to_idx) {
+                            orb.scroll_to_idx = -1;
+                            ImGui::SetScrollHereY();
+                        }
+                        char buf[32];
+                        const char* lbl = (n == homo_idx) ? " HOMO" : (n == lumo_idx) ? " LUMO" : "";
+                        snprintf(buf, sizeof(buf), "%i%s", n + 1, lbl);
+                        ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                        if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
+                            if (orb.mo_idx != n) {
+                                orb.mo_idx = n;
+                            }
+                        }
+                        ImGui::TableNextColumn();
+                        if (occ_alpha && occ_beta) {
+                            float occ = occ_alpha[n];
+                            if (type != MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                                occ += occ_beta[n];
+                            }
+                            ImGui::Text("%.1f", occ);
+                        } else {
+                            ImGui::Text("-");
+                        }
+                        if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                            ImGui::TableNextColumn();
+                            if (occ_beta) {
+                                ImGui::Text("%.1f", occ_beta[n]);
+                            } else {
+                                ImGui::Text("-");
+                            }
+                        }
+                        ImGui::TableNextColumn();
+                        if (ene_alpha) {
+                            ImGui::Text("%.4f", ene_alpha[n]);
+                        } else {
+                            ImGui::Text("-");
+                        }
+                        if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                            ImGui::TableNextColumn();
+                            if (ene_beta) {
+                                ImGui::Text("%.4f", ene_beta[n]);
+                            } else {
+                                ImGui::Text("-");
+                            }
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndTable();
+                }
+
+                ImGui::EndGroup();
+                ImGui::PopItemWidth();
+
+                ImGui::EndChild();
+            }
 
             ImGui::SameLine();
 
             // These represent the new mo_idx we want to have in each slot
-            int vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+            int vol_mo_idx[16]  = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+            md_vlx_mo_type_t vol_mo_type[16] = {};
             for (int i = 0; i < num_mos; ++i) {
-                int mo_idx = beg_mo_idx + i;
-                if (-1 < mo_idx && mo_idx < num_orbitals()) {
-                    vol_mo_idx[i] = mo_idx;
+                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                    vol_mo_idx[i] = beg_mo_idx + i / 2;
+                    vol_mo_type[i] = (i & 1) ? MD_VLX_MO_TYPE_BETA : MD_VLX_MO_TYPE_ALPHA;
+                } else {
+                    vol_mo_idx[i] = beg_mo_idx + i;
+                    vol_mo_type[i] = MD_VLX_MO_TYPE_ALPHA;
                 }
             }
 
@@ -3088,7 +3133,7 @@ struct VeloxChem : viamd::EventHandler {
             // If there is no existing volume, we queue up a new job
             for (int i = 0; i < num_mos; ++i) {
                 // Check if we already have that entry in the correct slot
-                if (orb.vol_mo_idx[i] == vol_mo_idx[i]) continue;
+                if (orb.vol_mo_idx[i] == vol_mo_idx[i] && orb.vol_mo_type[i] == vol_mo_type[i]) continue;
 
                 // Try to find the entry in the existing list
                 bool found = false;
@@ -3097,7 +3142,8 @@ struct VeloxChem : viamd::EventHandler {
                     if (vol_mo_idx[i] == orb.vol_mo_idx[j]) {
                         // Swap to correct location
                         ImSwap(orb.vol[i], orb.vol[j]);
-                        ImSwap(orb.vol_mo_idx[i], orb.vol_mo_idx[j]);
+                        ImSwap(orb.vol_mo_idx[i],  orb.vol_mo_idx[j]);
+                        ImSwap(orb.vol_mo_type[i], orb.vol_mo_type[j]);
                         found = true;
                         break;
                     }
@@ -3114,16 +3160,18 @@ struct VeloxChem : viamd::EventHandler {
                 for (int i = 0; i < num_jobs; ++i) {
                     int slot_idx = job_queue[i];
                     int mo_idx = vol_mo_idx[slot_idx];
+                    md_vlx_mo_type_t mo_type = vol_mo_type[slot_idx];
                     orb.vol_mo_idx[slot_idx] = mo_idx;
+                    orb.vol_mo_type[slot_idx] = mo_type;
 
                     if (-1 < mo_idx && mo_idx < num_orbitals()) {
                         if (task_system::task_is_running(orb.vol_task[slot_idx])) {
                             task_system::task_interrupt(orb.vol_task[slot_idx]);
                         }
                         if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                            compute_mo_GPU(&orb.vol[slot_idx], mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            compute_mo_GPU(&orb.vol[slot_idx], mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                         } else {
-                            orb.vol_task[slot_idx] = compute_mo_async(&orb.vol[slot_idx], mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            orb.vol_task[slot_idx] = compute_mo_async(&orb.vol[slot_idx], mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
                         }
                     }
                 }
@@ -3146,28 +3194,42 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
-            ImVec2 orb_win_sz = (canvas_p1 - canvas_p0) / ImVec2((float)orb.num_x, (float)orb.num_y);
+            ImVec2 orb_win_sz = (canvas_p1 - canvas_p0) / ImVec2((float)num_x, (float)num_y);
             orb_win_sz.x = floorf(orb_win_sz.x);
             orb_win_sz.y = floorf(orb_win_sz.y);
-            canvas_p1.x = canvas_p0.x + orb.num_x * orb_win_sz.x;
-            canvas_p1.y = canvas_p0.y + orb.num_y * orb_win_sz.y;
+            canvas_p1.x = canvas_p0.x + num_x * orb_win_sz.x;
+            canvas_p1.y = canvas_p0.y + num_y * orb_win_sz.y;
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
+
             for (int i = 0; i < num_mos; ++i) {
                 int mo_idx = beg_mo_idx + i;
-                int x = orb.num_x - i % orb.num_x - 1;
-                int y = orb.num_y - i / orb.num_x - 1;
+                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                    mo_idx = beg_mo_idx + i / 2;
+                }
+                int x = num_x - i % num_x - 1;
+                int y = num_y - i / num_x - 1;
                 ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
                 ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
                 if (-1 < mo_idx && mo_idx < num_orbitals()) {
-                    ImVec2 text_pos = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                    ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                    ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y - TEXT_BASE_HEIGHT);
+                    ImVec2 text_pos_br = ImVec2(p1.x - TEXT_BASE_HEIGHT * 0.5f, p1.y);
                     char buf[32];
                     const char* lbl = (mo_idx == homo_idx) ? " (HOMO)" : (mo_idx == lumo_idx) ? " (LUMO)" : "";
                     snprintf(buf, sizeof(buf), "%i%s", mo_idx + 1, lbl);
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddText(text_pos, ImColor(0,0,0), buf);
+                    draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
+
+                    if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                        snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
+                    } else {
+                        snprintf(buf, sizeof(buf), "%.4f", ene_alpha[mo_idx]);
+                    }
+                    ImVec2 size = ImGui::CalcTextSize(buf);
+                    draw_list->AddText(text_pos_br - size, ImColor(0,0,0), buf);
                 }
             }
             for (int x = 1; x < orb.num_x; ++x) {
