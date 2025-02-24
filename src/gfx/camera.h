@@ -8,6 +8,6 @@ struct Camera {
 
     float focus_distance = 10.0f;
     float near_plane = 1.0f;
-    float far_plane = 1000.0f;
+    float far_plane = 10000.0f;
     float fov_y = (3.1415926534f / 4.0f);
 };

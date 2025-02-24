@@ -2682,9 +2682,11 @@ static void draw_main_menu(ApplicationState* data) {
 
             // STORED SELECTIONS
             {
+                md_bitfield_clear(&data->selection.highlight_mask);
                 // @NOTE(Robin): This ImGui ItemFlag can be used to force the menu to remain open after buttons are pressed.
                 // Leave it here as a comment if we feel that it is needed in the future
                 //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
+
                 ImGui::Text("Stored Selections");
                 for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
                     auto& sel = data->selection.stored_selections[i];
@@ -2711,19 +2713,19 @@ static void draw_main_menu(ApplicationState* data) {
                         update_all_representations(data);
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Load the stored selection into the active selection");
+                        ImGui::SetTooltip("Load the stored selection as the active selection");
                         md_bitfield_copy(&data->selection.highlight_mask, &sel.atom_mask);
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Store")) {
-                        ImGui::SetTooltip("Store the active selection into the stored selection");
+                        ImGui::SetTooltip("Store the active selection into this selection");
                         md_bitfield_copy(&sel.atom_mask, &data->selection.selection_mask);
                         data->script.compile_ir = true;
                         update_all_representations(data);
                     }
                     ImGui::SameLine();
                     if (ImGui::DeleteButton("Remove")) {
-                        ImGui::SetTooltip("Remove the stored selection");
+                        ImGui::SetTooltip("Remove this selection");
                         remove_selection(data, i);
                     }
                     ImGui::PopID();
@@ -3935,11 +3937,18 @@ static void draw_animation_window(ApplicationState* data) {
             md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
             snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
         }
-        if (ImGui::Combo("Interp.", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic Spline\0\0")) {
-            interpolate_atomic_properties(data);
+        if (ImGui::BeginCombo("Interp.", interpolation_mode_str[(int)data->animation.interpolation])) {
+            for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
+                if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
+                    data->animation.interpolation = (InterpolationMode)i;
+                    data->mold.dirty_buffers |= MolBit_ClearVelocity;
+                    interpolate_atomic_properties(data);
+                }
+            }
+            ImGui::EndCombo();
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Interpolation Method for Atom Positions");
+            ImGui::SetTooltip("Interpolation Mode for Atom Positions");
         }
         if (ImGui::SliderScalar(time_label, ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
             data->animation.frame = time_to_frame(t, data->timeline.x_values);
@@ -4689,38 +4698,43 @@ static void draw_timeline_window(ApplicationState* data) {
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 2));
         defer { ImPlot::PopStyleVar(); };
 
-        if (ImGui::BeginMenuBar()) {
-            DisplayProperty* props = data->display_properties;
-            const int num_props = (int)md_array_size(props);
-            
+        // Filter out temporal display properties
+        int num_temp_props = 0;
+        for (int i = 0; i < md_array_size(data->display_properties); ++i) {
+            if (data->display_properties[i].type == DisplayProperty::Type_Temporal) {
+                num_temp_props += 1;
+            }
+        }
+
+        const int num_props = (int)md_array_size(data->display_properties);
+
+        if (ImGui::BeginMenuBar()) {            
             if (ImGui::BeginMenu("Properties")) {
-                if (num_props) {
+                if (num_temp_props) {
                     for (int i = 0; i < num_props; ++i) {
-                        DisplayProperty& dp = props[i];
-                        if (dp.type == DisplayProperty::Type_Temporal) {
-                            ImPlot::ItemIcon(dp.color);
-                            ImGui::SameLine();
-                            ImGui::Selectable(dp.label);
+                        DisplayProperty& dp = data->display_properties[i];
+                        ImPlot::ItemIcon(dp.color);
+                        ImGui::SameLine();
+                        ImGui::Selectable(dp.label);
 
-                            if (ImGui::IsItemHovered()) {
-                                if ((dp.dim > MAX_POPULATION_SIZE)) {
-                                    ImGui::SetTooltip("The property has a large population, only the first %i items will be shown", MAX_POPULATION_SIZE);
-                                }
-                                visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                                set_hovered_property(data, str_from_cstr(dp.label));
+                        if (ImGui::IsItemHovered()) {
+                            if ((dp.dim > MAX_POPULATION_SIZE)) {
+                                ImGui::SetTooltip("The property has a large population, only the first %i items will be shown", MAX_POPULATION_SIZE);
                             }
+                            visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            set_hovered_property(data, str_from_cstr(dp.label));
+                        }
 
-                            if (ImGui::BeginDragDropSource()) {
-                                DisplayPropertyDragDropPayload payload = {i};
-                                ImGui::SetDragDropPayload("TEMPORAL_DND", &payload, sizeof(payload));
-                                ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                                ImGui::TextUnformatted(dp.label);
-                                ImGui::EndDragDropSource();
-                            }
+                        if (ImGui::BeginDragDropSource()) {
+                            DisplayPropertyDragDropPayload payload = {i};
+                            ImGui::SetDragDropPayload("TEMPORAL_DND", &payload, sizeof(payload));
+                            ImPlot::ItemIcon(dp.color); ImGui::SameLine();
+                            ImGui::TextUnformatted(dp.label);
+                            ImGui::EndDragDropSource();
                         }
                     }
                 } else {
-                    ImGui::Text("No properties available, try evaluating the script");
+                    ImGui::Text("No temporal properties available, define and evaluate properties in the script editor");
                 }
                 ImGui::EndMenu();
             }
@@ -4753,7 +4767,7 @@ static void draw_timeline_window(ApplicationState* data) {
         if (num_x_values > 0) {
             ImPlotInputMap old_map = ImPlot::GetInputMap();
 
-            static bool is_dragging = false;
+            static bool is_dragging  = false;
             static bool is_selecting = false;
 
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -4766,8 +4780,6 @@ static void draw_timeline_window(ApplicationState* data) {
             if (!ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
                 is_selecting = false;
             }
-
-            int64_t num_props = md_array_size(data->display_properties);
 
             // Create a temporary 'time' representation of the filters min and max value
             // The visualization uses time units while we store 'frame' units
@@ -4865,7 +4877,6 @@ static void draw_timeline_window(ApplicationState* data) {
                     
                         for (int j = 0; j < num_props; ++j) {
                             DisplayProperty& prop = data->display_properties[j];
-                            if (prop.type != DisplayProperty::Type_Temporal) continue;
                             
                             ImPlotItem* item = ImPlot::GetItem(prop.label);
                             if (!item || !item->Show) {
@@ -4987,11 +4998,11 @@ static void draw_timeline_window(ApplicationState* data) {
                         }
                     } else {
                         if (!str_empty(data->hovered_display_property_label)) {
-                            for (size_t j = 0; j < md_array_size(data->display_properties); ++j) {
+                            for (int j = 0; j < num_props; ++j) {
                                 DisplayProperty& dp = data->display_properties[j];
                                 if (dp.type != DisplayProperty::Type_Temporal) continue;
                                 if (str_eq_cstr(data->hovered_display_property_label, dp.label)) {
-                                    hovered_prop_idx = (int)j;
+                                    hovered_prop_idx = j;
                                     hovered_pop_idx = data->hovered_display_property_pop_idx;
                                     break;
                                 }
@@ -5915,7 +5926,9 @@ static void draw_density_volume_window(ApplicationState* data) {
                         data->density_volume.dvr.tf.dirty = true;
                     }
                     ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SameLine();
                     ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    data->density_volume.dvr.tf.min_val = MIN(data->density_volume.dvr.tf.min_val, data->density_volume.dvr.tf.max_val);
 
                     ImGui::Unindent();
                 }

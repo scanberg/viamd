@@ -29,12 +29,24 @@
 #define POP_GPU_SECTION()     { if (glPopDebugGroup) glPopDebugGroup(); }
 
 enum class PlaybackMode { Stopped, Playing };
-enum class InterpolationMode { Nearest, Linear, CubicSpline };
 enum class SelectionGranularity { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
+
+enum class InterpolationMode {
+    Nearest,
+    Linear,
+    CubicSpline,
+    Count
+};
+
+static const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
+    "Nearest",
+    "Linear",
+    "Cubic Spline",
+};
 
 // These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
 enum AtomBit_ {
@@ -562,12 +574,12 @@ struct ApplicationState {
 
         md_array(md_gl_rep_t) gl_reps = nullptr;
         md_array(mat4_t) rep_model_mats = nullptr;
-        mat4_t model_mat = {0};        
+        mat4_t model_mat = {0};
 
         Camera camera = {};
-        quat_t target_ori;
-        vec3_t target_pos;
-        float  target_dist;
+        quat_t target_ori = {};
+        vec3_t target_pos = {};
+        float  target_dist = 0;
     } density_volume;
 
     // --- VISUALS ---
