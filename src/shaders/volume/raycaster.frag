@@ -55,13 +55,36 @@ const float REF_SAMPLING_RATE = 150.0;
 const float ERT_THRESHOLD = 0.995;
 const float samplingRate = 2.0;
 
+// Tonemapping operations (in case one writes to post tonemap)
+float max3(float x, float y, float z) { return max(x, max(y, z)); }
+float rcp(float x) { return 1.0 / x; }
+
+const float exposure_bias = 0.5;
+const float gamma = 2.2;
+
+vec3 Tonemap(vec3 c) {
+    c = c * exposure_bias;
+    c = c * rcp(max3(c.r, c.g, c.b) + 1.0);
+    c = pow(c, vec3(1.0 / gamma));
+    return c;
+}
+
+vec3 TonemapInvert(vec3 c) {
+    c = pow(c, vec3(gamma));
+    c = c * rcp(1.0 - max3(c.r, c.g, c.b));
+    c = c / exposure_bias;
+    return c;
+}
+
 float getVoxel(in vec3 samplePos) {
     return texture(u_tex_volume, samplePos).r;
 }
 
 vec4 classify(in float density) {
-    float t = clamp((density - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
-    return texture(u_tex_tf, vec2(t, 0.5));
+    float t  = clamp((density - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
+    vec4 col = texture(u_tex_tf, vec2(t, 0.5));
+    col.rgb = TonemapInvert(col.rgb);
+    return col;
 }
 
 vec4 compositing(in vec4 dstColor, in vec4 srcColor, in float tIncr) {
@@ -172,27 +195,6 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
     vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
     vec4 view_coord = u_inv_proj_mat * clip_coord;
     return view_coord / view_coord.w;
-}
-
-// Tonemapping operations (in case one writes to post tonemap)
-float max3(float x, float y, float z) { return max(x, max(y, z)); }
-float rcp(float x) { return 1.0 / x; }
-
-const float exposure_bias = 0.5;
-const float gamma = 2.2;
-
-vec3 Tonemap(vec3 c) {
-    c = c * exposure_bias;
-    c = c * rcp(max3(c.r, c.g, c.b) + 1.0);
-    c = pow(c, vec3(1.0 / gamma));
-    return c;
-}
-
-vec3 TonemapInvert(vec3 c) {
-    c = pow(c, vec3(gamma));
-    c = c * rcp(1.0 - max3(c.r, c.g, c.b));
-    c = c / exposure_bias;
-    return c;
 }
 
 /**
