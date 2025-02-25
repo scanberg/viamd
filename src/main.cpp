@@ -4713,6 +4713,8 @@ static void draw_timeline_window(ApplicationState* data) {
                 if (num_temp_props) {
                     for (int i = 0; i < num_props; ++i) {
                         DisplayProperty& dp = data->display_properties[i];
+                        if (dp.type != DisplayProperty::Type_Temporal) continue;
+
                         ImPlot::ItemIcon(dp.color);
                         ImGui::SameLine();
                         ImGui::Selectable(dp.label);
