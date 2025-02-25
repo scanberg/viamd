@@ -3249,9 +3249,6 @@ struct VeloxChem : viamd::EventHandler {
                     if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                         snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
                         draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (i & 1) ? (const char*)u8"α" : (const char*)u8"β");
-                    } else {
-                        snprintf(buf, sizeof(buf), "%.4f", ene_alpha[mo_idx]);
-                        draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (const char*)u8"α");
                     }
                     float width = ImGui::CalcTextSize(buf).x;
                     draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0,0,0), buf);
