@@ -363,14 +363,14 @@ struct VeloxChem : viamd::EventHandler {
         int selected = -1;
         int focused_plot = -1;
 
-        double x_ev_samples[NUM_SAMPLES];
-        double x_unit_samples[NUM_SAMPLES];
-        double* x_unit_peaks;
+        double x_ev_samples[NUM_SAMPLES] = {};
+        double x_unit_samples[NUM_SAMPLES] = {};
+        double* x_unit_peaks = nullptr;
 
         //Spectra Y values, calculated from osc
-        double eps[NUM_SAMPLES];
+        double eps[NUM_SAMPLES] = {};
         //Spectra y values, calculated from rot
-        double ecd[NUM_SAMPLES];
+        double ecd[NUM_SAMPLES] = {};
         
         //double* osc_points;
         //double* cgs_points;
@@ -2986,10 +2986,13 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
                 if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                     ImGui::PushDisabled();
-                }
-                ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
-                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                    int num_x = 2;
+                    ImGui::SliderInt("##Cols", &num_x, 1, 4);
                     ImGui::PopDisabled();
+
+                }
+                else {
+                    ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
                 }
 
                 const double iso_min = 1.0e-4;
@@ -3016,10 +3019,13 @@ struct VeloxChem : viamd::EventHandler {
                     Col_Ene_Beta,
                 };
 
+                float homo_occ = (occ_alpha && occ_beta) ? occ_alpha[homo_idx] + occ_beta[homo_idx] : 0.0f;
+                const char* btn_text = (homo_occ > 1.0f) ? "Goto HOMO" : "Goto SOMO";
+
                 if (ImGui::IsWindowAppearing()) {
                     orb.scroll_to_idx = orb.mo_idx;
                 }
-                if (ImGui::Button("Goto HOMO", ImVec2(-1,0))) {
+                if (ImGui::Button(btn_text, ImVec2(-1, 0))) {
                     orb.scroll_to_idx = homo_idx;
                 }
 
@@ -3061,8 +3067,13 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::SetScrollHereY();
                         }
                         char buf[32];
-                        const char* lbl = (n == homo_idx) ? " HOMO" : (n == lumo_idx) ? " LUMO" : "";
-                        snprintf(buf, sizeof(buf), "%i%s", n + 1, lbl);
+                        const char* lbl = "";
+                        if (n == homo_idx) {
+                            lbl = (homo_occ > 1.0f) ? "HOMO" : "SOMO";
+                        } else if (n == lumo_idx) {
+                            lbl = "LUMO";
+                        }
+                        snprintf(buf, sizeof(buf), "%i %s", n + 1, lbl);
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                         if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
                             if (orb.mo_idx != n) {
@@ -3120,7 +3131,7 @@ struct VeloxChem : viamd::EventHandler {
             for (int i = 0; i < num_mos; ++i) {
                 if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                     vol_mo_idx[i] = beg_mo_idx + i / 2;
-                    vol_mo_type[i] = (i & 1) ? MD_VLX_MO_TYPE_BETA : MD_VLX_MO_TYPE_ALPHA;
+                    vol_mo_type[i] = (i & 1) ? MD_VLX_MO_TYPE_ALPHA : MD_VLX_MO_TYPE_BETA;
                 } else {
                     vol_mo_idx[i] = beg_mo_idx + i;
                     vol_mo_type[i] = MD_VLX_MO_TYPE_ALPHA;
@@ -3213,23 +3224,37 @@ struct VeloxChem : viamd::EventHandler {
                 ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
                 ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
                 if (-1 < mo_idx && mo_idx < num_orbitals()) {
-                    ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
-                    ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y - TEXT_BASE_HEIGHT);
-                    ImVec2 text_pos_br = ImVec2(p1.x - TEXT_BASE_HEIGHT * 0.5f, p1.y);
+                    const ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                    const ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.25f);
+                    const ImVec2 text_pos_br = ImVec2(p1.x - TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+
+                    const char* lbl = "";
+                    if (mo_idx == homo_idx) {
+                        double occ = occ_alpha[mo_idx] + occ_beta[mo_idx];
+                        if (occ > 1.0f) {
+                            lbl = "(HOMO)";
+                        } else {
+                            lbl = "(SOMO)";
+                        }
+                    } else if (mo_idx == lumo_idx) {
+                        lbl = "(LUMO)";
+                    }
+
                     char buf[32];
-                    const char* lbl = (mo_idx == homo_idx) ? " (HOMO)" : (mo_idx == lumo_idx) ? " (LUMO)" : "";
-                    snprintf(buf, sizeof(buf), "%i%s", mo_idx + 1, lbl);
+                    snprintf(buf, sizeof(buf), "%i %s", mo_idx + 1, lbl);
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
 
                     if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                         snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
+                        draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (i & 1) ? (const char*)u8"α" : (const char*)u8"β");
                     } else {
                         snprintf(buf, sizeof(buf), "%.4f", ene_alpha[mo_idx]);
+                        draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (const char*)u8"α");
                     }
-                    ImVec2 size = ImGui::CalcTextSize(buf);
-                    draw_list->AddText(text_pos_br - size, ImColor(0,0,0), buf);
+                    float width = ImGui::CalcTextSize(buf).x;
+                    draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0,0,0), buf);
                 }
             }
             for (int x = 1; x < orb.num_x; ++x) {
