@@ -3216,7 +3216,7 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
         md_array_push(items, item, md_get_temp_allocator());
     }
 
-    const int64_t num_items = md_array_size(items);
+    const int64_t num_items = (int64_t)md_array_size(items);
     if (num_items > 1) sb += "{";
     for (int64_t i = 0; i < num_items; ++i) {
         md_range_t item = items[i];
@@ -6671,45 +6671,56 @@ static void draw_script_editor_window(ApplicationState* data) {
         }
 
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
-        if (hovered_marker && hovered_marker->payload) {
-            if (md_semaphore_try_aquire(&data->script.ir_semaphore)) {
-                defer { md_semaphore_release(&data->script.ir_semaphore); };
-
-                if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
-                    const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
-                    md_bitfield_copy(&data->selection.highlight_mask, bf);
+        if (hovered_marker) {
+            if (!hovered_marker->text.empty()) {
+                ImGui::BeginTooltip();
+                ImGui::Text("%.*s", (int)hovered_marker->text.length(), hovered_marker->text.c_str());
+                if (data->script.sub_idx != -1) {
+                    ImGui::Text("Currently inspected idx: %i", data->script.sub_idx + 1);
                 }
-                else if (hovered_marker->type == MarkerType_Visualization) {
-                    // Clear hovered property
-                    set_hovered_property(data, STR_LIT(""));
+                ImGui::EndTooltip();
+            }
+            if (hovered_marker->payload) {
+                if (md_semaphore_try_aquire(&data->script.ir_semaphore)) {
+                    defer { md_semaphore_release(&data->script.ir_semaphore); };
 
-                    if (md_script_ir_valid(data->script.ir)) {
-                        data->script.vis = {0};
-                        md_script_vis_init(&data->script.vis, frame_alloc);
-                        md_script_vis_ctx_t ctx = {
-                            .ir = data->script.ir,
-                            .mol = &data->mold.mol,
-                            .traj = data->mold.traj,
-                        };
-                        const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
+                    if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
+                        const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
+                        md_bitfield_copy(&data->selection.highlight_mask, bf);
+                    }
+                    else if (hovered_marker->type == MarkerType_Visualization) {
+                        // Clear hovered property
+                        set_hovered_property(data, STR_LIT(""));
 
-                        str_t payload_ident = md_script_payload_ident(payload);
-                        set_hovered_property(data, payload_ident);
-                        md_script_vis_eval_payload(&data->script.vis, payload, -1, &ctx, 0);
-                    
-                        if (!md_bitfield_empty(&data->script.vis.atom_mask)) {
-                            md_bitfield_copy(&data->selection.highlight_mask, &data->script.vis.atom_mask);
+                        if (md_script_ir_valid(data->script.ir)) {
+                            const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
+                            str_t payload_ident = md_script_payload_ident(payload);
+                            size_t payload_dim  = md_script_payload_dim(payload); 
+
+                            if (payload_dim > 1) {
+                                int delta = (int)ImGui::GetIO().MouseWheel;
+                                if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                                    delta *= 10;
+                                }
+                                data->script.sub_idx += delta;
+                                data->script.sub_idx = CLAMP(data->script.sub_idx, -1, (int)payload_dim - 1);
+                            }
+
+                            visualize_payload(data, payload, data->script.sub_idx, 0);
+                            set_hovered_property(data, payload_ident, data->script.sub_idx);
                         }
                     }
-                }
 
-                bool lm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-                bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
-                if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
-                    SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
-                    modify_selection(data, &data->selection.highlight_mask, op);
+                    bool lm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                    bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                    if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
+                        SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
+                        modify_selection(data, &data->selection.highlight_mask, op);
+                    }
                 }
             }
+        } else {
+            data->script.sub_idx = -1;
         }
     }
     ImGui::End();

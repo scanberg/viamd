@@ -696,7 +696,7 @@ struct ApplicationState {
     struct {
         vec4_t point_color      = {1,0,0,0.8f};
         vec4_t line_color       = {0,0,0,0.6f};
-        vec4_t triangle_color   = {1,1,0,0.5f};
+        vec4_t triangle_color   = {0.55f,0.55f,1.0f,0.5f};
 
         str_t text; // The current text in the texteditor
         uint64_t text_hash;
@@ -713,6 +713,9 @@ struct ApplicationState {
 
         // Semaphore to control access to IR
         md_semaphore_t ir_semaphore = {};
+
+        // Controls current subindex being visualized (if array)
+        int sub_idx = -1;
 
         bool compile_ir = false;
         bool eval_init = false;
