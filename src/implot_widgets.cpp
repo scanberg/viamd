@@ -163,4 +163,16 @@ IMPLOT_API bool ColormapQualitative(ImPlotColormap idx) {
     return ImPlot::GetCurrentContext()->ColormapData.IsQual(idx);
 }
 
+IMPLOT_API void SyncAxesY() {
+    ImPlotPlot& plot = *GImPlot->CurrentPlot;
+    for (int s = ImAxis_Y1; s < ImAxis_COUNT; ++s)
+    {
+        ImPlotAxis& axis = plot.Axes[s];
+        double v = ImMax(fabs(axis.FitExtents.Min), fabs(axis.FitExtents.Max));
+        v *= 1.10; // Padding
+        axis.FitExtents.Min = -v;
+        axis.FitExtents.Max = v;
+    }
+}
+
 }  // namespace ImGui

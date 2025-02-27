@@ -1172,11 +1172,6 @@ void TextEditor::Render()
 		}
 
 		if (mHoveredMarker) {
-			if (!mHoveredMarker->text.empty()) {
-				ImGui::BeginTooltip();
-				ImGui::Text("%.*s", (int)mHoveredMarker->text.length(), mHoveredMarker->text.c_str());
-				ImGui::EndTooltip();
-			}
 			drawList->AddRectFilled(hoverBeg, hoverEnd,mHoveredMarker->hoverBgColor);
 		}
 

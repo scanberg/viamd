@@ -875,7 +875,7 @@ int main(int argc, char** argv) {
                 load::LoaderState state = {};
                 bool success = load::init_loader_state(&state, e.path, frame_alloc);
 
-                if (success == false || (e.flags & FileFlags_ShowDialogue) || (state.flags & LoaderStateFlag_RequiresDialogue)) {
+                if (!success || (e.flags & FileFlags_ShowDialogue) || (state.flags & LoaderStateFlag_RequiresDialogue)) {
                     data.load_dataset = LoadDatasetWindowState();
                     str_copy_to_char_buf(data.load_dataset.path_buf, sizeof(data.load_dataset.path_buf), e.path);
                     data.load_dataset.path_changed = true;
@@ -1475,7 +1475,8 @@ static void init_dataset_items(ApplicationState* data) {
                 snprintf(it.query, sizeof(it.query), "resname('%.*s')", (int)resname.len, resname.ptr);
                 it.count = 0;
                 it.fraction = 0;
-                item = md_array_push(data->dataset.residue_names, it, persistent_alloc);
+                md_array_push(data->dataset.residue_names, it, persistent_alloc);
+                item = md_array_last(data->dataset.residue_names);
             }
             item->count += 1;
             item->fraction += fraction_size;
@@ -1499,7 +1500,8 @@ static void init_dataset_items(ApplicationState* data) {
                 snprintf(it.query, sizeof(it.query), "type('%.*s')", (int)label.len, label.ptr);
                 it.count = 0;
                 it.fraction = 0;
-                item = md_array_push(data->dataset.atom_types, it, persistent_alloc);
+                md_array_push(data->dataset.atom_types, it, persistent_alloc);
+                item = md_array_last(data->dataset.atom_types);
             }
             item->count += 1;
         }
@@ -2680,9 +2682,11 @@ static void draw_main_menu(ApplicationState* data) {
 
             // STORED SELECTIONS
             {
+                md_bitfield_clear(&data->selection.highlight_mask);
                 // @NOTE(Robin): This ImGui ItemFlag can be used to force the menu to remain open after buttons are pressed.
                 // Leave it here as a comment if we feel that it is needed in the future
                 //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
+
                 ImGui::Text("Stored Selections");
                 for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
                     auto& sel = data->selection.stored_selections[i];
@@ -2709,19 +2713,19 @@ static void draw_main_menu(ApplicationState* data) {
                         update_all_representations(data);
                     }
                     if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Load the stored selection into the active selection");
+                        ImGui::SetTooltip("Load the stored selection as the active selection");
                         md_bitfield_copy(&data->selection.highlight_mask, &sel.atom_mask);
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Store")) {
-                        ImGui::SetTooltip("Store the active selection into the stored selection");
+                        ImGui::SetTooltip("Store the active selection into this selection");
                         md_bitfield_copy(&sel.atom_mask, &data->selection.selection_mask);
                         data->script.compile_ir = true;
                         update_all_representations(data);
                     }
                     ImGui::SameLine();
                     if (ImGui::DeleteButton("Remove")) {
-                        ImGui::SetTooltip("Remove the stored selection");
+                        ImGui::SetTooltip("Remove this selection");
                         remove_selection(data, i);
                     }
                     ImGui::PopID();
@@ -3124,7 +3128,8 @@ AtomElementMapping* add_atom_elem_mapping(ApplicationState* data, str_t lbl, md_
             .elem = elem,
         };
         str_copy_to_char_buf(mapping.lbl, sizeof(mapping.lbl), lbl);
-        return md_array_push(data->dataset.atom_element_remappings, mapping, persistent_alloc);
+        md_array_push(data->dataset.atom_element_remappings, mapping, persistent_alloc);
+        return md_array_last(data->dataset.atom_element_remappings);
     } else {
         data->dataset.atom_element_remappings[i].elem = elem;
         return &data->dataset.atom_element_remappings[i];
@@ -3211,7 +3216,7 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
         md_array_push(items, item, md_get_temp_allocator());
     }
 
-    const int64_t num_items = md_array_size(items);
+    const int64_t num_items = (int64_t)md_array_size(items);
     if (num_items > 1) sb += "{";
     for (int64_t i = 0; i < num_items; ++i) {
         md_range_t item = items[i];
@@ -3932,11 +3937,18 @@ static void draw_animation_window(ApplicationState* data) {
             md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
             snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
         }
-        if (ImGui::Combo("Interp.", (int*)(&data->animation.interpolation), "Nearest\0Linear\0Cubic Spline\0\0")) {
-            interpolate_atomic_properties(data);
+        if (ImGui::BeginCombo("Interp.", interpolation_mode_str[(int)data->animation.interpolation])) {
+            for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
+                if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
+                    data->animation.interpolation = (InterpolationMode)i;
+                    data->mold.dirty_buffers |= MolBit_ClearVelocity;
+                    interpolate_atomic_properties(data);
+                }
+            }
+            ImGui::EndCombo();
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Interpolation Method for Atom Positions");
+            ImGui::SetTooltip("Interpolation Mode for Atom Positions");
         }
         if (ImGui::SliderScalar(time_label, ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
             data->animation.frame = time_to_frame(t, data->timeline.x_values);
@@ -4187,37 +4199,39 @@ static void draw_representations_window(ApplicationState* state) {
                     ImGui::EndCombo();
                 }
 
-                char lbl[32];
-                auto write_lbl = [&rep_info = state->representation.info, &lbl](int idx) -> const char* {
-                    const char* suffix = "";
-                    if (idx == rep_info.mo_homo_idx) {
-                        suffix = "(HOMO)";
-                    } else if (idx == rep_info.mo_lumo_idx) {
-                        suffix = "(LUMO)";
-                    }
-                    snprintf(lbl, sizeof(lbl), "%i %s", idx + 1, suffix);
-                    return lbl;
-                };
+                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi || rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared) {
+                    char lbl[32];
+                    auto write_lbl = [&rep_info = state->representation.info, &lbl](int idx) -> const char* {
+                        const char* suffix = "";
+                        if (idx == rep_info.mo_homo_idx) {
+                            suffix = "(HOMO)";
+                        } else if (idx == rep_info.mo_lumo_idx) {
+                            suffix = "(LUMO)";
+                        }
+                        snprintf(lbl, sizeof(lbl), "%i %s", idx + 1, suffix);
+                        return lbl;
+                    };
 
-                write_lbl(rep.orbital.orbital_idx);
-                if (ImGui::BeginCombo("Orbital Idx", lbl)) {
-                    for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
-                        int idx = state->representation.info.molecular_orbitals[n].idx;
-                        const bool is_selected = (rep.orbital.orbital_idx == idx);
+                    write_lbl(rep.orbital.orbital_idx);
+                    if (ImGui::BeginCombo("Orbital Idx", lbl)) {
+                        for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
+                            int idx = state->representation.info.molecular_orbitals[n].idx;
+                            const bool is_selected = (rep.orbital.orbital_idx == idx);
                         
-                        write_lbl(idx);
-                        if (ImGui::Selectable(lbl, is_selected)) {
-                            if (rep.orbital.orbital_idx != idx) {
-                                update_rep = true;
+                            write_lbl(idx);
+                            if (ImGui::Selectable(lbl, is_selected)) {
+                                if (rep.orbital.orbital_idx != idx) {
+                                    update_rep = true;
+                                }
+                                rep.orbital.orbital_idx = idx;
                             }
-                            rep.orbital.orbital_idx = idx;
-                        }
 
-                        if (is_selected) {
-                            ImGui::SetItemDefaultFocus();
+                            if (is_selected) {
+                                ImGui::SetItemDefaultFocus();
+                            }
                         }
+                        ImGui::EndCombo();
                     }
-                    ImGui::EndCombo();
                 }
 
                 if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
@@ -4246,7 +4260,7 @@ static void draw_representations_window(ApplicationState* state) {
 
                 //ImGui::Checkbox("Enable Iso-Surface", &rep.orbital.vol.iso.enabled);
 
-                if (rep.orbital.type == OrbitalType::Psi) {
+                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
                     double iso_val = rep.orbital.iso_psi.values[0];
@@ -4255,7 +4269,7 @@ static void draw_representations_window(ApplicationState* state) {
                         rep.orbital.iso_psi.values[1] = -(float)iso_val;
                         rep.orbital.iso_den.values[0] =  (float)(iso_val * iso_val);
                     }
-                } else {
+                } else if (rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared || rep.orbital.type == OrbitalType::ElectronDensity) {
                     const double iso_min = 1.0e-8;
                     const double iso_max = 5.0;
                     double iso_val = rep.orbital.iso_den.values[0];
@@ -4264,14 +4278,16 @@ static void draw_representations_window(ApplicationState* state) {
                         rep.orbital.iso_psi.values[0] =  (float)sqrt(iso_val);
                         rep.orbital.iso_psi.values[1] = -(float)sqrt(iso_val);
                         rep.orbital.iso_den.values[0] =  (float)iso_val;
+                        rep.orbital.iso_den.values[1] =  (float)iso_val;
                     }
                 }
 
-                if (rep.orbital.type == OrbitalType::Psi) {
+                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) {
                     ImGui::ColorEdit4("Color Positive", rep.orbital.iso_psi.colors[0].elem);
                     ImGui::ColorEdit4("Color Negative", rep.orbital.iso_psi.colors[1].elem);
                 } else {
                     ImGui::ColorEdit4("Color Density",  rep.orbital.iso_den.colors[0].elem);
+                    rep.orbital.iso_den.colors[1] = rep.orbital.iso_den.colors[0];
                 }
             }
             ImGui::TreePop();
@@ -4682,38 +4698,45 @@ static void draw_timeline_window(ApplicationState* data) {
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 2));
         defer { ImPlot::PopStyleVar(); };
 
-        if (ImGui::BeginMenuBar()) {
-            DisplayProperty* props = data->display_properties;
-            const int num_props = (int)md_array_size(props);
-            
+        // Filter out temporal display properties
+        int num_temp_props = 0;
+        for (int i = 0; i < md_array_size(data->display_properties); ++i) {
+            if (data->display_properties[i].type == DisplayProperty::Type_Temporal) {
+                num_temp_props += 1;
+            }
+        }
+
+        const int num_props = (int)md_array_size(data->display_properties);
+
+        if (ImGui::BeginMenuBar()) {            
             if (ImGui::BeginMenu("Properties")) {
-                if (num_props) {
+                if (num_temp_props) {
                     for (int i = 0; i < num_props; ++i) {
-                        DisplayProperty& dp = props[i];
-                        if (dp.type == DisplayProperty::Type_Temporal) {
-                            ImPlot::ItemIcon(dp.color);
-                            ImGui::SameLine();
-                            ImGui::Selectable(dp.label);
+                        DisplayProperty& dp = data->display_properties[i];
+                        if (dp.type != DisplayProperty::Type_Temporal) continue;
 
-                            if (ImGui::IsItemHovered()) {
-                                if ((dp.dim > MAX_POPULATION_SIZE)) {
-                                    ImGui::SetTooltip("The property has a large population, only the first %i items will be shown", MAX_POPULATION_SIZE);
-                                }
-                                visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                                set_hovered_property(data, str_from_cstr(dp.label));
-                            }
+                        ImPlot::ItemIcon(dp.color);
+                        ImGui::SameLine();
+                        ImGui::Selectable(dp.label);
 
-                            if (ImGui::BeginDragDropSource()) {
-                                DisplayPropertyDragDropPayload payload = {i};
-                                ImGui::SetDragDropPayload("TEMPORAL_DND", &payload, sizeof(payload));
-                                ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                                ImGui::TextUnformatted(dp.label);
-                                ImGui::EndDragDropSource();
+                        if (ImGui::IsItemHovered()) {
+                            if ((dp.dim > MAX_POPULATION_SIZE)) {
+                                ImGui::SetTooltip("The property has a large population, only the first %i items will be shown", MAX_POPULATION_SIZE);
                             }
+                            visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            set_hovered_property(data, str_from_cstr(dp.label));
+                        }
+
+                        if (ImGui::BeginDragDropSource()) {
+                            DisplayPropertyDragDropPayload payload = {i};
+                            ImGui::SetDragDropPayload("TEMPORAL_DND", &payload, sizeof(payload));
+                            ImPlot::ItemIcon(dp.color); ImGui::SameLine();
+                            ImGui::TextUnformatted(dp.label);
+                            ImGui::EndDragDropSource();
                         }
                     }
                 } else {
-                    ImGui::Text("No properties available, try evaluating the script");
+                    ImGui::Text("No temporal properties available, define and evaluate properties in the script editor");
                 }
                 ImGui::EndMenu();
             }
@@ -4746,7 +4769,7 @@ static void draw_timeline_window(ApplicationState* data) {
         if (num_x_values > 0) {
             ImPlotInputMap old_map = ImPlot::GetInputMap();
 
-            static bool is_dragging = false;
+            static bool is_dragging  = false;
             static bool is_selecting = false;
 
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -4759,8 +4782,6 @@ static void draw_timeline_window(ApplicationState* data) {
             if (!ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
                 is_selecting = false;
             }
-
-            int64_t num_props = md_array_size(data->display_properties);
 
             // Create a temporary 'time' representation of the filters min and max value
             // The visualization uses time units while we store 'frame' units
@@ -4858,7 +4879,6 @@ static void draw_timeline_window(ApplicationState* data) {
                     
                         for (int j = 0; j < num_props; ++j) {
                             DisplayProperty& prop = data->display_properties[j];
-                            if (prop.type != DisplayProperty::Type_Temporal) continue;
                             
                             ImPlotItem* item = ImPlot::GetItem(prop.label);
                             if (!item || !item->Show) {
@@ -4980,11 +5000,11 @@ static void draw_timeline_window(ApplicationState* data) {
                         }
                     } else {
                         if (!str_empty(data->hovered_display_property_label)) {
-                            for (size_t j = 0; j < md_array_size(data->display_properties); ++j) {
+                            for (int j = 0; j < num_props; ++j) {
                                 DisplayProperty& dp = data->display_properties[j];
                                 if (dp.type != DisplayProperty::Type_Temporal) continue;
                                 if (str_eq_cstr(data->hovered_display_property_label, dp.label)) {
-                                    hovered_prop_idx = (int)j;
+                                    hovered_prop_idx = j;
                                     hovered_pop_idx = data->hovered_display_property_pop_idx;
                                     break;
                                 }
@@ -5908,7 +5928,9 @@ static void draw_density_volume_window(ApplicationState* data) {
                         data->density_volume.dvr.tf.dirty = true;
                     }
                     ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SameLine();
                     ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    data->density_volume.dvr.tf.min_val = MIN(data->density_volume.dvr.tf.min_val, data->density_volume.dvr.tf.max_val);
 
                     ImGui::Unindent();
                 }
@@ -6649,45 +6671,56 @@ static void draw_script_editor_window(ApplicationState* data) {
         }
 
         const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
-        if (hovered_marker && hovered_marker->payload) {
-            if (md_semaphore_try_aquire(&data->script.ir_semaphore)) {
-                defer { md_semaphore_release(&data->script.ir_semaphore); };
-
-                if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
-                    const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
-                    md_bitfield_copy(&data->selection.highlight_mask, bf);
+        if (hovered_marker) {
+            if (!hovered_marker->text.empty()) {
+                ImGui::BeginTooltip();
+                ImGui::Text("%.*s", (int)hovered_marker->text.length(), hovered_marker->text.c_str());
+                if (data->script.sub_idx != -1) {
+                    ImGui::Text("Currently inspected idx: %i", data->script.sub_idx + 1);
                 }
-                else if (hovered_marker->type == MarkerType_Visualization) {
-                    // Clear hovered property
-                    set_hovered_property(data, STR_LIT(""));
+                ImGui::EndTooltip();
+            }
+            if (hovered_marker->payload) {
+                if (md_semaphore_try_aquire(&data->script.ir_semaphore)) {
+                    defer { md_semaphore_release(&data->script.ir_semaphore); };
 
-                    if (md_script_ir_valid(data->script.ir)) {
-                        data->script.vis = {0};
-                        md_script_vis_init(&data->script.vis, frame_alloc);
-                        md_script_vis_ctx_t ctx = {
-                            .ir = data->script.ir,
-                            .mol = &data->mold.mol,
-                            .traj = data->mold.traj,
-                        };
-                        const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
+                    if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
+                        const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
+                        md_bitfield_copy(&data->selection.highlight_mask, bf);
+                    }
+                    else if (hovered_marker->type == MarkerType_Visualization) {
+                        // Clear hovered property
+                        set_hovered_property(data, STR_LIT(""));
 
-                        str_t payload_ident = md_script_payload_ident(payload);
-                        set_hovered_property(data, payload_ident);
-                        md_script_vis_eval_payload(&data->script.vis, payload, -1, &ctx, 0);
-                    
-                        if (!md_bitfield_empty(&data->script.vis.atom_mask)) {
-                            md_bitfield_copy(&data->selection.highlight_mask, &data->script.vis.atom_mask);
+                        if (md_script_ir_valid(data->script.ir)) {
+                            const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
+                            str_t payload_ident = md_script_payload_ident(payload);
+                            size_t payload_dim  = md_script_payload_dim(payload); 
+
+                            if (payload_dim > 1) {
+                                int delta = (int)ImGui::GetIO().MouseWheel;
+                                if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                                    delta *= 10;
+                                }
+                                data->script.sub_idx += delta;
+                                data->script.sub_idx = CLAMP(data->script.sub_idx, -1, (int)payload_dim - 1);
+                            }
+
+                            visualize_payload(data, payload, data->script.sub_idx, 0);
+                            set_hovered_property(data, payload_ident, data->script.sub_idx);
                         }
                     }
-                }
 
-                bool lm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-                bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
-                if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
-                    SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
-                    modify_selection(data, &data->selection.highlight_mask, op);
+                    bool lm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                    bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                    if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
+                        SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
+                        modify_selection(data, &data->selection.highlight_mask, op);
+                    }
                 }
             }
+        } else {
+            data->script.sub_idx = -1;
         }
     }
     ImGui::End();
@@ -7869,7 +7902,8 @@ void create_screenshot(ApplicationState* data) {
 // #representation
 static Representation* create_representation(ApplicationState* data, RepresentationType type, ColorMapping color_mapping, str_t filter) {
     ASSERT(data);
-    Representation* rep = md_array_push(data->representation.reps, Representation(), persistent_alloc);
+    md_array_push(data->representation.reps, Representation(), persistent_alloc);
+    Representation* rep = md_array_last(data->representation.reps);
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
@@ -7883,7 +7917,8 @@ static Representation* create_representation(ApplicationState* data, Representat
 
 static Representation* clone_representation(ApplicationState* state, const Representation& rep) {
     ASSERT(state);
-    Representation* clone = md_array_push(state->representation.reps, rep, persistent_alloc);
+    md_array_push(state->representation.reps, rep, persistent_alloc);
+    Representation* clone = md_array_last(state->representation.reps);
     clone->md_rep = {0};
     clone->atom_mask = {0};
     init_representation(state, clone);
@@ -8054,11 +8089,13 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 
     switch (rep->type) {
     case RepresentationType::SpaceFill:
-        rep->type_is_valid = true;
+        rep->type_is_valid = mol.atom.count > 0;
         break;
     case RepresentationType::Licorice:
-    case RepresentationType::BallAndStick:
         rep->type_is_valid = mol.bond.count > 0;
+        break;
+    case RepresentationType::BallAndStick:
+        rep->type_is_valid = mol.atom.count > 0;
         break;
     case RepresentationType::Ribbons:
     case RepresentationType::Cartoon:
@@ -8237,7 +8274,7 @@ static void create_default_representations(ApplicationState* state) {
 done:
     if (orbitals_present) {
         Representation* rep = create_representation(state, RepresentationType::Orbital);
-        snprintf(rep->name, sizeof(rep->name), "homo");
+        snprintf(rep->name, sizeof(rep->name), "orbital");
         rep->enabled = true;
     }
 
@@ -8253,7 +8290,8 @@ static Selection* create_selection(ApplicationState* state, str_t name, md_bitfi
     if (atom_mask) {
         md_bitfield_copy(&sel.atom_mask, atom_mask);
     }
-    return md_array_push(state->selection.stored_selections, sel, persistent_alloc);
+    md_array_push(state->selection.stored_selections, sel, persistent_alloc);
+    return md_array_last(state->selection.stored_selections);
 }
 
 static void clear_selections(ApplicationState* state) {
@@ -8975,7 +9013,7 @@ static void draw_representations_transparent(ApplicationState* state) {
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::Orbital) continue;
 
-        const IsoDesc& iso = (rep.orbital.type == OrbitalType::Psi) ? rep.orbital.iso_psi : rep.orbital.iso_den;
+        const IsoDesc& iso = (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) ? rep.orbital.iso_psi : rep.orbital.iso_den;
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
         update_representation(state, &state->representation.reps[i]);
@@ -9007,9 +9045,9 @@ static void draw_representations_transparent(ApplicationState* state) {
             },
             .iso = {
                 .enabled = iso.enabled,
-                .count  = iso.count,
-                .values = iso.values,
-                .colors = iso.colors,
+                .count   = iso.count,
+                .values  = iso.values,
+                .colors  = iso.colors,
             },
             .dvr = {
                 .enabled = rep.orbital.dvr.enabled,

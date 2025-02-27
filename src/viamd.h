@@ -29,12 +29,24 @@
 #define POP_GPU_SECTION()     { if (glPopDebugGroup) glPopDebugGroup(); }
 
 enum class PlaybackMode { Stopped, Playing };
-enum class InterpolationMode { Nearest, Linear, CubicSpline };
 enum class SelectionGranularity { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
+
+enum class InterpolationMode {
+    Nearest,
+    Linear,
+    CubicSpline,
+    Count
+};
+
+static const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
+    "Nearest",
+    "Linear",
+    "Cubic Spline",
+};
 
 // These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
 enum AtomBit_ {
@@ -94,14 +106,16 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
 };
 
 enum class OrbitalType {
-    Psi,
-    PsiSquared,
+    MolecularOrbitalPsi,
+    MolecularOrbitalPsiSquared,
+    ElectronDensity,
     Count
 };
 
 static const char* orbital_type_str[(int)OrbitalType::Count] = {
-    (const char*)u8"Orbital (Ψ)",
-    (const char*)u8"Density (Ψ²)",
+    (const char*)u8"Molecular Orbital (Ψ)",
+    (const char*)u8"Molecular Orbital Density (Ψ²)",
+    (const char*)u8"Electron Density (ρ)",
 };
 
 enum MolBit_ {
@@ -235,7 +249,7 @@ struct IsoDesc {
 // Event Payload when an orbital is to be evaluated
 struct ComputeOrbital {
     // Input information
-    OrbitalType type = OrbitalType::Psi;
+    OrbitalType type = OrbitalType::MolecularOrbitalPsi;
     int orbital_idx = 0;
     float samples_per_angstrom = 4.0f;
 
@@ -306,7 +320,7 @@ struct Representation {
             int colormap = DEFAULT_COLORMAP;
         } dvr;
 
-        OrbitalType type = OrbitalType::Psi;
+        OrbitalType type = OrbitalType::MolecularOrbitalPsi;
         int orbital_idx = 0;
 		uint64_t vol_hash = 0;
         uint64_t tf_hash = 0;
@@ -572,12 +586,12 @@ struct ApplicationState {
 
         md_array(md_gl_rep_t) gl_reps = nullptr;
         md_array(mat4_t) rep_model_mats = nullptr;
-        mat4_t model_mat = {0};        
+        mat4_t model_mat = {0};
 
         Camera camera = {};
-        quat_t target_ori;
-        vec3_t target_pos;
-        float  target_dist;
+        quat_t target_ori = {};
+        vec3_t target_pos = {};
+        float  target_dist = 0;
     } density_volume;
 
     // --- VISUALS ---
@@ -694,7 +708,7 @@ struct ApplicationState {
     struct {
         vec4_t point_color      = {1,0,0,0.8f};
         vec4_t line_color       = {0,0,0,0.6f};
-        vec4_t triangle_color   = {1,1,0,0.5f};
+        vec4_t triangle_color   = {0.55f,0.55f,1.0f,0.5f};
 
         str_t text; // The current text in the texteditor
         uint64_t text_hash;
@@ -711,6 +725,9 @@ struct ApplicationState {
 
         // Semaphore to control access to IR
         md_semaphore_t ir_semaphore = {};
+
+        // Controls current subindex being visualized (if array)
+        int sub_idx = -1;
 
         bool compile_ir = false;
         bool eval_init = false;
