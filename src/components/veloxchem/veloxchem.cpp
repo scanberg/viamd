@@ -242,8 +242,8 @@ struct VeloxChem : viamd::EventHandler {
     //md_gl_mol_t gl_mol = {};
     md_gl_rep_t gl_rep = {};
 
-    int homo_idx = 0;
-    int lumo_idx = 0;
+    int homo_idx[2] = {};
+    int lumo_idx[2] = {};
 
     // Principal Component Axes of the geometry
     mat3_t PCA = mat3_ident();
@@ -459,8 +459,8 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
                 RepresentationInfo& info = *(RepresentationInfo*)e.payload;
 
-                info.mo_homo_idx = homo_idx;
-                info.mo_lumo_idx = lumo_idx;
+                info.mo_homo_idx = homo_idx[0];
+                info.mo_lumo_idx = lumo_idx[0];
 
                 size_t num_orb = num_orbitals();
                 const double* occ = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
@@ -589,8 +589,11 @@ struct VeloxChem : viamd::EventHandler {
                     // Scf
                     scf.show_window = true;
 
-                    homo_idx = (int)md_vlx_scf_homo_idx(vlx);
-                    lumo_idx = (int)md_vlx_scf_lumo_idx(vlx);
+                    homo_idx[0] = (int)md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+                    homo_idx[1] = (int)md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_BETA);
+
+                    lumo_idx[0] = (int)md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
+                    lumo_idx[1] = (int)md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_BETA);
 
                     vec4_t min_box = vec4_set1( FLT_MAX);
                     vec4_t max_box = vec4_set1(-FLT_MAX);
@@ -712,8 +715,8 @@ struct VeloxChem : viamd::EventHandler {
                     // ORB
                     orb.show_window = true;
                     camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
-                    orb.mo_idx = homo_idx;
-                    orb.scroll_to_idx = homo_idx;
+                    orb.mo_idx = homo_idx[0];
+                    orb.scroll_to_idx = homo_idx[0];
 
                 }
                 else {
@@ -777,11 +780,10 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_gtos_per_lambda = md_vlx_nto_gto_count(vlx);
 
         size_t num_lambdas = 0;
-        const double* occ = md_vlx_rsp_nto_occupancy(vlx, nto_idx);
-        if (occ) {
-            for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
-                double lambda = occ[lumo_idx + lambda_idx];
-                if (lambda < NTO_LAMBDA_CUTOFF_VALUE) {
+        const double* lambda = md_vlx_rsp_nto_lambdas(vlx, nto_idx);
+        if (lambda) {
+            for (size_t i = 0; i < MAX_NTO_LAMBDAS; ++i) {
+                if (lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
                     break;
                 }
                 num_lambdas += 1;
@@ -801,7 +803,6 @@ struct VeloxChem : viamd::EventHandler {
         md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
 
         for (size_t i = 0; i < num_lambdas; ++i) {
-            double lambda = occ[lumo_idx + i];
             if (!md_vlx_nto_gto_extract(temp_gtos, vlx, nto_idx, i, nto_type)) {
                 MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, i);
                 return false;
@@ -809,7 +810,7 @@ struct VeloxChem : viamd::EventHandler {
             size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
             md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
             md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
-            md_array_push(orb_data->orb_scaling, (float)lambda, alloc);
+            md_array_push(orb_data->orb_scaling, (float)lambda[i], alloc);
         }
 
         orb_data->num_gtos = md_array_size(orb_data->gtos);
@@ -819,7 +820,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     bool extract_electron_density_orb_data(md_orbital_data_t* orb_data, double cutoff, md_allocator_i* alloc) {
-        size_t num_mo = md_vlx_scf_homo_idx(vlx);
+        size_t num_mo = MAX(md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA), md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_BETA));
         size_t num_gtos_per_mo = md_vlx_mo_gto_count(vlx);
 
         const double* occ_a = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
@@ -1727,21 +1728,20 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_gtos = 0;
 
         // Only add GTOs from lambdas that has a contribution more than a certain percentage
-        const double* occ = md_vlx_rsp_nto_occupancy(vlx, nto_idx);
-        if (occ) {
-            for (size_t lambda_idx = 0; lambda_idx < 4; ++lambda_idx) {
-                double lambda = occ[lumo_idx + lambda_idx];
-                if (lambda < lambda_cutoff) {
+        const double* lambda = md_vlx_rsp_nto_lambdas(vlx, nto_idx);
+        if (lambda) {
+            for (size_t i = 0; i < MAX_NTO_LAMBDAS; ++i) {
+                if (lambda[i] < lambda_cutoff) {
                     break;
                 }
-                if (!md_vlx_nto_gto_extract(gtos + num_gtos, vlx, nto_idx, lambda_idx, type)) {
-                    MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
+                if (!md_vlx_nto_gto_extract(gtos + num_gtos, vlx, nto_idx, i, type)) {
+                    MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, i);
                     md_free(alloc, gtos, sizeof(md_gto_t) * cap_gto);
                     return false;
                 }
                 // Scale the added GTOs with the lambda value
                 // The sqrt is to ensure that the scaling is linear with the lambda value
-                const double scale = sqrt(lambda);
+                const double scale = sqrt(lambda[i]);
                 for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
                     gtos[i].coeff = (float)(gtos[i].coeff * scale);
                 }
@@ -2965,6 +2965,12 @@ struct VeloxChem : viamd::EventHandler {
             int num_x = (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ? 2 : orb.num_x;
             int num_y = orb.num_y;
 
+            int orb_homo_idx = MAX(homo_idx[0], homo_idx[1]);
+            int orb_lumo_idx = MIN(lumo_idx[0], lumo_idx[1]);
+            if (type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+                orb_lumo_idx = MAX(lumo_idx[0], lumo_idx[1]);
+            }
+
             int num_mos = num_x * num_y;
             int beg_mo_idx = orb.mo_idx - num_mos / 2 + (num_mos % 2 == 0 ? 1 : 0);
             int window_size = num_mos;
@@ -3019,14 +3025,16 @@ struct VeloxChem : viamd::EventHandler {
                     Col_Ene_Beta,
                 };
 
-                float homo_occ = (occ_alpha && occ_beta) ? occ_alpha[homo_idx] + occ_beta[homo_idx] : 0.0f;
-                const char* btn_text = (homo_occ > 1.0f) ? "Goto HOMO" : "Goto SOMO";
+                const char* btn_text = "Goto HOMO";
+                if (type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL && (homo_idx[0] != homo_idx[1])) {
+                    btn_text = "Goto SOMO";
+                }
 
                 if (ImGui::IsWindowAppearing()) {
                     orb.scroll_to_idx = orb.mo_idx;
                 }
                 if (ImGui::Button(btn_text, ImVec2(-1, 0))) {
-                    orb.scroll_to_idx = homo_idx;
+                    orb.scroll_to_idx = homo_idx[0];
                 }
 
                 int num_cols = (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ? 5 : 3;
@@ -3066,14 +3074,10 @@ struct VeloxChem : viamd::EventHandler {
                             orb.scroll_to_idx = -1;
                             ImGui::SetScrollHereY();
                         }
+
                         char buf[32];
-                        const char* lbl = "";
-                        if (n == homo_idx) {
-                            lbl = (homo_occ > 1.0f) ? "HOMO" : "SOMO";
-                        } else if (n == lumo_idx) {
-                            lbl = "LUMO";
-                        }
-                        snprintf(buf, sizeof(buf), "%i %s", n + 1, lbl);
+                        snprintf(buf, sizeof(buf), "%i", n + 1);
+
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                         if (ImGui::Selectable(buf, is_selected, selectable_flags)) {
                             if (orb.mo_idx != n) {
@@ -3081,19 +3085,39 @@ struct VeloxChem : viamd::EventHandler {
                             }
                         }
                         ImGui::TableNextColumn();
-                        if (occ_alpha && occ_beta) {
-                            float occ = occ_alpha[n];
-                            if (type != MD_VLX_SCF_TYPE_UNRESTRICTED) {
-                                occ += occ_beta[n];
+                        if (occ_alpha) {
+                            const char* lbl = "";
+                            double occ = occ_alpha[n];
+                            if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                                if (n == homo_idx[0] && n == orb_homo_idx) {
+                                    lbl = "HOMO";
+                                } else if (n == lumo_idx[0] && n == orb_lumo_idx) {
+                                    lbl = "LUMO";
+                                }
+                            } else {
+                                if (occ_beta) {
+                                    occ += occ_beta[n];
+                                }
+                                if (n == orb_homo_idx) {
+                                    lbl = (homo_idx[0] == homo_idx[1]) ? "HOMO" : "SOMO";
+                                } else if (n == orb_lumo_idx) {
+                                    lbl = "LUMO";
+                                }
                             }
-                            ImGui::Text("%.1f", occ);
+                            ImGui::Text("%.1f %s", occ, lbl);
                         } else {
                             ImGui::Text("-");
                         }
                         if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                             ImGui::TableNextColumn();
                             if (occ_beta) {
-                                ImGui::Text("%.1f", occ_beta[n]);
+                                const char* lbl = "";
+                                if (n == homo_idx[1] && n == orb_homo_idx) {
+                                    lbl = "HOMO";
+                                } else if (n == lumo_idx[1] && n == orb_lumo_idx) {
+                                    lbl = "LUMO";
+                                }
+                                ImGui::Text("%.1f %s", occ_beta[n], lbl);
                             } else {
                                 ImGui::Text("-");
                             }
@@ -3214,6 +3238,8 @@ struct VeloxChem : viamd::EventHandler {
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
 
+            const int num_orbs = (int)num_orbitals();
+
             for (int i = 0; i < num_mos; ++i) {
                 int mo_idx = beg_mo_idx + i;
                 if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
@@ -3223,21 +3249,25 @@ struct VeloxChem : viamd::EventHandler {
                 int y = num_y - i / num_x - 1;
                 ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
                 ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
-                if (-1 < mo_idx && mo_idx < num_orbitals()) {
+                if (-1 < mo_idx && mo_idx < num_orbs) {
                     const ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     const ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.25f);
                     const ImVec2 text_pos_br = ImVec2(p1.x - TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
 
                     const char* lbl = "";
-                    if (mo_idx == homo_idx) {
-                        double occ = occ_alpha[mo_idx] + occ_beta[mo_idx];
-                        if (occ > 1.0f) {
+                    if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                        int j = (i & 1) ? 0 : 1;
+                        if (mo_idx == orb_homo_idx && orb_homo_idx == homo_idx[j]) {
                             lbl = "(HOMO)";
-                        } else {
-                            lbl = "(SOMO)";
+                        } else if (mo_idx == orb_lumo_idx && orb_lumo_idx == lumo_idx[j]) {
+                            lbl = "(LUMO)";
                         }
-                    } else if (mo_idx == lumo_idx) {
-                        lbl = "(LUMO)";
+                    } else {
+                        if (mo_idx == orb_homo_idx) {
+                            lbl = (homo_idx[0] == homo_idx[1]) ? "(HOMO)" : "(SOMO)";
+                        } else if (mo_idx == orb_lumo_idx) {
+                            lbl = "(LUMO)";
+                        }
                     }
 
                     char buf[32];
@@ -3247,8 +3277,10 @@ struct VeloxChem : viamd::EventHandler {
                     draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
 
                     if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-                        snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
                         draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (i & 1) ? (const char*)u8"α" : (const char*)u8"β");
+                        snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
+                    } else {
+                        snprintf(buf, sizeof(buf), "%.4f", ene_alpha[mo_idx]);
                     }
                     float width = ImGui::CalcTextSize(buf).x;
                     draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0,0,0), buf);
@@ -4131,20 +4163,18 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
-            double nto_lambda[MAX_NTO_LAMBDAS] = {};
             int num_lambdas = 1;
             bool reset_view = false;
 
             if (rsp.selected != -1) {
                 // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
                 // If the occupation parameter is less than this it will not be displayed
-                const double* occ = md_vlx_rsp_nto_occupancy(vlx, rsp.selected);
-                if (!occ) {
-                    MD_LOG_ERROR("No occupancy information available for NTOs in veloxchem object");
+                const double* lambda = md_vlx_rsp_nto_lambdas(vlx, rsp.selected);
+                if (!lambda) {
+                    MD_LOG_ERROR("No lambda information available for NTOs in veloxchem object");
                 } else {
-                    for (size_t i = 0; i < ARRAY_SIZE(nto_lambda); ++i) {
-                        nto_lambda[i] = occ[lumo_idx + i];
-                        if (nto_lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
+                    for (size_t i = 0; i < MAX_NTO_LAMBDAS; ++i) {
+                        if (lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
                             num_lambdas = (int)i;
                             break;
                         }
