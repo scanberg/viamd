@@ -114,6 +114,7 @@ static struct {
         GLuint dvr_only = 0;
         GLuint iso_only = 0;
         GLuint dvr_and_iso = 0;
+        GLuint iso_explicit_tf = 0;
         GLuint median = 0;
         GLuint map_volume_to_surface = 0;
     } program;
@@ -153,6 +154,7 @@ void initialize() {
     GLuint f_shader_dvr_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR"));
     GLuint f_shader_iso_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO"));
     GLuint f_shader_dvr_and_iso         = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
+    GLuint f_shader_iso_explicit_tf     = gl::compile_shader_from_source({(const char*)raycaster_iso_explicit_tf_frag, raycaster_iso_explicit_tf_frag_size}, GL_FRAGMENT_SHADER);
 
     GLuint f_shader_map_vol_to_surf     = gl::compile_shader_from_source({(const char*)map_vol_to_surf_frag, map_vol_to_surf_frag_size}, GL_FRAGMENT_SHADER);
 
@@ -162,10 +164,11 @@ void initialize() {
         glDeleteShader(f_shader_dvr_only);
         glDeleteShader(f_shader_iso_only);
         glDeleteShader(f_shader_dvr_and_iso);
+        glDeleteShader(f_shader_iso_explicit_tf);
         glDeleteShader(f_shader_map_vol_to_surf);
     };
 
-    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_dvr_and_iso == 0 || f_shader_map_vol_to_surf == 0) {
+    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_dvr_and_iso == 0 || f_shader_iso_explicit_tf == 0 || f_shader_map_vol_to_surf == 0) {
         MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
@@ -175,6 +178,7 @@ void initialize() {
     if (!gl.program.dvr_only) gl.program.dvr_only = glCreateProgram();
     if (!gl.program.iso_only) gl.program.iso_only = glCreateProgram();
     if (!gl.program.dvr_and_iso) gl.program.dvr_and_iso = glCreateProgram();
+    if (!gl.program.iso_explicit_tf) gl.program.iso_explicit_tf = glCreateProgram();
     if (!gl.program.map_volume_to_surface) gl.program.map_volume_to_surface = glCreateProgram();
 
     {
@@ -196,6 +200,10 @@ void initialize() {
     {
         const GLuint shaders[] = {v_shader_vol, f_shader_dvr_and_iso};
         gl::attach_link_detach(gl.program.dvr_and_iso, shaders, (int)ARRAY_SIZE(shaders));
+    }
+    {
+        const GLuint shaders[] = {v_shader_vol, f_shader_iso_explicit_tf};
+        gl::attach_link_detach(gl.program.iso_explicit_tf, shaders, (int)ARRAY_SIZE(shaders));
     }
     {
         const GLuint shaders[] = {v_shader_vol, f_shader_map_vol_to_surf};
@@ -283,7 +291,7 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
     return mat4_ident();
 }
 
-void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float alpha_scale, int res) {
+void compute_transfer_function_texture_simple_ramp(uint32_t* tex, int colormap, float alpha_scale, int res) {
     ASSERT(tex);
     if (res <= 0) {
         MD_LOG_ERROR("Bad input resolution");
@@ -302,6 +310,33 @@ void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float
         col.w = MIN(160 * t*t, 0.341176f) * alpha_scale;
         col.w = CLAMP(col.w, 0.0f, 1.0f);
 
+        pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
+    }
+
+    gl::init_texture_2D(tex, res, 1, GL_RGBA8);
+    gl::set_texture_2D_data(*tex, pixel_data, GL_RGBA8);
+
+    md_temp_set_pos_back(temp_pos);
+}
+
+void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float alpha, int res) {
+    ASSERT(tex);
+    if (res <= 0) {
+        MD_LOG_ERROR("Bad input resolution");
+        return;
+    }
+
+    size_t temp_pos = md_temp_get_pos();
+    size_t bytes = sizeof(uint32_t) * res;
+    uint32_t* pixel_data = (uint32_t*)md_temp_push(bytes);
+
+    alpha = CLAMP(alpha, 0.0f, 1.0f);
+
+    // Update colormap texture
+    for (int i = 0; i < res; ++i) {
+        float t = CLAMP((float)i / (float)(res - 1), 0.0f, 1.0f);
+        ImVec4 col = ImPlot::SampleColormap(t, colormap);
+        col.w = alpha;
         pixel_data[i] = ImGui::ColorConvertFloat4ToU32(col);
     }
 
@@ -413,8 +448,8 @@ void render_volume(const RenderDesc& desc) {
         time = 0.0f;
     }
 
-    float tf_min = desc.dvr.min_tf_value;
-    float tf_max = desc.dvr.max_tf_value;
+    float tf_min = desc.tf.min_value;
+    float tf_max = desc.tf.max_value;
     float tf_ext = tf_max - tf_min;
     float inv_tf_ext = tf_ext == 0 ? 1.0f : 1.0f / tf_ext;
 
@@ -495,7 +530,12 @@ void render_volume(const RenderDesc& desc) {
     glBindTexture(GL_TEXTURE_3D, desc.texture.volume);
 
     glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
+    glBindTexture(GL_TEXTURE_2D, desc.texture.tf);
+
+    if (desc.texture.tf_volume) {
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_3D, desc.texture.tf_volume);
+    }
 
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tex_result, 0);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -522,16 +562,22 @@ void render_volume(const RenderDesc& desc) {
 
     PUSH_GPU_SECTION("VOLUME RAYCASTING")
     {
-        const GLuint vol_prog = desc.dvr.enabled ? (desc.iso.enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+        GLuint vol_prog = 0;
+        if (desc.texture.tf_volume != 0) {
+            vol_prog = gl.program.iso_explicit_tf;
+        } else {
+            vol_prog = desc.dvr.enabled ? (desc.iso.enabled ? gl.program.dvr_and_iso : gl.program.dvr_only) : gl.program.iso_only;
+        }
 
-        const GLint uniform_block_index     = glGetUniformBlockIndex(vol_prog, "UniformData");
-        const GLint uniform_loc_tex_entry   = glGetUniformLocation(vol_prog, "u_tex_entry");
-        const GLint uniform_loc_tex_exit    = glGetUniformLocation(vol_prog, "u_tex_exit");
-        const GLint uniform_loc_tex_tf      = glGetUniformLocation(vol_prog, "u_tex_tf");
-        const GLint uniform_loc_tex_volume  = glGetUniformLocation(vol_prog, "u_tex_volume");
-        const GLint uniform_loc_iso_values  = glGetUniformLocation(vol_prog, "u_iso.values");
-        const GLint uniform_loc_iso_colors  = glGetUniformLocation(vol_prog, "u_iso.colors");
-        const GLint uniform_loc_iso_count   = glGetUniformLocation(vol_prog, "u_iso.count");
+        const GLint uniform_block_index         = glGetUniformBlockIndex(vol_prog, "UniformData");
+        const GLint uniform_loc_tex_entry       = glGetUniformLocation(vol_prog, "u_tex_entry");
+        const GLint uniform_loc_tex_exit        = glGetUniformLocation(vol_prog, "u_tex_exit");
+        const GLint uniform_loc_tex_tf          = glGetUniformLocation(vol_prog, "u_tex_tf");
+        const GLint uniform_loc_tex_tf_volume   = glGetUniformLocation(vol_prog, "u_tex_tf_volume");
+        const GLint uniform_loc_tex_volume      = glGetUniformLocation(vol_prog, "u_tex_volume");
+        const GLint uniform_loc_iso_values      = glGetUniformLocation(vol_prog, "u_iso.values");
+        const GLint uniform_loc_iso_colors      = glGetUniformLocation(vol_prog, "u_iso.colors");
+        const GLint uniform_loc_iso_count       = glGetUniformLocation(vol_prog, "u_iso.count");
 
         glUseProgram(vol_prog);
 
@@ -539,6 +585,9 @@ void render_volume(const RenderDesc& desc) {
         glUniform1i(uniform_loc_tex_exit,  1);
         glUniform1i(uniform_loc_tex_volume, 2);
         glUniform1i(uniform_loc_tex_tf, 3);
+        if (uniform_loc_tex_tf_volume != -1) {
+            glUniform1i(uniform_loc_tex_tf_volume, 4);
+        }
         glUniform1fv(uniform_loc_iso_values, (GLsizei)iso_count, (const float*)iso_values);
         glUniform4fv(uniform_loc_iso_colors, (GLsizei)iso_count, (const float*)iso_colors);
         glUniform1i(uniform_loc_iso_count, (int)iso_count);

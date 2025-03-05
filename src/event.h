@@ -40,7 +40,7 @@ enum : EventType {
 	EventType_ViamdSelectionMaskChanged		= HASH_STR_LIT("Selection Mask Changed"),
 
 	EventType_RepresentationInfoFill		= HASH_STR_LIT("Representation Info Fill"),
-	EventType_RepresentationComputeOrbital	= HASH_STR_LIT("Representation Compute Orbital"),
+	EventType_RepresentationVolumeEval		= HASH_STR_LIT("Representation Volume Evaluate"),
 
 	//EventType_RepresentationChange		= HASH_STR_LIT("Representation Changed"),
 
@@ -57,7 +57,7 @@ enum : EventPayloadType {
 	EventPayloadType_Representation			= HASH_STR_LIT("Payload Representation"),
 	EventPayloadType_SerializationState		= HASH_STR_LIT("Payload Serialization State"),
 	EventPayloadType_DeserializationState	= HASH_STR_LIT("Payload Deserialization State"),
-	EventPayloadType_ComputeOrbital			= HASH_STR_LIT("Payload Compute Orbital"),
+	EventPayloadType_EvaluateVolume			= HASH_STR_LIT("Payload Evaluate Volume"),
 };
 
 struct Event {

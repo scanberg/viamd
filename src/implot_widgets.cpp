@@ -142,8 +142,10 @@ IMPLOT_API bool ColormapSelection(const char* id, ImPlotColormap* idx, ImVec2 si
     if (ImPlot::ColormapButton(ImPlot::GetColormapName(*idx), size, *idx)) {
         ImGui::OpenPopup("Color Map Selector");
     }
-    if (id && id[0] != '#' && id[1] != '#')
+    if (id && id[0] != '#' && id[1] != '#') {
+        ImGui::SameLine();
         ImGui::Text("%s", id);
+    }
     if (ImGui::BeginPopup("Color Map Selector")) {
         for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
             if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), size, map)) {

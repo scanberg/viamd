@@ -34,6 +34,8 @@
 #define MAX_NTO_LAMBDAS 3
 #define NTO_LAMBDA_CUTOFF_VALUE 0.1
 
+#define AU_TO_EV 27.211396
+
 // Resolution for broadened plots
 #define NUM_SAMPLES 1024
 
@@ -513,28 +515,36 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 break;
             }
-            case viamd::EventType_RepresentationComputeOrbital: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ComputeOrbital);
-                ComputeOrbital& data = *(ComputeOrbital*)e.payload;
+            case viamd::EventType_RepresentationVolumeEval: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_EvaluateVolume);
+                EvaluateVolumePayload& data = *(EvaluateVolumePayload*)e.payload;
 
                 if (!data.output_written) {
-                    if (data.type == OrbitalType::MolecularOrbitalPsi || data.type == OrbitalType::MolecularOrbitalPsiSquared) {
-                        md_gto_eval_mode_t mode = (data.type == OrbitalType::MolecularOrbitalPsi) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
+                    if (str_eq(data.id, STR_LIT("Molecular Orbital")) || str_eq(data.id, STR_LIT("Molecular Orbital Density"))) {
+                        md_gto_eval_mode_t mode = str_eq(data.id, STR_LIT("Molecular Orbital")) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
+                        size_t mo_idx = (size_t)data.aux;
                         if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                            data.output_written = compute_mo_GPU(data.dst_volume, MD_VLX_MO_TYPE_ALPHA, data.orbital_idx, mode, data.samples_per_angstrom);
+                            data.output_written = compute_mo_GPU(data.dst_volume, MD_VLX_MO_TYPE_ALPHA, mo_idx, mode, data.samples_per_angstrom);
                         }
                         else {
-                            data.output_written = (compute_mo_async(data.dst_volume, MD_VLX_MO_TYPE_ALPHA, data.orbital_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
+                            data.output_written = (compute_mo_async(data.dst_volume, MD_VLX_MO_TYPE_ALPHA, mo_idx, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
                         }
-                    } else if (data.type == OrbitalType::ElectronDensity) {
+                    } else if (str_eq(data.id, STR_LIT("Electron Density"))) {
                         md_gto_eval_mode_t mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
                         if (gl_version.major >= 4 && gl_version.minor >= 3) {
                             data.output_written = compute_electron_density_GPU(data.dst_volume, mode, data.samples_per_angstrom);
                         } else {
                             data.output_written = (compute_electron_density_async(data.dst_volume, mode, data.samples_per_angstrom) != task_system::INVALID_ID);
                         }
+                    } else if (str_eq(data.id, STR_LIT("Average Local Ionization Energy"))) {
+                        md_gto_eval_mode_t mode = MD_GTO_EVAL_MODE_PSI_SQUARED;
+                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                            data.output_written = compute_average_local_ionization_energy_GPU(data.dst_volume, mode, data.samples_per_angstrom);
+                        } else {
+                            MD_LOG_DEBUG("This feature is not implemented yet");
+                        }
                     } else {
-                        MD_LOG_ERROR("Invalid Orbital Type supplied to Compute Orbital Event");
+                        MD_LOG_DEBUG("Unrecognized Volume Eval ID: " STR_FMT, STR_ARG(data.id));
                     }
                 }
 
@@ -819,12 +829,14 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    bool extract_electron_density_orb_data(md_orbital_data_t* orb_data, double cutoff, md_allocator_i* alloc) {
+    bool extract_average_local_ionization_energy_orb_data(md_orbital_data_t* orb_data, double cutoff, md_allocator_i* alloc) {
         size_t num_mo = MAX(md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA), md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_BETA));
         size_t num_gtos_per_mo = md_vlx_mo_gto_count(vlx);
 
-        const double* occ_a = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
-        const double* occ_b = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
+        const double* occ_a = md_vlx_scf_mo_occupancy(vlx,  MD_VLX_MO_TYPE_ALPHA);
+        const double* occ_b = md_vlx_scf_mo_occupancy(vlx,  MD_VLX_MO_TYPE_BETA);
+        const double* ene_a = md_vlx_scf_mo_energy(vlx,     MD_VLX_MO_TYPE_ALPHA);
+        const double* ene_b = md_vlx_scf_mo_energy(vlx,     MD_VLX_MO_TYPE_BETA);
         md_vlx_scf_type_t scf_type = md_vlx_scf_type(vlx);
 
         md_array_ensure(orb_data->gtos, num_gtos_per_mo * num_mo, alloc);
@@ -841,12 +853,15 @@ struct VeloxChem : viamd::EventHandler {
 
         if (scf_type == MD_VLX_SCF_TYPE_RESTRICTED || scf_type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
             for (size_t mo_idx = 0; mo_idx < num_mo; ++mo_idx) {
-                double occ = occ_a[mo_idx] + occ_b[mo_idx];
-                md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
-                size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
-                md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
-                md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
-                md_array_push(orb_data->orb_scaling, (float)occ, alloc);
+                double occ = occ_a[mo_idx];
+                if (occ > 0.0) {
+                    double scl = fabs(ene_a[mo_idx]) * occ;
+                    md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
+                    size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+                    md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                    md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+                    md_array_push(orb_data->orb_scaling, (float)scl, alloc);
+                }
             }
         }
         else if (scf_type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
@@ -856,21 +871,83 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (occ_a[mo_idx] > 0.0) {
-                    double occ = occ_a[mo_idx];
+                    double scl = fabs(ene_a[mo_idx]) * occ_a[mo_idx];
                     md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
                     size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
                     md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
                     md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
-                    md_array_push(orb_data->orb_scaling, (float)occ, alloc);
+                    md_array_push(orb_data->orb_scaling, (float)scl, alloc);
                 }
 
                 if (occ_b[mo_idx] > 0.0) {
-                    double occ = occ_b[mo_idx];
+                    double scl = fabs(ene_b[mo_idx]) * occ_b[mo_idx];
                     md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_BETA);
                     size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
                     md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
                     md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
-                    md_array_push(orb_data->orb_scaling, (float)occ, alloc);
+                    md_array_push(orb_data->orb_scaling, (float)scl, alloc);
+                }
+            }
+        }
+
+        orb_data->num_gtos = md_array_size(orb_data->gtos);
+        orb_data->num_orbs = md_array_size(orb_data->orb_scaling);
+
+        return true;
+    }
+
+    bool extract_electron_density_orb_data(md_orbital_data_t* orb_data, double cutoff, md_allocator_i* alloc) {
+        size_t num_mo = MAX(md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA), md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_BETA));
+        size_t num_gtos_per_mo = md_vlx_mo_gto_count(vlx);
+
+        const double* occ_a = md_vlx_scf_mo_occupancy(vlx,  MD_VLX_MO_TYPE_ALPHA);
+        const double* occ_b = md_vlx_scf_mo_occupancy(vlx,  MD_VLX_MO_TYPE_BETA);
+        md_vlx_scf_type_t scf_type = md_vlx_scf_type(vlx);
+
+        md_array_ensure(orb_data->gtos, num_gtos_per_mo * num_mo, alloc);
+        md_array_ensure(orb_data->orb_offsets, num_mo + 1, alloc);
+        md_array_ensure(orb_data->orb_scaling, num_mo, alloc);
+
+        size_t temp_pos = md_temp_get_pos();
+        defer { md_temp_set_pos_back(temp_pos); };
+
+        md_gto_t* temp_gtos = (md_gto_t*)md_temp_push(num_gtos_per_mo * sizeof(md_gto_t));
+        size_t num_temp_gtos = num_gtos_per_mo;
+
+        md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+
+        if (scf_type == MD_VLX_SCF_TYPE_RESTRICTED || scf_type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+            for (size_t mo_idx = 0; mo_idx < num_mo; ++mo_idx) {
+                double scl = occ_a[mo_idx] + occ_b[mo_idx];
+                md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
+                size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+                md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+                md_array_push(orb_data->orb_scaling, (float)scl, alloc);
+            }
+        }
+        else if (scf_type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+            for (size_t mo_idx = 0; mo_idx < num_mo; ++mo_idx) {
+                if (occ_a[mo_idx] == 0.0 && occ_b[mo_idx] == 0.0) {
+                    break;
+                }
+
+                if (occ_a[mo_idx] > 0.0) {
+                    double scl = occ_a[mo_idx];
+                    md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
+                    size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+                    md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                    md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+                    md_array_push(orb_data->orb_scaling, (float)scl, alloc);
+                }
+
+                if (occ_b[mo_idx] > 0.0) {
+                    double scl = occ_b[mo_idx];
+                    md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_BETA);
+                    size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+                    md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                    md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
+                    md_array_push(orb_data->orb_scaling, (float)scl, alloc);
                 }
             }
         }
@@ -1123,6 +1200,31 @@ struct VeloxChem : viamd::EventHandler {
 
         OBB obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
+
+        // Dispatch Compute shader evaluation
+        md_gto_grid_evaluate_orb_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, &orb_data, mode);
+
+        return true;
+    }
+
+    bool compute_average_local_ionization_energy_GPU(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+        if (!vol) {
+            MD_LOG_ERROR("No volume object supplied");
+            return false;
+        }
+
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+        defer { md_vm_arena_destroy(alloc); };
+
+        md_orbital_data_t orb_data = {0};
+        if (!extract_average_local_ionization_energy_orb_data(&orb_data, 1.0e-6, alloc)) {
+            return false;
+        }
+
+        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+
+        OBB obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
+        init_volume_from_OBB(vol, obb, samples_per_unit_length, GL_R32F);
 
         // Dispatch Compute shader evaluation
         md_gto_grid_evaluate_orb_GPU(vol->tex_id, vol->dim, vol->step_size.elem, (const float*)vol->world_to_model.elem, (const float*)vol->index_to_world.elem, &orb_data, mode);
@@ -1742,8 +1844,8 @@ struct VeloxChem : viamd::EventHandler {
                 // Scale the added GTOs with the lambda value
                 // The sqrt is to ensure that the scaling is linear with the lambda value
                 const double scale = sqrt(lambda[i]);
-                for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
-                    gtos[i].coeff = (float)(gtos[i].coeff * scale);
+                for (size_t j = num_gtos; j < num_gtos + num_gtos_per_lambda; ++j) {
+                    gtos[j].coeff = (float)(gtos[j].coeff * scale);
                 }
                 num_gtos += num_gtos_per_lambda;
             }

@@ -14,7 +14,10 @@ mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z);
 mat4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z);
 
 // Simple transfer function 
-void compute_transfer_function_texture_simple(uint32_t* texture, int implot_colormap, float alpha_scale = 1.0f, int resolution = 128);
+void compute_transfer_function_texture_simple_ramp(uint32_t* texture, int implot_colormap, float alpha_scale = 1.0f, int resolution = 128);
+
+void compute_transfer_function_texture_simple(uint32_t* texture, int implot_colormap, float alpha = 1.0f, int resolution = 128);
+
 
 enum ramp_type_t {
     RAMP_TYPE_SAWTOOTH,         /* Alpha ramp: /|/|/|/|   */
@@ -51,7 +54,8 @@ struct RenderDesc {
 
     struct {
         uint32_t volume = 0;
-        uint32_t transfer_function = 0;
+        uint32_t tf_volume = 0;
+        uint32_t tf = 0;
     } texture;
 
     struct {
@@ -80,9 +84,12 @@ struct RenderDesc {
 
     struct {
         bool enabled = false;
-        float min_tf_value = 0.0f;
-        float max_tf_value = 1.0f;
     } dvr;
+
+    struct {
+        float min_value = 0.0f;
+        float max_value = 1.0f;
+    } tf;
 
     // A simplified shading model based on Cook-Torrance
     // Static enviromental radiance (uniformly lit from all directions)
@@ -108,8 +115,6 @@ struct RenderDesc {
 };
 
 void render_volume(const RenderDesc& desc);
-
-
 
 struct MapVolumeToSurfaceDesc {
     struct {

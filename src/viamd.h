@@ -109,6 +109,7 @@ enum class OrbitalType {
     MolecularOrbitalPsi,
     MolecularOrbitalPsiSquared,
     ElectronDensity,
+    AverageLocalIonizationEnergy,
     Count
 };
 
@@ -116,6 +117,15 @@ static const char* orbital_type_str[(int)OrbitalType::Count] = {
     (const char*)u8"Molecular Orbital (Ψ)",
     (const char*)u8"Molecular Orbital Density (Ψ²)",
     (const char*)u8"Electron Density (ρ)",
+    (const char*)u8"Average Local Ionization Energy (I)",
+};
+
+// IDs for passing on to evaluate volume operation
+static str_t orbital_type_id[(int)OrbitalType::Count] = {
+    STR_LIT("Molecular Orbital"),
+    STR_LIT("Molecular Orbital Density"),
+    STR_LIT("Electron Density"),
+    STR_LIT("Average Local Ionization Energy"),
 };
 
 enum MolBit_ {
@@ -160,6 +170,12 @@ enum class VolumeResolution {
     Mid,
     High,
     Count,
+};
+
+static const float volume_resolution_samples_per_angstrom[(int)VolumeResolution::Count] = {
+    4.0f,
+    8.0f,
+    16.0f,
 };
 
 static const char* volume_resolution_str[(int)VolumeResolution::Count] = {
@@ -216,6 +232,10 @@ struct MolecularOrbital {
     float energy;
 };
 
+struct VolumeProperty {
+    str_t label;
+};
+
 // Struct to fill in for the different components
 // Which provides information of what representations are available for the currently loaded datasets
 struct RepresentationInfo {
@@ -246,21 +266,11 @@ struct IsoDesc {
     vec4_t colors[8];
 };
 
-// Event Payload when an orbital is to be evaluated
-struct ComputeOrbital {
-    // Input information
-    OrbitalType type = OrbitalType::MolecularOrbitalPsi;
-    int orbital_idx = 0;
-    float samples_per_angstrom = 4.0f;
-
-    // Output information
-    bool output_written = false;
-    Volume* dst_volume = nullptr;
-};
-
 // Event Payload for evaluating a volume to be used for mapping colors
-struct ComputeVolume {
-
+struct EvaluateVolumePayload {
+    // Input Information
+    str_t id = {};  // Encodes what volume to compute
+    int64_t aux = 0; // Auxillary information
     float samples_per_angstrom = 4.0f;
 
     // Output information
@@ -298,6 +308,7 @@ struct Representation {
 
     struct {
         Volume vol = {};
+        Volume tf_vol = {};
         VolumeResolution resolution = VolumeResolution::Mid;
 
         IsoDesc iso_psi {
@@ -317,13 +328,22 @@ struct Representation {
         struct {
             bool enabled = false;
             uint32_t tf_tex = 0;
+            uint64_t tf_hash = 0;
             int colormap = DEFAULT_COLORMAP;
         } dvr;
+
+        struct {
+            uint32_t tf_tex = 0;
+            uint64_t tf_hash = 0;
+            float min_tf_val = -1.0f;
+            float max_tf_val =  0.1f;
+            float tf_alpha   =  1.0f;
+            int colormap = DEFAULT_COLORMAP;
+        } alie;
 
         OrbitalType type = OrbitalType::MolecularOrbitalPsi;
         int orbital_idx = 0;
 		uint64_t vol_hash = 0;
-        uint64_t tf_hash = 0;
     } orbital;
 
     struct {

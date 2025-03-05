@@ -27,9 +27,9 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         str_t res_name = {};
         int res_id = 0;
         if (mol.residue.count && mol.atom.res_idx) {
-            res_idx = mol.atom.res_idx[atom_idx];
+            res_idx  = mol.atom.res_idx[atom_idx];
             res_name = mol.residue.name[res_idx];
-            res_id = mol.residue.id[res_idx];
+            res_id   = mol.residue.id[res_idx];
             md_range_t range = md_residue_atom_range(mol.residue, res_idx);
             local_idx = atom_idx - range.beg;
         }

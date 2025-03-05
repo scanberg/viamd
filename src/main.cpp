@@ -1816,7 +1816,7 @@ static void update_density_volume(ApplicationState* data) {
     if (data->density_volume.dvr.tf.dirty) {
         data->density_volume.dvr.tf.dirty = false;
         // Update colormap texture
-        volume::compute_transfer_function_texture_simple(&data->density_volume.dvr.tf.id, data->density_volume.dvr.tf.colormap, data->density_volume.dvr.tf.alpha_scale);
+        volume::compute_transfer_function_texture_simple_ramp(&data->density_volume.dvr.tf.id, data->density_volume.dvr.tf.colormap, data->density_volume.dvr.tf.alpha_scale);
     }
 
     int64_t selected_property = -1;
@@ -4269,7 +4269,9 @@ static void draw_representations_window(ApplicationState* state) {
                         rep.orbital.iso_psi.values[1] = -(float)iso_val;
                         rep.orbital.iso_den.values[0] =  (float)(iso_val * iso_val);
                     }
-                } else if (rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared || rep.orbital.type == OrbitalType::ElectronDensity) {
+                } else if (rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared ||
+                           rep.orbital.type == OrbitalType::ElectronDensity ||
+                           rep.orbital.type == OrbitalType::AverageLocalIonizationEnergy) {
                     const double iso_min = 1.0e-8;
                     const double iso_max = 5.0;
                     double iso_val = rep.orbital.iso_den.values[0];
@@ -4285,6 +4287,13 @@ static void draw_representations_window(ApplicationState* state) {
                 if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) {
                     ImGui::ColorEdit4("Color Positive", rep.orbital.iso_psi.colors[0].elem);
                     ImGui::ColorEdit4("Color Negative", rep.orbital.iso_psi.colors[1].elem);
+                } else if (rep.orbital.type == OrbitalType::AverageLocalIonizationEnergy) {
+                    update_rep |= ImPlot::ColormapSelection("Colormap", &rep.orbital.alie.colormap);
+                    update_rep |= ImGui::SliderFloat("Alpha", &rep.orbital.alie.tf_alpha, 0.0f, 1.0f);
+                    //ImGui::RangeSliderFloat("Value Range", &rep.orbital.alie.min_tf_val, &rep.orbital.alie.max_tf_val, -0.01f, 0.01f);
+                    ImGui::SliderFloat("Value Min", &rep.orbital.alie.min_tf_val, -0.1f, 0.1f, "%.8f");
+                    ImGui::SliderFloat("Value Max", &rep.orbital.alie.max_tf_val, -0.1f, 0.1f, "%.8f");
+                    rep.orbital.alie.max_tf_val = MAX(rep.orbital.alie.min_tf_val, rep.orbital.alie.max_tf_val);
                 } else {
                     ImGui::ColorEdit4("Color Density",  rep.orbital.iso_den.colors[0].elem);
                     rep.orbital.iso_den.colors[1] = rep.orbital.iso_den.colors[0];
@@ -6287,7 +6296,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                     },
                     .texture = {
                         .volume = data->density_volume.volume_texture.id,
-                        .transfer_function = data->density_volume.dvr.tf.id,
+                        .tf = data->density_volume.dvr.tf.id,
                     },
                     .matrix = {
                         .model = data->density_volume.model_mat,
@@ -6307,8 +6316,10 @@ static void draw_density_volume_window(ApplicationState* data) {
                     },
                     .dvr = {
                         .enabled = data->density_volume.dvr.enabled,
-                        .min_tf_value = data->density_volume.dvr.tf.min_val,
-                        .max_tf_value = data->density_volume.dvr.tf.max_val,
+                    },
+                    .tf = {
+                        .min_value = data->density_volume.dvr.tf.min_val,
+                        .max_value = data->density_volume.dvr.tf.max_val,
                     },
                     .shading = {
                         .env_radiance = data->visuals.background.color * data->visuals.background.intensity * 0.25f,
@@ -7932,8 +7943,8 @@ static void remove_representation(ApplicationState* state, int idx) {
     auto& rep = state->representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_rep_destroy(rep.md_rep);
-    if (rep.orbital.vol.tex_id != 0) gl::free_texture(&rep.orbital.vol.tex_id);
-    if (rep.orbital.dvr.tf_tex != 0) gl::free_texture(&rep.orbital.dvr.tf_tex);
+    if (rep.orbital.vol.tex_id) gl::free_texture(&rep.orbital.vol.tex_id);
+    if (rep.orbital.dvr.tf_tex) gl::free_texture(&rep.orbital.dvr.tf_tex);
     md_array_swap_back_and_pop(state->representation.reps, idx);
 }
 
@@ -8105,32 +8116,61 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         size_t num_mol_orbitals = md_array_size(state->representation.info.molecular_orbitals);
         rep->type_is_valid = num_mol_orbitals > 0;
         if (num_mol_orbitals > 0) {
-            uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
+            uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.resolution << 8);
+            if (rep->orbital.type == OrbitalType::MolecularOrbitalPsi || rep->orbital.type == OrbitalType::MolecularOrbitalPsiSquared) {
+                vol_hash |= rep->orbital.orbital_idx;
+            }
             if (vol_hash != rep->orbital.vol_hash) {
-                const float samples_per_angstrom[(int)VolumeResolution::Count] = {
-                    4.0f,
-                    8.0f,
-                    16.0f,
-                };
-                ComputeOrbital data = {
-                    .type = rep->orbital.type,
-                    .orbital_idx = rep->orbital.orbital_idx,
-                    .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.resolution],
-                    .dst_volume = &rep->orbital.vol,
-                };
-                viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
+                bool success = false;
+                if (rep->orbital.type == OrbitalType::AverageLocalIonizationEnergy) {
+                    EvaluateVolumePayload eval_alie = {
+                        .id = orbital_type_id[(int)OrbitalType::AverageLocalIonizationEnergy],
+                        .aux = 0,
+                        .samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)rep->orbital.resolution],
+                        .dst_volume = &rep->orbital.tf_vol,
+                    };
+                    viamd::event_system_broadcast_event(viamd::EventType_RepresentationVolumeEval, viamd::EventPayloadType_EvaluateVolume, &eval_alie);
 
-                if (data.output_written) {
+                    EvaluateVolumePayload eval_den = {
+                        .id = orbital_type_id[(int)OrbitalType::ElectronDensity],
+                        .aux = 0,
+                        .samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)rep->orbital.resolution],
+                        .dst_volume = &rep->orbital.vol,
+                    };
+                    viamd::event_system_broadcast_event(viamd::EventType_RepresentationVolumeEval, viamd::EventPayloadType_EvaluateVolume, &eval_den);
+
+                    success = eval_alie.output_written && eval_den.output_written;
+                } else {
+                    EvaluateVolumePayload data = {
+                        .id = orbital_type_id[(int)rep->orbital.type],
+                        .aux = rep->orbital.orbital_idx,
+                        .samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)rep->orbital.resolution],
+                        .dst_volume = &rep->orbital.vol,
+                    };
+                    viamd::event_system_broadcast_event(viamd::EventType_RepresentationVolumeEval, viamd::EventPayloadType_EvaluateVolume, &data);
+                    success = data.output_written;
+                }
+
+                if (success) {
 #if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
                     rep->orbital.vol_hash = vol_hash;
 #endif
                 }
             }
         }
-        uint64_t tf_hash = md_hash64(&rep->orbital.dvr.colormap, sizeof(rep->orbital.dvr.colormap), 0);
-        if (tf_hash != rep->orbital.tf_hash) {
-            rep->orbital.tf_hash = tf_hash;
-            volume::compute_transfer_function_texture_simple(&rep->orbital.dvr.tf_tex, rep->orbital.dvr.colormap);
+        {
+            uint64_t tf_hash = md_hash64(&rep->orbital.alie.colormap, sizeof(rep->orbital.alie.colormap), md_hash64(&rep->orbital.alie.tf_alpha, sizeof(rep->orbital.alie.tf_alpha), 0));
+            if (tf_hash != rep->orbital.alie.tf_hash) {
+                rep->orbital.alie.tf_hash = tf_hash;
+                volume::compute_transfer_function_texture_simple(&rep->orbital.alie.tf_tex, rep->orbital.alie.colormap, rep->orbital.alie.tf_alpha);
+            }
+        }
+        {
+            uint64_t tf_hash = md_hash64(&rep->orbital.dvr.colormap, sizeof(rep->orbital.dvr.colormap), 0);
+            if (tf_hash != rep->orbital.dvr.tf_hash) {
+                rep->orbital.dvr.tf_hash = tf_hash;
+                volume::compute_transfer_function_texture_simple(&rep->orbital.dvr.tf_tex, rep->orbital.dvr.colormap);
+            }
         }
         break;
     }
@@ -9019,6 +9059,17 @@ static void draw_representations_transparent(ApplicationState* state) {
         update_representation(state, &state->representation.reps[i]);
 #endif
 
+        uint32_t tf_vol = 0;
+        uint32_t tf_tex = 0;
+        float tf_min = 0;
+        float tf_max = 0;
+        if (rep.orbital.type == OrbitalType::AverageLocalIonizationEnergy) {
+            tf_vol = rep.orbital.tf_vol.tex_id;
+            tf_tex = rep.orbital.alie.tf_tex;
+            tf_min = rep.orbital.alie.min_tf_val;
+            tf_max = rep.orbital.alie.max_tf_val;
+        }
+
         volume::RenderDesc desc = {
             .render_target = {
                 .depth = state->gbuffer.tex.depth,
@@ -9028,7 +9079,8 @@ static void draw_representations_transparent(ApplicationState* state) {
             },
             .texture = {
                 .volume = rep.orbital.vol.tex_id,
-                .transfer_function = rep.orbital.dvr.tf_tex,
+                .tf_volume = tf_vol,
+                .tf = tf_tex,
             },
             .matrix = {
                 .model = rep.orbital.vol.texture_to_world,
@@ -9050,9 +9102,11 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .colors  = iso.colors,
             },
             .dvr = {
-                .enabled = rep.orbital.dvr.enabled,
-                .min_tf_value = -1.0f,
-                .max_tf_value =  1.0f,
+                .enabled = false,
+            },
+            .tf = {
+                .min_value = tf_min,
+                .max_value = tf_max,
             },
             .shading = {
                 .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25f,
