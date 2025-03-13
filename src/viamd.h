@@ -62,7 +62,7 @@ enum class RepresentationType {
     Ribbons = MD_GL_REP_RIBBONS,
     Cartoon = MD_GL_REP_CARTOON,
     Orbital,
-    DipoleMoment,
+//    DipoleMoment,
     Count
 };
 
@@ -73,7 +73,7 @@ static const char* representation_type_str[(int)RepresentationType::Count] = {
     "Ribbons",
     "Cartoon",
     "Orbital",
-    "Dipole Moment"
+//    "Dipole Moment"
 };
 
 enum class ColorMapping {
@@ -274,7 +274,7 @@ struct Representation {
     bool filt_is_dirty = true;
     bool filt_is_valid = false;
     bool filt_is_dynamic = false;
-    bool dynamic_evaluation = false;
+    bool dynamic_evaluation = true;
 
     // User defined color used in uniform mode
     vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};

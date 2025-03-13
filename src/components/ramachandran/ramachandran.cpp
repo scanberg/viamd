@@ -863,7 +863,7 @@ struct Ramachandran : viamd::EventHandler {
                         } else if (hovered && shift && (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1))) {
                             is_selecting[plot_idx] = true;
                             selection_rect = ImPlotRect(mouse_coord.x, mouse_coord.x, mouse_coord.y, mouse_coord.y);
-                            op = ImGui::IsMouseClicked(0) ? SelectionOperator::Or : SelectionOperator::AndNot;
+                            //op = ImGui::IsMouseClicked(0) ? SelectionOperator::Or : SelectionOperator::AndNot;
                         }
 
                         const double cut_d2 = fabs(ImPlot::PixelsToPlot(9,0).x - ImPlot::PixelsToPlot(0,0).x);
@@ -902,7 +902,7 @@ struct Ramachandran : viamd::EventHandler {
                                         md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[idx];
                                         if (res_idx < (int)mol.residue.count) {
                                             md_range_t range = md_residue_atom_range(mol.residue, res_idx);
-                                            modify_field(highlight_mask, range, op);
+                                            modify_field(highlight_mask, range, SelectionOperator::Or);
                                         }
                                     }
                                 }
@@ -992,6 +992,7 @@ struct Ramachandran : viamd::EventHandler {
 
                         if (ImGui::IsMouseReleased(0) || ImGui::IsMouseReleased(1)) {
                             if (is_selecting[plot_idx]) {
+                                op = ImGui::IsMouseReleased(0) ? SelectionOperator::Or : SelectionOperator::AndNot;
                                 is_selecting[plot_idx] = false;
                                 auto size = selection_rect.Size();
                                 if (size.x == 0 && size.y == 0) {
@@ -1005,7 +1006,7 @@ struct Ramachandran : viamd::EventHandler {
                                 }
                                 else {
                                     // Commit whatever is in the highlight mask
-                                    modify_field(selection_mask, highlight_mask, SelectionOperator::Set);
+                                    modify_field(selection_mask, highlight_mask, op);
                                 }
                             } 
                         }

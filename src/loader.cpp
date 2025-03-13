@@ -627,6 +627,14 @@ bool close(md_trajectory_i* traj) {
     return false;
 }
 
+bool has_recenter_target(md_trajectory_i* traj) {
+    LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
+    if (loaded_traj) {
+        return md_array_size(loaded_traj->recenter_indices) > 0;
+    }
+    return false;
+}
+
 bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask) {
     ASSERT(traj);
 

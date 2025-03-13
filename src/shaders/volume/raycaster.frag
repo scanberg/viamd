@@ -71,7 +71,7 @@ vec3 Tonemap(vec3 c) {
 
 vec3 TonemapInvert(vec3 c) {
     c = pow(c, vec3(gamma));
-    c = c * rcp(1.0 - max3(c.r, c.g, c.b));
+    c = c * rcp(1.0 - min(max3(c.r, c.g, c.b), 0.9999));
     c = c / exposure_bias;
     return c;
 }
@@ -83,7 +83,6 @@ float getVoxel(in vec3 samplePos) {
 vec4 classify(in float density) {
     float t  = clamp((density - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
     vec4 col = texture(u_tex_tf, vec2(t, 0.5));
-    col.rgb = TonemapInvert(col.rgb);
     return col;
 }
 
@@ -254,16 +253,12 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         // apply compositing of volumetric media from last sampling position up till isosurface
         vec4 voxelColor = classify(isovalue);
         if (voxelColor.a > 0) {
-//#if defined(SHADING_ENABLED)
-//            voxelColor.rgb = APPLY_LIGHTING(lighting, voxelColor.rgb, voxelColor.rgb, vec3(1.0),
-//                                       isoposWorld, -gradient, toCameraDir);
-//#endif // SHADING_ENABLED
-
             result = compositing(result, voxelColor, raySegmentLen - tIncr);
         }
 #endif // INCLUDE_DVR
 
         isocolor = shade(isocolor, isoposView, normal);
+        isocolor.rgb = Tonemap(isocolor.rgb);
 
         // blend isosurface color with result accumulated so far
         result += (1.0 - result.a) * isocolor;
@@ -393,6 +388,5 @@ void main() {
         }
     }
 
-    result.rgb = Tonemap(result.rgb);
     out_color = result;
 }

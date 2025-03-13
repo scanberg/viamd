@@ -81,6 +81,9 @@
 #define MEASURE_EVALUATION_TIME 1
 #define FRAME_ALLOCATOR_BYTES MEGABYTES(256)
 
+#define HIGHLIGHT_PULSE_TIME_SCALE  5.0
+#define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
+
 #define LOG_INFO  MD_LOG_INFO
 #define LOG_DEBUG MD_LOG_DEBUG
 #define LOG_ERROR MD_LOG_ERROR
@@ -965,26 +968,23 @@ int main(int argc, char** argv) {
             }
 
             if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
-                if (data.animation.mode == PlaybackMode::Stopped) {
-                    if (data.animation.frame == max_frame && data.animation.fps > 0) {
-                        data.animation.frame = 0;
-                    } else if (data.animation.frame == 0 && data.animation.fps < 0) {
-                        data.animation.frame = max_frame;
-                    }
-                }
-
                 switch (data.animation.mode) {
                     case PlaybackMode::Playing:
                         data.animation.mode = PlaybackMode::Stopped;
+                        data.mold.dirty_buffers |= MolBit_ClearVelocity;
                         break;
                     case PlaybackMode::Stopped:
                         data.animation.mode = PlaybackMode::Playing;
+                        if (data.animation.frame == max_frame && data.animation.fps > 0) {
+                            data.animation.frame = 0;
+                        } else if (data.animation.frame == 0 && data.animation.fps < 0) {
+                            data.animation.frame = max_frame;
+                        }
                         break;
                     default:
                         ASSERT(false);
                 }
 
-                data.mold.dirty_buffers |= MolBit_DirtyPosition;   // Update previous position to not get motion trail when paused
             }
 
             if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME) || ImGui::IsKeyPressed(KEY_SKIP_TO_NEXT_FRAME)) {
@@ -1153,14 +1153,15 @@ int main(int argc, char** argv) {
                     if (!str_empty(cwd)) {
                         md_path_set_cwd(cwd);
                     }
+
+                    const size_t num_stored_selections = md_array_size(data.selection.stored_selections);                       
+                    for (size_t i = 0; i < num_stored_selections; ++i) {
+                        str_t name = str_from_cstr(data.selection.stored_selections[i].name);
+                        const md_bitfield_t* bf = &data.selection.stored_selections[i].atom_mask;
+                        md_script_ir_add_identifier_bitfield(data.script.ir, name, bf);
+                    }
                     
                     if (src_str) {
-                        const size_t num_stored_selections = md_array_size(data.selection.stored_selections);                       
-                        for (size_t i = 0; i < num_stored_selections; ++i) {
-                            str_t name = str_from_cstr(data.selection.stored_selections[i].name);
-                            const md_bitfield_t* bf = &data.selection.stored_selections[i].atom_mask;
-                            md_script_ir_add_identifier_bitfield(data.script.ir, name, bf);
-                        }
                         md_script_ir_compile_from_source(data.script.ir, src_str, &data.mold.mol, data.mold.traj, NULL);
 
                         const size_t num_errors = md_script_ir_num_errors(data.script.ir);
@@ -2367,6 +2368,13 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     state->mold.mol_aabb_max = aabb_max;
     mol.unit_cell = payload.unit_cell;
 
+#if 0
+    if (mol.unit_cell.flags) {
+        vec3_t c = mol.unit_cell.basis * vec3_set1(0.5f);
+        state->mold.model_mat = mat4_translate_vec3(-c);
+    }
+#endif
+
     state->mold.dirty_buffers |= MolBit_DirtyPosition;
     state->mold.dirty_buffers |= MolBit_DirtySecondaryStructure;
 }
@@ -2763,8 +2771,17 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Operations")) {
+            if (load::traj::has_recenter_target(data->mold.traj)) {
+                if (ImGui::Button("Remove Recenter Target")) {
+                    load::traj::set_recenter_target(data->mold.traj, nullptr);
+                    load::traj::clear_cache(data->mold.traj);
+                    interpolate_atomic_properties(data);
+                    data->mold.dirty_buffers |= MolBit_ClearVelocity;
+                }
+            }
+
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
-            if (ImGui::BeginTable("##table", 2, flags)) {
+            if (ImGui::BeginTable("##table", 3, flags)) {
                 /*
                 ImGui::TableSetupColumn("Once", 0);
                 ImGui::TableSetupColumn("Always", 0);
@@ -3920,8 +3937,7 @@ static void draw_animation_window(ApplicationState* data) {
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window)) {
-        const float item_width = MAX(ImGui::GetContentRegionAvail().x - 80.f, 100.f);
-        ImGui::PushItemWidth(item_width);
+
 
         ImGui::Text("Num Frames: %i", num_frames);
 
@@ -3937,6 +3953,9 @@ static void draw_animation_window(ApplicationState* data) {
             md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
             snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
         }
+        const float w = ImGui::CalcTextSize("Time (ps)").x;
+        const float item_width = MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
+        ImGui::PushItemWidth(item_width);
         if (ImGui::BeginCombo("Interp.", interpolation_mode_str[(int)data->animation.interpolation])) {
             for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
                 if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
@@ -3968,7 +3987,9 @@ static void draw_animation_window(ApplicationState* data) {
                 if (ImGui::Button((const char*)ICON_FA_PAUSE)) data->animation.mode = PlaybackMode::Stopped;
                 break;
             case PlaybackMode::Stopped:
-                if (ImGui::Button((const char*)ICON_FA_PLAY)) data->animation.mode = PlaybackMode::Playing;
+                if (ImGui::Button((const char*)ICON_FA_PLAY)) {
+                    data->animation.mode = PlaybackMode::Playing;
+                }
                 break;
             default:
                 ASSERT(false);
@@ -4046,7 +4067,8 @@ static void draw_representations_window(ApplicationState* state) {
         }
 
         if (draw_content) {
-            ImGui::PushItemWidth(item_width);
+            const float inner_item_width = MAX(ImGui::GetContentRegionAvail().x - ImGui::GetStyle().IndentSpacing - ImGui::CalcTextSize("helix scale").x, 100.f);
+            ImGui::PushItemWidth(inner_item_width);
 
             // @TODO: Only display the representations which can be used for the current dataset
             if (!rep.type_is_valid) ImGui::PushInvalid();
@@ -4055,9 +4077,6 @@ static void draw_representations_window(ApplicationState* state) {
                     switch (i) {
                     case (int)RepresentationType::Orbital:
                         if (md_array_size(state->representation.info.molecular_orbitals) == 0) continue;
-                        break;
-                    case (int)RepresentationType::DipoleMoment:
-                        if (md_array_size(state->representation.info.dipole_moments) == 0) continue;
                         break;
                     default:
                         break;
@@ -4151,7 +4170,7 @@ static void draw_representations_window(ApplicationState* state) {
                 if (rep.color_mapping == ColorMapping::Uniform) {
                     update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
                 }
-                ImGui::PushItemWidth(item_width);
+                ImGui::PushItemWidth(inner_item_width);
                 update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
                 switch (rep.type) {
                 case RepresentationType::SpaceFill:
@@ -6239,7 +6258,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                 num_reps = 1;
             }
 
-            md_gl_draw_op_t* draw_ops = 0;
+            md_gl_draw_op_t* draw_ops = md_array_create(md_gl_draw_op_t, num_reps, frame_alloc);
 
             md_gl_draw_op_t op = {};
             op.type = (md_gl_rep_type_t)data->density_volume.rep.type;
@@ -6248,13 +6267,13 @@ static void draw_density_volume_window(ApplicationState* data) {
             for (size_t i = 0; i < num_reps; ++i) {
                 op.rep = data->density_volume.gl_reps[i];
                 op.model_matrix = &data->density_volume.rep_model_mats[i].elem[0][0];
-                md_array_push(draw_ops, op, frame_alloc);
+                draw_ops[i] = op;
             }
 
             md_gl_draw_args_t draw_args = {
                 .shaders = data->mold.gl_shaders,
                 .draw_operations = {
-                    .count = (uint32_t)md_array_size(draw_ops),
+                    .count = md_array_size(draw_ops),
                     .ops = draw_ops
                 },
                 .view_transform = {
@@ -7935,6 +7954,7 @@ static void remove_representation(ApplicationState* state, int idx) {
     if (rep.orbital.vol.tex_id != 0) gl::free_texture(&rep.orbital.vol.tex_id);
     if (rep.orbital.dvr.tf_tex != 0) gl::free_texture(&rep.orbital.dvr.tf_tex);
     md_array_swap_back_and_pop(state->representation.reps, idx);
+    recompute_atom_visibility_mask(state);
 }
 
 static void recompute_atom_visibility_mask(ApplicationState* state) {
@@ -7961,7 +7981,6 @@ static void update_all_representations(ApplicationState* state) {
 
 static bool rep_type_uses_colors(RepresentationType type) {
     switch(type) {
-        case RepresentationType::DipoleMoment:
         case RepresentationType::Orbital:
             return false;
         default:
@@ -8134,9 +8153,6 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         }
         break;
     }
-    case RepresentationType::DipoleMoment:
-        rep->type_is_valid = md_array_size(state->representation.info.dipole_moments) > 0;
-        break;
     default:
         ASSERT(false);
         break;
@@ -8578,14 +8594,14 @@ static void fill_gbuffer(ApplicationState* data) {
     PUSH_GPU_SECTION("G-Buffer fill")
 
     // Immediate mode graphics
+    const mat4_t model_view_mat = data->view.param.matrix.curr.view;
 
-    if (data->simulation_box.enabled && data->mold.mol.unit_cell.basis != mat3_t{0}) {
+    if (data->simulation_box.enabled && data->mold.mol.unit_cell.flags != 0) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-        const mat4_t model_mat = mat4_from_mat3(data->mold.mol.unit_cell.basis);
-        const mat4_t model_view_mat = data->view.param.matrix.curr.view * model_mat;
+        const mat4_t basis_model_mat = mat4_from_mat3(data->mold.mol.unit_cell.basis);
         immediate::set_model_view_matrix(model_view_mat);
         immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
-        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, convert_color(data->simulation_box.color));
+        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, basis_model_mat, convert_color(data->simulation_box.color));
         immediate::render();
         POP_GPU_SECTION()
     }
@@ -8700,7 +8716,10 @@ static void fill_gbuffer(ApplicationState* data) {
             glColorMask(1, 1, 1, 1);
 
             glStencilFunc(GL_EQUAL, 2, 0xFF);
-            postprocessing::blit_color(data->selection.color.highlight.visible);
+            vec4_t col_vis = data->selection.color.highlight.visible;
+            col_vis.w += sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE;
+            //col_vis = hcla_to_rgba(col_vis);
+            postprocessing::blit_color(col_vis);
 
             glStencilFunc(GL_EQUAL, 0, 0xFF);
             postprocessing::blit_color(data->selection.color.highlight.hidden);
@@ -8737,7 +8756,7 @@ static void fill_gbuffer(ApplicationState* data) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
-    immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
+    immediate::set_model_view_matrix(model_view_mat);
     immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
 
     const md_script_vis_t& vis = data->script.vis;
@@ -8745,14 +8764,6 @@ static void fill_gbuffer(ApplicationState* data) {
     const uint32_t point_color      = convert_color(data->script.point_color);
     const uint32_t line_color       = convert_color(data->script.line_color);
     const uint32_t triangle_color   = convert_color(data->script.triangle_color);
-
-    md_array(mat4_t) model_matrices = 0;
-    if (md_array_size(vis.sdf.matrices) > 0) {
-        model_matrices = md_array_create(mat4_t, md_array_size(vis.sdf.matrices), frame_alloc);
-        for (size_t i = 0; i < md_array_size(vis.sdf.matrices); ++i) {
-            model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
-        }
-    }
 
     if (vis.points) {
         immediate::draw_points_v((immediate::Vertex*)vis.points, md_array_size(vis.points), data->script.point_color);
@@ -8765,34 +8776,43 @@ static void fill_gbuffer(ApplicationState* data) {
     if (vis.lines) {
         immediate::draw_lines_v((immediate::Vertex*)vis.lines, md_array_size(vis.lines), data->script.line_color);
     }
-
     
+    md_array(mat4_t) model_matrices = 0;
+    defer { md_array_free(model_matrices, frame_alloc); };
 
-    
+    if (vis.sdf.matrices) {
+        if (md_array_size(vis.sdf.matrices) > 0) {
+            model_matrices = md_array_create(mat4_t, md_array_size(vis.sdf.matrices), frame_alloc);
+            for (size_t i = 0; i < md_array_size(vis.sdf.matrices); ++i) {
+                model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
+            }
+        }
 
-    const vec4_t col_x = {1, 0, 0, 0.7f};
-    const vec4_t col_y = {0, 1, 0, 0.7f};
-    const vec4_t col_z = {0, 0, 1, 0.7f};
-    const float ext = vis.sdf.extent * 0.25f;
-    for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
-        immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
+        const vec4_t col_x = {1, 0, 0, 0.7f};
+        const vec4_t col_y = {0, 1, 0, 0.7f};
+        const vec4_t col_z = {0, 0, 1, 0.7f};
+        const float ext = vis.sdf.extent * 0.25f;
+        for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
+            immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
+        }
     }
     
     immediate::render();
 
-    immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
-    immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
+    // This operation is split in two as this portion requires DEPTH TEST
+    if (model_matrices) {
+        immediate::set_model_view_matrix(model_view_mat);
+        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
     
-    glEnable(GL_DEPTH_TEST);
+        glEnable(GL_DEPTH_TEST);
     
-    const vec3_t box_ext = vec3_set1(vis.sdf.extent);
-    for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
-        immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], data->density_volume.bounding_box_color);
+        const vec3_t box_ext = vec3_set1(vis.sdf.extent);
+        for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
+            immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], data->density_volume.bounding_box_color);
+        }
+
+        immediate::render();
     }
-
-    immediate::render();
-
-    md_array_free(model_matrices, frame_alloc);
 
     md_script_vis_free(&data->script.vis);
 
@@ -8961,6 +8981,7 @@ static void draw_representations_opaque(ApplicationState* data) {
 #endif
         const size_t num_representations = md_array_size(data->representation.reps);
         if (num_representations == 0) return;
+
 
         md_array(md_gl_draw_op_t) draw_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {

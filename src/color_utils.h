@@ -142,6 +142,14 @@ inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 inline vec3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
 inline vec3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
 
+inline vec4_t rgba_to_hcla(vec4_t rgba) {
+    return vec4_from_vec3(rgb_to_hcl(rgba.x, rgba.y, rgba.z), rgba.w);
+}
+
+inline vec4_t hcla_to_rgba(vec4_t hcla) {
+    return vec4_from_vec3(hcl_to_rgb(hcla.x, hcla.y, hcla.z), hcla.w);
+}
+
 constexpr float hue_from_hash(uint32_t hash) {
     return hash / (float)0xFFFFFFFFU;
 }
