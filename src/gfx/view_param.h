@@ -7,6 +7,7 @@ struct ViewParam {
         mat4_t view;
         mat4_t proj;
         mat4_t norm;
+        mat4_t proj_no_jitter;
     };
 
     struct {
