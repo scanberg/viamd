@@ -633,13 +633,14 @@ struct VeloxChem : viamd::EventHandler {
                     mat3_eigen_t eigen = mat3_eigen(C);
                     PCA = mat3_extract_rotation(eigen.vectors);
                     PCA = mat3_orthonormalize(PCA);
+                    mat3_t basis = mat3_transpose(PCA);
 
                     // NTO
                     size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
                     if (num_excited_states > 0) {
 
                         nto.show_window = true;
-                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
+                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, basis, min_aabb, max_aabb, nto.distance_scale);
                         nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * mol.atom.count);
                         MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * mol.atom.count);
 
@@ -714,7 +715,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     // ORB
                     orb.show_window = true;
-                    camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
+                    camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, basis, min_aabb, max_aabb, orb.distance_scale);
                     orb.mo_idx = homo_idx[0];
                     orb.scroll_to_idx = homo_idx[0];
 
@@ -3322,7 +3323,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (reset_view) {
-                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, min_aabb, max_aabb, orb.distance_scale);
+                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, mat3_ident(), min_aabb, max_aabb, orb.distance_scale);
 
                 if (reset_hard) {
                     orb.camera.position         = orb.target.pos;
@@ -4454,7 +4455,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (reset_view) {
-                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, min_aabb, max_aabb, nto.distance_scale);
+                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, mat3_ident(), min_aabb, max_aabb, nto.distance_scale);
                 }
 
                 if (nto.show_coordinate_system_widget) {

@@ -697,6 +697,8 @@ struct ApplicationState {
         vec4_t point_color      = {1,0,0,0.8f};
         vec4_t line_color       = {0,0,0,0.6f};
         vec4_t triangle_color   = {0.55f,0.55f,1.0f,0.5f};
+        vec4_t text_color       = {1,1,1,1};
+        vec4_t text_bg_color    = {0,0,0,0.5f};
 
         str_t text; // The current text in the texteditor
         uint64_t text_hash;

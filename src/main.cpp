@@ -895,10 +895,13 @@ int main(int argc, char** argv) {
                     if (load_dataset_from_file(&data, param)) {
                         data.animation = {};
                         if (param.mol_loader) {
+                            md_bitfield_reset(&data.representation.visibility_mask);
+
                             if (!data.settings.keep_representations) {
                                 clear_representations(&data);
                                 create_default_representations(&data);
                             }
+                            recompute_atom_visibility_mask(&data);
                             interpolate_atomic_properties(&data);
                             data.mold.dirty_buffers |= MolBit_ClearVelocity;
                             reset_view(&data, &data.representation.visibility_mask, true, false);
@@ -1403,6 +1406,42 @@ int main(int argc, char** argv) {
             data.screenshot.path_to_file = {};
         }
 
+        if (data.script.vis.text) {
+            PUSH_CPU_SECTION("Draw vis text");
+            ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
+            if (window) {
+                ImDrawList* dl = window->DrawList;
+                ASSERT(dl);
+
+                const vec2_t res = { (float)data.app.window.width, (float)data.app.window.height };
+                const mat4_t mvp = data.view.param.matrix.curr.proj_no_jitter * data.view.param.matrix.curr.view;
+
+                // Script text
+                const ImU32 text_color = convert_color(data.script.text_color);
+                const ImU32 rect_color = convert_color(data.script.text_bg_color);
+                const float rect_rounding = 5.f;
+                const ImVec2 rect_padding = ImVec2(4.f, 2.f);
+
+                size_t num_text = md_array_size(data.script.vis.text);
+                for (size_t i = 0; i < num_text; ++i) {
+                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(data.script.vis.text[i].pos, 1.0f));
+                    const vec4_t c = p / p.w;
+
+                    str_t str = data.script.vis.text[i].str;
+                    const ImVec2 text_size = ImGui::CalcTextSize(str.beg(), str.end());
+
+                    if (-1 < c.x && c.x < 1 && -1 < c.y && c.y < 1 && -1 < c.z && c.z < 1) {
+                        ImVec2 tc = {(c.x * 0.5f + 0.5f) * res.x, (-c.y * 0.5f + 0.5f) * res.y};
+                        ImVec2 p0 = tc - text_size * 0.5f;
+                        ImVec2 p1 = tc + text_size * 0.5f;
+                        dl->AddRectFilled(p0 - rect_padding, p1 + rect_padding, rect_color, rect_rounding);
+                        dl->AddText(p0, text_color, data.script.vis.text[i].str.beg(), data.script.vis.text[i].str.end());
+                    }
+                }
+            }
+            POP_CPU_SECTION();
+        }
+
         PUSH_GPU_SECTION("Imgui render")
         application::render_imgui(&data.app);
         POP_GPU_SECTION()
@@ -1415,6 +1454,8 @@ int main(int argc, char** argv) {
 
         viamd::event_system_process_event_queue();
         task_system::execute_main_task_queue();
+
+        md_script_vis_free(&data.script.vis);
 
         // Reset frame allocator
         md_vm_arena_reset(frame_alloc);
@@ -2393,39 +2434,42 @@ static void update_view_param(ApplicationState* data) {
     param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera);
     param.matrix.inv.view  = camera_view_to_world_matrix(data->view.camera);
 
+    const float n = data->view.camera.near_plane;
+    const float f = data->view.camera.far_plane;
+    const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
+
     if (data->visuals.temporal_aa.enabled && data->visuals.temporal_aa.jitter) {
         static uint32_t i = 0;
         i = (i+1) % (uint32_t)ARRAY_SIZE(data->view.jitter.sequence);
         param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
             const vec2_t j = param.jitter.curr;
-            const int w = data->gbuffer.width;
-            const int h = data->gbuffer.height;
-            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, w, h, j.x, j.y);
-            param.matrix.inv.proj  = camera_inverse_perspective_projection_matrix(data->view.camera, w, h, j.x, j.y);
+            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
+            param.matrix.inv.proj  = camera_inverse_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
+            param.matrix.curr.proj_no_jitter = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
         } else {
-            const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
             const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
             const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
             const vec2_t j = param.jitter.curr * scl;
-            param.matrix.curr.proj = camera_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
-            param.matrix.inv.proj  = camera_inverse_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, data->view.camera.near_plane, data->view.camera.far_plane);
+            param.matrix.curr.proj = camera_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
+            param.matrix.inv.proj  = camera_inverse_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
+            param.matrix.curr.proj_no_jitter = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
+
         }
     } else {
         param.jitter.curr = {0,0};
         if (data->view.mode == CameraMode::Perspective) {
-            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
+            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
             param.matrix.inv.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
         } else {
             const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
             const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
-            const float n = data->view.camera.near_plane;
-            const float f = data->view.camera.far_plane;
             param.matrix.curr.proj = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
             param.matrix.inv.proj = camera_inverse_orthographic_projection_matrix(-w, w, -h, h, n, f);
         }
+        param.matrix.curr.proj_no_jitter = param.matrix.curr.proj;
     }
 
     param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
@@ -2433,6 +2477,10 @@ static void update_view_param(ApplicationState* data) {
 
 static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera, bool smooth_transition) {
     ASSERT(data);
+
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
+    defer { md_vm_arena_temp_end(tmp); };
+
     if (!data->mold.mol.atom.count) return;
     const auto& mol = data->mold.mol;
 
@@ -2440,27 +2488,45 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
     if (target) {
         popcount = md_bitfield_popcount(target);
     }
-    vec3_t aabb_min = {};
-    vec3_t aabb_max = {};
-    
+
+    int32_t* indices = nullptr;
     if (0 < popcount && popcount < mol.atom.count) {
-        md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-        int32_t* indices = (int32_t*)md_vm_arena_push_array(frame_alloc, int32_t, popcount);
+        indices = (int32_t*)md_vm_arena_push_array(frame_alloc, int32_t, popcount);
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(target));
         if (len > popcount || len > mol.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
             len = MIN(popcount, mol.atom.count);
         }
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, len);
-        md_vm_arena_temp_end(tmp);
-    } else {
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, mol.atom.x, mol.atom.y, mol.atom.z, nullptr, nullptr, mol.atom.count);
+    }
+
+    size_t count = popcount ? popcount : mol.atom.count;
+    vec3_t com = md_util_com_compute(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, &mol.unit_cell);
+    mat3_t C = mat3_covariance_matrix(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, com);
+    mat3_eigen_t eigen = mat3_eigen(C);
+    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+    mat4_t Ri  = mat4_from_mat3(PCA);
+
+    // Compute min and maximum extent along the PCA axes
+    vec3_t min_ext = vec3_set1( FLT_MAX);
+    vec3_t max_ext = vec3_set1(-FLT_MAX);
+    mat3_t basis = mat3_transpose(PCA);
+
+    const float radius = 1.0f;
+
+    // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
+    for (size_t i = 0; i < count; ++i) {
+        int32_t idx = indices ? indices[i] : i;
+        vec3_t xyz = { mol.atom.x[idx], mol.atom.y[idx], mol.atom.z[idx] };
+
+        vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
+        min_ext = vec3_min(min_ext, vec3_sub_f(p, radius));
+        max_ext = vec3_max(max_ext, vec3_add_f(p, radius));
     }
 
     vec3_t optimal_pos;
     quat_t optimal_ori;
     float  optimal_dist;
-    camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, aabb_min, aabb_max);
+    camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, basis, min_ext, max_ext);
 
     if (move_camera) {
         data->view.animation.target_position    = optimal_pos;
@@ -2475,7 +2541,7 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
     }
 
     float max_cell_ext = vec3_reduce_max(mat3_diag(data->mold.mol.unit_cell.basis));
-    float max_aabb_ext = vec3_reduce_max(vec3_sub(aabb_max, aabb_min));
+    float max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
 
     data->view.camera.near_plane = 1.0f;
     data->view.camera.far_plane = 10000.0f;
@@ -6169,9 +6235,9 @@ static void draw_density_volume_window(ApplicationState* data) {
         }
 
         if (reset_view) {
-            vec3_t aabb_min = vec3_from_vec4(data->density_volume.model_mat * vec4_set(0,0,0,1));
-            vec3_t aabb_max = vec3_from_vec4(data->density_volume.model_mat * vec4_set(1,1,1,1));
-            camera_compute_optimal_view(&data->density_volume.target_pos, &data->density_volume.target_ori, &data->density_volume.target_dist, aabb_min, aabb_max);
+            vec3_t min_ext = vec3_set(0,0,0);
+            vec3_t max_ext = vec3_set(1,1,1);
+            camera_compute_optimal_view(&data->density_volume.target_pos, &data->density_volume.target_ori, &data->density_volume.target_dist, mat3_from_mat4(data->density_volume.model_mat), min_ext, max_ext);
 
             if (reset_hard) {
                 data->density_volume.camera.position = data->density_volume.target_pos;
@@ -6642,9 +6708,11 @@ static void draw_script_editor_window(ApplicationState* data) {
                 if (ImGui::MenuItem("Retro blue palette"))
                     editor.SetPalette(TextEditor::GetRetroBluePalette());
                 ImGui::Separator();
-                ImGui::ColorEdit4("Point Color",      data->script.point_color.elem);
-                ImGui::ColorEdit4("Line Color",       data->script.line_color.elem);
-                ImGui::ColorEdit4("Triangle Color",   data->script.triangle_color.elem);
+                ImGui::ColorEdit4("Point Color",    data->script.point_color.elem);
+                ImGui::ColorEdit4("Line Color",     data->script.line_color.elem);
+                ImGui::ColorEdit4("Triangle Color", data->script.triangle_color.elem);
+                ImGui::ColorEdit4("Text Color",     data->script.text_color.elem);
+                ImGui::ColorEdit4("Text Bg Color",  data->script.text_bg_color.elem);
 
                 ImGui::EndMenu();
             }
@@ -6673,7 +6741,7 @@ static void draw_script_editor_window(ApplicationState* data) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
-        const bool valid = md_script_ir_valid(data->script.ir);
+        const bool valid = md_script_ir_valid(data->script.ir) && md_trajectory_num_frames(data->mold.traj) > 0;
 
         if (!valid) ImGui::PushDisabled();
         if (ImGui::Button(btn_text, btn_size)) {
@@ -7959,7 +8027,6 @@ static void remove_representation(ApplicationState* state, int idx) {
 
 static void recompute_atom_visibility_mask(ApplicationState* state) {
     ASSERT(state);
-
     auto& mask = state->representation.visibility_mask;
 
     md_bitfield_clear(&mask);
@@ -8813,8 +8880,6 @@ static void fill_gbuffer(ApplicationState* data) {
 
         immediate::render();
     }
-
-    md_script_vis_free(&data->script.vis);
 
     glEnable(GL_CULL_FACE);
     POP_GPU_SECTION()
