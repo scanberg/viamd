@@ -774,7 +774,7 @@ struct Ramachandran : viamd::EventHandler {
 
             auto formatter = [](double value, char* buff, int size, void* user_data) -> int {
                 const char* suffix = (const char*)user_data;
-                value = deperiodize(value, 0, 360.0);
+                value = deperiodize_ortho(value, 0, 360.0);
                 return snprintf(buff, size, "%g%s", value, suffix);
             };
 
@@ -885,8 +885,8 @@ struct Ramachandran : viamd::EventHandler {
                             double ref_x = (min_x + max_x) * 0.5;
                             double ref_y = (min_y + max_y) * 0.5;
 
-                            mouse_coord.x = deperiodize(mouse_coord.x, ref_x, 360.0);
-                            mouse_coord.y = deperiodize(mouse_coord.y, ref_y, 360.0);
+                            mouse_coord.x = deperiodize_ortho(mouse_coord.x, ref_x, 360.0);
+                            mouse_coord.y = deperiodize_ortho(mouse_coord.y, ref_y, 360.0);
 
                             for (size_t i = 0; i < md_array_size(indices); ++i) {
                                 uint32_t idx = indices[i];
@@ -894,8 +894,8 @@ struct Ramachandran : viamd::EventHandler {
                                 if (mol.protein_backbone.angle[idx].phi == 0 && mol.protein_backbone.angle[idx].psi == 0) continue;
 
                                 ImPlotPoint coord = ImPlotPoint(RAD_TO_DEG(mol.protein_backbone.angle[idx].phi), RAD_TO_DEG(mol.protein_backbone.angle[idx].psi));
-                                coord.x = deperiodize(coord.x, ref_x, 360.0);
-                                coord.y = deperiodize(coord.y, ref_y, 360.0);
+                                coord.x = deperiodize_ortho(coord.x, ref_x, 360.0);
+                                coord.y = deperiodize_ortho(coord.y, ref_y, 360.0);
 
                                 if (is_selecting[plot_idx]) {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
@@ -963,8 +963,8 @@ struct Ramachandran : viamd::EventHandler {
                                     return { INFINITY, INFINITY }; // Hide by INF!
                                 }
 
-                                double x = deperiodize(RAD_TO_DEG(data->coords[idx].x), data->view_center.x, 360.0);
-                                double y = deperiodize(RAD_TO_DEG(data->coords[idx].y), data->view_center.y, 360.0);
+                                double x = deperiodize_ortho(RAD_TO_DEG(data->coords[idx].x), data->view_center.x, 360.0);
+                                double y = deperiodize_ortho(RAD_TO_DEG(data->coords[idx].y), data->view_center.y, 360.0);
                                 return { x, y };
                             };
 

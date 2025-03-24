@@ -2253,8 +2253,8 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::Text("Num Atoms:           %6zu", md_vlx_number_of_atoms(vlx));
                 ImGui::Text("Num Alpha Electrons: %6zu", md_vlx_number_of_alpha_electrons(vlx));
                 ImGui::Text("Num Beta Electrons:  %6zu", md_vlx_number_of_beta_electrons(vlx));
-                ImGui::Text("Molecular Charge:    %6i",  md_vlx_molecular_charge(vlx));
-                ImGui::Text("Spin Multiplicity:   %6i",  md_vlx_spin_multiplicity(vlx));
+                ImGui::Text("Molecular Charge:    %6f",  md_vlx_molecular_charge(vlx));
+                ImGui::Text("Spin Multiplicity:   %6zu", md_vlx_spin_multiplicity(vlx));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
