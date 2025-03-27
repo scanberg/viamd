@@ -271,7 +271,7 @@ struct VeloxChem : viamd::EventHandler {
             .enabled = true,
             .count = 2,
             .values = {0.05f, -0.05},
-            .colors = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}},
+            .colors = {{0.f/255.f,128.f/255.f,128.f/255.f,0.75f}, {255.f/255.f,127.f/255.f,80.f/255.f,0.75f}},
         };
 
         GBuffer gbuf = {};
@@ -330,7 +330,7 @@ struct VeloxChem : viamd::EventHandler {
             .enabled = true,
             .count = 1,
             .values = {0.0025f},
-            .colors = {{0, 0, 0, 0.2f}},
+            .colors = {{255.f/255.f,255.f/255.f,255.f/255.f,0.75f}},
         };
 
         struct {
