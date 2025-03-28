@@ -1,4 +1,4 @@
-#include <core/md_compiler.h>
+﻿#include <core/md_compiler.h>
 
 #if MD_COMPILER_MSVC
 #   ifndef _CRT_SECURE_NO_WARNINGS
@@ -2277,12 +2277,12 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
                         float psi[2] = {src_angles[0][i].psi, src_angles[1][i].psi};
 
-                        phi[1] = deperiodizef(phi[1], phi[0], (float)TWO_PI);
-                        psi[1] = deperiodizef(psi[1], psi[0], (float)TWO_PI);
+                        phi[1] = deperiodize_orthof(phi[1], phi[0], (float)TWO_PI);
+                        psi[1] = deperiodize_orthof(psi[1], psi[0], (float)TWO_PI);
 
                         float final_phi = lerp(phi[0], phi[1], data->t);
                         float final_psi = lerp(psi[0], psi[1], data->t);
-                        mol.protein_backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
+                        mol.protein_backbone.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
                     }
                 });
 
@@ -2303,17 +2303,17 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
                         float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
 
-                        phi[0] = deperiodizef(phi[0], phi[1], (float)TWO_PI);
-                        phi[2] = deperiodizef(phi[2], phi[1], (float)TWO_PI);
-                        phi[3] = deperiodizef(phi[3], phi[2], (float)TWO_PI);
+                        phi[0] = deperiodize_orthof(phi[0], phi[1], (float)TWO_PI);
+                        phi[2] = deperiodize_orthof(phi[2], phi[1], (float)TWO_PI);
+                        phi[3] = deperiodize_orthof(phi[3], phi[2], (float)TWO_PI);
 
-                        psi[0] = deperiodizef(psi[0], psi[1], (float)TWO_PI);
-                        psi[2] = deperiodizef(psi[2], psi[1], (float)TWO_PI);
-                        psi[3] = deperiodizef(psi[3], psi[2], (float)TWO_PI);
+                        psi[0] = deperiodize_orthof(psi[0], psi[1], (float)TWO_PI);
+                        psi[2] = deperiodize_orthof(psi[2], psi[1], (float)TWO_PI);
+                        psi[3] = deperiodize_orthof(psi[3], psi[2], (float)TWO_PI);
 
                         float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], data->t, data->s);
                         float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], data->t, data->s);
-                        mol.protein_backbone.angle[i] = {deperiodizef(final_phi, 0, (float)TWO_PI), deperiodizef(final_psi, 0, (float)TWO_PI)};
+                        mol.protein_backbone.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
                     }
                 });
 

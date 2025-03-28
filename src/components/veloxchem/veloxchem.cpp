@@ -1607,7 +1607,6 @@ struct VeloxChem : viamd::EventHandler {
 
             for (int i = 1; i < nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0 ; j--) {//The bigger ones
-                    bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
                     if (hole_percentages[i] == 0.0) {
                         show_start_text[size_order[i]] = false;
                         break;
@@ -1632,7 +1631,6 @@ struct VeloxChem : viamd::EventHandler {
             });
             for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0; j--) {//The bigger ones
-                    bool overlaps = rectangles[size_order[i]].Overlaps(rectangles[size_order[j]]);
                     if (hole_percentages[i] == 0.0) {
                         show_end_text[size_order[i]] = false;
                         break;
@@ -1743,8 +1741,8 @@ struct VeloxChem : viamd::EventHandler {
                 // Scale the added GTOs with the lambda value
                 // The sqrt is to ensure that the scaling is linear with the lambda value
                 const double scale = sqrt(lambda[i]);
-                for (size_t i = num_gtos; i < num_gtos + num_gtos_per_lambda; ++i) {
-                    gtos[i].coeff = (float)(gtos[i].coeff * scale);
+                for (size_t j = num_gtos; j < num_gtos + num_gtos_per_lambda; ++j) {
+                    gtos[j].coeff = (float)(gtos[j].coeff * scale);
                 }
                 num_gtos += num_gtos_per_lambda;
             }
@@ -2012,7 +2010,6 @@ struct VeloxChem : viamd::EventHandler {
 
         }
     }
-    */
 
     static inline void general_broadening(double* y_out, const double* x, size_t num_samples, const double* y_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma, double intensity), double gamma) {
         double integral = 0;
@@ -2030,6 +2027,7 @@ struct VeloxChem : viamd::EventHandler {
 
         double i_sum = integral;
     }
+    */
 
     static inline void osc_to_eps(double* eps_out, const double* x, size_t num_samples, const double* osc_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
         double c = 137.035999;
@@ -2049,8 +2047,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline void rot_to_eps_delta(double* eps_out, const double* x, size_t num_samples, const double* rot_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
-        double inv = 1 / (22.94);
-        double eV2au = 1 / 27.211396;
+        static const double scl = 1 / (22.94);
 
         for (size_t si = 0; si < num_samples; si++) {
             double sum = 0;
@@ -2058,7 +2055,7 @@ struct VeloxChem : viamd::EventHandler {
                 sum += (*distr_func)(x[si], x_peaks[pi], gamma) * rot_peaks[pi] * x_peaks[pi];
             }
             
-            eps_out[si] = sum * inv;
+            eps_out[si] = sum * scl;
         }
     }
 
@@ -2318,7 +2315,6 @@ struct VeloxChem : viamd::EventHandler {
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                         bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
                         bool is_hov = md_bitfield_test_bit(&state.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
-                        bool hov_col = false;
                         ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                         ImGui::TableNextColumn();
 
@@ -2387,6 +2383,7 @@ struct VeloxChem : viamd::EventHandler {
     } vibration_mode;
 
     void draw_rsp_spectra_export_window(ApplicationState& state) {
+        (void)state;
         ASSERT(&state);
 
         struct ExportFormat {
@@ -2991,16 +2988,9 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::BeginGroup();
 
                 ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
-                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-                    ImGui::PushDisabled();
-                    int num_x = 2;
-                    ImGui::SliderInt("##Cols", &num_x, 1, 4);
-                    ImGui::PopDisabled();
-
-                }
-                else {
-                    ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
-                }
+                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ImGui::PushDisabled();
+                ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
+                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ImGui::PopDisabled();
 
                 const double iso_min = 1.0e-4;
                 const double iso_max = 5.0;
@@ -3614,7 +3604,7 @@ struct VeloxChem : viamd::EventHandler {
             bool hovered = ImGui::IsItemHovered();
             bool focused = ImGui::IsItemFocused();
 
-            ImVec2 coord = ImGui::GetMousePos() - ImGui::GetWindowPos();
+            //ImVec2 coord = ImGui::GetMousePos() - ImGui::GetWindowPos();
 
             ImVec2 canvas_min = ImGui::GetItemRectMin();
             ImVec2 canvas_max = ImGui::GetItemRectMax();
