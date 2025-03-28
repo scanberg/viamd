@@ -292,7 +292,7 @@ struct Representation {
             .enabled = true,
             .count   = 2,
             .values  = {0.05f, -0.05},
-            .colors  = {{0.f/255.f,128.f/255.f,128.f/255.f,0.75f}, {255.f/255.f,127.f/255.f,80.f/255.f,0.75f}},
+            .colors  = {{0.f/255.f,75.f/255.f,135.f/255.f,0.75f}, {255.f/255.f,205.f/255.f,0.f/255.f,0.75f}},
         };
 
         IsoDesc iso_den {
