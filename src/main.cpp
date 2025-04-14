@@ -2208,6 +2208,41 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             break;
     }
 
+    if (state->operations.recalc_bonds) {
+        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
+            const auto& mol = data->state->mold.mol;
+            const float* x = mol.atom.x;
+            const float* y = mol.atom.y;
+            const float* z = mol.atom.z;
+            const md_unit_cell_t* cell = &mol.unit_cell;
+            int offset = data->t < 0.5 ? 0 : 1;
+
+            switch (data->mode) {
+            case InterpolationMode::Nearest: break;
+            case InterpolationMode::Linear:
+                x = data->src_x[0 + offset];
+                y = data->src_y[0 + offset];
+                z = data->src_z[0 + offset];
+                cell = &data->headers[0 + offset].unit_cell;
+            case InterpolationMode::CubicSpline:
+                x = data->src_x[1 + offset];
+                y = data->src_y[1 + offset];
+                z = data->src_z[1 + offset];
+                cell = &data->headers[1 + offset].unit_cell;
+            };
+
+            md_bond_data_t bond = {0};
+            md_allocator_i* alloc = md_get_heap_allocator();
+            md_util_covalent_bonds_compute_exp(&bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, cell, alloc);
+
+            task_system::ID update_bonds = task_system::create_main_task(STR_LIT("## Update bonds"), &bond, &data->state) {
+                
+            }
+            md_gl_mol_set_bonds(data->state->mold.gl_mol, 0, bond.count, bond.pairs, 0);
+        });
+        tasks[num_tasks++] = recalc_bond_task;
+    }
+
     if (state->operations.apply_pbc) {
         task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)mol.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
@@ -2857,6 +2892,7 @@ static void draw_main_menu(ApplicationState* data) {
 
                 bool do_pbc = false;
                 bool do_unwrap = false;
+                bool do_bonds = false;
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -2884,6 +2920,19 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SetItemTooltip("Unwrap structures present in the system (Always)");
 
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                if (ImGui::Button("Recalculate Bonds", ImVec2(button_width, 0))) {
+                    do_bonds = true;
+                }
+                ImGui::SetItemTooltip("Recalculate covalent bonds (Once)");
+
+                ImGui::TableSetColumnIndex(1);
+                if (ImGui::Checkbox("##bonds", &data->operations.recalc_bonds) && data->operations.recalc_bonds) {
+                    do_bonds = true;
+                }
+                ImGui::SetItemTooltip("Recalculate covalent bonds (Always)");
+
                 if (do_pbc) {
                     md_molecule_t& mol = data->mold.mol;
                     md_util_pbc(mol.atom.x, mol.atom.y, mol.atom.z, 0, mol.atom.count, &mol.unit_cell);
@@ -2899,6 +2948,27 @@ static void draw_main_menu(ApplicationState* data) {
                         md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
                     }
                     data->mold.dirty_buffers |= MolBit_DirtyPosition;
+                }
+
+                if (do_bonds) {
+                    const auto& mol = data->mold.mol;
+                    uint32_t frame_idx = (uint32_t)data->animation.frame;
+                    md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
+
+                    float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                    float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                    float* z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                    md_trajectory_frame_header_t frame_header;
+
+                    if (!md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, x, y, z)) {
+                        MD_LOG_ERROR("Failed to extract frame data");
+                    } else {
+                        MD_LOG_DEBUG("RECALCULATING BONDS");
+                        md_bond_data_t bond = {0};
+                        md_util_covalent_bonds_compute_exp(&bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, &frame_header.unit_cell, frame_alloc);
+                        md_gl_mol_set_bonds(data->mold.gl_mol, 0, bond.count, bond.pairs, 0);
+                        md_vm_arena_temp_end(temp_pos);
+                    }
                 }
 
                 ImGui::EndTable();

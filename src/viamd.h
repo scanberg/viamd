@@ -671,6 +671,7 @@ struct ApplicationState {
     struct {
         bool apply_pbc = false;
         bool unwrap_structures = false;
+        bool recalc_bonds = false;
     } operations;
 
     struct {
