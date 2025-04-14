@@ -1,4 +1,4 @@
-#include <core/md_compiler.h>
+﻿#include <core/md_compiler.h>
 
 #if MD_COMPILER_MSVC
 #   ifndef _CRT_SECURE_NO_WARNINGS

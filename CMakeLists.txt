@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 INCLUDE(ext/mdlib/cmake/common.cmake)
 
@@ -54,6 +54,7 @@ set(MD_LINK_STDLIB_STATIC ${VIAMD_LINK_STDLIB_STATIC} CACHE BOOL "" FORCE)
 
 if (VIAMD_ENABLE_VELOXCHEM)
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
+    set(MD_VLX_BASIS_FOLDER "basis")
 endif ()
 
 if (APPLE)
@@ -177,6 +178,11 @@ endif()
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
+endif()
+
+if (VIAMD_ENABLE_VELOXCHEM)
+    create_copy_resource_dir_target(viamd_copy_basis "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis"      "${VIAMD_BIN_DIR}/basis")
+    add_dependencies(viamd viamd_copy_basis)
 endif()
 
 if (VIAMD_ENABLE_DEFAULT_DATASET)

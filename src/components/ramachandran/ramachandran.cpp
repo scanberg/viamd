@@ -1,4 +1,4 @@
-#include <event.h>
+﻿#include <event.h>
 
 #include "density_gen.inl"
 #include "density_gly.inl"
@@ -533,6 +533,11 @@ struct Ramachandran : viamd::EventHandler {
                 draw(state);
                 break;
             }
+            case viamd::EventType_ViamdTopologyInit: {
+                ApplicationState& state = *(ApplicationState*)e.payload;
+                on_topology_init(state);
+                break;
+            }
             case viamd::EventType_ViamdDrawMenu:
                 ImGui::Checkbox("Ramachandran", &show_window);
                 break;
@@ -613,42 +618,39 @@ struct Ramachandran : viamd::EventHandler {
         if (vao) glDeleteVertexArrays(1, &vao);
     }
 
-    void update(ApplicationState& state) {
-        if (show_window && state.mold.mol.protein_backbone.count > 0) {
-            if (backbone_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
+    void on_topology_init(ApplicationState& state) {
+        if (task_system::task_is_running(compute_density_full)) {
+            task_system::task_interrupt(compute_density_full);
+        }
+        if (task_system::task_is_running(compute_density_filt)) {
+            task_system::task_interrupt(compute_density_filt);
+        }
 
-                if (task_system::task_is_running(compute_density_full)) {
-                    task_system::task_interrupt(compute_density_full);
-                }
-                if (task_system::task_is_running(compute_density_filt)) {
-                    task_system::task_interrupt(compute_density_filt);
-                }
+        if (!task_system::task_is_running(compute_density_full) &&
+            !task_system::task_is_running(compute_density_filt))
+        {
+            md_array_shrink(rama_type_indices[0], 0);
+            md_array_shrink(rama_type_indices[1], 0);
+            md_array_shrink(rama_type_indices[2], 0);
+            md_array_shrink(rama_type_indices[3], 0);
 
-                if (!task_system::task_is_running(compute_density_full) &&
-                    !task_system::task_is_running(compute_density_filt))
-                {
-                    backbone_fingerprint = state.trajectory_data.backbone_angles.fingerprint;
-
-                    md_array_shrink(rama_type_indices[0], 0);
-                    md_array_shrink(rama_type_indices[1], 0);
-                    md_array_shrink(rama_type_indices[2], 0);
-                    md_array_shrink(rama_type_indices[3], 0);
-
-                    for (uint32_t i = 0; i < (uint32_t)md_array_size(state.mold.mol.protein_backbone.ramachandran_type); ++i) {
-                        switch (state.mold.mol.protein_backbone.ramachandran_type[i]) {
-                        case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
-                        case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
-                        case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
-                        case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(rama_type_indices[3], i, arena); break;
-                        default: break;
-                        }
-                    }
-
-                    full_fingerprint = 0;
-                    filt_fingerprint = 0;
+            for (uint32_t i = 0; i < (uint32_t)md_array_size(state.mold.mol.protein_backbone.ramachandran_type); ++i) {
+                switch (state.mold.mol.protein_backbone.ramachandran_type[i]) {
+                case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
+                case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
+                case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
+                case MD_RAMACHANDRAN_TYPE_PREPROL: md_array_push(rama_type_indices[3], i, arena); break;
+                default: break;
                 }
             }
 
+            full_fingerprint = 0;
+            filt_fingerprint = 0;
+        }
+    }
+
+    void update(ApplicationState& state) {
+        if (show_window && state.mold.mol.protein_backbone.count > 0) {
             const size_t num_frames = md_trajectory_num_frames(state.mold.traj);
             if (num_frames > 0) {
                 if (full_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {

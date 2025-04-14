@@ -292,14 +292,14 @@ struct Representation {
             .enabled = true,
             .count   = 2,
             .values  = {0.05f, -0.05},
-            .colors  = {{215.f/255.f,25.f/255.f,28.f/255.f,0.75f}, {44.f/255.f,123.f/255.f,182.f/255.f,0.75f}},
+            .colors  = {{0.f/255.f,75.f/255.f,135.f/255.f,0.75f}, {255.f/255.f,205.f/255.f,0.f/255.f,0.75f}},
         };
 
         IsoDesc iso_den {
             .enabled = true,
             .count   = 1,
             .values  = {0.0025f},
-            .colors  = {{0, 0, 0, 0.2f}},
+            .colors  = {{255.f/255.f,255.f/255.f,255.f/255.f,0.75f}},
         };
 
         struct {
