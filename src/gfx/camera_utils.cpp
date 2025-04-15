@@ -199,7 +199,7 @@ void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dis
     *out_dist = dist;
 }
 
-bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, TrackballControllerInput input, TrackballControllerParam param, TrackballFlags flags) {
+bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, const TrackballControllerInput& input, const TrackballControllerParam& param, TrackballFlags flags) {
     ASSERT(position);
     ASSERT(orientation);
     ASSERT(distance);
@@ -234,7 +234,7 @@ bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* d
     return false;
 }
 
-void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_dist, mat3_t in_basis, vec3_t in_min_ext, vec3_t in_max_ext, float distance_scale) {
+void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_dist, const mat3_t& in_basis, const vec3_t& in_min_ext, const vec3_t& in_max_ext, float distance_scale) {
     const vec3_t ext = in_max_ext - in_min_ext;
     const float len = MAX(vec3_length(ext * 0.5f), 5.0f);
 
@@ -270,7 +270,7 @@ void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_di
     *out_dist = vec3_length(pos - cen);
 }
 
-void camera_animate(Camera* camera, quat_t target_ori, vec3_t target_pos, float target_dist, double dt, double target_factor) {
+void camera_animate(Camera* camera, const quat_t& target_ori, const vec3_t& target_pos, float target_dist, double dt, double target_factor) {
     ASSERT(camera);
 
     dt = CLAMP(dt, 1.0 / 1000.0, 1.0 / 20.0);
