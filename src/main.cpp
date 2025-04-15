@@ -2036,6 +2036,14 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     const int64_t frame = (int64_t)time;
     const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
 
+    static int64_t curr_nearest_frame = -1;
+    if (state->animation.interpolation == InterpolationMode::Nearest) {
+        if (curr_nearest_frame == nearest_frame) {
+            return;
+        }
+    }
+    curr_nearest_frame = nearest_frame;
+
     const int64_t frames[4] = {
         MAX(0LL, frame - 1),
         MAX(0LL, frame),
@@ -2209,44 +2217,48 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
 
     if (state->operations.recalc_bonds) {
-        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
-            const auto& mol = data->state->mold.mol;
-            const float* x = mol.atom.x;
-            const float* y = mol.atom.y;
-            const float* z = mol.atom.z;
-            const md_unit_cell_t* cell = &mol.unit_cell;
-            int offset = data->t < 0.5 ? 0 : 1;
+        static int64_t cur_nearest_frame = -1;
+        if (cur_nearest_frame != payload.nearest_frame) {
+            cur_nearest_frame = payload.nearest_frame;
+            task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
+                const auto& mol = data->state->mold.mol;
+                const float* x = mol.atom.x;
+                const float* y = mol.atom.y;
+                const float* z = mol.atom.z;
+                const md_unit_cell_t* cell = &mol.unit_cell;
+                int offset = data->t < 0.5 ? 0 : 1;
 
-            switch (data->mode) {
-            case InterpolationMode::Nearest: break;
-            case InterpolationMode::Linear:
-                x = data->src_x[0 + offset];
-                y = data->src_y[0 + offset];
-                z = data->src_z[0 + offset];
-                cell = &data->headers[0 + offset].unit_cell;
-                break;
-            case InterpolationMode::CubicSpline:
-                x = data->src_x[1 + offset];
-                y = data->src_y[1 + offset];
-                z = data->src_z[1 + offset];
-                cell = &data->headers[1 + offset].unit_cell;
-                break;
-            default:
-                break;
-            };
+                switch (data->mode) {
+                case InterpolationMode::Nearest: break;
+                case InterpolationMode::Linear:
+                    x = data->src_x[0 + offset];
+                    y = data->src_y[0 + offset];
+                    z = data->src_z[0 + offset];
+                    cell = &data->headers[0 + offset].unit_cell;
+                    break;
+                case InterpolationMode::CubicSpline:
+                    x = data->src_x[1 + offset];
+                    y = data->src_y[1 + offset];
+                    z = data->src_z[1 + offset];
+                    cell = &data->headers[1 + offset].unit_cell;
+                    break;
+                default:
+                    break;
+                };
 
-            md_bond_data_t bond = {0};
-            md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-            md_util_covalent_bonds_compute_exp(&bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, cell, arena);
+                md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+                md_bond_data_t* bond  = (md_bond_data_t*)md_arena_allocator_push_zero(arena, sizeof(md_bond_data_t));
+                md_util_covalent_bonds_compute_exp(bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, cell, arena);
 
-            task_system::ID update_bonds = task_system::create_main_task(STR_LIT("## Update bonds"), [&bond, data, arena]() {
-                md_gl_mol_set_bonds(data->state->mold.gl_mol, 0, bond.count, bond.pairs, 0);
-                md_arena_allocator_destroy(arena);
+                task_system::ID update_bonds = task_system::create_main_task(STR_LIT("## Update bonds"), [bond, gl_mol = data->state->mold.gl_mol, arena]() {
+                    md_gl_mol_set_bonds(gl_mol, 0, (uint32_t)bond->count, bond->pairs, 0);
+                    md_arena_allocator_destroy(arena);
+                });
+
+                task_system::enqueue_task(update_bonds);
             });
-
-            task_system::enqueue_task(update_bonds);
-        });
-        tasks[num_tasks++] = recalc_bond_task;
+            tasks[num_tasks++] = recalc_bond_task;
+        }
     }
 
     if (state->operations.apply_pbc) {
@@ -2274,6 +2286,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
 
     {
+        // Calculate a global AABB for the molecule
         task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)mol.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             size_t count = range_end - range_beg;
             const float* x = data->state->mold.mol.atom.x + range_beg;
@@ -2928,7 +2941,7 @@ static void draw_main_menu(ApplicationState* data) {
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("Recalculate Bonds", ImVec2(button_width, 0))) {
+                if (ImGui::Button("Recalc Bonds", ImVec2(button_width, 0))) {
                     do_bonds = true;
                 }
                 ImGui::SetItemTooltip("Recalculate covalent bonds (Once)");
