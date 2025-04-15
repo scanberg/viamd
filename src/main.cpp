@@ -2224,21 +2224,27 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 y = data->src_y[0 + offset];
                 z = data->src_z[0 + offset];
                 cell = &data->headers[0 + offset].unit_cell;
+                break;
             case InterpolationMode::CubicSpline:
                 x = data->src_x[1 + offset];
                 y = data->src_y[1 + offset];
                 z = data->src_z[1 + offset];
                 cell = &data->headers[1 + offset].unit_cell;
+                break;
+            default:
+                break;
             };
 
             md_bond_data_t bond = {0};
-            md_allocator_i* alloc = md_get_heap_allocator();
-            md_util_covalent_bonds_compute_exp(&bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, cell, alloc);
+            md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+            md_util_covalent_bonds_compute_exp(&bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, cell, arena);
 
-            task_system::ID update_bonds = task_system::create_main_task(STR_LIT("## Update bonds"), &bond, &data->state) {
-                
-            }
-            md_gl_mol_set_bonds(data->state->mold.gl_mol, 0, bond.count, bond.pairs, 0);
+            task_system::ID update_bonds = task_system::create_main_task(STR_LIT("## Update bonds"), [&bond, data, arena]() {
+                md_gl_mol_set_bonds(data->state->mold.gl_mol, 0, bond.count, bond.pairs, 0);
+                md_arena_allocator_destroy(arena);
+            });
+
+            task_system::enqueue_task(update_bonds);
         });
         tasks[num_tasks++] = recalc_bond_task;
     }
@@ -2983,7 +2989,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             // Font
             ImFont* font_current = ImGui::GetFont();
-            if (ImGui::BeginCombo("Font", font_current->GetDebugName()))
+            if (ImGui::BeginCombo("Font Size", font_current->GetDebugName()))
             {
                 ImGuiIO& io = ImGui::GetIO();
                 for (int n = 0; n < io.Fonts->Fonts.Size; n++) {

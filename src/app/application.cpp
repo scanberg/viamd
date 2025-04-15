@@ -134,8 +134,8 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     // Superscripts and Subscripts: 0x2070 - 0x209F
     const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x0370, 0x03FF, 0x2070, 0x209F, 0};
     const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
-    const float font_size[] = {16, 18, 20, 24, 32, 36, 40, 48};
-    const char* font_names[] = {"16", "18", "20", "24", "32", "36", "40", "48"};
+    const float font_size[] = {10, 12, 14, 16, 18, 20, 24, 32, 36, 40, 48};
+    const char* font_names[] = {"10", "12", "14", "16", "18", "20", "24", "32", "36", "40", "48"};
 
     STATIC_ASSERT(ARRAY_SIZE(font_size) == ARRAY_SIZE(font_names), "font_size and font_names must have the same size");
     
@@ -160,7 +160,7 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     }
 
     io.Fonts->Build();
-    io.FontDefault = io.Fonts->Fonts[1]; // Set default to 18px
+    io.FontDefault = io.Fonts->Fonts[4]; // Set default to 18px
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window, false) ||
         !ImGui_ImplOpenGL3_Init("#version 150"))

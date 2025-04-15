@@ -24,6 +24,21 @@ enum LoadTrajectoryFlag_ {
 typedef uint32_t LoaderStateFlags;
 typedef uint32_t LoadTrajectoryFlags;
 
+typedef struct FrameLock;
+
+typedef struct FrameData {
+    // Header
+    size_t  num_atoms;
+    int64_t index;
+    double  timestamp;
+    md_unit_cell_t unit_cell;
+
+    // Coordinates
+    float* x;
+    float* y;
+    float* z;
+};
+
 namespace load {
     // This represents a loader state with arguments to load a molecule or trajectory from a file
     struct LoaderState {		
@@ -48,6 +63,7 @@ namespace mol {
 }
 
 namespace traj {
+    typedef uint64_t Handle;
     md_trajectory_loader_i* loader_from_ext(str_t ext);
 
     md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_molecule_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
@@ -58,6 +74,28 @@ namespace traj {
 
     bool clear_cache(md_trajectory_i* traj);
     size_t num_cache_frames(md_trajectory_i* traj);
+
+
+    // New interface
+
+    size_t set_cache_memory_budget(size_t megabytes);
+
+    Handle open(str_t filename);
+    void   close(Handle traj);
+
+    md_bitfield_t* get_recenter_target(Handle traj);
+    bool set_recenter_target(Handle traj, const md_bitfield_t* atom_mask);
+
+    bool evict_from_cache(Handle traj);
+
+    // This operation pins a frame in the cache, which will ensures that it cannot be evicted by other threads.
+    // If the frames data is not present in the cache, it will load the data first.
+    bool pin_frame    (Handle traj, FrameLock* lock, FrameData* out_frame_data, size_t frame_idx);
+
+    // This function attempts to pin a frame in place, but will only succeeed if it is already in the cache.
+    bool try_pin_frame(Handle traj, FrameLock* lock, FrameData* out_frame_data, size_t frame_idx);
+
+    void unpin_frame  (Handle traj, FrameLock* lock);
 }
 
 }  // namespace load
