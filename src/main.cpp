@@ -620,7 +620,7 @@ static void save_workspace(ApplicationState* data, str_t file);
 static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
 static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
 
-static void create_screenshot(ApplicationState* data);
+static void create_screenshot(str_t path);
 
 // Representations
 static Representation* create_representation(ApplicationState* data, RepresentationType type = RepresentationType::SpaceFill,
@@ -1344,10 +1344,19 @@ int main(int argc, char** argv) {
             reset_view(&data, &data.selection.highlight_mask, true, true);
         }
 
+        bool do_screenshot = !str_empty(data.screenshot.path_to_file);
+
+        uint32_t gbuffer_target_width  = data.app.framebuffer.width;
+        uint32_t gbuffer_target_height = data.app.framebuffer.height;
+        if (do_screenshot) {
+            gbuffer_target_width  = data.screenshot.res_x;
+            gbuffer_target_height = data.screenshot.res_y;
+        }
+
         // Resize Framebuffer
-        if ((data.gbuffer.width != data.app.framebuffer.width || data.gbuffer.height != data.app.framebuffer.height) &&
-            (data.app.framebuffer.width != 0 && data.app.framebuffer.height != 0)) {
-            init_gbuffer(&data.gbuffer, data.app.framebuffer.width, data.app.framebuffer.height);
+        if ((data.gbuffer.width != gbuffer_target_width || data.gbuffer.height != gbuffer_target_height) &&
+            (gbuffer_target_width != 0 && gbuffer_target_height != 0)) {
+            init_gbuffer(&data.gbuffer, gbuffer_target_width, gbuffer_target_height);
             postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
         }
 
@@ -1390,21 +1399,23 @@ int main(int argc, char** argv) {
         clear_gbuffer(&data.gbuffer);
         fill_gbuffer(&data);
 
-        // Activate backbuffer
         glDisable(GL_DEPTH_TEST);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glViewport(0, 0, data.app.framebuffer.width, data.app.framebuffer.height);
-        glDrawBuffer(GL_BACK);
-        glClear(GL_COLOR_BUFFER_BIT);
+
+        if (do_screenshot) {
+            // Activate gbuffer to store screenshot
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.gbuffer.fbo);
+            glViewport(0, 0, data.gbuffer.width, data.gbuffer.height);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        }
+        else {
+            // Activate backbuffer
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glViewport(0, 0, data.app.framebuffer.width, data.app.framebuffer.height);
+            glDrawBuffer(GL_BACK);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
 
         apply_postprocessing(data);
-
-        // Render Screenshot of backbuffer without GUI here
-        if (data.screenshot.hide_gui && !str_empty(data.screenshot.path_to_file)) {
-            create_screenshot(&data);
-            str_free(data.screenshot.path_to_file, persistent_alloc);
-            data.screenshot.path_to_file = {};
-        }
 
         if (data.script.vis.text) {
             PUSH_CPU_SECTION("Draw vis text");
@@ -1442,14 +1453,23 @@ int main(int argc, char** argv) {
             POP_CPU_SECTION();
         }
 
+        // Render Screenshot of backbuffer without GUI here
+        if (do_screenshot && data.screenshot.hide_gui) {
+            create_screenshot(data.screenshot.path_to_file);
+            str_free(data.screenshot.path_to_file, persistent_alloc);
+            data.screenshot.path_to_file = {};
+            do_screenshot = false;
+        }
+
         PUSH_GPU_SECTION("Imgui render")
         application::render_imgui(&data.app);
         POP_GPU_SECTION()
 
-        if (!data.screenshot.hide_gui && !str_empty(data.screenshot.path_to_file)) {
-            create_screenshot(&data);
+        if (do_screenshot && !data.screenshot.hide_gui) {
+            create_screenshot(data.screenshot.path_to_file);
             data.screenshot.path_to_file = {};
             str_free(data.screenshot.path_to_file, persistent_alloc);
+            do_screenshot = false;
         }
 
         viamd::event_system_process_event_queue();
@@ -2871,6 +2891,48 @@ static void draw_main_menu(ApplicationState* data) {
         }
         if (ImGui::BeginMenu("Screenshot")) {
             ImGui::Checkbox("Hide GUI", &data->screenshot.hide_gui);
+            if (data->screenshot.hide_gui) {
+                data->screenshot.resolution = (ScreenshotResolution)MIN((int)data->screenshot.resolution, (int)ScreenshotResolution::Count - 1);
+                if (ImGui::BeginCombo("Resolution", screenshot_resolution_str[(int)data->screenshot.resolution])) {
+                    for (int i = 0; i < (int)ScreenshotResolution::Count; ++i) {
+                        if (ImGui::Selectable(screenshot_resolution_str[i], (i == (int)data->screenshot.resolution))) {
+                            data->screenshot.resolution = (ScreenshotResolution)i;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+
+                switch (data->screenshot.resolution) {
+                case ScreenshotResolution::Window:
+                    data->screenshot.res_x = data->gbuffer.width;
+                    data->screenshot.res_y = data->gbuffer.height;
+                    break;
+                case ScreenshotResolution::FHD:
+                    data->screenshot.res_x = 1920;
+                    data->screenshot.res_y = 1080;
+                    break;
+                case ScreenshotResolution::QHD:
+                    data->screenshot.res_x = 2560;
+                    data->screenshot.res_y = 1440;
+                    break;
+                case ScreenshotResolution::UHD:
+                    data->screenshot.res_x = 3840;
+                    data->screenshot.res_y = 2160;
+                    break;
+                case ScreenshotResolution::Custom:
+                    ImGui::InputInt("Res X", &data->screenshot.res_x);
+                    ImGui::InputInt("Res Y", &data->screenshot.res_y);
+
+                    data->screenshot.res_x = CLAMP(data->screenshot.res_x, 640, (3840*4));
+                    data->screenshot.res_y = CLAMP(data->screenshot.res_y, 480, (3840*4));
+                    break;
+                default:
+                    ASSERT(false);
+                }
+            } else {
+                data->screenshot.res_x = data->gbuffer.width;
+                data->screenshot.res_y = data->gbuffer.height;
+            }
             if (ImGui::MenuItem("Take Screenshot")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("jpg,png,bmp"))) {
                     size_t path_len = strnlen(path_buf, sizeof(path_buf));
@@ -8025,22 +8087,27 @@ static void save_workspace(ApplicationState* data, str_t filename) {
     md_file_write(file, str_ptr(text), str_len(text));
 }
 
-void create_screenshot(ApplicationState* data) {
-    ASSERT(data);
-
+void create_screenshot(str_t path) {
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
     defer { md_vm_arena_temp_end(tmp); };
 
-    str_t path = data->screenshot.path_to_file;
+    int viewport[4] = {};
+    int fbo = 0;
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
 
-    int width  = data->gbuffer.width;
-    int height = data->gbuffer.height;
+    int width  = viewport[2];
+    int height = viewport[3];
+
     size_t bytes = width * height * sizeof(uint32_t);
     uint32_t* rgba = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
     defer { md_vm_arena_pop(frame_alloc, bytes); };
 
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glReadBuffer(GL_BACK);
+    GLenum read_buffer = fbo ? GL_COLOR_ATTACHMENT0 : GL_BACK;
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glReadBuffer(read_buffer);
+
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
 
@@ -8071,11 +8138,11 @@ void create_screenshot(ApplicationState* data) {
     } else if (str_eq_cstr_ignore_case(ext, "bmp")) {
         image_write_bmp(path, rgba, width, height);
     } else {
-        LOG_ERROR("Non supported file-extension '%.*s' when saving screenshot", (int)ext.len, ext.ptr);
+        LOG_ERROR("Non supported file-extension '" STR_FMT "' when saving screenshot", STR_ARG(ext));
         return;
     }
 
-    LOG_SUCCESS("Screenshot saved to: '%.*s'", (int)path.len, path.ptr);
+    LOG_SUCCESS("Screenshot saved to: '" STR_FMT "'", STR_ARG(path));
 }
 
 // #representation
