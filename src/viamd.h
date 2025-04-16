@@ -166,6 +166,23 @@ static const char* volume_resolution_str[(int)VolumeResolution::Count] = {
     "High",
 };
 
+enum class ScreenshotResolution {
+    Window,
+    FHD,
+    QHD,
+    UHD,
+    Custom,
+    Count,
+};
+
+static const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] = {
+    "Window",
+    "Full HD (1920x1080)",
+    "Quad HD (2560x1440)",
+    "Ultra HD (3840x2160)",
+    "Custom",
+};
+
 struct FileQueue {
     struct Entry {
         str_t path;
@@ -370,6 +387,9 @@ struct ApplicationState {
 
     struct {
         bool  hide_gui = true;
+        ScreenshotResolution resolution = ScreenshotResolution::Window;
+        int   res_x = 1920;
+        int   res_y = 1080;
         str_t path_to_file = {};
     } screenshot;
 
@@ -671,6 +691,7 @@ struct ApplicationState {
     struct {
         bool apply_pbc = false;
         bool unwrap_structures = false;
+        bool recalc_bonds = false;
     } operations;
 
     struct {

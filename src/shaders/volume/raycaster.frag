@@ -339,9 +339,8 @@ void main() {
     vec3 entryPos = texelFetch(u_tex_entry, ivec2(gl_FragCoord.xy), 0).xyz;
     vec3 exitPos  = texelFetch(u_tex_exit,  ivec2(gl_FragCoord.xy), 0).xyz;
 
-    if (entryPos == exitPos) discard;
-
     float dist = distance(entryPos, exitPos);
+    if (dist < 0.00001) discard;
 
     vec3 ori = entryPos;
     vec3 dir = (exitPos - entryPos) / dist;
@@ -351,8 +350,8 @@ void main() {
     float jitter = PDnrand(gl_FragCoord.xy + vec2(u_time, u_time));
 
     float tIncr = min(tEnd, tEnd / (samplingRate * length(dir * tEnd * textureSize(u_tex_volume, 0))));
-    float samples = ceil(tEnd / tIncr);
-    float baseIncr = tEnd / samples;
+    float samples = max(1, ceil(tEnd / tIncr));
+    float baseIncr = max(tEnd / samples, 0.0001);
 
 	tIncr = baseIncr;
 
