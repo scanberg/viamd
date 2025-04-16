@@ -166,13 +166,11 @@ endif()
 
 if (WIN32)
     target_sources(viamd PRIVATE icon.rc)
-endif()
-
-# Default to linking statically
-if (VIAMD_LINK_STDLIB_STATIC)
-    set_property(TARGET viamd PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-else()
-    set_property(TARGET viamd PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    if (VIAMD_LINK_STDLIB_STATIC)
+        set_property(TARGET viamd PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    else()
+        set_property(TARGET viamd PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    endif()
 endif()
 
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
