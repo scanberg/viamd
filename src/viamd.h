@@ -32,7 +32,6 @@ enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Residue, Chain };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
-enum class TrackingMode { Absolute, Relative };
 enum class CameraMode { Perspective, Orthographic };
 
 enum class InterpolationMode {
@@ -170,7 +169,8 @@ enum class ScreenshotResolution {
     Window,
     FHD,
     QHD,
-    UHD,
+    UHD_4K,
+    UHD_8K,
     Custom,
     Count,
 };
@@ -179,7 +179,8 @@ static const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] =
     "Window",
     "Full HD (1920x1080)",
     "Quad HD (2560x1440)",
-    "Ultra HD (3840x2160)",
+    "Ultra HD 4K (3840x2160)",
+    "Ultra HD 8K (7680x4320)",
     "Custom",
 };
 
@@ -390,6 +391,8 @@ struct ApplicationState {
         ScreenshotResolution resolution = ScreenshotResolution::Window;
         int   res_x = 1920;
         int   res_y = 1080;
+        int   sample_count = 0;
+        int   sample_target = 0;
         str_t path_to_file = {};
     } screenshot;
 

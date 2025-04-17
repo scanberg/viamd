@@ -934,8 +934,6 @@ int main(int argc, char** argv) {
         camera_animate(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
         data.visuals.dof.focus_depth = data.view.camera.focus_distance;
 
-        update_view_param(&data);
-
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
             set_hovered_property(&data,  STR_LIT(""));
@@ -1340,6 +1338,42 @@ int main(int argc, char** argv) {
             }
         }
 
+        if (data.script.vis.text) {
+            PUSH_CPU_SECTION("Draw vis text");
+            ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
+            if (window) {
+                ImDrawList* dl = window->DrawList;
+                ASSERT(dl);
+
+                const vec2_t res = { (float)data.app.window.width, (float)data.app.window.height };
+                const mat4_t mvp = data.view.param.matrix.curr.proj_no_jitter * data.view.param.matrix.curr.view;
+
+                // Script text
+                const ImU32 text_color = convert_color(data.script.text_color);
+                const ImU32 rect_color = convert_color(data.script.text_bg_color);
+                const float rect_rounding = 5.f;
+                const ImVec2 rect_padding = ImVec2(4.f, 2.f);
+
+                size_t num_text = md_array_size(data.script.vis.text);
+                for (size_t i = 0; i < num_text; ++i) {
+                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(data.script.vis.text[i].pos, 1.0f));
+                    const vec4_t c = p / p.w;
+
+                    str_t str = data.script.vis.text[i].str;
+                    const ImVec2 text_size = ImGui::CalcTextSize(str.beg(), str.end());
+
+                    if (-1 < c.x && c.x < 1 && -1 < c.y && c.y < 1 && -1 < c.z && c.z < 1) {
+                        ImVec2 tc = {(c.x * 0.5f + 0.5f) * res.x, (-c.y * 0.5f + 0.5f) * res.y};
+                        ImVec2 p0 = tc - text_size * 0.5f;
+                        ImVec2 p1 = tc + text_size * 0.5f;
+                        dl->AddRectFilled(p0 - rect_padding, p1 + rect_padding, rect_color, rect_rounding);
+                        dl->AddText(p0, text_color, data.script.vis.text[i].str.beg(), data.script.vis.text[i].str.end());
+                    }
+                }
+            }
+            POP_CPU_SECTION();
+        }
+
         if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
             reset_view(&data, &data.selection.highlight_mask, true, true);
         }
@@ -1359,6 +1393,8 @@ int main(int argc, char** argv) {
             init_gbuffer(&data.gbuffer, gbuffer_target_width, gbuffer_target_height);
             postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
         }
+
+        update_view_param(&data);
 
         // The motivation for doing this is to reduce the frequency at which we invalidate and upload the atom flag field to the GPU
         // For large systems, this can be a costly operation: Consider a system of 100'000'000 atoms
@@ -1401,13 +1437,12 @@ int main(int argc, char** argv) {
 
         glDisable(GL_DEPTH_TEST);
 
-        if (do_screenshot) {
+        if (do_screenshot && data.screenshot.hide_gui) {
             // Activate gbuffer to store screenshot
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.gbuffer.fbo);
             glViewport(0, 0, data.gbuffer.width, data.gbuffer.height);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        }
-        else {
+        } else {
             // Activate backbuffer
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             glViewport(0, 0, data.app.framebuffer.width, data.app.framebuffer.height);
@@ -1417,48 +1452,32 @@ int main(int argc, char** argv) {
 
         apply_postprocessing(data);
 
-        if (data.script.vis.text) {
-            PUSH_CPU_SECTION("Draw vis text");
-            ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
-            if (window) {
-                ImDrawList* dl = window->DrawList;
-                ASSERT(dl);
-
-                const vec2_t res = { (float)data.app.window.width, (float)data.app.window.height };
-                const mat4_t mvp = data.view.param.matrix.curr.proj_no_jitter * data.view.param.matrix.curr.view;
-
-                // Script text
-                const ImU32 text_color = convert_color(data.script.text_color);
-                const ImU32 rect_color = convert_color(data.script.text_bg_color);
-                const float rect_rounding = 5.f;
-                const ImVec2 rect_padding = ImVec2(4.f, 2.f);
-
-                size_t num_text = md_array_size(data.script.vis.text);
-                for (size_t i = 0; i < num_text; ++i) {
-                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(data.script.vis.text[i].pos, 1.0f));
-                    const vec4_t c = p / p.w;
-
-                    str_t str = data.script.vis.text[i].str;
-                    const ImVec2 text_size = ImGui::CalcTextSize(str.beg(), str.end());
-
-                    if (-1 < c.x && c.x < 1 && -1 < c.y && c.y < 1 && -1 < c.z && c.z < 1) {
-                        ImVec2 tc = {(c.x * 0.5f + 0.5f) * res.x, (-c.y * 0.5f + 0.5f) * res.y};
-                        ImVec2 p0 = tc - text_size * 0.5f;
-                        ImVec2 p1 = tc + text_size * 0.5f;
-                        dl->AddRectFilled(p0 - rect_padding, p1 + rect_padding, rect_color, rect_rounding);
-                        dl->AddText(p0, text_color, data.script.vis.text[i].str.beg(), data.script.vis.text[i].str.end());
-                    }
-                }
-            }
-            POP_CPU_SECTION();
-        }
-
-        // Render Screenshot of backbuffer without GUI here
         if (do_screenshot && data.screenshot.hide_gui) {
-            create_screenshot(data.screenshot.path_to_file);
-            str_free(data.screenshot.path_to_file, persistent_alloc);
-            data.screenshot.path_to_file = {};
-            do_screenshot = false;
+            data.screenshot.sample_count += 1;
+
+            ImGui::OpenPopup("Capturing Frame");
+            ImVec2 size = ImGui::CalcTextSize("Capturing Frame");
+            ImGui::SetNextWindowSize(size * ImVec2(2, 5), ImGuiCond_Always);
+            if (ImGui::BeginPopupModal("Capturing Frame", 0, ImGuiWindowFlags_NoResize)) {
+                float fraction = (float)data.screenshot.sample_count / (float)data.screenshot.sample_target;
+                ImGui::ProgressBar(fraction);
+                ImGui::EndPopup();
+            }
+
+            if (data.screenshot.sample_count == data.screenshot.sample_target) {
+                create_screenshot(data.screenshot.path_to_file);
+                str_free(data.screenshot.path_to_file, persistent_alloc);
+                data.screenshot.path_to_file = {};
+                data.screenshot.sample_count  = 0;
+                data.screenshot.sample_target = 0;
+                ImGui::CloseCurrentPopup();
+            }
+
+            // Activate backbuffer
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glViewport(0, 0, data.app.framebuffer.width, data.app.framebuffer.height);
+            glDrawBuffer(GL_BACK);
+            glClear(GL_COLOR_BUFFER_BIT);
         }
 
         PUSH_GPU_SECTION("Imgui render")
@@ -1467,9 +1486,8 @@ int main(int argc, char** argv) {
 
         if (do_screenshot && !data.screenshot.hide_gui) {
             create_screenshot(data.screenshot.path_to_file);
-            data.screenshot.path_to_file = {};
             str_free(data.screenshot.path_to_file, persistent_alloc);
-            do_screenshot = false;
+            data.screenshot.path_to_file = {};
         }
 
         viamd::event_system_process_event_queue();
@@ -2915,16 +2933,20 @@ static void draw_main_menu(ApplicationState* data) {
                     data->screenshot.res_x = 2560;
                     data->screenshot.res_y = 1440;
                     break;
-                case ScreenshotResolution::UHD:
+                case ScreenshotResolution::UHD_4K:
                     data->screenshot.res_x = 3840;
                     data->screenshot.res_y = 2160;
+                    break;
+                case ScreenshotResolution::UHD_8K:
+                    data->screenshot.res_x = 7680;
+                    data->screenshot.res_y = 4320;
                     break;
                 case ScreenshotResolution::Custom:
                     ImGui::InputInt("Res X", &data->screenshot.res_x);
                     ImGui::InputInt("Res Y", &data->screenshot.res_y);
 
-                    data->screenshot.res_x = CLAMP(data->screenshot.res_x, 640, (3840*4));
-                    data->screenshot.res_y = CLAMP(data->screenshot.res_y, 480, (3840*4));
+                    data->screenshot.res_x = CLAMP(data->screenshot.res_x, 640, 16384);
+                    data->screenshot.res_y = CLAMP(data->screenshot.res_y, 480, 16384);
                     break;
                 default:
                     ASSERT(false);
@@ -2943,6 +2965,11 @@ static void draw_main_menu(ApplicationState* data) {
                     }
                     if (str_eq_cstr_ignore_case(ext, "jpg") || str_eq_cstr_ignore_case(ext, "png") || str_eq_cstr_ignore_case(ext, "bmp")) {
                         data->screenshot.path_to_file = str_copy({path_buf, path_len}, persistent_alloc);
+                        if (data->visuals.temporal_aa.enabled) {
+                            data->screenshot.sample_target = JITTER_SEQUENCE_SIZE;
+                        } else {
+                            data->screenshot.sample_target = 1;
+                        }
                     }
                     else {
                         LOG_ERROR("Supplied image extension is not supported");
