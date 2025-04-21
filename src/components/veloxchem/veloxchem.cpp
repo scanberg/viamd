@@ -378,18 +378,27 @@ struct VeloxChem : viamd::EventHandler {
         // Broadening gamma parameter
         double broadening_gamma = 0.123;
         broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
-        x_unit_t x_unit;
+        x_unit_t x_unit = X_UNIT_EV;
 
         bool first_plot_rot_ecd = true;
     } rsp;
 
     struct Vib {
-        double* vib_y;
-        double* vib_x;
-        double* vib_points;
+        double* vib_y = 0;
+        double* vib_x = 0;
+        double* vib_points = 0;
 
         bool first_plot_vib = true;
-    };
+    } vib;
+
+    struct Export {
+        char export_path[1024];
+        OrbitalType orb_type = OrbitalType::MolecularOrbitalPsi;
+        md_vlx_mo_type_t mo_type = MD_VLX_MO_TYPE_ALPHA;
+        VolumeResolution resolution = VolumeResolution::High;
+        int orb_idx = 0;
+        bool show_window = false;
+    } export_state;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
     md_allocator_i* arena = 0;
@@ -418,17 +427,26 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
-                draw_orb_window(state);
-                draw_nto_window(state);
-                draw_summary_window(state);
-                draw_rsp_window(state);
+                if (vlx) {
+                    draw_orb_window(state);
+                    draw_nto_window(state);
+                    draw_summary_window(state);
+                    draw_rsp_window(state);
+                    draw_exp_window(state);
+                }
                 break;
             }
             case viamd::EventType_ViamdDrawMenu:
-                ImGui::Checkbox("VeloxChem Summary", &scf.show_window);
-                ImGui::Checkbox("VeloxChem RSP", &rsp.show_window);
-                ImGui::Checkbox("VeloxChem ORB", &orb.show_window);
-                ImGui::Checkbox("VeloxChem NTO", &nto.show_window);
+                if (ImGui::BeginMenu("VeloxChem")) {
+                    ImGui::Checkbox("Summary", &scf.show_window);
+                    ImGui::Checkbox("RSP", &rsp.show_window);
+                    ImGui::Checkbox("ORB", &orb.show_window);
+                    ImGui::Checkbox("NTO", &nto.show_window);
+                    if (ImGui::MenuItem("Export Orbital")) {
+                        export_state.show_window = true;
+                    }
+                    ImGui::EndMenu();
+                }
                 break;
             case viamd::EventType_ViamdRenderTransparent: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
@@ -3504,6 +3522,176 @@ struct VeloxChem : viamd::EventHandler {
                             volume::render_volume(vol_desc);
                         }
                     POP_GPU_SECTION();
+                }
+            }
+        }
+        ImGui::End();
+    }
+
+    void draw_exp_window(ApplicationState& state) {
+        if (ImGui::Begin("VeloxChem Export", &export_state.show_window)) {
+            if (ImGui::BeginCombo("Orbital Type", orbital_type_str[(int)export_state.orb_type])) {
+                for (int i = 0; i < (int)OrbitalType::Count; i++) {
+                    const bool is_selected = ((int)export_state.orb_type == i);
+                    if (ImGui::Selectable(orbital_type_str[i], is_selected)) {
+                        export_state.orb_type = (OrbitalType)i;
+                    }
+
+                    if (is_selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+
+            if (export_state.orb_type == OrbitalType::MolecularOrbitalPsi || export_state.orb_type == OrbitalType::MolecularOrbitalPsiSquared) {
+                md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
+                
+                if (type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+                    const char* options[2] = {"Alpha", "Beta"};
+                    if (ImGui::BeginCombo("##MO_TYPE", options[export_state.mo_type])) {
+                        for (int i = 0; i < ARRAY_SIZE(options); ++i) {
+                            if (ImGui::Selectable(options[i])) {
+                                export_state.mo_type = (md_vlx_mo_type_t)i;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+
+                int orb_homo_idx = homo_idx[export_state.mo_type];
+                int orb_lumo_idx = lumo_idx[export_state.mo_type];
+
+                char lbl[32];
+
+                auto write_lbl = [orb_homo_idx, orb_lumo_idx](char* buf, size_t cap, int idx) {
+                    const char* suffix = "";
+                    if (idx == orb_homo_idx) {
+                        suffix = "(HOMO)";
+                    } else if (idx == orb_lumo_idx) {
+                        suffix = "(LUMO)";
+                    }
+                    snprintf(buf, cap, "%i %s", idx + 1, suffix);
+                };
+
+                write_lbl(lbl, sizeof(lbl), export_state.orb_idx);
+                int num_orbs = (int)num_orbitals();
+                if (ImGui::BeginCombo("Orbital Idx", lbl)) {
+                    for (int i = 0; i < num_orbs; i++) {                        
+                        const bool is_selected = (export_state.orb_idx == i);
+
+                        write_lbl(lbl, sizeof(lbl), i);
+                        if (ImGui::Selectable(lbl, is_selected)) {
+                            export_state.orb_idx = i;
+                        }
+
+                        if (is_selected) {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+
+            ImGui::Combo("Volume Resolution", (int*)&export_state.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
+
+            if (ImGui::Button("Export")) {
+                char path[2048];
+                if (application::file_dialog(path, sizeof(path), application::FileDialogFlag_Save, STR_LIT("cube"))) {
+                    md_file_o* file = md_file_open({path, strnlen(path, sizeof(path))}, MD_FILE_WRITE);
+                    if (file) {
+                        md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+                        Volume vol = {};
+
+                        float samples_per_angstrom = vol_res_scl[(int)export_state.resolution];
+
+                        md_vlx_mo_type_t mo_type  = MD_VLX_MO_TYPE_ALPHA;
+
+                        switch (export_state.orb_type) {
+                        case OrbitalType::MolecularOrbitalPsi:
+                            compute_mo_GPU(&vol, mo_type, export_state.orb_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            break;
+                        case OrbitalType::MolecularOrbitalPsiSquared:
+                            compute_mo_GPU(&vol, mo_type, export_state.orb_idx, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
+                            break;
+                        case OrbitalType::ElectronDensity:
+                            compute_electron_density_GPU(&vol, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
+                            break;
+                        default:
+                            break;
+                        }
+
+                        int num_samples = vol.dim[0] * vol.dim[1] * vol.dim[2];
+                        float* data = (float*)md_vm_arena_push(temp_arena, num_samples * sizeof(float));
+                        float* reordered = (float*)md_vm_arena_push(temp_arena, num_samples * sizeof(float));
+
+                        vec3_t origin = mat4_mul_vec3(vol.index_to_world, {0,0,0}, 1.0f);
+                        vec3_t step_x = mat4_mul_vec3(vol.index_to_world, {1,0,0}, 1.0f) - origin;
+                        vec3_t step_y = mat4_mul_vec3(vol.index_to_world, {0,1,0}, 1.0f) - origin;
+                        vec3_t step_z = mat4_mul_vec3(vol.index_to_world, {0,0,1}, 1.0f) - origin;
+
+                        // Extract data from OpenGL Texture
+                        glBindTexture(GL_TEXTURE_3D, vol.tex_id);
+                        glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, data);
+                        glBindTexture(GL_TEXTURE_3D, 0);
+
+                        int dst_idx = 0;
+                        for (int x = 0; x < vol.dim[0]; ++x) {
+                            for (int y = 0; y < vol.dim[1]; ++y) {
+                                for (int z = 0; z < vol.dim[2]; ++z) {
+                                    int src_idx = z * vol.dim[0] * vol.dim[1] + y * vol.dim[0] + x;
+                                    reordered[dst_idx++] = data[src_idx];
+                                }
+                            }
+                        }
+
+                        int natoms     = (int)md_vlx_number_of_atoms(vlx);
+                        vec3_t* coords = (vec3_t*)md_vm_arena_push(temp_arena, natoms * sizeof(vec3_t));
+                        int* number    = (int*)   md_vm_arena_push(temp_arena, natoms * sizeof(int));
+                        float* charge  = (float*) md_vm_arena_push(temp_arena, natoms * sizeof(float));
+
+                        const dvec3_t* vlx_coords = md_vlx_atom_coordinates(vlx);
+                        const uint8_t* vlx_numbers = md_vlx_atomic_numbers(vlx);
+
+                        for (int i = 0; i < natoms; ++i) {
+                            dvec3_t coord = dvec3_mul_f(vlx_coords[i], ANGSTROM_TO_BOHR);
+                            vec3_t v3 = {(float)coord.x, (float)coord.y, (float)coord.z};
+                            coords[i] = v3;
+                            number[i] = vlx_numbers[i];
+                            charge[i] = 0;
+                        }
+
+                        md_file_printf(file, "Cube file generated by VIAMD\n");
+                        md_file_printf(file, "%s\n", orbital_type_str[(int)export_state.orb_type]);
+
+                        md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", -natoms, origin.x, origin.y, origin.z);
+                        md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol.dim[0], step_x.x, step_x.y, step_x.z);
+                        md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol.dim[1], step_y.x, step_y.y, step_y.z);
+                        md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol.dim[2], step_z.x, step_z.y, step_z.z);
+
+                        for (int i = 0; i < natoms; ++i) {
+                            md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", number[i], (float)number[i], coords[i].x, coords[i].y, coords[i].z);
+                        }
+
+                        // This entry somehow relates to the number of densities
+                        md_file_printf(file, "%5i %5i\n", 1, export_state.orb_idx);
+
+                        // Write density data
+                        int count = 0;
+                        for (int x = 0; x < vol.dim[0]; ++x) {
+                            for (int y = 0; y < vol.dim[1]; ++y) {
+                                for (int z = 0; z < vol.dim[2]; ++z) {
+                                    int idx = z * vol.dim[0] * vol.dim[1] + y * vol.dim[0] + x;
+                                    float val = data[idx];
+                                    md_file_printf(file, " %12.6E", val);
+                                    if (++count % 6 == 0) md_file_printf(file, "\n");
+                                }
+                            }
+                        }
+
+                        md_vm_arena_destroy(temp_arena);
+                        md_file_close(file);
+                    }
                 }
             }
         }

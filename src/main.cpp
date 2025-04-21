@@ -4464,24 +4464,23 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi || rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared) {
                     char lbl[32];
-                    auto write_lbl = [&rep_info = state->representation.info, &lbl](int idx) -> const char* {
+                    auto write_lbl = [&rep_info = state->representation.info](char* buf, size_t cap, int idx) {
                         const char* suffix = "";
                         if (idx == rep_info.mo_homo_idx) {
                             suffix = "(HOMO)";
                         } else if (idx == rep_info.mo_lumo_idx) {
                             suffix = "(LUMO)";
                         }
-                        snprintf(lbl, sizeof(lbl), "%i %s", idx + 1, suffix);
-                        return lbl;
+                        snprintf(buf, cap, "%i %s", idx + 1, suffix);
                     };
 
-                    write_lbl(rep.orbital.orbital_idx);
+                    write_lbl(lbl, sizeof(lbl), rep.orbital.orbital_idx);
                     if (ImGui::BeginCombo("Orbital Idx", lbl)) {
                         for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
                             int idx = state->representation.info.molecular_orbitals[n].idx;
                             const bool is_selected = (rep.orbital.orbital_idx == idx);
                         
-                            write_lbl(idx);
+                            write_lbl(lbl, sizeof(lbl), idx);
                             if (ImGui::Selectable(lbl, is_selected)) {
                                 if (rep.orbital.orbital_idx != idx) {
                                     update_rep = true;
