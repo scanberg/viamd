@@ -3628,7 +3628,7 @@ struct VeloxChem : viamd::EventHandler {
                 int num_orbs = (int)num_natural_transition_orbitals();
                 char lbl[32];
                 snprintf(lbl, sizeof(lbl), "%i", export_state.nto_idx);
-                if (ImGui::BeginCombo("Excited State Idx ", lbl)) {
+                if (ImGui::BeginCombo("Excited State Idx", lbl)) {
                     for (int i = 0; i < num_orbs; i++) {
                         const bool is_selected = (export_state.nto_idx == i);
 

@@ -4489,7 +4489,7 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity || rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
                     if (state->representation.info.nto.label) {
-                        if (ImGui::BeginCombo("NTO Idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
+                        if (ImGui::BeginCombo("Excited State Idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
                             for (int n = 0; n < (int)state->representation.info.nto.num_orbitals; n++) {
                                 bool is_selected = (rep.electronic_structure.nto_idx == n);
                                 if (ImGui::Selectable(state->representation.info.nto.label[n].ptr, is_selected)) {
