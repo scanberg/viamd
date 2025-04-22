@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -21,7 +21,7 @@ enum : EventType {
 	EventType_ViamdRenderOpaque			= HASH_STR_LIT("VIAMD Render Opaque"),			// Render opaque geometry into GBuffer
 	EventType_ViamdRenderTransparent	= HASH_STR_LIT("VIAMD Render Transparent"),		// Render transparent geometry (Occurs after opaque render pass)
 
-	EventType_ViamdDrawMenu				= HASH_STR_LIT("VIAMD Draw Menu"),				// Draw the menu
+	EventType_ViamdWindowDrawMenu		= HASH_STR_LIT("VIAMD Draw Window Menu"),		// Draw the menu
 
 	EventType_ViamdSerialize			= HASH_STR_LIT("VIAMD Serialize Workspace"),
 	EventType_ViamdDeserialize			= HASH_STR_LIT("VIAMD Deserialize Workspace"),
@@ -39,8 +39,8 @@ enum : EventType {
 	EventType_ViamdHoverMaskChanged			= HASH_STR_LIT("Hover Mask Changed"),
 	EventType_ViamdSelectionMaskChanged		= HASH_STR_LIT("Selection Mask Changed"),
 
-	EventType_RepresentationInfoFill		= HASH_STR_LIT("Representation Info Fill"),
-	EventType_RepresentationComputeOrbital	= HASH_STR_LIT("Representation Compute Orbital"),
+	EventType_RepresentationInfoFill				= HASH_STR_LIT("Representation Info Fill"),
+	EventType_RepresentationEvalElectronicStructure	= HASH_STR_LIT("Representation Eval ElectronicStructure"),
 
 	//EventType_RepresentationChange		= HASH_STR_LIT("Representation Changed"),
 
@@ -51,13 +51,13 @@ enum : EventType {
 };
 
 enum : EventPayloadType {
-	EventPayloadType_Undefined				= 0,
-	EventPayloadType_ApplicationState		= HASH_STR_LIT("Payload Application State"),
-	EventPayloadType_RepresentationInfo		= HASH_STR_LIT("Payload Representation Info"),
-	EventPayloadType_Representation			= HASH_STR_LIT("Payload Representation"),
-	EventPayloadType_SerializationState		= HASH_STR_LIT("Payload Serialization State"),
-	EventPayloadType_DeserializationState	= HASH_STR_LIT("Payload Deserialization State"),
-	EventPayloadType_ComputeOrbital			= HASH_STR_LIT("Payload Compute Orbital"),
+	EventPayloadType_Undefined					= 0,
+	EventPayloadType_ApplicationState			= HASH_STR_LIT("Payload Application State"),
+	EventPayloadType_RepresentationInfo			= HASH_STR_LIT("Payload Representation Info"),
+	EventPayloadType_Representation				= HASH_STR_LIT("Payload Representation"),
+	EventPayloadType_SerializationState			= HASH_STR_LIT("Payload Serialization State"),
+	EventPayloadType_DeserializationState		= HASH_STR_LIT("Payload Deserialization State"),
+	EventPayloadType_EvalElectronicStructure	= HASH_STR_LIT("Payload Eval ElectronicStructure"),
 };
 
 struct Event {

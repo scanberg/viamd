@@ -2555,7 +2555,6 @@ static void update_view_param(ApplicationState* data) {
             param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
             param.matrix.inv.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
         } else {
-            const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
             const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
             param.matrix.curr.proj = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
@@ -2607,7 +2606,7 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
 
     // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < count; ++i) {
-        int32_t idx = indices ? indices[i] : i;
+        int32_t idx = indices ? indices[i] : (int32_t)i;
         vec3_t xyz = { mol.atom.x[idx], mol.atom.y[idx], mol.atom.z[idx] };
 
         vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
@@ -2823,7 +2822,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
             ImGui::Checkbox("Dataset", &data->dataset.show_window);
 
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdDrawMenu);
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowDrawMenu);
 
             ImGui::EndMenu();
         }
@@ -3074,7 +3073,7 @@ static void draw_main_menu(ApplicationState* data) {
                         MD_LOG_DEBUG("RECALCULATING BONDS");
                         md_bond_data_t bond = {0};
                         md_util_covalent_bonds_compute_exp(&bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, &frame_header.unit_cell, frame_alloc);
-                        md_gl_mol_set_bonds(data->mold.gl_mol, 0, bond.count, bond.pairs, 0);
+                        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)bond.count, bond.pairs, 0);
                         md_vm_arena_temp_end(temp_pos);
                     }
                 }
@@ -4180,7 +4179,7 @@ static void draw_animation_window(ApplicationState* data) {
     ASSERT(md_array_size(data->timeline.x_values) == num_frames);
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Animation", &data->animation.show_window)) {
+    if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
 
 
         ImGui::Text("Num Frames: %i", num_frames);
@@ -4316,14 +4315,11 @@ static void draw_representations_window(ApplicationState* state) {
 
             // @TODO: Only display the representations which can be used for the current dataset
             if (!rep.type_is_valid) ImGui::PushInvalid();
-            if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
+            if (ImGui::BeginCombo("Type", representation_type_str[(int)rep.type])) {
                 for (int i = 0; i < (int)RepresentationType::Count; ++i) {
-                    switch (i) {
-                    case (int)RepresentationType::Orbital:
-                        if (md_array_size(state->representation.info.molecular_orbitals) == 0) continue;
-                        break;
-                    default:
-                        break;
+                    if (i == (int)RepresentationType::ElectronicStructure) {
+                        // Do not enlist Electronic Structure if there are no orbitals available
+                        if (state->representation.info.alpha.num_orbitals == 0) continue;
                     }
                     if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                         rep.type = (RepresentationType)i;
@@ -4445,15 +4441,23 @@ static void draw_representations_window(ApplicationState* state) {
                 ImGui::Separator();
             }
 
-            if (rep.type == RepresentationType::Orbital) {
+            if (rep.type == RepresentationType::ElectronicStructure) {
                 ImGuiComboFlags flags = 0;
-                if (ImGui::BeginCombo("Orbital Type", orbital_type_str[(int)rep.orbital.type], flags)) {
-                    for (int n = 0; n < (int)OrbitalType::Count; n++) {
-                        const bool is_selected = ((int)rep.orbital.type == n);
-                        if (ImGui::Selectable(orbital_type_str[n], is_selected)) {
-                            rep.orbital.type = (OrbitalType)n;
+                if (ImGui::BeginCombo("Electronic Structure Type", electronic_structure_type_str[(int)rep.electronic_structure.type], flags)) {
+                    for (int n = 0; n < (int)ElectronicStructureType::Count; n++) {
+                        bool is_selected = ((int)rep.electronic_structure.type == n);
+                        bool disabled = false;
+
+                        if (n == (int)ElectronicStructureType::AttachmentDensity || n == (int)ElectronicStructureType::DetachmentDensity) {
+                            disabled = (state->representation.info.nto.num_orbitals == 0);
+                        }
+
+                        if (disabled) ImGui::PushDisabled();
+                        if (ImGui::Selectable(electronic_structure_type_str[n], is_selected)) {
+                            rep.electronic_structure.type = (ElectronicStructureType)n;
                             update_rep = true;
                         }
+                        if (disabled) ImGui::PopDisabled();
 
                         if (is_selected) {
                             ImGui::SetItemDefaultFocus();
@@ -4462,55 +4466,63 @@ static void draw_representations_window(ApplicationState* state) {
                     ImGui::EndCombo();
                 }
 
-                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi || rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared) {
-                    char lbl[32];
-                    auto write_lbl = [&rep_info = state->representation.info](char* buf, size_t cap, int idx) {
-                        const char* suffix = "";
-                        if (idx == rep_info.mo_homo_idx) {
-                            suffix = "(HOMO)";
-                        } else if (idx == rep_info.mo_lumo_idx) {
-                            suffix = "(LUMO)";
-                        }
-                        snprintf(buf, cap, "%i %s", idx + 1, suffix);
-                    };
-
-                    write_lbl(lbl, sizeof(lbl), rep.orbital.orbital_idx);
-                    if (ImGui::BeginCombo("Orbital Idx", lbl)) {
-                        for (int n = 0; n < (int)md_array_size(state->representation.info.molecular_orbitals); n++) {
-                            int idx = state->representation.info.molecular_orbitals[n].idx;
-                            const bool is_selected = (rep.orbital.orbital_idx == idx);
-                        
-                            write_lbl(lbl, sizeof(lbl), idx);
-                            if (ImGui::Selectable(lbl, is_selected)) {
-                                if (rep.orbital.orbital_idx != idx) {
-                                    update_rep = true;
+                if (rep.electronic_structure.type == ElectronicStructureType::MolecularOrbital || rep.electronic_structure.type == ElectronicStructureType::MolecularOrbitalDensity) {
+                    if (state->representation.info.alpha.label) {
+                        if (ImGui::BeginCombo("Molecular Orbital Idx", state->representation.info.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
+                            for (int n = 0; n < (int)state->representation.info.alpha.num_orbitals; n++) {
+                                bool is_selected = (rep.electronic_structure.mo_idx == n);
+                                if (ImGui::Selectable(state->representation.info.alpha.label[n].ptr, is_selected)) {
+                                    if (rep.electronic_structure.mo_idx != n) {
+                                        update_rep = true;
+                                    }
+                                    rep.electronic_structure.mo_idx = n;
                                 }
-                                rep.orbital.orbital_idx = idx;
-                            }
 
-                            if (is_selected) {
-                                ImGui::SetItemDefaultFocus();
+                                if (is_selected) {
+                                    ImGui::SetItemDefaultFocus();
+                                }
                             }
+                            ImGui::EndCombo();
                         }
-                        ImGui::EndCombo();
                     }
                 }
 
-                if (ImGui::Combo("Volume Resolution", (int*)&rep.orbital.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
+                if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity || rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                    if (state->representation.info.nto.label) {
+                        if (ImGui::BeginCombo("NTO Idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
+                            for (int n = 0; n < (int)state->representation.info.nto.num_orbitals; n++) {
+                                bool is_selected = (rep.electronic_structure.nto_idx == n);
+                                if (ImGui::Selectable(state->representation.info.nto.label[n].ptr, is_selected)) {
+                                    if (rep.electronic_structure.nto_idx != n) {
+                                        update_rep = true;
+                                    }
+                                    rep.electronic_structure.nto_idx = n;
+                                }
+
+                                if (is_selected) {
+                                    ImGui::SetItemDefaultFocus();
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+                    }
+                }
+
+                if (ImGui::Combo("Volume Resolution", (int*)&rep.electronic_structure.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
                     update_rep = true;
                 }
 #if 0
                 // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
-                ImGui::Checkbox("Enable DVR", &rep.orbital.dvr.enabled);
-                if (rep.orbital.dvr.enabled) {
+                ImGui::Checkbox("Enable DVR", &rep.electronic_structure.dvr.enabled);
+                if (rep.electronic_structure.dvr.enabled) {
                     const ImVec2 button_size = {160, 0};
-                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.orbital.dvr.colormap), button_size, rep.orbital.dvr.colormap)) {
+                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.electronic_structure.dvr.colormap), button_size, rep.electronic_structure.dvr.colormap)) {
                         ImGui::OpenPopup("Colormap Selector");
                     }
                     if (ImGui::BeginPopup("Colormap Selector")) {
                         for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
                             if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
-                                rep.orbital.dvr.colormap = map;
+                                rep.electronic_structure.dvr.colormap = map;
                                 update_rep = true;
                                 ImGui::CloseCurrentPopup();
                             }
@@ -4520,36 +4532,41 @@ static void draw_representations_window(ApplicationState* state) {
                 }
 #endif
 
-                //ImGui::Checkbox("Enable Iso-Surface", &rep.orbital.vol.iso.enabled);
-
-                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) {
+                //ImGui::Checkbox("Enable Iso-Surface", &rep.electronic_structure.vol.iso.enabled);
+                switch (rep.electronic_structure.type) {
+                case ElectronicStructureType::MolecularOrbital: {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
-                    double iso_val = rep.orbital.iso_psi.values[0];
+                    double iso_val = rep.electronic_structure.iso_psi.values[0];
                     if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
-                        rep.orbital.iso_psi.values[0] =  (float)iso_val;
-                        rep.orbital.iso_psi.values[1] = -(float)iso_val;
-                        rep.orbital.iso_den.values[0] =  (float)(iso_val * iso_val);
+                        rep.electronic_structure.iso_psi.values[0] =  (float)iso_val;
+                        rep.electronic_structure.iso_psi.values[1] = -(float)iso_val;
+                        rep.electronic_structure.iso_den.values[0] =  (float)(iso_val * iso_val);
                     }
-                } else if (rep.orbital.type == OrbitalType::MolecularOrbitalPsiSquared || rep.orbital.type == OrbitalType::ElectronDensity) {
+                    ImGui::ColorEdit4("Color Positive", rep.electronic_structure.iso_psi.colors[0].elem);
+                    ImGui::ColorEdit4("Color Negative", rep.electronic_structure.iso_psi.colors[1].elem);
+                    break;
+                }
+                case ElectronicStructureType::MolecularOrbitalDensity:
+                case ElectronicStructureType::AttachmentDensity:
+                case ElectronicStructureType::DetachmentDensity:
+                case ElectronicStructureType::ElectronDensity: {
                     const double iso_min = 1.0e-8;
                     const double iso_max = 5.0;
-                    double iso_val = rep.orbital.iso_den.values[0];
+                    double iso_val = rep.electronic_structure.iso_den.values[0];
 
                     if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
-                        rep.orbital.iso_psi.values[0] =  (float)sqrt(iso_val);
-                        rep.orbital.iso_psi.values[1] = -(float)sqrt(iso_val);
-                        rep.orbital.iso_den.values[0] =  (float)iso_val;
-                        rep.orbital.iso_den.values[1] =  (float)iso_val;
+                        rep.electronic_structure.iso_psi.values[0] =  (float)sqrt(iso_val);
+                        rep.electronic_structure.iso_psi.values[1] = -(float)sqrt(iso_val);
+                        rep.electronic_structure.iso_den.values[0] =  (float)iso_val;
+                        rep.electronic_structure.iso_den.values[1] =  (float)iso_val;
                     }
+                    ImGui::ColorEdit4("Color Density",  rep.electronic_structure.iso_den.colors[0].elem);
+                    rep.electronic_structure.iso_den.colors[1] = rep.electronic_structure.iso_den.colors[0];
+                    break;
                 }
-
-                if (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) {
-                    ImGui::ColorEdit4("Color Positive", rep.orbital.iso_psi.colors[0].elem);
-                    ImGui::ColorEdit4("Color Negative", rep.orbital.iso_psi.colors[1].elem);
-                } else {
-                    ImGui::ColorEdit4("Color Density",  rep.orbital.iso_den.colors[0].elem);
-                    rep.orbital.iso_den.colors[1] = rep.orbital.iso_den.colors[0];
+                default:
+                    ASSERT(false);
                 }
             }
             ImGui::TreePop();
@@ -6121,7 +6138,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
 static void draw_density_volume_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar)) {
+    if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
         const ImVec2 button_size = {160, 0};
         bool volume_changed = false;
 
@@ -6252,7 +6269,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                     ImGui::Checkbox("Show Superimposed Structures", &data->density_volume.show_reference_ensemble);
 
                     if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
-                        for (int i = 0; i < (int)RepresentationType::Orbital; ++i) {
+                        for (int i = 0; i <= (int)RepresentationType::Cartoon; ++i) {
                             if (ImGui::Selectable(representation_type_str[i], (int)rep.type == i)) {
                                 rep.type = (RepresentationType)i;
                                 data->density_volume.dirty_rep = true;
@@ -6680,7 +6697,7 @@ static void draw_dataset_window(ApplicationState* data) {
     ASSERT(data);
 
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Dataset", &data->dataset.show_window)) {
+    if (ImGui::Begin("Dataset", &data->dataset.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::Text("Molecular data: %s", data->files.molecule);
         ImGui::Text("Num atoms:    %9i", (int)data->mold.mol.atom.count);
         ImGui::Text("Num residues: %9i", (int)data->mold.mol.residue.count);
@@ -6792,23 +6809,6 @@ static void draw_debug_window(ApplicationState* data) {
         ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
         ImGui::Text("[%g %g %g %g]", P.col[2].x, P.col[2].y, P.col[2].z, P.col[2].w);
         ImGui::Text("[%g %g %g %g]", P.col[3].x, P.col[3].y, P.col[3].z, P.col[3].w);
-
-        if (ImGui::Button("Load Data")) {
-            char buf[2048];
-            if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Open, STR_LIT("out"))) {
-                struct Payload {
-                    ApplicationState* state;
-                    str_t path;
-                };
-                Payload payload = {
-                    .state = data,
-                    .path  = str_from_cstr(buf),
-                };
-                viamd::event_system_broadcast_event(HASH_STR_LIT("Secret Sauce"), 0, &payload);
-                update_representation_info(data);
-                update_all_representations(data);
-            }
-        }
     }
     ImGui::End();
 }
@@ -6817,7 +6817,7 @@ static void draw_script_editor_window(ApplicationState* data) {
     ASSERT(data);
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Script Editor", &data->show_script_window, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar)) {
+    if (ImGui::Begin("Script Editor", &data->show_script_window, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::SetWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
         if (ImGui::BeginMenuBar())
         {
@@ -7911,25 +7911,29 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                 } else if (str_eq(ident, STR_LIT("DynamicEval"))) {
                     viamd::extract_bool(rep->dynamic_evaluation, arg);
                 } else if (str_eq(ident, STR_LIT("OrbIdx"))) {
-                    viamd::extract_int(rep->orbital.orbital_idx, arg);
+                    viamd::extract_int(rep->electronic_structure.mo_idx, arg);
+                } else if (str_eq(ident, STR_LIT("OrbMoIdx"))) {
+                    viamd::extract_int(rep->electronic_structure.mo_idx, arg);
+                } else if (str_eq(ident, STR_LIT("OrbNtoIdx"))) {
+                    viamd::extract_int(rep->electronic_structure.nto_idx, arg);
                 } else if (str_eq(ident, STR_LIT("OrbRes"))) {
                     int res;
                     viamd::extract_int(res, arg);
-                    rep->orbital.resolution = (VolumeResolution)res;
+                    rep->electronic_structure.resolution = (VolumeResolution)res;
                 } else if (str_eq(ident, STR_LIT("OrbType"))) {
                     int type;
                     viamd::extract_int(type, arg);
-                    rep->orbital.type = (OrbitalType)type;
+                    rep->electronic_structure.type = (ElectronicStructureType)type;
                 } else if (str_eq(ident, STR_LIT("OrbIso"))) {
-                    viamd::extract_flt(rep->orbital.iso_psi.values[0], arg);
-                    rep->orbital.iso_psi.values[1] = - rep->orbital.iso_psi.values[0];
-                    rep->orbital.iso_den.values[0] = rep->orbital.iso_psi.values[0] * rep->orbital.iso_psi.values[0];
+                    viamd::extract_flt(rep->electronic_structure.iso_psi.values[0], arg);
+                    rep->electronic_structure.iso_psi.values[1] = - rep->electronic_structure.iso_psi.values[0];
+                    rep->electronic_structure.iso_den.values[0] = rep->electronic_structure.iso_psi.values[0] * rep->electronic_structure.iso_psi.values[0];
                 } else if (str_eq(ident, STR_LIT("OrbColPos"))) {
-                    viamd::extract_vec4(rep->orbital.iso_psi.colors[0], arg);
+                    viamd::extract_vec4(rep->electronic_structure.iso_psi.colors[0], arg);
                 } else if (str_eq(ident, STR_LIT("OrbColNeg"))) {
-                    viamd::extract_vec4(rep->orbital.iso_psi.colors[1], arg);
+                    viamd::extract_vec4(rep->electronic_structure.iso_psi.colors[1], arg);
                 } else if (str_eq(ident, STR_LIT("OrbColDen"))) {
-                    viamd::extract_vec4(rep->orbital.iso_den.colors[0], arg);
+                    viamd::extract_vec4(rep->electronic_structure.iso_den.colors[0], arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("AtomElementMapping"))) {
@@ -8072,14 +8076,15 @@ static void save_workspace(ApplicationState* data, str_t filename) {
         viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
         viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
 
-        if (rep.type == RepresentationType::Orbital) {
-            viamd::write_int(state,  STR_LIT("OrbIdx"),      rep.orbital.orbital_idx);
-            viamd::write_int(state,  STR_LIT("OrbType"),(int)rep.orbital.type);
-            viamd::write_int(state,  STR_LIT("OrbRes"), (int)rep.orbital.resolution);
-            viamd::write_flt(state,  STR_LIT("OrbIso"),      rep.orbital.iso_psi.values[0]);
-            viamd::write_vec4(state, STR_LIT("OrbColPos"),   rep.orbital.iso_psi.colors[0]);
-            viamd::write_vec4(state, STR_LIT("OrbColNeg"),   rep.orbital.iso_psi.colors[1]);
-            viamd::write_vec4(state, STR_LIT("OrbColDen"),   rep.orbital.iso_den.colors[0]);
+        if (rep.type == RepresentationType::ElectronicStructure) {
+            viamd::write_int(state,  STR_LIT("ElectronicStructureMoIdx"),    rep.electronic_structure.mo_idx);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureNtoIdx"),   rep.electronic_structure.nto_idx);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureType"),(int)rep.electronic_structure.type);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureRes"), (int)rep.electronic_structure.resolution);
+            viamd::write_flt(state,  STR_LIT("ElectronicStructureIso"),      rep.electronic_structure.iso_psi.values[0]);
+            viamd::write_vec4(state, STR_LIT("ElectronicStructureColPos"),   rep.electronic_structure.iso_psi.colors[0]);
+            viamd::write_vec4(state, STR_LIT("ElectronicStructureColNeg"),   rep.electronic_structure.iso_psi.colors[1]);
+            viamd::write_vec4(state, STR_LIT("ElectronicStructureColDen"),   rep.electronic_structure.iso_den.colors[0]);
         }
     }
 
@@ -8181,7 +8186,7 @@ static Representation* create_representation(ApplicationState* data, Representat
     if (!str_empty(filter)) {
         str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
     }
-    rep->orbital.orbital_idx = data->representation.info.mo_homo_idx;
+    rep->electronic_structure.mo_idx = data->representation.info.alpha.homo_idx;
     init_representation(data, rep);
     update_representation(data, rep);
     return rep;
@@ -8204,8 +8209,8 @@ static void remove_representation(ApplicationState* state, int idx) {
     auto& rep = state->representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_rep_destroy(rep.md_rep);
-    if (rep.orbital.vol.tex_id != 0) gl::free_texture(&rep.orbital.vol.tex_id);
-    if (rep.orbital.dvr.tf_tex != 0) gl::free_texture(&rep.orbital.dvr.tf_tex);
+    if (rep.electronic_structure.vol.tex_id != 0) gl::free_texture(&rep.electronic_structure.vol.tex_id);
+    if (rep.electronic_structure.dvr.tf_tex != 0) gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
     md_array_swap_back_and_pop(state->representation.reps, idx);
     recompute_atom_visibility_mask(state);
 }
@@ -8231,13 +8236,8 @@ static void update_all_representations(ApplicationState* state) {
     }
 }
 
-static bool rep_type_uses_colors(RepresentationType type) {
-    switch(type) {
-        case RepresentationType::Orbital:
-            return false;
-        default:
-            return true;
-    }
+static bool rep_type_uses_atomic_colors(RepresentationType type) {
+    return type != RepresentationType::ElectronicStructure;
 }
 
 static void update_representation(ApplicationState* state, Representation* rep) {
@@ -8258,7 +8258,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.mol, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
     //}
 
-    bool use_colors = rep_type_uses_colors(rep->type);
+    bool use_colors = rep_type_uses_atomic_colors(rep->type);
     uint32_t* colors = 0;
 
     if (use_colors) {
@@ -8372,36 +8372,49 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::Cartoon:
         rep->type_is_valid = mol.protein_backbone.range.count > 0;
         break;
-    case RepresentationType::Orbital: {
-        size_t num_mol_orbitals = md_array_size(state->representation.info.molecular_orbitals);
-        rep->type_is_valid = num_mol_orbitals > 0;
-        if (num_mol_orbitals > 0) {
-            uint64_t vol_hash = (uint64_t)rep->orbital.type | ((uint64_t)rep->orbital.resolution << 8) | ((uint64_t)rep->orbital.orbital_idx << 32);
-            if (vol_hash != rep->orbital.vol_hash) {
+    case RepresentationType::ElectronicStructure: {
+        size_t num_mos = state->representation.info.alpha.num_orbitals;
+        rep->type_is_valid = num_mos > 0;
+        if (num_mos > 0) {
+            uint64_t orb_idx = 0;
+            switch(rep->electronic_structure.type) {
+            case ElectronicStructureType::MolecularOrbital:
+            case ElectronicStructureType::MolecularOrbitalDensity:
+                orb_idx = rep->electronic_structure.mo_idx;
+                break;
+            case ElectronicStructureType::AttachmentDensity:
+            case ElectronicStructureType::DetachmentDensity:
+                orb_idx = rep->electronic_structure.nto_idx;
+                break;
+            default:
+                break;
+            }
+            uint64_t vol_hash = (uint64_t)rep->electronic_structure.type | ((uint64_t)rep->electronic_structure.resolution << 8) | (orb_idx << 32);
+            if (vol_hash != rep->electronic_structure.vol_hash) {
                 const float samples_per_angstrom[(int)VolumeResolution::Count] = {
                     4.0f,
                     8.0f,
                     16.0f,
                 };
-                ComputeOrbital data = {
-                    .type = rep->orbital.type,
-                    .orbital_idx = rep->orbital.orbital_idx,
-                    .samples_per_angstrom = samples_per_angstrom[(int)rep->orbital.resolution],
-                    .dst_volume = &rep->orbital.vol,
+                EvalElectronicStructure data = {
+                    .type = rep->electronic_structure.type,
+                    .orbital_idx = (int)orb_idx,
+                    .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
+                    .dst_volume = &rep->electronic_structure.vol,
                 };
-                viamd::event_system_broadcast_event(viamd::EventType_RepresentationComputeOrbital, viamd::EventPayloadType_ComputeOrbital, &data);
+                viamd::event_system_broadcast_event(viamd::EventType_RepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
 
                 if (data.output_written) {
 #if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
-                    rep->orbital.vol_hash = vol_hash;
+                    rep->electronic_structure.vol_hash = vol_hash;
 #endif
                 }
             }
         }
-        uint64_t tf_hash = md_hash64(&rep->orbital.dvr.colormap, sizeof(rep->orbital.dvr.colormap), 0);
-        if (tf_hash != rep->orbital.tf_hash) {
-            rep->orbital.tf_hash = tf_hash;
-            volume::compute_transfer_function_texture_simple(&rep->orbital.dvr.tf_tex, rep->orbital.dvr.colormap);
+        uint64_t tf_hash = md_hash64(&rep->electronic_structure.dvr.colormap, sizeof(rep->electronic_structure.dvr.colormap), 0);
+        if (tf_hash != rep->electronic_structure.tf_hash) {
+            rep->electronic_structure.tf_hash = tf_hash;
+            volume::compute_transfer_function_texture_simple(&rep->electronic_structure.dvr.tf_tex, rep->electronic_structure.dvr.colormap);
         }
         break;
     }
@@ -8445,11 +8458,14 @@ static void init_representation(ApplicationState* state, Representation* rep) {
 }
 
 static void update_representation_info(ApplicationState* state) {
-    md_arena_allocator_reset(state->representation.info.alloc);
-    state->representation.info.dipole_moments = 0;
-    state->representation.info.molecular_orbitals = 0;
-    state->representation.info.mo_homo_idx = 0;
-    state->representation.info.mo_lumo_idx = 0;
+    md_allocator_i* alloc = state->representation.info.alloc;
+    md_arena_allocator_reset(alloc);
+
+    // Clear info, maintain allocator
+    state->representation.info = {};
+    state->representation.info.alloc = alloc;
+
+    // Broadcast event to populate info
     viamd::event_system_broadcast_event(viamd::EventType_RepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
 }
 
@@ -8472,7 +8488,7 @@ static void create_default_representations(ApplicationState* state) {
     bool ion_present = false;
     bool water_present = false;
     bool ligand_present = false;
-    bool orbitals_present = md_array_size(state->representation.info.molecular_orbitals) > 0;
+    bool orbitals_present = state->representation.info.alpha.num_orbitals > 0;
 
     if (state->mold.mol.atom.count > 4'000'000) {
         LOG_INFO("Large molecule detected, creating default representation for all atoms");
@@ -8541,8 +8557,8 @@ static void create_default_representations(ApplicationState* state) {
 
 done:
     if (orbitals_present) {
-        Representation* rep = create_representation(state, RepresentationType::Orbital);
-        snprintf(rep->name, sizeof(rep->name), "orbital");
+        Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
+        snprintf(rep->name, sizeof(rep->name), "electronic structure");
         rep->enabled = true;
     }
 
@@ -9282,9 +9298,9 @@ static void draw_representations_transparent(ApplicationState* state) {
     for (size_t i = 0; i < num_representations; ++i) {
         const Representation& rep = state->representation.reps[i];
         if (!rep.enabled) continue;
-        if (rep.type != RepresentationType::Orbital) continue;
+        if (rep.type != RepresentationType::ElectronicStructure) continue;
 
-        const IsoDesc& iso = (rep.orbital.type == OrbitalType::MolecularOrbitalPsi) ? rep.orbital.iso_psi : rep.orbital.iso_den;
+        const IsoDesc& iso = (rep.electronic_structure.type == ElectronicStructureType::MolecularOrbital) ? rep.electronic_structure.iso_psi : rep.electronic_structure.iso_den;
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
         update_representation(state, &state->representation.reps[i]);
@@ -9298,11 +9314,11 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .height = state->gbuffer.height,
             },
             .texture = {
-                .volume = rep.orbital.vol.tex_id,
-                .transfer_function = rep.orbital.dvr.tf_tex,
+                .volume = rep.electronic_structure.vol.tex_id,
+                .transfer_function = rep.electronic_structure.dvr.tf_tex,
             },
             .matrix = {
-                .model = rep.orbital.vol.texture_to_world,
+                .model = rep.electronic_structure.vol.texture_to_world,
                 .view  = state->view.param.matrix.curr.view,
                 .proj  = state->view.param.matrix.curr.proj,
                 .inv_proj = state->view.param.matrix.inv.proj,
@@ -9321,7 +9337,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .colors  = iso.colors,
             },
             .dvr = {
-                .enabled = rep.orbital.dvr.enabled,
+                .enabled = rep.electronic_structure.dvr.enabled,
                 .min_tf_value = -1.0f,
                 .max_tf_value =  1.0f,
             },
@@ -9331,7 +9347,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .dir_radiance = {10,10,10},
                 .ior = 1.5f,
         },
-            .voxel_spacing = rep.orbital.vol.step_size,
+            .voxel_spacing = rep.electronic_structure.vol.step_size,
         };
 
         volume::render_volume(desc);
@@ -9339,7 +9355,7 @@ static void draw_representations_transparent(ApplicationState* state) {
 #if DEBUG
         immediate::set_model_view_matrix(state->view.param.matrix.curr.view);
         immediate::set_proj_matrix(state->view.param.matrix.curr.proj);
-        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, rep.orbital.vol.texture_to_world, immediate::COLOR_BLACK);
+        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, rep.electronic_structure.vol.texture_to_world, immediate::COLOR_BLACK);
         immediate::render();
 #endif
     }

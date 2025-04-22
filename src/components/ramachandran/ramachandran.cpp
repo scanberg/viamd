@@ -538,7 +538,7 @@ struct Ramachandran : viamd::EventHandler {
                 on_topology_init(state);
                 break;
             }
-            case viamd::EventType_ViamdDrawMenu:
+            case viamd::EventType_ViamdWindowDrawMenu:
                 ImGui::Checkbox("Ramachandran", &show_window);
                 break;
             default:

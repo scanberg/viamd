@@ -60,7 +60,7 @@ enum class RepresentationType {
     BallAndStick = MD_GL_REP_BALL_AND_STICK,
     Ribbons = MD_GL_REP_RIBBONS,
     Cartoon = MD_GL_REP_CARTOON,
-    Orbital,
+    ElectronicStructure,
 //    DipoleMoment,
     Count
 };
@@ -71,7 +71,7 @@ static const char* representation_type_str[(int)RepresentationType::Count] = {
     "Ball And Stick",
     "Ribbons",
     "Cartoon",
-    "Orbital",
+    "Electronic Structure",
 //    "Dipole Moment"
 };
 
@@ -102,16 +102,20 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Property",
 };
 
-enum class OrbitalType {
-    MolecularOrbitalPsi,
-    MolecularOrbitalPsiSquared,
+enum class ElectronicStructureType {
+    MolecularOrbital,
+    MolecularOrbitalDensity,
+    AttachmentDensity,
+    DetachmentDensity,
     ElectronDensity,
     Count
 };
 
-static const char* orbital_type_str[(int)OrbitalType::Count] = {
+static const char* electronic_structure_type_str[(int)ElectronicStructureType::Count] = {
     (const char*)u8"Molecular Orbital (Ψ)",
     (const char*)u8"Molecular Orbital Density (Ψ²)",
+    (const char*)u8"Attachment Density (A)",
+    (const char*)u8"Detachment Density (D)",
     (const char*)u8"Electron Density (ρ)",
 };
 
@@ -222,26 +226,36 @@ struct DatasetItem {
 };
 
 struct DipoleMoment {
-    str_t  label;
-    vec3_t vector;
+    size_t num_dipoles = 0;
+    str_t* label = nullptr;
+    vec3_t* vec  = nullptr;
+};
+
+struct NaturalTransitionOrbital {
+    size_t num_orbitals = 0;
+    str_t* label = nullptr;
 };
 
 struct MolecularOrbital {
-    int idx;
-    float occupation;
-    float energy;
+    size_t homo_idx = 0;
+    size_t lumo_idx = 0;
+    size_t num_orbitals = 0;
+    str_t* label = nullptr;
+    double* occupation = nullptr;
+    double* energy = nullptr;
 };
 
 // Struct to fill in for the different components
 // Which provides information of what representations are available for the currently loaded datasets
 struct RepresentationInfo {
-    int mo_homo_idx = 0;
-    int mo_lumo_idx = 0;
+    MolecularOrbital alpha;
+    MolecularOrbital beta;
+    NaturalTransitionOrbital nto;
+    DipoleMoment electric_dipoles;
+    DipoleMoment magnetic_dipoles;
+    DipoleMoment velocity_dipoles;
 
-    md_array(MolecularOrbital) molecular_orbitals = 0;
-    md_array(DipoleMoment) dipole_moments = 0;
-
-    md_allocator_i* alloc;
+    md_allocator_i* alloc = nullptr;
 };
 
 struct Volume {
@@ -262,10 +276,10 @@ struct IsoDesc {
     vec4_t colors[8];
 };
 
-// Event Payload when an orbital is to be evaluated
-struct ComputeOrbital {
+// Event Payload when an electronic structure is to be evaluated
+struct EvalElectronicStructure {
     // Input information
-    OrbitalType type = OrbitalType::MolecularOrbitalPsi;
+    ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
     int orbital_idx = 0;
     float samples_per_angstrom = 4.0f;
 
@@ -326,11 +340,12 @@ struct Representation {
             int colormap = DEFAULT_COLORMAP;
         } dvr;
 
-        OrbitalType type = OrbitalType::MolecularOrbitalPsi;
-        int orbital_idx = 0;
+        ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
+        int mo_idx = 0;
+        int nto_idx = 0;
 		uint64_t vol_hash = 0;
         uint64_t tf_hash = 0;
-    } orbital;
+    } electronic_structure;
 
     struct {
         int colormap = DEFAULT_COLORMAP;

@@ -1,4 +1,4 @@
-#define IMGUI_DEFINE_MATH_OPERATORS
+﻿#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <event.h>
 
@@ -91,7 +91,7 @@ struct Shapespace : viamd::EventHandler {
             case viamd::EventType_ViamdFrameTick:
                 draw_window();
                 break;
-            case viamd::EventType_ViamdDrawMenu:
+            case viamd::EventType_ViamdWindowDrawMenu:
                 ImGui::Checkbox("ShapeSpace", &show_window);
                 break;
             case viamd::EventType_ViamdDeserialize: {
@@ -133,7 +133,7 @@ struct Shapespace : viamd::EventHandler {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(2, 2));
         defer { ImGui::PopStyleVar(1); };
 
-        if (ImGui::Begin("Shapespace", &show_window, ImGuiWindowFlags_MenuBar)) {
+        if (ImGui::Begin("Shapespace", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Export")) {
                     if (ImGui::MenuItem("XVG")) {
