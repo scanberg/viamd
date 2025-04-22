@@ -146,6 +146,35 @@ static inline OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t
     return obb;
 }
 
+// Compute an oriented bounding box (OBB) for the supplied gto
+static inline OBB compute_gto_aabb(const md_gto_t* gto, size_t num_gto) {
+    // Compute min and maximum extent along the axes
+    vec3_t min_ext = vec3_set1( FLT_MAX);
+    vec3_t max_ext = vec3_set1(-FLT_MAX);
+
+    // Find the min and max extend within it
+    for (size_t i = 0; i < num_gto; ++i) {
+        vec3_t xyz = { gto[i].x, gto[i].y, gto[i].z };
+
+        // The cutoff-radius is computed for a value which is lower than the range of rendered iso-values
+        // So the effective radius is a bit overestimated, thus we scale it back a bit
+        // The quirk here is that the cutoff can be 'Infinite' meaning the GTO should contribute across the entire space
+        // In such case, we need to limit the extent to something, otherwise the box becomes infinite
+        float  r = MIN(gto[i].cutoff * 0.85f, 10.f);
+
+        min_ext = vec3_min(min_ext, vec3_sub_f(xyz, r));
+        max_ext = vec3_max(max_ext, vec3_add_f(xyz, r));
+    }
+
+    OBB obb = {
+        .basis = mat3_ident(),
+        .min_ext = min_ext,
+        .max_ext = max_ext,
+    };
+
+    return obb;
+}
+
 static inline mat4_t compute_texture_to_world_mat(const OBB& obb) {
     mat4_t T = mat4_translate_vec3(obb.basis * obb.min_ext * BOHR_TO_ANGSTROM);
     mat4_t R = mat4_from_mat3(obb.basis);
@@ -920,7 +949,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // Compute attachment / detachment density
-    bool compute_nto_density_GPU(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool compute_nto_density_GPU(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, bool use_oobb = true) {
         md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
         defer { md_vm_arena_destroy(alloc); };
 
@@ -932,7 +961,12 @@ struct VeloxChem : viamd::EventHandler {
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, orb_data.gtos,orb_data.num_gtos);
+        OBB obb = {};
+        if (use_oobb) {
+            obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
+        } else {
+            obb = compute_gto_aabb(orb_data.gtos, orb_data.num_gtos);
+        }
         init_volume_from_OBB(vol, obb, samples_per_unit_length, GL_R32F);
 
         // Dispatch Compute shader evaluation
@@ -942,7 +976,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // Compute attachment / detachment density
-    task_system::ID compute_nto_density_async(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    task_system::ID compute_nto_density_async(Volume* vol, size_t nto_idx, NtoDensity type, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, bool use_oobb = true) {
         if (!vol) {
             MD_LOG_ERROR("No volume object supplied");
             return task_system::INVALID_ID;
@@ -958,7 +992,12 @@ struct VeloxChem : viamd::EventHandler {
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
+        OBB obb = {};
+        if (use_oobb) {
+            obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
+        } else {
+            obb = compute_gto_aabb(orb_data.gtos, orb_data.num_gtos);
+        }
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
         vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
@@ -1023,7 +1062,7 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    task_system::ID compute_nto_async(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    task_system::ID compute_nto_async(Volume* vol, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, bool use_oobb = true) {
         if (!vol) {
             MD_LOG_ERROR("No volume object supplied");
             return task_system::INVALID_ID;
@@ -1043,7 +1082,12 @@ struct VeloxChem : viamd::EventHandler {
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        OBB obb = {};
+        if (use_oobb) {
+            obb = compute_gto_obb(PCA, gtos, num_gtos);
+        } else {
+            obb = compute_gto_aabb(gtos, num_gtos);
+        }
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
         vec3_t step_x = obb.basis.col[0] * vol->step_size;
@@ -1119,7 +1163,7 @@ struct VeloxChem : viamd::EventHandler {
         md_gto_eval_mode_t mode;
     };
 
-    bool compute_mo_GPU(Volume* vol, md_vlx_mo_type_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool compute_mo_GPU(Volume* vol, md_vlx_mo_type_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, bool use_oobb = true) {
         ScopedTemp reset_temp;
 
         size_t num_gtos = md_vlx_mo_gto_count(vlx);
@@ -1133,7 +1177,12 @@ struct VeloxChem : viamd::EventHandler {
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        OBB obb = {};
+        if (use_oobb) {
+            obb = compute_gto_obb(PCA, gtos, num_gtos);
+        } else {
+            obb = compute_gto_aabb(gtos, num_gtos);
+        }
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
         // Dispatch Compute shader evaluation
@@ -1143,7 +1192,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // The full electron density that includes all orbitals weighted by their occupancy
-    bool compute_electron_density_GPU(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool compute_electron_density_GPU(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, bool use_oobb = true) {
         if (!vol) {
             MD_LOG_ERROR("No volume object supplied");
             return false;
@@ -1159,7 +1208,13 @@ struct VeloxChem : viamd::EventHandler {
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
+        OBB obb = {};
+        if (use_oobb) {
+            obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
+        } else {
+            obb = compute_gto_aabb(orb_data.gtos, orb_data.num_gtos);
+        }
+
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
         // Dispatch Compute shader evaluation
@@ -1168,7 +1223,7 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    task_system::ID compute_electron_density_async(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    task_system::ID compute_electron_density_async(Volume* vol, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, bool use_oobb = true) {
         if (!vol) {
             MD_LOG_ERROR("No volume object supplied");
             return task_system::INVALID_ID;
@@ -1184,7 +1239,12 @@ struct VeloxChem : viamd::EventHandler {
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
+        OBB obb = {};
+        if (use_oobb) {
+            obb = compute_gto_obb(PCA, orb_data.gtos, orb_data.num_gtos);
+        } else {
+            obb = compute_gto_aabb(orb_data.gtos, orb_data.num_gtos);
+        }
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
         vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
@@ -1246,7 +1306,7 @@ struct VeloxChem : viamd::EventHandler {
         return async_task;
     }
 
-    task_system::ID compute_mo_async(Volume* vol, md_vlx_mo_type_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {
+    task_system::ID compute_mo_async(Volume* vol, md_vlx_mo_type_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM, bool use_oobb = true) {
         if (!vol) {
             MD_LOG_ERROR("No volume object supplied");
             return task_system::INVALID_ID;
@@ -1266,7 +1326,12 @@ struct VeloxChem : viamd::EventHandler {
 
         const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
-        OBB obb = compute_gto_obb(PCA, gtos, num_gtos);
+        OBB obb = {};
+        if (use_oobb) {
+            obb = compute_gto_obb(PCA, gtos, num_gtos);
+        } else {
+            obb = compute_gto_aabb(gtos, num_gtos);
+        }
         init_volume_from_OBB(vol, obb, samples_per_unit_length);
 
         vec3_t step_x = obb.basis.col[0] * vol->step_size.x;
@@ -3648,88 +3713,90 @@ struct VeloxChem : viamd::EventHandler {
 
             ImGui::Combo("Volume Resolution", (int*)&export_state.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
 
+            enum {
+                EXPORT_FILE_FORMAT_CUBE = 0,
+                EXPORT_FILE_FORMAT_RAW_MHD_XYZ,
+                EXPORT_FILE_FORMAT_COUNT,
+            };
+            const char* file_format_str[] = {"cube", "raw + mhd + xyz"};
+            str_t file_format_ext[] = {STR_LIT("cube"), STR_LIT("raw")};
+
+            STATIC_ASSERT(ARRAY_SIZE(file_format_str) == EXPORT_FILE_FORMAT_COUNT);
+            STATIC_ASSERT(ARRAY_SIZE(file_format_ext) == EXPORT_FILE_FORMAT_COUNT);
+
+            static int file_format = 0;
+            ImGui::Combo("File format", &file_format, file_format_str, IM_ARRAYSIZE(file_format_str));
+
+            static bool use_oobb = true;
+            ImGui::Checkbox("Use OOBB", &use_oobb);
+            ImGui::SetItemTooltip("Use Object Aligned Bounding Box for volume (rotate and fit the volume to the data)");
+
             if (ImGui::Button("Export")) {
-                char path[2048];
-                if (application::file_dialog(path, sizeof(path), application::FileDialogFlag_Save, STR_LIT("cube"))) {
-                    md_file_o* file = md_file_open({path, strnlen(path, sizeof(path))}, MD_FILE_WRITE);
-                    if (file) {
-                        md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
-                        Volume vol = {};
+                str_t ext = file_format_ext[file_format];
+                char path_buf[2048];
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
+                    str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
 
-                        float samples_per_angstrom = vol_res_scl[(int)export_state.resolution];
+                    md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
+                    if (!file) {
+                        MD_LOG_ERROR("Failed to open file for writing: '" STR_FMT "'", STR_ARG(path));
+                        return;
+                    }
 
-                        md_vlx_mo_type_t mo_type  = MD_VLX_MO_TYPE_ALPHA;
+                    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
+                    Volume vol = {};
 
-                        switch (export_state.orb_type) {
-                        case ElectronicStructureType::MolecularOrbital:
-                            compute_mo_GPU(&vol, mo_type, export_state.mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
-                            break;
-                        case ElectronicStructureType::MolecularOrbitalDensity:
-                            compute_mo_GPU(&vol, mo_type, export_state.mo_idx, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
-                            break;
-                        case ElectronicStructureType::AttachmentDensity:
-                            compute_nto_density_GPU(&vol, export_state.nto_idx, NtoDensity::Attachment, samples_per_angstrom);
-                            break;
-                        case ElectronicStructureType::DetachmentDensity:
-                            compute_nto_density_GPU(&vol, export_state.nto_idx, NtoDensity::Detachment, samples_per_angstrom);
-                            break;
-                        case ElectronicStructureType::ElectronDensity:
-                            compute_electron_density_GPU(&vol, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom);
-                            break;
-                        default:
-                            break;
-                        }
+                    float samples_per_angstrom = vol_res_scl[(int)export_state.resolution];
+                    md_vlx_mo_type_t mo_type  = MD_VLX_MO_TYPE_ALPHA;
 
-                        int num_samples = vol.dim[0] * vol.dim[1] * vol.dim[2];
-                        float* data = (float*)md_vm_arena_push(temp_arena, num_samples * sizeof(float));
-                        float* reordered = (float*)md_vm_arena_push(temp_arena, num_samples * sizeof(float));
+                    switch (export_state.orb_type) {
+                    case ElectronicStructureType::MolecularOrbital:
+                        compute_mo_GPU(&vol, mo_type, export_state.mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom, DEFAULT_GTO_CUTOFF_VALUE, use_oobb);
+                        break;
+                    case ElectronicStructureType::MolecularOrbitalDensity:
+                        compute_mo_GPU(&vol, mo_type, export_state.mo_idx, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom, DEFAULT_GTO_CUTOFF_VALUE, use_oobb);
+                        break;
+                    case ElectronicStructureType::AttachmentDensity:
+                        compute_nto_density_GPU(&vol, export_state.nto_idx, NtoDensity::Attachment, samples_per_angstrom, DEFAULT_GTO_CUTOFF_VALUE, use_oobb);
+                        break;
+                    case ElectronicStructureType::DetachmentDensity:
+                        compute_nto_density_GPU(&vol, export_state.nto_idx, NtoDensity::Detachment, samples_per_angstrom, DEFAULT_GTO_CUTOFF_VALUE, use_oobb);
+                        break;
+                    case ElectronicStructureType::ElectronDensity:
+                        compute_electron_density_GPU(&vol, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom, DEFAULT_GTO_CUTOFF_VALUE, use_oobb);
+                        break;
+                    default:
+                        break;
+                    }
 
-                        vec3_t origin = mat4_mul_vec3(vol.index_to_world, {0,0,0}, 1.0f);
-                        vec3_t step_x = mat4_mul_vec3(vol.index_to_world, {1,0,0}, 1.0f) - origin;
-                        vec3_t step_y = mat4_mul_vec3(vol.index_to_world, {0,1,0}, 1.0f) - origin;
-                        vec3_t step_z = mat4_mul_vec3(vol.index_to_world, {0,0,1}, 1.0f) - origin;
+                    int num_samples = vol.dim[0] * vol.dim[1] * vol.dim[2];
+                    size_t              natoms = md_vlx_number_of_atoms(vlx);
+                    const dvec3_t* vlx_coords  = md_vlx_atom_coordinates(vlx);
+                    const uint8_t* vlx_numbers = md_vlx_atomic_numbers(vlx);
+                    float* data = (float*)md_vm_arena_push(temp_arena, num_samples * sizeof(float));
 
-                        // Extract data from OpenGL Texture
-                        glBindTexture(GL_TEXTURE_3D, vol.tex_id);
-                        glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, data);
-                        glBindTexture(GL_TEXTURE_3D, 0);
+                    vec3_t origin = mat4_mul_vec3(vol.index_to_world, {0,0,0}, 1.0f);
+                    vec3_t step_x = mat4_mul_vec3(vol.index_to_world, {1,0,0}, 1.0f) - origin;
+                    vec3_t step_y = mat4_mul_vec3(vol.index_to_world, {0,1,0}, 1.0f) - origin;
+                    vec3_t step_z = mat4_mul_vec3(vol.index_to_world, {0,0,1}, 1.0f) - origin;
 
-                        int dst_idx = 0;
-                        for (int x = 0; x < vol.dim[0]; ++x) {
-                            for (int y = 0; y < vol.dim[1]; ++y) {
-                                for (int z = 0; z < vol.dim[2]; ++z) {
-                                    int src_idx = z * vol.dim[0] * vol.dim[1] + y * vol.dim[0] + x;
-                                    reordered[dst_idx++] = data[src_idx];
-                                }
-                            }
-                        }
+                    // Extract data from OpenGL Texture
+                    glBindTexture(GL_TEXTURE_3D, vol.tex_id);
+                    glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, data);
+                    glBindTexture(GL_TEXTURE_3D, 0);
 
-                        int natoms     = (int)md_vlx_number_of_atoms(vlx);
-                        vec3_t* coords = (vec3_t*)md_vm_arena_push(temp_arena, natoms * sizeof(vec3_t));
-                        int* number    = (int*)   md_vm_arena_push(temp_arena, natoms * sizeof(int));
-                        float* charge  = (float*) md_vm_arena_push(temp_arena, natoms * sizeof(float));
-
-                        const dvec3_t* vlx_coords = md_vlx_atom_coordinates(vlx);
-                        const uint8_t* vlx_numbers = md_vlx_atomic_numbers(vlx);
-
-                        for (int i = 0; i < natoms; ++i) {
-                            dvec3_t coord = dvec3_mul_f(vlx_coords[i], ANGSTROM_TO_BOHR);
-                            vec3_t v3 = {(float)coord.x, (float)coord.y, (float)coord.z};
-                            coords[i] = v3;
-                            number[i] = vlx_numbers[i];
-                            charge[i] = 0;
-                        }
-
+                    switch (file_format) {
+                    case EXPORT_FILE_FORMAT_CUBE: {
                         md_file_printf(file, "Cube file generated by VIAMD\n");
                         md_file_printf(file, "%s\n", electronic_structure_type_str[(int)export_state.orb_type]);
 
-                        md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", -natoms, origin.x, origin.y, origin.z);
+                        md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", -(int)natoms, origin.x, origin.y, origin.z);
                         md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol.dim[0], step_x.x, step_x.y, step_x.z);
                         md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol.dim[1], step_y.x, step_y.y, step_y.z);
                         md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol.dim[2], step_z.x, step_z.y, step_z.z);
 
-                        for (int i = 0; i < natoms; ++i) {
-                            md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", number[i], (float)number[i], coords[i].x, coords[i].y, coords[i].z);
+                        for (size_t i = 0; i < natoms; ++i) {
+                            md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", (int)vlx_numbers[i], (float)vlx_numbers[i], vlx_coords[i].x * ANGSTROM_TO_BOHR, vlx_coords[i].y * ANGSTROM_TO_BOHR, vlx_coords[i].z * ANGSTROM_TO_BOHR);
                         }
 
                         // This entry somehow relates to the number of densities
@@ -3747,10 +3814,101 @@ struct VeloxChem : viamd::EventHandler {
                                 }
                             }
                         }
-
-                        md_vm_arena_destroy(temp_arena);
-                        md_file_close(file);
+                        MD_LOG_INFO("Successfully exported electronic structure to '" STR_FMT "'", STR_ARG(path));
+                        break;
                     }
+                    case EXPORT_FILE_FORMAT_RAW_MHD_XYZ: {
+                        /*
+                        * # EXAMPLE
+                        ObjectType = Image
+                        NDims = 3
+                        DimSize = 256 256 64
+                        ElementType = MET_USHORT
+                        HeaderSize = -1
+                        ElementSpacing = 1 1 1
+                        ElementByteOrderMSB = False
+                        ElementDataFile = image.raw
+                        */
+
+                        str_t basepath;
+                        if (!extract_file_path_without_ext(&basepath, path)) {
+                            MD_LOG_ERROR("Failed to extract base path");
+                            goto done;
+                        }
+
+                        str_t filename_raw;
+                        if (!extract_file(&filename_raw, path)) {
+                            MD_LOG_ERROR("Failed to extract filename raw");
+                            goto done;
+                        }
+
+                        str_t filename;
+                        if (!extract_file_path_without_ext(&filename, filename_raw)) {
+                            MD_LOG_ERROR("Failed to extract filename");
+                            goto done;
+                        }
+
+                        md_file_write(file, data, num_samples * sizeof(float));
+
+                        str_t mhd_path = str_printf(temp_arena, STR_FMT ".mhd", STR_ARG(basepath));
+                        str_t xyz_path = str_printf(temp_arena, STR_FMT ".xyz", STR_ARG(basepath));
+
+                        md_file_o* mhd_file = md_file_open(mhd_path, MD_FILE_WRITE | MD_FILE_BINARY);
+                        if (!mhd_file) {
+                            MD_LOG_ERROR("Failed to open .mhd file");
+                            goto done;
+                        }
+
+                        vec3_t ori   = origin * BOHR_TO_ANGSTROM;
+                        vec3_t dir_x = vec3_normalize(step_x) * BOHR_TO_ANGSTROM;
+                        vec3_t dir_y = vec3_normalize(step_y) * BOHR_TO_ANGSTROM;
+                        vec3_t dir_z = vec3_normalize(step_z) * BOHR_TO_ANGSTROM;
+                        vec3_t step  = vol.step_size * BOHR_TO_ANGSTROM;
+
+                        md_file_printf(mhd_file, "ObjectType = Image\n");
+                        md_file_printf(mhd_file, "NDims = 3\n");
+                        md_file_printf(mhd_file, "DimSize = %i %i %i\n", vol.dim[0], vol.dim[1], vol.dim[2]);
+                        md_file_printf(mhd_file, "ElementType = MET_FLOAT\n");
+                        md_file_printf(mhd_file, "HeaderSize = -1\n");
+                        md_file_printf(mhd_file, "ElementSpacing = %12.6f %12.6f %12.6f\n", step.x, step.y, step.z);
+                        md_file_printf(mhd_file, "ElementByteOrderMSB = False\n");
+                        md_file_printf(mhd_file, "ElementDataFile = " STR_FMT "\n", STR_ARG(filename_raw));
+                        md_file_printf(mhd_file, "Position = %12.6f %12.6f %12.6f\n", ori.x, ori.y, ori.z);
+                        md_file_printf(mhd_file, "Orientation =\n");
+                        md_file_printf(mhd_file, "%12.6f %12.6f %12.6f\n", dir_x.x, dir_x.y, dir_x.z);
+                        md_file_printf(mhd_file, "%12.6f %12.6f %12.6f\n", dir_y.x, dir_y.y, dir_y.z);
+                        md_file_printf(mhd_file, "%12.6f %12.6f %12.6f\n", dir_z.x, dir_z.y, dir_z.z);
+
+                        md_file_close(mhd_file);
+
+                        md_file_o* xyz_file = md_file_open(xyz_path, MD_FILE_WRITE | MD_FILE_BINARY);
+                        if (!xyz_file) {
+                            MD_LOG_ERROR("Failed to open .xyz file");
+                            goto done;
+                        }
+                        
+                        // XYZ
+                        md_file_printf(xyz_file, "%i\n", natoms);
+                        md_file_printf(xyz_file, "Geometry extracted from VeloxChem dataset: '%s'\n", state.files.molecule);
+                        for (int i = 0; i < natoms; ++i) {
+                            str_t sym = md_util_element_symbol(vlx_numbers[i]);
+                            md_file_printf(xyz_file, "%-2s %12.6f %12.6f %12.6f\n", sym.ptr, vlx_coords[i].x, vlx_coords[i].y, vlx_coords[i].z);
+                        }
+
+                        md_file_close(xyz_file);
+
+                        MD_LOG_INFO("Successfully exported electronic structure to '" STR_FMT "'", STR_ARG(path));
+
+                        break;
+                    }
+                    default:
+                        ASSERT(false);
+                        break;
+                    }
+
+                    done:
+                    md_vm_arena_destroy(temp_arena);
+                    md_file_close(file);
                 }
             }
         }
