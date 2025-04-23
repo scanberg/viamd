@@ -6429,9 +6429,10 @@ static void draw_density_volume_window(ApplicationState* data) {
         }
 
         if (reset_view) {
-            vec3_t min_ext = vec3_set(0,0,0);
-            vec3_t max_ext = vec3_set(1,1,1);
-            camera_compute_optimal_view(&data->density_volume.target_pos, &data->density_volume.target_ori, &data->density_volume.target_dist, mat3_from_mat4(data->density_volume.model_mat), min_ext, max_ext);
+            vec3_t min_ext = vec3_from_vec4(data->density_volume.model_mat * vec4_set(0,0,0,1));
+            vec3_t max_ext = vec3_from_vec4(data->density_volume.model_mat * vec4_set(1,1,1,1));
+            mat3_t basis = mat3_ident();
+            camera_compute_optimal_view(&data->density_volume.target_pos, &data->density_volume.target_ori, &data->density_volume.target_dist, basis, min_ext, max_ext);
 
             if (reset_hard) {
                 data->density_volume.camera.position = data->density_volume.target_pos;
