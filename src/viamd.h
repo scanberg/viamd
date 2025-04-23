@@ -262,9 +262,10 @@ struct Volume {
     mat4_t index_to_world   = {};
     mat4_t texture_to_world = {};
     mat4_t world_to_model   = {};
+    mat3_t basis  = mat3_ident();
     int dim[3] = {128, 128, 128};
+    vec3_t min_ext = {};
     vec3_t step_size = {};
-    vec3_t extent = {};
     uint32_t tex_id = 0;
 };
 
