@@ -796,7 +796,6 @@ int main(int argc, char** argv) {
             extract_folder_path(&folder, {exe, len});
             sb += folder;
             sb += VIAMD_DATASET_DIR "/1ALA-500.pdb";
-            replace_char(md_strb_ptr(sb), md_strb_len(sb), '\\', '/');
             str_t path = md_strb_to_str(sb);
             if (md_path_is_valid(path)) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
