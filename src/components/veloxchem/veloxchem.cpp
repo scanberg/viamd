@@ -626,9 +626,9 @@ struct VeloxChem : viamd::EventHandler {
         md_vlx_destroy(vlx);
         md_arena_allocator_reset(arena);
         vlx = nullptr;
-        orb = {};
-        nto = {};
-        rsp = {};
+        orb = VeloxChem::Orb{};
+        nto = VeloxChem::Nto{};
+        rsp = VeloxChem::Rsp{};
     }
 
     void update_nto_group_colors() {
