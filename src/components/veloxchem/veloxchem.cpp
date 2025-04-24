@@ -195,11 +195,11 @@ static inline mat4_t compute_world_to_model_mat(const mat3_t& orientation, const
     return world_to_model;
 }
 
-static inline mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& min_ext, vec3_t stepsize) {
+static inline mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& stepsize) {
     vec3_t step_x = orientation.col[0] * stepsize.x;
     vec3_t step_y = orientation.col[1] * stepsize.y;
     vec3_t step_z = orientation.col[2] * stepsize.z;
-    vec3_t origin = orientation * (min_ext + stepsize * 0.5f);
+    vec3_t origin = orientation * ((min_ext + stepsize * 0.5f));
 
     mat4_t index_to_world = {
         step_x.x, step_x.y, step_x.z, 0.0f,
@@ -582,8 +582,8 @@ struct VeloxChem : viamd::EventHandler {
                 EvalElectronicStructure& data = *(EvalElectronicStructure*)e.payload;
 
                 if (!data.output_written) {
-                    const float samples_per_unit_length = (float)(data.samples_per_angstrom * BOHR_TO_ANGSTROM);
-                    init_volume(data.dst_volume, obb.basis, obb.min_ext, obb.max_ext, samples_per_unit_length);
+                    const float samples_per_unit_length = data.samples_per_angstrom * BOHR_TO_ANGSTROM;
+                    init_volume(data.dst_volume, obb.basis, obb.min_ext, obb.max_ext, data.samples_per_angstrom);
 
                     if (data.type == ElectronicStructureType::MolecularOrbital || data.type == ElectronicStructureType::MolecularOrbitalDensity) {
                         md_gto_eval_mode_t mode = (data.type == ElectronicStructureType::MolecularOrbital) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
@@ -680,7 +680,7 @@ struct VeloxChem : viamd::EventHandler {
                     // This is used in determining a better fitting volume for the orbitals
                     vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * num_atoms);
                     for (size_t i = 0; i < num_atoms; ++i) {
-                        nto.atom_xyzr[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, md_util_element_vdw_radius(atomic_numbers[i])) * ANGSTROM_TO_BOHR;
+                        nto.atom_xyzr[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, md_util_element_vdw_radius(atomic_numbers[i])) * 1.0f;
                         xyzw[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, 1.0f);
                     }
 
@@ -710,7 +710,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
                     for (size_t i = 0; i < num_atoms; ++i) {
-                        vec3_t xyz = { (float)coords[i].x, (float)coords[i].y, (float)coords[i].z };
+                        vec3_t xyz = vec3_from_vec4(xyzw[i]) * ANGSTROM_TO_BOHR;
                         aabb.min_ext = vec3_min(aabb.min_ext, xyz);
                         aabb.max_ext = vec3_max(aabb.max_ext, xyz);
 
@@ -719,14 +719,8 @@ struct VeloxChem : viamd::EventHandler {
                         obb.max_ext = vec3_max(obb.max_ext, xyz);
                     }
 
-                    aabb.min_ext = aabb.min_ext * ANGSTROM_TO_BOHR;
-                    aabb.max_ext = aabb.max_ext * ANGSTROM_TO_BOHR;
-
-                    obb.min_ext  = obb.min_ext  * ANGSTROM_TO_BOHR;
-                    obb.max_ext  = obb.max_ext  * ANGSTROM_TO_BOHR;
-
                     // This is the extra padding we apply to the 'bounding volumes'
-                    const float pad = 8.0f;
+                    const float pad = 4.0f;
                     aabb.min_ext -= pad;
                     aabb.max_ext += pad;
 
@@ -737,7 +731,7 @@ struct VeloxChem : viamd::EventHandler {
                     size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
                     if (num_excited_states > 0) {
                         //nto.show_window = true;
-                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, obb.basis, obb.min_ext, obb.max_ext, nto.distance_scale);
+                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, obb.basis, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
                         nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * mol.atom.count);
                         MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * mol.atom.count);
 
@@ -811,7 +805,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     // ORB
                     //orb.show_window = true;
-                    camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, obb.basis, obb.min_ext, obb.max_ext, orb.distance_scale);
+                    camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, obb.basis, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
                     orb.mo_idx = homo_idx[0];
                     orb.scroll_to_idx = homo_idx[0];
 
@@ -836,6 +830,8 @@ struct VeloxChem : viamd::EventHandler {
         vol->world_to_model   = compute_world_to_model_mat(orientation, min_ext);
         vol->index_to_world   = compute_index_to_world_mat(orientation, min_ext, vol->step_size);
         vol->texture_to_world = compute_texture_to_world_mat(orientation, min_ext, max_ext);
+
+        MD_LOG_DEBUG("Initialized volume with resolution {%i,%i,%i}", vol->dim[0], vol->dim[1], vol->dim[2]);
 
         gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
     }
@@ -3230,8 +3226,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (num_jobs > 0) {
-                const float samples_per_angstrom = 6.0f;
-                const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+                const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
                 for (int i = 0; i < num_jobs; ++i) {
                     int slot_idx = job_queue[i];
                     int mo_idx = vol_mo_idx[slot_idx];
@@ -3365,7 +3360,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (reset_view) {
-                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, obb.basis, obb.min_ext, obb.max_ext, orb.distance_scale);
+                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, obb.basis, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
 
                 if (reset_hard) {
                     orb.camera.position         = orb.target.pos;
@@ -3693,8 +3688,7 @@ struct VeloxChem : viamd::EventHandler {
                         return;
                     }
 
-                    const float samples_per_angstrom    = vol_res_scl[(int)export_state.resolution];
-                    const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
+                    const float samples_per_unit_length = vol_res_scl[(int)export_state.resolution] * BOHR_TO_ANGSTROM;
 
                     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
                     Volume vol = {};
@@ -4533,10 +4527,8 @@ struct VeloxChem : viamd::EventHandler {
 
                     if (nto.sel_nto_idx != rsp.selected) {
                         nto.sel_nto_idx = rsp.selected;
-                        const float samples_per_angstrom = 6.0f;
+                        const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
                         size_t nto_idx = (size_t)rsp.selected;
-
-                        const float samples_per_unit_length = (float)(samples_per_angstrom * BOHR_TO_ANGSTROM);
 
                         init_volume(&nto.vol[NTO_Attachment], obb.basis, obb.min_ext, obb.max_ext, samples_per_unit_length);
                         init_volume(&nto.vol[NTO_Detachment], obb.basis, obb.min_ext, obb.max_ext, samples_per_unit_length);
@@ -4813,7 +4805,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (reset_view) {
-                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, obb.basis, obb.min_ext, obb.max_ext, nto.distance_scale);
+                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, obb.basis, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
                 }
 
                 if (nto.show_coordinate_system_widget) {
@@ -5167,7 +5159,7 @@ struct VeloxChem : viamd::EventHandler {
             MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
             if (nto.sel_nto_idx != -1) {
-                const float samples_per_angstrom = 6.0f;
+                const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
                 const size_t nto_idx = (size_t)nto.sel_nto_idx;
 
                 if (gl_version.major >= 4 && gl_version.minor >= 3) {
@@ -5180,8 +5172,8 @@ struct VeloxChem : viamd::EventHandler {
                     task_system::ID eval_detach = 0;
                     task_system::ID seg_detach  = 0;
 
-                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom) &&
-                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_angstrom))
+                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_unit_length) &&
+                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_unit_length))
                     {
                         task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
