@@ -3247,9 +3247,9 @@ struct VeloxChem : viamd::EventHandler {
                         init_volume(&orb.vol[slot_idx], obb.basis, obb.min_ext, obb.max_ext, samples_per_unit_length);
 
                         if (gl_version.major >= 4 && gl_version.minor >= 3) {
-                            compute_mo_GPU(&orb.vol[slot_idx], mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            compute_mo_GPU(&orb.vol[slot_idx], mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
                         } else {
-                            orb.vol_task[slot_idx] = compute_mo_async(&orb.vol[slot_idx], mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI, samples_per_angstrom);
+                            orb.vol_task[slot_idx] = compute_mo_async(&orb.vol[slot_idx], mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
                         }
                     }
                 }
