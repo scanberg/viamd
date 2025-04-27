@@ -680,7 +680,7 @@ struct VeloxChem : viamd::EventHandler {
                     // This is used in determining a better fitting volume for the orbitals
                     vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * num_atoms);
                     for (size_t i = 0; i < num_atoms; ++i) {
-                        nto.atom_xyzr[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, md_util_element_vdw_radius(atomic_numbers[i])) * 1.0f;
+                        nto.atom_xyzr[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, md_util_element_vdw_radius(atomic_numbers[i])) * ANGSTROM_TO_BOHR;
                         xyzw[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, 1.0f);
                     }
 
