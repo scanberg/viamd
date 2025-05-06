@@ -5162,7 +5162,8 @@ struct VeloxChem : viamd::EventHandler {
                 const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
                 const size_t nto_idx = (size_t)nto.sel_nto_idx;
 
-                if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                // @HACK(Robin): Remove this once the GPU implementation is working again...
+                if (false && gl_version.major >= 4 && gl_version.minor >= 3) {
                     md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_part, nto.group.count, nto.vol[NTO_Attachment].tex_id, nto.vol[NTO_Attachment].dim, nto.vol[NTO_Attachment].step_size.elem, (const float*)nto.vol[NTO_Attachment].world_to_model.elem, (const float*)nto.vol[NTO_Attachment].index_to_world.elem, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
                     md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_hole, nto.group.count, nto.vol[NTO_Detachment].tex_id, nto.vol[NTO_Detachment].dim, nto.vol[NTO_Detachment].step_size.elem, (const float*)nto.vol[NTO_Detachment].world_to_model.elem, (const float*)nto.vol[NTO_Detachment].index_to_world.elem, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
                     compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
@@ -5177,7 +5178,7 @@ struct VeloxChem : viamd::EventHandler {
                     {
                         task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
-                            });
+                        });
 
                         task_system::set_task_dependency(compute_matrix_task, seg_attach);
                         task_system::set_task_dependency(compute_matrix_task, seg_detach);
