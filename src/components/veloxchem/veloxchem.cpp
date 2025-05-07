@@ -2560,7 +2560,7 @@ struct VeloxChem : viamd::EventHandler {
         if (num_excited_states == 0) return;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Spectra", &rsp.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (ImGui::Begin("Response", &rsp.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::BeginMenuBar())
             {
                 if (ImGui::BeginMenu("File")) {
@@ -2994,7 +2994,7 @@ struct VeloxChem : viamd::EventHandler {
         if (!orb.show_window) return;
         if (num_molecular_orbitals() == 0) return;
         ImGui::SetNextWindowSize({600,300}, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("VeloxChem Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
 
             const double* occ_alpha = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
             const double* occ_beta  = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
@@ -3633,7 +3633,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 orb_idx = export_state.mo_idx;
             }
-mGui::Checkbox("NTO",
+
             if (export_state.orb_type == ElectronicStructureType::AttachmentDensity || export_state.orb_type == ElectronicStructureType::DetachmentDensity) {
                 int num_orbs = (int)num_natural_transition_orbitals();
                 char lbl[32];
