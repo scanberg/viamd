@@ -480,9 +480,9 @@ struct VeloxChem : viamd::EventHandler {
                 if (vlx) {
                     if (ImGui::BeginMenu("VeloxChem")) {
                         ImGui::Checkbox("Summary", &scf.show_window);
-                        ImGui::Checkbox("RSP", &rsp.show_window);
-                        ImGui::Checkbox("ORB", &orb.show_window);
-                        ImGui::Checkbox("NTO", &nto.show_window);
+                        ImGui::Checkbox("Response", &rsp.show_window);
+                        ImGui::Checkbox("Orbital Grid", &orb.show_window);
+                        ImGui::Checkbox("Transition Analysis", &nto.show_window);
                         ImGui::Checkbox("Export", &export_state.show_window);
                         ImGui::EndMenu();
                     }
@@ -3633,7 +3633,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 orb_idx = export_state.mo_idx;
             }
-
+mGui::Checkbox("NTO",
             if (export_state.orb_type == ElectronicStructureType::AttachmentDensity || export_state.orb_type == ElectronicStructureType::DetachmentDensity) {
                 int num_orbs = (int)num_natural_transition_orbitals();
                 char lbl[32];
@@ -4195,7 +4195,7 @@ struct VeloxChem : viamd::EventHandler {
         static bool edit_mode = false;
 
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("NTO viewer", &nto.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (ImGui::Begin("Transition Analysis", &nto.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
             nto.group.hovered_index = -1;
             bool viewport_hovered = false;
 
