@@ -105,6 +105,10 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
 enum class ElectronicStructureType {
     MolecularOrbital,
     MolecularOrbitalDensity,
+    NaturalTransitionOrbitalParticle,
+    NaturalTransitionOrbitalHole,
+    NaturalTransitionOrbitalDensityParticle,
+    NaturalTransitionOrbitalDensityHole,
     AttachmentDensity,
     DetachmentDensity,
     ElectronDensity,
@@ -114,6 +118,10 @@ enum class ElectronicStructureType {
 static const char* electronic_structure_type_str[(int)ElectronicStructureType::Count] = {
     (const char*)u8"Molecular Orbital (Ψ)",
     (const char*)u8"Molecular Orbital Density (Ψ²)",
+    (const char*)u8"Natural Transition Orbital (NTO) Particle",
+    (const char*)u8"Natural Transition Orbital (NTO) Hole",
+    (const char*)u8"Natural Transition Orbital Density (NTO²) Particle",
+    (const char*)u8"Natural Transition Orbital Density (NTO²) Hole",
     (const char*)u8"Attachment Density (A)",
     (const char*)u8"Detachment Density (D)",
     (const char*)u8"Electron Density (ρ)",
@@ -259,13 +267,10 @@ struct RepresentationInfo {
 };
 
 struct Volume {
-    mat4_t index_to_world   = {};
+    //mat4_t index_to_world   = {};
     mat4_t texture_to_world = {};
-    mat4_t world_to_model   = {};
-    mat3_t basis  = mat3_ident();
+    vec3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
-    vec3_t min_ext = {};
-    vec3_t step_size = {};
     uint32_t tex_id = 0;
 };
 
@@ -281,7 +286,8 @@ struct IsoDesc {
 struct EvalElectronicStructure {
     // Input information
     ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
-    int orbital_idx = 0;
+    int major_idx = 0;
+    int minor_idx = 0;
     float samples_per_angstrom = 4.0f;
 
     // Output information
@@ -344,6 +350,7 @@ struct Representation {
         ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
         int mo_idx = 0;
         int nto_idx = 0;
+        int nto_lambda_idx = 0;
 		uint64_t vol_hash = 0;
         uint64_t tf_hash = 0;
     } electronic_structure;

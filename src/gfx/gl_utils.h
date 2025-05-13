@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "gl.h"
 #include <core/md_str.h>
@@ -21,7 +21,7 @@ bool get_texture_format(GLenum* format, GLuint texture);
 
 bool free_texture(GLuint* texture);
 
-// We assume you set the entire data for the texture
+// Set the data for the entire texture
 bool set_texture_1D_data(GLuint texture, const void* data, GLenum format);
 bool set_texture_2D_data(GLuint texture, const void* data, GLenum format);
 bool set_texture_3D_data(GLuint texture, const void* data, GLenum format);

@@ -4533,7 +4533,9 @@ static void draw_representations_window(ApplicationState* state) {
 
                 //ImGui::Checkbox("Enable Iso-Surface", &rep.electronic_structure.vol.iso.enabled);
                 switch (rep.electronic_structure.type) {
-                case ElectronicStructureType::MolecularOrbital: {
+                case ElectronicStructureType::MolecularOrbital:
+                case ElectronicStructureType::NaturalTransitionOrbitalParticle:
+                case ElectronicStructureType::NaturalTransitionOrbitalHole: {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
                     double iso_val = rep.electronic_structure.iso_psi.values[0];
@@ -4547,13 +4549,14 @@ static void draw_representations_window(ApplicationState* state) {
                     break;
                 }
                 case ElectronicStructureType::MolecularOrbitalDensity:
+                case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
+                case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
                 case ElectronicStructureType::AttachmentDensity:
                 case ElectronicStructureType::DetachmentDensity:
                 case ElectronicStructureType::ElectronDensity: {
                     const double iso_min = 1.0e-8;
                     const double iso_max = 5.0;
                     double iso_val = rep.electronic_structure.iso_den.values[0];
-
                     if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
                         rep.electronic_structure.iso_psi.values[0] =  (float)sqrt(iso_val);
                         rep.electronic_structure.iso_psi.values[1] = -(float)sqrt(iso_val);
@@ -8377,10 +8380,19 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid = num_mos > 0;
         if (num_mos > 0) {
             uint64_t orb_idx = 0;
+            uint64_t sub_idx = 0;
+
             switch(rep->electronic_structure.type) {
             case ElectronicStructureType::MolecularOrbital:
             case ElectronicStructureType::MolecularOrbitalDensity:
                 orb_idx = rep->electronic_structure.mo_idx;
+                break;
+            case ElectronicStructureType::NaturalTransitionOrbitalParticle:
+            case ElectronicStructureType::NaturalTransitionOrbitalHole:
+            case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
+            case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
+                orb_idx = rep->electronic_structure.nto_idx;
+                sub_idx = rep->electronic_structure.nto_lambda_idx;
                 break;
             case ElectronicStructureType::AttachmentDensity:
             case ElectronicStructureType::DetachmentDensity:
@@ -8389,7 +8401,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             default:
                 break;
             }
-            uint64_t vol_hash = (uint64_t)rep->electronic_structure.type | ((uint64_t)rep->electronic_structure.resolution << 8) | (orb_idx << 32);
+            uint64_t vol_hash = (uint64_t)rep->electronic_structure.type | ((uint64_t)rep->electronic_structure.resolution << 8) | (orb_idx << 24) | (sub_idx << 48);
             if (vol_hash != rep->electronic_structure.vol_hash) {
                 const float samples_per_angstrom[(int)VolumeResolution::Count] = {
                     4.0f,
@@ -8398,7 +8410,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 };
                 EvalElectronicStructure data = {
                     .type = rep->electronic_structure.type,
-                    .orbital_idx = (int)orb_idx,
+                    .major_idx = (int)orb_idx,
+                    .minor_idx = (int)sub_idx,
                     .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
                     .dst_volume = &rep->electronic_structure.vol,
                 };
@@ -9300,7 +9313,25 @@ static void draw_representations_transparent(ApplicationState* state) {
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::ElectronicStructure) continue;
 
-        const IsoDesc& iso = (rep.electronic_structure.type == ElectronicStructureType::MolecularOrbital) ? rep.electronic_structure.iso_psi : rep.electronic_structure.iso_den;
+        const IsoDesc* iso = nullptr;
+
+        switch (rep.electronic_structure.type) {
+        case ElectronicStructureType::MolecularOrbital:
+        case ElectronicStructureType::NaturalTransitionOrbitalParticle:
+        case ElectronicStructureType::NaturalTransitionOrbitalHole:
+            iso = &rep.electronic_structure.iso_psi;
+            break;
+        case ElectronicStructureType::MolecularOrbitalDensity:
+        case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
+        case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
+        case ElectronicStructureType::AttachmentDensity:
+        case ElectronicStructureType::DetachmentDensity:
+        case ElectronicStructureType::ElectronDensity:
+            iso = &rep.electronic_structure.iso_den;
+            break;
+        default:
+            ASSERT(false);
+        }
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
         update_representation(state, &state->representation.reps[i]);
@@ -9331,10 +9362,10 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .enabled = state->visuals.temporal_aa.enabled,
             },
             .iso = {
-                .enabled = iso.enabled,
-                .count   = iso.count,
-                .values  = iso.values,
-                .colors  = iso.colors,
+                .enabled = iso->enabled,
+                .count   = iso->count,
+                .values  = iso->values,
+                .colors  = iso->colors,
             },
             .dvr = {
                 .enabled = rep.electronic_structure.dvr.enabled,
@@ -9347,7 +9378,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .dir_radiance = {10,10,10},
                 .ior = 1.5f,
         },
-            .voxel_spacing = rep.electronic_structure.vol.step_size,
+            .voxel_spacing = rep.electronic_structure.vol.voxel_size,
         };
 
         volume::render_volume(desc);
