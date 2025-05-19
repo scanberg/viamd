@@ -438,6 +438,14 @@ struct VeloxChem : viamd::EventHandler {
         int hovered = -1;
         int selected = -1;
 
+        float gamma = 5.0f;
+        broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
+        bool coord_modified = false;
+        float amp_scl  = 1;
+        float freq_scl = 1;
+        bool invert_x = true;
+        bool invert_y = false;
+
         double x_samples[NUM_SAMPLES] = {}; // in cm^-1
         double y_samples[NUM_SAMPLES] = {};
 
@@ -2671,22 +2679,13 @@ struct VeloxChem : viamd::EventHandler {
                     // ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
                     size_t num_atoms = md_vlx_number_of_atoms(vlx);
 
-                    static float gamma = 5.0f;
-                    static broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
-                    static bool coord_modified = false;
-                    static float amp_scl = 1;
-                    static float freq_scl = 1;
-                    static bool invert_x = true;
-                    static bool invert_y = false;
-
-                    bool recalc =
-                        ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &gamma, 1.0f, 100.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    bool refit = ImGui::Combo("Broadening mode", (int*)(&broadening_mode), broadening_mode_str, IM_ARRAYSIZE(broadening_mode_str));
+                    bool recalc = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &vib.gamma, 1.0f, 100.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    bool refit  = ImGui::Combo("Broadening mode", (int*)(&vib.broadening_mode), broadening_mode_str, IM_ARRAYSIZE(broadening_mode_str));
 
                     ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_normal_modes);
 
                     double (*distr_func)(double x, double x_o, double gamma, double intensity) = 0;
-                    switch (broadening_mode) {
+                    switch (vib.broadening_mode) {
                         case BROADENING_MODE_GAUSSIAN:
                             distr_func = &phys_gaussian;
                             break;
@@ -2710,15 +2709,15 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     if (vib.first_plot || recalc || refit) {
-                        general_broadening(vib.y_samples, vib.x_samples, NUM_SAMPLES, y_values, x_values, num_normal_modes, distr_func, gamma * 2);
+                        general_broadening(vib.y_samples, vib.x_samples, NUM_SAMPLES, y_values, x_values, num_normal_modes, distr_func, vib.gamma * 2);
                     }
 
-                    ImGui::Checkbox("Invert X", &invert_x);
+                    ImGui::Checkbox("Invert X", &vib.invert_x);
                     ImGui::SameLine();
-                    ImGui::Checkbox("Invert Y", &invert_y);
+                    ImGui::Checkbox("Invert Y", &vib.invert_y);
 
-                    ImPlotAxisFlags x_flag = invert_x ? ImPlotAxisFlags_Invert : 0;
-                    ImPlotAxisFlags y_flag = invert_y ? ImPlotAxisFlags_Invert : 0;
+                    ImPlotAxisFlags x_flag = vib.invert_x ? ImPlotAxisFlags_Invert : 0;
+                    ImPlotAxisFlags y_flag = vib.invert_y ? ImPlotAxisFlags_Invert : 0;
 
                     if (ImPlot::BeginPlot("Vibrational analysis")) {
                         ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
@@ -2738,7 +2737,7 @@ struct VeloxChem : viamd::EventHandler {
                         peaks_to_pixels(pixel_peaks, x_values, y_values, num_normal_modes);
                         if (ImPlot::IsPlotHovered()) {
                             vib.hovered = get_hovered_peak(ImPlot::PlotToPixels(ImPlot::GetPlotMousePos()), pixel_peaks, pixel_peaks,
-                                                           num_normal_modes, invert_y);
+                                                           num_normal_modes, vib.invert_y);
                         }
 
                         // Check hovered state
@@ -2759,8 +2758,8 @@ struct VeloxChem : viamd::EventHandler {
                             draw_bar(1, x_values[vib.selected], y_values[vib.selected], bar_width, IM_RED);
 
                             // Animation
-                            vib.t += state.app.timing.delta_s * freq_scl * 8.0;
-                            const double scl = amp_scl * 0.25 * sin(vib.t);
+                            vib.t += state.app.timing.delta_s * vib.freq_scl * 8.0;
+                            const double scl = vib.amp_scl * 0.25 * sin(vib.t);
                             const dvec3_t* norm_modes = md_vlx_vib_normal_mode(vlx, vib.selected);
 
                             if (norm_modes) {
@@ -2770,18 +2769,18 @@ struct VeloxChem : viamd::EventHandler {
                                     state.mold.mol.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                                 }
                                 state.mold.dirty_buffers |= MolBit_DirtyPosition;
-                                coord_modified = true;
+                                vib.coord_modified = true;
                             }
                         }
                         // If all is deselected, reset coords once
-                        else if (coord_modified) {
+                        else if (vib.coord_modified) {
                             for (size_t i = 0; i < num_atoms; i++) {
                                 state.mold.mol.atom.x[i] = (float)atom_coord[i].x;
                                 state.mold.mol.atom.y[i] = (float)atom_coord[i].y;
                                 state.mold.mol.atom.z[i] = (float)atom_coord[i].z;
                             }
                             state.mold.dirty_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
-                            coord_modified = false;
+                            vib.coord_modified = false;
                         }
                         vib.first_plot = false;
                         ImPlot::EndPlot();
@@ -2790,8 +2789,8 @@ struct VeloxChem : viamd::EventHandler {
                     // ImGui::Text("%i is hovered", hov_vib);
                     // ImGui::Text("%f is z coord", (float)state.mold.mol.atom.z[2]);
 
-                    ImGui::SliderFloat((const char*)"Amplitude", &amp_scl, 0.2f, 2.0f);
-                    ImGui::SliderFloat((const char*)"Speed", &freq_scl, 0.5f, 2.0f);
+                    ImGui::SliderFloat((const char*)"Amplitude", &vib.amp_scl, 0.25f, 2.0f);
+                    ImGui::SliderFloat((const char*)"Speed", &vib.freq_scl, 0.25f, 2.0f);
 
                     // Table
                     static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
