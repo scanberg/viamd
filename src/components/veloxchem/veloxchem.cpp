@@ -2751,36 +2751,9 @@ struct VeloxChem : viamd::EventHandler {
                             vib.selected = vib.hovered;
                         }
 
-                        const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx);
-
                         // Check selected state
                         if (vib.selected != -1) {
                             draw_bar(1, x_values[vib.selected], y_values[vib.selected], bar_width, IM_RED);
-
-                            // Animation
-                            vib.t += state.app.timing.delta_s * vib.freq_scl * 8.0;
-                            const double scl = vib.amp_scl * 0.25 * sin(vib.t);
-                            const dvec3_t* norm_modes = md_vlx_vib_normal_mode(vlx, vib.selected);
-
-                            if (norm_modes) {
-                                for (size_t i = 0; i < num_atoms; i++) {
-                                    state.mold.mol.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                    state.mold.mol.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                    state.mold.mol.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
-                                }
-                                state.mold.dirty_buffers |= MolBit_DirtyPosition;
-                                vib.coord_modified = true;
-                            }
-                        }
-                        // If all is deselected, reset coords once
-                        else if (vib.coord_modified) {
-                            for (size_t i = 0; i < num_atoms; i++) {
-                                state.mold.mol.atom.x[i] = (float)atom_coord[i].x;
-                                state.mold.mol.atom.y[i] = (float)atom_coord[i].y;
-                                state.mold.mol.atom.z[i] = (float)atom_coord[i].z;
-                            }
-                            state.mold.dirty_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
-                            vib.coord_modified = false;
                         }
                         vib.first_plot = false;
                         ImPlot::EndPlot();
@@ -2847,6 +2820,36 @@ struct VeloxChem : viamd::EventHandler {
 
                         ImGui::PopStyleColor(2);
                         ImGui::EndTable();
+                    }
+
+                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx);
+
+                    // Check selected state
+                    if (vib.selected != -1) {
+                        // Animation
+                        vib.t += state.app.timing.delta_s * vib.freq_scl * 8.0;
+                        const double scl = vib.amp_scl * 0.25 * sin(vib.t);
+                        const dvec3_t* norm_modes = md_vlx_vib_normal_mode(vlx, vib.selected);
+
+                        if (norm_modes) {
+                            for (size_t i = 0; i < num_atoms; i++) {
+                                state.mold.mol.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                state.mold.mol.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                state.mold.mol.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                            }
+                            state.mold.dirty_buffers |= MolBit_DirtyPosition;
+                            vib.coord_modified = true;
+                        }
+                    }
+                    // If all is deselected, reset coords once
+                    else if (vib.coord_modified) {
+                        for (size_t i = 0; i < num_atoms; i++) {
+                            state.mold.mol.atom.x[i] = (float)atom_coord[i].x;
+                            state.mold.mol.atom.y[i] = (float)atom_coord[i].y;
+                            state.mold.mol.atom.z[i] = (float)atom_coord[i].z;
+                        }
+                        state.mold.dirty_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+                        vib.coord_modified = false;
                     }
 
                     ImGui::TreePop();
