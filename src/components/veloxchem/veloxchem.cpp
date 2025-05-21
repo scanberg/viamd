@@ -702,6 +702,7 @@ struct VeloxChem : viamd::EventHandler {
         orb = VeloxChem::Orb{};
         nto = VeloxChem::Nto{};
         rsp = VeloxChem::Rsp{};
+        vib = VeloxChem::Vib{};
     }
 
     void update_nto_group_colors() {
