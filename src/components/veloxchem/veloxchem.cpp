@@ -472,6 +472,7 @@ struct VeloxChem : viamd::EventHandler {
             int idx = 1;
         } nto;
 
+        bool use_obb = true;
         bool show_window = false;
     } export_state;
 
@@ -3457,10 +3458,34 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             int orb_idx = 0;
+            bool show_mo_combo = false;
+            bool show_lambda_combo = false;
+            bool show_excited_state_combo = false;
 
-            if (export_state.orb_type == ElectronicStructureType::MolecularOrbital || export_state.orb_type == ElectronicStructureType::MolecularOrbitalDensity) {
+            switch (export_state.orb_type) {
+            case ElectronicStructureType::MolecularOrbital:
+            case ElectronicStructureType::MolecularOrbitalDensity:
+                show_mo_combo = true;
+                break;
+            case ElectronicStructureType::NaturalTransitionOrbitalParticle:
+            case ElectronicStructureType::NaturalTransitionOrbitalHole:
+            case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
+            case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
+                show_excited_state_combo = true;
+                show_lambda_combo = true;
+                break;
+            case ElectronicStructureType::AttachmentDensity:
+            case ElectronicStructureType::DetachmentDensity:
+                show_excited_state_combo = true;
+                break;
+            case ElectronicStructureType::ElectronDensity:
+                break;
+            default:
+                break;
+            }
+
+            if (show_mo_combo) {
                 md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
-                
                 if (type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
                     const char* options[2] = {"Alpha", "Beta"};
                     if (ImGui::BeginCombo("##MO_TYPE", options[export_state.mo.type])) {
@@ -3476,8 +3501,6 @@ struct VeloxChem : viamd::EventHandler {
                 int orb_homo_idx = homo_idx[export_state.mo.type];
                 int orb_lumo_idx = lumo_idx[export_state.mo.type];
 
-                char lbl[32];
-
                 auto write_lbl = [orb_homo_idx, orb_lumo_idx](char* buf, size_t cap, int idx) {
                     const char* suffix = "";
                     if (idx == orb_homo_idx) {
@@ -3488,6 +3511,7 @@ struct VeloxChem : viamd::EventHandler {
                     snprintf(buf, cap, "%i %s", idx + 1, suffix);
                 };
 
+                char lbl[32];
                 write_lbl(lbl, sizeof(lbl), export_state.mo.idx);
                 int num_orbs = (int)num_molecular_orbitals();
                 if (ImGui::BeginCombo("MO Idx", lbl)) {
@@ -3508,7 +3532,7 @@ struct VeloxChem : viamd::EventHandler {
                 orb_idx = export_state.mo.idx;
             }
 
-            if (export_state.orb_type == ElectronicStructureType::AttachmentDensity || export_state.orb_type == ElectronicStructureType::DetachmentDensity) {
+            if (show_excited_state_combo) {
                 int num_orbs = (int)num_natural_transition_orbitals();
                 char lbl[32];
                 snprintf(lbl, sizeof(lbl), "%i", export_state.nto.idx + 1);
@@ -3530,7 +3554,57 @@ struct VeloxChem : viamd::EventHandler {
                 orb_idx = export_state.nto.idx;
             }
 
-            ImGui::Combo("Volume Resolution", (int*)&export_state.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str));
+            if (show_lambda_combo) {
+                const double* lambdas = md_vlx_rsp_nto_lambdas(vlx, (size_t)export_state.nto.idx);
+                if (lambdas) {
+                    char lbl[32];
+                    int i = export_state.nto.lambda_idx;
+                    snprintf(lbl, sizeof(lbl), "%i (%.4f)", i + 1, lambdas[i]);
+                    if (ImGui::BeginCombo("Lambda Idx", lbl)) {
+                        for (i = 0; i < 4; i++) {
+                            const bool is_selected = (export_state.nto.lambda_idx == i);
+                            snprintf(lbl, sizeof(lbl), "%i (%.4f)", i + 1, lambdas[i]);
+                            if (ImGui::Selectable(lbl, is_selected)) {
+                                export_state.nto.lambda_idx = i;
+                            }
+
+                            if (is_selected) {
+                                ImGui::SetItemDefaultFocus();
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+            }
+
+            vec3_t extent;
+            if (export_state.use_obb) {
+                extent = obb.max_ext - obb.min_ext;
+            } else {
+                extent = aabb.max_ext - aabb.min_ext;
+            }
+
+            int dim[3];
+            compute_dim(dim, extent, vol_res_scl[(int)export_state.resolution] * BOHR_TO_ANGSTROM);
+
+            char lbl[32];
+            static const char* fmt = (const char*)u8"%s (%i×%i×%i)";
+            snprintf(lbl, sizeof(lbl), fmt, volume_resolution_str[(int)export_state.resolution], dim[0], dim[1], dim[2]);
+            if (ImGui::BeginCombo("Volume Resolution (XYZ)", lbl)) {
+                for (int i = 0; i < IM_ARRAYSIZE(volume_resolution_str); ++i) {
+                    const bool is_selected = ((int)export_state.resolution == i);
+                    compute_dim(dim, extent, vol_res_scl[i] * BOHR_TO_ANGSTROM);
+                    snprintf(lbl, sizeof(lbl), fmt, volume_resolution_str[i], dim[0], dim[1], dim[2]);
+                    if (ImGui::Selectable(lbl, is_selected)) {
+                        export_state.resolution = (VolumeResolution)i;
+                    }
+
+                    if (is_selected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
 
             enum {
                 EXPORT_FILE_FORMAT_CUBE = 0,
@@ -3546,8 +3620,7 @@ struct VeloxChem : viamd::EventHandler {
             static int file_format = 0;
             ImGui::Combo("File format", &file_format, file_format_str, IM_ARRAYSIZE(file_format_str));
 
-            static bool use_obb = true;
-            ImGui::Checkbox("Use OBB", &use_obb);
+            ImGui::Checkbox("Use OBB", &export_state.use_obb);
             ImGui::SetItemTooltip("Use Oriented Bounding Box for volume (rotate and fit the volume to the data)");
 
             if (ImGui::Button("Export")) {
@@ -3562,22 +3635,21 @@ struct VeloxChem : viamd::EventHandler {
                         return;
                     }
 
-                    defer { md_file_close(file); };
-
                     const float samples_per_unit_length = vol_res_scl[(int)export_state.resolution] * BOHR_TO_ANGSTROM;
+                    md_grid_t grid = {};
+                    if (export_state.use_obb) {
+                        init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
+                    } else {
+                        init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+                    }
+
+                    defer { md_file_close(file); };
 
                     bool use_gpu = gl_version.major >= 4 && gl_version.minor >= 3;
                     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
                     defer { md_vm_arena_destroy(temp_arena); };
 
                     Volume vol = {};
-
-                    md_grid_t grid = {};
-                    if (use_obb) {
-                        init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
-                    } else {
-                        init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
-                    }
                     init_volume(&vol, grid, GL_R32F);
 
                     task_system::ID task = task_system::INVALID_ID;
