@@ -1,7 +1,13 @@
 [![C++14](https://img.shields.io/badge/dialect-C%2B%2B14-blue)](https://en.cppreference.com/w/cpp/14)
 [![MIT license](https://img.shields.io/github/license/max0x7ba/atomic_queue)](https://github.com/max0x7ba/atomic_queue/blob/master/LICENSE)
 ![Latest release](https://img.shields.io/github/v/tag/max0x7ba/atomic_queue?label=latest%20release)
-[![Continuous Integrations](https://github.com/max0x7ba/atomic_queue/actions/workflows/ci.yml/badge.svg)](https://github.com/max0x7ba/atomic_queue/actions/workflows/ci.yml)
+<br>
+[![Conan Center](https://img.shields.io/conan/v/atomic_queue)](https://conan.io/center/recipes/atomic_queue)
+![Vcpkg Version](https://img.shields.io/vcpkg/v/atomic-queue)
+<br>
+[![Makefile Continuous Integrations](https://github.com/max0x7ba/atomic_queue/actions/workflows/ci.yml/badge.svg)](https://github.com/max0x7ba/atomic_queue/actions/workflows/ci.yml)
+[![CMake Continuous Integrations](https://github.com/max0x7ba/atomic_queue/actions/workflows/cmake-gcc-clang.yml/badge.svg)](https://github.com/max0x7ba/atomic_queue/actions/workflows/cmake-gcc-clang.yml)
+[![Meson Continuous Integrations](https://github.com/max0x7ba/atomic_queue/actions/workflows/ci-meson.yml/badge.svg)](https://github.com/max0x7ba/atomic_queue/actions/workflows/ci-meson.yml)
 <br>
 ![platform Linux x86_64](https://img.shields.io/badge/platform-Linux%20x86_64--bit-yellow)
 ![platform Linux ARM](https://img.shields.io/badge/platform-Linux%20ARM-yellow)
@@ -10,12 +16,16 @@
 ![platform Linux IBM System/390](https://img.shields.io/badge/platform-Linux%20IBM%20System/390-yellow)
 
 # atomic_queue
-C++14 multiple-producer-multiple-consumer *lock-free* queues based on circular buffer and [`std::atomic`][3]. Designed with a goal to minimize the latency between one thread pushing an element into a queue and another thread popping it from the queue.
+C++14 multiple-producer-multiple-consumer *lock-free* queues based on circular buffers and [`std::atomic`][3].
 
-It has been developed, tested and benchmarked on Linux, but should support any C++14 platforms which implement `std::atomic`. Reported as compatible with Windows, but the continuous integrations hosted by GitHub are currently set up only for x86_64 platform on Ubuntu-20.04 and Ubuntu-22.04. Pull requests to extend the [continuous integrations][18] to run on other architectures and/or platforms are welcome.
+Designed with a goal to minimize the latency between one thread pushing an element into a queue and another thread popping it from the queue.
+
+It has been developed, tested and benchmarked on Linux, but should support any C++14 platforms which implement `std::atomic`. Reported as compatible with Windows, but the continuous integrations hosted by GitHub are currently set up only for x86_64 platform on Ubuntu-22.04 and Ubuntu-24.04. Pull requests to extend the [continuous integrations][18] to run on other architectures and/or platforms are welcome.
 
 ## Design Principles
 When minimizing latency a good design is not when there is nothing left to add, but rather when there is nothing left to remove, as these queues exemplify.
+
+Minimizing latency naturally maximizes throughput. Low latency reciprocal is high throuhput, in ideal mathematical and practical engineering sense. Low latency is incompatible with any delays and/or batching, which destroy original (hardware) global time order of events pushed into one queue by different threads. Maximizing throughput, on the other hand, can be done at expense of latency by delaying and batching multiple updates.
 
 The main design principle these queues follow is _minimalism_, which results in such design choices as:
 
@@ -32,20 +42,6 @@ These design choices are also limitations:
 * There are no OS-blocking push/pop functions. This queue is designed for ultra-low-latency scenarios and using an OS blocking primitive would be sacrificing push-to-pop latency. For lowest possible latency one cannot afford blocking in the OS kernel because the wake-up latency of a blocked thread is about 1-3 microseconds, whereas this queue's round-trip time can be as low as 150 nanoseconds.
 
 Ultra-low-latency applications need just that and nothing more. The minimalism pays off, see the [throughput and latency benchmarks][1].
-
-Available containers are:
-* `AtomicQueue` - a fixed size ring-buffer for atomic elements.
-* `OptimistAtomicQueue` - a faster fixed size ring-buffer for atomic elements which busy-waits when empty or full. It is `AtomicQueue` used with `push`/`pop` instead of `try_push`/`try_pop`.
-* `AtomicQueue2` - a fixed size ring-buffer for non-atomic elements.
-* `OptimistAtomicQueue2` - a faster fixed size ring-buffer for non-atomic elements which busy-waits when empty or full. It is `AtomicQueue2` used with `push`/`pop` instead of `try_push`/`try_pop`.
-
-These containers have corresponding `AtomicQueueB`, `OptimistAtomicQueueB`, `AtomicQueueB2`, `OptimistAtomicQueueB2` versions where the buffer size is specified as an argument to the constructor.
-
-Totally ordered mode is supported. In this mode consumers receive messages in the same FIFO order the messages were posted. This mode is supported for `push` and `pop` functions, but for not the `try_` versions. On Intel x86 the totally ordered mode has 0 cost, as of 2019.
-
-Single-producer-single-consumer mode is supported. In this mode, no expensive atomic read-modify-write CPU instructions are necessary, only the cheapest atomic loads and stores. That improves queue throughput significantly.
-
-Move-only queue element types are fully supported. For example, a queue of `std::unique_ptr<T>` elements would be `AtomicQueue2B<std::unique_ptr<T>>` or `AtomicQueue2<std::unique_ptr<T>, CAPACITY>`.
 
 ## Role Models
 Several other well established and popular thread-safe containers are used for reference in the [benchmarks][1]:
@@ -77,6 +73,10 @@ git clone https://github.com/max0x7ba/atomic_queue.git
 vcpkg install atomic-queue
 ```
 
+## Install using conan
+Follow the official tutorial on [how to consume conan packages](https://docs.conan.io/2/tutorial/consuming_packages.html).
+Details specific to this library are available in [ConanCenter](https://conan.io/center/recipes/atomic_queue).
+
 ## Benchmark build and run instructions
 The containers provided are header-only class templates that require only `#include <atomic_queue/atomic_queue.h>`, no building/installing is necessary.
 
@@ -93,7 +93,30 @@ make -r -j4 run_benchmarks
 
 The benchmark also requires Intel TBB library to be available. It assumes that it is installed in `/usr/local/include` and `/usr/local/lib`. If it is installed elsewhere you may like to modify `cppflags.tbb` and `ldlibs.tbb` in `Makefile`.
 
-# API
+# Library contents
+## Available queues
+* `AtomicQueue` - a fixed size ring-buffer for atomic elements.
+* `OptimistAtomicQueue` - a faster fixed size ring-buffer for atomic elements which busy-waits when empty or full. It is `AtomicQueue` used with `push`/`pop` instead of `try_push`/`try_pop`.
+* `AtomicQueue2` - a fixed size ring-buffer for non-atomic elements.
+* `OptimistAtomicQueue2` - a faster fixed size ring-buffer for non-atomic elements which busy-waits when empty or full. It is `AtomicQueue2` used with `push`/`pop` instead of `try_push`/`try_pop`.
+
+These containers have corresponding `AtomicQueueB`, `OptimistAtomicQueueB`, `AtomicQueueB2`, `OptimistAtomicQueueB2` versions where the buffer size is specified as an argument to the constructor.
+
+Totally ordered mode is supported. In this mode consumers receive messages in the same FIFO order the messages were posted. This mode is supported for `push` and `pop` functions, but for not the `try_` versions. On Intel x86 the totally ordered mode has 0 cost, as of 2019.
+
+Single-producer-single-consumer mode is supported. In this mode, no expensive atomic read-modify-write CPU instructions are necessary, only the cheapest atomic loads and stores. That improves queue throughput significantly.
+
+Move-only queue element types are fully supported. For example, a queue of `std::unique_ptr<T>` elements would be `AtomicQueue2B<std::unique_ptr<T>>` or `AtomicQueue2<std::unique_ptr<T>, CAPACITY>`.
+
+## Queue schematics
+
+```
+queue-end                 queue-front
+[newest-element, ..., oldest-element]
+push()                          pop()
+```
+
+## Queue API
 The queue class templates provide the following member functions:
 * `try_push` - Appends an element to the end of the queue. Returns `false` when the queue is full.
 * `try_pop` - Removes an element from the front of the queue. Returns `false` when the queue is empty.
@@ -112,15 +135,13 @@ Note that _optimism_ is a choice of a queue modification operation control flow,
 
 See [example.cc](src/example.cc) for a usage example.
 
-TODO: full API reference.
-
+# Implementation Notes
 ## Memory order of non-atomic loads and stores
 `push` and `try_push` operations _synchronize-with_ (as defined in [`std::memory_order`][17]) with any subsequent `pop` or `try_pop` operation of the same queue object. Meaning that:
 * No non-atomic load/store gets reordered past `push`/`try_push`, which is a `memory_order::release` operation. Same memory order as that of `std::mutex::unlock`.
 * No non-atomic load/store gets reordered prior to `pop`/`try_pop`, which is a `memory_order::acquire` operation. Same memory order as that of `std::mutex::lock`.
 * The effects of a producer thread's non-atomic stores followed by `push`/`try_push` of an element into a queue become visible in the consumer's thread which `pop`/`try_pop` that particular element.
 
-# Implementation Notes
 ## Ring-buffer capacity
 The available queues here use a ring-buffer array for storing elements. The capacity of the queue is fixed at compile time or construction time.
 
@@ -179,15 +200,17 @@ There are a few OS behaviours that complicate benchmarking:
 * CPU scheduler can place threads on different CPU cores each run. To avoid that the threads are pinned to specific CPU cores.
 * CPU scheduler can preempt threads. To avoid that real-time `SCHED_FIFO` priority 50 is used to disable scheduler time quantum expiry and make the threads non-preemptable by lower priority processes/threads.
 * Real-time thread throttling disabled.
-* Adverse address space randomisation may cause extra CPU cache conflicts, as well as other processes running on the system. To minimise effects of that `benchmarks` executable is run at least 33 times. The benchmark charts show the average; the standard deviation, minimum and maximum values are shown in the chart tooltips.
+* Adverse address space randomisation may cause extra CPU cache conflicts, as well as other processes running on the system. To minimise effects of that `benchmarks` executable is run at least 33 times. The benchmark charts display average values. The chart tooltip also displays the standard deviation, minimum and maximum values.
+
+Benchmark performance of single-producer-single-consumer queues `boost::lockfree::spsc_queue`, `moodycamel::ReaderWriterQueue` and these queues in single-producer-single-consumer mode should be identical because they implement exactly the same algorithm using exactly the same atomic load and store instructions. `boost::lockfree::spsc_queue` implementation benchmarked at that time had no optimizations for minimizing L1d cache contention, cold branch misprediction or pipeline stalls from subtler issues noticable only in the generated assembly code.
 
 I only have access to a few x86-64 machines. If you have access to different hardware feel free to submit the output file of `scripts/run-benchmarks.sh` and I will include your results into the benchmarks page.
 
 ### Huge pages
 When huge pages are available the benchmarks use 1x1GB or 16x2MB huge pages for the queues to minimise TLB misses. To enable huge pages do one of:
 ```
-sudo hugeadm --pool-pages-min 1GB:1 --pool-pages-max 1GB:1
-sudo hugeadm --pool-pages-min 2MB:16 --pool-pages-max 2MB:16
+sudo hugeadm --pool-pages-min 1GB:1
+sudo hugeadm --pool-pages-min 2MB:16
 ```
 Alternatively, you may like to enable [transparent hugepages][15] in your system and use a hugepage-aware allocator, such as [tcmalloc][14].
 
@@ -205,6 +228,12 @@ One thread posts an integer to another thread through one queue and waits for a 
 
 # Contributing
 Contributions are more than welcome. `.editorconfig` and `.clang-format` can be used to automatically match code formatting.
+
+# Reading material
+Some books on the subject of multi-threaded programming I found quite instructive:
+
+* _Programming with POSIX Threads_ by David R. Butenhof.
+* _The Art of Multiprocessor Programming_ by Maurice Herlihy, Nir Shavit.
 
 ---
 
