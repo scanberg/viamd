@@ -2778,7 +2778,7 @@ struct VeloxChem : viamd::EventHandler {
                     // ImGui::Text("%f is z coord", (float)state.mold.mol.atom.z[2]);
 
                     ImGui::SliderFloat((const char*)"Amplitude", &vib.displacement_amp_scl, 0.25f, 2.0f);
-                    ImGui::SliderFloat((const char*)"Speed", &vib.displacement_amp_scl, 0.25f, 2.0f);
+                    ImGui::SliderFloat((const char*)"Speed", &vib.displacement_freq_scl, 0.25f, 2.0f);
 
                     // Table
                     static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
