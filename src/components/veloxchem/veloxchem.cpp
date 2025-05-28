@@ -2692,7 +2692,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     const double* y_values = md_vlx_vib_ir_intensities(vlx);
                     const double* x_values_raw = md_vlx_vib_frequencies(vlx);
-                    double* x_values = md_temp_push(sizeof(double) * num_normal_modes);
+                    double* x_values = (double*)md_temp_push(sizeof(double) * num_normal_modes);
                     for (size_t i = 0; i < num_normal_modes; ++i) {
                         x_values[i] = x_values_raw[i] * vib.freq_scaling_factor;
                     }
