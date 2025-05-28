@@ -441,8 +441,8 @@ struct VeloxChem : viamd::EventHandler {
         float gamma = 5.0f;
         broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
         bool coord_modified = false;
-        float amp_scl  = 1;
-        float freq_scl = 1;
+        float displacement_amp_scl  = 1.0f;
+        float displacement_freq_scl = 1.0f;
         bool invert_x = true;
         bool invert_y = false;
 
@@ -451,6 +451,9 @@ struct VeloxChem : viamd::EventHandler {
 
         // Time accumulation for vibrational mode visualization (pertubation of atoms)
         double t = 0;
+
+        // Scaling applied to input frequencies (to account for inaccuracies of the chosen basis set)
+        double freq_scaling_factor = 1.0;
 
         // x_peaks and y_peaks are fetched directly from vlx
         bool first_plot = true;
@@ -2426,8 +2429,6 @@ struct VeloxChem : viamd::EventHandler {
                     //str_t y_label = str_from_cstr("Y");
                     md_array_push(column_labels, properties[property_idx].y_unit, arena);
 
-
-
                     md_array_push(column_data, x_values, arena);
                     md_array_push(column_data, y_values, arena);
 
@@ -2675,14 +2676,26 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::SetNextItemOpen(true);
                 }
                 if (ImGui::TreeNode("Vibrational Analysis")) {
-                    const double* x_values = md_vlx_vib_frequencies(vlx);
-                    const double* y_values = md_vlx_vib_ir_intensities(vlx);
 
                     // ASSERT(ARRAY_SIZE(har_freqs) == ARRAY_SIZE(irs));
                     size_t num_atoms = md_vlx_number_of_atoms(vlx);
 
-                    bool recalc = ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &vib.gamma, 1.0f, 100.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    bool refit  = ImGui::Combo("Broadening mode", (int*)(&vib.broadening_mode), broadening_mode_str, IM_ARRAYSIZE(broadening_mode_str));
+                    // Frequency scaling factor limits
+                    static const double scale_min = 0.85;
+                    static const double scale_max = 1.05;
+
+                    bool recalc = false;
+                    recalc |= ImGui::SliderFloat((const char*)u8"Broadening γ HWHM (cm⁻¹)", &vib.gamma, 1.0f, 100.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    recalc |= ImGui::Combo("Broadening mode", (int*)(&vib.broadening_mode), broadening_mode_str, IM_ARRAYSIZE(broadening_mode_str));
+                    recalc |= ImGui::SliderScalar("Scaling factor", ImGuiDataType_Double, &vib.freq_scaling_factor, &scale_min, &scale_max, "%.4f");
+                    ImGui::SetItemTooltip("Frequency scaling factor");
+
+                    const double* y_values = md_vlx_vib_ir_intensities(vlx);
+                    const double* x_values_raw = md_vlx_vib_frequencies(vlx);
+                    double* x_values = md_temp_push(sizeof(double) * num_normal_modes);
+                    for (size_t i = 0; i < num_normal_modes; ++i) {
+                        x_values[i] = x_values_raw[i] * vib.freq_scaling_factor;
+                    }
 
                     ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_normal_modes);
 
@@ -2710,7 +2723,7 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
 
-                    if (vib.first_plot || recalc || refit) {
+                    if (vib.first_plot || recalc) {
                         general_broadening(vib.y_samples, vib.x_samples, NUM_SAMPLES, y_values, x_values, num_normal_modes, distr_func, vib.gamma * 2);
                     }
 
@@ -2764,8 +2777,8 @@ struct VeloxChem : viamd::EventHandler {
                     // ImGui::Text("%i is hovered", hov_vib);
                     // ImGui::Text("%f is z coord", (float)state.mold.mol.atom.z[2]);
 
-                    ImGui::SliderFloat((const char*)"Amplitude", &vib.amp_scl, 0.25f, 2.0f);
-                    ImGui::SliderFloat((const char*)"Speed", &vib.freq_scl, 0.25f, 2.0f);
+                    ImGui::SliderFloat((const char*)"Amplitude", &vib.displacement_amp_scl, 0.25f, 2.0f);
+                    ImGui::SliderFloat((const char*)"Speed", &vib.displacement_amp_scl, 0.25f, 2.0f);
 
                     // Table
                     static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
@@ -2829,8 +2842,8 @@ struct VeloxChem : viamd::EventHandler {
                     // Check selected state
                     if (vib.selected != -1) {
                         // Animation
-                        vib.t += state.app.timing.delta_s * vib.freq_scl * 8.0;
-                        const double scl = vib.amp_scl * 0.25 * sin(vib.t);
+                        vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
+                        const double scl = vib.displacement_amp_scl * 0.25 * sin(vib.t);
                         const dvec3_t* norm_modes = md_vlx_vib_normal_mode(vlx, vib.selected);
 
                         if (norm_modes) {
