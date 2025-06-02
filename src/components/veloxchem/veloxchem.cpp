@@ -2196,9 +2196,10 @@ struct VeloxChem : viamd::EventHandler {
         // The actual plot
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &scf.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-            if (ImGui::TreeNode("Level of calculation")) {
+            if (ImGui::TreeNode("Level of Calculation")) {
                 str_t basis_set = md_vlx_basis_set_ident(vlx);
-                ImGui::Text("Method:");
+                str_t dft_func  = md_vlx_dft_func_label(vlx);
+                ImGui::Text("Method: %s", str_ptr(dft_func));
                 ImGui::Text("Basis Set: %s", str_ptr(basis_set));
                 ImGui::Spacing();
                 
