@@ -302,9 +302,16 @@ struct VeloxChem : viamd::EventHandler {
     OBB  obb = {};
     AABB aabb = {};
 
-    struct Scf {
+    struct Summary {
         bool show_window = false;
-    } scf;
+    } summary;
+
+    struct Opt {
+        int hovered = -1;
+        int selected = -1;
+
+        bool coord_modified = false;
+    } opt;
 
     struct Orb {
         bool show_window = false;
@@ -522,7 +529,7 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdWindowDrawMenu:
                 if (vlx) {
                     if (ImGui::BeginMenu("VeloxChem")) {
-                        ImGui::Checkbox("Summary", &scf.show_window);
+                        ImGui::Checkbox("Summary", &summary.show_window);
                         ImGui::Checkbox("Response", &rsp.show_window);
                         ImGui::Checkbox("Orbital Grid", &orb.show_window);
                         ImGui::Checkbox("Transition Analysis", &nto.show_window);
@@ -706,6 +713,7 @@ struct VeloxChem : viamd::EventHandler {
         nto = VeloxChem::Nto{};
         rsp = VeloxChem::Rsp{};
         vib = VeloxChem::Vib{};
+        opt = VeloxChem::Opt{};
     }
 
     void update_nto_group_colors() {
@@ -879,6 +887,11 @@ struct VeloxChem : viamd::EventHandler {
                                 rsp.x_ev_samples[i] = value;
                             }
                         }
+                    }
+
+                    // OPT
+                    if (md_vlx_opt_number_of_steps(vlx) > 0) {
+                        opt.selected = (int)(md_vlx_opt_number_of_steps(vlx) - 1);
                     }
 
                     // ORB
@@ -2053,6 +2066,39 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    static inline int get_hovered_plot_peak(const double* xs, const double* ys, size_t count, double distance_threshold = 10.0) {
+        ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
+        int closest_idx = -1;
+        double closest_dist = DBL_MAX;
+        for (size_t i = 0; i < count; ++i) {
+            double dx = mouse_pos.x - xs[i];
+            double dy = CLAMP(mouse_pos.y, 0.0, ys[i]) - mouse_pos.y;
+            double dist = sqrt(dx * dx + dy * dy);
+            if (dist < distance_threshold && dist < closest_dist) {
+                closest_idx = (int)i;
+                closest_dist = dist;
+            }
+        }
+        return closest_idx;
+    }
+
+    static inline int get_hovered_plot_peak(const double* values, size_t count, double x_base = 0.0, double x_step = 1.0, double distance_threshold = 10.0) {
+        ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
+        int closest_idx = -1;
+        double closest_dist = DBL_MAX;
+        for (size_t i = 0; i < count; ++i) {
+            double x = x_base + i * x_step;
+            double dx = mouse_pos.x - x;
+            double dy = CLAMP(mouse_pos.y, 0.0, values[i]) - mouse_pos.y;
+            double dist = sqrt(dx * dx + dy * dy);
+            if (dist < distance_threshold && dist < closest_dist) {
+                closest_idx = (int)i;
+                closest_dist = dist;
+            }
+        }
+        return closest_idx;
+    }
+
     // Returns peak index closest to mouse pixel position, assumes that x-values are sorted.
     static inline int get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, const ImVec2* pixel_points, size_t num_peaks, bool y_flipped = false, double proxy_distance = 10.0) {
         int closest_idx = 0;
@@ -2165,37 +2211,31 @@ struct VeloxChem : viamd::EventHandler {
     }
     */
 
+    void set_atom_coordinates(ApplicationState& state, const dvec3_t* atom_coords, uint32_t flags = MolBit_DirtyPosition | MolBit_ClearVelocity) {
+        const dvec3_t* coords = atom_coords ? atom_coords : md_vlx_atom_coordinates(vlx);
+        size_t num_atoms = md_vlx_number_of_atoms(vlx);
+        for (size_t i = 0; i < num_atoms; i++) {
+            state.mold.mol.atom.x[i] = (float)coords[i].x;
+            state.mold.mol.atom.y[i] = (float)coords[i].y;
+            state.mold.mol.atom.z[i] = (float)coords[i].z;
+        }
+        state.mold.dirty_buffers |= flags;
+    }
+
     void draw_summary_window(ApplicationState& state) {
-        if (!scf.show_window) { return; }
+        if (!summary.show_window) {
+            opt.selected = (int)md_vlx_opt_number_of_steps(vlx) - 1;
+            return;
+        }
 
         static ImPlotRect lims{ 0,1,0,1 };
 
         size_t temp_pos = md_temp_get_pos();
         defer {  md_temp_set_pos_back(temp_pos); };
 
-        size_t num_iter = md_vlx_scf_history_size(vlx);
-        const double* grad_norm = md_vlx_scf_history_gradient_norm(vlx);
-        const double* energy = md_vlx_scf_history_energy(vlx);
-        double* energy_offsets = nullptr;
-        double ref_energy = 0.0;
-        double y1_to_y2_mult = 1.0;
-
-        // We set up iterations as doubles for easier use
-        if (num_iter > 0) {
-            ASSERT(energy);
-            ASSERT(grad_norm);
-
-            energy_offsets = (double*)md_temp_push(sizeof(double) * num_iter);
-            ref_energy = energy[num_iter - 1];
-            for (size_t i = 0; i < num_iter; i++) {
-                energy_offsets[i] = fabs(energy[i] - ref_energy);
-            }
-            y1_to_y2_mult = axis_conversion_multiplier(grad_norm, energy_offsets, num_iter, num_iter);
-        }
-
         // The actual plot
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Summary", &scf.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::TreeNode("Level of Calculation")) {
                 str_t basis_set = md_vlx_basis_set_ident(vlx);
                 str_t dft_func  = md_vlx_dft_func_label(vlx);
@@ -2206,20 +2246,40 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::TreePop();
             }
             if (ImGui::TreeNode("System Information")) {
-                ImGui::Text("Num Atoms:           %6zu", md_vlx_number_of_atoms(vlx));
-                ImGui::Text("Num Alpha Electrons: %6zu", md_vlx_number_of_alpha_electrons(vlx));
-                ImGui::Text("Num Beta Electrons:  %6zu", md_vlx_number_of_beta_electrons(vlx));
-                ImGui::Text("Molecular Charge:    %6f",  md_vlx_molecular_charge(vlx));
-                ImGui::Text("Spin Multiplicity:   %6zu", md_vlx_spin_multiplicity(vlx));
+                ImGui::Text("Num Atoms:           %-6zu", md_vlx_number_of_atoms(vlx));
+                ImGui::Text("Num Alpha Electrons: %-6zu", md_vlx_number_of_alpha_electrons(vlx));
+                ImGui::Text("Num Beta Electrons:  %-6zu", md_vlx_number_of_beta_electrons(vlx));
+                ImGui::Text("Molecular Charge:    %-6f",  md_vlx_molecular_charge(vlx));
+                ImGui::Text("Spin Multiplicity:   %-6zu", md_vlx_spin_multiplicity(vlx));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
 
             if (ImGui::TreeNode("SCF")) {
+                size_t num_iter = md_vlx_scf_history_size(vlx);
+                const double* grad_norm = md_vlx_scf_history_gradient_norm(vlx);
+                const double* energy = md_vlx_scf_history_energy(vlx);
+                double* energy_offsets = nullptr;
+                double ref_energy = 0.0;
+                double y1_to_y2_mult = 1.0;
+
+                // We set up iterations as doubles for easier use
+                if (num_iter > 0) {
+                    ASSERT(energy);
+                    ASSERT(grad_norm);
+
+                    energy_offsets = (double*)md_temp_push(sizeof(double) * num_iter);
+                    ref_energy = energy[num_iter - 1];
+                    for (size_t i = 0; i < num_iter; i++) {
+                        energy_offsets[i] = fabs(energy[i] - ref_energy);
+                    }
+                    y1_to_y2_mult = axis_conversion_multiplier(grad_norm, energy_offsets, num_iter, num_iter);
+                }
+
                 if (num_iter > 1) {
                     if (ImPlot::BeginPlot("SCF")) {
                         ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)num_iter);
-                        ImPlot::SetupLegend(ImPlotLocation_East, ImPlotLegendFlags_Outside);
+                        ImPlot::SetupLegend(ImPlotLocation_NorthEast);
                         ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
                         // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
                         ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
@@ -2242,9 +2302,56 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::Text("Total energy:              %16.10f a.u.", energy[num_iter - 1]);
                     ImGui::Text("Gradient norm:             %16.10f a.u.", grad_norm[num_iter - 1]);
                 }
-                ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", md_vlx_nuclear_repulsion(vlx));
+                ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", md_vlx_nuclear_repulsion_energy(vlx));
                 ImGui::Spacing();
                 ImGui::TreePop();
+            }
+
+            {
+                size_t num_steps = md_vlx_opt_number_of_steps(vlx);
+                if (num_steps > 0) {
+                    if (ImGui::TreeNode("Optimization")) {
+                        const double* energies = md_vlx_opt_energies(vlx);
+                        if (ImPlot::BeginPlot("OPT")) {
+                            ImPlot::SetupAxes("Step", "Energy (au)");
+                            ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (double)num_steps);
+                            ImPlot::SetupLegend(ImPlotLocation_NorthEast);
+                            ImPlot::PlotLine("Energy", energies, (int)num_steps, 1.0, 1.0);
+
+                            const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
+
+                            if (ImPlot::IsPlotHovered()) {
+                                opt.hovered = get_hovered_plot_peak(energies, num_steps, 1.0, 1.0);
+
+                                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
+                                    opt.selected = (opt.hovered == opt.selected) ? (int)num_steps - 1 : opt.hovered;
+                                }
+                            }
+
+                            //ImPlot::PlotBars("##bars", energies, (int)num_steps, bar_width);
+                            ImVec4 color = opt.hovered ? IM_RED : (opt.selected ? IM_GREEN : ImVec4{0, 0, 0, -1});
+                            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3, color);
+                            ImPlot::PlotScatter("##points", energies, (int)num_steps, 1.0, 1.0);
+
+                            ImPlot::EndPlot();
+                        }
+                        ImGui::Spacing();
+                        int value = opt.selected + 1;
+                        ImGui::SliderInt("Step", &value, 1, (int)num_steps);
+                        opt.selected = value - 1;
+
+                        ImGui::TreePop();
+                    }
+                    else {
+                        opt.selected = (int)num_steps - 1;
+                    }
+
+                    static int prev_idx = -1;
+                    if (opt.selected != prev_idx) {
+                        prev_idx = opt.selected;
+                        set_atom_coordinates(state, md_vlx_opt_coordinates(vlx, opt.selected));
+                    }
+                }
             }
 
             size_t num_atoms = md_vlx_number_of_atoms(vlx);
