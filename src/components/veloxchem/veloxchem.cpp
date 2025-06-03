@@ -35,6 +35,8 @@
 #define MAX_NTO_LAMBDAS 3
 #define NTO_LAMBDA_CUTOFF_VALUE 0.1
 
+#define FORCE_CPU_PATH 0
+
 // Resolution for broadened plots
 #define NUM_SAMPLES 1024
 
@@ -225,19 +227,19 @@ static void grid_segment_and_attribute(float* out_group_values, size_t group_cap
     float step_x[3] = {
         grid.orientation[0][0] * grid.spacing[0],
         grid.orientation[0][1] * grid.spacing[0],
-        grid.orientation[0][2] * grid.spacing[0]
+        grid.orientation[0][2] * grid.spacing[0],
     };
 
     float step_y[3] = {
         grid.orientation[1][0] * grid.spacing[1],
         grid.orientation[1][1] * grid.spacing[1],
-        grid.orientation[1][2] * grid.spacing[1]
+        grid.orientation[1][2] * grid.spacing[1],
     };
 
     float step_z[3] = {
         grid.orientation[2][0] * grid.spacing[2],
         grid.orientation[2][1] * grid.spacing[2],
-        grid.orientation[2][2] * grid.spacing[2]
+        grid.orientation[2][2] * grid.spacing[2],
     };
 
     mat4_t index_to_world = compute_index_to_world_mat(grid.orientation, grid.origin, grid.spacing);
@@ -279,14 +281,14 @@ static void grid_segment_and_attribute(float* out_group_values, size_t group_cap
 }
 
 struct VeloxChem : viamd::EventHandler {
-    VeloxChem() { viamd::event_system_register_handler(*this); }
+    VeloxChem() {
+        viamd::event_system_register_handler(*this);
 
-    struct {
-        int major = 0;
-        int minor = 0;
-    } gl_version;
+    }
 
     md_vlx_t* vlx = nullptr;
+
+    bool use_gpu_path = false;
 
     // Used for clearing volumes
     uint32_t vol_fbo = 0;
@@ -505,9 +507,13 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdInitialize: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
-                arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(1));
-                glGetIntegerv(GL_MAJOR_VERSION, &gl_version.major);
-                glGetIntegerv(GL_MINOR_VERSION, &gl_version.minor);
+                arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(4));
+                {
+                    int gl_major, gl_minor;
+                    glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
+                    glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
+                    use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
+                }
                 break;
             }
             case viamd::EventType_ViamdShutdown:
@@ -642,7 +648,7 @@ struct VeloxChem : viamd::EventHandler {
                     case ElectronicStructureType::MolecularOrbitalDensity:
                     {
                         md_gto_eval_mode_t mode = (data.type == ElectronicStructureType::MolecularOrbital) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        if (use_gpu_path) {
                             data.output_written = compute_mo_GPU(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA, data.major_idx, mode);
                         }
                         else {
@@ -662,7 +668,7 @@ struct VeloxChem : viamd::EventHandler {
                                                    data.type == ElectronicStructureType::NaturalTransitionOrbitalHole)
                                                    ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
 
-                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        if (use_gpu_path) {
                             data.output_written = compute_nto_GPU(data.dst_volume->tex_id, grid, data.major_idx, data.minor_idx, type, mode);
                         } else {
                             data.output_written = (compute_nto_async(data.dst_volume->tex_id, grid, data.major_idx, data.minor_idx, type, mode) != task_system::INVALID_ID);
@@ -673,7 +679,7 @@ struct VeloxChem : viamd::EventHandler {
                     case ElectronicStructureType::DetachmentDensity:
                     {
                         AttachmentDetachmentType nto_type = (data.type == ElectronicStructureType::AttachmentDensity) ? AttachmentDetachmentType::Attachment : AttachmentDetachmentType::Detachment;
-                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        if (use_gpu_path) {
                             data.output_written = compute_attachment_detachment_density_GPU(data.dst_volume->tex_id, grid, data.major_idx, nto_type);
                         } else {
                             data.output_written = (compute_attachment_detachment_density_async(data.dst_volume->tex_id, grid, data.major_idx, nto_type) != task_system::INVALID_ID);
@@ -682,7 +688,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     case ElectronicStructureType::ElectronDensity:
                     {
-                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        if (use_gpu_path) {
                             data.output_written = compute_electron_density_GPU(data.dst_volume->tex_id, grid);
                         } else {
                             data.output_written = (compute_electron_density_async(data.dst_volume->tex_id, grid) != task_system::INVALID_ID);
@@ -941,7 +947,7 @@ struct VeloxChem : viamd::EventHandler {
             MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             return task_system::INVALID_ID;
         }
-        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, cutoff_value);
+        num_gtos = md_gto_cutoff_compute_and_filter(gtos, num_gtos, cutoff_value);
 
         // Dispatch Compute shader evaluation
         md_gto_grid_evaluate_GPU(vol_tex, &grid, gtos, num_gtos, mode);
@@ -983,7 +989,7 @@ struct VeloxChem : viamd::EventHandler {
                 MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, i);
                 return false;
             }
-            size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
+            size_t num_pruned = md_gto_cutoff_compute_and_filter(temp_gtos, num_temp_gtos, cutoff);
             md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
             md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
             md_array_push(orb_data->orb_scaling, (float)lambda[i], alloc);
@@ -1018,9 +1024,8 @@ struct VeloxChem : viamd::EventHandler {
         if (scf_type == MD_VLX_SCF_TYPE_RESTRICTED || scf_type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
             for (size_t mo_idx = 0; mo_idx < num_mo; ++mo_idx) {
                 double occ = occ_a[mo_idx] + occ_b[mo_idx];
-                md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
-                size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
-                md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                size_t num_gtos = md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, cutoff);
+                md_array_push_array(orb_data->gtos, temp_gtos, num_gtos, alloc);
                 md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
                 md_array_push(orb_data->orb_scaling, (float)occ, alloc);
             }
@@ -1033,18 +1038,16 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (occ_a[mo_idx] > 0.0) {
                     double occ = occ_a[mo_idx];
-                    md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
-                    size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
-                    md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                    size_t num_gtos = md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, cutoff);
+                    md_array_push_array(orb_data->gtos, temp_gtos, num_gtos, alloc);
                     md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
                     md_array_push(orb_data->orb_scaling, (float)occ, alloc);
                 }
 
                 if (occ_b[mo_idx] > 0.0) {
                     double occ = occ_b[mo_idx];
-                    md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_BETA);
-                    size_t num_pruned = md_gto_cutoff_compute(temp_gtos, num_temp_gtos, cutoff);
-                    md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
+                    size_t num_gtos = md_vlx_mo_gto_extract(temp_gtos, vlx, mo_idx, MD_VLX_MO_TYPE_BETA, cutoff);
+                    md_array_push_array(orb_data->gtos, temp_gtos, num_gtos, alloc);
                     md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
                     md_array_push(orb_data->orb_scaling, (float)occ, alloc);
                 }
@@ -1132,7 +1135,7 @@ struct VeloxChem : viamd::EventHandler {
             md_vm_arena_destroy(alloc);
             return task_system::INVALID_ID;
         }
-        orb_data.num_gtos = md_gto_cutoff_compute(orb_data.gtos, orb_data.num_gtos, cutoff_value);
+        orb_data.num_gtos = md_gto_cutoff_compute_and_filter(orb_data.gtos, orb_data.num_gtos, cutoff_value);
 
         struct Payload {
             AsyncGridEvalArgs args;
@@ -1184,11 +1187,11 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_gtos = md_vlx_mo_gto_count(vlx);
         md_gto_t* gtos  = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
 
-        if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, mo_type)) {
+        num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, mo_type, cutoff_value);
+        if (!num_gtos) {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
             return false;
         }
-        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, cutoff_value);
 
         // Dispatch Compute shader evaluation
         md_gto_grid_evaluate_GPU(vol_tex, &grid, gtos, num_gtos, mode);
@@ -1270,13 +1273,12 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_gtos = md_vlx_mo_gto_count(vlx);
         md_gto_t* gtos  = (md_gto_t*)md_vm_arena_push(alloc, sizeof(md_gto_t)* num_gtos);
 
-        if (!md_vlx_mo_gto_extract(gtos, vlx, mo_idx, mo_type)) {
+        num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, mo_type, cutoff_value);
+        if (!num_gtos) {
             MD_LOG_ERROR("Failed to extract molecular gto for orbital index: %zu", mo_idx);
             md_vm_arena_destroy(alloc);
             return task_system::INVALID_ID;
         }
-
-        num_gtos = md_gto_cutoff_compute(gtos, num_gtos, cutoff_value);
 
         md_orbital_data_t orb_data = {
             .num_gtos = num_gtos,
@@ -3240,7 +3242,7 @@ struct VeloxChem : viamd::EventHandler {
 
                         init_volume(&orb.vol[slot_idx], grid);
 
-                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        if (use_gpu_path) {
                             compute_mo_GPU(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
                         } else {
                             orb.vol_task[slot_idx] = compute_mo_async(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
@@ -3769,7 +3771,6 @@ struct VeloxChem : viamd::EventHandler {
 
                     defer { md_file_close(file); };
 
-                    bool use_gpu = gl_version.major >= 4 && gl_version.minor >= 3;
                     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
                     defer { md_vm_arena_destroy(temp_arena); };
 
@@ -3783,7 +3784,7 @@ struct VeloxChem : viamd::EventHandler {
                     case ElectronicStructureType::MolecularOrbitalDensity:
                     {
                         md_gto_eval_mode_t mode = (export_state.orb_type == ElectronicStructureType::MolecularOrbital) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-                        if (use_gpu) {
+                        if (use_gpu_path) {
                            compute_mo_GPU(vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, mode);
                         } else {
                             task = compute_mo_async(vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, mode);
@@ -3801,7 +3802,7 @@ struct VeloxChem : viamd::EventHandler {
                         md_gto_eval_mode_t mode = (export_state.orb_type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle ||
                                                    export_state.orb_type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole)
                                                       ? MD_GTO_EVAL_MODE_PSI_SQUARED : MD_GTO_EVAL_MODE_PSI;
-                        if (use_gpu) {
+                        if (use_gpu_path) {
                             compute_nto_GPU(vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, mode);
                         } else {
                             task = compute_nto_async(vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, mode);
@@ -3814,7 +3815,7 @@ struct VeloxChem : viamd::EventHandler {
                         AttachmentDetachmentType type = (export_state.orb_type == ElectronicStructureType::AttachmentDensity)
                                                             ? AttachmentDetachmentType::Attachment
                                                             : AttachmentDetachmentType::Detachment;
-                        if (use_gpu) {
+                        if (use_gpu_path) {
                             compute_attachment_detachment_density_GPU(vol.tex_id, grid, export_state.nto.idx, type);
                         } else {
                             task = compute_attachment_detachment_density_async(vol.tex_id, grid, export_state.nto.idx, type);
@@ -3822,7 +3823,7 @@ struct VeloxChem : viamd::EventHandler {
                         break;
                     }
                     case ElectronicStructureType::ElectronDensity:
-                        if (use_gpu) {
+                        if (use_gpu_path) {
                             compute_electron_density_GPU(vol.tex_id, grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
                         } else {
                             task = compute_electron_density_async(vol.tex_id, grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
@@ -4640,7 +4641,7 @@ struct VeloxChem : viamd::EventHandler {
                         init_volume(&nto.vol[NTO_Attachment], nto.grid);
                         init_volume(&nto.vol[NTO_Detachment], nto.grid);
 
-                        if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                        if (use_gpu_path) {
                             compute_attachment_detachment_density_GPU(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Attachment);
                             compute_attachment_detachment_density_GPU(nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Detachment);
                         } else {
@@ -4663,7 +4664,7 @@ struct VeloxChem : viamd::EventHandler {
                             init_volume(&nto.vol[pi], nto.grid);
                             init_volume(&nto.vol[hi], nto.grid);
 
-                            if (gl_version.major >= 4 && gl_version.minor >= 3) {
+                            if (use_gpu_path) {
                                 compute_nto_GPU(nto.vol[pi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI);
                                 compute_nto_GPU(nto.vol[hi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI);
                             } else {
@@ -5270,7 +5271,7 @@ struct VeloxChem : viamd::EventHandler {
                 const size_t nto_idx = (size_t)nto.sel_nto_idx;
 
                 // @TODO(Robin): Remove once proper fix is in place
-                if (false && gl_version.major >= 4 && gl_version.minor >= 3) {
+                if (false && use_gpu_path) {
                     md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_part, nto.group.count, nto.vol[NTO_Attachment].tex_id, &nto.grid, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
                     md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_hole, nto.group.count, nto.vol[NTO_Detachment].tex_id, &nto.grid, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
                     compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
