@@ -2886,7 +2886,9 @@ struct VeloxChem : viamd::EventHandler {
 
                     // ImGui::Text("%i is hovered", hov_vib);
                     // ImGui::Text("%f is z coord", (float)state.mold.mol.atom.z[2]);
-
+                    int idx = vib.selected + 1;
+                    ImGui::SliderInt("Index", &idx, 0, (int)num_normal_modes);
+                    vib.selected = idx - 1;
                     ImGui::SliderFloat((const char*)"Amplitude", &vib.displacement_amp_scl, 0.25f, 2.0f);
                     ImGui::SetItemTooltip("Displacement Amplitude Scale");
                     ImGui::SliderFloat((const char*)"Frequency", &vib.displacement_freq_scl, 0.25f, 2.0f);
