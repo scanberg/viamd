@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20)
 
 INCLUDE(ext/mdlib/cmake/common.cmake)
 
@@ -59,7 +59,7 @@ endif ()
 
 if (APPLE)
     # Remove once we have proper support for Apple Silicon?
-    SET(CMAKE_OSX_ARCHITECTURES "x86_64")
+    # SET(CMAKE_OSX_ARCHITECTURES "x86_64")
     if (VIAMD_CREATE_MACOSX_BUNDLE)
         set(OSX_BUNDLE "MACOSX_BUNDLE")
         set(MACOSX_BUNDLE_ICON_FILE viamd.icns)
