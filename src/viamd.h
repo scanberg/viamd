@@ -253,6 +253,14 @@ struct MolecularOrbital {
     double* energy = nullptr;
 };
 
+struct AtomProperty {
+    uint64_t id;
+    str_t label;
+    int num_idx     = 0;
+    float value_min = 0;
+    float value_max = 0;
+};
+
 // Struct to fill in for the different components
 // Which provides information of what representations are available for the currently loaded datasets
 struct RepresentationInfo {
@@ -262,6 +270,8 @@ struct RepresentationInfo {
     DipoleMoment electric_dipoles;
     DipoleMoment magnetic_dipoles;
     DipoleMoment velocity_dipoles;
+
+    md_array(AtomProperty) atom_properties = nullptr;
 
     md_allocator_i* alloc = nullptr;
 };
@@ -280,6 +290,15 @@ struct IsoDesc {
     size_t count;
     float values[8];
     vec4_t colors[8];
+};
+
+struct EvalAtomProperty {
+    uint64_t property_id = 0;
+    int idx = 0; // This is probably rarely applicable
+
+    bool output_written = false;
+    size_t num_values = 0;
+    float* dst_values = nullptr;
 };
 
 // Event Payload when an electronic structure is to be evaluated
@@ -357,11 +376,11 @@ struct Representation {
 
     struct {
         int colormap = DEFAULT_COLORMAP;
-        float map_beg = 0.0f;
-        float map_end = 1.0f;
-        float map_min = 0.0f;
-        float map_max = 1.0f;
-        char ident[64] = "";
+        float range_beg = 0.0f;
+        float range_end = 1.0f;
+        //float map_min = 0.0f;
+        //float map_max = 1.0f;
+        int idx = 0;
     } prop;
 };
 

@@ -4337,20 +4337,46 @@ static void draw_representations_window(ApplicationState* state) {
                 if (ImGui::Combo("color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
                     update_rep = true;
                 }
-#if 0
-                if (rep.color_mapping == ColorMapping::Property) {
-                    // @TODO: Update this with something more proper, and use a filter window to allow the user to specify a property
-                    /*
-                    if (!rep.prop_is_valid) ImGui::PushStyleColor(ImGuiCol_FrameBg, TEXT_BG_ERROR_COLOR);
-                    if (ImGui::InputText("property", rep.prop.cstr(), rep.prop.capacity())) {
-                        update_color = true;
-                    }
-                    if (ImGui::IsItemHovered() && !rep.prop_is_valid) {
-                        ImGui::SetTooltip("%s", rep.prop_error.cstr());
-                    }
-                    if (!rep.prop_is_valid) ImGui::PopStyleColor();
-                    */
 
+                if (rep.color_mapping == ColorMapping::Property) {
+                    AtomProperty* props = state->representation.info.atom_properties;
+                    int num_props = (int)md_array_size(state->representation.info.atom_properties);
+                    if (num_props > 0) {
+                        rep.prop.idx = CLAMP(rep.prop.idx, 0, num_props - 1);
+                        if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
+                            for (int i = 0; i < num_props; ++i) {
+                                bool selected = rep.prop.idx == i;
+                                if (ImGui::Selectable(props[rep.prop.idx].label.ptr, selected)) {
+                                    rep.prop.idx = i;
+                                    rep.prop.range_beg = props[rep.prop.idx].value_min;
+                                    rep.prop.range_end = props[rep.prop.idx].value_max;
+                                    update_rep = true;
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+                        
+                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.prop.colormap), ImVec2(inner_item_width,0), rep.prop.colormap)) {
+                            ImGui::OpenPopup("Color Map Selector");
+                        }
+
+                        update_rep |= ImGui::RangeSliderFloat("Min / Max", &rep.prop.range_beg, &rep.prop.range_end, props[rep.prop.idx].value_min, props[rep.prop.idx].value_max);
+                        if (ImGui::BeginPopup("Color Map Selector")) {
+                            for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
+                                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {
+                                    rep.prop.colormap = map;
+                                    update_rep = true;
+                                    ImGui::CloseCurrentPopup();
+                                }
+                            }
+                            ImGui::EndPopup();
+                        }
+                    } else {
+                        ImGui::Text("No properties available");
+                    }
+
+
+#if 0
                     static int prop_idx = 0;
                     const md_script_property_t* props[32] = {0};
                     size_t num_props = 0;
@@ -4391,8 +4417,8 @@ static void draw_representations_window(ApplicationState* state) {
                             ImGui::EndPopup();
                         }
                     }
-                }
 #endif
+                }
                 if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
                     update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
                     if (!rep.dynamic_evaluation) {
@@ -8298,6 +8324,32 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             case ColorMapping::Property:
                 // @TODO: Map colors accordingly
                 //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+
+                if (md_array_size(state->representation.info.atom_properties) > 0) {
+                    float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * mol.atom.count);
+                    EvalAtomProperty eval = {
+                        .property_id = state->representation.info.atom_properties[rep->prop.idx].id,
+                        .idx = 0,
+                        .output_written = false,
+                        .num_values = mol.atom.count,
+                        .dst_values = values,
+                    };
+                    viamd::event_system_broadcast_event(viamd::EventType_RepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
+
+                    if (eval.output_written) {
+                        float range_ext = (rep->prop.range_end - rep->prop.range_beg);
+                        range_ext = MAX(range_ext, 0.001f);
+                        for (size_t i = 0; i < mol.atom.count; ++i) {
+                            float t = (values[i] - rep->prop.range_beg) / range_ext;
+                            colors[i] = ImPlot::SampleColormapU32(ImClamp(t, 0.0f, 1.0f), rep->prop.colormap);
+                        }
+                    } else {
+                        MD_LOG_DEBUG("No output written for EvalAtomProperty event");
+                        MEMSET(colors, 0xFFFFFFFFu, bytes);
+                    }
+                } else {
+                    MEMSET(colors, 0xFFFFFFFFu, bytes);
+                }
     #if 0
                 if (rep->prop) {
                     MEMSET(colors, 0xFFFFFFFF, bytes);

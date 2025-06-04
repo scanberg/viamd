@@ -41,6 +41,7 @@ enum : EventType {
 
 	EventType_RepresentationInfoFill				= HASH_STR_LIT("Representation Info Fill"),
 	EventType_RepresentationEvalElectronicStructure	= HASH_STR_LIT("Representation Eval ElectronicStructure"),
+	EventType_RepresentationEvalAtomProperty		= HASH_STR_LIT("Representation Eval AtomProperty"),
 
 	//EventType_RepresentationChange		= HASH_STR_LIT("Representation Changed"),
 
@@ -58,6 +59,7 @@ enum : EventPayloadType {
 	EventPayloadType_SerializationState			= HASH_STR_LIT("Payload Serialization State"),
 	EventPayloadType_DeserializationState		= HASH_STR_LIT("Payload Deserialization State"),
 	EventPayloadType_EvalElectronicStructure	= HASH_STR_LIT("Payload Eval ElectronicStructure"),
+	EventPayloadType_EvalAtomProperty			= HASH_STR_LIT("Payload Eval AtomProperty"),
 };
 
 struct Event {
