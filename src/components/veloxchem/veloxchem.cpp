@@ -2135,13 +2135,14 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline int get_hovered_plot_peak(const double* values, size_t count, double x_base = 0.0, double x_step = 1.0, double distance_threshold = 10.0) {
-        ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
+        ImPlotPoint mouse_pos = ImGui::GetMousePos();
         int closest_idx = -1;
         double closest_dist = DBL_MAX;
+        ImVec2 zero = ImPlot::PlotToPixels(0, 0);
         for (size_t i = 0; i < count; ++i) {
-            double x = x_base + i * x_step;
-            double dx = mouse_pos.x - x;
-            double dy = CLAMP(mouse_pos.y, 0.0, values[i]) - mouse_pos.y;
+            ImVec2 point = ImPlot::PlotToPixels(x_base + i * x_step, values[i]);
+            double dx = mouse_pos.x - point.x;
+            double dy = CLAMP(mouse_pos.y, MIN(zero.y, point.y), MAX(zero.y, point.y)) - mouse_pos.y;
             double dist = sqrt(dx * dx + dy * dy);
             if (dist < distance_threshold && dist < closest_dist) {
                 closest_idx = (int)i;
@@ -2334,7 +2335,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::SetupLegend(ImPlotLocation_NorthEast);
                         ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
                         // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                        ImPlot::SetupAxis(ImAxis_Y2, "Energy (hartree)", ImPlotAxisFlags_AuxDefault);
+                        ImPlot::SetupAxis(ImAxis_Y2, "Energy (au)", ImPlotAxisFlags_AuxDefault);
                         ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
 
                         ImPlot::PlotLine("Gradient", grad_norm, (int)num_iter, 1.0, 1.0);
@@ -2351,10 +2352,10 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 ImGui::Spacing();
                 if (num_iter > 0) {
-                    ImGui::Text("Total energy:              %16.10f a.u.", energy[num_iter - 1]);
-                    ImGui::Text("Gradient norm:             %16.10f a.u.", grad_norm[num_iter - 1]);
+                    ImGui::Text("Total energy:              %16.10f (au)", energy[num_iter - 1]);
+                    ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
                 }
-                ImGui::Text("Nuclear repulsion energy:  %16.10f a.u.", md_vlx_nuclear_repulsion_energy(vlx));
+                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", md_vlx_nuclear_repulsion_energy(vlx));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
@@ -2364,26 +2365,40 @@ struct VeloxChem : viamd::EventHandler {
                 if (num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
                         const double* energies = md_vlx_opt_energies(vlx);
+                        double ref_energy = energies[num_steps - 1];
+                        double* energy_offsets = (double*)md_temp_push(sizeof(double) * num_steps);
+
+                        for (size_t i = 0; i < num_steps; ++i) {
+                            energy_offsets[i] = fabs(energies[i] - ref_energy);
+                        }
+
                         if (ImPlot::BeginPlot("OPT")) {
                             ImPlot::SetupAxes("Step", "Energy (au)");
                             ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (double)num_steps);
                             ImPlot::SetupLegend(ImPlotLocation_NorthEast);
-                            ImPlot::PlotLine("Energy", energies, (int)num_steps, 1.0, 1.0);
+                            ImPlot::PlotLine("Energy", energy_offsets, (int)num_steps, 1.0, 1.0);
 
                             const double bar_width = ImPlot::PixelsToPlot(ImVec2(2, 0)).x - ImPlot::PixelsToPlot(ImVec2(0, 0)).x;
 
                             if (ImPlot::IsPlotHovered()) {
-                                opt.hovered = get_hovered_plot_peak(energies, num_steps, 1.0, 1.0);
+                                opt.hovered = get_hovered_plot_peak(energy_offsets, num_steps, 1.0, 1.0);
 
                                 if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
                                     opt.selected = (opt.hovered == opt.selected) ? (int)num_steps - 1 : opt.hovered;
                                 }
                             }
 
-                            //ImPlot::PlotBars("##bars", energies, (int)num_steps, bar_width);
-                            ImVec4 color = opt.hovered ? IM_RED : (opt.selected ? IM_GREEN : ImVec4{0, 0, 0, -1});
-                            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3, color);
-                            ImPlot::PlotScatter("##points", energies, (int)num_steps, 1.0, 1.0);
+                            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3);
+                            ImPlot::PlotBars("##bars", energy_offsets, (int)num_steps, bar_width, 1.0);
+                            ImPlot::PlotScatter("##points", energy_offsets, (int)num_steps, 1.0, 1.0);
+
+                            if (opt.hovered != -1) {
+                                draw_bar(0, 1.0 + opt.hovered, energy_offsets[opt.hovered], bar_width, IM_GREEN);
+                            }
+
+                            if (opt.selected != -1) {
+                                draw_bar(1, 1.0 + opt.selected, energy_offsets[opt.selected], bar_width, IM_RED);
+                            }
 
                             ImPlot::EndPlot();
                         }
