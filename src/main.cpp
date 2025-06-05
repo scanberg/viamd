@@ -8519,6 +8519,14 @@ static void init_representation(ApplicationState* state, Representation* rep) {
 #endif
     rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_alloc);
+
+    size_t num_props = md_array_size(state->representation.info.atom_properties);
+    if (num_props > 0) {
+        rep->prop.idx = 0;
+        rep->prop.range_beg = state->representation.info.atom_properties[0].value_min;
+        rep->prop.range_end = state->representation.info.atom_properties[0].value_max;
+    }
+
     rep->filt_is_dirty = true;
 }
 
