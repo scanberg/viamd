@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
-INCLUDE(ext/mdlib/cmake/common.cmake)
-
 project(viamd VERSION 0.1.15 LANGUAGES CXX)
+
+INCLUDE(ext/mdlib/cmake/common.cmake)
 
 # If configured using single configuration generator, set default build type to Release
 if (NOT EXISTS ${CMAKE_BINARY_DIR}/CMakeCache.txt)
