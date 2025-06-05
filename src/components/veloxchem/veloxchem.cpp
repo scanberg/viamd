@@ -2968,9 +2968,10 @@ struct VeloxChem : viamd::EventHandler {
 
                     static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_DefaultSort;
 
-                    double height = ImGui::GetTextLineHeightWithSpacing();
+                    //ImVec2 table_size = {460, ImGui::GetTextLineHeightWithSpacing() * (num_normal_modes + 1)};
+                    ImVec2 table_size = {0, 0};
 
-                    if (ImGui::BeginTable("table_advanced", 3, flags, ImVec2(460, height * (num_normal_modes + 1)), 0)) {
+                    if (ImGui::BeginTable("table_advanced", 3, flags, table_size, 0)) {
                         ImGui::TableSetupColumn("Vibration mode", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Harmonic Frequency", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("IR Intensity", columns_base_flags, 0.0f);
