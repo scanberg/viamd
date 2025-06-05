@@ -1147,7 +1147,7 @@ struct VeloxChem : viamd::EventHandler {
         *payload = {
             .args = {
                 .grid = grid,
-                .grid_data = (float*)md_vm_arena_push(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
+                .grid_data = (float*)md_vm_arena_push_zero(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
                 .orb  = orb_data,
                 .mode = MD_GTO_EVAL_MODE_PSI_SQUARED,
             },
@@ -1197,7 +1197,7 @@ struct VeloxChem : viamd::EventHandler {
         *payload = {
             .args = {
                 .grid = grid,
-                .grid_data = (float*)md_vm_arena_push(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
+                .grid_data = (float*)md_vm_arena_push_zero(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
                 .orb = orb_data,
                 .mode = mode,
             },
@@ -1291,7 +1291,7 @@ struct VeloxChem : viamd::EventHandler {
         *payload = {
             .args = {
                 .grid = grid,
-                .grid_data = (float*)md_vm_arena_push(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
+                .grid_data = (float*)md_vm_arena_push_zero(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
                 .orb = orb_data,
                 .mode = MD_GTO_EVAL_MODE_PSI_SQUARED,
              },
@@ -1921,21 +1921,41 @@ struct VeloxChem : viamd::EventHandler {
                     0
                 };
 
-                size_t num_sub_gtos = 0;
+                if (data->orb.num_orbs <= 1) {
+                    size_t num_sub_gtos = 0;
+                    // Transform GTO xyz into model space of the volume and perform AABB overlap test
+                    for (size_t i = 0; i < data->orb.num_gtos; ++i) {
+                        float cutoff = data->orb.gtos[i].cutoff;
+                        if (cutoff == 0.0f) continue;
 
-                // Transform GTO xyz into model space of the volume and perform AABB overlap test
-                for (size_t i = 0; i < data->orb.num_gtos; ++i) {
-                    float cutoff = data->orb.gtos[i].cutoff;
-                    if (cutoff == 0.0f) continue;
+                        vec4_t coord = world_to_model * vec4_set(data->orb.gtos[i].x, data->orb.gtos[i].y, data->orb.gtos[i].z, 1.0f);
+                        vec4_t clamped = vec4_clamp(coord, aabb_min, aabb_max);
+                        if (vec4_distance_squared(coord, clamped) < cutoff * cutoff) {
+                            sub_gtos[num_sub_gtos++] = data->orb.gtos[i];
+                        }
+                    }
 
-                    vec4_t coord = world_to_model * vec4_set(data->orb.gtos[i].x, data->orb.gtos[i].y, data->orb.gtos[i].z, 1.0f);
-                    vec4_t clamped = vec4_clamp(coord, aabb_min, aabb_max);
-                    if (vec4_distance_squared(coord, clamped) < cutoff * cutoff) {
-                        sub_gtos[num_sub_gtos++] = data->orb.gtos[i];
+                    md_gto_grid_evaluate_sub(data->grid_data, &data->grid, off_idx, len_idx, sub_gtos, num_sub_gtos, data->mode);
+                } else {
+                    for (size_t orb_idx = 0; orb_idx < data->orb.num_orbs; ++orb_idx) {
+                        size_t num_sub_gtos = 0;
+                        // Transform GTO xyz into model space of the volume and perform AABB overlap test
+                        size_t beg = data->orb.orb_offsets[orb_idx];
+                        size_t end = data->orb.orb_offsets[orb_idx + 1];
+                        for (size_t i = beg; i < end; ++i) {
+                            float cutoff = data->orb.gtos[i].cutoff;
+                            if (cutoff == 0.0f) continue;
+
+                            vec4_t coord = world_to_model * vec4_set(data->orb.gtos[i].x, data->orb.gtos[i].y, data->orb.gtos[i].z, 1.0f);
+                            vec4_t clamped = vec4_clamp(coord, aabb_min, aabb_max);
+                            if (vec4_distance_squared(coord, clamped) < cutoff * cutoff) {
+                                sub_gtos[num_sub_gtos++] = data->orb.gtos[i];
+                            }
+                        }
+
+                        md_gto_grid_evaluate_sub(data->grid_data, &data->grid, off_idx, len_idx, sub_gtos, num_sub_gtos, data->mode);
                     }
                 }
-
-                md_gto_grid_evaluate_sub(data->grid_data, &data->grid, off_idx, len_idx, sub_gtos, num_sub_gtos, data->mode);
             }
 
             md_temp_set_pos_back(temp_pos);
