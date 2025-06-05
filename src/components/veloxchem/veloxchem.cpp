@@ -29,6 +29,9 @@
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
+
+#define HARTREE_TO_KJ_PER_MOL 2625.4996394799
+
 #define DEFAULT_SAMPLES_PER_ANGSTROM 8
 #define DEFAULT_GTO_CUTOFF_VALUE 1.0e-6
 #define MAX_NTO_GROUPS 16
@@ -2369,11 +2372,11 @@ struct VeloxChem : viamd::EventHandler {
                         double* energy_offsets = (double*)md_temp_push(sizeof(double) * num_steps);
 
                         for (size_t i = 0; i < num_steps; ++i) {
-                            energy_offsets[i] = fabs(energies[i] - ref_energy);
+                            energy_offsets[i] = fabs(energies[i] - ref_energy) * HARTREE_TO_KJ_PER_MOL;
                         }
 
                         if (ImPlot::BeginPlot("OPT")) {
-                            ImPlot::SetupAxes("Step", "Energy (au)");
+                            ImPlot::SetupAxes("Step", "Energy (kJ/mol)");
                             ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (double)num_steps);
                             ImPlot::SetupLegend(ImPlotLocation_NorthEast);
                             ImPlot::PlotLine("Energy", energy_offsets, (int)num_steps, 1.0, 1.0);
