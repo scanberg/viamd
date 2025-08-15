@@ -2254,47 +2254,48 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
 
     if (state->operations.recalc_bonds) {
-        static int64_t cur_nearest_frame = -1;
-        if (cur_nearest_frame != payload.nearest_frame) {
-            cur_nearest_frame = payload.nearest_frame;
-            task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
-                const auto& mol = data->state->mold.mol;
-                const float* x = mol.atom.x;
-                const float* y = mol.atom.y;
-                const float* z = mol.atom.z;
-                const md_unit_cell_t* cell = &mol.unit_cell;
-                int offset = data->t < 0.5 ? 0 : 1;
+        if (!task_system::task_is_running(state->tasks.evaluate_full) && !task_system::task_is_running(state->tasks.evaluate_filt)) {
+            // We cannot recalculate bonds while the full or filtered evaluation is running
+            // because it would overwrite the bond data while we are reading it
 
-                switch (data->mode) {
-                case InterpolationMode::Nearest: break;
-                case InterpolationMode::Linear:
-                    x = data->src_x[0 + offset];
-                    y = data->src_y[0 + offset];
-                    z = data->src_z[0 + offset];
-                    cell = &data->headers[0 + offset].unit_cell;
-                    break;
-                case InterpolationMode::CubicSpline:
-                    x = data->src_x[1 + offset];
-                    y = data->src_y[1 + offset];
-                    z = data->src_z[1 + offset];
-                    cell = &data->headers[1 + offset].unit_cell;
-                    break;
-                default:
-                    break;
-                };
+            static int64_t cur_nearest_frame = -1;
+            if (cur_nearest_frame != payload.nearest_frame) {
+                cur_nearest_frame = payload.nearest_frame;
+                task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
+                    const auto& mol = data->state->mold.mol;
+                    const float* x = mol.atom.x;
+                    const float* y = mol.atom.y;
+                    const float* z = mol.atom.z;
+                    const md_unit_cell_t* cell = &mol.unit_cell;
+                    int offset = data->t < 0.5 ? 0 : 1;
 
-                md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-                md_bond_data_t* bond  = (md_bond_data_t*)md_arena_allocator_push_zero(arena, sizeof(md_bond_data_t));
-                md_util_covalent_bonds_compute_exp(bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, cell, arena);
+                    switch (data->mode) {
+                    case InterpolationMode::Nearest: break;
+                    case InterpolationMode::Linear:
+                        x = data->src_x[0 + offset];
+                        y = data->src_y[0 + offset];
+                        z = data->src_z[0 + offset];
+                        cell = &data->headers[0 + offset].unit_cell;
+                        break;
+                    case InterpolationMode::CubicSpline:
+                        x = data->src_x[1 + offset];
+                        y = data->src_y[1 + offset];
+                        z = data->src_z[1 + offset];
+                        cell = &data->headers[1 + offset].unit_cell;
+                        break;
+                    default:
+                        break;
+                    };
 
-                task_system::ID update_bonds = task_system::create_main_task(STR_LIT("## Update bonds"), [bond, gl_mol = data->state->mold.gl_mol, arena]() {
-                    md_gl_mol_set_bonds(gl_mol, 0, (uint32_t)bond->count, bond->pairs, 0);
-                    md_arena_allocator_destroy(arena);
-                });
-
-                task_system::enqueue_task(update_bonds);
-            });
-            tasks[num_tasks++] = recalc_bond_task;
+                    //md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+                    //md_bond_data_t* bond  = (md_bond_data_t*)md_arena_allocator_push_zero(arena, sizeof(md_bond_data_t));
+                    md_bond_data_t* bonds = &data->state->mold.mol.bond; 
+                    md_bond_data_clear(bonds);
+                    md_util_covalent_bonds_compute_exp(bonds, x, y, z, mol.atom.element, mol.atom.count, nullptr, cell, data->state->mold.mol_alloc);
+                    data->state->mold.dirty_buffers |= MolBit_DirtyBonds;
+                    });
+                tasks[num_tasks++] = recalc_bond_task;
+            }
         }
     }
 
@@ -3057,23 +3058,27 @@ static void draw_main_menu(ApplicationState* data) {
                 }
 
                 if (do_bonds) {
-                    const auto& mol = data->mold.mol;
-                    uint32_t frame_idx = (uint32_t)data->animation.frame;
-                    md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
+                    if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
+                        const auto& mol = data->mold.mol;
+                        uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
+                        md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
 
-                    float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                    float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                    float* z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                    md_trajectory_frame_header_t frame_header;
+                        float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                        float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                        float* z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                        md_trajectory_frame_header_t frame_header;
 
-                    if (!md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, x, y, z)) {
-                        MD_LOG_ERROR("Failed to extract frame data");
+                        if (!md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, x, y, z)) {
+                            MD_LOG_DEBUG("Failed to extract frame data");
+                        } else {
+                            MD_LOG_DEBUG("RECALCULATING BONDS");
+                            md_bond_data_clear(&data->mold.mol.bond);
+                            md_util_covalent_bonds_compute_exp(&data->mold.mol.bond, x, y, z, mol.atom.element, mol.atom.count, nullptr, &frame_header.unit_cell, frame_alloc);
+                            data->mold.dirty_buffers |= MolBit_DirtyBonds;
+                            md_vm_arena_temp_end(temp_pos);
+                        }
                     } else {
-                        MD_LOG_DEBUG("RECALCULATING BONDS");
-                        md_bond_data_t bond = {0};
-                        md_util_covalent_bonds_compute_exp(&bond, x, y, z, mol.atom.element, mol.atom.count, &mol.residue, &frame_header.unit_cell, frame_alloc);
-                        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)bond.count, bond.pairs, 0);
-                        md_vm_arena_temp_end(temp_pos);
+                        MD_LOG_INFO("Cannot recalculate bonds while evaluation is occuring.");
                     }
                 }
 
@@ -4360,7 +4365,11 @@ static void draw_representations_window(ApplicationState* state) {
                             ImGui::OpenPopup("Color Map Selector");
                         }
 
-                        update_rep |= ImGui::RangeSliderFloat("Min / Max", &rep.prop.range_beg, &rep.prop.range_end, props[rep.prop.idx].value_min, props[rep.prop.idx].value_max);
+                        // Scale a bit outside of the default range
+                        const float value_min = props[rep.prop.idx].value_min * 2.0f;
+                        const float value_max = props[rep.prop.idx].value_max * 2.0f;
+
+                        update_rep |= ImGui::RangeSliderFloat("Min / Max", &rep.prop.range_beg, &rep.prop.range_end, value_min, value_max);
                         if (ImGui::BeginPopup("Color Map Selector")) {
                             for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
                                 if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {
