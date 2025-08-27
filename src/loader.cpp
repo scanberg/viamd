@@ -1,4 +1,4 @@
-#include "loader.h"
+﻿#include "loader.h"
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -578,7 +578,8 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
         return NULL;
     }
     
-    if (md_trajectory_num_atoms(internal_traj) != mol->atom.count) {
+    size_t traj_atom_count = md_trajectory_num_atoms(internal_traj);
+    if (traj_atom_count != mol->atom.count) {
         MD_LOG_ERROR("Trajectory is not compatible with the loaded molecule.");
         loader->destroy(internal_traj);
         return NULL;

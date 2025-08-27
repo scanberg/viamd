@@ -55,12 +55,6 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         uint32_t flags = mol.atom.flags[atom_idx];
         if (flags) {
             sb += "flags: ";
-            if (flags & MD_FLAG_RES_BEG)            { sb += "RES_BEG "; }
-            if (flags & MD_FLAG_RES)                { sb += "RES "; }
-            if (flags & MD_FLAG_RES_END)            { sb += "RES_END "; }
-            if (flags & MD_FLAG_CHAIN_BEG)          { sb += "CHAIN_BEG "; }
-            if (flags & MD_FLAG_CHAIN)              { sb += "CHAIN "; }
-            if (flags & MD_FLAG_CHAIN_END)          { sb += "CHAIN_END "; }
             if (flags & MD_FLAG_HETATM)             { sb += "HETATM "; }
             if (flags & MD_FLAG_AMINO_ACID)         { sb += "AMINO "; }
             //if (flags & MD_FLAG_SIDE_CHAIN)         { sb += "SIDE_CHAIN "; }
