@@ -278,6 +278,8 @@ struct RepresentationInfo {
     DipoleMoment magnetic_dipoles;
     DipoleMoment velocity_dipoles;
 
+    uint32_t electronic_structure_type_mask;
+
     md_array(AtomProperty) atom_properties = nullptr;
 
     md_allocator_i* alloc = nullptr;

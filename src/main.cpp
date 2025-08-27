@@ -4480,11 +4480,7 @@ static void draw_representations_window(ApplicationState* state) {
                 if (ImGui::BeginCombo("Electronic Structure Type", electronic_structure_type_str[(int)rep.electronic_structure.type], flags)) {
                     for (int n = 0; n < (int)ElectronicStructureType::Count; n++) {
                         bool is_selected = ((int)rep.electronic_structure.type == n);
-                        bool disabled = false;
-
-                        if (n == (int)ElectronicStructureType::AttachmentDensity || n == (int)ElectronicStructureType::DetachmentDensity) {
-                            disabled = (state->representation.info.nto.num_orbitals == 0);
-                        }
+                        bool disabled = !((1 << n) & state->representation.info.electronic_structure_type_mask);
 
                         if (disabled) ImGui::PushDisabled();
                         if (ImGui::Selectable(electronic_structure_type_str[n], is_selected)) {

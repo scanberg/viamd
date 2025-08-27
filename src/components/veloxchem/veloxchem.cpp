@@ -640,6 +640,21 @@ struct VeloxChem : viamd::EventHandler {
                         md_array_push(info.nto.lambda, lambda_info, info.alloc);
                     }
                 }
+                
+                if (md_vlx_scf_number_of_molecular_orbitals(vlx) > 0) {
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::MolecularOrbital);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::MolecularOrbitalDensity);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::ElectronDensity);
+                }
+
+                if (md_vlx_rsp_number_of_excited_states(vlx) > 0) {
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalParticle);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalHole);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalDensityParticle);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalDensityHole);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::AttachmentDensity);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::DetachmentDensity);
+                }
 
                 const double* resp_charges = md_vlx_scf_resp_charges(vlx);
                 if (resp_charges) {
