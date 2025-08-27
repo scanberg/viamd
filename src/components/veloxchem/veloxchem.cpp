@@ -626,6 +626,18 @@ struct VeloxChem : viamd::EventHandler {
                     md_array_resize(info.nto.label, num_excited_states, info.alloc);
                     for (size_t i = 0; i < num_excited_states; ++i) {
                         info.nto.label[i] = str_printf(info.alloc, "%zu", i + 1);
+
+                        const double LAMBDA_CUTOFF = 1.0e-3;
+                        const double* lambdas = md_vlx_rsp_nto_lambdas(vlx, i);
+                        NaturalTransitionOrbitalLambda lambda_info = {};
+                        for (size_t j = 0; j < 16; ++j) {
+                            if (lambdas[j] < LAMBDA_CUTOFF) break;
+                            str_t lbl = str_printf(info.alloc, (const char*)u8"λ[%zu] (%.3f)", j + 1, lambdas[j]);
+                            md_array_push(lambda_info.label, lbl, info.alloc);
+                            md_array_push(lambda_info.value, lambdas[j], info.alloc);
+                            lambda_info.num_lambdas += 1;
+                        }
+                        md_array_push(info.nto.lambda, lambda_info, info.alloc);
                     }
                 }
 

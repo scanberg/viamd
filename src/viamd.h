@@ -239,9 +239,16 @@ struct DipoleMoment {
     vec3_t* vec  = nullptr;
 };
 
+struct NaturalTransitionOrbitalLambda {
+    size_t num_lambdas = 0;
+    str_t* label = nullptr;
+    double* value = nullptr;
+};
+
 struct NaturalTransitionOrbital {
     size_t num_orbitals = 0;
     str_t* label = nullptr;
+    NaturalTransitionOrbitalLambda* lambda = nullptr;
 };
 
 struct MolecularOrbital {

@@ -4500,7 +4500,22 @@ static void draw_representations_window(ApplicationState* state) {
                     ImGui::EndCombo();
                 }
 
-                if (rep.electronic_structure.type == ElectronicStructureType::MolecularOrbital || rep.electronic_structure.type == ElectronicStructureType::MolecularOrbitalDensity) {
+                const bool show_molecular_orbitals = (rep.electronic_structure.type == ElectronicStructureType::MolecularOrbital ||
+                                                      rep.electronic_structure.type == ElectronicStructureType::MolecularOrbitalDensity);
+
+                const bool show_exited_states = (rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalParticle ||
+                                                 rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalHole ||
+                                                 rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle ||
+                                                 rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole ||
+                                                 rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity ||
+                                                 rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity);
+
+                const bool show_lambdas =   (rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalParticle ||
+                                             rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalHole ||
+                                             rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle ||
+                                             rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole);
+
+                if (show_molecular_orbitals) {
                     if (state->representation.info.alpha.label) {
                         if (ImGui::BeginCombo("Molecular Orbital Idx", state->representation.info.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
                             for (int n = 0; n < (int)state->representation.info.alpha.num_orbitals; n++) {
@@ -4521,11 +4536,11 @@ static void draw_representations_window(ApplicationState* state) {
                     }
                 }
 
-                if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity || rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                if (show_exited_states) {
                     if (state->representation.info.nto.label) {
                         if (ImGui::BeginCombo("Excited State Idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
                             for (int n = 0; n < (int)state->representation.info.nto.num_orbitals; n++) {
-                                bool is_selected = (rep.electronic_structure.nto_idx == n);
+                                const bool is_selected = (rep.electronic_structure.nto_idx == n);
                                 if (ImGui::Selectable(state->representation.info.nto.label[n].ptr, is_selected)) {
                                     if (rep.electronic_structure.nto_idx != n) {
                                         update_rep = true;
@@ -4538,6 +4553,33 @@ static void draw_representations_window(ApplicationState* state) {
                                 }
                             }
                             ImGui::EndCombo();
+                        }
+                        if (show_lambdas) {
+                            if (state->representation.info.nto.lambda) {
+                                const NaturalTransitionOrbitalLambda& lambda = state->representation.info.nto.lambda[rep.electronic_structure.nto_idx];
+                                const int num_lambdas = (int)lambda.num_lambdas;
+                                if (num_lambdas > 0) {
+                                    rep.electronic_structure.nto_lambda_idx = CLAMP(rep.electronic_structure.nto_lambda_idx, 0, num_lambdas - 1);
+                                    if (lambda.label) {
+                                        if (ImGui::BeginCombo("Lambda Idx", lambda.label[rep.electronic_structure.nto_lambda_idx].ptr)) {
+                                            for (int n = 0; n < (int)num_lambdas; n++) {
+                                                const bool is_selected = (rep.electronic_structure.nto_lambda_idx == n);
+                                                if (ImGui::Selectable(lambda.label[n].ptr, is_selected)) {
+                                                    if (rep.electronic_structure.nto_lambda_idx != n) {
+                                                        update_rep = true;
+                                                    }
+                                                    rep.electronic_structure.nto_lambda_idx = n;
+                                                }
+
+                                                if (is_selected) {
+                                                    ImGui::SetItemDefaultFocus();
+                                                }
+                                            }
+                                            ImGui::EndCombo();
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
