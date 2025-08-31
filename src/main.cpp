@@ -604,6 +604,7 @@ static void draw_dataset_window(ApplicationState* data);
 static void draw_debug_window(ApplicationState* data);
 static void draw_property_export_window(ApplicationState* data);
 static void draw_notifications_window();
+static void draw_structure_export_window(ApplicationState* data);
 
 static void update_md_buffers(ApplicationState* data);
 
@@ -1160,6 +1161,8 @@ int main(int argc, char** argv) {
                         const md_bitfield_t* bf = &data.selection.stored_selections[i].atom_mask;
                         md_script_ir_add_identifier_bitfield(data.script.ir, name, bf);
                     }
+
+                    md_script_ir_add_identifier_bitfield(data.script.ir, STR_LIT("selection"), &data.selection.selection_mask);
                     
                     if (src_str) {
                         md_script_ir_compile_from_source(data.script.ir, src_str, &data.mold.mol, data.mold.traj, NULL);
@@ -3374,6 +3377,141 @@ void draw_load_dataset_window(ApplicationState* data) {
         }
 
         ImGui::EndPopup();
+    }
+}
+
+static void export_xyz(md_file_o* file, str_t comment, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, size_t num_atoms, const int32_t* indices = nullptr) {
+    ASSERT(file);
+    ASSERT(comment);
+    ASSERT(atom_x);
+    ASSERT(atom_y);
+    ASSERT(atom_z);
+    ASSERT(atom_elem);
+
+    md_file_printf(file, "%zu\n", num_atoms);
+    md_file_printf(file, STR_FMT "\n", STR_ARG(comment));
+    for (size_t i = 0; i < num_atoms; ++i) {
+        size_t idx = indices ? indices[i] : i;
+        str_t elem = md_util_element_symbol(atom_elem[idx]);
+        float x = atom_x[idx];
+        float y = atom_y[idx];
+        float z = atom_z[idx];
+        printf("%-2s %12.6f %12.6f %12.6f\n", elem.ptr, x, y, z);
+    }
+}
+
+enum FilterOptions {
+    ActiveSelection,
+    Representation,
+    TextFilter,
+
+    Count,
+};
+
+static const char* filter_options_str[] = {
+    "Active Selection",
+    "Representation",
+    "Text Filter"
+};
+
+struct ExportStructureWindowState {
+    bool show_window = false;
+    bool use_filter = false;
+    char filter[256] = "all";
+    int filter_option_idx = 0;
+    int file_format_idx = 0;
+    int frame_option_idx = 0;
+};
+
+static void draw_structure_export_window(ApplicationState* data) {
+    ExportStructureWindowState state = ExportStructureWindowState();
+
+    ImGui::SetNextWindowSize(ImVec2(300, 215), ImGuiCond_FirstUseEver);
+    if (state.show_window) {
+        ImGui::OpenPopup("Export Structure");
+    }
+
+    if (ImGui::BeginPopupModal("Export Dataset", &state.show_window)) {
+        const md_bitfield_t* bf = nullptr;
+
+        ImGui::Checkbox("Use subset", &state.use_filter);
+        if (state.use_filter) {
+            ImGui::Combo("Subset", &state.filter_option_idx, filter_options_str, FilterOptions::Count);
+            if (state.filter_option_idx == FilterOptions::TextFilter) {
+                ImGui::InputText("##filter", state.filter, sizeof(state.filter));
+            }
+        }
+
+        static const char* file_format_str[] = {
+            "xyz",
+        };
+        ImGui::Combo("File format", &state.file_format_idx, file_format_str, ARRAY_SIZE(file_format_str));
+
+        /*
+        static const char* frame_options_str[] = {
+            "Current frame (Nearest)",
+        };
+        ImGui::Combo("Frame option", &state.frame_option_idx, frame_options_str, ARRAY_SIZE(frame_options_str));
+        */
+
+        if (ImGui::Button("Export")) {
+            // Do file dialogue
+            char buf[1024];
+            str_t ext_str = str_from_cstr(file_format_str[state.file_format_idx]);
+            if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Save, ext_str)) {
+                md_vm_arena_temp_t temp = md_vm_arena_temp_begin(data->allocator.frame);
+                defer { md_vm_arena_temp_end(temp); };
+
+                str_t path = str_from_cstrn(buf, sizeof(buf));
+
+                size_t num_atoms = data->mold.mol.atom.count;
+                float* x = data->mold.mol.atom.x;
+                float* y = data->mold.mol.atom.y;
+                float* z = data->mold.mol.atom.z;
+                md_element_t* elem = data->mold.mol.atom.element;
+                int32_t* indices = nullptr;
+
+                if (data->mold.traj) {
+
+                    size_t num_atoms = data->mold.mol.atom.count;
+                    x = md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
+                    y = md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
+                    z = md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
+
+                    int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
+                    int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, num_frames - 1);
+
+                    md_trajectory_frame_header_t header;
+                    md_trajectory_load_frame(data->mold.traj, frame_idx, &header, x, y, z);
+                }
+
+                if (state.use_filter) {
+                    switch(state.filter_option_idx) {
+                    case FilterOptions::ActiveSelection:
+                        bf = &data->selection.selection_mask;
+                        break;
+                    case FilterOptions::Representation:
+                        break;
+                    }
+                }
+
+                if (bf) {
+                    // Extract indices if a bitfield is set
+                    size_t capacity = md_bitfield_popcount(bf);
+                    indices = (int32_t*)md_vm_arena_push(data->allocator.frame, capacity * sizeof(int32_t));
+                    num_atoms = md_bitfield_iter_extract_indices(indices, num_atoms, md_bitfield_iter_create(bf));
+                }
+
+                str_t dataset;
+                extract_file(&dataset, str_from_cstr(data->files.molecule));
+
+                str_t comment = str_printf(data->allocator.frame, "Exported by VIAMD from '" STR_FMT "'\n", STR_ARG(dataset));
+
+                md_file_o* file = md_file_open(path, MD_FILE_WRITE);
+                export_xyz(file, comment, x, y, z, elem, num_atoms, indices);
+            }
+        }
+        ImGui::CloseCurrentPopup();
     }
 }
 
