@@ -4273,7 +4273,7 @@ struct VeloxChem : viamd::EventHandler {
                                 }
                                 md_bitfield_set_bit(&mask, select.hovered_atom_idx);
                             } else if (mol.bond.pairs && 0 <= select.hovered_bond_idx && select.hovered_bond_idx < (int)mol.bond.count) {
-                                md_bond_pair_t pair = mol.bond.pairs[select.hovered_bond_idx];
+                                md_atom_pair_t pair = mol.bond.pairs[select.hovered_bond_idx];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
@@ -4298,7 +4298,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (0 <= select.hovered_atom_idx && select.hovered_atom_idx < (int)mol.atom.count) {
                         md_bitfield_set_bit(select.highlight_mask, select.hovered_atom_idx);
                     } else if (mol.bond.pairs && 0 <= select.hovered_bond_idx && select.hovered_bond_idx < (int)mol.bond.count) {
-                        md_bond_pair_t pair = mol.bond.pairs[select.hovered_bond_idx];
+                        md_atom_pair_t pair = mol.bond.pairs[select.hovered_bond_idx];
                         md_bitfield_set_bit(select.highlight_mask, pair.idx[0]);
                         md_bitfield_set_bit(select.highlight_mask, pair.idx[1]);
                     }

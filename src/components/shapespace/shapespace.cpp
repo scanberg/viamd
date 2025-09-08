@@ -410,8 +410,8 @@ struct Shapespace : viamd::EventHandler {
                                     xyzw[dst_idx++] = vec4_set(x[src_idx], y[src_idx], z[src_idx], w ? w[src_idx] : 1.0f);
                                 }
 
-                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &app_state->mold.mol.unit_cell);
-                                md_util_deperiodize_vec4(xyzw, count, com, &app_state->mold.mol.unit_cell);
+                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &app_state->mold.mol.unitcell);
+                                md_util_deperiodize_vec4(xyzw, count, com, &app_state->mold.mol.unitcell);
 
                                 const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                                 const vec3_t weights = md_util_shape_weights(&M);

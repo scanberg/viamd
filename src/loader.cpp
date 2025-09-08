@@ -510,7 +510,7 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
         result = md_trajectory_load_frame(loaded_traj->traj, idx, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
         if (result) {
-            const md_unit_cell_t* cell = &frame_data->header.unit_cell;
+            const md_unitcell_t* cell = &frame_data->header.unitcell;
             const md_molecule_t* mol = loaded_traj->mol;
             float* x = frame_data->x;
             float* y = frame_data->y;
@@ -527,12 +527,12 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
                     const int32_t i = indices[0];
                     com = vec3_set(x[i], y[i], z[i]);
                 } else {
-                    com = md_util_com_compute(x, y, z, mol->atom.mass, indices, count, &mol->unit_cell);
+                    com = md_util_com_compute(x, y, z, mol->atom.mass, indices, count, &mol->unitcell);
                     md_util_pbc(&com.x, &com.y, &com.z, 0, 1, cell);
                 }
 
                 // Translate all
-                const vec3_t center = cell->flags ? cell->basis * vec3_set1(0.5f) : vec3_zero();
+                const vec3_t center = cell->flags ? md_unitcell_basis_mat3(&mol->unitcell) * vec3_set1(0.5f) : vec3_zero();
                 const vec3_t trans  = center - com;
                 vec3_batch_translate_inplace(x, y, z, num_atoms, trans);
             }

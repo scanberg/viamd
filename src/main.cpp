@@ -2110,7 +2110,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         int64_t nearest_frame;
         int64_t frames[4];
         md_trajectory_frame_header_t headers[4];
-        md_unit_cell_t unit_cell;
+        md_unitcell_t unitcell;
 
         size_t count;
 
@@ -2155,7 +2155,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"),[data = &payload]() {
                 md_trajectory_frame_header_t header;
                 md_trajectory_load_frame(data->state->mold.traj, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
-                MEMCPY(&data->unit_cell, &header.unit_cell, sizeof(md_unit_cell_t));
+                MEMCPY(&data->unitcell, &header.unitcell, sizeof(md_unitcell_t));
             });
 
             tasks[num_tasks++] = load_task;
@@ -2170,15 +2170,12 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             });
 
             task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
-                if ((data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) && (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO)) {
-                    double ext_x = lerp(data->headers[0].unit_cell.basis[0][0], data->headers[1].unit_cell.basis[0][0], data->t);
-                    double ext_y = lerp(data->headers[0].unit_cell.basis[1][1], data->headers[1].unit_cell.basis[1][1], data->t);
-                    double ext_z = lerp(data->headers[0].unit_cell.basis[2][2], data->headers[1].unit_cell.basis[2][2], data->t);
-                    data->unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
-                } else if ( (data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) || (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC)) {
-                    data->unit_cell.basis = lerp(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->t);
-                    data->unit_cell.inv_basis = mat3_inverse(data->state->mold.mol.unit_cell.basis);
-                }
+                data->unitcell.x = lerp(data->headers[0].unitcell.x, data->headers[1].unitcell.x, data->t);
+                data->unitcell.y = lerp(data->headers[0].unitcell.y, data->headers[1].unitcell.y, data->t);
+                data->unitcell.z = lerp(data->headers[0].unitcell.z, data->headers[1].unitcell.z, data->t);
+                data->unitcell.xy = lerp(data->headers[0].unitcell.xy, data->headers[1].unitcell.xy, data->t);
+                data->unitcell.xz = lerp(data->headers[0].unitcell.xz, data->headers[1].unitcell.xz, data->t);
+                data->unitcell.yz = lerp(data->headers[0].unitcell.yz, data->headers[1].unitcell.yz, data->t);
             });
 
             task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)mol.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
@@ -2191,7 +2188,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 const float* src_y[2] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg};
                 const float* src_z[2] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg};
 
-                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t);
+                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t);
             }, grain_size);
 
             tasks[num_tasks++] = load_task;
@@ -2209,24 +2206,12 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             });
 
             task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
-                if ((data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                    (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                    (data->headers[2].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                    (data->headers[3].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO))
-                {
-                    double ext_x = cubic_spline(data->headers[0].unit_cell.basis[0][0], data->headers[1].unit_cell.basis[0][0], data->headers[2].unit_cell.basis[0][0], data->headers[3].unit_cell.basis[0][0], data->t);
-                    double ext_y = cubic_spline(data->headers[0].unit_cell.basis[1][1], data->headers[1].unit_cell.basis[1][1], data->headers[2].unit_cell.basis[1][1], data->headers[3].unit_cell.basis[1][1], data->t);
-                    double ext_z = cubic_spline(data->headers[0].unit_cell.basis[2][2], data->headers[1].unit_cell.basis[2][2], data->headers[2].unit_cell.basis[2][2], data->headers[3].unit_cell.basis[2][2], data->t);
-                    data->unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
-                } else if ( (data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                            (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                            (data->headers[2].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                            (data->headers[3].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC))
-                {
-                    data->unit_cell.flags = data->headers[0].unit_cell.flags;
-                    data->unit_cell.basis = cubic_spline(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->headers[2].unit_cell.basis, data->headers[3].unit_cell.basis, data->t, data->s);
-                    data->unit_cell.inv_basis = mat3_inverse(data->state->mold.mol.unit_cell.basis);
-                }
+                data->unitcell.x  = cubic_spline(data->headers[0].unitcell.x,  data->headers[1].unitcell.x,  data->headers[2].unitcell.x,  data->headers[3].unitcell.x,  data->t);
+                data->unitcell.y  = cubic_spline(data->headers[0].unitcell.y,  data->headers[1].unitcell.y,  data->headers[2].unitcell.y,  data->headers[3].unitcell.y,  data->t);
+                data->unitcell.z  = cubic_spline(data->headers[0].unitcell.z,  data->headers[1].unitcell.z,  data->headers[2].unitcell.z,  data->headers[3].unitcell.z,  data->t);
+                data->unitcell.xy = cubic_spline(data->headers[0].unitcell.xy, data->headers[1].unitcell.xy, data->headers[2].unitcell.xy, data->headers[3].unitcell.xy, data->t);
+                data->unitcell.xz = cubic_spline(data->headers[0].unitcell.xz, data->headers[1].unitcell.xz, data->headers[2].unitcell.xz, data->headers[3].unitcell.xz, data->t);
+                data->unitcell.yz = cubic_spline(data->headers[0].unitcell.yz, data->headers[1].unitcell.yz, data->headers[2].unitcell.yz, data->headers[3].unitcell.yz, data->t);
             });
 
             task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)mol.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
@@ -2239,7 +2224,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 const float* src_y[4] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg, data->src_y[2] + range_beg, data->src_y[3] + range_beg};
                 const float* src_z[4] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg, data->src_z[2] + range_beg, data->src_z[3] + range_beg};
 
-                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t, data->s);
+                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t, data->s);
             }, grain_size);
 
             tasks[num_tasks++] = load_task;
@@ -2266,7 +2251,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                     const float* x = mol.atom.x;
                     const float* y = mol.atom.y;
                     const float* z = mol.atom.z;
-                    const md_unit_cell_t* cell = &mol.unit_cell;
+                    const md_unitcell_t* cell = &mol.unitcell;
                     int offset = data->t < 0.5 ? 0 : 1;
 
                     switch (data->mode) {
@@ -2275,13 +2260,13 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         x = data->src_x[0 + offset];
                         y = data->src_y[0 + offset];
                         z = data->src_z[0 + offset];
-                        cell = &data->headers[0 + offset].unit_cell;
+                        cell = &data->headers[0 + offset].unitcell;
                         break;
                     case InterpolationMode::CubicSpline:
                         x = data->src_x[1 + offset];
                         y = data->src_y[1 + offset];
                         z = data->src_z[1 + offset];
-                        cell = &data->headers[1 + offset].unit_cell;
+                        cell = &data->headers[1 + offset].unitcell;
                         break;
                     default:
                         break;
@@ -2306,7 +2291,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             float* x = data->dst_x + range_beg;
             float* y = data->dst_y + range_beg;
             float* z = data->dst_z + range_beg;
-            md_util_pbc(x, y, z, 0, count, &data->unit_cell);
+            md_util_pbc(x, y, z, 0, count, &data->unitcell);
         });
         tasks[num_tasks++] = pbc_task;
     } 
@@ -2317,7 +2302,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int32_t* s_idx = md_index_range_beg(data->state->mold.mol.structure, i);
                 size_t   s_len = md_index_range_size(data->state->mold.mol.structure, i);
-                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unit_cell);
+                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unitcell);
             }
         });
         tasks[num_tasks++] = unwrap_task;
@@ -2499,7 +2484,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
     state->mold.mol_aabb_min = aabb_min;
     state->mold.mol_aabb_max = aabb_max;
-    mol.unit_cell = payload.unit_cell;
+    mol.unitcell = payload.unitcell;
 
 #if 0
     if (mol.unit_cell.flags) {
@@ -2591,7 +2576,7 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
     }
 
     size_t count = popcount ? popcount : mol.atom.count;
-    vec3_t com = md_util_com_compute(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, &mol.unit_cell);
+    vec3_t com = md_util_com_compute(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, &mol.unitcell);
     mat3_t C = mat3_covariance_matrix(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, com);
     mat3_eigen_t eigen = mat3_eigen(C);
     mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
@@ -2631,7 +2616,7 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
         }
     }
 
-    float max_cell_ext = vec3_reduce_max(mat3_diag(data->mold.mol.unit_cell.basis));
+    float max_cell_ext = vec3_reduce_max(md_unitcell_diag_vec3(&data->mold.mol.unitcell));
     float max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
 
     data->view.camera.near_plane = 1.0f;
@@ -3042,7 +3027,7 @@ static void draw_main_menu(ApplicationState* data) {
 
                 if (do_pbc) {
                     md_molecule_t& mol = data->mold.mol;
-                    md_util_pbc(mol.atom.x, mol.atom.y, mol.atom.z, 0, mol.atom.count, &mol.unit_cell);
+                    md_util_pbc(mol.atom.x, mol.atom.y, mol.atom.z, 0, mol.atom.count, &mol.unitcell);
                     data->mold.dirty_buffers |= MolBit_DirtyPosition;
                 }
 
@@ -3052,7 +3037,7 @@ static void draw_main_menu(ApplicationState* data) {
                     for (size_t i = 0; i < num_structures; ++i) {
                         const int32_t* s_idx = md_index_range_beg(mol.structure, i);
                         const size_t   s_len = md_index_range_size(mol.structure, i);
-                        md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unit_cell);
+                        md_util_unwrap(mol.atom.x, mol.atom.y, mol.atom.z, s_idx, s_len, &mol.unitcell);
                     }
                     data->mold.dirty_buffers |= MolBit_DirtyPosition;
                 }
@@ -3073,7 +3058,7 @@ static void draw_main_menu(ApplicationState* data) {
                         } else {
                             MD_LOG_DEBUG("RECALCULATING BONDS");
                             md_bond_data_clear(&data->mold.mol.bond);
-                            md_util_covalent_bonds_compute_exp(&data->mold.mol.bond, x, y, z, mol.atom.element, mol.atom.count, nullptr, &frame_header.unit_cell, frame_alloc);
+                            md_util_covalent_bonds_compute_exp(&data->mold.mol.bond, x, y, z, mol.atom.element, mol.atom.count, nullptr, &frame_header.unitcell, frame_alloc);
                             data->mold.dirty_buffers |= MolBit_DirtyBonds;
                             md_vm_arena_temp_end(temp_pos);
                         }
@@ -7499,7 +7484,7 @@ static void update_md_buffers(ApplicationState* data) {
     if (mol.atom.count == 0) return;
 
     if (data->mold.dirty_buffers & MolBit_DirtyPosition) {
-        const vec3_t pbc_ext = data->mold.mol.unit_cell.basis * vec3_t{1,1,1};
+        const vec3_t pbc_ext = md_unitcell_diag_vec3(&data->mold.mol.unitcell);
         md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         if (!(data->mold.dirty_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
@@ -7553,7 +7538,7 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
-        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_bond_pair_t));
+        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_atom_pair_t));
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
@@ -7585,7 +7570,7 @@ static void free_trajectory_data(ApplicationState* data) {
     }
     data->files.trajectory[0] = '\0';
     
-    data->mold.mol.unit_cell = {};
+    data->mold.mol.unitcell = {};
     md_array_free(data->timeline.x_values,  persistent_alloc);
     md_array_free(data->display_properties, persistent_alloc);
 
@@ -7618,7 +7603,7 @@ static void init_trajectory_data(ApplicationState* data) {
 
         md_trajectory_frame_header_t frame_header;
         md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, data->mold.mol.atom.x, data->mold.mol.atom.y, data->mold.mol.atom.z);
-        data->mold.mol.unit_cell = frame_header.unit_cell;
+        data->mold.mol.unitcell = frame_header.unitcell;
 
         if (data->mold.mol.protein_backbone.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.mol.protein_backbone.count;
@@ -8856,7 +8841,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                                 single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
                                 md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
                             } else {
-                                md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                                md_atom_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
@@ -8868,7 +8853,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                                 single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
                                 md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
                             } else {
-                                md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                                md_atom_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
@@ -8891,7 +8876,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                     md_bitfield_set_bit(&data->selection.highlight_mask, data->picking.idx);
                 }
                 else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.mol.bond.count) {
-                    md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                    md_atom_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
                     md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
                     md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
                 }
@@ -8984,9 +8969,9 @@ static void fill_gbuffer(ApplicationState* data) {
     // Immediate mode graphics
     const mat4_t model_view_mat = data->view.param.matrix.curr.view;
 
-    if (data->simulation_box.enabled && data->mold.mol.unit_cell.flags != 0) {
+    if (data->simulation_box.enabled && md_unitcell_flags(&data->mold.mol.unitcell) != MD_UNITCELL_NONE) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-        const mat4_t basis_model_mat = mat4_from_mat3(data->mold.mol.unit_cell.basis);
+        const mat4_t basis_model_mat = mat4_from_mat3(md_unitcell_basis_mat3(&data->mold.mol.unitcell));
         immediate::set_model_view_matrix(model_view_mat);
         immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
         immediate::draw_box_wireframe({0,0,0}, {1,1,1}, basis_model_mat, convert_color(data->simulation_box.color));
