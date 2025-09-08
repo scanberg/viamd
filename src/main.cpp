@@ -2065,6 +2065,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     ASSERT(state);
     auto& mol = state->mold.mol;
     const auto& traj = state->mold.traj;
+    static int64_t curr_nearest_frame = -1;
 
     if (!mol.atom.count || !md_trajectory_num_frames(traj)) return;
 
@@ -2075,14 +2076,15 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     // Scaling factor for cubic spline
     const int64_t frame = (int64_t)time;
     const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
+    const bool nearest_frame_changed = (curr_nearest_frame != nearest_frame);
 
-    static int64_t curr_nearest_frame = -1;
+    curr_nearest_frame = nearest_frame;
+
     if (state->animation.interpolation == InterpolationMode::Nearest) {
-        if (curr_nearest_frame == nearest_frame) {
+        if (!nearest_frame_changed) {
             return;
         }
     }
-    curr_nearest_frame = nearest_frame;
 
     const int64_t frames[4] = {
         MAX(0LL, frame - 1),
@@ -2256,50 +2258,77 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             break;
     }
 
-    if (state->operations.recalc_bonds) {
+    if (state->operations.recalc_bonds && nearest_frame_changed) {
         if (!task_system::task_is_running(state->tasks.evaluate_full) && !task_system::task_is_running(state->tasks.evaluate_filt)) {
             // We cannot recalculate bonds while the full or filtered evaluation is running
             // because it would overwrite the bond data while we are reading it
+            task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
+                const auto& mol = data->state->mold.mol;
+                const float* x = mol.atom.x;
+                const float* y = mol.atom.y;
+                const float* z = mol.atom.z;
+                const md_unit_cell_t* cell = &mol.unit_cell;
+                const int offset = data->t < 0.5 ? 0 : 1;
 
-            static int64_t cur_nearest_frame = -1;
-            if (cur_nearest_frame != payload.nearest_frame) {
-                cur_nearest_frame = payload.nearest_frame;
-                task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
-                    const auto& mol = data->state->mold.mol;
-                    const float* x = mol.atom.x;
-                    const float* y = mol.atom.y;
-                    const float* z = mol.atom.z;
-                    const md_unit_cell_t* cell = &mol.unit_cell;
-                    int offset = data->t < 0.5 ? 0 : 1;
+                switch (data->mode) {
+                case InterpolationMode::Nearest: break;
+                case InterpolationMode::Linear:
+                    x = data->src_x[0 + offset];
+                    y = data->src_y[0 + offset];
+                    z = data->src_z[0 + offset];
+                    cell = &data->headers[0 + offset].unit_cell;
+                    break;
+                case InterpolationMode::CubicSpline:
+                    x = data->src_x[1 + offset];
+                    y = data->src_y[1 + offset];
+                    z = data->src_z[1 + offset];
+                    cell = &data->headers[1 + offset].unit_cell;
+                    break;
+                default:
+                    break;
+                };
 
-                    switch (data->mode) {
-                    case InterpolationMode::Nearest: break;
-                    case InterpolationMode::Linear:
-                        x = data->src_x[0 + offset];
-                        y = data->src_y[0 + offset];
-                        z = data->src_z[0 + offset];
-                        cell = &data->headers[0 + offset].unit_cell;
-                        break;
-                    case InterpolationMode::CubicSpline:
-                        x = data->src_x[1 + offset];
-                        y = data->src_y[1 + offset];
-                        z = data->src_z[1 + offset];
-                        cell = &data->headers[1 + offset].unit_cell;
-                        break;
-                    default:
-                        break;
-                    };
-
-                    //md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-                    //md_bond_data_t* bond  = (md_bond_data_t*)md_arena_allocator_push_zero(arena, sizeof(md_bond_data_t));
-                    md_bond_data_t* bonds = &data->state->mold.mol.bond; 
-                    md_bond_data_clear(bonds);
-                    md_util_covalent_bonds_compute_exp(bonds, x, y, z, mol.atom.element, mol.atom.count, nullptr, cell, data->state->mold.mol_alloc);
-                    data->state->mold.dirty_buffers |= MolBit_DirtyBonds;
-                    });
-                tasks[num_tasks++] = recalc_bond_task;
-            }
+                //md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+                //md_bond_data_t* bond  = (md_bond_data_t*)md_arena_allocator_push_zero(arena, sizeof(md_bond_data_t));
+                md_bond_data_t* bonds = &data->state->mold.mol.bond; 
+                md_bond_data_clear(bonds);
+                md_util_covalent_bonds_compute_exp(bonds, x, y, z, mol.atom.element, mol.atom.count, nullptr, cell, data->state->mold.mol_alloc);
+                data->state->mold.dirty_buffers |= MolBit_DirtyBonds;
+                });
+            tasks[num_tasks++] = recalc_bond_task;
         }
+    }
+
+    if (true && nearest_frame_changed) {
+        task_system::ID hbond_task = task_system::create_pool_task(STR_LIT("## Identify Hydrogen Bonds"), [data = &payload]() {
+            auto& mol = data->state->mold.mol;
+            const float* x = mol.atom.x;
+            const float* y = mol.atom.y;
+            const float* z = mol.atom.z;
+            const md_unit_cell_t* cell = &mol.unit_cell;
+            const int offset = data->t < 0.5 ? 0 : 1;
+
+            switch (data->mode) {
+            case InterpolationMode::Nearest: break;
+            case InterpolationMode::Linear:
+                x = data->src_x[0 + offset];
+                y = data->src_y[0 + offset];
+                z = data->src_z[0 + offset];
+                cell = &data->headers[0 + offset].unit_cell;
+                break;
+            case InterpolationMode::CubicSpline:
+                x = data->src_x[1 + offset];
+                y = data->src_y[1 + offset];
+                z = data->src_z[1 + offset];
+                cell = &data->headers[1 + offset].unit_cell;
+                break;
+            default:
+                break;
+            };
+
+            md_util_hydrogen_bond_identify(&mol.hydrogen_bond, x, y, z, cell);
+        });
+        tasks[num_tasks++] = hbond_task;
     }
 
     if (state->operations.apply_pbc) {
@@ -3400,12 +3429,11 @@ static void export_xyz(md_file_o* file, str_t comment, const float* atom_x, cons
     }
 }
 
-enum FilterOptions {
-    ActiveSelection,
-    Representation,
-    TextFilter,
-
-    Count,
+enum FilterOption {
+    FilterOption_ActiveSelection,
+    FilterOption_Representation,
+    FilterOption_TextFilter,
+    FilterOption_Count,
 };
 
 static const char* filter_options_str[] = {
@@ -3436,8 +3464,8 @@ static void draw_structure_export_window(ApplicationState* data) {
 
         ImGui::Checkbox("Use subset", &state.use_filter);
         if (state.use_filter) {
-            ImGui::Combo("Subset", &state.filter_option_idx, filter_options_str, FilterOptions::Count);
-            if (state.filter_option_idx == FilterOptions::TextFilter) {
+            ImGui::Combo("Subset", &state.filter_option_idx, filter_options_str, FilterOption_Count);
+            if (state.filter_option_idx == FilterOption_TextFilter) {
                 ImGui::InputText("##filter", state.filter, sizeof(state.filter));
             }
         }
@@ -3474,9 +3502,9 @@ static void draw_structure_export_window(ApplicationState* data) {
                 if (data->mold.traj) {
 
                     size_t num_atoms = data->mold.mol.atom.count;
-                    x = md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
-                    y = md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
-                    z = md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
+                    x = (float*)md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
+                    y = (float*)md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
+                    z = (float*)md_vm_arena_push_array(data->allocator.frame, float, num_atoms);
 
                     int64_t num_frames = md_trajectory_num_frames(data->mold.traj);
                     int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, num_frames - 1);
@@ -3487,10 +3515,10 @@ static void draw_structure_export_window(ApplicationState* data) {
 
                 if (state.use_filter) {
                     switch(state.filter_option_idx) {
-                    case FilterOptions::ActiveSelection:
+                    case FilterOption_ActiveSelection:
                         bf = &data->selection.selection_mask;
                         break;
-                    case FilterOptions::Representation:
+                    case FilterOption_Representation:
                         break;
                     }
                 }
@@ -6821,6 +6849,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         glViewport(0, 0, gbuf.width, gbuf.height);
         glScissor(0, 0, gbuf.width, gbuf.height);
 
+        
         if (data->density_volume.show_bounding_box) {
             glEnable(GL_DEPTH_TEST);
             glDepthMask(GL_TRUE);
@@ -6831,8 +6860,8 @@ static void draw_density_volume_window(ApplicationState* data) {
                 immediate::set_model_view_matrix(mat4_mul(view_mat, data->density_volume.model_mat));
                 immediate::set_proj_matrix(proj_mat);
 
-                uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
-                uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
+                const uint32_t box_color  = convert_color(data->density_volume.bounding_box_color);
+                const uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
                 immediate::draw_box_wireframe({0,0,0}, {1,1,1}, box_color);
                 immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
 
@@ -7691,7 +7720,7 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
-        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_bond_pair_t));
+        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_atom_pair_t));
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
@@ -8994,7 +9023,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                                 single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
                                 md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
                             } else {
-                                md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                                md_atom_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
@@ -9006,7 +9035,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                                 single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
                                 md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
                             } else {
-                                md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                                md_atom_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
@@ -9029,7 +9058,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                     md_bitfield_set_bit(&data->selection.highlight_mask, data->picking.idx);
                 }
                 else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.mol.bond.count) {
-                    md_bond_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
+                    md_atom_pair_t pair = data->mold.mol.bond.pairs[data->selection.bond_idx.hovered];
                     md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
                     md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
                 }
@@ -9278,7 +9307,7 @@ static void fill_gbuffer(ApplicationState* data) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, data);
     POP_GPU_SECTION()
 
-    PUSH_GPU_SECTION("Draw Visualization Geometry")
+    PUSH_GPU_SECTION("Draw Immediate No Depth")
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
@@ -9325,20 +9354,34 @@ static void fill_gbuffer(ApplicationState* data) {
     
     immediate::render();
 
-    // This operation is split in two as this portion requires DEPTH TEST
+    POP_GPU_SECTION()
+
+    PUSH_GPU_SECTION("Draw Immediate With Depth")
+    immediate::set_model_view_matrix(model_view_mat);
+    immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
+    glEnable(GL_DEPTH_TEST);
+
     if (model_matrices) {
-        immediate::set_model_view_matrix(model_view_mat);
-        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
-    
-        glEnable(GL_DEPTH_TEST);
-    
         const vec3_t box_ext = vec3_set1(vis.sdf.extent);
         for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
             immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], data->density_volume.bounding_box_color);
         }
-
-        immediate::render();
     }
+
+    if (data->mold.mol.hydrogen_bond.num_bonds > 0) {
+        const uint32_t hb_color = convert_color(vec4_set(0.8f, 0.8f, 1.0f, 0.9f));
+
+        for (size_t i = 0; i < data->mold.mol.hydrogen_bond.num_bonds; ++i) {
+            const md_atom_pair_t pair = data->mold.mol.hydrogen_bond.bonds[i];
+            const vec3_t p0 = vec3_set(data->mold.mol.atom.x[pair.idx[0]], data->mold.mol.atom.y[pair.idx[0]], data->mold.mol.atom.z[pair.idx[0]]);
+            const vec3_t p1 = vec3_set(data->mold.mol.atom.x[pair.idx[1]], data->mold.mol.atom.y[pair.idx[1]], data->mold.mol.atom.z[pair.idx[1]]);
+            vec3_t d = vec3_sub(p1, p0);
+            md_util_min_image_vec3(&d, 1, &data->mold.mol.unit_cell);
+            immediate::draw_line(p0, p0 + d, hb_color);
+        }
+    }
+
+    immediate::render();
 
     glEnable(GL_CULL_FACE);
     POP_GPU_SECTION()

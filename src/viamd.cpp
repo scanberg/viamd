@@ -81,7 +81,7 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
     else if (picking_idx >= 0x80000000) {
         int bond_idx = picking_idx & 0x7FFFFFFF;
         if (0 <= bond_idx && bond_idx < (int)mol.bond.count) {
-            md_bond_pair_t b = mol.bond.pairs[bond_idx];
+            md_atom_pair_t b = mol.bond.pairs[bond_idx];
             char bond_type;
             switch (mol.bond.order[bond_idx] & MD_BOND_ORDER_MASK) {
             case 1: bond_type = '-'; break;
