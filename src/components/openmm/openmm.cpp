@@ -158,6 +158,39 @@ public:
         MD_LOG_INFO("Topology freed, OpenMM simulation stopped");
     }
 
+    void gradually_scale_charges(ApplicationState& state, double scale_factor) {
+#ifdef VIAMD_ENABLE_OPENMM
+        if (!sim_context.system || !state.simulation.initialized) {
+            return;
+        }
+        
+        try {
+            // Find the NonbondedForce in the system
+            for (int i = 0; i < sim_context.system->getNumForces(); ++i) {
+                OpenMM::NonbondedForce* nbForce = dynamic_cast<OpenMM::NonbondedForce*>(&sim_context.system->getForce(i));
+                if (nbForce) {
+                    // Scale all charges
+                    for (int j = 0; j < nbForce->getNumParticles(); ++j) {
+                        double charge, sigma, epsilon;
+                        nbForce->getParticleParameters(j, charge, sigma, epsilon);
+                        
+                        // Apply the scaling
+                        charge *= scale_factor;
+                        nbForce->setParticleParameters(j, charge, sigma, epsilon);
+                    }
+                    
+                    // Update the context with new parameters
+                    nbForce->updateParametersInContext(*sim_context.context);
+                    MD_LOG_INFO("Scaled all charges by factor %.2f for improved stability", scale_factor);
+                    break;
+                }
+            }
+        } catch (const std::exception& e) {
+            MD_LOG_ERROR("Failed to scale charges: %s", e.what());
+        }
+#endif
+    }
+
 private:
     void setup_system(ApplicationState& state) {
 #ifdef VIAMD_ENABLE_OPENMM
@@ -324,9 +357,9 @@ private:
             double sigma = atom_params.sigma;
             double epsilon = atom_params.epsilon;
             
-            // For initial stability, reduce charges by factor of 0.5
-            // This prevents electrostatic explosions while still having realistic interactions
-            charge *= 0.5;
+            // For initial stability, reduce charges by factor of 0.2
+            // This is more conservative than 0.5 and prevents electrostatic explosions
+            charge *= 0.2;
             
             nonbondedForce->addParticle(charge, sigma, epsilon);
             
@@ -338,10 +371,51 @@ private:
         nonbondedForce->setCutoffDistance(1.0); // nm - standard cutoff for non-periodic
         
         sim_context.system->addForce(nonbondedForce);
-        MD_LOG_INFO("Added non-bonded forces with AMBER parameters");
+        MD_LOG_INFO("Added non-bonded forces with AMBER parameters (charges scaled by 0.2 for stability)");
         
-        MD_LOG_INFO("AMBER force field setup complete: %zu atoms, %zu bonds, %zu angles", 
-                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count);
+        // Step 5: Add hydrogen bond constraints for stability
+        // This allows larger timesteps and prevents high-frequency H vibrations
+        size_t constraint_count = 0;
+        
+        for (size_t i = 0; i < state.mold.mol.bond.count; ++i) {
+            const auto& bond = state.mold.mol.bond.pairs[i];
+            uint32_t atom1 = bond.idx[0];
+            uint32_t atom2 = bond.idx[1];
+            
+            // Check if this bond involves hydrogen
+            bool atom1_is_H = (amber_types[atom1][0] == 'H');
+            bool atom2_is_H = (amber_types[atom2][0] == 'H');
+            
+            if (atom1_is_H || atom2_is_H) {
+                // Calculate bond length for constraint
+                double dx = state.mold.mol.atom.x[atom1] - state.mold.mol.atom.x[atom2];
+                double dy = state.mold.mol.atom.y[atom1] - state.mold.mol.atom.y[atom2];
+                double dz = state.mold.mol.atom.z[atom1] - state.mold.mol.atom.z[atom2];
+                double bond_length = sqrt(dx*dx + dy*dy + dz*dz) * 0.1; // Convert to nm
+                
+                // Use reasonable constraint length based on AMBER parameters
+                AmberBondType bond_params = get_amber_bond_params(amber_types[atom1], amber_types[atom2]);
+                double constraint_length = bond_params.r0;
+                
+                // Ensure reasonable constraint length
+                if (bond_length > 0.05 && bond_length < 0.25) {
+                    constraint_length = bond_length;
+                }
+                
+                sim_context.system->addConstraint(atom1, atom2, constraint_length);
+                constraint_count++;
+                
+                MD_LOG_DEBUG("H-bond constraint %u-%u: %s-%s, length=%.4f nm", 
+                           atom1, atom2, amber_types[atom1].c_str(), amber_types[atom2].c_str(), constraint_length);
+            }
+        }
+        
+        if (constraint_count > 0) {
+            MD_LOG_INFO("Added %zu hydrogen bond constraints for stability", constraint_count);
+        }
+        
+        MD_LOG_INFO("AMBER force field setup complete: %zu atoms, %zu bonds, %zu angles, %zu constraints", 
+                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count, constraint_count);
     }
 
     void set_positions(ApplicationState& state) {
@@ -366,11 +440,15 @@ private:
         }
         
         try {
-            MD_LOG_INFO("Performing energy minimization to stabilize system...");
+            MD_LOG_INFO("Performing thorough energy minimization to stabilize AMBER 14 system...");
             
-            // Perform local energy minimization to relax bad contacts
-            // This is crucial to prevent simulation explosion
-            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-4, 1000);
+            // Step 1: Initial coarse minimization with higher tolerance
+            // This quickly removes the worst contacts
+            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-2, 500);
+            
+            // Step 2: Fine minimization with stricter tolerance  
+            // This ensures the system is well-relaxed before dynamics
+            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-6, 2000);
             
             // Get minimized positions and update VIAMD coordinates
             OpenMM::State minimizedState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy);
@@ -389,6 +467,11 @@ private:
             double energy = minimizedState.getPotentialEnergy();
             MD_LOG_INFO("Energy minimization completed. Final energy: %.3f kJ/mol", energy);
             
+            // Initialize velocities from Maxwell-Boltzmann distribution
+            // This is crucial for stable dynamics
+            sim_context.context->setVelocitiesToTemperature(state.simulation.temperature);
+            MD_LOG_INFO("Velocities initialized to %.1f K temperature", state.simulation.temperature);
+            
         } catch (const std::exception& e) {
             MD_LOG_ERROR("Energy minimization failed: %s. Proceeding without minimization.", e.what());
         }
@@ -406,12 +489,14 @@ private:
             sim_context.integrator->step(state.simulation.steps_per_update);
             
             // Get updated positions and check for explosion
-            OpenMM::State openmmState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy);
+            OpenMM::State openmmState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy | OpenMM::State::Forces);
             const std::vector<OpenMM::Vec3>& positions = openmmState.getPositions();
+            const std::vector<OpenMM::Vec3>& forces = openmmState.getForces();
             
-            // Check for simulation explosion (coordinates too large)
+            // Enhanced stability monitoring for AMBER 14
             bool explosion_detected = false;
             double max_coord = 0.0;
+            double max_force = 0.0;
             
             for (size_t i = 0; i < positions.size(); ++i) {
                 double x = positions[i][0] * 10.0; // Convert to Angstroms
@@ -421,23 +506,41 @@ private:
                 double coord_magnitude = sqrt(x*x + y*y + z*z);
                 max_coord = std::max(max_coord, coord_magnitude);
                 
-                // Check for explosion: coordinates > 100 Angstroms from origin
-                if (coord_magnitude > 100.0) {
+                // Check for explosion: coordinates > 50 Angstroms from origin (reduced threshold)
+                if (coord_magnitude > 50.0) {
                     explosion_detected = true;
                     break;
+                }
+                
+                // Check force magnitude for early explosion detection
+                if (i < forces.size()) {
+                    double fx = forces[i][0];
+                    double fy = forces[i][1]; 
+                    double fz = forces[i][2];
+                    double force_magnitude = sqrt(fx*fx + fy*fy + fz*fz);
+                    max_force = std::max(max_force, force_magnitude);
+                    
+                    // Check for excessive forces (> 10000 kJ/mol/nm)
+                    if (force_magnitude > 10000.0) {
+                        explosion_detected = true;
+                        MD_LOG_WARN("Excessive force detected on atom %zu: %.1f kJ/mol/nm", i, force_magnitude);
+                        break;
+                    }
                 }
             }
             
             // Check for NaN or infinite values in energy
             double energy = openmmState.getPotentialEnergy();
-            if (std::isnan(energy) || std::isinf(energy)) {
+            if (std::isnan(energy) || std::isinf(energy) || energy > 1e6) {
                 explosion_detected = true;
             }
             
             if (explosion_detected) {
-                MD_LOG_ERROR("Simulation explosion detected! Max coordinate: %.3f Å, Energy: %.3f kJ/mol", 
-                            max_coord, energy);
+                MD_LOG_ERROR("AMBER 14 simulation explosion detected!");
+                MD_LOG_ERROR("Max coordinate: %.3f Å, Max force: %.1f kJ/mol/nm, Energy: %.3f kJ/mol", 
+                            max_coord, max_force, energy);
                 MD_LOG_ERROR("Stopping simulation to prevent further instability");
+                MD_LOG_INFO("Try: 1) Load a better minimized structure, 2) Reduce timestep, 3) Lower temperature");
                 state.simulation.running = false;
                 state.simulation.paused = false;
                 return;
@@ -502,10 +605,10 @@ private:
             }
             
             float timestep = static_cast<float>(state.simulation.timestep);
-            if (ImGui::SliderFloat("Timestep (ps)", &timestep, 0.0005f, 0.002f)) {
-                // Much smaller timestep range to prevent instability
-                // Reduced max from 0.005 to 0.002 ps
-                timestep = std::max(0.0005f, std::min(0.002f, timestep));
+            if (ImGui::SliderFloat("Timestep (ps)", &timestep, 0.0001f, 0.001f)) {
+                // Conservative timestep range for AMBER 14 stability
+                // Reduced max from 0.002 to 0.001 ps for better stability
+                timestep = std::max(0.0001f, std::min(0.001f, timestep));
                 state.simulation.timestep = timestep;
             }
             
@@ -561,6 +664,37 @@ private:
             ImGui::SameLine();
             if (ImGui::Button("Reset")) {
                 reset_simulation(state);
+            }
+            
+            // Advanced stability controls
+            if (ImGui::CollapsingHeader("Stability Controls")) {
+                ImGui::Text("AMBER 14 stability enhancement tools:");
+                
+                if (ImGui::Button("Scale Charges +20%")) {
+                    gradually_scale_charges(state, 1.2);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Scale Charges -20%")) {
+                    gradually_scale_charges(state, 0.8);
+                }
+                
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Gradually adjust electrostatic interactions for stability.\n"
+                                    "Reduce charges if simulation is unstable.\n"
+                                    "Increase charges gradually once system is stable.");
+                }
+                
+                if (ImGui::Button("Re-minimize Energy")) {
+                    if (state.simulation.initialized) {
+                        bool was_running = state.simulation.running;
+                        state.simulation.running = false;
+                        minimize_energy(state);
+                        state.simulation.running = was_running;
+                    }
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Perform additional energy minimization if system becomes unstable");
+                }
             }
         }
 

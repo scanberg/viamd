@@ -810,7 +810,7 @@ struct ApplicationState {
         bool show_window = false;
         
         // Simulation parameters
-        double timestep = 0.001; // ps - reduced from 0.002 for stability
+        double timestep = 0.0005; // ps - conservative timestep for AMBER 14 stability
         double temperature = 300.0; // K
         double friction = 1.0; // ps^-1
         int steps_per_update = 10;
