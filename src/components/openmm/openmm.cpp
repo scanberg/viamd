@@ -158,6 +158,39 @@ public:
         MD_LOG_INFO("Topology freed, OpenMM simulation stopped");
     }
 
+    void gradually_scale_charges(ApplicationState& state, double scale_factor) {
+#ifdef VIAMD_ENABLE_OPENMM
+        if (!sim_context.system || !state.simulation.initialized) {
+            return;
+        }
+        
+        try {
+            // Find the NonbondedForce in the system
+            for (int i = 0; i < sim_context.system->getNumForces(); ++i) {
+                OpenMM::NonbondedForce* nbForce = dynamic_cast<OpenMM::NonbondedForce*>(&sim_context.system->getForce(i));
+                if (nbForce) {
+                    // Scale all charges
+                    for (int j = 0; j < nbForce->getNumParticles(); ++j) {
+                        double charge, sigma, epsilon;
+                        nbForce->getParticleParameters(j, charge, sigma, epsilon);
+                        
+                        // Apply the scaling
+                        charge *= scale_factor;
+                        nbForce->setParticleParameters(j, charge, sigma, epsilon);
+                    }
+                    
+                    // Update the context with new parameters
+                    nbForce->updateParametersInContext(*sim_context.context);
+                    MD_LOG_INFO("Scaled all charges by factor %.2f for improved stability", scale_factor);
+                    break;
+                }
+            }
+        } catch (const std::exception& e) {
+            MD_LOG_ERROR("Failed to scale charges: %s", e.what());
+        }
+#endif
+    }
+
 private:
     void setup_system(ApplicationState& state) {
 #ifdef VIAMD_ENABLE_OPENMM
@@ -324,9 +357,9 @@ private:
             double sigma = atom_params.sigma;
             double epsilon = atom_params.epsilon;
             
-            // For initial stability, reduce charges by factor of 0.5
-            // This prevents electrostatic explosions while still having realistic interactions
-            charge *= 0.5;
+            // For initial stability, reduce charges by factor of 0.2
+            // This is more conservative than 0.5 and prevents electrostatic explosions
+            charge *= 0.2;
             
             nonbondedForce->addParticle(charge, sigma, epsilon);
             
@@ -338,10 +371,51 @@ private:
         nonbondedForce->setCutoffDistance(1.0); // nm - standard cutoff for non-periodic
         
         sim_context.system->addForce(nonbondedForce);
-        MD_LOG_INFO("Added non-bonded forces with AMBER parameters");
+        MD_LOG_INFO("Added non-bonded forces with AMBER parameters (charges scaled by 0.2 for stability)");
         
-        MD_LOG_INFO("AMBER force field setup complete: %zu atoms, %zu bonds, %zu angles", 
-                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count);
+        // Step 5: Add hydrogen bond constraints for stability
+        // This allows larger timesteps and prevents high-frequency H vibrations
+        size_t constraint_count = 0;
+        
+        for (size_t i = 0; i < state.mold.mol.bond.count; ++i) {
+            const auto& bond = state.mold.mol.bond.pairs[i];
+            uint32_t atom1 = bond.idx[0];
+            uint32_t atom2 = bond.idx[1];
+            
+            // Check if this bond involves hydrogen
+            bool atom1_is_H = (amber_types[atom1][0] == 'H');
+            bool atom2_is_H = (amber_types[atom2][0] == 'H');
+            
+            if (atom1_is_H || atom2_is_H) {
+                // Calculate bond length for constraint
+                double dx = state.mold.mol.atom.x[atom1] - state.mold.mol.atom.x[atom2];
+                double dy = state.mold.mol.atom.y[atom1] - state.mold.mol.atom.y[atom2];
+                double dz = state.mold.mol.atom.z[atom1] - state.mold.mol.atom.z[atom2];
+                double bond_length = sqrt(dx*dx + dy*dy + dz*dz) * 0.1; // Convert to nm
+                
+                // Use reasonable constraint length based on AMBER parameters
+                AmberBondType bond_params = get_amber_bond_params(amber_types[atom1], amber_types[atom2]);
+                double constraint_length = bond_params.r0;
+                
+                // Ensure reasonable constraint length
+                if (bond_length > 0.05 && bond_length < 0.25) {
+                    constraint_length = bond_length;
+                }
+                
+                sim_context.system->addConstraint(atom1, atom2, constraint_length);
+                constraint_count++;
+                
+                MD_LOG_DEBUG("H-bond constraint %u-%u: %s-%s, length=%.4f nm", 
+                           atom1, atom2, amber_types[atom1].c_str(), amber_types[atom2].c_str(), constraint_length);
+            }
+        }
+        
+        if (constraint_count > 0) {
+            MD_LOG_INFO("Added %zu hydrogen bond constraints for stability", constraint_count);
+        }
+        
+        MD_LOG_INFO("AMBER force field setup complete: %zu atoms, %zu bonds, %zu angles, %zu constraints", 
+                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count, constraint_count);
     }
 
     void set_positions(ApplicationState& state) {
@@ -366,11 +440,15 @@ private:
         }
         
         try {
-            MD_LOG_INFO("Performing energy minimization to stabilize system...");
+            MD_LOG_INFO("Performing thorough energy minimization to stabilize AMBER 14 system...");
             
-            // Perform local energy minimization to relax bad contacts
-            // This is crucial to prevent simulation explosion
-            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-4, 1000);
+            // Step 1: Initial coarse minimization with higher tolerance
+            // This quickly removes the worst contacts
+            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-2, 500);
+            
+            // Step 2: Fine minimization with stricter tolerance  
+            // This ensures the system is well-relaxed before dynamics
+            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-6, 2000);
             
             // Get minimized positions and update VIAMD coordinates
             OpenMM::State minimizedState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy);
@@ -389,6 +467,11 @@ private:
             double energy = minimizedState.getPotentialEnergy();
             MD_LOG_INFO("Energy minimization completed. Final energy: %.3f kJ/mol", energy);
             
+            // Initialize velocities from Maxwell-Boltzmann distribution
+            // This is crucial for stable dynamics
+            sim_context.context->setVelocitiesToTemperature(state.simulation.temperature);
+            MD_LOG_INFO("Velocities initialized to %.1f K temperature", state.simulation.temperature);
+            
         } catch (const std::exception& e) {
             MD_LOG_ERROR("Energy minimization failed: %s. Proceeding without minimization.", e.what());
         }
@@ -406,12 +489,14 @@ private:
             sim_context.integrator->step(state.simulation.steps_per_update);
             
             // Get updated positions and check for explosion
-            OpenMM::State openmmState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy);
+            OpenMM::State openmmState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy | OpenMM::State::Forces);
             const std::vector<OpenMM::Vec3>& positions = openmmState.getPositions();
+            const std::vector<OpenMM::Vec3>& forces = openmmState.getForces();
             
-            // Check for simulation explosion (coordinates too large)
+            // Enhanced stability monitoring for AMBER 14
             bool explosion_detected = false;
             double max_coord = 0.0;
+            double max_force = 0.0;
             
             for (size_t i = 0; i < positions.size(); ++i) {
                 double x = positions[i][0] * 10.0; // Convert to Angstroms
@@ -421,23 +506,41 @@ private:
                 double coord_magnitude = sqrt(x*x + y*y + z*z);
                 max_coord = std::max(max_coord, coord_magnitude);
                 
-                // Check for explosion: coordinates > 100 Angstroms from origin
-                if (coord_magnitude > 100.0) {
+                // Check for explosion: coordinates > 50 Angstroms from origin (reduced threshold)
+                if (coord_magnitude > 50.0) {
                     explosion_detected = true;
                     break;
+                }
+                
+                // Check force magnitude for early explosion detection
+                if (i < forces.size()) {
+                    double fx = forces[i][0];
+                    double fy = forces[i][1]; 
+                    double fz = forces[i][2];
+                    double force_magnitude = sqrt(fx*fx + fy*fy + fz*fz);
+                    max_force = std::max(max_force, force_magnitude);
+                    
+                    // Check for excessive forces (> 10000 kJ/mol/nm)
+                    if (force_magnitude > 10000.0) {
+                        explosion_detected = true;
+                        MD_LOG_WARN("Excessive force detected on atom %zu: %.1f kJ/mol/nm", i, force_magnitude);
+                        break;
+                    }
                 }
             }
             
             // Check for NaN or infinite values in energy
             double energy = openmmState.getPotentialEnergy();
-            if (std::isnan(energy) || std::isinf(energy)) {
+            if (std::isnan(energy) || std::isinf(energy) || energy > 1e6) {
                 explosion_detected = true;
             }
             
             if (explosion_detected) {
-                MD_LOG_ERROR("Simulation explosion detected! Max coordinate: %.3f Å, Energy: %.3f kJ/mol", 
-                            max_coord, energy);
+                MD_LOG_ERROR("AMBER 14 simulation explosion detected!");
+                MD_LOG_ERROR("Max coordinate: %.3f Å, Max force: %.1f kJ/mol/nm, Energy: %.3f kJ/mol", 
+                            max_coord, max_force, energy);
                 MD_LOG_ERROR("Stopping simulation to prevent further instability");
+                MD_LOG_INFO("Try: 1) Load a better minimized structure, 2) Reduce timestep, 3) Lower temperature");
                 state.simulation.running = false;
                 state.simulation.paused = false;
                 return;
@@ -488,6 +591,10 @@ private:
         if (state.simulation.initialized) {
             ImGui::Text("Frame: %d", state.simulation.current_frame);
             ImGui::Text("Time: %.3f ps", state.simulation.simulation_time);
+            
+            // Show stability information
+            ImGui::Text("Stability: Charges scaled to %.1f%%, H-bonds constrained", 
+                       20.0);  // Initial 0.2 scaling = 20%
         }
 
         ImGui::Separator();
@@ -502,10 +609,10 @@ private:
             }
             
             float timestep = static_cast<float>(state.simulation.timestep);
-            if (ImGui::SliderFloat("Timestep (ps)", &timestep, 0.0005f, 0.002f)) {
-                // Much smaller timestep range to prevent instability
-                // Reduced max from 0.005 to 0.002 ps
-                timestep = std::max(0.0005f, std::min(0.002f, timestep));
+            if (ImGui::SliderFloat("Timestep (ps)", &timestep, 0.0001f, 0.001f)) {
+                // Conservative timestep range for AMBER 14 stability
+                // Reduced max from 0.002 to 0.001 ps for better stability
+                timestep = std::max(0.0001f, std::min(0.001f, timestep));
                 state.simulation.timestep = timestep;
             }
             
@@ -538,8 +645,20 @@ private:
         } else {
             if (!state.simulation.running) {
                 if (ImGui::Button("Start Simulation")) {
+                    // Safety checks before starting AMBER 14 simulation
+                    if (state.simulation.temperature > 500.0) {
+                        MD_LOG_WARN("Temperature %.1f K is very high for AMBER 14! Consider using lower temperature for stability.", 
+                                   state.simulation.temperature);
+                    }
+                    if (state.simulation.timestep > 0.001) {
+                        MD_LOG_WARN("Timestep %.4f ps is large for AMBER 14! Consider using smaller timestep for stability.", 
+                                   state.simulation.timestep);
+                    }
+                    
                     state.simulation.running = true;
                     state.simulation.paused = false;
+                    MD_LOG_INFO("Starting AMBER 14 simulation: T=%.1f K, dt=%.4f ps", 
+                               state.simulation.temperature, state.simulation.timestep);
                 }
             } else {
                 if (!state.simulation.paused) {
@@ -561,6 +680,37 @@ private:
             ImGui::SameLine();
             if (ImGui::Button("Reset")) {
                 reset_simulation(state);
+            }
+            
+            // Advanced stability controls
+            if (ImGui::CollapsingHeader("Stability Controls")) {
+                ImGui::Text("AMBER 14 stability enhancement tools:");
+                
+                if (ImGui::Button("Scale Charges +20%")) {
+                    gradually_scale_charges(state, 1.2);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Scale Charges -20%")) {
+                    gradually_scale_charges(state, 0.8);
+                }
+                
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Gradually adjust electrostatic interactions for stability.\n"
+                                    "Reduce charges if simulation is unstable.\n"
+                                    "Increase charges gradually once system is stable.");
+                }
+                
+                if (ImGui::Button("Re-minimize Energy")) {
+                    if (state.simulation.initialized) {
+                        bool was_running = state.simulation.running;
+                        state.simulation.running = false;
+                        minimize_energy(state);
+                        state.simulation.running = was_running;
+                    }
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Perform additional energy minimization if system becomes unstable");
+                }
             }
         }
 
@@ -691,29 +841,39 @@ private:
     }
 
     AmberAtomType get_amber_atom_params(const std::string& amber_type) {
-        // AMBER14 force field parameters (selected subset)
+        // Enhanced AMBER14 force field parameters for better stability
         static const std::map<std::string, AmberAtomType> amber_atom_types = {
             // Protein backbone
-            {"C",   {"C", 12.011, 0.339967, 0.359824, 0.5973}},    // Carbonyl carbon
+            {"C",   {"C", 12.011, 0.339967, 0.359824, 0.5973}},     // Carbonyl carbon
             {"CA",  {"CA", 12.011, 0.339967, 0.359824, 0.0337}},    // Alpha carbon  
             {"CB",  {"CB", 12.011, 0.339967, 0.359824, -0.0875}},   // Beta carbon
-            {"N",   {"N", 14.007, 0.325000, 0.711280, -0.4157}},   // Backbone nitrogen
-            {"O",   {"O", 15.999, 0.296000, 0.878640, -0.5679}},   // Carbonyl oxygen
-            {"H",   {"H", 1.008,  0.247135, 0.065270, 0.2719}},    // Backbone hydrogen
+            {"CT",  {"CT", 12.011, 0.339967, 0.4577, 0.0000}},      // Aliphatic carbon
+            {"N",   {"N", 14.007, 0.325000, 0.711280, -0.4157}},    // Backbone nitrogen
+            {"N3",  {"N3", 14.007, 0.325000, 0.711280, -0.3000}},   // Amino nitrogen
+            {"O",   {"O", 15.999, 0.296000, 0.878640, -0.5679}},    // Carbonyl oxygen
+            {"O2",  {"O2", 15.999, 0.296000, 0.878640, -0.8000}},   // Carboxyl oxygen
+            {"H",   {"H", 1.008,  0.247135, 0.065270, 0.2719}},     // Backbone hydrogen
             {"HA",  {"HA", 1.008,  0.264953, 0.065270, 0.0337}},    // Alpha hydrogen
             {"HB",  {"HB", 1.008,  0.264953, 0.065270, 0.0295}},    // Beta hydrogen
+            {"HC",  {"HC", 1.008,  0.264953, 0.065270, 0.0000}},    // Aliphatic hydrogen
             
-            // Common side chains
+            // Common side chains  
             {"OH",  {"OH", 15.999, 0.306647, 0.880314, -0.6546}},   // Hydroxyl oxygen
-            {"HO",  {"HO", 1.008,  0.000000, 0.000000, 0.4275}},    // Hydroxyl hydrogen
+            {"HO",  {"HO", 1.008,  0.100000, 0.046000, 0.4275}},    // Hydroxyl hydrogen (fixed parameters)
             {"SH",  {"SH", 32.065, 0.356359, 1.046000, -0.3119}},   // Sulfur
             {"HS",  {"HS", 1.008,  0.106908, 0.065270, 0.1933}},    // Sulfur hydrogen
             
-            // Generic fallbacks
+            // Aromatic carbons for better coverage
+            {"CW",  {"CW", 12.011, 0.339967, 0.359824, -0.0275}},   // Aromatic carbon
+            {"CC",  {"CC", 12.011, 0.339967, 0.359824, 0.0000}},    // Aromatic carbon
+            {"HP",  {"HP", 1.008,  0.247135, 0.065270, 0.1000}},    // Aromatic hydrogen
+            
+            // Generic fallbacks with improved parameters
             {"C*",  {"C*", 12.011, 0.339967, 0.359824, 0.0000}},    // Generic carbon
             {"N*",  {"N*", 14.007, 0.325000, 0.711280, 0.0000}},    // Generic nitrogen  
             {"O*",  {"O*", 15.999, 0.296000, 0.878640, 0.0000}},    // Generic oxygen
             {"H*",  {"H*", 1.008,  0.247135, 0.065270, 0.0000}},    // Generic hydrogen
+            {"S*",  {"S*", 32.065, 0.356359, 1.046000, 0.0000}},    // Generic sulfur
         };
         
         auto it = amber_atom_types.find(amber_type);
@@ -726,13 +886,15 @@ private:
         if (amber_type[0] == 'C') return amber_atom_types.at("C*");
         if (amber_type[0] == 'N') return amber_atom_types.at("N*");
         if (amber_type[0] == 'O') return amber_atom_types.at("O*");
+        if (amber_type[0] == 'S') return amber_atom_types.at("S*");
         
         return amber_atom_types.at("C*");  // Ultimate fallback
     }
 
     AmberBondType get_amber_bond_params(const std::string& type1, const std::string& type2) {
-        // AMBER bond parameters (kJ/mol/nm^2, nm)
+        // Enhanced AMBER bond parameters (kJ/mol/nm^2, nm) for better stability
         static const std::map<std::pair<std::string, std::string>, AmberBondType> amber_bond_types = {
+            // Protein backbone bonds
             {{"C", "O"},   {502080.0, 0.1229}},   // C=O bond
             {{"C", "N"},   {351456.0, 0.1335}},   // C-N amide bond  
             {{"C", "CA"},  {317984.0, 0.1522}},   // C-C bond
@@ -740,14 +902,28 @@ private:
             {{"CA", "HA"}, {307105.6, 0.1090}},   // C-H bond
             {{"CA", "CB"}, {317984.0, 0.1526}},   // CA-CB bond
             {{"N", "H"},   {363171.2, 0.1010}},   // N-H bond
-            {{"OH", "HO"},  {462750.4, 0.0974}},   // O-H bond
-            {{"SH", "HS"}, {274887.2, 0.1336}},   // S-H bond
             
-            // Generic fallback bonds
-            {{"C*", "C*"}, {317984.0, 0.1540}},   // Generic C-C
-            {{"C*", "H*"}, {307105.6, 0.1090}},   // Generic C-H
-            {{"N*", "H*"}, {363171.2, 0.1010}},   // Generic N-H
-            {{"O*", "H*"}, {462750.4, 0.0960}},   // Generic O-H
+            // Side chain bonds
+            {{"OH", "HO"}, {462750.4, 0.0974}},   // O-H bond
+            {{"SH", "HS"}, {274887.2, 0.1336}},   // S-H bond
+            {{"CT", "HC"}, {307105.6, 0.1090}},   // Aliphatic C-H
+            {{"CT", "CT"}, {317984.0, 0.1526}},   // Aliphatic C-C
+            {{"N3", "H"},  {363171.2, 0.1010}},   // Amino N-H
+            {{"O2", "C"},  {469870.4, 0.1250}},   // Carboxyl C-O
+            
+            // Aromatic bonds
+            {{"CW", "HP"}, {307105.6, 0.1080}},   // Aromatic C-H
+            {{"CC", "HP"}, {307105.6, 0.1080}},   // Aromatic C-H
+            {{"CW", "CW"}, {418400.0, 0.1371}},   // Aromatic C-C
+            {{"CC", "CC"}, {418400.0, 0.1371}},   // Aromatic C-C
+            
+            // Generic fallback bonds (more conservative force constants)
+            {{"C*", "C*"}, {250000.0, 0.1540}},   // Generic C-C (reduced force)
+            {{"C*", "H*"}, {284512.0, 0.1090}},   // Generic C-H (reduced force)
+            {{"N*", "H*"}, {320000.0, 0.1010}},   // Generic N-H (reduced force)
+            {{"O*", "H*"}, {400000.0, 0.0960}},   // Generic O-H (reduced force)
+            {{"S*", "H*"}, {250000.0, 0.1336}},   // Generic S-H
+            {{"S*", "C*"}, {200000.0, 0.1810}},   // Generic S-C
         };
         
         // Try direct lookup
@@ -781,13 +957,14 @@ private:
             return it->second;
         }
         
-        // Ultimate fallback
-        return {317984.0, 0.1540};  // Generic C-C bond
+        // Ultimate fallback (more conservative parameters)
+        return {250000.0, 0.1540};  // Conservative C-C bond parameters
     }
 
     AmberAngleType get_amber_angle_params(const std::string& type1, const std::string& type2, const std::string& type3) {
-        // AMBER angle parameters (kJ/mol/rad^2, radians)  
+        // Enhanced AMBER angle parameters (kJ/mol/rad^2, radians) for better stability
         static const std::map<std::tuple<std::string, std::string, std::string>, AmberAngleType> amber_angle_types = {
+            // Protein backbone angles
             {std::make_tuple("N", "CA", "C"),   {527.184, 1.9373}},   // 111.0 degrees
             {std::make_tuple("CA", "C", "O"),   {568.518, 2.0944}},   // 120.0 degrees
             {std::make_tuple("CA", "C", "N"),   {585.760, 2.0246}},   // 116.0 degrees
@@ -795,11 +972,25 @@ private:
             {std::make_tuple("H", "N", "CA"),   {418.400, 2.0595}},   // 118.0 degrees
             {std::make_tuple("HA", "CA", "N"),  {418.400, 1.9373}},   // 111.0 degrees
             {std::make_tuple("HA", "CA", "C"),  {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("CB", "CA", "N"),  {527.184, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("CB", "CA", "C"),  {527.184, 1.9373}},   // 111.0 degrees
             
-            // Generic fallback angles
-            {std::make_tuple("C*", "C*", "C*"), {527.184, 1.9373}},   // Generic C-C-C
-            {std::make_tuple("C*", "C*", "H*"), {418.400, 1.9373}},   // Generic C-C-H
-            {std::make_tuple("H*", "C*", "H*"), {276.144, 1.8762}},   // Generic H-C-H
+            // Side chain angles
+            {std::make_tuple("CA", "CB", "HC"), {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("HC", "CT", "HC"), {276.144, 1.8762}},   // 107.8 degrees (tetrahedral)
+            {std::make_tuple("CT", "CT", "HC"), {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("N3", "CT", "HC"), {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("H", "N3", "CT"),  {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("HO", "OH", "CT"), {460.240, 1.8849}},   // 107.8 degrees
+            {std::make_tuple("HS", "SH", "CT"), {368.192, 1.6232}},   // 93.0 degrees
+            
+            // More conservative generic fallback angles (reduced force constants)
+            {std::make_tuple("C*", "C*", "C*"), {400.000, 1.9373}},   // Generic C-C-C (reduced)
+            {std::make_tuple("C*", "C*", "H*"), {350.000, 1.9373}},   // Generic C-C-H (reduced)
+            {std::make_tuple("H*", "C*", "H*"), {250.000, 1.8762}},   // Generic H-C-H (reduced)
+            {std::make_tuple("N*", "C*", "C*"), {400.000, 1.9373}},   // Generic N-C-C
+            {std::make_tuple("O*", "C*", "C*"), {400.000, 1.9373}},   // Generic O-C-C
+            {std::make_tuple("S*", "C*", "C*"), {350.000, 1.9373}},   // Generic S-C-C
         };
         
         auto key = std::make_tuple(type1, type2, type3);
@@ -832,8 +1023,8 @@ private:
             return it->second;
         }
         
-        // Ultimate fallback
-        return {527.184, 1.9373};  // Generic tetrahedral angle
+        // Ultimate fallback (more conservative parameters)
+        return {400.000, 1.9373};  // Conservative tetrahedral angle
     }
 };
 
