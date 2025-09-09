@@ -802,6 +802,29 @@ struct ApplicationState {
         uint64_t ir_fingerprint = 0;
     } script;
 
+#ifdef VIAMD_ENABLE_OPENMM
+    struct {
+        bool initialized = false;
+        bool running = false;
+        bool paused = false;
+        bool show_window = false;
+        
+        // Simulation parameters
+        double timestep = 0.002; // ps
+        double temperature = 300.0; // K
+        double friction = 1.0; // ps^-1
+        int steps_per_update = 10;
+        
+        // Current simulation state
+        int current_frame = 0;
+        double simulation_time = 0.0; // ps
+        
+        // Performance metrics
+        double steps_per_second = 0.0;
+        double last_update_time = 0.0;
+    } simulation;
+#endif
+
     bool show_script_window = true;
     bool show_debug_window = false;
     bool show_property_export_window = false;

@@ -70,6 +70,24 @@ endif()
 
 find_package(OpenGL REQUIRED)
 
+# OPENMM OPTIONS
+option(VIAMD_ENABLE_OPENMM "Enable OpenMM molecular dynamics simulation" ON)
+
+if(VIAMD_ENABLE_OPENMM)
+    # Try to find OpenMM
+    find_library(OpenMM_LIBRARY NAMES OpenMM PATHS /usr/lib/x86_64-linux-gnu)
+    find_path(OpenMM_INCLUDE_DIR NAMES OpenMM.h PATHS /usr/include)
+    
+    if(OpenMM_LIBRARY AND OpenMM_INCLUDE_DIR)
+        set(VIAMD_OPENMM_FOUND TRUE)
+        message(STATUS "OpenMM found: ${OpenMM_LIBRARY}")
+    else()
+        message(WARNING "OpenMM not found, disabling OpenMM support")
+        set(VIAMD_ENABLE_OPENMM OFF)
+        set(VIAMD_OPENMM_FOUND FALSE)
+    endif()
+endif()
+
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
@@ -113,6 +131,10 @@ set(COMP_FILES
 
 if (VIAMD_ENABLE_VELOXCHEM)
     set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp)
+endif()
+
+if (VIAMD_ENABLE_OPENMM)
+    set(COMP_FILES ${COMP_FILES} src/components/openmm/openmm.cpp)
 endif()
 
 set(SHADER_FILES 
@@ -189,6 +211,10 @@ if (VIAMD_ENABLE_DEFAULT_DATASET)
     set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DATASET_DIR=\"datasets\")
 endif()
 
+if (VIAMD_ENABLE_OPENMM)
+    set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_ENABLE_OPENMM=1)
+endif()
+
 target_compile_definitions(viamd PRIVATE
     ${VIAMD_DEFINES}
     VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}
@@ -209,6 +235,7 @@ target_include_directories(viamd
         gen
         ext/gl3w
         ext/enkiTS/src
+        $<$<BOOL:${VIAMD_ENABLE_OPENMM}>:${OpenMM_INCLUDE_DIR}>
 )
 
 set_target_properties(viamd PROPERTIES
@@ -227,4 +254,5 @@ target_link_libraries(viamd
     atomic_queue
     imgui_notify
     ${VIAMD_STDLIBS}
+    $<$<BOOL:${VIAMD_ENABLE_OPENMM}>:${OpenMM_LIBRARY}>
 )

@@ -2821,6 +2821,9 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
             ImGui::Checkbox("Dataset", &data->dataset.show_window);
+#ifdef VIAMD_ENABLE_OPENMM
+            ImGui::Checkbox("OpenMM Simulation", &data->simulation.show_window);
+#endif
 
             viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowDrawMenu);
 
