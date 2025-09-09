@@ -170,6 +170,9 @@ private:
             // Set initial positions
             set_positions(state);
             
+            // Perform energy minimization to prevent simulation explosion
+            minimize_energy(state);
+            
             state.simulation.initialized = true;
             state.simulation.current_frame = 0;
             state.simulation.simulation_time = 0.0;
@@ -191,29 +194,75 @@ private:
             
             for (size_t i = 0; i < state.mold.mol.bond.count; ++i) {
                 const auto& bond = state.mold.mol.bond.pairs[i];
-                // Use simplified bond parameters
-                double length = 1.0; // Angstroms - should be calculated from atom types
-                double k = 462750.4; // kJ/mol/nm^2 - typical C-C bond strength
-                bondForce->addBond(bond.idx[0], bond.idx[1], length * 0.1, k); // Convert to nm
+                
+                // Calculate actual bond length from current coordinates
+                uint32_t atom1 = bond.idx[0];
+                uint32_t atom2 = bond.idx[1];
+                
+                double dx = state.mold.mol.atom.x[atom1] - state.mold.mol.atom.x[atom2];
+                double dy = state.mold.mol.atom.y[atom1] - state.mold.mol.atom.y[atom2];
+                double dz = state.mold.mol.atom.z[atom1] - state.mold.mol.atom.z[atom2];
+                
+                double length_angstrom = sqrt(dx*dx + dy*dy + dz*dz);
+                double length_nm = length_angstrom * 0.1; // Convert to nm
+                
+                // Use much softer force constant to prevent explosion
+                // Reduced from 462750.4 to 30000 kJ/mol/nm^2 (about 10x softer)
+                double k = 30000.0; // kJ/mol/nm^2 - softer bond strength
+                
+                // Sanity check: ensure reasonable bond length (0.5 - 3.0 Angstroms)
+                if (length_angstrom < 0.5 || length_angstrom > 3.0) {
+                    MD_LOG_ERROR("Unusual bond length detected: %.3f Å between atoms %u and %u", 
+                               length_angstrom, atom1, atom2);
+                    // Use default reasonable bond length if detected bond length is unrealistic
+                    length_nm = 0.15; // 1.5 Angstroms in nm
+                }
+                
+                bondForce->addBond(atom1, atom2, length_nm, k);
             }
             
             sim_context.system->addForce(bondForce);
         }
         
-        // Add non-bonded forces (very simplified)
+        // Add non-bonded forces (very simplified but safer)
         auto* nonbondedForce = new OpenMM::NonbondedForce();
         
         for (size_t i = 0; i < state.mold.mol.atom.count; ++i) {
-            // Simplified parameters based on atom type
-            double charge = 0.0; // Neutral for simplicity
-            double sigma = 0.3; // nm - typical van der Waals radius
-            double epsilon = 0.5; // kJ/mol - typical well depth
+            // Get element-specific parameters for better stability
+            uint8_t atomic_number = get_atomic_number_from_atom_type(state.mold.mol.atom.type[i]);
+            
+            double charge = 0.0; // Neutral for simplicity - prevents electrostatic explosion
+            double sigma, epsilon;
+            
+            // Element-specific van der Waals parameters (softer than before)
+            switch (atomic_number) {
+            case 1: // Hydrogen
+                sigma = 0.24;  // nm - reduced from 0.3
+                epsilon = 0.15; // kJ/mol - reduced from 0.5
+                break;
+            case 6: // Carbon  
+                sigma = 0.34;
+                epsilon = 0.35;
+                break;
+            case 7: // Nitrogen
+                sigma = 0.32;
+                epsilon = 0.30;
+                break;
+            case 8: // Oxygen
+                sigma = 0.30;
+                epsilon = 0.25;
+                break;
+            default:
+                sigma = 0.32;  // Default values
+                epsilon = 0.30;
+                break;
+            }
             
             nonbondedForce->addParticle(charge, sigma, epsilon);
         }
         
         nonbondedForce->setNonbondedMethod(OpenMM::NonbondedForce::CutoffNonPeriodic);
-        nonbondedForce->setCutoffDistance(1.0); // nm
+        nonbondedForce->setCutoffDistance(1.2); // nm - increased cutoff for smoother potential
         
         sim_context.system->addForce(nonbondedForce);
     }
@@ -233,6 +282,42 @@ private:
         sim_context.context->setPositions(positions);
     }
 
+    void minimize_energy(ApplicationState& state) {
+#ifdef VIAMD_ENABLE_OPENMM
+        if (!sim_context.context) {
+            return;
+        }
+        
+        try {
+            MD_LOG_INFO("Performing energy minimization to stabilize system...");
+            
+            // Perform local energy minimization to relax bad contacts
+            // This is crucial to prevent simulation explosion
+            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-4, 1000);
+            
+            // Get minimized positions and update VIAMD coordinates
+            OpenMM::State minimizedState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy);
+            const std::vector<OpenMM::Vec3>& positions = minimizedState.getPositions();
+            
+            // Update VIAMD atom positions with minimized coordinates
+            for (size_t i = 0; i < state.mold.mol.atom.count && i < positions.size(); ++i) {
+                state.mold.mol.atom.x[i] = static_cast<float>(positions[i][0] * 10.0);
+                state.mold.mol.atom.y[i] = static_cast<float>(positions[i][1] * 10.0);
+                state.mold.mol.atom.z[i] = static_cast<float>(positions[i][2] * 10.0);
+            }
+            
+            // Mark buffers as dirty for visualization update
+            state.mold.dirty_buffers |= MolBit_DirtyPosition;
+            
+            double energy = minimizedState.getPotentialEnergy();
+            MD_LOG_INFO("Energy minimization completed. Final energy: %.3f kJ/mol", energy);
+            
+        } catch (const std::exception& e) {
+            MD_LOG_ERROR("Energy minimization failed: %s. Proceeding without minimization.", e.what());
+        }
+#endif
+    }
+
     void run_simulation_step(ApplicationState& state) {
 #ifdef VIAMD_ENABLE_OPENMM
         if (!state.simulation.initialized || !sim_context.context) {
@@ -243,9 +328,43 @@ private:
             // Run simulation steps
             sim_context.integrator->step(state.simulation.steps_per_update);
             
-            // Get updated positions
-            OpenMM::State openmmState = sim_context.context->getState(OpenMM::State::Positions);
+            // Get updated positions and check for explosion
+            OpenMM::State openmmState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy);
             const std::vector<OpenMM::Vec3>& positions = openmmState.getPositions();
+            
+            // Check for simulation explosion (coordinates too large)
+            bool explosion_detected = false;
+            double max_coord = 0.0;
+            
+            for (size_t i = 0; i < positions.size(); ++i) {
+                double x = positions[i][0] * 10.0; // Convert to Angstroms
+                double y = positions[i][1] * 10.0;
+                double z = positions[i][2] * 10.0;
+                
+                double coord_magnitude = sqrt(x*x + y*y + z*z);
+                max_coord = std::max(max_coord, coord_magnitude);
+                
+                // Check for explosion: coordinates > 100 Angstroms from origin
+                if (coord_magnitude > 100.0) {
+                    explosion_detected = true;
+                    break;
+                }
+            }
+            
+            // Check for NaN or infinite values in energy
+            double energy = openmmState.getPotentialEnergy();
+            if (std::isnan(energy) || std::isinf(energy)) {
+                explosion_detected = true;
+            }
+            
+            if (explosion_detected) {
+                MD_LOG_ERROR("Simulation explosion detected! Max coordinate: %.3f Å, Energy: %.3f kJ/mol", 
+                            max_coord, energy);
+                MD_LOG_ERROR("Stopping simulation to prevent further instability");
+                state.simulation.running = false;
+                state.simulation.paused = false;
+                return;
+            }
             
             // Update VIAMD atom positions (convert from nm to Angstroms)
             for (size_t i = 0; i < state.mold.mol.atom.count && i < positions.size(); ++i) {
@@ -299,20 +418,32 @@ private:
         if (ImGui::CollapsingHeader("Parameters", ImGuiTreeNodeFlags_DefaultOpen)) {
             float temp = static_cast<float>(state.simulation.temperature);
             if (ImGui::SliderFloat("Temperature (K)", &temp, 250.0f, 400.0f)) {
+                // Bounds checking for temperature
+                temp = std::max(250.0f, std::min(400.0f, temp));
                 state.simulation.temperature = temp;
             }
             
             float timestep = static_cast<float>(state.simulation.timestep);
-            if (ImGui::SliderFloat("Timestep (ps)", &timestep, 0.001f, 0.005f)) {
+            if (ImGui::SliderFloat("Timestep (ps)", &timestep, 0.0005f, 0.002f)) {
+                // Much smaller timestep range to prevent instability
+                // Reduced max from 0.005 to 0.002 ps
+                timestep = std::max(0.0005f, std::min(0.002f, timestep));
                 state.simulation.timestep = timestep;
             }
             
             float friction = static_cast<float>(state.simulation.friction);
-            if (ImGui::SliderFloat("Friction (ps^-1)", &friction, 0.1f, 10.0f)) {
+            if (ImGui::SliderFloat("Friction (ps^-1)", &friction, 0.5f, 5.0f)) {
+                // Constrain friction to reasonable range
+                friction = std::max(0.5f, std::min(5.0f, friction));
                 state.simulation.friction = friction;
             }
             
-            ImGui::SliderInt("Steps per update", &state.simulation.steps_per_update, 1, 100);
+            ImGui::SliderInt("Steps per update", &state.simulation.steps_per_update, 1, 50);
+            
+            // Add helpful tooltips for safety
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Lower values = smoother animation, higher values = faster simulation");
+            }
         }
 
         ImGui::Separator();
