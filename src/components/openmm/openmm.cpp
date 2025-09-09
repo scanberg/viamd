@@ -523,7 +523,7 @@ private:
                     // Check for excessive forces (> 10000 kJ/mol/nm)
                     if (force_magnitude > 10000.0) {
                         explosion_detected = true;
-                        MD_LOG_WARN("Excessive force detected on atom %zu: %.1f kJ/mol/nm", i, force_magnitude);
+                        MD_LOG_ERROR("Excessive force detected on atom %zu: %.1f kJ/mol/nm", i, force_magnitude);
                         break;
                     }
                 }
@@ -647,11 +647,11 @@ private:
                 if (ImGui::Button("Start Simulation")) {
                     // Safety checks before starting AMBER 14 simulation
                     if (state.simulation.temperature > 500.0) {
-                        MD_LOG_WARN("Temperature %.1f K is very high for AMBER 14! Consider using lower temperature for stability.", 
+                        MD_LOG_INFO("Temperature %.1f K is very high for AMBER 14! Consider using lower temperature for stability.", 
                                    state.simulation.temperature);
                     }
                     if (state.simulation.timestep > 0.001) {
-                        MD_LOG_WARN("Timestep %.4f ps is large for AMBER 14! Consider using smaller timestep for stability.", 
+                        MD_LOG_INFO("Timestep %.4f ps is large for AMBER 14! Consider using smaller timestep for stability.", 
                                    state.simulation.timestep);
                     }
                     
