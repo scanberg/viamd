@@ -22,17 +22,39 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <map>
+#include <tuple>
+#include <algorithm>
+#include <cmath>
 
 namespace openmm {
+
+// AMBER force field parameter structures
+struct AmberAtomType {
+    std::string name;
+    double mass;
+    double sigma;    // LJ sigma parameter (nm)
+    double epsilon;  // LJ epsilon parameter (kJ/mol)
+    double charge;   // Partial charge (default, can be overridden)
+};
+
+struct AmberBondType {
+    double k;        // Force constant (kJ/mol/nm^2)
+    double r0;       // Equilibrium length (nm)
+};
+
+struct AmberAngleType {
+    double k;        // Force constant (kJ/mol/rad^2)
+    double theta0;   // Equilibrium angle (radians)
+};
 
 struct SimulationContext {
     std::unique_ptr<OpenMM::System> system;
     std::unique_ptr<OpenMM::Context> context;
     std::unique_ptr<OpenMM::Integrator> integrator;
     
-    // Force field parameters
-    std::string force_field = "amber14-all.xml";
-    std::string solvent = "amber14/tip3pfb.xml";
+    // AMBER force field identifier
+    std::string force_field_name = "AMBER14";
 };
 
 class OpenMMComponent : public viamd::EventHandler {
@@ -148,12 +170,23 @@ private:
             // Create OpenMM system
             sim_context.system = std::make_unique<OpenMM::System>();
             
-            // Add particles (atoms) to the system
+            // Add particles (atoms) to the system with AMBER masses
+            std::vector<std::string> amber_types(state.mold.mol.atom.count);
             for (size_t i = 0; i < state.mold.mol.atom.count; ++i) {
-                // Get mass from atomic number - simplified approach
                 uint8_t atomic_number = get_atomic_number_from_atom_type(state.mold.mol.atom.type[i]);
-                double mass = get_atomic_mass(atomic_number);
+                
+                // Create a temporary connectivity for atom type assignment
+                std::vector<uint32_t> temp_connectivity;
+                amber_types[i] = map_to_amber_type(state.mold.mol.atom.type[i], atomic_number, temp_connectivity, state);
+                
+                // Get AMBER mass for this atom type
+                AmberAtomType atom_params = get_amber_atom_params(amber_types[i]);
+                double mass = atom_params.mass;
+                
                 sim_context.system->addParticle(mass);
+                
+                MD_LOG_DEBUG("Atom %zu: type=%s, AMBER_type=%s, mass=%.3f amu", 
+                           i, state.mold.mol.atom.type[i].buf, amber_types[i].c_str(), mass);
             }
             
             // Set up basic force field (simplified)
@@ -188,83 +221,127 @@ private:
     }
 
     void setup_force_field(ApplicationState& state) {
-        // Add harmonic bond forces (simplified)
+        MD_LOG_INFO("Setting up AMBER force field...");
+        
+        // Step 1: Build connectivity information and assign AMBER atom types
+        std::vector<std::string> amber_types(state.mold.mol.atom.count);
+        std::vector<std::vector<uint32_t>> connectivity(state.mold.mol.atom.count);
+        
+        // Build connectivity matrix
+        for (size_t i = 0; i < state.mold.mol.bond.count; ++i) {
+            const auto& bond = state.mold.mol.bond.pairs[i];
+            uint32_t atom1 = bond.idx[0];
+            uint32_t atom2 = bond.idx[1];
+            connectivity[atom1].push_back(atom2);
+            connectivity[atom2].push_back(atom1);
+        }
+        
+        // Assign AMBER atom types
+        for (size_t i = 0; i < state.mold.mol.atom.count; ++i) {
+            uint8_t atomic_number = get_atomic_number_from_atom_type(state.mold.mol.atom.type[i]);
+            amber_types[i] = map_to_amber_type(state.mold.mol.atom.type[i], atomic_number, connectivity[i], state);
+        }
+        
+        // Step 2: Set up bond forces with AMBER parameters
         if (state.mold.mol.bond.count > 0) {
             auto* bondForce = new OpenMM::HarmonicBondForce();
             
             for (size_t i = 0; i < state.mold.mol.bond.count; ++i) {
                 const auto& bond = state.mold.mol.bond.pairs[i];
-                
-                // Calculate actual bond length from current coordinates
                 uint32_t atom1 = bond.idx[0];
                 uint32_t atom2 = bond.idx[1];
                 
+                // Get AMBER bond parameters
+                AmberBondType bond_params = get_amber_bond_params(amber_types[atom1], amber_types[atom2]);
+                
+                // Calculate current bond length as starting point
                 double dx = state.mold.mol.atom.x[atom1] - state.mold.mol.atom.x[atom2];
                 double dy = state.mold.mol.atom.y[atom1] - state.mold.mol.atom.y[atom2];
                 double dz = state.mold.mol.atom.z[atom1] - state.mold.mol.atom.z[atom2];
+                double current_length = sqrt(dx*dx + dy*dy + dz*dz) * 0.1; // Convert to nm
                 
-                double length_angstrom = sqrt(dx*dx + dy*dy + dz*dz);
-                double length_nm = length_angstrom * 0.1; // Convert to nm
-                
-                // Use much softer force constant to prevent explosion
-                // Reduced from 462750.4 to 30000 kJ/mol/nm^2 (about 10x softer)
-                double k = 30000.0; // kJ/mol/nm^2 - softer bond strength
-                
-                // Sanity check: ensure reasonable bond length (0.5 - 3.0 Angstroms)
-                if (length_angstrom < 0.5 || length_angstrom > 3.0) {
-                    MD_LOG_ERROR("Unusual bond length detected: %.3f Å between atoms %u and %u", 
-                               length_angstrom, atom1, atom2);
-                    // Use default reasonable bond length if detected bond length is unrealistic
-                    length_nm = 0.15; // 1.5 Angstroms in nm
+                // Use AMBER equilibrium length, but if current length is reasonable, use it
+                double equilibrium_length = bond_params.r0;
+                if (current_length > 0.05 && current_length < 0.30) {  // Reasonable bond length range
+                    equilibrium_length = current_length;
                 }
                 
-                bondForce->addBond(atom1, atom2, length_nm, k);
+                bondForce->addBond(atom1, atom2, equilibrium_length, bond_params.k);
+                
+                MD_LOG_DEBUG("Bond %zu-%zu: %s-%s, k=%.1f, r0=%.4f nm", 
+                           atom1, atom2, amber_types[atom1].c_str(), amber_types[atom2].c_str(),
+                           bond_params.k, equilibrium_length);
             }
             
             sim_context.system->addForce(bondForce);
+            MD_LOG_INFO("Added %zu bond forces", state.mold.mol.bond.count);
         }
         
-        // Add non-bonded forces (very simplified but safer)
+        // Step 3: Set up angle forces (missing from original implementation)
+        auto* angleForce = new OpenMM::HarmonicAngleForce();
+        size_t angle_count = 0;
+        
+        for (size_t center = 0; center < state.mold.mol.atom.count; ++center) {
+            const auto& bonded = connectivity[center];
+            
+            // For each pair of atoms bonded to the center atom, create an angle
+            for (size_t i = 0; i < bonded.size(); ++i) {
+                for (size_t j = i + 1; j < bonded.size(); ++j) {
+                    uint32_t atom1 = bonded[i];
+                    uint32_t atom2 = static_cast<uint32_t>(center);
+                    uint32_t atom3 = bonded[j];
+                    
+                    // Get AMBER angle parameters
+                    AmberAngleType angle_params = get_amber_angle_params(
+                        amber_types[atom1], amber_types[atom2], amber_types[atom3]);
+                    
+                    angleForce->addAngle(atom1, atom2, atom3, angle_params.theta0, angle_params.k);
+                    angle_count++;
+                    
+                    MD_LOG_DEBUG("Angle %u-%u-%u: %s-%s-%s, k=%.1f, theta0=%.3f rad", 
+                               atom1, atom2, atom3, 
+                               amber_types[atom1].c_str(), amber_types[atom2].c_str(), amber_types[atom3].c_str(),
+                               angle_params.k, angle_params.theta0);
+                }
+            }
+        }
+        
+        if (angle_count > 0) {
+            sim_context.system->addForce(angleForce);
+            MD_LOG_INFO("Added %zu angle forces", angle_count);
+        } else {
+            delete angleForce;
+        }
+        
+        // Step 4: Set up non-bonded forces with AMBER parameters
         auto* nonbondedForce = new OpenMM::NonbondedForce();
         
         for (size_t i = 0; i < state.mold.mol.atom.count; ++i) {
-            // Get element-specific parameters for better stability
-            uint8_t atomic_number = get_atomic_number_from_atom_type(state.mold.mol.atom.type[i]);
+            AmberAtomType atom_params = get_amber_atom_params(amber_types[i]);
             
-            double charge = 0.0; // Neutral for simplicity - prevents electrostatic explosion
-            double sigma, epsilon;
+            // Use AMBER parameters for charge, sigma, epsilon
+            double charge = atom_params.charge;
+            double sigma = atom_params.sigma;
+            double epsilon = atom_params.epsilon;
             
-            // Element-specific van der Waals parameters (softer than before)
-            switch (atomic_number) {
-            case 1: // Hydrogen
-                sigma = 0.24;  // nm - reduced from 0.3
-                epsilon = 0.15; // kJ/mol - reduced from 0.5
-                break;
-            case 6: // Carbon  
-                sigma = 0.34;
-                epsilon = 0.35;
-                break;
-            case 7: // Nitrogen
-                sigma = 0.32;
-                epsilon = 0.30;
-                break;
-            case 8: // Oxygen
-                sigma = 0.30;
-                epsilon = 0.25;
-                break;
-            default:
-                sigma = 0.32;  // Default values
-                epsilon = 0.30;
-                break;
-            }
+            // For initial stability, reduce charges by factor of 0.5
+            // This prevents electrostatic explosions while still having realistic interactions
+            charge *= 0.5;
             
             nonbondedForce->addParticle(charge, sigma, epsilon);
+            
+            MD_LOG_DEBUG("Atom %zu (%s): charge=%.3f, sigma=%.3f nm, epsilon=%.3f kJ/mol", 
+                       i, amber_types[i].c_str(), charge, sigma, epsilon);
         }
         
         nonbondedForce->setNonbondedMethod(OpenMM::NonbondedForce::CutoffNonPeriodic);
-        nonbondedForce->setCutoffDistance(1.2); // nm - increased cutoff for smoother potential
+        nonbondedForce->setCutoffDistance(1.0); // nm - standard cutoff for non-periodic
         
         sim_context.system->addForce(nonbondedForce);
+        MD_LOG_INFO("Added non-bonded forces with AMBER parameters");
+        
+        MD_LOG_INFO("AMBER force field setup complete: %zu atoms, %zu bonds, %zu angles", 
+                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count);
     }
 
     void set_positions(ApplicationState& state) {
@@ -395,6 +472,7 @@ private:
         }
 
         ImGui::Text("OpenMM Molecular Dynamics Simulation");
+        ImGui::Text("Force Field: %s", sim_context.force_field_name.c_str());
         ImGui::Separator();
 
         // System information
@@ -568,6 +646,194 @@ private:
             return masses[atomic_number];
         }
         return 12.011; // Default to carbon mass
+    }
+
+    std::string map_to_amber_type(const md_label_t& atom_type, uint8_t atomic_number, const std::vector<uint32_t>& bonded_atoms, ApplicationState& state) {
+        // Convert VIAMD atom type to AMBER atom type based on chemical environment
+        const char* type_str = atom_type.buf;
+        
+        // First try direct mapping for common AMBER types
+        std::string type_upper = type_str;
+        std::transform(type_upper.begin(), type_upper.end(), type_upper.begin(), ::toupper);
+        
+        // Direct AMBER type mapping - check if this is already a known AMBER type
+        AmberAtomType test_params = get_amber_atom_params(type_str);
+        if (test_params.name == type_str) {  // Found exact match
+            return type_str;
+        }
+        
+        // Element-based mapping with chemical environment consideration
+        switch (atomic_number) {
+        case 1: // Hydrogen
+            return "H";  // Generic hydrogen, could be refined based on bonding
+        case 6: // Carbon
+            if (bonded_atoms.size() == 4) return "CA";  // sp3 carbon (approximation)
+            if (bonded_atoms.size() == 3) return "C";   // sp2 carbon (approximation)
+            return "C*";  // Generic carbon
+        case 7: // Nitrogen
+            return "N";   // Generic nitrogen
+        case 8: // Oxygen
+            if (bonded_atoms.size() == 1) return "O";   // Carbonyl oxygen
+            if (bonded_atoms.size() == 2) return "OH";  // Hydroxyl oxygen
+            return "O*";  // Generic oxygen
+        case 16: // Sulfur
+            return "SH";  // Sulfur (thiol)
+        default:
+            // Create generic type based on element
+            switch (atomic_number) {
+            case 1: return "H*";
+            case 6: return "C*";
+            case 7: return "N*";
+            case 8: return "O*";
+            default: return "C*";  // Fallback to carbon
+            }
+        }
+    }
+
+    AmberAtomType get_amber_atom_params(const std::string& amber_type) {
+        // AMBER14 force field parameters (selected subset)
+        static const std::map<std::string, AmberAtomType> amber_atom_types = {
+            // Protein backbone
+            {"C",   {"C", 12.011, 0.339967, 0.359824, 0.5973}},    // Carbonyl carbon
+            {"CA",  {"CA", 12.011, 0.339967, 0.359824, 0.0337}},    // Alpha carbon  
+            {"CB",  {"CB", 12.011, 0.339967, 0.359824, -0.0875}},   // Beta carbon
+            {"N",   {"N", 14.007, 0.325000, 0.711280, -0.4157}},   // Backbone nitrogen
+            {"O",   {"O", 15.999, 0.296000, 0.878640, -0.5679}},   // Carbonyl oxygen
+            {"H",   {"H", 1.008,  0.247135, 0.065270, 0.2719}},    // Backbone hydrogen
+            {"HA",  {"HA", 1.008,  0.264953, 0.065270, 0.0337}},    // Alpha hydrogen
+            {"HB",  {"HB", 1.008,  0.264953, 0.065270, 0.0295}},    // Beta hydrogen
+            
+            // Common side chains
+            {"OH",  {"OH", 15.999, 0.306647, 0.880314, -0.6546}},   // Hydroxyl oxygen
+            {"HO",  {"HO", 1.008,  0.000000, 0.000000, 0.4275}},    // Hydroxyl hydrogen
+            {"SH",  {"SH", 32.065, 0.356359, 1.046000, -0.3119}},   // Sulfur
+            {"HS",  {"HS", 1.008,  0.106908, 0.065270, 0.1933}},    // Sulfur hydrogen
+            
+            // Generic fallbacks
+            {"C*",  {"C*", 12.011, 0.339967, 0.359824, 0.0000}},    // Generic carbon
+            {"N*",  {"N*", 14.007, 0.325000, 0.711280, 0.0000}},    // Generic nitrogen  
+            {"O*",  {"O*", 15.999, 0.296000, 0.878640, 0.0000}},    // Generic oxygen
+            {"H*",  {"H*", 1.008,  0.247135, 0.065270, 0.0000}},    // Generic hydrogen
+        };
+        
+        auto it = amber_atom_types.find(amber_type);
+        if (it != amber_atom_types.end()) {
+            return it->second;
+        }
+        
+        // Fallback to generic parameters based on first character
+        if (amber_type[0] == 'H') return amber_atom_types.at("H*");
+        if (amber_type[0] == 'C') return amber_atom_types.at("C*");
+        if (amber_type[0] == 'N') return amber_atom_types.at("N*");
+        if (amber_type[0] == 'O') return amber_atom_types.at("O*");
+        
+        return amber_atom_types.at("C*");  // Ultimate fallback
+    }
+
+    AmberBondType get_amber_bond_params(const std::string& type1, const std::string& type2) {
+        // AMBER bond parameters (kJ/mol/nm^2, nm)
+        static const std::map<std::pair<std::string, std::string>, AmberBondType> amber_bond_types = {
+            {{"C", "O"},   {502080.0, 0.1229}},   // C=O bond
+            {{"C", "N"},   {351456.0, 0.1335}},   // C-N amide bond  
+            {{"C", "CA"},  {317984.0, 0.1522}},   // C-C bond
+            {{"CA", "N"},  {337648.0, 0.1449}},   // CA-N bond
+            {{"CA", "HA"}, {307105.6, 0.1090}},   // C-H bond
+            {{"CA", "CB"}, {317984.0, 0.1526}},   // CA-CB bond
+            {{"N", "H"},   {363171.2, 0.1010}},   // N-H bond
+            {{"OH", "HO"},  {462750.4, 0.0974}},   // O-H bond
+            {{"SH", "HS"}, {274887.2, 0.1336}},   // S-H bond
+            
+            // Generic fallback bonds
+            {{"C*", "C*"}, {317984.0, 0.1540}},   // Generic C-C
+            {{"C*", "H*"}, {307105.6, 0.1090}},   // Generic C-H
+            {{"N*", "H*"}, {363171.2, 0.1010}},   // Generic N-H
+            {{"O*", "H*"}, {462750.4, 0.0960}},   // Generic O-H
+        };
+        
+        // Try direct lookup
+        auto key1 = std::make_pair(type1, type2);
+        auto key2 = std::make_pair(type2, type1);  // Try reverse order
+        
+        auto it = amber_bond_types.find(key1);
+        if (it != amber_bond_types.end()) {
+            return it->second;
+        }
+        
+        it = amber_bond_types.find(key2);
+        if (it != amber_bond_types.end()) {
+            return it->second;
+        }
+        
+        // Fallback to generic types
+        std::string gen1 = std::string(1, type1[0]) + "*";
+        std::string gen2 = std::string(1, type2[0]) + "*";
+        
+        key1 = std::make_pair(gen1, gen2);
+        key2 = std::make_pair(gen2, gen1);
+        
+        it = amber_bond_types.find(key1);
+        if (it != amber_bond_types.end()) {
+            return it->second;
+        }
+        
+        it = amber_bond_types.find(key2);
+        if (it != amber_bond_types.end()) {
+            return it->second;
+        }
+        
+        // Ultimate fallback
+        return {317984.0, 0.1540};  // Generic C-C bond
+    }
+
+    AmberAngleType get_amber_angle_params(const std::string& type1, const std::string& type2, const std::string& type3) {
+        // AMBER angle parameters (kJ/mol/rad^2, radians)  
+        static const std::map<std::tuple<std::string, std::string, std::string>, AmberAngleType> amber_angle_types = {
+            {std::make_tuple("N", "CA", "C"),   {527.184, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("CA", "C", "O"),   {568.518, 2.0944}},   // 120.0 degrees
+            {std::make_tuple("CA", "C", "N"),   {585.760, 2.0246}},   // 116.0 degrees
+            {std::make_tuple("C", "N", "CA"),   {418.400, 2.0246}},   // 116.0 degrees
+            {std::make_tuple("H", "N", "CA"),   {418.400, 2.0595}},   // 118.0 degrees
+            {std::make_tuple("HA", "CA", "N"),  {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("HA", "CA", "C"),  {418.400, 1.9373}},   // 111.0 degrees
+            
+            // Generic fallback angles
+            {std::make_tuple("C*", "C*", "C*"), {527.184, 1.9373}},   // Generic C-C-C
+            {std::make_tuple("C*", "C*", "H*"), {418.400, 1.9373}},   // Generic C-C-H
+            {std::make_tuple("H*", "C*", "H*"), {276.144, 1.8762}},   // Generic H-C-H
+        };
+        
+        auto key = std::make_tuple(type1, type2, type3);
+        auto it = amber_angle_types.find(key);
+        if (it != amber_angle_types.end()) {
+            return it->second;
+        }
+        
+        // Try reverse order
+        key = std::make_tuple(type3, type2, type1);
+        it = amber_angle_types.find(key);
+        if (it != amber_angle_types.end()) {
+            return it->second;
+        }
+        
+        // Fallback to generic types
+        std::string gen1 = std::string(1, type1[0]) + "*";
+        std::string gen2 = std::string(1, type2[0]) + "*";
+        std::string gen3 = std::string(1, type3[0]) + "*";
+        
+        key = std::make_tuple(gen1, gen2, gen3);
+        it = amber_angle_types.find(key);
+        if (it != amber_angle_types.end()) {
+            return it->second;
+        }
+        
+        key = std::make_tuple(gen3, gen2, gen1);
+        it = amber_angle_types.find(key);
+        if (it != amber_angle_types.end()) {
+            return it->second;
+        }
+        
+        // Ultimate fallback
+        return {527.184, 1.9373};  // Generic tetrahedral angle
     }
 };
 
