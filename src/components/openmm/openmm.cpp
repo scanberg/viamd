@@ -591,6 +591,10 @@ private:
         if (state.simulation.initialized) {
             ImGui::Text("Frame: %d", state.simulation.current_frame);
             ImGui::Text("Time: %.3f ps", state.simulation.simulation_time);
+            
+            // Show stability information
+            ImGui::Text("Stability: Charges scaled to %.1f%%, H-bonds constrained", 
+                       20.0);  // Initial 0.2 scaling = 20%
         }
 
         ImGui::Separator();
@@ -641,8 +645,20 @@ private:
         } else {
             if (!state.simulation.running) {
                 if (ImGui::Button("Start Simulation")) {
+                    // Safety checks before starting AMBER 14 simulation
+                    if (state.simulation.temperature > 500.0) {
+                        MD_LOG_WARN("Temperature %.1f K is very high for AMBER 14! Consider using lower temperature for stability.", 
+                                   state.simulation.temperature);
+                    }
+                    if (state.simulation.timestep > 0.001) {
+                        MD_LOG_WARN("Timestep %.4f ps is large for AMBER 14! Consider using smaller timestep for stability.", 
+                                   state.simulation.timestep);
+                    }
+                    
                     state.simulation.running = true;
                     state.simulation.paused = false;
+                    MD_LOG_INFO("Starting AMBER 14 simulation: T=%.1f K, dt=%.4f ps", 
+                               state.simulation.temperature, state.simulation.timestep);
                 }
             } else {
                 if (!state.simulation.paused) {
@@ -825,29 +841,39 @@ private:
     }
 
     AmberAtomType get_amber_atom_params(const std::string& amber_type) {
-        // AMBER14 force field parameters (selected subset)
+        // Enhanced AMBER14 force field parameters for better stability
         static const std::map<std::string, AmberAtomType> amber_atom_types = {
             // Protein backbone
-            {"C",   {"C", 12.011, 0.339967, 0.359824, 0.5973}},    // Carbonyl carbon
+            {"C",   {"C", 12.011, 0.339967, 0.359824, 0.5973}},     // Carbonyl carbon
             {"CA",  {"CA", 12.011, 0.339967, 0.359824, 0.0337}},    // Alpha carbon  
             {"CB",  {"CB", 12.011, 0.339967, 0.359824, -0.0875}},   // Beta carbon
-            {"N",   {"N", 14.007, 0.325000, 0.711280, -0.4157}},   // Backbone nitrogen
-            {"O",   {"O", 15.999, 0.296000, 0.878640, -0.5679}},   // Carbonyl oxygen
-            {"H",   {"H", 1.008,  0.247135, 0.065270, 0.2719}},    // Backbone hydrogen
+            {"CT",  {"CT", 12.011, 0.339967, 0.4577, 0.0000}},      // Aliphatic carbon
+            {"N",   {"N", 14.007, 0.325000, 0.711280, -0.4157}},    // Backbone nitrogen
+            {"N3",  {"N3", 14.007, 0.325000, 0.711280, -0.3000}},   // Amino nitrogen
+            {"O",   {"O", 15.999, 0.296000, 0.878640, -0.5679}},    // Carbonyl oxygen
+            {"O2",  {"O2", 15.999, 0.296000, 0.878640, -0.8000}},   // Carboxyl oxygen
+            {"H",   {"H", 1.008,  0.247135, 0.065270, 0.2719}},     // Backbone hydrogen
             {"HA",  {"HA", 1.008,  0.264953, 0.065270, 0.0337}},    // Alpha hydrogen
             {"HB",  {"HB", 1.008,  0.264953, 0.065270, 0.0295}},    // Beta hydrogen
+            {"HC",  {"HC", 1.008,  0.264953, 0.065270, 0.0000}},    // Aliphatic hydrogen
             
-            // Common side chains
+            // Common side chains  
             {"OH",  {"OH", 15.999, 0.306647, 0.880314, -0.6546}},   // Hydroxyl oxygen
-            {"HO",  {"HO", 1.008,  0.000000, 0.000000, 0.4275}},    // Hydroxyl hydrogen
+            {"HO",  {"HO", 1.008,  0.100000, 0.046000, 0.4275}},    // Hydroxyl hydrogen (fixed parameters)
             {"SH",  {"SH", 32.065, 0.356359, 1.046000, -0.3119}},   // Sulfur
             {"HS",  {"HS", 1.008,  0.106908, 0.065270, 0.1933}},    // Sulfur hydrogen
             
-            // Generic fallbacks
+            // Aromatic carbons for better coverage
+            {"CW",  {"CW", 12.011, 0.339967, 0.359824, -0.0275}},   // Aromatic carbon
+            {"CC",  {"CC", 12.011, 0.339967, 0.359824, 0.0000}},    // Aromatic carbon
+            {"HP",  {"HP", 1.008,  0.247135, 0.065270, 0.1000}},    // Aromatic hydrogen
+            
+            // Generic fallbacks with improved parameters
             {"C*",  {"C*", 12.011, 0.339967, 0.359824, 0.0000}},    // Generic carbon
             {"N*",  {"N*", 14.007, 0.325000, 0.711280, 0.0000}},    // Generic nitrogen  
             {"O*",  {"O*", 15.999, 0.296000, 0.878640, 0.0000}},    // Generic oxygen
             {"H*",  {"H*", 1.008,  0.247135, 0.065270, 0.0000}},    // Generic hydrogen
+            {"S*",  {"S*", 32.065, 0.356359, 1.046000, 0.0000}},    // Generic sulfur
         };
         
         auto it = amber_atom_types.find(amber_type);
@@ -860,13 +886,15 @@ private:
         if (amber_type[0] == 'C') return amber_atom_types.at("C*");
         if (amber_type[0] == 'N') return amber_atom_types.at("N*");
         if (amber_type[0] == 'O') return amber_atom_types.at("O*");
+        if (amber_type[0] == 'S') return amber_atom_types.at("S*");
         
         return amber_atom_types.at("C*");  // Ultimate fallback
     }
 
     AmberBondType get_amber_bond_params(const std::string& type1, const std::string& type2) {
-        // AMBER bond parameters (kJ/mol/nm^2, nm)
+        // Enhanced AMBER bond parameters (kJ/mol/nm^2, nm) for better stability
         static const std::map<std::pair<std::string, std::string>, AmberBondType> amber_bond_types = {
+            // Protein backbone bonds
             {{"C", "O"},   {502080.0, 0.1229}},   // C=O bond
             {{"C", "N"},   {351456.0, 0.1335}},   // C-N amide bond  
             {{"C", "CA"},  {317984.0, 0.1522}},   // C-C bond
@@ -874,14 +902,28 @@ private:
             {{"CA", "HA"}, {307105.6, 0.1090}},   // C-H bond
             {{"CA", "CB"}, {317984.0, 0.1526}},   // CA-CB bond
             {{"N", "H"},   {363171.2, 0.1010}},   // N-H bond
-            {{"OH", "HO"},  {462750.4, 0.0974}},   // O-H bond
-            {{"SH", "HS"}, {274887.2, 0.1336}},   // S-H bond
             
-            // Generic fallback bonds
-            {{"C*", "C*"}, {317984.0, 0.1540}},   // Generic C-C
-            {{"C*", "H*"}, {307105.6, 0.1090}},   // Generic C-H
-            {{"N*", "H*"}, {363171.2, 0.1010}},   // Generic N-H
-            {{"O*", "H*"}, {462750.4, 0.0960}},   // Generic O-H
+            // Side chain bonds
+            {{"OH", "HO"}, {462750.4, 0.0974}},   // O-H bond
+            {{"SH", "HS"}, {274887.2, 0.1336}},   // S-H bond
+            {{"CT", "HC"}, {307105.6, 0.1090}},   // Aliphatic C-H
+            {{"CT", "CT"}, {317984.0, 0.1526}},   // Aliphatic C-C
+            {{"N3", "H"},  {363171.2, 0.1010}},   // Amino N-H
+            {{"O2", "C"},  {469870.4, 0.1250}},   // Carboxyl C-O
+            
+            // Aromatic bonds
+            {{"CW", "HP"}, {307105.6, 0.1080}},   // Aromatic C-H
+            {{"CC", "HP"}, {307105.6, 0.1080}},   // Aromatic C-H
+            {{"CW", "CW"}, {418400.0, 0.1371}},   // Aromatic C-C
+            {{"CC", "CC"}, {418400.0, 0.1371}},   // Aromatic C-C
+            
+            // Generic fallback bonds (more conservative force constants)
+            {{"C*", "C*"}, {250000.0, 0.1540}},   // Generic C-C (reduced force)
+            {{"C*", "H*"}, {284512.0, 0.1090}},   // Generic C-H (reduced force)
+            {{"N*", "H*"}, {320000.0, 0.1010}},   // Generic N-H (reduced force)
+            {{"O*", "H*"}, {400000.0, 0.0960}},   // Generic O-H (reduced force)
+            {{"S*", "H*"}, {250000.0, 0.1336}},   // Generic S-H
+            {{"S*", "C*"}, {200000.0, 0.1810}},   // Generic S-C
         };
         
         // Try direct lookup
@@ -915,13 +957,14 @@ private:
             return it->second;
         }
         
-        // Ultimate fallback
-        return {317984.0, 0.1540};  // Generic C-C bond
+        // Ultimate fallback (more conservative parameters)
+        return {250000.0, 0.1540};  // Conservative C-C bond parameters
     }
 
     AmberAngleType get_amber_angle_params(const std::string& type1, const std::string& type2, const std::string& type3) {
-        // AMBER angle parameters (kJ/mol/rad^2, radians)  
+        // Enhanced AMBER angle parameters (kJ/mol/rad^2, radians) for better stability
         static const std::map<std::tuple<std::string, std::string, std::string>, AmberAngleType> amber_angle_types = {
+            // Protein backbone angles
             {std::make_tuple("N", "CA", "C"),   {527.184, 1.9373}},   // 111.0 degrees
             {std::make_tuple("CA", "C", "O"),   {568.518, 2.0944}},   // 120.0 degrees
             {std::make_tuple("CA", "C", "N"),   {585.760, 2.0246}},   // 116.0 degrees
@@ -929,11 +972,25 @@ private:
             {std::make_tuple("H", "N", "CA"),   {418.400, 2.0595}},   // 118.0 degrees
             {std::make_tuple("HA", "CA", "N"),  {418.400, 1.9373}},   // 111.0 degrees
             {std::make_tuple("HA", "CA", "C"),  {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("CB", "CA", "N"),  {527.184, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("CB", "CA", "C"),  {527.184, 1.9373}},   // 111.0 degrees
             
-            // Generic fallback angles
-            {std::make_tuple("C*", "C*", "C*"), {527.184, 1.9373}},   // Generic C-C-C
-            {std::make_tuple("C*", "C*", "H*"), {418.400, 1.9373}},   // Generic C-C-H
-            {std::make_tuple("H*", "C*", "H*"), {276.144, 1.8762}},   // Generic H-C-H
+            // Side chain angles
+            {std::make_tuple("CA", "CB", "HC"), {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("HC", "CT", "HC"), {276.144, 1.8762}},   // 107.8 degrees (tetrahedral)
+            {std::make_tuple("CT", "CT", "HC"), {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("N3", "CT", "HC"), {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("H", "N3", "CT"),  {418.400, 1.9373}},   // 111.0 degrees
+            {std::make_tuple("HO", "OH", "CT"), {460.240, 1.8849}},   // 107.8 degrees
+            {std::make_tuple("HS", "SH", "CT"), {368.192, 1.6232}},   // 93.0 degrees
+            
+            // More conservative generic fallback angles (reduced force constants)
+            {std::make_tuple("C*", "C*", "C*"), {400.000, 1.9373}},   // Generic C-C-C (reduced)
+            {std::make_tuple("C*", "C*", "H*"), {350.000, 1.9373}},   // Generic C-C-H (reduced)
+            {std::make_tuple("H*", "C*", "H*"), {250.000, 1.8762}},   // Generic H-C-H (reduced)
+            {std::make_tuple("N*", "C*", "C*"), {400.000, 1.9373}},   // Generic N-C-C
+            {std::make_tuple("O*", "C*", "C*"), {400.000, 1.9373}},   // Generic O-C-C
+            {std::make_tuple("S*", "C*", "C*"), {350.000, 1.9373}},   // Generic S-C-C
         };
         
         auto key = std::make_tuple(type1, type2, type3);
@@ -966,8 +1023,8 @@ private:
             return it->second;
         }
         
-        // Ultimate fallback
-        return {527.184, 1.9373};  // Generic tetrahedral angle
+        // Ultimate fallback (more conservative parameters)
+        return {400.000, 1.9373};  // Conservative tetrahedral angle
     }
 };
 
