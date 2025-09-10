@@ -102,6 +102,7 @@ if(VIAMD_ENABLE_BUILDER AND VIAMD_ENABLE_RDKIT)
         message(STATUS "RDKit found: ${RDKIT_LIBRARIES}")
         
         # Find additional RDKit libraries
+        find_library(RDKIT_RDGENERAL_LIB NAMES RDKitRDGeneral PATHS /usr/lib/x86_64-linux-gnu)
         find_library(RDKIT_SMILES_PARSE_LIB NAMES RDKitSmilesParse PATHS /usr/lib/x86_64-linux-gnu)
         find_library(RDKIT_DISTGEOM_LIB NAMES RDKitDistGeomHelpers PATHS /usr/lib/x86_64-linux-gnu)
         find_library(RDKIT_UFF_LIB NAMES RDKitForceFieldHelpers PATHS /usr/lib/x86_64-linux-gnu)
@@ -111,6 +112,7 @@ if(VIAMD_ENABLE_BUILDER AND VIAMD_ENABLE_RDKIT)
         
         set(RDKIT_ALL_LIBRARIES 
             ${RDKIT_LIBRARIES}
+            ${RDKIT_RDGENERAL_LIB}
             ${RDKIT_SMILES_PARSE_LIB}
             ${RDKIT_DISTGEOM_LIB}
             ${RDKIT_UFF_LIB}
