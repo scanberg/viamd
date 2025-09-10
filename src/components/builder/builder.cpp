@@ -26,6 +26,7 @@
 #include <core/md_bitfield.h>
 #include <md_molecule.h>
 #include <md_util.h>
+#include <md_gl.h>
 
 #include <imgui_widgets.h>
 #include <imgui.h>
@@ -267,9 +268,24 @@ struct MoleculeBuilder : viamd::EventHandler {
             return;
         }
 
+        // Complete scene clearing before loading new molecule
+        // This prevents molecules from being added on top of each other
+        
         // Reset the arena allocator to free existing molecule data
-        // This is the pattern used by the main application for molecule cleanup
         md_arena_allocator_reset(app_state->mold.mol_alloc);
+        
+        // Zero out the existing molecule structure completely
+        memset(&app_state->mold.mol, 0, sizeof(app_state->mold.mol));
+        
+        // Destroy existing GPU resources
+        if (app_state->mold.gl_mol) {
+            md_gl_mol_destroy(app_state->mold.gl_mol);
+            app_state->mold.gl_mol = nullptr;
+        }
+        
+        // Clear selection and highlight masks
+        md_bitfield_clear(&app_state->selection.selection_mask);
+        md_bitfield_clear(&app_state->selection.highlight_mask);
         
         // Copy the built molecule to the app state
         app_state->mold.mol = built_molecule.mol;
