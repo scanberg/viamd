@@ -310,6 +310,9 @@ struct MoleculeBuilder : viamd::EventHandler {
                  "Molecule loaded successfully: %s", built_molecule.formula.c_str());
         
         MD_LOG_INFO("Molecule builder: loaded molecule into VIAMD");
+        
+        // Broadcast topology initialization event to recreate GL resources
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, viamd::EventPayloadType_ApplicationState, app_state);
     }
 
     void draw_example_buttons() {
