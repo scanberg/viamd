@@ -555,7 +555,7 @@ private:
             
             // Check if energy is reasonable after minimization
             if (std::isnan(energy) || std::isinf(energy) || energy > 1e6) {
-                MD_LOG_WARN("Energy after minimization is suspicious (%.3f kJ/mol). System may be unstable.", energy);
+                MD_LOG_ERROR("Energy after minimization is suspicious (%.3f kJ/mol). System may be unstable.", energy);
             }
             
         } catch (const std::exception& e) {
@@ -700,7 +700,6 @@ private:
                 // Very conservative timestep range to prevent instability
                 // Max reduced to 0.001 ps for better stability
                 timestep = std::max(0.0001f, std::min(0.001f, timestep));
-                state.simulation.timestep = timestep;
                 state.simulation.timestep = timestep;
             }
             
