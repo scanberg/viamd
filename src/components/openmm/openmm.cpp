@@ -186,7 +186,7 @@ public:
         MD_LOG_INFO("Topology freed, OpenMM simulation stopped");
     }
 
-private:
+public:
     void setup_system(ApplicationState& state) {
 #ifdef VIAMD_ENABLE_OPENMM
         try {
@@ -1242,7 +1242,6 @@ private:
 
     std::string map_to_uff_type(const md_label_t& atom_type, uint8_t atomic_number, const std::vector<uint32_t>& bonded_atoms, ApplicationState& state) {
         // Convert VIAMD atom type to UFF atom type based on chemical environment
-        const char* type_str = atom_type.buf;
         
         // Element-based mapping with chemical environment consideration
         switch (atomic_number) {
