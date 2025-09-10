@@ -278,9 +278,6 @@ struct Correlation : viamd::EventHandler {
                                 
                                 // Check for hover/click on points
                                 if (ImPlot::IsPlotHovered()) {
-                                    ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
-                                    ImPlotRect plot_rect = ImPlot::GetPlotLimits();
-                                    
                                     // Find closest point in screen space
                                     float min_dist_sq = FLT_MAX;
                                     int closest_point = -1;
@@ -288,8 +285,8 @@ struct Correlation : viamd::EventHandler {
                                     for (size_t p = 0; p < md_array_size(scatter.x_data); ++p) {
                                         // Convert plot coordinates to screen space for distance calculation
                                         ImVec2 screen_pos = ImPlot::PlotToPixels(scatter.x_data[p], scatter.y_data[p]);
-                                        ImVec2 mouse_screen = ImPlot::GetPlotMousePos(ImAxis_X1, ImAxis_Y1);
-                                        ImVec2 mouse_pixel = ImPlot::PlotToPixels(mouse_screen.x, mouse_screen.y);
+                                        ImPlotPoint mouse_plot = ImPlot::GetPlotMousePos();
+                                        ImVec2 mouse_pixel = ImPlot::PlotToPixels(mouse_plot.x, mouse_plot.y);
                                         
                                         float dx = screen_pos.x - mouse_pixel.x;
                                         float dy = screen_pos.y - mouse_pixel.y;
