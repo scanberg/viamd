@@ -9358,15 +9358,38 @@ static void fill_gbuffer(ApplicationState* data) {
     }
 
     if (data->mold.mol.hydrogen_bond.num_bonds > 0) {
-        const uint32_t hb_color = convert_color(vec4_set(0.8f, 0.8f, 1.0f, 0.9f));
+        const vec4_t hb_color = vec4_set(0.5f, 0.5f, 1.0f, 1.0f);
+        const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
+        const float dist     = data->view.camera.focus_distance;
+        const vec3_t foc_pos = data->view.camera.position - forward * dist;
+
+        const float inner_d2 = 10.0f * 10.0f;
+        const float outer_d2 = 15.0f * 15.0f;
 
         for (size_t i = 0; i < data->mold.mol.hydrogen_bond.num_bonds; ++i) {
             const md_atom_pair_t pair = data->mold.mol.hydrogen_bond.bonds[i];
             const vec3_t p0 = vec3_set(data->mold.mol.atom.x[pair.idx[0]], data->mold.mol.atom.y[pair.idx[0]], data->mold.mol.atom.z[pair.idx[0]]);
             const vec3_t p1 = vec3_set(data->mold.mol.atom.x[pair.idx[1]], data->mold.mol.atom.y[pair.idx[1]], data->mold.mol.atom.z[pair.idx[1]]);
+
+            const float d2_0 = vec3_distance_squared(foc_pos, p0);
+            const float d2_1 = vec3_distance_squared(foc_pos, p1);
+            const float d2 = MIN(d2_0, d2_1);
+
+            if (d2 > outer_d2) continue;
+
+            vec4_t col = hb_color;
+            if (d2 > inner_d2) {
+                const float t = CLAMP((d2 - inner_d2) / (outer_d2 - inner_d2), 0.0f, 1.0f);
+                // Squared falloff
+                col.w *= (1.0f - t * t);
+            }
+
             vec3_t d = vec3_sub(p1, p0);
             md_util_min_image_vec3(&d, 1, &data->mold.mol.unitcell);
-            immediate::draw_line(p0, p0 + d, hb_color);
+            if (vec3_length_squared(d) > 3.0f * 3.0f) {
+                continue;
+            }
+            immediate::draw_line(p0, p0 + d, convert_color(col));
         }
     }
 
