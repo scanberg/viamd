@@ -54,6 +54,12 @@ struct AmberAngleType {
     double theta0;   // Equilibrium angle (radians)
 };
 
+struct AmberDihedralType {
+    double k;        // Force constant (kJ/mol)
+    double phi0;     // Phase angle (radians)
+    int n;           // Periodicity
+};
+
 // UFF force field parameter structures
 struct UffAtomType {
     std::string name;
@@ -71,6 +77,12 @@ struct UffBondType {
 struct UffAngleType {
     double k;        // Force constant (kJ/mol/rad^2)
     double theta0;   // Equilibrium angle (radians)
+};
+
+struct UffDihedralType {
+    double k;        // Force constant (kJ/mol)
+    double phi0;     // Phase angle (radians)
+    int n;           // Periodicity
 };
 
 struct SimulationContext {
@@ -296,17 +308,8 @@ public:
                 // Get AMBER bond parameters
                 AmberBondType bond_params = get_amber_bond_params(amber_types[atom1], amber_types[atom2]);
                 
-                // Calculate current bond length as starting point
-                double dx = state.mold.mol.atom.x[atom1] - state.mold.mol.atom.x[atom2];
-                double dy = state.mold.mol.atom.y[atom1] - state.mold.mol.atom.y[atom2];
-                double dz = state.mold.mol.atom.z[atom1] - state.mold.mol.atom.z[atom2];
-                double current_length = sqrt(dx*dx + dy*dy + dz*dz) * 0.1; // Convert to nm
-                
-                // Use AMBER equilibrium length, but if current length is reasonable, use it
+                // Always use force field equilibrium length for correct distances
                 double equilibrium_length = bond_params.r0;
-                if (current_length > 0.05 && current_length < 0.30) {  // Reasonable bond length range
-                    equilibrium_length = current_length;
-                }
                 
                 bondForce->addBond(atom1, atom2, equilibrium_length, bond_params.k);
                 
@@ -355,7 +358,49 @@ public:
             delete angleForce;
         }
         
-        // Step 4: Set up non-bonded forces with AMBER parameters
+        // Step 4: Set up dihedral forces (torsional angles)
+        auto* dihedralForce = new OpenMM::PeriodicTorsionForce();
+        size_t dihedral_count = 0;
+        
+        // Generate dihedrals for all connected chains of 4 atoms (A-B-C-D)
+        for (size_t bond_b_c = 0; bond_b_c < state.mold.mol.bond.count; ++bond_b_c) {
+            const auto& central_bond = state.mold.mol.bond.pairs[bond_b_c];
+            uint32_t atom_b = central_bond.idx[0];
+            uint32_t atom_c = central_bond.idx[1];
+            
+            // Find atoms connected to B (but not C)
+            for (uint32_t atom_a : connectivity[atom_b]) {
+                if (atom_a == atom_c) continue;
+                
+                // Find atoms connected to C (but not B)
+                for (uint32_t atom_d : connectivity[atom_c]) {
+                    if (atom_d == atom_b) continue;
+                    
+                    // Get AMBER dihedral parameters
+                    AmberDihedralType dihedral_params = get_amber_dihedral_params(
+                        amber_types[atom_a], amber_types[atom_b], amber_types[atom_c], amber_types[atom_d]);
+                    
+                    dihedralForce->addTorsion(atom_a, atom_b, atom_c, atom_d,
+                                            dihedral_params.n, dihedral_params.phi0, dihedral_params.k);
+                    dihedral_count++;
+                    
+                    MD_LOG_DEBUG("Dihedral %u-%u-%u-%u: %s-%s-%s-%s, k=%.1f, phi0=%.3f, n=%d", 
+                               atom_a, atom_b, atom_c, atom_d,
+                               amber_types[atom_a].c_str(), amber_types[atom_b].c_str(), 
+                               amber_types[atom_c].c_str(), amber_types[atom_d].c_str(),
+                               dihedral_params.k, dihedral_params.phi0, dihedral_params.n);
+                }
+            }
+        }
+        
+        if (dihedral_count > 0) {
+            sim_context.system->addForce(dihedralForce);
+            MD_LOG_INFO("Added %zu dihedral forces", dihedral_count);
+        } else {
+            delete dihedralForce;
+        }
+        
+        // Step 5: Set up non-bonded forces with AMBER parameters
         auto* nonbondedForce = new OpenMM::NonbondedForce();
         
         for (size_t i = 0; i < state.mold.mol.atom.count; ++i) {
@@ -382,8 +427,8 @@ public:
         sim_context.system->addForce(nonbondedForce);
         MD_LOG_INFO("Added non-bonded forces with AMBER parameters");
         
-        MD_LOG_INFO("AMBER force field setup complete: %zu atoms, %zu bonds, %zu angles", 
-                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count);
+        MD_LOG_INFO("AMBER force field setup complete: %zu atoms, %zu bonds, %zu angles, %zu dihedrals", 
+                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count, dihedral_count);
     }
 
     void setup_uff_force_field(ApplicationState& state) {
@@ -420,17 +465,8 @@ public:
                 // Get UFF bond parameters
                 UffBondType bond_params = get_uff_bond_params(uff_types[atom1], uff_types[atom2]);
                 
-                // Calculate current bond length as starting point
-                double dx = state.mold.mol.atom.x[atom1] - state.mold.mol.atom.x[atom2];
-                double dy = state.mold.mol.atom.y[atom1] - state.mold.mol.atom.y[atom2];
-                double dz = state.mold.mol.atom.z[atom1] - state.mold.mol.atom.z[atom2];
-                double current_length = sqrt(dx*dx + dy*dy + dz*dz) * 0.1; // Convert to nm
-                
-                // Use UFF equilibrium length, but if current length is reasonable, use it
+                // Always use force field equilibrium length for correct distances
                 double equilibrium_length = bond_params.r0;
-                if (current_length > 0.05 && current_length < 0.30) {  // Reasonable bond length range
-                    equilibrium_length = current_length;
-                }
                 
                 bondForce->addBond(atom1, atom2, equilibrium_length, bond_params.k);
                 
@@ -479,7 +515,49 @@ public:
             delete angleForce;
         }
         
-        // Step 4: Set up non-bonded forces with UFF parameters
+        // Step 4: Set up dihedral forces (torsional angles)
+        auto* dihedralForce = new OpenMM::PeriodicTorsionForce();
+        size_t dihedral_count = 0;
+        
+        // Generate dihedrals for all connected chains of 4 atoms (A-B-C-D)
+        for (size_t bond_b_c = 0; bond_b_c < state.mold.mol.bond.count; ++bond_b_c) {
+            const auto& central_bond = state.mold.mol.bond.pairs[bond_b_c];
+            uint32_t atom_b = central_bond.idx[0];
+            uint32_t atom_c = central_bond.idx[1];
+            
+            // Find atoms connected to B (but not C)
+            for (uint32_t atom_a : connectivity[atom_b]) {
+                if (atom_a == atom_c) continue;
+                
+                // Find atoms connected to C (but not B)
+                for (uint32_t atom_d : connectivity[atom_c]) {
+                    if (atom_d == atom_b) continue;
+                    
+                    // Get UFF dihedral parameters
+                    UffDihedralType dihedral_params = get_uff_dihedral_params(
+                        uff_types[atom_a], uff_types[atom_b], uff_types[atom_c], uff_types[atom_d]);
+                    
+                    dihedralForce->addTorsion(atom_a, atom_b, atom_c, atom_d,
+                                            dihedral_params.n, dihedral_params.phi0, dihedral_params.k);
+                    dihedral_count++;
+                    
+                    MD_LOG_DEBUG("Dihedral %u-%u-%u-%u: %s-%s-%s-%s, k=%.1f, phi0=%.3f, n=%d", 
+                               atom_a, atom_b, atom_c, atom_d,
+                               uff_types[atom_a].c_str(), uff_types[atom_b].c_str(), 
+                               uff_types[atom_c].c_str(), uff_types[atom_d].c_str(),
+                               dihedral_params.k, dihedral_params.phi0, dihedral_params.n);
+                }
+            }
+        }
+        
+        if (dihedral_count > 0) {
+            sim_context.system->addForce(dihedralForce);
+            MD_LOG_INFO("Added %zu dihedral forces", dihedral_count);
+        } else {
+            delete dihedralForce;
+        }
+        
+        // Step 5: Set up non-bonded forces with UFF parameters
         auto* nonbondedForce = new OpenMM::NonbondedForce();
         
         for (size_t i = 0; i < state.mold.mol.atom.count; ++i) {
@@ -506,8 +584,8 @@ public:
         sim_context.system->addForce(nonbondedForce);
         MD_LOG_INFO("Added non-bonded forces with UFF parameters");
         
-        MD_LOG_INFO("UFF force field setup complete: %zu atoms, %zu bonds, %zu angles", 
-                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count);
+        MD_LOG_INFO("UFF force field setup complete: %zu atoms, %zu bonds, %zu angles, %zu dihedrals", 
+                   state.mold.mol.atom.count, state.mold.mol.bond.count, angle_count, dihedral_count);
     }
 
     void set_positions(ApplicationState& state) {
@@ -1057,6 +1135,64 @@ public:
         return {527.184, 1.9373};  // Generic tetrahedral angle
     }
 
+    AmberDihedralType get_amber_dihedral_params(const std::string& type1, const std::string& type2, const std::string& type3, const std::string& type4) {
+        // AMBER dihedral parameters (kJ/mol, radians, periodicity)
+        // Simplified set of common protein backbone and side chain dihedrals
+        static const std::map<std::tuple<std::string, std::string, std::string, std::string>, AmberDihedralType> amber_dihedral_types = {
+            // Protein backbone phi angle: C(i-1) - N(i) - CA(i) - C(i)
+            {std::make_tuple("C", "N", "CA", "C"),     {9.62760, 3.14159, 2}},  // pi phase, n=2
+            // Protein backbone psi angle: N(i) - CA(i) - C(i) - N(i+1)  
+            {std::make_tuple("N", "CA", "C", "N"),     {20.08320, 3.14159, 2}}, // pi phase, n=2
+            // Common side chain torsions
+            {std::make_tuple("CA", "CB", "C*", "C*"),  {1.04600, 0.0, 3}},      // Chi1 generic
+            {std::make_tuple("N", "CA", "CB", "C*"),   {0.83680, 0.0, 3}},      // N-CA-CB-X
+            {std::make_tuple("H", "N", "CA", "C"),     {0.00000, 0.0, 2}},      // H-N-CA-C (flat)
+            {std::make_tuple("HA", "CA", "C", "N"),    {0.00000, 0.0, 2}},      // HA-CA-C-N (flat)
+            {std::make_tuple("HA", "CA", "CB", "HB"),  {0.65084, 0.0, 3}},      // H-C-C-H 
+            
+            // Generic fallback dihedrals based on hybridization patterns
+            {std::make_tuple("C*", "C*", "C*", "C*"),  {1.04600, 0.0, 3}},      // Generic sp3-sp3
+            {std::make_tuple("C*", "C*", "C*", "H*"),  {0.65084, 0.0, 3}},      // Generic C-C-C-H
+            {std::make_tuple("H*", "C*", "C*", "H*"),  {0.62760, 0.0, 3}},      // Generic H-C-C-H
+            {std::make_tuple("N*", "C*", "C*", "C*"),  {1.04600, 0.0, 3}},      // Generic N-C-C-C
+            {std::make_tuple("O*", "C*", "C*", "C*"),  {1.04600, 0.0, 3}},      // Generic O-C-C-C
+        };
+        
+        auto key = std::make_tuple(type1, type2, type3, type4);
+        auto it = amber_dihedral_types.find(key);
+        if (it != amber_dihedral_types.end()) {
+            return it->second;
+        }
+        
+        // Try reverse order
+        key = std::make_tuple(type4, type3, type2, type1);
+        it = amber_dihedral_types.find(key);
+        if (it != amber_dihedral_types.end()) {
+            return it->second;
+        }
+        
+        // Fallback to generic types
+        std::string gen1 = std::string(1, type1[0]) + "*";
+        std::string gen2 = std::string(1, type2[0]) + "*";
+        std::string gen3 = std::string(1, type3[0]) + "*";
+        std::string gen4 = std::string(1, type4[0]) + "*";
+        
+        key = std::make_tuple(gen1, gen2, gen3, gen4);
+        it = amber_dihedral_types.find(key);
+        if (it != amber_dihedral_types.end()) {
+            return it->second;
+        }
+        
+        key = std::make_tuple(gen4, gen3, gen2, gen1);
+        it = amber_dihedral_types.find(key);
+        if (it != amber_dihedral_types.end()) {
+            return it->second;
+        }
+        
+        // Ultimate fallback - weak torsion potential
+        return {1.04600, 0.0, 3};  // Generic sp3 torsion, 3-fold symmetry
+    }
+
     // UFF force field parameter functions
     UffAtomType get_uff_atom_params(const std::string& uff_type) {
         // UFF (Universal Force Field) parameters
@@ -1238,6 +1374,82 @@ public:
         
         // Ultimate fallback
         return {418.400, 1.9106};  // Generic tetrahedral angle
+    }
+
+    UffDihedralType get_uff_dihedral_params(const std::string& type1, const std::string& type2, const std::string& type3, const std::string& type4) {
+        // UFF dihedral parameters (kJ/mol, radians, periodicity)
+        // UFF typically uses cosine-based torsion potentials: V = 0.5 * k * (1 - cos(n*phi - phi0))
+        static const std::map<std::tuple<std::string, std::string, std::string, std::string>, UffDihedralType> uff_dihedral_types = {
+            // sp3-sp3 torsions (tetrahedral-tetrahedral)
+            {std::make_tuple("C_3", "C_3", "C_3", "C_3"), {2.92880, 0.0, 3}},      // C(sp3)-C(sp3) barrier
+            {std::make_tuple("H_", "C_3", "C_3", "H_"),   {1.04600, 0.0, 3}},      // H-C-C-H 
+            {std::make_tuple("H_", "C_3", "C_3", "C_3"),  {1.04600, 0.0, 3}},      // H-C-C-C
+            
+            // sp2-sp3 torsions (trigonal-tetrahedral)
+            {std::make_tuple("C_3", "C_3", "C_2", "C_2"), {8.36800, 3.14159, 2}},  // sp3-sp2 conjugation
+            {std::make_tuple("H_", "C_3", "C_2", "C_2"),  {0.00000, 0.0, 2}},      // H-C(sp3)-C(sp2) flat
+            
+            // sp2-sp2 torsions (trigonal-trigonal) - aromatic and conjugated systems
+            {std::make_tuple("C_2", "C_2", "C_2", "C_2"), {20.92000, 3.14159, 2}}, // conjugated barrier
+            {std::make_tuple("H_", "C_2", "C_2", "H_"),   {20.92000, 3.14159, 2}}, // aromatic H-C=C-H
+            {std::make_tuple("H_", "C_2", "C_2", "C_2"),  {20.92000, 3.14159, 2}}, // aromatic H-C=C-C
+            
+            // Aromatic (C_R) torsions - planar systems
+            {std::make_tuple("C_R", "C_R", "C_R", "C_R"), {25.10400, 3.14159, 2}}, // aromatic barrier
+            {std::make_tuple("H_", "C_R", "C_R", "H_"),   {25.10400, 3.14159, 2}}, // aromatic H-C-C-H
+            {std::make_tuple("H_", "C_R", "C_R", "C_R"),  {25.10400, 3.14159, 2}}, // aromatic H-C-C-C
+            
+            // Nitrogen torsions
+            {std::make_tuple("C_3", "N_3", "C_3", "C_3"), {1.67360, 0.0, 3}},      // C-N-C-C 
+            {std::make_tuple("H_", "N_3", "C_3", "C_3"),  {0.41840, 0.0, 3}},      // H-N-C-C
+            {std::make_tuple("H_", "N_3", "C_3", "H_"),   {0.41840, 0.0, 3}},      // H-N-C-H
+            
+            // Oxygen torsions
+            {std::make_tuple("C_3", "O_3", "C_3", "C_3"), {2.30120, 0.0, 3}},      // C-O-C-C
+            {std::make_tuple("H_", "O_3", "C_3", "C_3"),  {0.41840, 0.0, 3}},      // H-O-C-C
+            {std::make_tuple("H_", "O_3", "C_3", "H_"),   {0.41840, 0.0, 3}},      // H-O-C-H
+            
+            // Generic fallback dihedrals
+            {std::make_tuple("C*", "C*", "C*", "C*"),     {2.09200, 0.0, 3}},      // Generic C-C-C-C
+            {std::make_tuple("C*", "C*", "C*", "H*"),     {1.04600, 0.0, 3}},      // Generic C-C-C-H
+            {std::make_tuple("H*", "C*", "C*", "H*"),     {1.04600, 0.0, 3}},      // Generic H-C-C-H
+            {std::make_tuple("N*", "C*", "C*", "C*"),     {1.67360, 0.0, 3}},      // Generic N-C-C-C
+            {std::make_tuple("O*", "C*", "C*", "C*"),     {2.30120, 0.0, 3}},      // Generic O-C-C-C
+        };
+        
+        auto key = std::make_tuple(type1, type2, type3, type4);
+        auto it = uff_dihedral_types.find(key);
+        if (it != uff_dihedral_types.end()) {
+            return it->second;
+        }
+        
+        // Try reverse order
+        key = std::make_tuple(type4, type3, type2, type1);
+        it = uff_dihedral_types.find(key);
+        if (it != uff_dihedral_types.end()) {
+            return it->second;
+        }
+        
+        // Fallback to generic types
+        std::string gen1 = std::string(1, type1[0]) + "*";
+        std::string gen2 = std::string(1, type2[0]) + "*";
+        std::string gen3 = std::string(1, type3[0]) + "*";
+        std::string gen4 = std::string(1, type4[0]) + "*";
+        
+        key = std::make_tuple(gen1, gen2, gen3, gen4);
+        it = uff_dihedral_types.find(key);
+        if (it != uff_dihedral_types.end()) {
+            return it->second;
+        }
+        
+        key = std::make_tuple(gen4, gen3, gen2, gen1);
+        it = uff_dihedral_types.find(key);
+        if (it != uff_dihedral_types.end()) {
+            return it->second;
+        }
+        
+        // Ultimate fallback - weak general torsion barrier
+        return {2.09200, 0.0, 3};  // Generic torsion with 3-fold symmetry
     }
 
     std::string map_to_uff_type(const md_label_t& atom_type, uint8_t atomic_number, const std::vector<uint32_t>& bonded_atoms, ApplicationState& state) {
