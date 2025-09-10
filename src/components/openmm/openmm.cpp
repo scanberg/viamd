@@ -84,8 +84,10 @@ struct SimulationContext {
 };
 
 class OpenMMComponent : public viamd::EventHandler {
-private:
+public:
     SimulationContext sim_context;
+    
+private:
     md_allocator_i* allocator = nullptr;
 
 public:
@@ -718,6 +720,31 @@ private:
             }
         }
 
+        // Minimization panel
+        if (ImGui::CollapsingHeader("Energy Minimization", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextWrapped("Energy minimization can stabilize molecular structures by finding local energy minima.");
+            
+            if (state.simulation.initialized) {
+                if (ImGui::Button("Minimize Energy", ImVec2(-1, 0))) {
+                    minimize_energy(state);
+                }
+                ImGui::SameLine();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Perform energy minimization using the current force field to stabilize the structure");
+                }
+            } else {
+                ImGui::BeginDisabled();
+                ImGui::Button("Minimize Energy (Initialize system first)", ImVec2(-1, 0));
+                ImGui::EndDisabled();
+            }
+            
+            ImGui::Separator();
+            ImGui::TextWrapped("Minimization Parameters:");
+            ImGui::BulletText("Tolerance: 1e-6 kJ/mol");
+            ImGui::BulletText("Max iterations: 5000");
+            ImGui::BulletText("Algorithm: L-BFGS");
+        }
+
         ImGui::Separator();
 
         // Control buttons
@@ -1261,6 +1288,52 @@ private:
 };
 
 static OpenMMComponent g_openmm_component;
+
+// Public interface for other components to trigger energy minimization
+namespace openmm_interface {
+    void minimize_energy_if_available(ApplicationState& state) {
+#ifdef VIAMD_ENABLE_OPENMM
+        if (state.simulation.initialized) {
+            MD_LOG_INFO("Performing post-build energy minimization with UFF...");
+            // Temporarily switch to UFF for minimization if not already using it
+            ForceFieldType original_ff = g_openmm_component.sim_context.force_field_type;
+            
+            if (original_ff != ForceFieldType::UFF) {
+                g_openmm_component.sim_context.force_field_type = ForceFieldType::UFF;
+                g_openmm_component.sim_context.force_field_name = "UFF";
+                g_openmm_component.cleanup_simulation(state);
+                g_openmm_component.setup_system(state);
+            }
+            
+            g_openmm_component.minimize_energy(state);
+            
+            // Restore original force field if changed
+            if (original_ff != ForceFieldType::UFF) {
+                g_openmm_component.sim_context.force_field_type = original_ff;
+                g_openmm_component.sim_context.force_field_name = (original_ff == ForceFieldType::AMBER) ? "AMBER14" : "UFF";
+                g_openmm_component.cleanup_simulation(state);
+                g_openmm_component.setup_system(state);
+            }
+        } else {
+            // If simulation is not initialized, set up UFF system just for minimization
+            ForceFieldType original_ff = g_openmm_component.sim_context.force_field_type;
+            g_openmm_component.sim_context.force_field_type = ForceFieldType::UFF;
+            g_openmm_component.sim_context.force_field_name = "UFF";
+            
+            g_openmm_component.setup_system(state);
+            g_openmm_component.minimize_energy(state);
+            
+            // Optionally cleanup after minimization to return to uninitialized state
+            // or keep it initialized for further use
+            // g_openmm_component.cleanup_simulation(state);
+            
+            MD_LOG_INFO("Energy minimization completed with UFF");
+        }
+#else
+        MD_LOG_INFO("OpenMM not available - skipping energy minimization");
+#endif
+    }
+}
 
 } // namespace openmm
 

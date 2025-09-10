@@ -32,6 +32,10 @@
 #include <imgui.h>
 #include <loader.h>
 
+#ifdef VIAMD_ENABLE_OPENMM
+#include "../openmm/openmm_interface.h"
+#endif
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -111,6 +115,49 @@ struct MoleculeBuilder : viamd::EventHandler {
             md_molecule_free(&built_molecule.mol, app_state->mold.mol_alloc);
             built_molecule = {};
         }
+    }
+
+    void clear_molecule_from_viamd() {
+        if (!app_state) {
+            strcpy(error_message, "Application state not available");
+            return;
+        }
+
+        // Complete scene clearing
+        // Reset the arena allocator to free existing molecule data
+        md_arena_allocator_reset(app_state->mold.mol_alloc);
+        
+        // Zero out the existing molecule structure completely
+        memset(&app_state->mold.mol, 0, sizeof(app_state->mold.mol));
+        
+        // Destroy existing GPU resources
+        if (app_state->mold.gl_mol.id != 0) {
+            md_gl_mol_destroy(app_state->mold.gl_mol);
+            app_state->mold.gl_mol = {0};
+        }
+        
+        // Clear selection and highlight masks
+        md_bitfield_clear(&app_state->selection.selection_mask);
+        md_bitfield_clear(&app_state->selection.highlight_mask);
+        
+        // Update app state flags
+        app_state->mold.dirty_buffers = MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyBonds;
+        
+        // Reset animation
+        app_state->animation.frame = 0.0;
+        
+        // Clear trajectory - check if exists first
+        if (app_state->mold.traj) {
+            ::load::traj::close(app_state->mold.traj);
+            app_state->mold.traj = nullptr;
+        }
+
+        snprintf(info_message, sizeof(info_message), "Molecule cleared from VIAMD");
+        
+        MD_LOG_INFO("Molecule builder: cleared molecule from VIAMD");
+        
+        // Broadcast topology initialization event to recreate GL resources
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, viamd::EventPayloadType_ApplicationState, app_state);
     }
 
 #ifdef VIAMD_ENABLE_RDKIT
@@ -313,6 +360,11 @@ struct MoleculeBuilder : viamd::EventHandler {
         
         // Broadcast topology initialization event to recreate GL resources
         viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, viamd::EventPayloadType_ApplicationState, app_state);
+        
+        // Perform energy minimization with UFF after loading
+#ifdef VIAMD_ENABLE_OPENMM
+        openmm_interface::minimize_energy_if_available(*app_state);
+#endif
     }
 
     void draw_example_buttons() {
@@ -391,6 +443,11 @@ struct MoleculeBuilder : viamd::EventHandler {
                     load_molecule_into_viamd();
                 }
                 ImGui::EndDisabled();
+                
+                // Clear button - clear any loaded molecule from VIAMD
+                if (ImGui::Button("Clear Molecule", ImVec2(-1, 0))) {
+                    clear_molecule_from_viamd();
+                }
                 
                 ImGui::Separator();
                 
