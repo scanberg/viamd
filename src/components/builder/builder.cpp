@@ -278,9 +278,9 @@ struct MoleculeBuilder : viamd::EventHandler {
         memset(&app_state->mold.mol, 0, sizeof(app_state->mold.mol));
         
         // Destroy existing GPU resources
-        if (app_state->mold.gl_mol) {
+        if (app_state->mold.gl_mol.id != 0) {
             md_gl_mol_destroy(app_state->mold.gl_mol);
-            app_state->mold.gl_mol = nullptr;
+            app_state->mold.gl_mol = {0};
         }
         
         // Clear selection and highlight masks
