@@ -612,6 +612,37 @@ static void init_trajectory_data(ApplicationState* data);
 
 static void interrupt_async_tasks(ApplicationState* data);
 
+// Event handler for main application
+struct MainEventHandler : viamd::EventHandler {
+    ApplicationState* app_state = nullptr;
+    
+    MainEventHandler(ApplicationState* state) : app_state(state) {
+        viamd::event_system_register_handler(*this);
+    }
+    
+    void process_events(const viamd::Event* events, size_t num_events) final {
+        for (size_t i = 0; i < num_events; ++i) {
+            const viamd::Event& e = events[i];
+            
+            switch (e.type) {
+                case viamd::EventType_ViamdTopologyInit: {
+                    if (e.payload_type == viamd::EventPayloadType_ApplicationState && app_state) {
+                        // Only reinitialize molecule data if GL molecule is invalid (e.g., after builder loads a molecule)
+                        if (app_state->mold.gl_mol.id == 0 && app_state->mold.mol.atom.count > 0) {
+                            MD_LOG_DEBUG("Recreating GL molecule after topology initialization");
+                            init_molecule_data(app_state);
+                        }
+                    }
+                    break;
+                }
+                default:
+                    // Ignore other events
+                    break;
+            }
+        }
+    }
+};
+
 static bool load_dataset_from_file(ApplicationState* data, const LoadParam& param);
 
 static void load_workspace(ApplicationState* data, str_t file);
@@ -774,6 +805,9 @@ int main(int argc, char** argv) {
     md_gl_initialize();
     data.mold.gl_shaders                = md_gl_shaders_create(shader_output_snippet);
     data.mold.gl_shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
+
+    // Initialize main event handler to respond to topology changes
+    MainEventHandler main_event_handler(&data);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &data);
 
