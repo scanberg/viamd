@@ -95,7 +95,7 @@ option(VIAMD_ENABLE_RDKIT "Enable RDKit for molecule building" ON)
 if(VIAMD_ENABLE_BUILDER AND VIAMD_ENABLE_RDKIT)
     # Try to find RDKit
     find_library(RDKIT_LIBRARIES NAMES RDKitGraphMol PATHS /usr/lib/x86_64-linux-gnu)
-    find_path(RDKIT_INCLUDE_DIR NAMES rdkit/GraphMol/GraphMol.h PATHS /usr/include)
+    find_path(RDKIT_INCLUDE_DIR NAMES GraphMol/GraphMol.h PATHS /usr/include/rdkit)
     
     if(RDKIT_LIBRARIES AND RDKIT_INCLUDE_DIR)
         set(VIAMD_RDKIT_FOUND TRUE)
