@@ -46,6 +46,7 @@ option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
+option(VIAMD_ENABLE_BUILDER "Enable Molecule Builder Module" ON)
 set(VIAMD_FRAME_CACHE_SIZE_MB "2048" CACHE STRING "Reserved frame cache size in Megabytes")
 set(VIAMD_NUM_WORKER_THREADS "8" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation)")
 
@@ -85,6 +86,38 @@ if(VIAMD_ENABLE_OPENMM)
         message(WARNING "OpenMM not found, disabling OpenMM support")
         set(VIAMD_ENABLE_OPENMM OFF)
         set(VIAMD_OPENMM_FOUND FALSE)
+    endif()
+endif()
+
+# RDKIT OPTIONS (for Builder module)
+option(VIAMD_ENABLE_RDKIT "Enable RDKit for molecule building" ON)
+
+if(VIAMD_ENABLE_BUILDER AND VIAMD_ENABLE_RDKIT)
+    # Try to find RDKit
+    find_library(RDKIT_LIBRARIES NAMES RDKitGraphMol PATHS /usr/lib/x86_64-linux-gnu)
+    find_path(RDKIT_INCLUDE_DIR NAMES rdkit/GraphMol/GraphMol.h PATHS /usr/include)
+    
+    if(RDKIT_LIBRARIES AND RDKIT_INCLUDE_DIR)
+        set(VIAMD_RDKIT_FOUND TRUE)
+        message(STATUS "RDKit found: ${RDKIT_LIBRARIES}")
+        
+        # Find additional RDKit libraries
+        find_library(RDKIT_SMILES_PARSE_LIB NAMES RDKitSmilesParse PATHS /usr/lib/x86_64-linux-gnu)
+        find_library(RDKIT_DISTGEOM_LIB NAMES RDKitDistGeom PATHS /usr/lib/x86_64-linux-gnu)
+        find_library(RDKIT_UFF_LIB NAMES RDKitForceFieldHelpers PATHS /usr/lib/x86_64-linux-gnu)
+        find_library(RDKIT_MOLOPS_LIB NAMES RDKitGraphMol PATHS /usr/lib/x86_64-linux-gnu)
+        
+        set(RDKIT_ALL_LIBRARIES 
+            ${RDKIT_LIBRARIES}
+            ${RDKIT_SMILES_PARSE_LIB}
+            ${RDKIT_DISTGEOM_LIB}
+            ${RDKIT_UFF_LIB}
+        )
+        
+    else()
+        message(WARNING "RDKit not found, disabling RDKit support")
+        set(VIAMD_ENABLE_RDKIT OFF)
+        set(VIAMD_RDKIT_FOUND FALSE)
     endif()
 endif()
 
@@ -135,6 +168,10 @@ endif()
 
 if (VIAMD_ENABLE_OPENMM)
     set(COMP_FILES ${COMP_FILES} src/components/openmm/openmm.cpp)
+endif()
+
+if (VIAMD_ENABLE_BUILDER)
+    set(COMP_FILES ${COMP_FILES} src/components/builder/builder.cpp)
 endif()
 
 set(SHADER_FILES 
@@ -215,6 +252,14 @@ if (VIAMD_ENABLE_OPENMM)
     set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_ENABLE_OPENMM=1)
 endif()
 
+if (VIAMD_ENABLE_BUILDER)
+    set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_ENABLE_BUILDER=1)
+endif()
+
+if (VIAMD_ENABLE_RDKIT)
+    set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_ENABLE_RDKIT=1)
+endif()
+
 target_compile_definitions(viamd PRIVATE
     ${VIAMD_DEFINES}
     VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}
@@ -236,6 +281,7 @@ target_include_directories(viamd
         ext/gl3w
         ext/enkiTS/src
         $<$<BOOL:${VIAMD_ENABLE_OPENMM}>:${OpenMM_INCLUDE_DIR}>
+        $<$<BOOL:${VIAMD_ENABLE_RDKIT}>:${RDKIT_INCLUDE_DIR}>
 )
 
 set_target_properties(viamd PROPERTIES
@@ -255,4 +301,5 @@ target_link_libraries(viamd
     imgui_notify
     ${VIAMD_STDLIBS}
     $<$<BOOL:${VIAMD_ENABLE_OPENMM}>:${OpenMM_LIBRARY}>
+    $<$<BOOL:${VIAMD_ENABLE_RDKIT}>:${RDKIT_ALL_LIBRARIES}>
 )
