@@ -21,6 +21,40 @@ For windows, we recommend to use the latest binary available on the [release pag
 ### Ubuntu and MacOs
 To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your machine, you can follow the procedure described in details in the wiki for [Linux](https://github.com/scanberg/viamd/wiki/0.-Building#linux) and [MacOS](https://github.com/scanberg/viamd/wiki/0.-Building#mac).
 
+## Optional Components
+
+VIAMD includes several optional components that enhance functionality:
+
+### Molecule Builder (RDKit Integration)
+Build molecules from SMILES strings with 3D coordinate generation and geometry optimization.
+
+**Installation requirements:**
+```bash
+# Ubuntu/Debian
+sudo apt install librdkit-dev librdkit1
+
+# Build with molecule builder support (enabled by default)
+cmake .. -DVIAMD_ENABLE_BUILDER=ON -DVIAMD_ENABLE_RDKIT=ON
+```
+
+**Usage:** Navigate to `Builder → Molecule Builder` in the main menu.
+
+**Documentation:** See [BUILDER_INTEGRATION.md](BUILDER_INTEGRATION.md) for detailed installation and usage instructions.
+
+### OpenMM Integration
+Real-time molecular dynamics simulation capabilities with force field support.
+
+**Installation requirements:**
+```bash
+# Ubuntu/Debian
+sudo apt install libopenmm-dev libopenmm8.0t64
+
+# Build with OpenMM support
+cmake .. -DVIAMD_ENABLE_OPENMM=ON
+```
+
+**Documentation:** See [OPENMM_INTEGRATION.md](OPENMM_INTEGRATION.md) for detailed installation and usage instructions.
+
 ## Documentation
 Documentation about VIAMD is available on the github [wiki](https://github.com/scanberg/viamd/wiki). The two first chapters relate to the [visual](https://github.com/scanberg/viamd/wiki/1.-Visual) and [analysis](https://github.com/scanberg/viamd/wiki/2.-Analysis) features respectively, where we highlight the interactive part of software. The third chapter focus on the VIAMD [language](https://github.com/scanberg/viamd/wiki/3.-Language) used for scripting and the fourth chapter propose a serie of [tutorial](https://github.com/scanberg/viamd/wiki/4.-Tutorials) (under construction). 
 
