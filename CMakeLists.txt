@@ -166,6 +166,7 @@ file(GLOB GFX_FILES src/gfx/*.cpp src/gfx/*.h)
 set(COMP_FILES
     src/components/ramachandran/ramachandran.cpp
     src/components/shapespace/shapespace.cpp
+    src/components/correlation/correlation.cpp
 )
 
 if (VIAMD_ENABLE_VELOXCHEM)
