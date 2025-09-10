@@ -1288,6 +1288,8 @@ public:
 
 static OpenMMComponent g_openmm_component;
 
+} // namespace openmm
+
 // Public interface for other components to trigger energy minimization
 namespace openmm_interface {
     void minimize_energy_if_available(ApplicationState& state) {
@@ -1295,36 +1297,36 @@ namespace openmm_interface {
         if (state.simulation.initialized) {
             MD_LOG_INFO("Performing post-build energy minimization with UFF...");
             // Temporarily switch to UFF for minimization if not already using it
-            ForceFieldType original_ff = g_openmm_component.sim_context.force_field_type;
+            openmm::ForceFieldType original_ff = openmm::g_openmm_component.sim_context.force_field_type;
             
-            if (original_ff != ForceFieldType::UFF) {
-                g_openmm_component.sim_context.force_field_type = ForceFieldType::UFF;
-                g_openmm_component.sim_context.force_field_name = "UFF";
-                g_openmm_component.cleanup_simulation(state);
-                g_openmm_component.setup_system(state);
+            if (original_ff != openmm::ForceFieldType::UFF) {
+                openmm::g_openmm_component.sim_context.force_field_type = openmm::ForceFieldType::UFF;
+                openmm::g_openmm_component.sim_context.force_field_name = "UFF";
+                openmm::g_openmm_component.cleanup_simulation(state);
+                openmm::g_openmm_component.setup_system(state);
             }
             
-            g_openmm_component.minimize_energy(state);
+            openmm::g_openmm_component.minimize_energy(state);
             
             // Restore original force field if changed
-            if (original_ff != ForceFieldType::UFF) {
-                g_openmm_component.sim_context.force_field_type = original_ff;
-                g_openmm_component.sim_context.force_field_name = (original_ff == ForceFieldType::AMBER) ? "AMBER14" : "UFF";
-                g_openmm_component.cleanup_simulation(state);
-                g_openmm_component.setup_system(state);
+            if (original_ff != openmm::ForceFieldType::UFF) {
+                openmm::g_openmm_component.sim_context.force_field_type = original_ff;
+                openmm::g_openmm_component.sim_context.force_field_name = (original_ff == openmm::ForceFieldType::AMBER) ? "AMBER14" : "UFF";
+                openmm::g_openmm_component.cleanup_simulation(state);
+                openmm::g_openmm_component.setup_system(state);
             }
         } else {
             // If simulation is not initialized, set up UFF system just for minimization
-            ForceFieldType original_ff = g_openmm_component.sim_context.force_field_type;
-            g_openmm_component.sim_context.force_field_type = ForceFieldType::UFF;
-            g_openmm_component.sim_context.force_field_name = "UFF";
+            openmm::ForceFieldType original_ff = openmm::g_openmm_component.sim_context.force_field_type;
+            openmm::g_openmm_component.sim_context.force_field_type = openmm::ForceFieldType::UFF;
+            openmm::g_openmm_component.sim_context.force_field_name = "UFF";
             
-            g_openmm_component.setup_system(state);
-            g_openmm_component.minimize_energy(state);
+            openmm::g_openmm_component.setup_system(state);
+            openmm::g_openmm_component.minimize_energy(state);
             
             // Optionally cleanup after minimization to return to uninitialized state
             // or keep it initialized for further use
-            // g_openmm_component.cleanup_simulation(state);
+            // openmm::g_openmm_component.cleanup_simulation(state);
             
             MD_LOG_INFO("Energy minimization completed with UFF");
         }
@@ -1333,7 +1335,5 @@ namespace openmm_interface {
 #endif
     }
 }
-
-} // namespace openmm
 
 #endif // VIAMD_ENABLE_OPENMM
