@@ -106,8 +106,8 @@ struct MoleculeBuilder : viamd::EventHandler {
     }
 
     void cleanup_built_molecule() {
-        if (built_molecule.valid) {
-            md_molecule_free(&built_molecule.mol, arena);
+        if (built_molecule.valid && app_state && app_state->mold.mol_alloc) {
+            md_molecule_free(&built_molecule.mol, app_state->mold.mol_alloc);
             built_molecule = {};
         }
     }
@@ -160,6 +160,11 @@ struct MoleculeBuilder : viamd::EventHandler {
     bool convert_rdkit_to_viamd(const RDKit::RWMol& rdkit_mol) {
         cleanup_built_molecule();
 
+        if (!app_state || !app_state->mold.mol_alloc) {
+            strcpy(error_message, "Application state not available");
+            return false;
+        }
+
         // Initialize VIAMD molecule structure - zero initialize
         built_molecule.mol = {};
 
@@ -167,15 +172,18 @@ struct MoleculeBuilder : viamd::EventHandler {
         unsigned int num_atoms = rdkit_mol.getNumAtoms();
         unsigned int num_bonds = rdkit_mol.getNumBonds();
 
+        // Use the same allocator that will manage the molecule in VIAMD
+        md_allocator_i* mol_alloc = app_state->mold.mol_alloc;
+
         // Allocate arrays for atoms
-        md_array_resize(built_molecule.mol.atom.x, num_atoms, arena);
-        md_array_resize(built_molecule.mol.atom.y, num_atoms, arena);
-        md_array_resize(built_molecule.mol.atom.z, num_atoms, arena);
-        md_array_resize(built_molecule.mol.atom.element, num_atoms, arena);
-        md_array_resize(built_molecule.mol.atom.type, num_atoms, arena);
-        md_array_resize(built_molecule.mol.atom.radius, num_atoms, arena);
-        md_array_resize(built_molecule.mol.atom.mass, num_atoms, arena);
-        md_array_resize(built_molecule.mol.atom.flags, num_atoms, arena);
+        md_array_resize(built_molecule.mol.atom.x, num_atoms, mol_alloc);
+        md_array_resize(built_molecule.mol.atom.y, num_atoms, mol_alloc);
+        md_array_resize(built_molecule.mol.atom.z, num_atoms, mol_alloc);
+        md_array_resize(built_molecule.mol.atom.element, num_atoms, mol_alloc);
+        md_array_resize(built_molecule.mol.atom.type, num_atoms, mol_alloc);
+        md_array_resize(built_molecule.mol.atom.radius, num_atoms, mol_alloc);
+        md_array_resize(built_molecule.mol.atom.mass, num_atoms, mol_alloc);
+        md_array_resize(built_molecule.mol.atom.flags, num_atoms, mol_alloc);
 
         // Convert atoms
         for (unsigned int i = 0; i < num_atoms; ++i) {
@@ -207,8 +215,8 @@ struct MoleculeBuilder : viamd::EventHandler {
 
         // Convert bonds
         if (num_bonds > 0) {
-            md_array_resize(built_molecule.mol.bond.pairs, num_bonds, arena);
-            md_array_resize(built_molecule.mol.bond.order, num_bonds, arena);
+            md_array_resize(built_molecule.mol.bond.pairs, num_bonds, mol_alloc);
+            md_array_resize(built_molecule.mol.bond.order, num_bonds, mol_alloc);
 
             for (unsigned int i = 0; i < num_bonds; ++i) {
                 const auto* bond = rdkit_mol.getBondWithIdx(i);
@@ -259,8 +267,9 @@ struct MoleculeBuilder : viamd::EventHandler {
             return;
         }
 
-        // Free existing molecule
-        md_molecule_free(&app_state->mold.mol, app_state->allocator.persistent);
+        // Reset the arena allocator to free existing molecule data
+        // This is the pattern used by the main application for molecule cleanup
+        md_arena_allocator_reset(app_state->mold.mol_alloc);
         
         // Copy the built molecule to the app state
         app_state->mold.mol = built_molecule.mol;
