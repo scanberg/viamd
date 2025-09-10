@@ -103,8 +103,10 @@ if(VIAMD_ENABLE_BUILDER AND VIAMD_ENABLE_RDKIT)
         
         # Find additional RDKit libraries
         find_library(RDKIT_SMILES_PARSE_LIB NAMES RDKitSmilesParse PATHS /usr/lib/x86_64-linux-gnu)
-        find_library(RDKIT_DISTGEOM_LIB NAMES RDKitDistGeom PATHS /usr/lib/x86_64-linux-gnu)
+        find_library(RDKIT_DISTGEOM_LIB NAMES RDKitDistGeomHelpers PATHS /usr/lib/x86_64-linux-gnu)
         find_library(RDKIT_UFF_LIB NAMES RDKitForceFieldHelpers PATHS /usr/lib/x86_64-linux-gnu)
+        find_library(RDKIT_FORCEFIELD_LIB NAMES RDKitForceField PATHS /usr/lib/x86_64-linux-gnu)
+        find_library(RDKIT_DESCRIPTORS_LIB NAMES RDKitDescriptors PATHS /usr/lib/x86_64-linux-gnu)
         find_library(RDKIT_MOLOPS_LIB NAMES RDKitGraphMol PATHS /usr/lib/x86_64-linux-gnu)
         
         set(RDKIT_ALL_LIBRARIES 
@@ -112,6 +114,8 @@ if(VIAMD_ENABLE_BUILDER AND VIAMD_ENABLE_RDKIT)
             ${RDKIT_SMILES_PARSE_LIB}
             ${RDKIT_DISTGEOM_LIB}
             ${RDKIT_UFF_LIB}
+            ${RDKIT_FORCEFIELD_LIB}
+            ${RDKIT_DESCRIPTORS_LIB}
         )
         
     else()
