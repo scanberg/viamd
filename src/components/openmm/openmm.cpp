@@ -364,9 +364,9 @@ private:
             double sigma = atom_params.sigma;
             double epsilon = atom_params.epsilon;
             
-            // For initial stability, reduce charges by factor of 0.5
+            // For initial stability, reduce charges by factor of 0.25 (more conservative)
             // This prevents electrostatic explosions while still having realistic interactions
-            charge *= 0.5;
+            charge *= 0.25;
             
             nonbondedForce->addParticle(charge, sigma, epsilon);
             
@@ -488,9 +488,9 @@ private:
             double sigma = atom_params.sigma;
             double epsilon = atom_params.epsilon;
             
-            // For initial stability, reduce charges by factor of 0.5
+            // For initial stability, reduce charges by factor of 0.25 (more conservative)
             // This prevents electrostatic explosions while still having realistic interactions
-            charge *= 0.5;
+            charge *= 0.25;
             
             nonbondedForce->addParticle(charge, sigma, epsilon);
             
@@ -532,9 +532,9 @@ private:
         try {
             MD_LOG_INFO("Performing energy minimization to stabilize system...");
             
-            // Perform local energy minimization to relax bad contacts
-            // This is crucial to prevent simulation explosion
-            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-4, 1000);
+            // More aggressive energy minimization to prevent explosions
+            // Use tighter tolerance and more iterations
+            OpenMM::LocalEnergyMinimizer::minimize(*sim_context.context, 1e-6, 5000);
             
             // Get minimized positions and update VIAMD coordinates
             OpenMM::State minimizedState = sim_context.context->getState(OpenMM::State::Positions | OpenMM::State::Energy);
@@ -552,6 +552,11 @@ private:
             
             double energy = minimizedState.getPotentialEnergy();
             MD_LOG_INFO("Energy minimization completed. Final energy: %.3f kJ/mol", energy);
+            
+            // Check if energy is reasonable after minimization
+            if (std::isnan(energy) || std::isinf(energy) || energy > 1e6) {
+                MD_LOG_WARN("Energy after minimization is suspicious (%.3f kJ/mol). System may be unstable.", energy);
+            }
             
         } catch (const std::exception& e) {
             MD_LOG_ERROR("Energy minimization failed: %s. Proceeding without minimization.", e.what());
@@ -585,8 +590,8 @@ private:
                 double coord_magnitude = sqrt(x*x + y*y + z*z);
                 max_coord = std::max(max_coord, coord_magnitude);
                 
-                // Check for explosion: coordinates > 100 Angstroms from origin
-                if (coord_magnitude > 100.0) {
+                // Check for explosion: coordinates > 50 Angstroms from origin (more sensitive)
+                if (coord_magnitude > 50.0) {
                     explosion_detected = true;
                     break;
                 }
@@ -640,15 +645,25 @@ private:
         // Force field selection
         ImGui::Text("Force Field: %s", sim_context.force_field_name.c_str());
         
-        // Only allow force field change when not initialized
-        if (!state.simulation.initialized) {
-            const char* force_field_items[] = { "AMBER14", "UFF" };
-            int current_ff = (sim_context.force_field_type == ForceFieldType::UFF) ? 1 : 0;
+        const char* force_field_items[] = { "AMBER14", "UFF" };
+        int current_ff = (sim_context.force_field_type == ForceFieldType::UFF) ? 1 : 0;
+        
+        if (ImGui::Combo("Force Field", &current_ff, force_field_items, IM_ARRAYSIZE(force_field_items))) {
+            ForceFieldType new_force_field_type = (current_ff == 1) ? ForceFieldType::UFF : ForceFieldType::AMBER;
+            std::string new_force_field_name = (current_ff == 1) ? "UFF" : "AMBER14";
             
-            if (ImGui::Combo("Force Field", &current_ff, force_field_items, IM_ARRAYSIZE(force_field_items))) {
-                sim_context.force_field_type = (current_ff == 1) ? ForceFieldType::UFF : ForceFieldType::AMBER;
-                sim_context.force_field_name = (current_ff == 1) ? "UFF" : "AMBER14";
+            // Check if force field actually changed
+            if (new_force_field_type != sim_context.force_field_type) {
+                sim_context.force_field_type = new_force_field_type;
+                sim_context.force_field_name = new_force_field_name;
                 MD_LOG_INFO("Force field changed to: %s", sim_context.force_field_name.c_str());
+                
+                // If system is already initialized, we need to reinitialize with new force field
+                if (state.simulation.initialized) {
+                    MD_LOG_INFO("Reinitializing system with new force field...");
+                    cleanup_simulation(state);
+                    setup_system(state);
+                }
             }
         }
         
@@ -681,10 +696,11 @@ private:
             }
             
             float timestep = static_cast<float>(state.simulation.timestep);
-            if (ImGui::SliderFloat("Timestep (ps)", &timestep, 0.0005f, 0.002f)) {
-                // Much smaller timestep range to prevent instability
-                // Reduced max from 0.005 to 0.002 ps
-                timestep = std::max(0.0005f, std::min(0.002f, timestep));
+            if (ImGui::SliderFloat("Timestep (ps)", &timestep, 0.0001f, 0.001f)) {
+                // Very conservative timestep range to prevent instability
+                // Max reduced to 0.001 ps for better stability
+                timestep = std::max(0.0001f, std::min(0.001f, timestep));
+                state.simulation.timestep = timestep;
                 state.simulation.timestep = timestep;
             }
             
