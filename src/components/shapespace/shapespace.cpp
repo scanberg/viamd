@@ -384,12 +384,18 @@ struct Shapespace : viamd::EventHandler {
                         ApplicationState* app_state = shapespace->app_state;
                         const size_t stride = ALIGN_TO(app_state->mold.mol.atom.count, 8);
                         const size_t bytes = stride * 3 * sizeof(float);
-                        float* coords = (float*)md_alloc(md_get_heap_allocator(), bytes);
-                        defer { md_free(md_get_heap_allocator(), coords, bytes); };
+                        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+                        defer { md_arena_allocator_destroy(alloc); };
+
+                        float* coords = (float*)md_arena_allocator_push(alloc, bytes);
                         float* x = coords + stride * 0;
                         float* y = coords + stride * 1;
                         float* z = coords + stride * 2;
-                        const float* w = shapespace->use_mass ? app_state->mold.mol.atom.mass : 0;
+                        float* w = 0;
+                        if (shapespace->use_mass) {
+                            w = (float*)md_arena_allocator_push(alloc, stride * sizeof(float));
+                            md_atom_extract_masses(w, 0, app_state->mold.mol.atom.count, &app_state->mold.mol.atom);
+                        }
 
                         const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
 
@@ -401,7 +407,7 @@ struct Shapespace : viamd::EventHandler {
                             for (size_t i = 0; i < md_array_size(shapespace->bitfields); ++i) {
                                 const md_bitfield_t* bf = &shapespace->bitfields[i];
                                 size_t count = md_bitfield_popcount(bf);
-                                md_array_resize(xyzw, count, md_get_heap_allocator());
+                                md_array_resize(xyzw, count, alloc);
 
                                 md_bitfield_iter_t iter = md_bitfield_iter_create(bf);
                                 size_t dst_idx = 0;
@@ -421,7 +427,6 @@ struct Shapespace : viamd::EventHandler {
                                 shapespace->coords[dst_idx] = p[0] * weights[0] + p[1] * weights[1] + p[2] * weights[2];
                             }
                         }
-                        md_array_free(xyzw, md_get_heap_allocator());
                     });
 
                     task_system::enqueue_task(evaluate_task);

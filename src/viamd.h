@@ -857,7 +857,7 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
         break;
     case SelectionGranularity::Residue:
         for (size_t i = 0; i < mol.residue.count; ++i) {
-            md_range_t range = md_residue_atom_range(mol.residue, i);
+            md_range_t range = md_residue_atom_range(&mol.residue, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
                 md_bitfield_set_range(mask, range.beg, range.end);
             }
@@ -865,7 +865,7 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
         break;
     case SelectionGranularity::Chain:
         for (size_t i = 0; i < mol.chain.count; ++i) {
-            md_range_t range = md_chain_atom_range(mol.chain, i);
+            md_range_t range = md_chain_atom_range(&mol.chain, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
                 md_bitfield_set_range(mask, range.beg, range.end);
             }
@@ -929,9 +929,9 @@ static inline int32_t single_selection_sequence_last(const SingleSelectionSequen
     return -1;
 }
 
-static inline int64_t single_selection_sequence_count(const SingleSelectionSequence* seq) {
-    int64_t i = 0;
-    for (; i < (int64_t)ARRAY_SIZE(seq->idx); ++i) {
+static inline size_t single_selection_sequence_count(const SingleSelectionSequence* seq) {
+    size_t i = 0;
+    for (; i < ARRAY_SIZE(seq->idx); ++i) {
         if (seq->idx[i] == -1) break;
     }
     return i;

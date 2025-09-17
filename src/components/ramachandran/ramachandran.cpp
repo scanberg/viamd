@@ -903,7 +903,7 @@ struct Ramachandran : viamd::EventHandler {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
                                         md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[idx];
                                         if (res_idx < (int)mol.residue.count) {
-                                            md_range_t range = md_residue_atom_range(mol.residue, res_idx);
+                                            md_range_t range = md_residue_atom_range(&mol.residue, res_idx);
                                             modify_field(highlight_mask, range, SelectionOperator::Or);
                                         }
                                     }
@@ -925,7 +925,7 @@ struct Ramachandran : viamd::EventHandler {
                                 if (mouse_hover_idx < (int64_t)mol.protein_backbone.count) {
                                     md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[mouse_hover_idx];
                                     if (res_idx < (int)mol.residue.count) {
-                                        md_range_t range = md_residue_atom_range(mol.residue, res_idx);
+                                        md_range_t range = md_residue_atom_range(&mol.residue, res_idx);
                                         modify_field(highlight_mask, range, SelectionOperator::Or);
                                         grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, mol);
                                     }

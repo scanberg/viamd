@@ -527,7 +527,7 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
                     const int32_t i = indices[0];
                     com = vec3_set(x[i], y[i], z[i]);
                 } else {
-                    com = md_util_com_compute(x, y, z, mol->atom.mass, indices, count, &mol->unit_cell);
+                    com = md_util_com_compute(x, y, z, NULL, indices, count, &mol->unit_cell);
                     md_util_pbc(&com.x, &com.y, &com.z, 0, 1, cell);
                 }
 

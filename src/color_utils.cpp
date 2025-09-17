@@ -1,4 +1,4 @@
-#include "color_utils.h"
+﻿#include "color_utils.h"
 
 #include <core/md_hash.h>
 #include <md_molecule.h>
@@ -45,14 +45,16 @@ const float luminance = 1.0f;
 
 void color_atoms_cpk(uint32_t* colors, size_t count, const md_molecule_t& mol) {
     for (size_t i = 0; i < count; i++) {
-        colors[i] = mol.atom.element ? md_util_element_cpk_color(mol.atom.element[i]) : 0xFFFFFFFFU;
+        md_atomic_number_t z = md_atom_atomic_number(&mol.atom, i);
+        colors[i] = z ? md_util_element_cpk_color(z) : 0xFFFFFFFFU;
     }
 }
 
 void color_atoms_type(uint32_t* colors, size_t count, const md_molecule_t& mol) {
     for (size_t i = 0; i < count; ++i) {
-        const uint32_t u32 = md_hash32(mol.atom.type[i].buf, mol.atom.type[i].len, 0);
-        colors[i] = u32_to_color(u32);
+        str_t atom_name = md_atom_name(&mol.atom, i);
+        const uint64_t hash = md_hash64_str(atom_name, 0);
+        colors[i] = u32_to_color((uint32_t)hash ^ (uint32_t)(hash >> 32));
     }
 }
 
@@ -68,7 +70,7 @@ void color_atoms_res_name(uint32_t* colors, size_t count, const md_molecule_t& m
         str_t str = mol.residue.name[i];
         const uint32_t u32 = md_hash32(str.ptr, str.len, 0);
         const uint32_t color = u32_to_color(u32);
-        md_range_t range = md_residue_atom_range(mol.residue, i);
+        md_range_t range = md_residue_atom_range(&mol.residue, i);
         set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
@@ -77,7 +79,7 @@ void color_atoms_res_id(uint32_t* colors, size_t count, const md_molecule_t& mol
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t i = 0; i < mol.residue.count; i++) {
         const uint32_t color = u32_to_color(mol.residue.id[i]);
-        md_range_t range = md_residue_atom_range(mol.residue, i);
+        md_range_t range = md_residue_atom_range(&mol.residue, i);
         set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
@@ -85,7 +87,7 @@ void color_atoms_res_idx(uint32_t* colors, size_t count, const md_molecule_t& mo
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t i = 0; i < mol.residue.count; i++) {
         const uint32_t color = u32_to_color((uint32_t)i);
-        md_range_t range = md_residue_atom_range(mol.residue, i);
+        md_range_t range = md_residue_atom_range(&mol.residue, i);
         set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
@@ -99,7 +101,7 @@ void color_atoms_chain_id(uint32_t* colors, size_t count, const md_molecule_t& m
             u32 += str.ptr[j];
         }
         const uint32_t color = u32_to_color(u32);
-        md_range_t range = md_chain_atom_range(mol.chain, i);
+        md_range_t range = md_chain_atom_range(&mol.chain, i);
         set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
@@ -107,7 +109,7 @@ void color_atoms_chain_idx(uint32_t* colors, size_t count, const md_molecule_t& 
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t i = 0; i < mol.chain.count; i++) {
         const uint32_t color = u32_to_color((uint32_t)i);
-        md_range_t range = md_chain_atom_range(mol.chain, i);
+        md_range_t range = md_chain_atom_range(&mol.chain, i);
         set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
@@ -125,7 +127,7 @@ void color_atoms_sec_str(uint32_t* colors, size_t count, const md_molecule_t& mo
             const vec4_t rgba = w.x * convert_color(color_coil) + w.y * convert_color(color_helix) + w.z * convert_color(color_sheet);
             const uint32_t color = convert_color(rgba);
             md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[i];
-            md_range_t range = md_residue_atom_range(mol.residue, res_idx);
+            md_range_t range = md_residue_atom_range(&mol.residue, res_idx);
             set_colors(colors + range.beg, range.end - range.beg, color);
         }
     }

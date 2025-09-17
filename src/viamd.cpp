@@ -18,33 +18,30 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
     if (picking_idx < mol.atom.count) {
         int atom_idx = picking_idx;
         int local_idx = atom_idx;
-        const vec3_t pos = { mol.atom.x[atom_idx], mol.atom.y[atom_idx], mol.atom.z[atom_idx] };
-        str_t type = mol.atom.type ? mol.atom.type[atom_idx] : str_t{};
-        str_t elem = mol.atom.element ? md_util_element_name(mol.atom.element[atom_idx]) : str_t{};
-        str_t symbol = mol.atom.element ? md_util_element_symbol(mol.atom.element[atom_idx]) : str_t{};
+        const vec3_t pos = md_atom_coord(&mol.atom, atom_idx);
+        str_t type = md_atom_name(&mol.atom, atom_idx);
+        md_atomic_number_t z = md_atom_atomic_number(&mol.atom, atom_idx);
+        str_t elem = z ? md_util_element_name(z)   : str_t{};
+        str_t symb = z ? md_util_element_symbol(z) : str_t{};
 
-        int res_idx = -1;
+        int res_idx = md_residue_find_by_atom_idx(&mol.residue, atom_idx);
         str_t res_name = {};
         int res_id = 0;
-        if (mol.residue.count && mol.atom.res_idx) {
-            res_idx = mol.atom.res_idx[atom_idx];
-            res_name = mol.residue.name[res_idx];
-            res_id = mol.residue.id[res_idx];
-            md_range_t range = md_residue_atom_range(mol.residue, res_idx);
+        if (res_idx != -1) {
+            res_name = md_residue_name(&mol.residue, res_idx);
+            res_id   = md_residue_id(&mol.residue, res_idx);
+            md_range_t range = md_residue_atom_range(&mol.residue, res_idx);
             local_idx = atom_idx - range.beg;
         }
 
-        int chain_idx = -1;
+        int chain_idx = md_chain_find_by_atom_idx(&mol.chain, atom_idx);
         str_t chain_id = {};
-        if (mol.chain.count && mol.atom.chain_idx) {
-            chain_idx = mol.atom.chain_idx[atom_idx];
-            if (0 <= chain_idx && chain_idx < (int)mol.chain.count) {
-                chain_id = mol.chain.id[chain_idx];
-            }
+        if (chain_idx != -1) {
+            chain_id = md_chain_id(&mol.chain, chain_idx);
         }
 
         // External indices begin with 1 not 0
-        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx + 1, local_idx + 1, STR_ARG(type), STR_ARG(elem), STR_ARG(symbol), pos.x, pos.y, pos.z);
+        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx + 1, local_idx + 1, STR_ARG(type), STR_ARG(elem), STR_ARG(symb), pos.x, pos.y, pos.z);
         if (res_idx != -1) {
             md_strb_fmt(&sb, "res[%i]: %.*s %i\n", res_idx + 1, STR_ARG(res_name), res_id);
         }
@@ -82,19 +79,22 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         int bond_idx = picking_idx & 0x7FFFFFFF;
         if (0 <= bond_idx && bond_idx < (int)mol.bond.count) {
             md_bond_pair_t b = mol.bond.pairs[bond_idx];
-            char bond_type;
+            char bond_type = ' ';
             switch (mol.bond.order[bond_idx] & MD_BOND_ORDER_MASK) {
-            case 1: bond_type = '-'; break;
-            case 2: bond_type = '='; break;
-            case 3: bond_type = '#'; break;
-            case 4: bond_type = '$'; break;
-            default: bond_type = '?'; break;
+                case 1: bond_type = '-'; break;
+                case 2: bond_type = '='; break;
+                case 3: bond_type = '#'; break;
+                case 4: bond_type = '$'; break;
+                default: bond_type = '?'; break;
             }
-            const float dx = mol.atom.x[b.idx[0]] - mol.atom.x[b.idx[1]];
-            const float dy = mol.atom.y[b.idx[0]] - mol.atom.y[b.idx[1]];
-            const float dz = mol.atom.z[b.idx[0]] - mol.atom.z[b.idx[1]];
-            const float d = sqrtf(dx*dx + dy*dy + dz*dz);
-            md_strb_fmt(&sb, "bond: %s%c%s\n", mol.atom.type[b.idx[0]].buf, bond_type, mol.atom.type[b.idx[1]].buf);
+            vec3_t p0 = md_atom_coord(&mol.atom, b.idx[0]);
+            vec3_t p1 = md_atom_coord(&mol.atom, b.idx[1]);
+            float d = vec3_distance(p0, p1);
+
+            str_t type0 = md_atom_name(&mol.atom, b.idx[0]);
+            str_t type1 = md_atom_name(&mol.atom, b.idx[1]);
+
+            md_strb_fmt(&sb, "bond: " STR_FMT "%c" STR_FMT "\n", STR_ARG(type0), bond_type, STR_ARG(type1));
             md_strb_fmt(&sb, "order: %i\n", mol.bond.order[bond_idx]);
             md_strb_fmt(&sb, "length: %.3f\n", d);
         }
