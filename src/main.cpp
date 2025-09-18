@@ -2315,7 +2315,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 break;
             };
 
-            md_util_hydrogen_bond_calc(&mol.hydrogen_bond, x, y, z, cell, NULL);
+            md_util_hydrogen_bond_infer(&mol.hydrogen_bond, x, y, z, cell, NULL);
         });
         tasks[num_tasks++] = hbond_task;
     }
@@ -7035,12 +7035,45 @@ static void draw_debug_window(ApplicationState* data) {
         ImGui::Text("Camera Position: (%g, %g, %g)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
         ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
 
-        mat4_t P = data->view.param.matrix.curr.proj;
-        ImGui::Text("proj_matrix:");
-        ImGui::Text("[%g %g %g %g]", P.col[0].x, P.col[0].y, P.col[0].z, P.col[0].w);
-        ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
-        ImGui::Text("[%g %g %g %g]", P.col[2].x, P.col[2].y, P.col[2].z, P.col[2].w);
-        ImGui::Text("[%g %g %g %g]", P.col[3].x, P.col[3].y, P.col[3].z, P.col[3].w);
+        if (ImGui::TreeNode("Proj Matrix")) {
+            mat4_t P = data->view.param.matrix.curr.proj;
+            ImGui::Text("proj_matrix:");
+            ImGui::Text("[%g %g %g %g]", P.col[0].x, P.col[0].y, P.col[0].z, P.col[0].w);
+            ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
+            ImGui::Text("[%g %g %g %g]", P.col[2].x, P.col[2].y, P.col[2].z, P.col[2].w);
+            ImGui::Text("[%g %g %g %g]", P.col[3].x, P.col[3].y, P.col[3].z, P.col[3].w);
+        }
+
+        if (ImGui::Button("Export HBonds")) {
+			char path_buf[1024] = "";
+            if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save)) {
+                str_t path = str_t{ path_buf, strnlen(path_buf, sizeof(path_buf)) };
+                md_file_o* file = md_file_open(path, MD_FILE_WRITE);
+                if (file) {
+                    const md_molecule_t& mol = data->mold.mol;
+                    md_file_printf(file, "Donor,Hydrogen,Acceptor,Distance,Angle\n");
+                    for (size_t i = 0; i < mol.hydrogen_bond.num_bonds; ++i) {
+                        md_hydrogen_bond_pair_t bond = mol.hydrogen_bond.bonds[i];
+                        md_atom_idx_t d_idx = md_hydrogen_bond_donor_atom_idx(&mol.hydrogen_bond, bond.donor_idx);
+                        md_atom_idx_t h_idx = md_hydrogen_bond_donor_hydrogen_atom_idx(&mol.hydrogen_bond, bond.donor_idx);
+                        md_atom_idx_t a_idx = md_hydrogen_bond_acceptor_atom_idx(&mol.hydrogen_bond, bond.acceptor_idx);
+
+                        vec3_t d_pos = md_atom_coord(mol.atom, d_idx);
+                        vec3_t h_pos = md_atom_coord(mol.atom, h_idx);
+                        vec3_t a_pos = md_atom_coord(mol.atom, a_idx);
+
+                        float distance = vec3_distance(d_pos, a_pos);
+                        float angle = vec3_angle(vec3_sub(d_pos, h_pos), vec3_sub(a_pos, h_pos));
+
+                        md_file_printf(file, "%i,%i,%i,%.6f,%.6f\n", d_idx, h_idx, a_idx, distance, RAD_TO_DEG(angle));
+                    }
+                    md_file_close(file);
+                }
+                else {
+                    LOG_ERROR("Failed to open file '%s' for saving hbonds", path_buf);
+                }
+            }
+        }
     }
     ImGui::End();
 }
@@ -9367,10 +9400,15 @@ static void fill_gbuffer(ApplicationState* data) {
         const float outer_d2 = 15.0f * 15.0f;
 
         for (size_t i = 0; i < data->mold.mol.hydrogen_bond.num_bonds; ++i) {
-            const md_atom_pair_t pair = data->mold.mol.hydrogen_bond.bonds[i];
-            const vec3_t p0 = vec3_set(data->mold.mol.atom.x[pair.idx[0]], data->mold.mol.atom.y[pair.idx[0]], data->mold.mol.atom.z[pair.idx[0]]);
-            const vec3_t p1 = vec3_set(data->mold.mol.atom.x[pair.idx[1]], data->mold.mol.atom.y[pair.idx[1]], data->mold.mol.atom.z[pair.idx[1]]);
+            const md_hydrogen_bond_pair_t bond = data->mold.mol.hydrogen_bond.bonds[i];
+			const md_atom_idx_t h_idx = md_hydrogen_bond_donor_hydrogen_atom_idx(&data->mold.mol.hydrogen_bond, bond.donor_idx);
+            const md_atom_idx_t a_idx = md_hydrogen_bond_acceptor_atom_idx(&data->mold.mol.hydrogen_bond, bond.acceptor_idx);
 
+			const vec3_t p0 = md_atom_coord(data->mold.mol.atom, h_idx);
+			const vec3_t p1 = md_atom_coord(data->mold.mol.atom, a_idx);
+
+            vec4_t col = hb_color;
+            /*
             const float d2_0 = vec3_distance_squared(foc_pos, p0);
             const float d2_1 = vec3_distance_squared(foc_pos, p1);
             const float d2 = MIN(d2_0, d2_1);
@@ -9383,7 +9421,7 @@ static void fill_gbuffer(ApplicationState* data) {
                 // Squared falloff
                 col.w *= (1.0f - t * t);
             }
-
+            */
             vec3_t d = vec3_sub(p1, p0);
             md_util_min_image_vec3(&d, 1, &data->mold.mol.unitcell);
             if (vec3_length_squared(d) > 3.0f * 3.0f) {
