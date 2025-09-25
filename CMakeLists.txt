@@ -228,3 +228,5 @@ target_link_libraries(viamd
     imgui_notify
     ${VIAMD_STDLIBS}
 )
+add_executable(test_dataset src/test_dataset.cpp)
+target_link_libraries(test_dataset PRIVATE mdlib)
