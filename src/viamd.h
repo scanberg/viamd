@@ -231,6 +231,15 @@ struct DatasetItem {
     char query[32] = "";
     uint32_t count = 0;
     float fraction = 0;
+    
+    // Extended metadata for popups
+    char sequence[256] = "";  // For chains: residue sequence, for residues: atom type sequence
+    uint32_t type_hash = 0;   // Hash of the type (label + sequence) for uniqueness
+    
+    // For atom types, additional properties
+    float radius = 0.0f;
+    float mass = 0.0f;
+    md_element_t element = 0;
 };
 
 struct DipoleMoment {

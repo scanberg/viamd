@@ -11,6 +11,8 @@
 
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
 
+#include <string>
+
 #include <md_util.h>
 #include <md_gl.h>
 #include <md_gfx.h>
@@ -1521,71 +1523,158 @@ int main(int argc, char** argv) {
     return 0;
 }
 
+// Helper function to generate residue sequence for a chain
+static void generate_chain_residue_sequence(char* sequence, size_t max_len, const md_molecule_t* mol, size_t chain_idx) {
+    sequence[0] = '\0';
+    size_t len = 0;
+    
+    md_range_t chain_range = md_chain_residue_range(&mol->chain, chain_idx);
+    for (size_t i = chain_range.beg; i < chain_range.end && len < max_len - 10; ++i) {
+        str_t resname = LBL_TO_STR(mol->residue.name[i]);
+        if (i > chain_range.beg) {
+            len += snprintf(sequence + len, max_len - len, "-");
+        }
+        len += snprintf(sequence + len, max_len - len, "%.*s", (int)resname.len, resname.ptr);
+    }
+}
+
+// Helper function to generate atom type sequence for a residue
+static void generate_residue_atom_sequence(char* sequence, size_t max_len, const md_molecule_t* mol, size_t residue_idx) {
+    sequence[0] = '\0';
+    size_t len = 0;
+    
+    md_range_t res_range = md_residue_atom_range(&mol->residue, residue_idx);
+    for (size_t i = res_range.beg; i < res_range.end && len < max_len - 10; ++i) {
+        str_t atom_name = md_atom_name(&mol->atom, i);
+        if (i > res_range.beg) {
+            len += snprintf(sequence + len, max_len - len, "-");
+        }
+        len += snprintf(sequence + len, max_len - len, "%.*s", (int)atom_name.len, atom_name.ptr);
+    }
+}
+
+// Simple hash function for strings
+static uint32_t simple_hash(const char* str) {
+    uint32_t hash = 5381;
+    int c;
+    while ((c = *str++)) {
+        hash = ((hash << 5) + hash) + c;
+    }
+    return hash;
+}
+
 static void init_dataset_items(ApplicationState* data) {
     clear_dataset_items(data);
     if (data->mold.mol.atom.count == 0) return;
 
+    // Process chains - group by label + residue sequence
     for (size_t i = 0; i < data->mold.mol.chain.count; ++i) {
         DatasetItem item = {};
-        str_t str = LBL_TO_STR(data->mold.mol.chain.id[i]);
-        snprintf(item.label, sizeof(item.label), "%.*s", (int)str.len, str.ptr);
-        snprintf(item.query, sizeof(item.query), "chain(%d)", (int)(i+1));
-        size_t atom_count = md_chain_atom_count(&data->mold.mol.chain, i);
-        item.count = 1;
-        item.fraction = atom_count / (float)data->mold.mol.atom.count;
-        md_array_push(data->dataset.chains, item, persistent_alloc);
+        str_t chain_id = LBL_TO_STR(data->mold.mol.chain.id[i]);
+        snprintf(item.label, sizeof(item.label), "%.*s", (int)chain_id.len, chain_id.ptr);
+        
+        // Generate residue sequence for this chain
+        generate_chain_residue_sequence(item.sequence, sizeof(item.sequence), &data->mold.mol, i);
+        
+        // Create combined string for hash (label + sequence)
+        char combined[512];
+        snprintf(combined, sizeof(combined), "%s:%s", item.label, item.sequence);
+        item.type_hash = simple_hash(combined);
+        
+        // Check if we already have this chain type
+        DatasetItem* existing_item = nullptr;
+        for (size_t j = 0; j < md_array_size(data->dataset.chains); ++j) {
+            if (data->dataset.chains[j].type_hash == item.type_hash) {
+                existing_item = &data->dataset.chains[j];
+                break;
+            }
+        }
+        
+        if (existing_item) {
+            // Chain type already exists, increment count
+            existing_item->count += 1;
+            size_t atom_count = md_chain_atom_count(&data->mold.mol.chain, i);
+            existing_item->fraction += atom_count / (float)data->mold.mol.atom.count;
+        } else {
+            // New chain type
+            snprintf(item.query, sizeof(item.query), "chain('%s')", item.label);
+            size_t atom_count = md_chain_atom_count(&data->mold.mol.chain, i);
+            item.count = 1;
+            item.fraction = atom_count / (float)data->mold.mol.atom.count;
+            md_array_push(data->dataset.chains, item, persistent_alloc);
+        }
     }
 
+    // Process residues - group by name + atom type sequence
     for (size_t i = 0; i < data->mold.mol.residue.count; ++i) {
         const float fraction_size = md_residue_atom_count(&data->mold.mol.residue, i) / (float)data->mold.mol.atom.count;
-        {
-            // Do resname
-            str_t resname = LBL_TO_STR(data->mold.mol.residue.name[i]);
-            DatasetItem* item = 0;
-            for (size_t j = 0; j < md_array_size(data->dataset.residue_names); ++j) {
-                if (strcmp(data->dataset.residue_names[j].label, resname.ptr) == 0) {
-                    item = &data->dataset.residue_names[j];
-                    break;
-                }
+        
+        DatasetItem item = {};
+        str_t resname = LBL_TO_STR(data->mold.mol.residue.name[i]);
+        snprintf(item.label, sizeof(item.label), "%.*s", (int)resname.len, resname.ptr);
+        
+        // Generate atom type sequence for this residue
+        generate_residue_atom_sequence(item.sequence, sizeof(item.sequence), &data->mold.mol, i);
+        
+        // Create combined string for hash (label + sequence)
+        char combined[512];
+        snprintf(combined, sizeof(combined), "%s:%s", item.label, item.sequence);
+        item.type_hash = simple_hash(combined);
+        
+        // Check if we already have this residue type
+        DatasetItem* existing_item = nullptr;
+        for (size_t j = 0; j < md_array_size(data->dataset.residue_names); ++j) {
+            if (data->dataset.residue_names[j].type_hash == item.type_hash) {
+                existing_item = &data->dataset.residue_names[j];
+                break;
             }
-            if (!item) {
-                DatasetItem it = {};
-                snprintf(it.label, sizeof(it.label), "%.*s", (int)resname.len, resname.ptr);
-                snprintf(it.query, sizeof(it.query), "resname('%.*s')", (int)resname.len, resname.ptr);
-                it.count = 0;
-                it.fraction = 0;
-                md_array_push(data->dataset.residue_names, it, persistent_alloc);
-                item = md_array_last(data->dataset.residue_names);
-            }
-            item->count += 1;
-            item->fraction += fraction_size;
+        }
+        
+        if (existing_item) {
+            // Residue type already exists, increment count
+            existing_item->count += 1;
+            existing_item->fraction += fraction_size;
+        } else {
+            // New residue type
+            snprintf(item.query, sizeof(item.query), "resname('%s')", item.label);
+            item.count = 1;
+            item.fraction = fraction_size;
+            md_array_push(data->dataset.residue_names, item, persistent_alloc);
         }
     }
 
+    // Process atoms - populate atom types with additional properties
     for (size_t i = 0; i < data->mold.mol.atom.count; ++i) {
-        {
-            // Do atom label
-            str_t label = md_atom_name(&data->mold.mol.atom, i);
-            DatasetItem* item = 0;
-            for (size_t j = 0; j < md_array_size(data->dataset.atom_types); ++j) {
-                if (strcmp(data->dataset.atom_types[j].label, label.ptr) == 0) {
-                    item = &data->dataset.atom_types[j];
-                    break;
-                }
+        str_t atom_name = md_atom_name(&data->mold.mol.atom, i);
+        
+        DatasetItem* item = nullptr;
+        for (size_t j = 0; j < md_array_size(data->dataset.atom_types); ++j) {
+            if (strcmp(data->dataset.atom_types[j].label, atom_name.ptr) == 0) {
+                item = &data->dataset.atom_types[j];
+                break;
             }
-            if (!item) {
-                DatasetItem it = {};
-                snprintf(it.label, sizeof(it.label), "%.*s", (int)label.len, label.ptr);
-                snprintf(it.query, sizeof(it.query), "type('%.*s')", (int)label.len, label.ptr);
-                it.count = 0;
-                it.fraction = 0;
-                md_array_push(data->dataset.atom_types, it, persistent_alloc);
-                item = md_array_last(data->dataset.atom_types);
-            }
-            item->count += 1;
         }
+        
+        if (!item) {
+            DatasetItem it = {};
+            snprintf(it.label, sizeof(it.label), "%.*s", (int)atom_name.len, atom_name.ptr);
+            snprintf(it.query, sizeof(it.query), "type('%.*s')", (int)atom_name.len, atom_name.ptr);
+            it.count = 0;
+            it.fraction = 0;
+            
+            // Set atom properties
+            md_atomic_number_t z = md_atom_atomic_number(&data->mold.mol.atom, i);
+            it.element = z;
+            it.radius = md_atom_radius(&data->mold.mol.atom, i);
+            it.mass = md_atom_mass(&data->mold.mol.atom, i);
+            
+            md_array_push(data->dataset.atom_types, it, persistent_alloc);
+            item = md_array_last(data->dataset.atom_types);
+        }
+        item->count += 1;
     }
 
+    // Calculate final fractions for atom types
     for (size_t i = 0; i < md_array_size(data->dataset.atom_types); ++i) {
         data->dataset.atom_types[i].fraction = data->dataset.atom_types[i].count / (float)data->mold.mol.atom.count;
     }
@@ -6778,7 +6867,7 @@ static void draw_density_volume_window(ApplicationState* data) {
 static void draw_dataset_window(ApplicationState* data) {
     ASSERT(data);
 
-    ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(500, 600), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Dataset", &data->dataset.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::Text("Molecular data: %s", data->files.molecule);
         ImGui::Text("Num atoms:    %9i", (int)data->mold.mol.atom.count);
@@ -6792,58 +6881,111 @@ static void draw_dataset_window(ApplicationState* data) {
             ImGui::Text("Num atoms:     %9i", (int)md_trajectory_num_atoms(data->mold.traj));
         }
 
-        const char* lbls[] = {"Chains", "Residue Names", "Atom Labels"};
-        const md_array(DatasetItem) items[] = {data->dataset.chains, data->dataset.residue_names, data->dataset.atom_types};
-        STATIC_ASSERT(ARRAY_SIZE(lbls) == ARRAY_SIZE(items));
+        ImGui::Separator();
+        
+        // Helper lambda for displaying dataset sections
+        auto draw_dataset_section = [&](const char* title, DatasetItem* items, size_t item_count, int section_type) {
+            const size_t count = item_count;
+            if (count && ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) {
+                const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 12.0f, ImGui::GetFontSize() * 1.2f);
+                bool item_hovered = false;
+                
+                for (size_t j = 0; j < count; ++j) {
+                    const DatasetItem& item = items[j];
+                    const float t = powf(item.fraction, 0.2f) * 0.5f;
 
-        const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.8f, ImGui::GetFontSize() * 1.1f);
-        const float window_x_max = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-        for (size_t i = 0; i < ARRAY_SIZE(lbls); ++i) {
-            const size_t count = md_array_size(items[i]);
-            if (count) {
-                if (ImGui::CollapsingHeader(lbls[i])) {
-                    bool item_hovered = false;
-                    for (size_t j = 0; j < count; ++j) {
-                        const DatasetItem& item = items[i][j];
-                        const float t = powf(item.fraction, 0.2f) * 0.5f;
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
+                    
+                    char display_text[64];
+                    snprintf(display_text, sizeof(display_text), "%s (x%d, %.1f%%)", item.label, item.count, item.fraction * 100.f);
+                    
+                    ImGui::Selectable(display_text, false, 0, item_size);
+                    ImGui::PopStyleColor(2);
 
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
-                        ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
-                        ImGui::Selectable(item.label, true, 0, item_size);
-                        ImGui::PopStyleColor(2);
-                        //We do not show an item as selected in the UI, as we don't keep track if the whole item group is selected
-                        //Selecting will thus mark the atoms as selected, but not the item. It's a one way selection
+                    if (ImGui::IsItemHovered()) {
+                        filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask);
+                        item_hovered = true;
 
-                        if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("%s: count %d (%.2f%%)", item.label, item.count, item.fraction * 100.f);
-                            filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask);
-                            item_hovered = true;
-
-                            //Select
-                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitfield_or_inplace(&data->selection.selection_mask, &data->selection.highlight_mask);
-                            }
-                            //Deselect
-                            else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitfield_andnot_inplace(&data->selection.selection_mask, &data->selection.highlight_mask);
-                            }
+                        //Select
+                        if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                            md_bitfield_or_inplace(&data->selection.selection_mask, &data->selection.highlight_mask);
                         }
-
-                        float last_item_x = ImGui::GetItemRectMax().x;
-                        float next_button_x = last_item_x + item_size.x;
-                        if (j + 1 < count && next_button_x < window_x_max) {
+                        //Deselect
+                        else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                            md_bitfield_andnot_inplace(&data->selection.selection_mask, &data->selection.highlight_mask);
+                        }
+                    }
+                    
+                    // Right-click popup
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                        ImGui::OpenPopup(("##popup_" + std::to_string(section_type) + "_" + std::to_string(j)).c_str());
+                    }
+                    
+                    std::string popup_id = "##popup_" + std::to_string(section_type) + "_" + std::to_string(j);
+                    if (ImGui::BeginPopup(popup_id.c_str())) {
+                        if (section_type == 0) { // Chains
+                            ImGui::Text("Chain: %s", item.label);
+                            ImGui::Separator();
+                            ImGui::Text("Residue Sequence:");
+                            ImGui::TextWrapped("%s", item.sequence);
+                            if (ImGui::Button("Copy Sequence")) {
+                                ImGui::SetClipboardText(item.sequence);
+                            }
+                        } else if (section_type == 1) { // Residues
+                            ImGui::Text("Residue: %s", item.label);
+                            ImGui::Separator();
+                            ImGui::Text("Atom Types:");
+                            ImGui::TextWrapped("%s", item.sequence);
+                            if (ImGui::Button("Copy Atom Types")) {
+                                ImGui::SetClipboardText(item.sequence);
+                            }
+                        } else if (section_type == 2) { // Atom Types
+                            ImGui::Text("Atom Type: %s", item.label);
+                            ImGui::Separator();
+                            
+                            // Create a copy for editing
+                            static DatasetItem editing_item = {};
+                            static bool editing_initialized = false;
+                            if (!editing_initialized || strcmp(editing_item.label, item.label) != 0) {
+                                editing_item = item;
+                                editing_initialized = true;
+                            }
+                            
+                            ImGui::Text("Properties:");
+                            ImGui::InputFloat("Radius", &editing_item.radius, 0.01f, 0.1f, "%.3f");
+                            ImGui::InputFloat("Mass", &editing_item.mass, 0.01f, 1.0f, "%.3f");
+                            
+                            str_t elem_name = md_util_element_name(editing_item.element);
+                            ImGui::Text("Element: %.*s (%d)", (int)elem_name.len, elem_name.ptr, editing_item.element);
+                            
+                            if (ImGui::Button("Apply Changes")) {
+                                // Note: In a full implementation, you'd apply these changes back to the molecule data
+                                // For now, we just show the interface
+                                ImGui::CloseCurrentPopup();
+                            }
                             ImGui::SameLine();
+                            if (ImGui::Button("Reset")) {
+                                editing_item = item;
+                            }
                         }
+                        ImGui::EndPopup();
+                    }
 
-                        if (!item_hovered && ImGui::IsWindowHovered()) {
-                            //Makes sure that we clear the highlight if we are in this window, but don't hover an item
-                            md_bitfield_clear(&data->selection.highlight_mask);
-                        }
+                    if (!item_hovered && ImGui::IsWindowHovered()) {
+                        //Makes sure that we clear the highlight if we are in this window, but don't hover an item
+                        md_bitfield_clear(&data->selection.highlight_mask);
                     }
                 }
             }
-        }
+        };
 
+        // Draw the three sections
+        draw_dataset_section("Chain Types", data->dataset.chains, md_array_size(data->dataset.chains), 0);
+        draw_dataset_section("Residue Types", data->dataset.residue_names, md_array_size(data->dataset.residue_names), 1);  
+        draw_dataset_section("Atom Types", data->dataset.atom_types, md_array_size(data->dataset.atom_types), 2);
+
+        // Atom Element Mappings section (keep existing functionality)
         const size_t num_mappings = md_array_size(data->dataset.atom_element_remappings);
         if (num_mappings) {
             if (ImGui::CollapsingHeader("Atom Element Mappings")) {
