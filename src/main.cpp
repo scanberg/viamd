@@ -6887,7 +6887,8 @@ static void draw_dataset_window(ApplicationState* data) {
         auto draw_dataset_section = [&](const char* title, DatasetItem* items, size_t item_count, int section_type) {
             const size_t count = item_count;
             if (count && ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) {
-                const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 12.0f, ImGui::GetFontSize() * 1.2f);
+                const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.8f, ImGui::GetFontSize() * 1.1f);
+                const float window_x_max = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
                 bool item_hovered = false;
                 
                 for (size_t j = 0; j < count; ++j) {
@@ -6897,13 +6898,11 @@ static void draw_dataset_window(ApplicationState* data) {
                     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 0.5, 0.3));
                     ImGui::PushStyleColor(ImGuiCol_Header, ImPlot::SampleColormap(t, ImPlotColormap_Plasma));
                     
-                    char display_text[64];
-                    snprintf(display_text, sizeof(display_text), "%s (x%d, %.1f%%)", item.label, item.count, item.fraction * 100.f);
-                    
-                    ImGui::Selectable(display_text, false, 0, item_size);
+                    ImGui::Selectable(item.label, false, 0, item_size);
                     ImGui::PopStyleColor(2);
 
                     if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("%s: count %d (%.2f%%)", item.label, item.count, item.fraction * 100.f);
                         filter_expression(data, str_from_cstr(item.query), &data->selection.highlight_mask);
                         item_hovered = true;
 
@@ -6929,6 +6928,39 @@ static void draw_dataset_window(ApplicationState* data) {
                             ImGui::Separator();
                             ImGui::Text("Residue Sequence:");
                             ImGui::TextWrapped("%s", item.sequence);
+                            
+                            // Show subcomponents as buttons (residues in this chain)
+                            if (strlen(item.sequence) > 0) {
+                                ImGui::Separator();
+                                ImGui::Text("Residues:");
+                                
+                                // Parse sequence and show as buttons
+                                char sequence_copy[256];
+                                strncpy(sequence_copy, item.sequence, sizeof(sequence_copy) - 1);
+                                sequence_copy[sizeof(sequence_copy) - 1] = '\0';
+                                
+                                char* token = strtok(sequence_copy, "-");
+                                int button_count = 0;
+                                while (token != NULL && button_count < 20) { // Limit to prevent overflow
+                                    const float button_t = 0.3f; // Use consistent color for residue buttons
+                                    ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(button_t, ImPlotColormap_Plasma));
+                                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImPlot::SampleColormap(button_t + 0.1f, ImPlotColormap_Plasma));
+                                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImPlot::SampleColormap(button_t + 0.2f, ImPlotColormap_Plasma));
+                                    
+                                    if (ImGui::SmallButton(token)) {
+                                        // Could implement selection of this residue type
+                                    }
+                                    ImGui::PopStyleColor(3);
+                                    
+                                    if ((button_count + 1) % 6 != 0) { // 6 buttons per row
+                                        ImGui::SameLine();
+                                    }
+                                    token = strtok(NULL, "-");
+                                    button_count++;
+                                }
+                            }
+                            
+                            ImGui::Separator();
                             if (ImGui::Button("Copy Sequence")) {
                                 ImGui::SetClipboardText(item.sequence);
                             }
@@ -6937,6 +6969,39 @@ static void draw_dataset_window(ApplicationState* data) {
                             ImGui::Separator();
                             ImGui::Text("Atom Types:");
                             ImGui::TextWrapped("%s", item.sequence);
+                            
+                            // Show subcomponents as buttons (atoms in this residue)
+                            if (strlen(item.sequence) > 0) {
+                                ImGui::Separator();
+                                ImGui::Text("Atoms:");
+                                
+                                // Parse sequence and show as buttons
+                                char sequence_copy[256];
+                                strncpy(sequence_copy, item.sequence, sizeof(sequence_copy) - 1);
+                                sequence_copy[sizeof(sequence_copy) - 1] = '\0';
+                                
+                                char* token = strtok(sequence_copy, "-");
+                                int button_count = 0;
+                                while (token != NULL && button_count < 20) { // Limit to prevent overflow
+                                    const float button_t = 0.5f; // Use consistent color for atom buttons
+                                    ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(button_t, ImPlotColormap_Plasma));
+                                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImPlot::SampleColormap(button_t + 0.1f, ImPlotColormap_Plasma));
+                                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImPlot::SampleColormap(button_t + 0.2f, ImPlotColormap_Plasma));
+                                    
+                                    if (ImGui::SmallButton(token)) {
+                                        // Could implement selection of this atom type
+                                    }
+                                    ImGui::PopStyleColor(3);
+                                    
+                                    if ((button_count + 1) % 8 != 0) { // 8 buttons per row
+                                        ImGui::SameLine();
+                                    }
+                                    token = strtok(NULL, "-");
+                                    button_count++;
+                                }
+                            }
+                            
+                            ImGui::Separator();
                             if (ImGui::Button("Copy Atom Types")) {
                                 ImGui::SetClipboardText(item.sequence);
                             }
@@ -6970,6 +7035,13 @@ static void draw_dataset_window(ApplicationState* data) {
                             }
                         }
                         ImGui::EndPopup();
+                    }
+
+                    // Arrange buttons horizontally when possible (like original)
+                    float last_item_x = ImGui::GetItemRectMax().x;
+                    float next_button_x = last_item_x + item_size.x;
+                    if (j + 1 < count && next_button_x < window_x_max) {
+                        ImGui::SameLine();
                     }
 
                     if (!item_hovered && ImGui::IsWindowHovered()) {
