@@ -228,18 +228,13 @@ struct AtomElementMapping {
 // We use this to represent a single entity within the loaded system, e.g. a residue type
 struct DatasetItem {
     char label[32] = "";
-    char query[32] = "";
     uint32_t count = 0;
     float fraction = 0;
     
     // Extended metadata for popups
-    char sequence[256] = "";  // For chains: residue sequence, for residues: atom type sequence
-    uint32_t type_hash = 0;   // Hash of the type (label + sequence) for uniqueness
-    
-    // For atom types, additional properties
-    float radius = 0.0f;
-    float mass = 0.0f;
-    md_element_t element = 0;
+    uint64_t key = 0;          // Unique key of the type
+    md_array(int) indices = 0; // Indices into the underlying items which are represented by this item: i.e. chain indices (for highlighting)
+    md_array(int) sub_items = 0; // Indices into the items of the subcatagories: i.e. for chain -> residues types within that chain
 };
 
 struct DipoleMoment {
@@ -744,11 +739,14 @@ struct ApplicationState {
 
     struct {
         bool show_window = false;
-        AtomElementMapping* atom_element_remappings = 0;
 
-        md_array(DatasetItem) chains = 0;
-        md_array(DatasetItem) residue_names = 0;
+        md_array(AtomElementMapping) atom_element_remappings = 0;
+
+        md_array(DatasetItem) chain_types = 0;
+        md_array(DatasetItem) residue_types = 0;
         md_array(DatasetItem) atom_types = 0;
+
+        md_allocator_i* arena = 0;
     } dataset;
 
     struct {
