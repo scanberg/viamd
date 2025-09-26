@@ -52,7 +52,7 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         uint32_t flags = mol.atom.flags[atom_idx];
         if (flags) {
             sb += "flags: ";
-            if (flags & MD_FLAG_HETATM)             { sb += "HETATM "; }
+            if (flags & MD_FLAG_HETERO)             { sb += "HETERO "; }
             if (flags & MD_FLAG_AMINO_ACID)         { sb += "AMINO "; }
             //if (flags & MD_FLAG_SIDE_CHAIN)         { sb += "SIDE_CHAIN "; }
             if (flags & MD_FLAG_NUCLEOTIDE)         { sb += "NUCLEOTIDE "; }

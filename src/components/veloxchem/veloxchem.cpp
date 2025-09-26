@@ -857,7 +857,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     md_molecule_t mol = { 0 };
                     md_vlx_molecule_init(&mol, vlx, state.allocator.frame);
-                    md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_BOND_BIT);
+                    md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
                     //gl_mol = md_gl_mol_create(&mol);
 
                     uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));

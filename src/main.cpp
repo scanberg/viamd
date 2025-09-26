@@ -7966,7 +7966,7 @@ static bool load_dataset_from_file(ApplicationState* data, const LoadParam& para
             str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), path_to_file);
             data->files.coarse_grained = param.coarse_grained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
-            md_util_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_COARSE_GRAINED : MD_UTIL_POSTPROCESS_ALL;
+            md_util_postprocess_flags_t flags = param.coarse_grained ? 0 : MD_UTIL_POSTPROCESS_ALL;
             md_util_molecule_postprocess(&data->mold.mol, data->mold.mol_alloc, flags);
             init_molecule_data(data);
 
