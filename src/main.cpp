@@ -11,6 +11,7 @@
 
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
 
+#include <cmath>
 #include <string>
 
 #include <md_util.h>
@@ -7013,8 +7014,10 @@ static void draw_dataset_window(ApplicationState* data) {
                             }
                             
                             if (ImGui::Button("Apply Changes")) {
-                                // Note: In a full implementation, you'd apply these changes back to the molecule data
-                                // For now, we just show the interface
+                                data->mold.mol.atom.type.mass[editing_item_atom_type_idx] = editing_item_mass;
+                                data->mold.mol.atom.type.radius[editing_item_atom_type_idx] = editing_item_radius;
+                                data->mold.mol.atom.type.z[editing_item_atom_type_idx] = (md_atomic_number_t)editing_item_z;
+                                data->mold.dirty_buffers |= MolBit_DirtyRadius;
                                 ImGui::CloseCurrentPopup();
                             }
                             ImGui::SameLine();
