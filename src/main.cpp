@@ -565,9 +565,6 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 
 //static void launch_prefetch_job(ApplicationState* data);
 
-static void init_dataset_items(ApplicationState* data);
-static void clear_dataset_items(ApplicationState* data);
-
 static void init_display_properties(ApplicationState* data);
 static void update_display_properties(ApplicationState* data);
 
@@ -1522,133 +1519,6 @@ int main(int argc, char** argv) {
     application::shutdown(&data.app);
 
     return 0;
-}
-
-static void init_dataset_items(ApplicationState* data) {
-    if (!data->dataset.arena) {
-        data->dataset.arena = md_arena_allocator_create(data->allocator.persistent, MEGABYTES(1));
-    }
-    clear_dataset_items(data);
-
-    const md_molecule_t& mol = data->mold.mol;
-    size_t atom_count = md_atom_count(&mol.atom);
-    if (atom_count == 0) return;
-
-    size_t atom_type_count = md_atom_type_count(&mol.atom.type);
-
-    // Map atom types into dataset items
-    for (size_t i = 0; i < atom_type_count; ++i) {
-        str_t atom_type_name = md_atom_type_name(&mol.atom.type, i);
-        DatasetItem item = { .key = i };
-        snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(atom_type_name));
-        md_array_push(data->dataset.atom_types, item, data->dataset.arena);
-    }
-
-    // Count and set indices for each atom type
-    for (size_t i = 0; i < atom_count; ++i) {
-        md_atom_type_idx_t type_idx = mol.atom.type_idx[i]; 
-        data->dataset.atom_types[type_idx].count += 1;
-        md_array_push(data->dataset.atom_types[type_idx].indices, (int)i, data->dataset.arena);
-    }
-    
-    // Calculate fractions
-    for (size_t i = 0; i < atom_type_count; ++i) {
-        data->dataset.atom_types[i].fraction = data->dataset.atom_types[i].count / (float)atom_count;
-    }
-
-    size_t temp_pos = md_temp_get_pos();
-    md_allocator_i* temp_alloc = md_get_temp_allocator();
-    md_array(int) sequence = 0;
-    md_array(int) residue_idx_to_type = 0;
-
-    // Process residues - group by name + atom type sequence
-    size_t res_count = md_residue_count(&mol.residue);
-    for (size_t i = 0; i < res_count; ++i) {
-        str_t res_name = md_residue_name(&mol.residue, i);
-
-        md_array_shrink(sequence, 0);
-        md_range_t range = md_residue_atom_range(&mol.residue, i);
-        for (int j = range.beg; j < range.end; ++j) {
-            int ai = mol.atom.type_idx[j];
-            md_array_push(sequence, ai, temp_alloc);
-        }
-
-        // Create combined string for hash (label + sequence of atom types)
-        uint64_t hash = md_hash64_str(res_name, md_hash64(sequence, md_array_bytes(sequence), 0));
-
-        // Check if we already have this chain type
-        DatasetItem* item = nullptr;
-        for (size_t j = 0; j < md_array_size(data->dataset.residue_types); ++j) {
-            if (data->dataset.residue_types[j].key == hash) {
-                item = &data->dataset.residue_types[j];
-                md_array_push(residue_idx_to_type, (int)j, temp_alloc);
-                break;
-            }
-        }
-        if (!item) {
-            DatasetItem it = { .key = hash };
-            snprintf(it.label, sizeof(it.label), STR_FMT, STR_ARG(res_name));
-            md_array_push(residue_idx_to_type, (int)md_array_size(data->dataset.residue_types), temp_alloc);
-            md_array_push(data->dataset.residue_types, it, data->dataset.arena);
-            item = md_array_last(data->dataset.residue_types);
-            md_array_push_array(item->sub_items, sequence, md_array_size(sequence), data->dataset.arena);
-        }
-
-        size_t res_atom_count = md_residue_atom_count(&mol.residue, i);
-
-        item->count += 1;
-        item->fraction += (float)(res_atom_count / (double)atom_count);
-        md_array_push(item->indices, (int)i, data->dataset.arena);
-    }
-
-    // Process chains - group by label + residue sequence
-    size_t chain_count = md_chain_count(&mol.chain);
-    for (size_t i = 0; i < chain_count; ++i) {
-        str_t chain_id = md_chain_id(&mol.chain, i);
-
-        md_array_shrink(sequence, 0);
-        md_range_t range = md_chain_residue_range(&mol.chain, i);
-        for (int j = range.beg; j < range.end; ++j) {
-            int res_type_idx = residue_idx_to_type[j];
-            md_array_push(sequence, res_type_idx, temp_alloc);
-        }
-
-        // Create combined string for hash (label + sequence of residue types)
-        uint64_t hash = md_hash64_str(chain_id,  md_hash64(sequence, md_array_bytes(sequence), 0));
-        
-        // Check if we already have this chain type
-        DatasetItem* item = nullptr;
-        for (size_t j = 0; j < md_array_size(data->dataset.chain_types); ++j) {
-            if (data->dataset.chain_types[j].key == hash) {
-                item = &data->dataset.chain_types[j];
-                break;
-            }
-        }
-        if (!item) {
-            DatasetItem it = { .key = hash };
-            snprintf(it.label, sizeof(it.label), STR_FMT, STR_ARG(chain_id));
-            md_array_push(data->dataset.chain_types, it, data->dataset.arena);
-            item = md_array_last(data->dataset.chain_types);
-            md_array_push_array(item->sub_items, sequence, md_array_size(sequence), data->dataset.arena);
-        }
-        
-        size_t chain_atom_count = md_chain_atom_count(&mol.chain, i);
-
-        item->count += 1;
-        item->fraction += (float)(chain_atom_count / (double)atom_count);
-        md_array_push(item->indices, (int)i, data->dataset.arena);
-    }
-
-    md_temp_set_pos_back(temp_pos);
-}
-
-static void clear_dataset_items(ApplicationState* data) {
-    data->dataset.chain_types = 0;
-    data->dataset.residue_types = 0;
-    data->dataset.atom_types = 0;
-    if (data->dataset.arena) {
-        md_arena_allocator_reset(data->dataset.arena);
-    }
 }
 
 static void display_property_copy_param_from_old(DisplayProperty& item, const DisplayProperty* old_items, int64_t num_old_items) {
@@ -3437,6 +3307,7 @@ void draw_load_dataset_window(ApplicationState* data) {
 }
 
 /*
+// TODO: Move these functions to dataset component
 void clear_atom_elem_mappings(ApplicationState* data) {
     md_array_shrink(data->dataset.atom_element_remappings, 0);
 }
@@ -7688,8 +7559,6 @@ static void free_molecule_data(ApplicationState* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
 
-    clear_dataset_items(data);
-
     //md_molecule_free(&data->mold.mol, persistent_alloc);
     md_arena_allocator_reset(data->mold.mol_alloc);
     MEMSET(&data->mold.mol, 0, sizeof(data->mold.mol));
@@ -7754,7 +7623,6 @@ static void init_molecule_data(ApplicationState* data) {
     update_all_representations(data);
     data->script.compile_ir = true;
 
-    init_dataset_items(data);
 }
 
 static void launch_prefetch_job(ApplicationState* data) {
@@ -8153,12 +8021,15 @@ static void save_workspace(ApplicationState* data, str_t filename) {
         }
     }
 
+    // TODO: Move atom element remappings to dataset component
+    /*
     for (size_t i = 0; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
         const AtomElementMapping& mapping = data->dataset.atom_element_remappings[i];
         viamd::write_section_header(state, STR_LIT("AtomElementMapping"));
         viamd::write_str(state, STR_LIT("Label"), str_from_cstr(mapping.lbl));
         viamd::write_int(state, STR_LIT("Element"), mapping.elem);
     }
+    */
 
     {
         std::string text = editor.GetText();

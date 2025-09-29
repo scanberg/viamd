@@ -738,18 +738,6 @@ struct ApplicationState {
     } representation;
 
     struct {
-        bool show_window = false;
-
-        md_array(AtomElementMapping) atom_element_remappings = 0;
-
-        md_array(DatasetItem) chain_types = 0;
-        md_array(DatasetItem) residue_types = 0;
-        md_array(DatasetItem) atom_types = 0;
-
-        md_allocator_i* arena = 0;
-    } dataset;
-
-    struct {
         bool apply_pbc = false;
         bool unwrap_structures = false;
         bool recalc_bonds = false;

@@ -49,9 +49,148 @@ static char amino_acid_to_single_letter(const char* aa3) {
 
 struct Dataset : viamd::EventHandler {
     bool show_window = false;
+    
+    // Dataset data (moved from ApplicationState.dataset)
+    md_array(AtomElementMapping) atom_element_remappings = 0;
+    md_array(DatasetItem) chain_types = 0;
+    md_array(DatasetItem) residue_types = 0;
+    md_array(DatasetItem) atom_types = 0;
+    md_allocator_i* arena = 0;
 
     Dataset() { 
         viamd::event_system_register_handler(*this); 
+    }
+    
+    ~Dataset() {
+        // The arena will be cleaned up when the persistent allocator is destroyed
+        // No need for explicit cleanup here
+    }
+
+    void clear_dataset_items() {
+        chain_types = 0;
+        residue_types = 0;
+        atom_types = 0;
+        if (arena) {
+            md_arena_allocator_reset(arena);
+        }
+    }
+
+    void init_dataset_items(ApplicationState& data) {
+        if (!arena) {
+            arena = md_arena_allocator_create(data.allocator.persistent, MEGABYTES(1));
+        }
+        clear_dataset_items();
+
+        const md_molecule_t& mol = data.mold.mol;
+        size_t atom_count = md_atom_count(&mol.atom);
+        if (atom_count == 0) return;
+
+        size_t atom_type_count = md_atom_type_count(&mol.atom.type);
+
+        // Map atom types into dataset items
+        for (size_t i = 0; i < atom_type_count; ++i) {
+            str_t atom_type_name = md_atom_type_name(&mol.atom.type, i);
+            DatasetItem item = { .key = i };
+            snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(atom_type_name));
+            md_array_push(atom_types, item, arena);
+        }
+
+        // Count and set indices for each atom type
+        for (size_t i = 0; i < atom_count; ++i) {
+            md_atom_type_idx_t type_idx = mol.atom.type_idx[i]; 
+            atom_types[type_idx].count += 1;
+            md_array_push(atom_types[type_idx].indices, (int)i, arena);
+        }
+        
+        // Calculate fractions
+        for (size_t i = 0; i < atom_type_count; ++i) {
+            atom_types[i].fraction = atom_types[i].count / (float)atom_count;
+        }
+
+        size_t temp_pos = md_temp_get_pos();
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
+        md_array(int) sequence = 0;
+        md_array(int) residue_idx_to_type = 0;
+
+        // Process residues - group by name + atom type sequence
+        size_t res_count = md_residue_count(&mol.residue);
+        for (size_t i = 0; i < res_count; ++i) {
+            str_t res_name = md_residue_name(&mol.residue, i);
+
+            md_array_shrink(sequence, 0);
+            md_range_t range = md_residue_atom_range(&mol.residue, i);
+            for (int j = range.beg; j < range.end; ++j) {
+                int ai = mol.atom.type_idx[j];
+                md_array_push(sequence, ai, temp_alloc);
+            }
+
+            // Create combined string for hash (label + sequence of atom types)
+            uint64_t hash = md_hash64_str(res_name, md_hash64(sequence, md_array_bytes(sequence), 0));
+
+            // Check if we already have this chain type
+            DatasetItem* item = nullptr;
+            for (size_t j = 0; j < md_array_size(residue_types); ++j) {
+                if (residue_types[j].key == hash) {
+                    item = &residue_types[j];
+                    md_array_push(residue_idx_to_type, (int)j, temp_alloc);
+                    break;
+                }
+            }
+            if (!item) {
+                DatasetItem it = { .key = hash };
+                snprintf(it.label, sizeof(it.label), STR_FMT, STR_ARG(res_name));
+                md_array_push(residue_idx_to_type, (int)md_array_size(residue_types), temp_alloc);
+                md_array_push(residue_types, it, arena);
+                item = md_array_last(residue_types);
+                md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
+            }
+
+            size_t res_atom_count = md_residue_atom_count(&mol.residue, i);
+
+            item->count += 1;
+            item->fraction += (float)(res_atom_count / (double)atom_count);
+            md_array_push(item->indices, (int)i, arena);
+        }
+
+        // Process chains - group by label + residue sequence
+        size_t chain_count = md_chain_count(&mol.chain);
+        for (size_t i = 0; i < chain_count; ++i) {
+            str_t chain_id = md_chain_id(&mol.chain, i);
+
+            md_array_shrink(sequence, 0);
+            md_range_t range = md_chain_residue_range(&mol.chain, i);
+            for (int j = range.beg; j < range.end; ++j) {
+                int res_type_idx = residue_idx_to_type[j];
+                md_array_push(sequence, res_type_idx, temp_alloc);
+            }
+
+            // Create combined string for hash (label + sequence of residue types)
+            uint64_t hash = md_hash64_str(chain_id,  md_hash64(sequence, md_array_bytes(sequence), 0));
+            
+            // Check if we already have this chain type
+            DatasetItem* item = nullptr;
+            for (size_t j = 0; j < md_array_size(chain_types); ++j) {
+                if (chain_types[j].key == hash) {
+                    item = &chain_types[j];
+                    break;
+                }
+            }
+            if (!item) {
+                DatasetItem it = { .key = hash };
+                snprintf(it.label, sizeof(it.label), STR_FMT, STR_ARG(chain_id));
+                md_array_push(chain_types, it, arena);
+                item = md_array_last(chain_types);
+                md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
+            }
+            
+            size_t chain_atom_count = md_chain_atom_count(&mol.chain, i);
+
+            item->count += 1;
+            item->fraction += (float)(chain_atom_count / (double)atom_count);
+            md_array_push(item->indices, (int)i, arena);
+        }
+
+        md_temp_set_pos_back(temp_pos);
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final {
@@ -64,7 +203,13 @@ struct Dataset : viamd::EventHandler {
             }
             case viamd::EventType_ViamdShutdown:
                 // Cleanup
+                clear_dataset_items();
                 break;
+            case viamd::EventType_ViamdTopologyInit: {
+                ApplicationState& state = *(ApplicationState*)e.payload;
+                init_dataset_items(state);
+                break;
+            }
             case viamd::EventType_ViamdFrameTick: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 draw(state);
@@ -103,7 +248,7 @@ struct Dataset : viamd::EventHandler {
             }
             
             // Helper lambda for displaying dataset sections
-            auto draw_dataset_section = [&data](const char* title, DatasetItem* items, size_t item_count, int section_type) {
+            auto draw_dataset_section = [this, &data](const char* title, DatasetItem* items, size_t item_count, int section_type) {
                 const size_t count = item_count;
                 if (count && ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) {
                     const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.8f, ImGui::GetFontSize() * 1.1f);
@@ -185,7 +330,7 @@ struct Dataset : viamd::EventHandler {
                                     if (seq_len > 0) {
                                         int button_count = 0;
                                         for (size_t i = 0; i < seq_len; ++i) {
-                                            const DatasetItem& sub = data.dataset.residue_types[item.sub_items[i]];
+                                            const DatasetItem& sub = residue_types[item.sub_items[i]];
                                             const float button_t = 0.3f;
                                             ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(button_t, ImPlotColormap_Plasma));
                                             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImPlot::SampleColormap(button_t + 0.1f, ImPlotColormap_Plasma));
@@ -262,7 +407,7 @@ struct Dataset : viamd::EventHandler {
                                 if (seq_len > 0) {
                                     int button_count = 0;
                                     for (size_t i = 0; i < seq_len; ++i) {
-                                        const DatasetItem& sub = data.dataset.atom_types[item.sub_items[i]];
+                                        const DatasetItem& sub = atom_types[item.sub_items[i]];
 
                                         const float button_t = 0.5f; // Use consistent color for atom buttons
                                         ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(button_t, ImPlotColormap_Plasma));
@@ -344,16 +489,16 @@ struct Dataset : viamd::EventHandler {
             };
 
             // Draw the three sections
-            draw_dataset_section("Chain Types",     data.dataset.chain_types,      md_array_size(data.dataset.chain_types),   0);
-            draw_dataset_section("Residue Types",   data.dataset.residue_types,    md_array_size(data.dataset.residue_types), 1);  
-            draw_dataset_section("Atom Types",      data.dataset.atom_types,       md_array_size(data.dataset.atom_types),    2);
+            draw_dataset_section("Chain Types",     chain_types,      md_array_size(chain_types),   0);
+            draw_dataset_section("Residue Types",   residue_types,    md_array_size(residue_types), 1);  
+            draw_dataset_section("Atom Types",      atom_types,       md_array_size(atom_types),    2);
 
             // Atom Element Mappings section (keep existing functionality)
-            const size_t num_mappings = md_array_size(data.dataset.atom_element_remappings);
+            const size_t num_mappings = md_array_size(atom_element_remappings);
             if (num_mappings) {
                 if (ImGui::CollapsingHeader("Atom Element Mappings")) {
                     for (size_t i = 0; i < num_mappings; ++i) {
-                        const auto& mapping = data.dataset.atom_element_remappings[i];
+                        const auto& mapping = atom_element_remappings[i];
                         ImGui::Text("%s -> %s (%s)", mapping.lbl, md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
                     }
                 }
