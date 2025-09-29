@@ -17,6 +17,36 @@
 
 namespace dataset {
 
+// Helper function to convert 3-letter amino acid codes to single-letter codes
+static char amino_acid_to_single_letter(const char* aa3) {
+    if (!aa3) return 'X';
+    
+    // Standard amino acids
+    if (strcmp(aa3, "ALA") == 0) return 'A';
+    if (strcmp(aa3, "ARG") == 0) return 'R';
+    if (strcmp(aa3, "ASN") == 0) return 'N';
+    if (strcmp(aa3, "ASP") == 0) return 'D';
+    if (strcmp(aa3, "CYS") == 0) return 'C';
+    if (strcmp(aa3, "GLU") == 0) return 'E';
+    if (strcmp(aa3, "GLN") == 0) return 'Q';
+    if (strcmp(aa3, "GLY") == 0) return 'G';
+    if (strcmp(aa3, "HIS") == 0) return 'H';
+    if (strcmp(aa3, "ILE") == 0) return 'I';
+    if (strcmp(aa3, "LEU") == 0) return 'L';
+    if (strcmp(aa3, "LYS") == 0) return 'K';
+    if (strcmp(aa3, "MET") == 0) return 'M';
+    if (strcmp(aa3, "PHE") == 0) return 'F';
+    if (strcmp(aa3, "PRO") == 0) return 'P';
+    if (strcmp(aa3, "SER") == 0) return 'S';
+    if (strcmp(aa3, "THR") == 0) return 'T';
+    if (strcmp(aa3, "TRP") == 0) return 'W';
+    if (strcmp(aa3, "TYR") == 0) return 'Y';
+    if (strcmp(aa3, "VAL") == 0) return 'V';
+    
+    // Non-standard/modified amino acids - return 'X' for unknown
+    return 'X';
+}
+
 struct Dataset : viamd::EventHandler {
     bool show_window = false;
 
@@ -144,29 +174,83 @@ struct Dataset : viamd::EventHandler {
                                 ImGui::Text("Chain: %s", item.label);
                                 ImGui::Separator();
                                 
-                                // Show subcomponents as buttons (residues in this chain)
-                                size_t seq_len = md_array_size(item.sub_items);
-                                if (seq_len > 0) {
-                                    int button_count = 0;
-                                    for (size_t i = 0; i < seq_len; ++i) {
-                                        const DatasetItem& sub = data.dataset.residue_types[item.sub_items[i]];
-                                        // Possibly do not use the same color for all subitems
-                                        const float button_t = 0.3f;
-                                        ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(button_t, ImPlotColormap_Plasma));
-                                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImPlot::SampleColormap(button_t + 0.1f, ImPlotColormap_Plasma));
-                                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImPlot::SampleColormap(button_t + 0.2f, ImPlotColormap_Plasma));
-                                        
-                                        ImGui::SmallButton(sub.label);
-                                        handle_item_hover(sub, section_type + 1);
-
-                                        ImGui::PopStyleColor(3);
-                                        
-                                        if ((button_count + 1) % 6 != 0) { // 6 buttons per row
-                                            ImGui::SameLine();
+                                // First, get the actual chain indices to access residue sequence
+                                if (md_array_size(item.indices) > 0) {
+                                    int chain_idx = item.indices[0]; // Get first chain of this type
+                                    md_range_t chain_res_range = md_chain_residue_range(&data.mold.mol.chain, chain_idx);
+                                    
+                                    // 1. Show unique residue types (not sequence)
+                                    ImGui::Text("Unique Residue Types:");
+                                    size_t seq_len = md_array_size(item.sub_items);
+                                    if (seq_len > 0) {
+                                        int button_count = 0;
+                                        for (size_t i = 0; i < seq_len; ++i) {
+                                            const DatasetItem& sub = data.dataset.residue_types[item.sub_items[i]];
+                                            const float button_t = 0.3f;
+                                            ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(button_t, ImPlotColormap_Plasma));
+                                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImPlot::SampleColormap(button_t + 0.1f, ImPlotColormap_Plasma));
+                                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImPlot::SampleColormap(button_t + 0.2f, ImPlotColormap_Plasma));
+                                            
+                                            ImGui::SmallButton(sub.label);
+                                            handle_item_hover(sub, section_type + 1);
+                                            ImGui::PopStyleColor(3);
+                                            
+                                            if ((button_count + 1) % 6 != 0) { // 6 buttons per row
+                                                ImGui::SameLine();
+                                            }
+                                            button_count++;
                                         }
-                                        button_count++;
                                     }
-                                }
+                                    
+                                    ImGui::Separator();
+                                    
+                                    // 2. Show sequence using single-letter codes with hover highlighting
+                                    ImGui::Text("Sequence:");
+                                    
+                                    // Build the sequence string and create hoverable buttons
+                                    if (chain_res_range.end > chain_res_range.beg) {
+                                        ImGui::BeginGroup();
+                                        for (int res_idx = chain_res_range.beg; res_idx < chain_res_range.end; ++res_idx) {
+                                            str_t res_name = LBL_TO_STR(data.mold.mol.residue.name[res_idx]);
+                                            
+                                            // Convert to single-letter code
+                                            char aa_code[2] = {amino_acid_to_single_letter(res_name.ptr), '\0'};
+                                            
+                                            // Create a small hoverable button for each residue
+                                            ImGui::PushID(res_idx);
+                                            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 2));
+                                            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1, 1));
+                                            
+                                            // Use different color for each residue type
+                                            float res_t = (float)(res_idx - chain_res_range.beg) / (float)(chain_res_range.end - chain_res_range.beg) * 0.8f + 0.1f;
+                                            ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(res_t, ImPlotColormap_Viridis));
+                                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImPlot::SampleColormap(res_t + 0.1f, ImPlotColormap_Viridis));
+                                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImPlot::SampleColormap(res_t + 0.2f, ImPlotColormap_Viridis));
+                                            
+                                            if (ImGui::SmallButton(aa_code)) {
+                                                // Could implement additional functionality here
+                                            }
+                                            
+                                            // Highlight the corresponding residue when hovering
+                                            if (ImGui::IsItemHovered()) {
+                                                ImGui::SetTooltip("%.*s (residue %d)", (int)res_name.len, res_name.ptr, res_idx + 1);
+                                                // Highlight this specific residue
+                                                md_range_t res_atom_range = md_residue_atom_range(&data.mold.mol.residue, res_idx);
+                                                md_bitfield_set_range(&data.selection.highlight_mask, res_atom_range.beg, res_atom_range.end);
+                                            }
+                                            
+                                            ImGui::PopStyleColor(3);
+                                            ImGui::PopStyleVar(2);
+                                            ImGui::PopID();
+                                            
+                                            // Arrange in rows of ~20 amino acids
+                                            if ((res_idx - chain_res_range.beg + 1) % 20 != 0 && res_idx + 1 < chain_res_range.end) {
+                                                ImGui::SameLine();
+                                            }
+                                        }
+                                        ImGui::EndGroup();
+                                    }
+                                } // Close the if (md_array_size(item.indices) > 0) block
                                 
                                 ImGui::Separator();
                             } else if (section_type == 1) { // Residues
