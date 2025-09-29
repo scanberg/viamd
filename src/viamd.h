@@ -232,9 +232,9 @@ struct DatasetItem {
     float fraction = 0;
     
     // Extended metadata for popups
-    uint64_t key = 0;          // Unique key of the type
-    md_array(int) indices = 0; // Indices into the underlying items which are represented by this item: i.e. chain indices (for highlighting)
-    md_array(int) sub_items = 0; // Indices into the items of the subcatagories: i.e. for chain -> residues types within that chain
+    uint64_t key = 0;            // Unique key of the type
+    md_array(int) indices = 0;   // Indices into the corresponding structures which are represented by this item: i.e. chain or residue indices (for highlighting)
+    md_array(int) sub_items = 0; // Indices into the items of the subcatagories: i.e. for chain -> unique residues types within that chain
 };
 
 struct DipoleMoment {
