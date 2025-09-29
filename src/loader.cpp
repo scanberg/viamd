@@ -615,17 +615,27 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
 }
 
 bool close(md_trajectory_i* traj) {
-    ASSERT(traj);
-
-    LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
-    if (loaded_traj) {
-        remove_loaded_trajectory(loaded_traj->key);
-        MEMSET(traj, 0, sizeof(md_trajectory_i));
-        return true;
+    if (traj) {
+        LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
+        if (loaded_traj) {
+            remove_loaded_trajectory(loaded_traj->key);
+            MEMSET(traj, 0, sizeof(md_trajectory_i));
+            return true;
+        }
+        MD_LOG_ERROR("Attempting to free trajectory which was not loaded with loader");
     }
-    MD_LOG_ERROR("Attempting to free trajectory which was not loaded with loader");
-    ASSERT(false);
     return false;
+}
+
+md_trajectory_i* get_raw_trajectory(md_trajectory_i* traj) {
+    if (traj) {
+        LoadedTrajectory* loaded_traj = find_loaded_trajectory((uint64_t)traj);
+        if (loaded_traj) {
+            return loaded_traj->traj;
+        }
+        MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
+    }
+	return nullptr;
 }
 
 bool has_recenter_target(md_trajectory_i* traj) {

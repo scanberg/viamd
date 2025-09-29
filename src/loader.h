@@ -53,6 +53,10 @@ namespace traj {
     md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_molecule_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
     bool close(md_trajectory_i* traj);
 
+	// Get the internal trajectory, this can be used to access custom loader functionality
+	// This is the internal trajectory without any form of caching or recentering applied
+	md_trajectory_i* get_raw_trajectory(md_trajectory_i* traj);
+
     bool has_recenter_target(md_trajectory_i* traj);
     bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask);
 

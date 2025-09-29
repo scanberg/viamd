@@ -1279,7 +1279,8 @@ int main(int argc, char** argv) {
                         if (md_script_ir_property_count(data.script.eval_ir) > 0) {
                             data.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&data](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;
-                                md_script_eval_frame_range(data.script.full_eval, data.script.eval_ir, &data.mold.mol, data.mold.traj, frame_beg, frame_end);
+								md_trajectory_i* traj = load::traj::get_raw_trajectory(data.mold.traj);
+                                md_script_eval_frame_range(data.script.full_eval, data.script.eval_ir, &data.mold.mol, traj, frame_beg, frame_end);
                             });
                             
 #if MEASURE_EVALUATION_TIME
@@ -1315,7 +1316,8 @@ int main(int argc, char** argv) {
                                 if (beg_frame != end_frame) {
                                     data.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &data](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                         (void)thread_num;
-                                        md_script_eval_frame_range(data.script.filt_eval, data.script.eval_ir, &data.mold.mol, data.mold.traj, offset + beg, offset + end);
+                                        md_trajectory_i* traj = load::traj::get_raw_trajectory(data.mold.traj);
+                                        md_script_eval_frame_range(data.script.filt_eval, data.script.eval_ir, &data.mold.mol, traj, offset + beg, offset + end);
                                     });
                                     task_system::enqueue_task(data.tasks.evaluate_filt);
                                 }
