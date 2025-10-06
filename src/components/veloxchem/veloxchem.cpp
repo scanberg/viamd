@@ -855,7 +855,7 @@ struct VeloxChem : viamd::EventHandler {
                         xyzw[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, 1.0f);
                     }
 
-                    md_molecule_t mol = { 0 };
+                    md_system_t mol = { 0 };
                     md_vlx_molecule_init(&mol, vlx, state.allocator.frame);
                     md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
                     //gl_mol = md_gl_mol_create(&mol);
@@ -2318,9 +2318,9 @@ struct VeloxChem : viamd::EventHandler {
         const dvec3_t* coords = atom_coords ? atom_coords : md_vlx_atom_coordinates(vlx);
         size_t num_atoms = md_vlx_number_of_atoms(vlx);
         for (size_t i = 0; i < num_atoms; i++) {
-            state.mold.mol.atom.x[i] = (float)coords[i].x;
-            state.mold.mol.atom.y[i] = (float)coords[i].y;
-            state.mold.mol.atom.z[i] = (float)coords[i].z;
+            state.mold.sys.atom.x[i] = (float)coords[i].x;
+            state.mold.sys.atom.y[i] = (float)coords[i].y;
+            state.mold.sys.atom.z[i] = (float)coords[i].z;
         }
         state.mold.dirty_buffers |= flags;
     }
@@ -2512,7 +2512,7 @@ struct VeloxChem : viamd::EventHandler {
                         sprintf(lable, "%i", row_n + 1);
                         ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
                         if (ImGui::TableGetHoveredRow() == row_n + 1) {
-                            if (state.mold.mol.atom.count > row_n) {
+                            if (state.mold.sys.atom.count > row_n) {
                                 md_bitfield_clear(&state.selection.highlight_mask);
                                 md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
                                 item_hovered = true;
@@ -3078,9 +3078,9 @@ struct VeloxChem : viamd::EventHandler {
 
                         if (norm_modes) {
                             for (size_t i = 0; i < num_atoms; i++) {
-                                state.mold.mol.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                state.mold.mol.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                state.mold.mol.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                state.mold.sys.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                state.mold.sys.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                state.mold.sys.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
                             state.mold.dirty_buffers |= MolBit_DirtyPosition;
                             vib.coord_modified = true;
@@ -3089,9 +3089,9 @@ struct VeloxChem : viamd::EventHandler {
                     // If all is deselected, reset coords once
                     else if (vib.coord_modified) {
                         for (size_t i = 0; i < num_atoms; i++) {
-                            state.mold.mol.atom.x[i] = (float)atom_coord[i].x;
-                            state.mold.mol.atom.y[i] = (float)atom_coord[i].y;
-                            state.mold.mol.atom.z[i] = (float)atom_coord[i].z;
+                            state.mold.sys.atom.x[i] = (float)atom_coord[i].x;
+                            state.mold.sys.atom.y[i] = (float)atom_coord[i].y;
+                            state.mold.sys.atom.z[i] = (float)atom_coord[i].z;
                         }
                         state.mold.dirty_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                         vib.coord_modified = false;
@@ -4169,7 +4169,7 @@ struct VeloxChem : viamd::EventHandler {
         float*  target_dist;
     };
 
-    static void interaction_canvas(ImVec2 size, SelectionState& select, ViewState& view, const md_molecule_t& mol) {
+    static void interaction_canvas(ImVec2 size, SelectionState& select, ViewState& view, const md_system_t& mol) {
         enum class RegionMode { Append, Remove };
 
         bool is_selecting = false;
@@ -4866,7 +4866,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     draw_list->ChannelsSetCurrent(1);
                     ImGui::PushID(i);
-                    interaction_canvas(p1-p0, selection, view, state.mold.mol);
+                    interaction_canvas(p1-p0, selection, view, state.mold.sys);
 
                     if (ImGui::IsItemHovered()) {
                         viewport_hovered = true;

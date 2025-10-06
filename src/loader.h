@@ -3,7 +3,7 @@
 #include <core/md_str.h>
 
 struct md_allocator_i;
-struct md_molecule_t;
+struct md_system_t;
 struct md_molecule_loader_i;
 struct md_trajectory_i;
 struct md_trajectory_loader_i;
@@ -50,7 +50,7 @@ namespace mol {
 namespace traj {
     md_trajectory_loader_i* loader_from_ext(str_t ext);
 
-    md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_molecule_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
+    md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_system_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
     bool close(md_trajectory_i* traj);
 
 	// Get the internal trajectory, this can be used to access custom loader functionality

@@ -29,7 +29,7 @@
 #define POP_GPU_SECTION()     { if (glPopDebugGroup) glPopDebugGroup(); }
 
 enum class PlaybackMode { Stopped, Playing };
-enum class SelectionGranularity { Atom, Residue, Chain };
+enum class SelectionGranularity { Atom, Component, Instance };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
 enum class SelectionGrowth { CovalentBond, Radial };
 enum class CameraMode { Perspective, Orthographic };
@@ -80,10 +80,11 @@ enum class ColorMapping {
     Cpk,
     AtomLabel,
     AtomIndex,
-    ResName,
-    ResIndex,
-    ChainId,
-    ChainIndex,
+    CompName,
+    CompSeqId,
+    CompIndex,
+    InstId,
+    InstIndex,
     SecondaryStructure,
     Property,
     Count
@@ -94,7 +95,8 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "CPK",
     "Atom Label",
     "Atom Idx",
-    "Res Name",
+    "Res Name"
+    "Res Id",
     "Res Idx",
     "Chain Id",
     "Chain Idx",
@@ -453,18 +455,18 @@ struct ApplicationState {
 
     // --- MDLIB DATA ---
     struct {
-        md_allocator_i*     mol_alloc = nullptr;
+        md_allocator_i*     sys_alloc = nullptr;
         md_gl_shaders_t     gl_shaders = {};
         md_gl_shaders_t     gl_shaders_lean_and_mean = {};
         md_gl_mol_t         gl_mol = {};
 #if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};
 #endif
-        md_molecule_t       mol = {};
+        md_system_t         sys = {};
         md_trajectory_i*    traj = nullptr;
 
-        vec3_t              mol_aabb_min = {};
-        vec3_t              mol_aabb_max = {};
+        vec3_t              sys_aabb_min = {};
+        vec3_t              sys_aabb_max = {};
 
         uint32_t dirty_buffers = 0;
     } mold;
@@ -821,7 +823,7 @@ static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, Se
     }
 }
 
-static inline void modify_field(md_bitfield_t* bf, md_range_t range, SelectionOperator op) {
+static inline void modify_field(md_bitfield_t* bf, md_urange_t range, SelectionOperator op) {
     switch(op) {
     case SelectionOperator::Or:
         md_bitfield_set_range(bf, range.beg, range.end);
@@ -845,22 +847,22 @@ static inline void modify_field(md_bitfield_t* bf, md_range_t range, SelectionOp
     }
 }
 
-static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, SelectionGranularity granularity, const md_molecule_t& mol) {
+static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, SelectionGranularity granularity, const md_system_t& sys) {
     ASSERT(mask);
     switch(granularity) {
     case SelectionGranularity::Atom:
         break;
-    case SelectionGranularity::Residue:
-        for (size_t i = 0; i < mol.residue.count; ++i) {
-            md_range_t range = md_residue_atom_range(&mol.residue, i);
+    case SelectionGranularity::Component:
+        for (size_t i = 0; i < md_system_comp_count(&sys); ++i) {
+            md_urange_t range = md_system_comp_atom_range(&sys, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
                 md_bitfield_set_range(mask, range.beg, range.end);
             }
         }
         break;
-    case SelectionGranularity::Chain:
-        for (size_t i = 0; i < mol.chain.count; ++i) {
-            md_range_t range = md_chain_atom_range(&mol.chain, i);
+    case SelectionGranularity::Instance:
+        for (size_t i = 0; i < md_system_inst_count(&sys); ++i) {
+            md_urange_t range = md_system_inst_atom_range(&sys, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
                 md_bitfield_set_range(mask, range.beg, range.end);
             }

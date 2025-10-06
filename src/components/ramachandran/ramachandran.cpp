@@ -634,8 +634,8 @@ struct Ramachandran : viamd::EventHandler {
             md_array_shrink(rama_type_indices[2], 0);
             md_array_shrink(rama_type_indices[3], 0);
 
-            for (uint32_t i = 0; i < (uint32_t)md_array_size(state.mold.mol.protein_backbone.ramachandran_type); ++i) {
-                switch (state.mold.mol.protein_backbone.ramachandran_type[i]) {
+            for (uint32_t i = 0; i < (uint32_t)md_array_size(state.mold.sys.protein_backbone.segment.rama_type); ++i) {
+                switch (state.mold.sys.protein_backbone.segment.rama_type[i]) {
                 case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
                 case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
                 case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
@@ -650,7 +650,7 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void update(ApplicationState& state) {
-        if (show_window && state.mold.mol.protein_backbone.count > 0) {
+        if (show_window && state.mold.sys.protein_backbone.segment.count > 0) {
             const size_t num_frames = md_trajectory_num_frames(state.mold.traj);
             if (num_frames > 0) {
                 if (full_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
@@ -762,7 +762,7 @@ struct Ramachandran : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
-            const auto& mol = state.mold.mol;
+            const auto& sys = state.mold.sys;
             md_bitfield_t* selection_mask = &state.selection.selection_mask;
             md_bitfield_t* highlight_mask = &state.selection.highlight_mask;
 
@@ -876,7 +876,7 @@ struct Ramachandran : viamd::EventHandler {
                             md_bitfield_clear(highlight_mask);
                         }
 
-                        if (show_curr && mol.protein_backbone.angle) {
+                        if (show_curr && sys.protein_backbone.segment.angle) {
                             const uint32_t* indices = rama_type_indices[plot_idx];
 
                             double min_x = MIN(selection_rect.X.Min, selection_rect.X.Max);
@@ -893,17 +893,18 @@ struct Ramachandran : viamd::EventHandler {
                             for (size_t i = 0; i < md_array_size(indices); ++i) {
                                 uint32_t idx = indices[i];
 
-                                if (mol.protein_backbone.angle[idx].phi == 0 && mol.protein_backbone.angle[idx].psi == 0) continue;
+                                if (sys.protein_backbone.segment.angle[idx].phi == 0 && sys.protein_backbone.segment.angle[idx].psi == 0) continue;
 
-                                ImPlotPoint coord = ImPlotPoint(RAD_TO_DEG(mol.protein_backbone.angle[idx].phi), RAD_TO_DEG(mol.protein_backbone.angle[idx].psi));
+								md_backbone_angles_t bb_angles = sys.protein_backbone.segment.angle[idx];
+                                ImPlotPoint coord = ImPlotPoint(RAD_TO_DEG(bb_angles.phi), RAD_TO_DEG(bb_angles.psi));
                                 coord.x = deperiodize_ortho(coord.x, ref_x, 360.0);
                                 coord.y = deperiodize_ortho(coord.y, ref_y, 360.0);
 
                                 if (is_selecting[plot_idx]) {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
-                                        md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[idx];
-                                        if (res_idx < (int)mol.residue.count) {
-                                            md_range_t range = md_residue_atom_range(&mol.residue, res_idx);
+                                        md_comp_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[idx];
+										md_urange_t range = md_comp_atom_range(&sys.comp, comp_idx);
+                                        if (range.beg != range.end) {
                                             modify_field(highlight_mask, range, SelectionOperator::Or);
                                         }
                                     }
@@ -918,19 +919,20 @@ struct Ramachandran : viamd::EventHandler {
                             }
 
                             if (is_selecting[plot_idx]) {
-                                grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, mol);
+                                grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
                             }
 
                             if (mouse_hover_idx != -1) {
-                                if (mouse_hover_idx < (int64_t)mol.protein_backbone.count) {
-                                    md_residue_idx_t res_idx = mol.protein_backbone.residue_idx[mouse_hover_idx];
-                                    if (res_idx < (int)mol.residue.count) {
-                                        md_range_t range = md_residue_atom_range(&mol.residue, res_idx);
+                                if (mouse_hover_idx < (int64_t)sys.protein_backbone.segment.count) {
+                                    md_comp_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[mouse_hover_idx];
+									md_urange_t range = md_comp_atom_range(&sys.comp, comp_idx);
+                                    if (range.beg != range.end) {
                                         modify_field(highlight_mask, range, SelectionOperator::Or);
-                                        grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, mol);
-                                    }
-                                    str_t lbl = LBL_TO_STR(mol.residue.name[res_idx]);
-                                    ImGui::SetTooltip("res[%d]: %.*s %d", res_idx + 1, (int)lbl.len, lbl.ptr, mol.residue.id[res_idx]);
+                                        grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
+									}
+									str_t lbl = md_comp_name(&sys.comp, comp_idx);
+									md_seq_id_t seq_id = md_comp_seq_id(&sys.comp, comp_idx);
+                                    ImGui::SetTooltip("res[%d]: %.*s %d", comp_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
                                 }
                             }
 
@@ -939,9 +941,10 @@ struct Ramachandran : viamd::EventHandler {
 
                             for (uint32_t i = 0; i < (uint32_t)md_array_size(indices); ++i) {
                                 uint32_t idx = indices[i];
-                                if (mol.protein_backbone.angle[idx].phi == 0 && mol.protein_backbone.angle[idx].psi == 0) continue;
+								md_backbone_angles_t bb_angles = sys.protein_backbone.segment.angle[idx];
+                                if (bb_angles.phi == 0 && bb_angles.psi == 0) continue;
 
-                                int64_t atom_idx = mol.protein_backbone.atoms[idx].ca;
+                                int64_t atom_idx = sys.protein_backbone.segment.atoms[idx].ca;
                                 if (md_bitfield_test_bit(highlight_mask, atom_idx)) {
                                     md_array_push(highlight_indices, idx, state.allocator.frame);
                                 }
@@ -975,18 +978,18 @@ struct Ramachandran : viamd::EventHandler {
                             ImPlot::SetNextMarkerStyle(marker, style.base_size, style.base_fill, 1.0f, style.base_outline);
                             ImPlot::SetNextLineStyle(ImVec4(1, 1, 1, 1));
                             if (md_array_size(indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(sys.protein_backbone.segment.angle), indices, view_mid };
                                 ImPlot::PlotScatterG("##Current", index_getter, &user_data, (int)md_array_size(indices));
                             }
 
                             if (md_array_size(selection_indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), selection_indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(sys.protein_backbone.segment.angle), selection_indices, view_mid };
                                 ImPlot::SetNextMarkerStyle(marker, style.interaction_size, style.selection_fill, style.interaction_weight, style.selection_outline);
                                 ImPlot::PlotScatterG("##Selection", index_getter, &user_data, (int)md_array_size(selection_indices));
                             }
 
                             if (md_array_size(highlight_indices) > 0) {
-                                UserData user_data = { (const vec2_t*)(mol.protein_backbone.angle), highlight_indices, view_mid };
+                                UserData user_data = { (const vec2_t*)(sys.protein_backbone.segment.angle), highlight_indices, view_mid };
                                 ImPlot::SetNextMarkerStyle(marker, style.interaction_size, style.highlight_fill, style.interaction_weight, style.highlight_outline);
                                 ImPlot::PlotScatterG("##Highlight", index_getter, &user_data, (int)md_array_size(highlight_indices));
                             }

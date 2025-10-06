@@ -52,8 +52,8 @@ struct Dataset : viamd::EventHandler {
     
     // Dataset data (moved from ApplicationState.dataset)
     md_array(AtomElementMapping) atom_element_remappings = 0;
-    md_array(DatasetItem) chain_types = 0;
-    md_array(DatasetItem) residue_types = 0;
+    md_array(DatasetItem) inst_types = 0;
+    md_array(DatasetItem) comp_types = 0;
     md_array(DatasetItem) atom_types = 0;
     md_allocator_i* arena = 0;
 
@@ -67,8 +67,8 @@ struct Dataset : viamd::EventHandler {
     }
 
     void clear_dataset_items() {
-        chain_types = 0;
-        residue_types = 0;
+        inst_types = 0;
+        comp_types = 0;
         atom_types = 0;
         if (arena) {
             md_arena_allocator_reset(arena);
@@ -81,18 +81,19 @@ struct Dataset : viamd::EventHandler {
         }
         clear_dataset_items();
 
-        const md_molecule_t& mol = data.mold.mol;
+        const md_system_t& sys = data.mold.sys;
 
-        size_t atom_type_count = md_atom_type_count(&mol.atom.type);
-        size_t atom_count = md_atom_count(&mol.atom);
-        size_t res_count = md_residue_count(&mol.residue);
-        size_t chain_count = md_chain_count(&mol.chain);
+        size_t atom_type_count = md_atom_type_count(&sys.atom.type);
+        size_t atom_count = md_atom_count(&sys.atom);
+        size_t comp_count = md_comp_count(&sys.comp);
+        size_t inst_count = md_inst_count(&sys.inst);
+		size_t entity_count = md_entity_count(&sys.entity);
 
         if (atom_count == 0) return;
 
         // Map atom types into dataset items
         for (size_t i = 0; i < atom_type_count; ++i) {
-            str_t atom_type_name = md_atom_type_name(&mol.atom.type, i);
+            str_t atom_type_name = md_atom_type_name(&sys.atom.type, i);
             DatasetItem item = { .key = i };
             snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(atom_type_name));
             md_array_push(atom_types, item, arena);
@@ -100,7 +101,7 @@ struct Dataset : viamd::EventHandler {
 
         // Count and set indices for each atom type
         for (size_t i = 0; i < atom_count; ++i) {
-            md_atom_type_idx_t type_idx = mol.atom.type_idx[i]; 
+            md_atom_type_idx_t type_idx = sys.atom.type_idx[i]; 
             atom_types[type_idx].count += 1;
             md_array_push(atom_types[type_idx].indices, (int)i, arena);
         }
@@ -113,61 +114,61 @@ struct Dataset : viamd::EventHandler {
         size_t temp_pos = md_temp_get_pos();
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         md_array(int) sequence = 0;
-        md_array(int) residue_idx_to_type = 0;
+        md_array(int) comp_idx_type = 0;
 
-        if (res_count > 0) {
-			md_array_resize(residue_idx_to_type, res_count, temp_alloc);
-			MEMSET(residue_idx_to_type, -1, md_array_bytes(residue_idx_to_type));
+        if (comp_count > 0) {
+			md_array_resize(comp_idx_type, comp_count, temp_alloc);
+			MEMSET(comp_idx_type, -1, md_array_bytes(comp_idx_type));
         }
 
-        // Process residues - group by name + atom type sequence
-        for (size_t i = 0; i < res_count; ++i) {
-            str_t res_name = md_residue_name(&mol.residue, i);
+        // Process components - group by name + atom type sequence
+        for (size_t i = 0; i < comp_count; ++i) {
+            str_t comp_name = md_comp_name(&sys.comp, i);
 
             md_array_shrink(sequence, 0);
-            md_range_t range = md_residue_atom_range(&mol.residue, i);
+            md_urange_t range = md_comp_atom_range(&sys.comp, i);
             for (int j = range.beg; j < range.end; ++j) {
-                int ai = mol.atom.type_idx[j];
+                int ai = sys.atom.type_idx[j];
                 md_array_push(sequence, ai, temp_alloc);
             }
 
             // Create combined string for hash (label + sequence of atom types)
-            uint64_t hash = md_hash64_str(res_name, md_hash64(sequence, md_array_bytes(sequence), 0));
+            uint64_t hash = md_hash64_str(comp_name, md_hash64(sequence, md_array_bytes(sequence), 0));
 
             // Check if we already have this chain type
             DatasetItem* item = nullptr;
-            for (size_t j = 0; j < md_array_size(residue_types); ++j) {
-                if (residue_types[j].key == hash) {
-                    item = &residue_types[j];
-                    md_array_push(residue_idx_to_type, (int)j, temp_alloc);
+            for (size_t j = 0; j < md_array_size(comp_types); ++j) {
+                if (comp_types[j].key == hash) {
+                    item = &comp_types[j];
+                    md_array_push(comp_idx_type, (int)j, temp_alloc);
                     break;
                 }
             }
             if (!item) {
                 DatasetItem it = { .key = hash };
-                snprintf(it.label, sizeof(it.label), STR_FMT, STR_ARG(res_name));
-                md_array_push(residue_idx_to_type, (int)md_array_size(residue_types), temp_alloc);
-                md_array_push(residue_types, it, arena);
-                item = md_array_last(residue_types);
+                snprintf(it.label, sizeof(it.label), STR_FMT, STR_ARG(comp_name));
+                md_array_push(comp_idx_type, (int)md_array_size(comp_types), temp_alloc);
+                md_array_push(comp_types, it, arena);
+                item = md_array_last(comp_types);
                 md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
             }
 
-            size_t res_atom_count = md_residue_atom_count(&mol.residue, i);
+            size_t comp_atom_count = md_comp_atom_count(&sys.comp, i);
 
             item->count += 1;
-            item->fraction += (float)(res_atom_count / (double)atom_count);
+            item->fraction += (float)(comp_atom_count / (double)atom_count);
             md_array_push(item->indices, (int)i, arena);
         }
 
         // Process chains - key = residue type sequence
-        if (res_count > 0 && chain_count > 0) {
-            for (size_t i = 0; i < chain_count; ++i) {
-                str_t chain_id = md_chain_id(&mol.chain, i);
+        if (comp_count > 0 && inst_count > 0) {
+            for (size_t i = 0; i < inst_count; ++i) {
+                str_t inst_id = md_inst_id(&sys.inst, i);
 
                 md_array_shrink(sequence, 0);
-                md_range_t range = md_chain_residue_range(&mol.chain, i);
+                md_urange_t range = md_inst_comp_range(&sys.inst, i);
                 for (int j = range.beg; j < range.end; ++j) {
-                    int res_type_idx = residue_idx_to_type[j];
+                    int res_type_idx = comp_idx_type[j];
                     md_array_push(sequence, res_type_idx, temp_alloc);
                 }
 
@@ -176,22 +177,22 @@ struct Dataset : viamd::EventHandler {
 
                 // Check if we already have this chain type
                 DatasetItem* item = nullptr;
-                for (size_t j = 0; j < md_array_size(chain_types); ++j) {
-                    if (chain_types[j].key == hash) {
-                        item = &chain_types[j];
+                for (size_t j = 0; j < md_array_size(inst_types); ++j) {
+                    if (inst_types[j].key == hash) {
+                        item = &inst_types[j];
                         break;
                     }
                 }
                 if (!item) {
-					int c_idx = (int)md_array_size(chain_types);
+					int c_idx = (int)md_array_size(inst_types);
                     DatasetItem it = { .key = hash };
                     snprintf(it.label, sizeof(it.label), "Type %i", c_idx + 1);
-                    md_array_push(chain_types, it, arena);
-                    item = md_array_last(chain_types);
+                    md_array_push(inst_types, it, arena);
+                    item = md_array_last(inst_types);
                     md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
                 }
 
-                size_t chain_atom_count = md_chain_atom_count(&mol.chain, i);
+                size_t chain_atom_count = md_system_inst_atom_count(&sys, i);
 
                 item->count += 1;
                 item->fraction += (float)(chain_atom_count / (double)atom_count);
@@ -238,10 +239,10 @@ struct Dataset : viamd::EventHandler {
 
         ImGui::SetNextWindowSize(ImVec2(500, 600), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Dataset", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-            ImGui::Text("Molecular data: %s", data.files.molecule);
-            ImGui::Text("Num atoms:    %9i", (int)data.mold.mol.atom.count);
-            ImGui::Text("Num residues: %9i", (int)data.mold.mol.residue.count);
-            ImGui::Text("Num chains:   %9i", (int)data.mold.mol.chain.count);
+            ImGui::Text("System: %s", data.files.molecule);
+            ImGui::Text("Num atoms:      %9i", (int)data.mold.sys.atom.count);
+            ImGui::Text("Num components: %9i", (int)data.mold.sys.comp.count);
+            ImGui::Text("Num instances:  %9i", (int)data.mold.sys.inst.count);
 
             if (data.files.trajectory[0] != '\0') {
                 ImGui::Separator();
@@ -270,8 +271,8 @@ struct Dataset : viamd::EventHandler {
                             case 0: {
                                 // Chains
                                 for (int* it = md_array_beg(item.indices); it != md_array_end(item.indices); ++it) {
-                                    int chain_idx = *it;
-                                    md_range_t range = md_chain_atom_range(&data.mold.mol.chain, chain_idx);
+                                    int inst_idx = *it;
+                                    md_urange_t range = md_system_inst_atom_range(&data.mold.sys, inst_idx);
                                     md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
                                 }
                                 break;
@@ -279,8 +280,8 @@ struct Dataset : viamd::EventHandler {
                             case 1:
                                 // Residues
                                 for (int* it = md_array_beg(item.indices); it != md_array_end(item.indices); ++it) {
-                                    int res_idx = *it;
-                                    md_range_t range = md_residue_atom_range(&data.mold.mol.residue, res_idx);
+                                    int comp_idx = *it;
+                                    md_urange_t range = md_system_comp_atom_range(&data.mold.sys, comp_idx);
                                     md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
                                 }
                                 break;
@@ -330,8 +331,8 @@ struct Dataset : viamd::EventHandler {
                                 
                                 // First, get the actual chain indices to access residue sequence
                                 if (md_array_size(item.indices) > 0) {
-                                    int chain_idx = item.indices[0]; // Get first chain of this type
-                                    md_range_t chain_res_range = md_chain_residue_range(&data.mold.mol.chain, chain_idx);
+                                    int inst_idx = item.indices[0]; // Get first chain of this type
+                                    md_urange_t inst_comp_range = md_system_inst_comp_range(&data.mold.sys, inst_idx);
                                     
                                     // 1. Show unique residue types (not sequence)
                                     ImGui::Text("Unique Residue Types:");
@@ -339,7 +340,7 @@ struct Dataset : viamd::EventHandler {
                                     if (seq_len > 0) {
                                         int button_count = 0;
                                         for (size_t i = 0; i < seq_len; ++i) {
-                                            const DatasetItem& sub = residue_types[item.sub_items[i]];
+                                            const DatasetItem& sub = comp_types[item.sub_items[i]];
                                             const float button_t = 0.3f;
                                             ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(button_t, ImPlotColormap_Plasma));
                                             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImPlot::SampleColormap(button_t + 0.1f, ImPlotColormap_Plasma));
@@ -362,10 +363,10 @@ struct Dataset : viamd::EventHandler {
                                     ImGui::Text("Sequence:");
                                     
                                     // Build the sequence string and create hoverable buttons
-                                    if (chain_res_range.end > chain_res_range.beg) {
+                                    if (inst_comp_range.end > inst_comp_range.beg) {
                                         ImGui::BeginGroup();
-                                        for (int res_idx = chain_res_range.beg; res_idx < chain_res_range.end; ++res_idx) {
-                                            str_t res_name = LBL_TO_STR(data.mold.mol.residue.name[res_idx]);
+                                        for (int res_idx = inst_comp_range.beg; res_idx < inst_comp_range.end; ++res_idx) {
+                                            str_t res_name = LBL_TO_STR(data.mold.sys.comp.name[res_idx]);
                                             
                                             // Convert to single-letter code
                                             char aa_code[2] = {amino_acid_to_single_letter(res_name.ptr), '\0'};
@@ -376,7 +377,7 @@ struct Dataset : viamd::EventHandler {
                                             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1, 1));
                                             
                                             // Use different color for each residue type
-                                            float res_t = (float)(res_idx - chain_res_range.beg) / (float)(chain_res_range.end - chain_res_range.beg) * 0.8f + 0.1f;
+                                            float res_t = (float)(res_idx - inst_comp_range.beg) / (float)(inst_comp_range.end - inst_comp_range.beg) * 0.8f + 0.1f;
                                             ImGui::PushStyleColor(ImGuiCol_Button, ImPlot::SampleColormap(res_t, ImPlotColormap_Viridis));
                                             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImPlot::SampleColormap(res_t + 0.1f, ImPlotColormap_Viridis));
                                             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImPlot::SampleColormap(res_t + 0.2f, ImPlotColormap_Viridis));
@@ -389,7 +390,7 @@ struct Dataset : viamd::EventHandler {
                                             if (ImGui::IsItemHovered()) {
                                                 ImGui::SetTooltip("%.*s (residue %d)", (int)res_name.len, res_name.ptr, res_idx + 1);
                                                 // Highlight this specific residue
-                                                md_range_t res_atom_range = md_residue_atom_range(&data.mold.mol.residue, res_idx);
+                                                md_urange_t res_atom_range = md_comp_atom_range(&data.mold.sys.comp, res_idx);
                                                 md_bitfield_set_range(&data.selection.highlight_mask, res_atom_range.beg, res_atom_range.end);
                                             }
                                             
@@ -398,7 +399,7 @@ struct Dataset : viamd::EventHandler {
                                             ImGui::PopID();
                                             
                                             // Arrange in rows of ~20 amino acids
-                                            if ((res_idx - chain_res_range.beg + 1) % 20 != 0 && res_idx + 1 < chain_res_range.end) {
+                                            if ((res_idx - inst_comp_range.beg + 1) % 20 != 0 && res_idx + 1 < inst_comp_range.end) {
                                                 ImGui::SameLine();
                                             }
                                         }
@@ -446,9 +447,9 @@ struct Dataset : viamd::EventHandler {
 
                                 if (editing_item_atom_type_idx != item.key) {
                                     editing_item_atom_type_idx  = item.key;
-                                    editing_item_radius = md_atom_type_radius(&data.mold.mol.atom.type, editing_item_atom_type_idx);
-                                    editing_item_mass = md_atom_type_mass(&data.mold.mol.atom.type, editing_item_atom_type_idx);
-                                    editing_item_z = md_atom_type_atomic_number(&data.mold.mol.atom.type, editing_item_atom_type_idx);
+                                    editing_item_radius = md_atom_type_radius(&data.mold.sys.atom.type, editing_item_atom_type_idx);
+                                    editing_item_mass = md_atom_type_mass(&data.mold.sys.atom.type, editing_item_atom_type_idx);
+                                    editing_item_z = md_atom_type_atomic_number(&data.mold.sys.atom.type, editing_item_atom_type_idx);
                                 }
                                 
                                 ImGui::Text("Properties:");
@@ -471,17 +472,17 @@ struct Dataset : viamd::EventHandler {
                                 }
                                 
                                 if (ImGui::Button("Apply Changes")) {
-                                    data.mold.mol.atom.type.mass[editing_item_atom_type_idx] = editing_item_mass;
-                                    data.mold.mol.atom.type.radius[editing_item_atom_type_idx] = editing_item_radius;
-                                    data.mold.mol.atom.type.z[editing_item_atom_type_idx] = (md_atomic_number_t)editing_item_z;
+                                    data.mold.sys.atom.type.mass[editing_item_atom_type_idx] = editing_item_mass;
+                                    data.mold.sys.atom.type.radius[editing_item_atom_type_idx] = editing_item_radius;
+                                    data.mold.sys.atom.type.z[editing_item_atom_type_idx] = (md_atomic_number_t)editing_item_z;
                                     data.mold.dirty_buffers |= MolBit_DirtyRadius;
                                     ImGui::CloseCurrentPopup();
                                 }
                                 ImGui::SameLine();
                                 if (ImGui::Button("Reset")) {
-                                    editing_item_radius = md_atom_type_radius(&data.mold.mol.atom.type, editing_item_atom_type_idx);
-                                    editing_item_mass = md_atom_type_mass(&data.mold.mol.atom.type, editing_item_atom_type_idx);
-                                    editing_item_z = md_atom_type_atomic_number(&data.mold.mol.atom.type, editing_item_atom_type_idx);
+                                    editing_item_radius = md_atom_type_radius(&data.mold.sys.atom.type, editing_item_atom_type_idx);
+                                    editing_item_mass = md_atom_type_mass(&data.mold.sys.atom.type, editing_item_atom_type_idx);
+                                    editing_item_z = md_atom_type_atomic_number(&data.mold.sys.atom.type, editing_item_atom_type_idx);
                                 }
                             }
                             ImGui::EndPopup();
@@ -498,8 +499,8 @@ struct Dataset : viamd::EventHandler {
             };
 
             // Draw the three sections
-            draw_dataset_section("Chain Types",     chain_types,      md_array_size(chain_types),   0);
-            draw_dataset_section("Residue Types",   residue_types,    md_array_size(residue_types), 1);  
+            draw_dataset_section("Chain Types",     inst_types,      md_array_size(inst_types),   0);
+            draw_dataset_section("Residue Types",   comp_types,    md_array_size(comp_types), 1);  
             draw_dataset_section("Atom Types",      atom_types,       md_array_size(atom_types),    2);
 
             // Atom Element Mappings section (keep existing functionality)

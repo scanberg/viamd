@@ -357,7 +357,7 @@ struct Shapespace : viamd::EventHandler {
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
-                if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.mol, app_state->script.ir, NULL, error, sizeof(error), arena)) {
+                if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.sys, app_state->script.ir, NULL, error, sizeof(error), arena)) {
                     eval_hash = hash;
 
                     input_valid = true;                    
@@ -382,7 +382,7 @@ struct Shapespace : viamd::EventHandler {
                     evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), (uint32_t)num_frames, [shapespace = this](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                         (void)thread_num;
                         ApplicationState* app_state = shapespace->app_state;
-                        const size_t stride = ALIGN_TO(app_state->mold.mol.atom.count, 8);
+                        const size_t stride = ALIGN_TO(app_state->mold.sys.atom.count, 8);
                         const size_t bytes = stride * 3 * sizeof(float);
                         md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
                         defer { md_arena_allocator_destroy(alloc); };
@@ -394,7 +394,7 @@ struct Shapespace : viamd::EventHandler {
                         float* w = 0;
                         if (shapespace->use_mass) {
                             w = (float*)md_arena_allocator_push(alloc, stride * sizeof(float));
-                            md_atom_extract_masses(w, 0, app_state->mold.mol.atom.count, &app_state->mold.mol.atom);
+                            md_atom_extract_masses(w, 0, app_state->mold.sys.atom.count, &app_state->mold.sys.atom);
                         }
 
                         const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
@@ -416,8 +416,8 @@ struct Shapespace : viamd::EventHandler {
                                     xyzw[dst_idx++] = vec4_set(x[src_idx], y[src_idx], z[src_idx], w ? w[src_idx] : 1.0f);
                                 }
 
-                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &app_state->mold.mol.unit_cell);
-                                md_util_deperiodize_vec4(xyzw, count, com, &app_state->mold.mol.unit_cell);
+                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &app_state->mold.sys.unit_cell);
+                                md_util_deperiodize_vec4(xyzw, count, com, &app_state->mold.sys.unit_cell);
 
                                 const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                                 const vec3_t weights = md_util_shape_weights(&M);

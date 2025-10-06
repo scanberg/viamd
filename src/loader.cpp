@@ -119,7 +119,7 @@ struct LoadedMolecule {
 
 struct LoadedTrajectory {
     uint64_t key;
-    const md_molecule_t* mol;
+    const md_system_t* mol;
     md_trajectory_loader_i* loader;
     md_trajectory_i* traj;
     md_frame_cache_t cache;
@@ -441,7 +441,7 @@ bool decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, [[may
 
         if (result) {
             const md_unit_cell_t* cell = &frame_data->header.unit_cell;
-            const md_molecule_t* mol = loaded_traj->mol;
+            const md_system_t* mol = loaded_traj->mol;
             float* x = frame_data->x;
             float* y = frame_data->y;
             float* z = frame_data->z;
@@ -511,7 +511,7 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
 
         if (result) {
             const md_unit_cell_t* cell = &frame_data->header.unit_cell;
-            const md_molecule_t* mol = loaded_traj->mol;
+            const md_system_t* mol = loaded_traj->mol;
             float* x = frame_data->x;
             float* y = frame_data->y;
             float* z = frame_data->z;
@@ -558,7 +558,7 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
     return result;
 }
 
-md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_molecule_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags) {
+md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_system_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags) {
     ASSERT(mol);
     ASSERT(alloc);
 

@@ -176,16 +176,16 @@ constexpr inline uint32_t convert_color(vec4_t in) {
     return out;
 }
 
-void color_atoms_uniform    (uint32_t* colors, size_t count, vec4_t uniform_color, const md_bitfield_t* mask = NULL);
-void color_atoms_cpk        (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_type       (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_idx        (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_res_name   (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_res_id     (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_res_idx    (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_chain_id   (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_chain_idx  (uint32_t* colors, size_t count, const md_molecule_t& mol);
-void color_atoms_sec_str    (uint32_t* colors, size_t count, const md_molecule_t& mol);
+void color_atoms_uniform        (uint32_t* colors, size_t count, vec4_t uniform_color, const md_bitfield_t* mask = NULL);
+void color_atoms_cpk            (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_type           (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_idx            (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_name      (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_seq_id    (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_idx       (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_inst_id        (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_inst_idx       (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_sec_str        (uint32_t* colors, size_t count, const md_system_t& sys);
 
 void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask);
 void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale);
