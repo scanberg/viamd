@@ -1,4 +1,4 @@
-#include <event.h>
+﻿#include <event.h>
 #include <viamd.h>
 
 #include <core/md_common.h>
@@ -240,15 +240,16 @@ struct Dataset : viamd::EventHandler {
         ImGui::SetNextWindowSize(ImVec2(500, 600), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Dataset", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             ImGui::Text("System: %s", data.files.molecule);
-            ImGui::Text("Num atoms:      %9i", (int)data.mold.sys.atom.count);
-            ImGui::Text("Num components: %9i", (int)data.mold.sys.comp.count);
-            ImGui::Text("Num instances:  %9i", (int)data.mold.sys.inst.count);
+            ImGui::Text("Num entities:   %9zu", data.mold.sys.entity.count);
+            ImGui::Text("Num instances:  %9zu", data.mold.sys.inst.count);
+            ImGui::Text("Num components: %9zu", data.mold.sys.comp.count);
+            ImGui::Text("Num atoms:      %9zu", data.mold.sys.atom.count);
 
             if (data.files.trajectory[0] != '\0') {
                 ImGui::Separator();
                 ImGui::Text("Trajectory data: %s", data.files.trajectory);
-                ImGui::Text("Num frames:    %9i", (int)md_trajectory_num_frames(data.mold.traj));
-                ImGui::Text("Num atoms:     %9i", (int)md_trajectory_num_atoms(data.mold.traj));
+                ImGui::Text("Num frames:    %9zu", md_trajectory_num_frames(data.mold.traj));
+                ImGui::Text("Num atoms:     %9zu", md_trajectory_num_atoms(data.mold.traj));
             }
 
             ImGui::Separator();
@@ -257,12 +258,14 @@ struct Dataset : viamd::EventHandler {
                 md_bitfield_clear(&data.selection.highlight_mask);
             }
             
+#if 0
             // Helper lambda for displaying dataset sections
             auto draw_dataset_section = [this, &data](const char* title, DatasetItem* items, size_t item_count, int section_type) {
                 const size_t count = item_count;
                 if (count && ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) {
                     const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.8f, ImGui::GetFontSize() * 1.1f);
                     const float window_x_max = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+
 
                     auto handle_item_hover = [&data](const DatasetItem& item, int section_type) {
                         if (ImGui::IsItemHovered()) {
@@ -497,11 +500,73 @@ struct Dataset : viamd::EventHandler {
                     }
                 }
             };
+#endif
+
+            size_t num_entities = md_system_entity_count(&data.mold.sys);
+            size_t num_instances = md_system_inst_count(&data.mold.sys);
+
+            if (num_entities && ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
+                const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.4f, ImGui::GetFontSize() * 1.1f);
+
+                for (size_t ent_idx = 0; ent_idx < num_entities; ++ent_idx) {
+                    char buf[256];
+                    str_t entity_id   = md_entity_id(&data.mold.sys.entity, ent_idx);
+                    str_t entity_desc = md_entity_description(&data.mold.sys.entity, ent_idx);
+                    md_flags_t entity_flags = md_entity_flags(&data.mold.sys.entity, ent_idx);
+
+                    snprintf(buf, sizeof(buf), STR_FMT ": " STR_FMT, STR_ARG(entity_id), STR_ARG(entity_desc));
+
+                    ImGui::Indent();
+
+                    bool expand_entity = ImGui::CollapsingHeader(buf);
+                    if (ImGui::IsItemHovered()) {
+                        md_bitfield_clear(&data.selection.highlight_mask);
+                        for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
+                            if (md_inst_entity_idx(&data.mold.sys.inst, inst_idx) == (int)ent_idx) {
+                                md_urange_t range = md_system_inst_atom_range(&data.mold.sys, inst_idx);
+                                md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
+                            }
+                        }
+                    }
+                    if (expand_entity) {
+                        ImGui::Indent();
+                        for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
+                            if (md_inst_entity_idx(&data.mold.sys.inst, inst_idx) != (int)ent_idx) continue;
+                            str_t inst_id = md_inst_id(&data.mold.sys.inst, inst_idx);
+                            snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(inst_id));
+                            bool expand_inst = ImGui::CollapsingHeader(buf);
+                            if (ImGui::IsItemHovered()) {
+                                md_bitfield_clear(&data.selection.highlight_mask);
+                                md_urange_t range = md_system_inst_atom_range(&data.mold.sys, inst_idx);
+                                md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
+                            }
+                            if (expand_inst) {
+                                md_urange_t range = md_system_inst_comp_range(&data.mold.sys, inst_idx);
+                                for (size_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
+                                    str_t comp_name = md_comp_name(&data.mold.sys.comp, comp_idx);
+                                    ImGui::Selectable(comp_name.ptr, false, 0, item_size);
+                                    if (ImGui::IsItemHovered()) {
+                                        md_bitfield_clear(&data.selection.highlight_mask);
+                                        md_urange_t atom_range = md_system_comp_atom_range(&data.mold.sys, comp_idx);
+                                        md_bitfield_set_range(&data.selection.highlight_mask, atom_range.beg, atom_range.end);
+                                    }
+                                    if (comp_idx + 1 < range.end) {
+                                        ImGui::SameLine();
+                                    }
+                                }
+                            }
+                        }
+                        ImGui::Unindent();
+                    }
+                    ImGui::Unindent();
+                }
+                ImGui::Separator();
+            }
 
             // Draw the three sections
-            draw_dataset_section("Chain Types",     inst_types,      md_array_size(inst_types),   0);
-            draw_dataset_section("Residue Types",   comp_types,    md_array_size(comp_types), 1);  
-            draw_dataset_section("Atom Types",      atom_types,       md_array_size(atom_types),    2);
+            //draw_dataset_section("Chain Types",     inst_types,      md_array_size(inst_types),   0);
+            //draw_dataset_section("Residue Types",   comp_types,    md_array_size(comp_types), 1);  
+            //draw_dataset_section("Atom Types",      atom_types,       md_array_size(atom_types),    2);
 
             // Atom Element Mappings section (keep existing functionality)
             const size_t num_mappings = md_array_size(atom_element_remappings);

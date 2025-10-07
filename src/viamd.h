@@ -95,8 +95,8 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "CPK",
     "Atom Label",
     "Atom Idx",
-    "Res Name"
-    "Res Id",
+    "Res Name",
+    "Seq Id",
     "Res Idx",
     "Chain Id",
     "Chain Idx",
