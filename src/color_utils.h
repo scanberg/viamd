@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_vec_math.h>
 #include <core/md_bitfield.h>
