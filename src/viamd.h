@@ -2,7 +2,7 @@
 
 #include <core/md_str.h>
 #include <core/md_os.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_script.h>
 #include <md_gl.h>

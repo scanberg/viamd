@@ -26,20 +26,20 @@
 
 #include "task_system.h"
 
-enum mol_loader_t {
-    MOL_LOADER_UNKNOWN,
-    MOL_LOADER_PDB,
-    MOL_LOADER_GRO,
-    MOL_LOADER_XYZ,
-    MOL_LOADER_CIF,
-    MOL_LOADER_LAMMPS,
+enum sys_loader_t {
+    SYS_LOADER_UNKNOWN,
+    SYS_LOADER_PDB,
+    SYS_LOADER_GRO,
+    SYS_LOADER_XYZ,
+    SYS_LOADER_CIF,
+    SYS_LOADER_LAMMPS,
 #if MD_VLX
-    MOL_LOADER_VELOXCHEM,
+    SYS_LOADER_VELOXCHEM,
 #endif
-    MOL_LOADER_COUNT
+    SYS_LOADER_COUNT
 };
 
-static const str_t mol_loader_name[] {
+static const str_t sys_loader_name[] {
     STR_LIT("Unknown"),
     STR_LIT("Standard Protein Data Bank (pdb)"),
     STR_LIT("Gromacs Structure (gro)"),
@@ -51,7 +51,7 @@ static const str_t mol_loader_name[] {
 #endif
 };
 
-static const str_t mol_loader_ext[] {
+static const str_t sys_loader_ext[] {
     {},
     STR_LIT("pdb"),
     STR_LIT("gro"),
@@ -63,15 +63,15 @@ static const str_t mol_loader_ext[] {
 #endif
 };
 
-static md_molecule_loader_i* mol_loader_api[] = {
+static md_system_loader_i* sys_loader[] = {
     NULL,
-    md_pdb_molecule_api(),
-    md_gro_molecule_api(),
-    md_xyz_molecule_api(),
-    md_mmcif_molecule_api(),
-    md_lammps_molecule_api(),
+    md_pdb_system_loader(),
+    md_gro_system_loader(),
+    md_xyz_system_loader(),
+    md_mmcif_system_loader(),
+    md_lammps_system_loader(),
 #if MD_VLX
-    md_vlx_molecule_api(),
+    md_vlx_system_loader(),
 #endif
 };
 
@@ -103,7 +103,7 @@ static str_t traj_loader_ext[] {
 	STR_LIT("lammpstrj"),
 };
 
-static md_trajectory_loader_i* traj_loader_api[] = {
+static md_trajectory_loader_i* traj_loader[] = {
 	NULL,
 	md_pdb_trajectory_loader(),
 	md_xtc_trajectory_loader(),
@@ -187,9 +187,9 @@ static inline void remove_loaded_trajectory(uint64_t key) {
 }
 
 // In here each loader gets a chance to do a precheck with the file to be loaded
-static void mol_loader_preload_check(load::LoaderState* state, mol_loader_t loader, str_t file_path, md_allocator_i* alloc) {
+static void mol_loader_preload_check(load::LoaderState* state, sys_loader_t loader, str_t file_path, md_allocator_i* alloc) {
     switch (loader) {
-    case MOL_LOADER_LAMMPS: {
+    case SYS_LOADER_LAMMPS: {
         md_lammps_atom_format_t format = md_lammps_atom_format_from_file(file_path);
         if (format != MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
             // Encode this into the argument
@@ -198,7 +198,7 @@ static void mol_loader_preload_check(load::LoaderState* state, mol_loader_t load
             state->data_size = sizeof(arg);
             state->data_ptr = md_alloc(alloc, sizeof(arg));
             MEMCPY(state->data_ptr, &arg, sizeof(arg));
-            state->mol_loader_arg = state->data_ptr;
+            state->sys_loader_arg = state->data_ptr;
         } else {
             state->flags |= LoaderStateFlag_RequiresDialogue;
         }
@@ -219,7 +219,7 @@ namespace load {
 struct table_entry_t {
     str_t name[NUM_ENTRIES];
     str_t ext[NUM_ENTRIES];
-    md_molecule_loader_i*   mol_loader[NUM_ENTRIES];
+    md_system_loader_i*     sys_loader[NUM_ENTRIES];
     md_trajectory_loader_i* traj_loader[NUM_ENTRIES];
     uint32_t flags[NUM_ENTRIES];
 };
@@ -265,20 +265,20 @@ static const table_entry_t table = {
 #endif
     },
     { 
-        md_pdb_molecule_api(),
-        md_gro_molecule_api(),  
+        md_pdb_system_loader(),
+        md_gro_system_loader(),  
         NULL,
         NULL,
-        md_xyz_molecule_api(),
-        md_xyz_molecule_api(),
-        md_xyz_molecule_api(),
-        md_mmcif_molecule_api(),
-        md_lammps_molecule_api(),
+        md_xyz_system_loader(),
+        md_xyz_system_loader(),
+        md_xyz_system_loader(),
+        md_mmcif_system_loader(),
+        md_lammps_system_loader(),
         NULL,
         //NULL,
 #if MD_VLX
-        md_vlx_molecule_api(),
-        md_vlx_molecule_api(),
+        md_vlx_system_loader(),
+        md_vlx_system_loader(),
 #endif
     },
 	{ 
@@ -299,18 +299,18 @@ static const table_entry_t table = {
     }
 };
 
-mol_loader_t mol_loader_from_ext(str_t ext) {
+sys_loader_t mol_loader_from_ext(str_t ext) {
     str_t tok[16];
-	for (size_t i = 1; i < MOL_LOADER_COUNT; ++i) {
-        str_t exts = mol_loader_ext[i];
+	for (size_t i = 1; i < SYS_LOADER_COUNT; ++i) {
+        str_t exts = sys_loader_ext[i];
         size_t num_tok = extract_tokens_delim(tok, ARRAY_SIZE(tok), &exts, ';');
         for (size_t j = 0; j < num_tok; ++j) {
 			if (str_eq_ignore_case(ext, tok[j])) {
-				return (mol_loader_t)i;
+				return (sys_loader_t)i;
 			}
 		}
 	}
-	return MOL_LOADER_UNKNOWN;
+	return SYS_LOADER_UNKNOWN;
 }
 
 traj_loader_t traj_loader_from_ext(str_t ext) {
@@ -330,25 +330,25 @@ traj_loader_t traj_loader_from_ext(str_t ext) {
 bool init_loader_state(LoaderState* state, str_t file_path, md_allocator_i* alloc) {
     ASSERT(state);
     MEMSET(state, 0, sizeof(LoaderState));
-    mol_loader_t mol_loader   = MOL_LOADER_UNKNOWN;
-    traj_loader_t traj_loader = TRAJ_LOADER_UNKNOWN;
+    sys_loader_t  sys   = SYS_LOADER_UNKNOWN;
+    traj_loader_t traj  = TRAJ_LOADER_UNKNOWN;
 
     str_t ext = {0};
     if (extract_ext(&ext, file_path)) {
-        mol_loader = mol_loader_from_ext(ext);
-        if (mol_loader) {
-            state->mol_loader = mol_loader_api[mol_loader];
-            mol_loader_preload_check(state, mol_loader, file_path, alloc);
+        sys = mol_loader_from_ext(ext);
+        if (sys) {
+            state->sys_loader = sys_loader[sys];
+            mol_loader_preload_check(state, sys, file_path, alloc);
         }
 
-        traj_loader = traj_loader_from_ext(ext);
-        if (traj_loader) {
-            state->traj_loader = traj_loader_api[traj_loader];
-            traj_loader_preload_check(state, traj_loader, file_path, alloc);
+        traj = traj_loader_from_ext(ext);
+        if (traj) {
+            state->traj_loader = traj_loader[traj];
+            traj_loader_preload_check(state, traj, file_path, alloc);
         }
     }
 
-    return (mol_loader || traj_loader);
+    return (sys || traj);
 }
 
 void free_loader_state(LoaderState* state, md_allocator_i* alloc) {
@@ -374,19 +374,19 @@ const str_t* loader_extensions() {
 
 namespace mol {
 
-md_molecule_loader_i* loader_from_ext(str_t ext) {
+md_system_loader_i* loader_from_ext(str_t ext) {
     for (size_t i = 0; i < NUM_ENTRIES; ++i) {
     	if (str_eq(ext, table.ext[i])) {
-            return table.mol_loader[i];
+            return table.sys_loader[i];
         }
     }
     return NULL;
 }
 
-bool loader_requires_dialogue(md_molecule_loader_i* loader) {
+bool loader_requires_dialogue(md_system_loader_i* loader) {
     if (loader) {
         for (size_t i = 0; i < NUM_ENTRIES; ++i) {
-		    if (table.mol_loader[i] == loader) {
+		    if (table.sys_loader[i] == loader) {
 			    return table.flags[i] & FLAG_REQUIRES_DIALOGUE;
 		    }
 	    }
@@ -510,7 +510,7 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
         result = md_trajectory_load_frame(loaded_traj->traj, idx, &frame_data->header, frame_data->x, frame_data->y, frame_data->z);
 
         if (result) {
-            const md_unit_cell_t* cell = &frame_data->header.unit_cell;
+            const md_unitcell_t* cell = &frame_data->header.unitcell;
             const md_system_t* mol = loaded_traj->mol;
             float* x = frame_data->x;
             float* y = frame_data->y;
@@ -527,12 +527,13 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
                     const int32_t i = indices[0];
                     com = vec3_set(x[i], y[i], z[i]);
                 } else {
-                    com = md_util_com_compute(x, y, z, NULL, indices, count, &mol->unit_cell);
+                    com = md_util_com_compute(x, y, z, NULL, indices, count, &mol->unitcell);
                     md_util_pbc(&com.x, &com.y, &com.z, 0, 1, cell);
                 }
 
                 // Translate all
-                const vec3_t center = cell->flags ? cell->basis * vec3_set1(0.5f) : vec3_zero();
+                const mat3_t basis = md_unitcell_basis_mat3(cell);
+                const vec3_t center = basis * vec3_set1(0.5f);
                 const vec3_t trans  = center - com;
                 vec3_batch_translate_inplace(x, y, z, num_atoms, trans);
             }

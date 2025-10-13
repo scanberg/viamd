@@ -7,7 +7,7 @@
 #include <core/md_log.h>
 #include <core/md_array.h>
 #include <core/md_bitfield.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_util.h>
 
 #include <imgui_widgets.h>

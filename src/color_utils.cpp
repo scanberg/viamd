@@ -1,7 +1,7 @@
 ﻿#include "color_utils.h"
 
 #include <core/md_hash.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_util.h>
 
 static void set_colors(uint32_t* colors, size_t count, uint32_t color) {

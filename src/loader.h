@@ -4,7 +4,7 @@
 
 struct md_allocator_i;
 struct md_system_t;
-struct md_molecule_loader_i;
+struct md_system_loader_i;
 struct md_trajectory_i;
 struct md_trajectory_loader_i;
 struct md_bitfield_t;
@@ -27,9 +27,9 @@ typedef uint32_t LoadTrajectoryFlags;
 namespace load {
     // This represents a loader state with arguments to load a molecule or trajectory from a file
     struct LoaderState {		
-		md_molecule_loader_i*   mol_loader = 0;
+		md_system_loader_i*     sys_loader = 0;
 		md_trajectory_loader_i* traj_loader = 0;
-        const void*             mol_loader_arg = 0;
+        const void*             sys_loader_arg = 0;
         LoaderStateFlags 		flags = LoaderStateFlag_None;
 
         size_t data_size = 0;
@@ -44,7 +44,7 @@ namespace load {
     const str_t* loader_extensions();
 
 namespace mol {
-    md_molecule_loader_i* loader_from_ext(str_t ext);
+    md_system_loader_i* loader_from_ext(str_t ext);
 }
 
 namespace traj {

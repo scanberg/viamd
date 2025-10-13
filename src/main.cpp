@@ -19,7 +19,7 @@
 #include <md_gfx.h>
 #include <md_filter.h>
 #include <md_script.h>
-#include <md_molecule.h>
+#include <md_system.h>
 #include <md_trajectory.h>
 #include <md_xvg.h>
 #include <md_csv.h>
@@ -309,11 +309,11 @@ struct DisplayProperty {
 };
 
 struct LoadParam {
-    md_molecule_loader_i*   mol_loader  = NULL;
+    md_system_loader_i*     sys_loader  = NULL;
     md_trajectory_loader_i* traj_loader = NULL;
     str_t file_path = STR_LIT("");
     bool coarse_grained = false;
-    const void* mol_loader_arg = NULL;
+    const void* sys_loader_arg = NULL;
     LoadTrajectoryFlags traj_loader_flags = 0;
 };
 
@@ -885,15 +885,15 @@ int main(int argc, char** argv) {
                     data.load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
                 } else if (success) {
                     LoadParam param = {};
-                    param.mol_loader  = state.mol_loader;
+                    param.sys_loader  = state.sys_loader;
                     param.traj_loader = state.traj_loader;
                     param.file_path      = e.path;
                     param.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                    param.mol_loader_arg = state.mol_loader_arg;
+                    param.sys_loader_arg = state.sys_loader_arg;
                     param.traj_loader_flags = (e.flags & FileFlags_DisableCacheWrite) ? LoadTrajectoryFlag_DisableCacheWrite : 0;
                     if (load_dataset_from_file(&data, param)) {
                         data.animation = {};
-                        if (param.mol_loader) {
+                        if (param.sys_loader) {
                             md_bitfield_reset(&data.representation.visibility_mask);
 
                             if (!data.settings.keep_representations) {
@@ -2036,7 +2036,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         int64_t nearest_frame;
         int64_t frames[4];
         md_trajectory_frame_header_t headers[4];
-        md_unit_cell_t unit_cell;
+        md_unitcell_t unitcell;
 
         size_t count;
 
@@ -2081,7 +2081,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"),[data = &payload]() {
                 md_trajectory_frame_header_t header;
                 md_trajectory_load_frame(data->state->mold.traj, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
-                MEMCPY(&data->unit_cell, &header.unit_cell, sizeof(md_unit_cell_t));
+                MEMCPY(&data->unitcell, &header.unitcell, sizeof(md_unitcell_t));
             });
 
             tasks[num_tasks++] = load_task;
@@ -2096,14 +2096,14 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             });
 
             task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
-                if ((data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) && (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO)) {
-                    double ext_x = lerp(data->headers[0].unit_cell.basis[0][0], data->headers[1].unit_cell.basis[0][0], data->t);
-                    double ext_y = lerp(data->headers[0].unit_cell.basis[1][1], data->headers[1].unit_cell.basis[1][1], data->t);
-                    double ext_z = lerp(data->headers[0].unit_cell.basis[2][2], data->headers[1].unit_cell.basis[2][2], data->t);
-                    data->unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
-                } else if ( (data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) || (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC)) {
-                    data->unit_cell.basis = lerp(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->t);
-                    data->unit_cell.inv_basis = mat3_inverse(data->state->mold.sys.unit_cell.basis);
+                if (data->headers[0].unitcell.flags) {
+                    double x  = lerp(data->headers[0].unitcell.x,  data->headers[1].unitcell.x,  data->t);
+                    double y  = lerp(data->headers[0].unitcell.y,  data->headers[1].unitcell.y,  data->t);
+                    double z  = lerp(data->headers[0].unitcell.z,  data->headers[1].unitcell.z,  data->t);
+                    double xy = lerp(data->headers[0].unitcell.xy, data->headers[1].unitcell.xy, data->t);
+                    double xz = lerp(data->headers[0].unitcell.xz, data->headers[1].unitcell.xz, data->t);
+                    double yz = lerp(data->headers[0].unitcell.yz, data->headers[1].unitcell.yz, data->t);
+                    data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
                 }
             });
 
@@ -2117,7 +2117,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 const float* src_y[2] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg};
                 const float* src_z[2] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg};
 
-                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t);
+                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t);
             }, grain_size);
 
             tasks[num_tasks++] = load_task;
@@ -2135,23 +2135,15 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             });
 
             task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
-                if ((data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                    (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                    (data->headers[2].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO) &&
-                    (data->headers[3].unit_cell.flags & MD_UNIT_CELL_FLAG_ORTHO))
-                {
-                    double ext_x = cubic_spline(data->headers[0].unit_cell.basis[0][0], data->headers[1].unit_cell.basis[0][0], data->headers[2].unit_cell.basis[0][0], data->headers[3].unit_cell.basis[0][0], data->t);
-                    double ext_y = cubic_spline(data->headers[0].unit_cell.basis[1][1], data->headers[1].unit_cell.basis[1][1], data->headers[2].unit_cell.basis[1][1], data->headers[3].unit_cell.basis[1][1], data->t);
-                    double ext_z = cubic_spline(data->headers[0].unit_cell.basis[2][2], data->headers[1].unit_cell.basis[2][2], data->headers[2].unit_cell.basis[2][2], data->headers[3].unit_cell.basis[2][2], data->t);
-                    data->unit_cell = md_util_unit_cell_from_extent(ext_x, ext_y, ext_z);
-                } else if ( (data->headers[0].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                            (data->headers[1].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                            (data->headers[2].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC) ||
-                            (data->headers[3].unit_cell.flags & MD_UNIT_CELL_FLAG_TRICLINIC))
-                {
-                    data->unit_cell.flags = data->headers[0].unit_cell.flags;
-                    data->unit_cell.basis = cubic_spline(data->headers[0].unit_cell.basis, data->headers[1].unit_cell.basis, data->headers[2].unit_cell.basis, data->headers[3].unit_cell.basis, data->t, data->s);
-                    data->unit_cell.inv_basis = mat3_inverse(data->state->mold.sys.unit_cell.basis);
+                if (data->headers[0].unitcell.flags) {
+                    double x  = cubic_spline(data->headers[0].unitcell.x,  data->headers[1].unitcell.x,  data->headers[2].unitcell.x,  data->headers[3].unitcell.x,  data->t, data->s);
+                    double y  = cubic_spline(data->headers[0].unitcell.y,  data->headers[1].unitcell.y,  data->headers[2].unitcell.y,  data->headers[3].unitcell.y,  data->t, data->s);
+                    double z  = cubic_spline(data->headers[0].unitcell.z,  data->headers[1].unitcell.z,  data->headers[2].unitcell.z,  data->headers[3].unitcell.z,  data->t, data->s);
+                    double xy = cubic_spline(data->headers[0].unitcell.xy, data->headers[1].unitcell.xy, data->headers[2].unitcell.xy, data->headers[3].unitcell.xy, data->t, data->s);
+                    double xz = cubic_spline(data->headers[0].unitcell.xz, data->headers[1].unitcell.xz, data->headers[2].unitcell.xz, data->headers[3].unitcell.xz, data->t, data->s);
+                    double yz = cubic_spline(data->headers[0].unitcell.yz, data->headers[1].unitcell.yz, data->headers[2].unitcell.yz, data->headers[3].unitcell.yz, data->t, data->s);
+                    
+                    data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
                 }
             });
 
@@ -2165,7 +2157,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 const float* src_y[4] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg, data->src_y[2] + range_beg, data->src_y[3] + range_beg};
                 const float* src_z[4] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg, data->src_z[2] + range_beg, data->src_z[3] + range_beg};
 
-                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unit_cell, data->t, data->s);
+                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t, data->s);
             }, grain_size);
 
             tasks[num_tasks++] = load_task;
@@ -2192,7 +2184,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                     const float* x = sys.atom.x;
                     const float* y = sys.atom.y;
                     const float* z = sys.atom.z;
-                    const md_unit_cell_t* cell = &sys.unit_cell;
+                    const md_unitcell_t* cell = &sys.unitcell;
                     int offset = data->t < 0.5 ? 0 : 1;
 
                     switch (data->mode) {
@@ -2201,20 +2193,18 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         x = data->src_x[0 + offset];
                         y = data->src_y[0 + offset];
                         z = data->src_z[0 + offset];
-                        cell = &data->headers[0 + offset].unit_cell;
+                        cell = &data->headers[0 + offset].unitcell;
                         break;
                     case InterpolationMode::CubicSpline:
                         x = data->src_x[1 + offset];
                         y = data->src_y[1 + offset];
                         z = data->src_z[1 + offset];
-                        cell = &data->headers[1 + offset].unit_cell;
+                        cell = &data->headers[1 + offset].unitcell;
                         break;
                     default:
                         break;
                     };
 
-                    //md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-                    //md_bond_data_t* bond  = (md_bond_data_t*)md_arena_allocator_push_zero(arena, sizeof(md_bond_data_t));
                     md_bond_data_t* bonds = &data->state->mold.sys.bond;
                     md_bond_data_clear(bonds);
 
@@ -2233,7 +2223,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             float* x = data->dst_x + range_beg;
             float* y = data->dst_y + range_beg;
             float* z = data->dst_z + range_beg;
-            md_util_pbc(x, y, z, 0, count, &data->unit_cell);
+            md_util_pbc(x, y, z, 0, count, &data->unitcell);
         });
         tasks[num_tasks++] = pbc_task;
     } 
@@ -2244,7 +2234,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int32_t* s_idx = md_index_range_beg(&data->state->mold.sys.structure, i);
                 size_t   s_len = md_index_range_size(&data->state->mold.sys.structure, i);
-                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unit_cell);
+                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unitcell);
             }
         });
         tasks[num_tasks++] = unwrap_task;
@@ -2430,11 +2420,11 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
     state->mold.sys_aabb_min = aabb_min;
     state->mold.sys_aabb_max = aabb_max;
-    sys.unit_cell = payload.unit_cell;
+    sys.unitcell = payload.unitcell;
 
 #if 0
-    if (mol.unit_cell.flags) {
-        vec3_t c = mol.unit_cell.basis * vec3_set1(0.5f);
+    if (mol.unitcell.flags) {
+        vec3_t c = mol.unitcell.basis * vec3_set1(0.5f);
         state->mold.model_mat = mat4_translate_vec3(-c);
     }
 #endif
@@ -2522,7 +2512,7 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
     }
 
     size_t count = popcount ? popcount : mol.atom.count;
-    vec3_t com = md_util_com_compute(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, &mol.unit_cell);
+    vec3_t com = md_util_com_compute(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, &mol.unitcell);
     mat3_t C = mat3_covariance_matrix(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, com);
     mat3_eigen_t eigen = mat3_eigen(C);
     mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
@@ -2562,8 +2552,9 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
         }
     }
 
-    float max_cell_ext = vec3_reduce_max(mat3_diag(data->mold.sys.unit_cell.basis));
-    float max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
+    const vec3_t cell_ext = mat3_mul_vec3(md_unitcell_basis_mat3(&mol.unitcell), vec3_set1(1.0f));
+    const float  max_cell_ext = vec3_reduce_max(cell_ext);
+    const float  max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
 
     data->view.camera.near_plane = 1.0f;
     data->view.camera.far_plane = 10000.0f;
@@ -2997,7 +2988,7 @@ static void draw_main_menu(ApplicationState* data) {
                         } else {
                             MD_LOG_DEBUG("RECALCULATING BONDS");
                             md_bond_data_clear(&data->mold.sys.bond);
-                            md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, mol.atom.type_idx, mol.atom.count, &mol.atom.type, nullptr, &frame_header.unit_cell, frame_alloc);
+                            md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, mol.atom.type_idx, mol.atom.count, &mol.atom.type, nullptr, &frame_header.unitcell, frame_alloc);
                             data->mold.dirty_buffers |= MolBit_DirtyBonds;
                             md_vm_arena_temp_end(temp_pos);
                         }
@@ -3187,8 +3178,8 @@ void draw_load_dataset_window(ApplicationState* data) {
         bool load_enabled = (state.path_is_valid && state.loader_idx > -1);
 
         // Draw Options
-        md_molecule_loader_i* mol_loader = load::mol::loader_from_ext(cur_ext);
-        bool show_cg = state.path_is_valid && mol_loader;
+        md_system_loader_i* sys_loader = load::mol::loader_from_ext(cur_ext);
+        bool show_cg = state.path_is_valid && sys_loader;
         if (show_cg) {
             ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
             if (ImGui::IsItemHovered()) {
@@ -3196,7 +3187,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
         }
 
-        bool show_lammps_atom_format = state.path_is_valid && mol_loader && (mol_loader == md_lammps_molecule_api());
+        bool show_lammps_atom_format = state.path_is_valid && sys_loader && (sys_loader == md_lammps_system_loader());
         if (show_lammps_atom_format) {
             const char** atom_format_names = md_lammps_atom_format_names();
             const char** atom_format_strings = md_lammps_atom_format_strings();
@@ -3267,18 +3258,18 @@ void draw_load_dataset_window(ApplicationState* data) {
         {
             LoadParam param = {};
             param.file_path = path;
-            param.mol_loader = mol_loader;
+            param.sys_loader = sys_loader;
             param.traj_loader = traj_loader;
             param.coarse_grained = state.coarse_grained;
 
             md_lammps_molecule_loader_arg_t lammps_arg = {};
-            if (mol_loader == md_lammps_molecule_api()) {
+            if (sys_loader == md_lammps_system_loader()) {
                 lammps_arg = md_lammps_molecule_loader_arg(state.atom_format_buf);
-                param.mol_loader_arg = &lammps_arg;
+                param.sys_loader_arg = &lammps_arg;
             }
 
             if (load_dataset_from_file(data, param)) {
-                if (mol_loader && !data->settings.keep_representations) {
+                if (sys_loader && !data->settings.keep_representations) {
                     clear_representations(data);
                     create_default_representations(data);
                 }
@@ -3759,7 +3750,7 @@ void draw_context_popup(ApplicationState* data) {
 
                         str_t resname = md_comp_name(&data->mold.sys.comp, res_idx);
                         if (resname) {
-                            snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0] + 1, idx[1] + 1, STR_ARG(resname));
+                            snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
                                 editor.AppendText("\n");
                                 editor.AppendText(buf);
@@ -3811,7 +3802,6 @@ void draw_context_popup(ApplicationState* data) {
                     }
                 }
                 else if(sss_count == 4) {
-                    int32_t idx[4] = {data->selection.single_selection_sequence.idx[0], data->selection.single_selection_sequence.idx[1], data->selection.single_selection_sequence.idx[2], data->selection.single_selection_sequence.idx[3]};
                     str_t ident = create_unique_identifier(data->script.ir, STR_LIT("dih"), frame_alloc);
 
                     snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
@@ -7345,7 +7335,7 @@ static void update_md_buffers(ApplicationState* data) {
     if (mol.atom.count == 0) return;
 
     if (data->mold.dirty_buffers & MolBit_DirtyPosition) {
-        const vec3_t pbc_ext = data->mold.sys.unit_cell.basis * vec3_t{1,1,1};
+        const vec3_t pbc_ext = md_unitcell_diag_vec3(&data->mold.sys.unitcell);
         md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         if (!(data->mold.dirty_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
@@ -7405,7 +7395,7 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
-        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_bond_pair_t));
+        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_atom_pair_t));
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
@@ -7437,7 +7427,7 @@ static void free_trajectory_data(ApplicationState* data) {
     }
     data->files.trajectory[0] = '\0';
     
-    data->mold.sys.unit_cell = {};
+    data->mold.sys.unitcell = {};
     md_array_free(data->timeline.x_values,  persistent_alloc);
     md_array_free(data->display_properties, persistent_alloc);
 
@@ -7470,7 +7460,7 @@ static void init_trajectory_data(ApplicationState* data) {
 
         md_trajectory_frame_header_t frame_header;
         md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z);
-        data->mold.sys.unit_cell = frame_header.unit_cell;
+        data->mold.sys.unitcell = frame_header.unitcell;
 
         if (data->mold.sys.protein_backbone.segment.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.sys.protein_backbone.segment.count;
@@ -7647,12 +7637,12 @@ static bool load_dataset_from_file(ApplicationState* data, const LoadParam& para
 
     str_t path_to_file = md_path_make_canonical(param.file_path, frame_alloc);
     if (path_to_file) {
-        if (param.mol_loader) {
+        if (param.sys_loader) {
             interrupt_async_tasks(data);
             free_trajectory_data(data);
             free_molecule_data(data);
 
-            if (!param.mol_loader->init_from_file(&data->mold.sys, path_to_file, param.mol_loader_arg, data->mold.sys_alloc)) {
+            if (!param.sys_loader->init_from_file(&data->mold.sys, path_to_file, param.sys_loader_arg, data->mold.sys_alloc)) {
                 LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return false;
             }
@@ -7685,7 +7675,7 @@ static bool load_dataset_from_file(ApplicationState* data, const LoadParam& para
                 LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return true;
             } else {
-                if (param.mol_loader && param.traj_loader) {
+                if (param.sys_loader && param.traj_loader) {
                     // Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
                     return true;
                 }
@@ -7920,10 +7910,10 @@ static void load_workspace(ApplicationState* data, str_t filename) {
 
     LoadParam param = {};
     param.file_path = new_molecule_file;
-    param.mol_loader = loader_state.mol_loader;
+    param.sys_loader = loader_state.sys_loader;
     param.traj_loader = loader_state.traj_loader;
     param.coarse_grained = new_coarse_grained;
-    param.mol_loader_arg = loader_state.mol_loader_arg;
+    param.sys_loader_arg = loader_state.sys_loader_arg;
 
     if (new_molecule_file && load_dataset_from_file(data, param)) {
         str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), new_molecule_file);
@@ -7933,7 +7923,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
 
     if (new_trajectory_file) {
         load::init_loader_state(&loader_state, new_trajectory_file, frame_alloc);
-        param.mol_loader = 0;
+        param.sys_loader = 0;
         param.traj_loader = loader_state.traj_loader;
         param.file_path = new_trajectory_file;
         if (load_dataset_from_file(data, param)) {
@@ -8717,7 +8707,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                                 single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
                                 md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
                             } else {
-                                md_bond_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
+                                md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
@@ -8729,7 +8719,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                                 single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
                                 md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
                             } else {
-                                md_bond_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
+                                md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
@@ -8752,7 +8742,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                     md_bitfield_set_bit(&data->selection.highlight_mask, data->picking.idx);
                 }
                 else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.sys.bond.count) {
-                    md_bond_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
+                    md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
                     md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
                     md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
                 }
@@ -8845,9 +8835,9 @@ static void fill_gbuffer(ApplicationState* data) {
     // Immediate mode graphics
     const mat4_t model_view_mat = data->view.param.matrix.curr.view;
 
-    if (data->simulation_box.enabled && data->mold.sys.unit_cell.flags != 0) {
+    if (data->simulation_box.enabled && data->mold.sys.unitcell.flags != 0) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-        const mat4_t basis_model_mat = mat4_from_mat3(data->mold.sys.unit_cell.basis);
+        const mat4_t basis_model_mat = md_unitcell_basis_mat4(&data->mold.sys.unitcell);
         immediate::set_model_view_matrix(model_view_mat);
         immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
         immediate::draw_box_wireframe({0,0,0}, {1,1,1}, basis_model_mat, convert_color(data->simulation_box.color));
