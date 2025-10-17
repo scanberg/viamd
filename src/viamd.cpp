@@ -79,14 +79,37 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         int bond_idx = picking_idx & 0x7FFFFFFF;
         if (0 <= bond_idx && bond_idx < (int)sys.bond.count) {
             md_atom_pair_t b = sys.bond.pairs[bond_idx];
-            char bond_type = ' ';
-            switch (sys.bond.order[bond_idx] & MD_BOND_ORDER_MASK) {
-                case 1: bond_type = '-'; break;
-                case 2: bond_type = '='; break;
-                case 3: bond_type = '#'; break;
-                case 4: bond_type = '$'; break;
-                default: bond_type = '?'; break;
+            md_flags_t bond_flags = sys.bond.flags[bond_idx];
+            char bond_flags_buf[256] = {};
+            int  len = 0;
+
+            typedef struct {
+                md_flags_t flag;
+                const char* label;
+            } bond_flag_label_t;
+
+            bond_flag_label_t bond_flag_map[] = {
+                {MD_BOND_FLAG_COVALENT,     "COVALENT"},
+                {MD_BOND_FLAG_DOUBLE,       "DOUBLE"},
+                {MD_BOND_FLAG_TRIPLE,       "TRIPLE"},
+                {MD_BOND_FLAG_QUADRUPLE,    "QUADRUPLE"},
+                {MD_BOND_FLAG_AROMATIC,     "AROMATIC"},
+                {MD_BOND_FLAG_INTER,        "INTER"},
+                {MD_BOND_FLAG_COORDINATE,   "COORD"},
+            };
+
+            for (size_t i = 0; i < ARRAY_SIZE(bond_flag_map); ++i) {
+                if (bond_flags & bond_flag_map[i].flag) {
+                    len += snprintf(bond_flags_buf + len, 256 - len, "%s ", bond_flag_map[i].label);
+                }
             }
+            
+            char bond_type = '-';
+            if (bond_flags & MD_BOND_FLAG_DOUBLE) bond_type = '=';
+            if (bond_flags & MD_BOND_FLAG_TRIPLE) bond_type = '#';
+            if (bond_flags & MD_BOND_FLAG_QUADRUPLE) bond_type = '$';
+            if (bond_flags & MD_BOND_FLAG_AROMATIC) bond_type = ':';
+
             vec3_t p0 = md_atom_coord(&sys.atom, b.idx[0]);
             vec3_t p1 = md_atom_coord(&sys.atom, b.idx[1]);
             float d = vec3_distance(p0, p1);
@@ -95,7 +118,7 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
             str_t type1 = md_atom_name(&sys.atom, b.idx[1]);
 
             md_strb_fmt(&sb, "bond: " STR_FMT "%c" STR_FMT "\n", STR_ARG(type0), bond_type, STR_ARG(type1));
-            md_strb_fmt(&sb, "order: %i\n", sys.bond.order[bond_idx]);
+            md_strb_fmt(&sb, "flags: %.*s\n", len, bond_flags_buf);
             md_strb_fmt(&sb, "length: %.3f\n", d);
         }
     }
