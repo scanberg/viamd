@@ -2208,7 +2208,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                     md_bond_data_t* bonds = &data->state->mold.sys.bond;
                     md_bond_data_clear(bonds);
 
-                    md_util_infer_covalent_bonds(bonds, x, y, z, sys.atom.type_idx, sys.atom.count, &sys.atom.type, nullptr, cell, data->state->mold.sys_alloc);
+                    md_util_infer_covalent_bonds(bonds, x, y, z, cell, &sys, data->state->mold.sys_alloc);
                     data->state->mold.dirty_buffers |= MolBit_DirtyBonds;
                 });
                 tasks[num_tasks++] = recalc_bond_task;
@@ -2988,7 +2988,7 @@ static void draw_main_menu(ApplicationState* data) {
                         } else {
                             MD_LOG_DEBUG("RECALCULATING BONDS");
                             md_bond_data_clear(&data->mold.sys.bond);
-                            md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, mol.atom.type_idx, mol.atom.count, &mol.atom.type, nullptr, &frame_header.unitcell, frame_alloc);
+                            md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, frame_alloc);
                             data->mold.dirty_buffers |= MolBit_DirtyBonds;
                             md_vm_arena_temp_end(temp_pos);
                         }
