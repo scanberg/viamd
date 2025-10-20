@@ -280,7 +280,10 @@ struct Dataset : viamd::EventHandler {
             }
 
             static bool use_short_labels = true;
-            ImGui::Checkbox("Use short labels", &use_short_labels);
+            static bool use_auth_labels  = true;
+
+            ImGui::Checkbox("Use shorthand component labels", &use_short_labels);
+            ImGui::Checkbox("Use author instance labels", &use_auth_labels);
 
             size_t num_entities = md_system_entity_count(&data.mold.sys);
             size_t num_instances = md_system_inst_count(&data.mold.sys);
@@ -311,7 +314,16 @@ struct Dataset : viamd::EventHandler {
                         ImGui::Indent();
                         for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
                             if (md_inst_entity_idx(&data.mold.sys.inst, inst_idx) != (int)ent_idx) continue;
-                            str_t inst_id = md_inst_id(&data.mold.sys.inst, inst_idx);
+                            ImGui::PushID((int)inst_idx);  // avoid ID collisions if names repeat
+                            defer { ImGui::PopID(); };
+
+                            str_t inst_id = STR_LIT("");
+                            if (use_auth_labels) {
+                                inst_id = md_inst_auth_id(&data.mold.sys.inst, inst_idx);
+                            } else {
+                                inst_id = md_inst_id(&data.mold.sys.inst, inst_idx);
+                            }
+
                             snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(inst_id));
                             bool expand_inst = ImGui::CollapsingHeader(buf);
                             if (ImGui::IsItemHovered()) {
