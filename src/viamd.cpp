@@ -60,7 +60,7 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
             //if (flags & MD_FLAG_NUCLEOSIDE)         { sb += "NUCLEOSIDE "; }
             if (flags & MD_FLAG_WATER)              { sb += "WATER "; }
             if (flags & MD_FLAG_ION)                { sb += "ION "; }
-            //if (flags & MD_FLAG_BACKBONE)           { sb += "BACKBONE "; }
+            if (flags & MD_FLAG_BACKBONE)           { sb += "BACKBONE "; }
             if (flags & MD_FLAG_SP)                 { sb += "SP "; }
             if (flags & MD_FLAG_SP2)                { sb += "SP2 "; }
             if (flags & MD_FLAG_SP3)                { sb += "SP3 "; }
