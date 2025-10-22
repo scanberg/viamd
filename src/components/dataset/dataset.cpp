@@ -343,8 +343,6 @@ struct Dataset : viamd::EventHandler {
                                         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
                                         ImGui::PushStyleColor(ImGuiCol_Header, color);
                                         ImGui::PushStyleColor(ImGuiCol_HeaderActive, color);
-                                        //ImGui::PushStyleColor(ImGuiCol_HeaderHovered, color);
-
                                     }
 
                                     // Measure label + padding (match what we pass to Selectable)

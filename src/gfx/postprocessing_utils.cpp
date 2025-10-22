@@ -1,4 +1,4 @@
-/*-----------------------------------------------------------------------
+﻿/*-----------------------------------------------------------------------
   Copyright (c) 2014, NVIDIA. All rights reserved.
 
   Redistribution and use in source and binary forms, with or without
@@ -2123,7 +2123,7 @@ void destroy_gbuffer(GBuffer* gbuf) {
 }
 
 // #picking
-void extract_picking_data(uint32_t* out_idx, float* out_depth, GBuffer* gbuf, int x, int y) {
+void extract_gbuffer_picking_idx_and_depth(uint32_t* out_idx, float* out_depth, GBuffer* gbuf, int x, int y) {
     uint32_t idx = 0;
     float depth = 0;
 
@@ -2136,7 +2136,7 @@ void extract_picking_data(uint32_t* out_idx, float* out_depth, GBuffer* gbuf, in
     else {
 #endif
         ASSERT(gbuf);
-        uint32_t N = (uint32_t)ARRAY_SIZE(gbuf->pbo_picking.color);
+        const uint32_t N = (uint32_t)ARRAY_SIZE(gbuf->pbo_picking.color);
         uint32_t frame = gbuf->pbo_picking.frame++;
         uint32_t queue = (frame) % N;
         uint32_t read  = (frame + N-1) % N;

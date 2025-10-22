@@ -925,7 +925,6 @@ int main(int argc, char** argv) {
         if (data.show_property_export_window) draw_property_export_window(&data);
         if (data.show_debug_window) draw_debug_window(&data);
 
-        data.selection.selecting = false;
 
         //ImGui::ShowDemoWindow();
 
@@ -6537,11 +6536,12 @@ static void draw_density_volume_window(ApplicationState* data) {
             md_gl_draw(&draw_args);
 
             if (is_hovered) {
+                mat4_t inv_MVP = mat4_mul(inv_proj_mat, mat4_transpose(view_mat));
                 const vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
-                uint32_t picking_idx = INVALID_PICKING_IDX;
-                extract_picking_data(&picking_idx, NULL, &gbuf, (int)coord.x, (int)coord.y);
-                if (picking_idx != INVALID_PICKING_IDX) {
-                    draw_info_window(*data, picking_idx);
+                extract_picking_data(data->picking, gbuf, coord, inv_MVP);
+
+                if (data->picking.idx != INVALID_PICKING_IDX) {
+                    draw_info_window(*data, data->picking.idx);
                 }
             }
             glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
@@ -8636,6 +8636,7 @@ static void handle_camera_interaction(ApplicationState* data) {
 
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window) {
+        bool is_performing_region_selection = false;
         ImDrawList* dl = window->DrawList;
         ASSERT(dl);
 
@@ -8670,7 +8671,7 @@ static void handle_camera_interaction(ApplicationState* data) {
 
                 if (min_p != max_p) {
                     md_bitfield_clear(&data->selection.highlight_mask);
-                    data->selection.selecting = true;
+                    is_performing_region_selection = true;
 
                     const vec2_t res = { (float)data->app.window.width, (float)data->app.window.height };
                     const mat4_t mvp = data->view.param.matrix.curr.proj * data->view.param.matrix.curr.view;
@@ -8753,7 +8754,7 @@ static void handle_camera_interaction(ApplicationState* data) {
         }
 
         if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
-            if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !data->selection.selecting) {
+            if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !is_performing_region_selection) {
                 const ImVec2 delta = ImGui::GetIO().MouseDelta;
                 const ImVec2 coord = ImGui::GetMousePos() - ImGui::GetCurrentWindow()->Pos;
                 const vec2_t mouse_delta = {delta.x, delta.y};
@@ -9067,20 +9068,14 @@ static void handle_picking(ApplicationState* data) {
         PUSH_CPU_SECTION("PICKING")
         vec2_t mouse_pos = vec_cast(ImGui::GetMousePos() - ImGui::GetMainViewport()->Pos);
         vec2_t coord = {mouse_pos.x, ImGui::GetMainViewport()->Size.y - mouse_pos.y};
-#if MD_PLATFORM_OSX
-        coord = coord * vec_cast(ImGui::GetIO().DisplayFramebufferScale);
-#endif
-        if (coord.x < 0.f || coord.x >= (float)data->gbuffer.width || coord.y < 0.f || coord.y >= (float)data->gbuffer.height) {
-            data->picking.idx = INVALID_PICKING_IDX;
-            data->picking.depth = 1.f;
-        } else {
+
 #if PICKING_JITTER_HACK
             static uint32_t frame_idx = 0;
             static uint32_t ref_frame = 0;
             frame_idx = (frame_idx + 1) % JITTER_SEQUENCE_SIZE;
             // @NOTE: If we have jittering applied, we cannot? retreive the original pixel value (without the jitter)
             // Solution, pick one reference frame out of the jittering sequence and use that one...
-            // Ugly hack but works...
+            // Ugly hack but works... However, it introduces a noticable latency in picking
 
             if (data->app.input.mouse.moving) {
                 ref_frame = frame_idx;
@@ -9094,25 +9089,11 @@ static void handle_picking(ApplicationState* data) {
                 data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inv.view_proj, viewport);
             }
 #else
-            data->picking = {};
-            extract_picking_data(&data->picking.idx, &data->picking.depth, &data->gbuffer, (int)coord.x, (int)coord.y);
-            const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
-            const mat4_t inv_VP = data->view.param.matrix.inv.view * data->view.param.matrix.inv.proj;
-            data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, inv_VP, viewport);
-            data->picking.screen_coord = coord;
+            const mat4_t inv_MVP = data->view.param.matrix.inv.view * data->view.param.matrix.inv.proj;
+            extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);
 #endif
-        }
-        data->selection.atom_idx.hovered = -1;
-        data->selection.bond_idx.hovered = -1;
-
-        if (data->picking.idx != INVALID_PICKING_IDX) {
-            // The index space is segmented into two parts, the first half is for atoms and the second half is for bonds
-            if (data->picking.idx < 0x80000000) {
-                data->selection.atom_idx.hovered = data->picking.idx;
-            } else {
-                data->selection.bond_idx.hovered = data->picking.idx & 0x7FFFFFFF;
-            }
-        }
+        data->selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
+        data->selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
         
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;

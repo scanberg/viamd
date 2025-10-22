@@ -78,8 +78,8 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
     else if (picking_idx >= 0x80000000) {
         int bond_idx = picking_idx & 0x7FFFFFFF;
         if (0 <= bond_idx && bond_idx < (int)sys.bond.count) {
-            md_atom_pair_t b = sys.bond.pairs[bond_idx];
-            md_flags_t bond_flags = sys.bond.flags[bond_idx];
+            md_atom_pair_t pair = sys.bond.pairs[bond_idx];
+            md_flags_t    flags = sys.bond.flags[bond_idx];
             char bond_flags_buf[256] = {};
             int  len = 0;
 
@@ -99,23 +99,23 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
             };
 
             for (size_t i = 0; i < ARRAY_SIZE(bond_flag_map); ++i) {
-                if (bond_flags & bond_flag_map[i].flag) {
+                if (flags & bond_flag_map[i].flag) {
                     len += snprintf(bond_flags_buf + len, 256 - len, "%s ", bond_flag_map[i].label);
                 }
             }
             
             char bond_type = '-';
-            if (bond_flags & MD_BOND_FLAG_DOUBLE) bond_type = '=';
-            if (bond_flags & MD_BOND_FLAG_TRIPLE) bond_type = '#';
-            if (bond_flags & MD_BOND_FLAG_QUADRUPLE) bond_type = '$';
-            if (bond_flags & MD_BOND_FLAG_AROMATIC) bond_type = ':';
+            if (flags & MD_BOND_FLAG_DOUBLE) bond_type = '=';
+            if (flags & MD_BOND_FLAG_TRIPLE) bond_type = '#';
+            if (flags & MD_BOND_FLAG_QUADRUPLE) bond_type = '$';
+            if (flags & MD_BOND_FLAG_AROMATIC) bond_type = ':';
 
-            vec3_t p0 = md_atom_coord(&sys.atom, b.idx[0]);
-            vec3_t p1 = md_atom_coord(&sys.atom, b.idx[1]);
+            vec3_t p0 = md_atom_coord(&sys.atom, pair.idx[0]);
+            vec3_t p1 = md_atom_coord(&sys.atom, pair.idx[1]);
             float d = vec3_distance(p0, p1);
 
-            str_t type0 = md_atom_name(&sys.atom, b.idx[0]);
-            str_t type1 = md_atom_name(&sys.atom, b.idx[1]);
+            str_t type0 = md_atom_name(&sys.atom, pair.idx[0]);
+            str_t type1 = md_atom_name(&sys.atom, pair.idx[1]);
 
             md_strb_fmt(&sb, "bond: " STR_FMT "%c" STR_FMT "\n", STR_ARG(type0), bond_type, STR_ARG(type1));
             md_strb_fmt(&sb, "flags: %.*s\n", len, bond_flags_buf);
@@ -132,4 +132,32 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
     ImGui::Text("%s", md_strb_to_cstr(sb));
     ImGui::End();
     ImGui::PopStyleColor();
+}
+
+void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP) {
+    out_picking = {};
+
+#if MD_PLATFORM_OSX
+    coord = coord * vec_cast(ImGui::GetIO().DisplayFramebufferScale);
+#endif
+    if (0.f < coord.x && coord.x < (float)gbuffer.width && 0.f < coord.y && coord.y < (float)gbuffer.height) {
+        extract_gbuffer_picking_idx_and_depth(&out_picking.idx, &out_picking.depth, &gbuffer, (int)coord.x, (int)coord.y);
+        const vec4_t viewport = {0, 0, (float)gbuffer.width, (float)gbuffer.height};
+        out_picking.world_coord = mat4_unproject({coord.x, coord.y, out_picking.depth}, inv_MVP, viewport);
+        out_picking.screen_coord = {coord.x, coord.y};
+    }
+}
+
+md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx) {
+    if (picking_idx < 0x80000000) {
+        return (md_atom_idx_t)picking_idx;
+    }
+    return -1;
+}
+
+md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx) {
+    if (picking_idx >= 0x80000000) {
+        return (md_bond_idx_t)(picking_idx & 0x7FFFFFFF);
+    }
+    return -1;
 }
