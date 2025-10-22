@@ -517,7 +517,7 @@ struct ApplicationState {
             float saturation = 0.3f;
         } color;
 
-        bool selecting = false;
+        //bool selecting = false;
 
         struct {
             char buf[256] = "";
@@ -934,4 +934,9 @@ static inline size_t single_selection_sequence_count(const SingleSelectionSequen
     return i;
 }
 
-void draw_info_window(const ApplicationState& data, uint32_t picking_idx);
+void draw_info_window(const ApplicationState& state, uint32_t picking_idx);
+
+void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
+
+md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx);
+md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx);

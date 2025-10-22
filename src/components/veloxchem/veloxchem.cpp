@@ -4338,20 +4338,6 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    static void update_picking_data(PickingData& picking, const vec2_t& coord, GBuffer& gbuffer, mat4_t inv_MVP) {
-        picking = {};
-
-#if MD_PLATFORM_OSX
-        coord = coord * vec_cast(ImGui::GetIO().DisplayFramebufferScale);
-#endif
-        if (0.f < coord.x && coord.x < (float)gbuffer.width && 0.f < coord.y && coord.y < (float)gbuffer.height) {
-            extract_picking_data(&picking.idx, &picking.depth, &gbuffer, (int)coord.x, (int)coord.y);
-            const vec4_t viewport = {0, 0, (float)gbuffer.width, (float)gbuffer.height};
-            picking.world_coord = mat4_unproject({coord.x, coord.y, picking.depth}, inv_MVP, viewport);
-            picking.screen_coord = {coord.x, coord.y};
-        }
-    }
-
     void delete_group(int index) {
         vec4_t deleted_color = nto.group.color[index];
         for (size_t i = 0; i < nto.num_atoms; i++) {
@@ -5294,7 +5280,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (hovered_canvas_rect.GetArea() > 0) {
                     ImVec2 coord = ImGui::GetMousePos() - hovered_canvas_rect.Min;
                     coord.y = hovered_canvas_rect.GetSize().y - coord.y;
-                    update_picking_data(nto.picking, {coord.x, coord.y}, nto.gbuf, inv_MVP);
+                    extract_picking_data(nto.picking, nto.gbuf, {coord.x, coord.y}, inv_MVP);
 
                     state.selection.atom_idx.hovered = INVALID_PICKING_IDX;
                     state.selection.bond_idx.hovered = INVALID_PICKING_IDX;
