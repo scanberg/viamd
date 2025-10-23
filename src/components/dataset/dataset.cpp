@@ -181,7 +181,7 @@ struct Dataset : viamd::EventHandler {
             md_array_push(item->indices, (int)i, arena);
         }
 
-        // Process chains - key = residue type sequence
+        // Process instances: key = residue type sequence
         if (comp_count > 0 && inst_count > 0) {
             for (size_t i = 0; i < inst_count; ++i) {
                 str_t inst_id = md_inst_id(&sys.inst, i);
@@ -279,13 +279,15 @@ struct Dataset : viamd::EventHandler {
                 md_bitfield_clear(&data.selection.highlight_mask);
             }
 
+            const ImGuiStyle& style = ImGui::GetStyle();
+
             static bool use_short_labels = true;
             static bool use_auth_labels  = true;
 
             ImGui::Checkbox("Use shorthand component labels", &use_short_labels);
             ImGui::Checkbox("Use author instance labels", &use_auth_labels);
 
-            size_t num_entities = md_system_entity_count(&data.mold.sys);
+            size_t num_entities  = md_system_entity_count(&data.mold.sys);
             size_t num_instances = md_system_inst_count(&data.mold.sys);
 
             if (num_entities && ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -332,7 +334,6 @@ struct Dataset : viamd::EventHandler {
                                 md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
                             }
                             if (expand_inst) {
-                                const ImGuiStyle& style = ImGui::GetStyle();
                                 md_urange_t range = md_system_inst_comp_range(&data.mold.sys, inst_idx);
 
                                 for (size_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
@@ -389,10 +390,72 @@ struct Dataset : viamd::EventHandler {
                 ImGui::Separator();
             }
 
+            if (ImGui::CollapsingHeader("Component Types")) {
+                ImGui::Indent();
+                const size_t num_comp_types = md_array_size(comp_types);
+                for (size_t i = 0; i < num_comp_types; ++i) {
+                    const DatasetItem& item = comp_types[i];
+                    ImGui::PushID((int)i);
+                    defer { ImGui::PopID(); };
+                    char buf[256];
+                    snprintf(buf, sizeof(buf), "%s (Count: %d, Fraction: %.2f%%)", item.label, item.count, item.fraction * 100.0f);
+                    bool expanded = ImGui::CollapsingHeader(buf);
+                    if (expanded) {
+                        ImGui::Indent();
+                        const size_t num_sub_items = md_array_size(item.sub_items);
+                        for (size_t j = 0; j < num_sub_items; ++j) {
+                            int type_idx = item.sub_items[j];
+                            str_t type_name = md_comp_name(&data.mold.sys.comp, type_idx);
+                            ImGui::Text("%s", type_name.ptr);
+                        }
+                        ImGui::Unindent();
+                    }
+                }
+                ImGui::Unindent();
+            }
+
+			static const int colormap = ImPlotColormap_Viridis;
+
+            if (ImGui::CollapsingHeader("Atom Types")) {
+                const size_t num_atom_types = md_array_size(atom_types);
+                for (size_t i = 0; i < num_atom_types; ++i) {
+                    const DatasetItem& item = atom_types[i];
+                    ImGui::PushID((int)i);
+                    defer { ImGui::PopID(); };
+
+                    ImVec2 text_sz = ImGui::CalcTextSize(item.label);
+                    ImVec2 item_sz(text_sz.x + style.ItemSpacing.x * 2.0f, text_sz.y + style.ItemSpacing.x * 2.0f);
+
+                    // Flow: stay on same line only if it fits to the right of the previous item
+                    if (i > 0) {
+                        float last_x = ImGui::GetItemRectMax().x; // right edge of previous item (screen coords)
+                        float max_x  = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x; // window content right edge (screen coords)
+                        if (last_x + style.ItemSpacing.x + item_sz.x <= max_x) {
+                            ImGui::SameLine();
+                        }
+                    }
+                    
+                    // Use selectable with small size and color according to fraction (colormap)
+					float t = powf(item.fraction, 0.5f); // adjust for better visibility 
+                    ImVec4 color = ImPlot::SampleColormap(t, colormap);
+                    ImGui::PushStyleColor(ImGuiCol_Header, color);
+                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, color);
+					ImGui::Selectable(item.label, false, 0, text_sz);
+					ImGui::PopStyleColor(2);
+
+
+
+                    if (ImGui::IsItemHovered()) {
+                        md_bitfield_set_indices_u32(&data.selection.highlight_mask, (const uint32_t*)item.indices, md_array_size(item.indices));
+                        ImGui::SetTooltip("Count: %d\nFraction: %.2f%%", item.count, item.fraction * 100.0f);
+                    }
+				}
+			}
+
             // Draw the three sections
             //draw_dataset_section("Chain Types",     inst_types,      md_array_size(inst_types),   0);
-            //draw_dataset_section("Residue Types",   comp_types,    md_array_size(comp_types), 1);  
-            //draw_dataset_section("Atom Types",      atom_types,       md_array_size(atom_types),    2);
+            //draw_dataset_section("Residue Types",   comp_types,      md_array_size(comp_types), 1);  
+            //draw_dataset_section("Atom Types",      atom_types,      md_array_size(atom_types),    2);
 
             // Atom Element Mappings section (keep existing functionality)
             const size_t num_mappings = md_array_size(atom_element_remappings);
