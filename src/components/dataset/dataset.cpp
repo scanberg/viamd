@@ -266,14 +266,38 @@ struct Dataset : viamd::EventHandler {
             ImGui::Text("Num components: %9zu", data.mold.sys.comp.count);
             ImGui::Text("Num atoms:      %9zu", data.mold.sys.atom.count);
 
-            if (data.files.trajectory[0] != '\0') {
+            ImGui::Separator();
+
+            if (data.mold.sys.unitcell.flags) {
+                md_flags_t flags = data.mold.sys.unitcell.flags;
+                bool ortho = flags & MD_UNITCELL_ORTHO;
+                bool tricl = flags & MD_UNITCELL_TRICLINIC;
+                ImGui::Text("Unitcell %s", ortho ? "Orthorhombic" : tricl ? "Triclinic" : "");
+                if (flags & MD_UNITCELL_ORTHO) {
+                    ImGui::Indent();
+                    ImGui::Text("X: %f %s", data.mold.sys.unitcell.x, flags & MD_UNITCELL_PBC_X ? "(pbc)" : "");
+                    ImGui::Text("Y: %f %s", data.mold.sys.unitcell.y, flags & MD_UNITCELL_PBC_Y ? "(pbc)" : "");
+                    ImGui::Text("Z: %f %s", data.mold.sys.unitcell.z, flags & MD_UNITCELL_PBC_Z ? "(pbc)" : "");
+                    ImGui::Unindent();
+                } else if (flags & MD_UNITCELL_TRICLINIC) {
+                    ImGui::Indent();
+                    ImGui::Text("X:  %f", data.mold.sys.unitcell.x);
+                    ImGui::Text("XY: %f", data.mold.sys.unitcell.xy);
+                    ImGui::Text("XZ: %f", data.mold.sys.unitcell.xz);
+                    ImGui::Text("Y:  %f", data.mold.sys.unitcell.y);
+                    ImGui::Text("YZ: %f", data.mold.sys.unitcell.yz);
+                    ImGui::Text("Z:  %f", data.mold.sys.unitcell.z);
+                    ImGui::Unindent();
+                } 
                 ImGui::Separator();
+            }
+
+            if (data.files.trajectory[0] != '\0') {
                 ImGui::Text("Trajectory data: %s", data.files.trajectory);
                 ImGui::Text("Num frames:    %9zu", md_trajectory_num_frames(data.mold.traj));
                 ImGui::Text("Num atoms:     %9zu", md_trajectory_num_atoms(data.mold.traj));
+                ImGui::Separator();
             }
-
-            ImGui::Separator();
 
             if (ImGui::IsWindowHovered()) {
                 md_bitfield_clear(&data.selection.highlight_mask);

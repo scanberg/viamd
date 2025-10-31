@@ -2556,7 +2556,7 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
     const float  max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
 
     data->view.camera.near_plane = 1.0f;
-    data->view.camera.far_plane = 10000.0f;
+    data->view.camera.far_plane = 100000.0f;
     data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 }
 
@@ -8458,10 +8458,11 @@ static void create_default_representations(ApplicationState* state) {
     bool ion_present = false;
     bool water_present = false;
     bool ligand_present = false;
+    bool coarse_grained = false;
     bool orbitals_present = state->representation.info.alpha.num_orbitals > 0;
 
-    if (state->mold.sys.atom.count > 4'000'000) {
-        LOG_INFO("Large molecule detected, creating default representation for all atoms");
+    if (state->mold.sys.atom.count > 3'000'000) {
+        LOG_INFO("Large system detected, creating default representation for all atoms");
         Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
@@ -8481,10 +8482,17 @@ static void create_default_representations(ApplicationState* state) {
         if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
         if (flags & MD_FLAG_ION) ion_present = true;
         if (flags & MD_FLAG_WATER) water_present = true;
+        if (flags & MD_FLAG_COARSE_GRAINED) coarse_grained = true;
 
         if (!(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_ION | MD_FLAG_WATER))) {
             ligand_present = true;
         }
+    }
+
+    if (coarse_grained) {
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+        snprintf(rep->name, sizeof(rep->name), "default");
+        goto done;
     }
 
     if (amino_acid_present) {
