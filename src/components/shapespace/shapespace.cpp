@@ -20,6 +20,7 @@
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 #include <implot_internal.h>
+#include <loader.h>
 
 /*
     @NOTE:
@@ -355,6 +356,8 @@ struct Shapespace : viamd::EventHandler {
                 joined_bitfield = {0};
                 md_bitfield_init(&joined_bitfield, arena);
 
+				md_trajectory_i* traj = load::traj::get_raw_trajectory(app_state->mold.traj);
+
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
                 if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.sys, app_state->script.ir, NULL, error, sizeof(error), arena)) {
@@ -366,7 +369,7 @@ struct Shapespace : viamd::EventHandler {
                         MD_LOG_ERROR("No structures present when attempting to populate shape space");
                         return;
                     }
-                    num_frames = md_trajectory_num_frames(app_state->mold.traj);
+                    num_frames = md_trajectory_num_frames(traj);
                     if (!num_frames) {
                         MD_LOG_ERROR("No trajectory frames present when attempting to populate shape space");
                         return;
@@ -379,7 +382,7 @@ struct Shapespace : viamd::EventHandler {
                     md_array_resize(coords,  num_frames * num_structures, arena);
                     MEMSET(weights, 0, md_array_bytes(weights));
                     MEMSET(coords,  0, md_array_bytes(coords));
-                    evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), (uint32_t)num_frames, [shapespace = this](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), (uint32_t)num_frames, [shapespace = this, traj](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                         (void)thread_num;
                         ApplicationState* app_state = shapespace->app_state;
                         const size_t stride = ALIGN_TO(app_state->mold.sys.atom.count, 8);
@@ -402,7 +405,7 @@ struct Shapespace : viamd::EventHandler {
                         md_array(vec4_t) xyzw = 0;
                         for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                             md_trajectory_frame_header_t header;
-                            md_trajectory_load_frame(app_state->mold.traj, frame_idx, &header, x, y, z);
+                            md_trajectory_load_frame(traj, frame_idx, &header, x, y, z);
 
                             for (size_t i = 0; i < md_array_size(shapespace->bitfields); ++i) {
                                 const md_bitfield_t* bf = &shapespace->bitfields[i];

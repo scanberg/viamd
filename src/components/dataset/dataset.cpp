@@ -102,6 +102,8 @@ struct Dataset : viamd::EventHandler {
         }
         clear_dataset_items();
 
+        md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+
         const md_system_t& sys = data.mold.sys;
 
         size_t atom_type_count = md_atom_type_count(&sys.atom.type);
@@ -132,13 +134,11 @@ struct Dataset : viamd::EventHandler {
             atom_types[i].fraction = atom_types[i].count / (float)atom_count;
         }
 
-        size_t temp_pos = md_temp_get_pos();
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
         md_array(int) sequence = 0;
         md_array(int) comp_idx_type = 0;
 
         if (comp_count > 0) {
-			md_array_resize(comp_idx_type, comp_count, temp_alloc);
+			md_array_resize(comp_idx_type, comp_count, temp_arena);
 			MEMSET(comp_idx_type, -1, md_array_bytes(comp_idx_type));
         }
 
@@ -150,7 +150,7 @@ struct Dataset : viamd::EventHandler {
             md_urange_t range = md_comp_atom_range(&sys.comp, i);
             for (int j = range.beg; j < range.end; ++j) {
                 int ai = sys.atom.type_idx[j];
-                md_array_push(sequence, ai, temp_alloc);
+                md_array_push(sequence, ai, temp_arena);
             }
 
             // Create combined string for hash (label + sequence of atom types)
@@ -161,14 +161,14 @@ struct Dataset : viamd::EventHandler {
             for (size_t j = 0; j < md_array_size(comp_types); ++j) {
                 if (comp_types[j].key == hash) {
                     item = &comp_types[j];
-                    md_array_push(comp_idx_type, (int)j, temp_alloc);
+                    md_array_push(comp_idx_type, (int)j, temp_arena);
                     break;
                 }
             }
             if (!item) {
                 DatasetItem it = { .key = hash };
                 snprintf(it.label, sizeof(it.label), STR_FMT, STR_ARG(comp_name));
-                md_array_push(comp_idx_type, (int)md_array_size(comp_types), temp_alloc);
+                md_array_push(comp_idx_type, (int)md_array_size(comp_types), temp_arena);
                 md_array_push(comp_types, it, arena);
                 item = md_array_last(comp_types);
                 md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
@@ -190,7 +190,7 @@ struct Dataset : viamd::EventHandler {
                 md_urange_t range = md_inst_comp_range(&sys.inst, i);
                 for (int j = range.beg; j < range.end; ++j) {
                     int res_type_idx = comp_idx_type[j];
-                    md_array_push(sequence, res_type_idx, temp_alloc);
+                    md_array_push(sequence, res_type_idx, temp_arena);
                 }
 
                 // Create combined string for hash (label + sequence of residue types)
@@ -221,7 +221,7 @@ struct Dataset : viamd::EventHandler {
             }
         }
 
-        md_temp_set_pos_back(temp_pos);
+		md_vm_arena_destroy(temp_arena);
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final {

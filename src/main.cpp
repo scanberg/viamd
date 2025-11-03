@@ -7483,6 +7483,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 (void)thread_num;
                 // Create copy here of molecule since we use the full structure as input
                 md_system_t mol = data->mold.sys;
+				md_trajectory_i* traj = load::traj::get_raw_trajectory(data->mold.traj);
 
                 const size_t stride = ALIGN_TO(mol.atom.count, 8);
                 const size_t bytes = stride * sizeof(float) * 3;
@@ -7494,7 +7495,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 mol.atom.z = coords + stride * 2;
 
                 for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                    md_trajectory_load_frame(data->mold.traj, frame_idx, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
+                    md_trajectory_load_frame(traj, frame_idx, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
                     md_util_backbone_angles_compute(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &mol);
                     md_util_backbone_secondary_structure_infer(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &mol);
                 }
