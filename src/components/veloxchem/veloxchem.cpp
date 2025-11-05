@@ -227,6 +227,49 @@ static inline void compute_dim(int out_dim[3], const vec3_t& in_ext, float sampl
     out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
 }
 
+// Compute group densities given ao_to_group mapping, lambdas, a and S matrices
+// a: ao coefficients of NTO (num_lambdas x num_ao) array
+// S: overlap matrix (num_ao x num_ao) array (row-major)
+static void compute_group_density(double out_group_densities[], const int* ao_to_group, const double* lambdas, const double** a, const double* S, size_t num_lambdas, size_t num_ao) {
+
+    // Temporary buffer for r[mu] = sum_nu S[mu,nu] * a_k[nu]
+	size_t temp_pos = md_temp_get_pos();
+    double *r = (double*)md_temp_push(num_ao * sizeof(double));
+    ASSERT(r);
+
+    for (int k = 0; k < num_lambdas; ++k) {
+        double lam = lambdas[k];
+
+        const double* ak = a[k];
+
+		// Initialize r to zero
+		MEMSET(r, 0, num_ao * sizeof(double));
+
+        // r = S * ak  (row-major S)
+        for (int mu = 0; mu < num_ao; ++mu) {
+            double a_mu = ak[mu];
+            const double *S_row = &S[mu * num_ao];
+            // Diagonal term
+            r[mu] += S_row[mu] * a_mu;
+
+            // Upper-triangular terms
+            for (int nu = mu + 1; nu < num_ao; ++nu) {
+                double s = S_row[nu];
+                r[mu] += s * ak[nu];
+                r[nu] += s * a_mu;
+            }
+        }
+
+        // accumulate group contributions
+        for (int mu = 0; mu < num_ao; ++mu) {
+            int g = ao_to_group[mu];
+            out_group_densities[g] += lam * ak[mu] * r[mu];
+        }
+    }
+
+	md_temp_set_pos_back(temp_pos);
+}
+
 // Voronoi segmentation
 static void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, const float* grid_values, const md_grid_t& grid) {
     float step_x[3] = {
@@ -362,8 +405,7 @@ struct VeloxChem : viamd::EventHandler {
         md_grid_t grid = {0};
 
         size_t num_atoms = 0;
-        // These are in Atomic Units (Bohr)
-        vec4_t*   atom_xyzr = nullptr;
+        vec4_t*   atom_xyzr = nullptr;      // in Atomic Units (Bohr)
         uint32_t* atom_group_idx = nullptr;
 
         md_gl_rep_t gl_rep = {0};
@@ -4485,13 +4527,10 @@ struct VeloxChem : viamd::EventHandler {
 
             static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH | ImGuiTableFlags_SizingFixedFit;
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
-
             
             static bool hide_overlap_text = true;
             bool refresh = false;
             ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
-
-
 
             ImGui::Checkbox("Edit mode", &edit_mode);
             ImGui::SameLine();
@@ -4721,7 +4760,6 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             ImVec2 canvas_p1 = ImGui::GetItemRectMax();
 
-            int num_lambdas = 1;
             bool reset_view = false;
 
             if (rsp.selected != -1) {
@@ -4731,16 +4769,17 @@ struct VeloxChem : viamd::EventHandler {
                 if (!lambda) {
                     MD_LOG_ERROR("No lambda information available for NTOs in veloxchem object");
                 } else {
-                    for (size_t i = 0; i < MAX_NTO_LAMBDAS; ++i) {
-                        if (lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
-                            num_lambdas = (int)i;
-                            break;
-                        }
-                    }
-
                     if (nto.sel_nto_idx != rsp.selected) {
                         nto.sel_nto_idx = rsp.selected;
                         size_t nto_idx = (size_t)rsp.selected;
+
+                        size_t num_lambdas = 0;
+                        for (size_t i = 0; i < MAX_NTO_LAMBDAS; ++i) {
+                            if (lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
+                                break;
+							}
+							num_lambdas++;
+                        }
 
                         init_volume(&nto.vol[NTO_Attachment], nto.grid, GL_R32F);
                         init_volume(&nto.vol[NTO_Detachment], nto.grid, GL_R32F);
@@ -4753,10 +4792,9 @@ struct VeloxChem : viamd::EventHandler {
                             nto.vol_task[NTO_Detachment] = compute_attachment_detachment_density_async(nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Detachment);
                         }
 
-                        for (int i = 0; i < num_lambdas; ++i) {
-                            int pi = NTO_Part_0 + i;
-                            int hi = NTO_Hole_0 + i;
-                            size_t lambda_idx = (size_t)i;
+                        for (size_t lambda_idx = 0; lambda_idx < num_lambdas; ++lambda_idx) {
+                            size_t pi = (size_t)NTO_Part_0 + lambda_idx;
+                            size_t hi = (size_t)NTO_Hole_0 + lambda_idx;
 
                             if (task_system::task_is_running(nto.vol_task[pi])) {
                                 task_system::task_interrupt (nto.vol_task[pi]);
@@ -5371,8 +5409,55 @@ struct VeloxChem : viamd::EventHandler {
             MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
             if (nto.sel_nto_idx != -1) {
-                const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
                 const size_t nto_idx = (size_t)nto.sel_nto_idx;
+
+#if 0
+                {
+                    ScopedTemp temp_reset;
+
+				    size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
+					size_t num_lambdas = 4;
+
+                    // Calculate transition densities for groups
+				    const double* lambdas = md_vlx_rsp_nto_lambdas(vlx, nto_idx);
+				    const double* S = md_vlx_scf_overlap_matrix_data(vlx);
+				    const double* a_part[4] = {
+                        md_vlx_rsp_nto_lambda_ao_coefficients(vlx, nto_idx, 0, MD_VLX_NTO_TYPE_PARTICLE),
+                        md_vlx_rsp_nto_lambda_ao_coefficients(vlx, nto_idx, 1, MD_VLX_NTO_TYPE_PARTICLE),
+                        md_vlx_rsp_nto_lambda_ao_coefficients(vlx, nto_idx, 2, MD_VLX_NTO_TYPE_PARTICLE),
+                        md_vlx_rsp_nto_lambda_ao_coefficients(vlx, nto_idx, 3, MD_VLX_NTO_TYPE_PARTICLE),
+                    };
+				    const double* a_hole[4] = {
+                        md_vlx_rsp_nto_lambda_ao_coefficients(vlx, nto_idx, 0, MD_VLX_NTO_TYPE_HOLE),
+                        md_vlx_rsp_nto_lambda_ao_coefficients(vlx, nto_idx, 1, MD_VLX_NTO_TYPE_HOLE),
+                        md_vlx_rsp_nto_lambda_ao_coefficients(vlx, nto_idx, 2, MD_VLX_NTO_TYPE_HOLE),
+                        md_vlx_rsp_nto_lambda_ao_coefficients(vlx, nto_idx, 3, MD_VLX_NTO_TYPE_HOLE),
+                    };
+
+                    double group_density_part[64] = {0};
+                    double group_density_hole[64] = {0};
+
+                    const int* ao_to_atom = md_vlx_ao_to_atom_idx(vlx);
+
+					int* ao_to_group = (int*)md_temp_push(sizeof(int) * num_aos);
+
+                    for (size_t i = 0; i < num_aos; i++) {
+                        int atom_idx = ao_to_atom[i];
+						ASSERT(0 <= atom_idx && (size_t)atom_idx < nto.num_atoms);
+                        ao_to_group[i] = (int)nto.atom_group_idx[atom_idx];
+					}
+
+					compute_group_density(group_density_part, ao_to_group, lambdas, a_part, S, num_lambdas, num_aos);
+					compute_group_density(group_density_hole, ao_to_group, lambdas, a_hole, S, num_lambdas, num_aos);
+                    for (size_t g1 = 0; g1 < nto.group.count; g1++) {
+                        nto.transition_density_part[g1] = (float)group_density_part[g1];
+                        nto.transition_density_hole[g1] = (float)group_density_hole[g1];
+					}
+					compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
+                }
+
+#else
+                const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
 
                 if (use_gpu_path) {
                     md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_part, nto.group.count, nto.vol[NTO_Attachment].tex_id, &nto.grid, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
@@ -5403,6 +5488,7 @@ struct VeloxChem : viamd::EventHandler {
                         MD_LOG_DEBUG("An error occured when computing nto group values");
                     }
                 }
+#endif
             }
         }
     }
