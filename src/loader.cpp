@@ -68,7 +68,7 @@ static const str_t mol_loader_ext[] {
     STR_LIT("out;h5"),
 #endif
 #if MD_TREXIO
-    STR_LIT("trexio;h5"),
+    STR_LIT("trexio"),
 #endif
 };
 
@@ -227,6 +227,10 @@ static void traj_loader_preload_check(load::LoaderState*, traj_loader_t, str_t, 
 
 namespace load {
 
+// Note: NUM_ENTRIES must be manually updated when adding new loaders
+// Base count: 10 (pdb, gro, xtc, trr, xyz, xmol, arc, cif, data, lammpstrj)
+// VeloxChem adds: 2 (out, h5)
+// TREXIO adds: 1 (trexio)
 #if MD_VLX
 #define NUM_ENTRIES 12
 #elif MD_TREXIO

@@ -93,18 +93,20 @@ static bool load_trexio_file(str_t filename) {
     trexio_t* file = nullptr;
     trexio_exit_code rc;
     
-    // Convert str_t to null-terminated string
-    char* fname = (char*)malloc(filename.len + 1);
-    if (!fname) {
-        MD_LOG_ERROR("Failed to allocate memory for filename");
-        snprintf(data.error_text, sizeof(data.error_text), "Memory allocation failed");
+    // Convert str_t to null-terminated string using stack buffer
+    // Reasonable maximum path length for safety
+    const size_t MAX_PATH_LEN = 4096;
+    if (filename.len >= MAX_PATH_LEN) {
+        MD_LOG_ERROR("Filename too long: %zu bytes", filename.len);
+        snprintf(data.error_text, sizeof(data.error_text), "Filename too long");
         return false;
     }
+    
+    char fname[MAX_PATH_LEN];
     memcpy(fname, filename.ptr, filename.len);
     fname[filename.len] = '\0';
     
     file = trexio_open(fname, 'r', TREXIO_AUTO, &rc);
-    free(fname);
     
     if (file == nullptr || rc != TREXIO_SUCCESS) {
         snprintf(data.error_text, sizeof(data.error_text), 
@@ -299,9 +301,9 @@ static struct TrexioComponent {
     
     // Event handlers
     void on_file_drop(const char* filename) {
-        // Check if this is a TREXIO file
+        // Check if this is a TREXIO file (only .trexio extension to avoid conflicts)
         const char* ext = strrchr(filename, '.');
-        if (ext && (strcmp(ext, ".trexio") == 0 || strcmp(ext, ".h5") == 0)) {
+        if (ext && strcmp(ext, ".trexio") == 0) {
             str_t file_str = {filename, strlen(filename)};
             if (trexio_loader::load_trexio_file(file_str)) {
                 MD_LOG_INFO("TREXIO file loaded via drag-and-drop");
