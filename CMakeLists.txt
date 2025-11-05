@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.20)
 
 project(viamd VERSION 0.1.15 LANGUAGES CXX)
 
+# Add cmake module path for FindTREXIO
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 INCLUDE(ext/mdlib/cmake/common.cmake)
 
 # If configured using single configuration generator, set default build type to Release
@@ -46,6 +49,7 @@ option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
+option(VIAMD_ENABLE_TREXIO "Enable TREXIO Module" OFF)
 set(VIAMD_FRAME_CACHE_SIZE_MB "2048" CACHE STRING "Reserved frame cache size in Megabytes")
 set(VIAMD_NUM_WORKER_THREADS "8" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation)")
 
@@ -56,6 +60,14 @@ if (VIAMD_ENABLE_VELOXCHEM)
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
     set(MD_VLX_BASIS_FOLDER "basis")
 endif ()
+
+if (VIAMD_ENABLE_TREXIO)
+    find_package(TREXIO REQUIRED)
+    if (TREXIO_FOUND)
+        message(STATUS "TREXIO found: ${TREXIO_LIBRARIES}")
+        set(MD_ENABLE_TREXIO ON CACHE BOOL "" FORCE)
+    endif()
+endif()
 
 if (APPLE)
     # Remove once we have proper support for Apple Silicon?
@@ -113,6 +125,10 @@ set(COMP_FILES
 
 if (VIAMD_ENABLE_VELOXCHEM)
     set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp)
+endif()
+
+if (VIAMD_ENABLE_TREXIO)
+    set(COMP_FILES ${COMP_FILES} src/components/trexio/trexio.cpp)
 endif()
 
 set(SHADER_FILES 
@@ -211,6 +227,10 @@ target_include_directories(viamd
         ext/enkiTS/src
 )
 
+if (VIAMD_ENABLE_TREXIO)
+    target_include_directories(viamd PRIVATE ${TREXIO_INCLUDE_DIRS})
+endif()
+
 set_target_properties(viamd PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${VIAMD_BIN_DIR}")
 
@@ -228,3 +248,7 @@ target_link_libraries(viamd
     imgui_notify
     ${VIAMD_STDLIBS}
 )
+
+if (VIAMD_ENABLE_TREXIO)
+    target_link_libraries(viamd ${TREXIO_LIBRARIES})
+endif()

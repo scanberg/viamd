@@ -36,6 +36,9 @@ enum mol_loader_t {
 #if MD_VLX
     MOL_LOADER_VELOXCHEM,
 #endif
+#if MD_TREXIO
+    MOL_LOADER_TREXIO,
+#endif
     MOL_LOADER_COUNT
 };
 
@@ -49,6 +52,9 @@ static const str_t mol_loader_name[] {
 #if MD_VLX
     STR_LIT("VeloxChem"),
 #endif
+#if MD_TREXIO
+    STR_LIT("TREXIO"),
+#endif
 };
 
 static const str_t mol_loader_ext[] {
@@ -61,6 +67,9 @@ static const str_t mol_loader_ext[] {
 #if MD_VLX
     STR_LIT("out;h5"),
 #endif
+#if MD_TREXIO
+    STR_LIT("trexio"),
+#endif
 };
 
 static md_molecule_loader_i* mol_loader_api[] = {
@@ -72,6 +81,9 @@ static md_molecule_loader_i* mol_loader_api[] = {
     md_lammps_molecule_api(),
 #if MD_VLX
     md_vlx_molecule_api(),
+#endif
+#if MD_TREXIO
+    NULL,  // TREXIO loader not yet implemented in mdlib
 #endif
 };
 
@@ -215,7 +227,19 @@ static void traj_loader_preload_check(load::LoaderState*, traj_loader_t, str_t, 
 
 namespace load {
 
-#define NUM_ENTRIES 12
+// Note: NUM_ENTRIES must be manually updated when adding new loaders
+// Base count: 10 (pdb, gro, xtc, trr, xyz, xmol, arc, cif, data, lammpstrj)
+// VeloxChem adds: 2 (out, h5)
+// TREXIO adds: 1 (trexio)
+#if defined(MD_VLX) && defined(MD_TREXIO)
+#define NUM_ENTRIES 13  // Base + VeloxChem + TREXIO
+#elif defined(MD_VLX)
+#define NUM_ENTRIES 12  // Base + VeloxChem
+#elif defined(MD_TREXIO)
+#define NUM_ENTRIES 11  // Base + TREXIO
+#else
+#define NUM_ENTRIES 10  // Base only
+#endif
 struct table_entry_t {
     str_t name[NUM_ENTRIES];
     str_t ext[NUM_ENTRIES];
@@ -245,6 +269,8 @@ static const table_entry_t table = {
 #if MD_VLX
         STR_LIT("VeloxChem (out)"),
         STR_LIT("VeloxChem (h5)")
+#elif MD_TREXIO
+        STR_LIT("TREXIO")
 #endif
     },
     {
@@ -262,6 +288,8 @@ static const table_entry_t table = {
 #if MD_VLX
         STR_LIT("out"),
         STR_LIT("h5")
+#elif MD_TREXIO
+        STR_LIT("trexio")
 #endif
     },
     { 
@@ -279,6 +307,8 @@ static const table_entry_t table = {
 #if MD_VLX
         md_vlx_molecule_api(),
         md_vlx_molecule_api(),
+#elif MD_TREXIO
+        NULL,  // TREXIO loader not yet implemented in mdlib
 #endif
     },
 	{ 
@@ -294,6 +324,8 @@ static const table_entry_t table = {
         md_lammps_trajectory_loader(),
         //md_dcd_trajectory_loader(),
 #if MD_VLX
+        NULL,
+#elif MD_TREXIO
         NULL,
 #endif
     }
