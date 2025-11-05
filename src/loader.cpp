@@ -231,12 +231,14 @@ namespace load {
 // Base count: 10 (pdb, gro, xtc, trr, xyz, xmol, arc, cif, data, lammpstrj)
 // VeloxChem adds: 2 (out, h5)
 // TREXIO adds: 1 (trexio)
-#if MD_VLX
-#define NUM_ENTRIES 12
-#elif MD_TREXIO
-#define NUM_ENTRIES 11
+#if defined(MD_VLX) && defined(MD_TREXIO)
+#define NUM_ENTRIES 13  // Base + VeloxChem + TREXIO
+#elif defined(MD_VLX)
+#define NUM_ENTRIES 12  // Base + VeloxChem
+#elif defined(MD_TREXIO)
+#define NUM_ENTRIES 11  // Base + TREXIO
 #else
-#define NUM_ENTRIES 10
+#define NUM_ENTRIES 10  // Base only
 #endif
 struct table_entry_t {
     str_t name[NUM_ENTRIES];

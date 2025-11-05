@@ -37,9 +37,19 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits.h>  // For PATH_MAX
 
 // Conversion constants
-#define BOHR_TO_ANGSTROM 0.529177210903
+// CODATA 2018 recommended value: 0.529177210903(80) Angstrom/Bohr
+// Reference: https://physics.nist.gov/cgi-bin/cuu/Value?bohrrada0
+#define BOHR_TO_ANGSTROM 0.52917721090300
+
+// Maximum path length - use system-defined constant if available
+#ifndef PATH_MAX
+#define MAX_TREXIO_PATH_LEN 4096
+#else
+#define MAX_TREXIO_PATH_LEN PATH_MAX
+#endif
 
 namespace trexio_loader {
 
@@ -94,15 +104,13 @@ static bool load_trexio_file(str_t filename) {
     trexio_exit_code rc;
     
     // Convert str_t to null-terminated string using stack buffer
-    // Reasonable maximum path length for safety
-    const size_t MAX_PATH_LEN = 4096;
-    if (filename.len >= MAX_PATH_LEN) {
-        MD_LOG_ERROR("Filename too long: %zu bytes", filename.len);
+    if (filename.len >= MAX_TREXIO_PATH_LEN) {
+        MD_LOG_ERROR("Filename too long: %zu bytes (max: %d)", filename.len, MAX_TREXIO_PATH_LEN);
         snprintf(data.error_text, sizeof(data.error_text), "Filename too long");
         return false;
     }
     
-    char fname[MAX_PATH_LEN];
+    char fname[MAX_TREXIO_PATH_LEN];
     memcpy(fname, filename.ptr, filename.len);
     fname[filename.len] = '\0';
     

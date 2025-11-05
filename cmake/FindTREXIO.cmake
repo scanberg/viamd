@@ -47,9 +47,20 @@ if(PC_TREXIO_VERSION)
 elseif(TREXIO_INCLUDE_DIR)
     # Try to extract version from header file
     if(EXISTS "${TREXIO_INCLUDE_DIR}/trexio.h")
-        file(STRINGS "${TREXIO_INCLUDE_DIR}/trexio.h" TREXIO_VERSION_LINE REGEX "^#define[ \t]+TREXIO_VERSION_.*")
-        if(TREXIO_VERSION_LINE)
-            string(REGEX MATCH "([0-9]+\\.[0-9]+\\.[0-9]+)" TREXIO_VERSION "${TREXIO_VERSION_LINE}")
+        # Try various version definition patterns
+        file(STRINGS "${TREXIO_INCLUDE_DIR}/trexio.h" TREXIO_VERSION_LINES 
+             REGEX "#define[ \t]+TREXIO_(PACKAGE_)?VERSION")
+        
+        # Try semantic versioning first (X.Y.Z)
+        string(REGEX MATCH "([0-9]+\\.[0-9]+\\.[0-9]+)" TREXIO_VERSION "${TREXIO_VERSION_LINES}")
+        
+        # If not found, try simpler version patterns (X.Y or just X)
+        if(NOT TREXIO_VERSION)
+            string(REGEX MATCH "([0-9]+\\.[0-9]+)" TREXIO_VERSION "${TREXIO_VERSION_LINES}")
+        endif()
+        
+        if(NOT TREXIO_VERSION)
+            string(REGEX MATCH "([0-9]+)" TREXIO_VERSION "${TREXIO_VERSION_LINES}")
         endif()
     endif()
 endif()
