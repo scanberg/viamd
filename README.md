@@ -21,6 +21,46 @@ For windows, we recommend to use the latest binary available on the [release pag
 ### Ubuntu and MacOs
 To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your machine, you can follow the procedure described in details in the wiki for [Linux](https://github.com/scanberg/viamd/wiki/0.-Building#linux) and [MacOS](https://github.com/scanberg/viamd/wiki/0.-Building#mac).
 
+## Optional Features
+
+### TREXIO File Support
+VIAMD can be built with optional support for [TREXIO](https://github.com/TREX-CoE/trexio) files, which provides a standardized format for quantum chemistry data.
+
+#### Prerequisites
+To enable TREXIO support, you need to install the TREXIO library:
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install libtrexio-dev
+```
+
+**From source:**
+```bash
+git clone https://github.com/TREX-CoE/trexio.git
+cd trexio
+mkdir build && cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local
+make -j4
+make install
+```
+
+#### Building with TREXIO Support
+To build VIAMD with TREXIO support enabled:
+
+```bash
+cmake -DVIAMD_ENABLE_TREXIO=ON .
+make -j4
+```
+
+If TREXIO is installed in a non-standard location, you can specify the path:
+
+```bash
+cmake -DVIAMD_ENABLE_TREXIO=ON -DTREXIO_ROOT=/path/to/trexio .
+make -j4
+```
+
+Once built with TREXIO support, VIAMD will be able to load `.trexio` files containing molecular geometry, basis sets, and wavefunction data.
+
 ## Documentation
 Documentation about VIAMD is available on the github [wiki](https://github.com/scanberg/viamd/wiki). The two first chapters relate to the [visual](https://github.com/scanberg/viamd/wiki/1.-Visual) and [analysis](https://github.com/scanberg/viamd/wiki/2.-Analysis) features respectively, where we highlight the interactive part of software. The third chapter focus on the VIAMD [language](https://github.com/scanberg/viamd/wiki/3.-Language) used for scripting and the fourth chapter propose a serie of [tutorial](https://github.com/scanberg/viamd/wiki/4.-Tutorials) (under construction). 
 
