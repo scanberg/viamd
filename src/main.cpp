@@ -9323,6 +9323,9 @@ static void handle_picking(ApplicationState* data) {
 #endif
         data->selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
         data->selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
+
+        if (data->selection.atom_idx.hovered > data->mold.sys.atom.count) data->selection.atom_idx.hovered = -1;
+        if (data->selection.bond_idx.hovered > data->mold.sys.bond.count) data->selection.bond_idx.hovered = -1;
         
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;
