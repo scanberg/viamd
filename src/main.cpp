@@ -642,7 +642,7 @@ static Selection* create_selection(ApplicationState* data, str_t name, md_bitfie
 static void remove_selection(ApplicationState* data, int idx);
 static void clear_selections(ApplicationState* data);
 
-static bool filter_expression(ApplicationState* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic, char* error_str, int error_cap);
+static bool filter_expression(ApplicationState* data, const md_system_t* sys, const float* x, const float* y, const float* z, str_t expr, md_bitfield_t* mask, bool* is_dynamic, char* error_str, int error_cap);
 
 static void modify_selection(ApplicationState* data, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(data);
@@ -924,8 +924,8 @@ int main(int argc, char** argv) {
         if (data.selection.query.show_window) draw_selection_query_window(&data);
         if (data.selection.grow.show_window) draw_selection_grow_window(&data);
         if (data.show_property_export_window) draw_property_export_window(&data);
+        if (data.structure_export.show_window) draw_structure_export_window(&data);
         if (data.show_debug_window) draw_debug_window(&data);
-
 
         //ImGui::ShowDemoWindow();
 
@@ -2561,14 +2561,14 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
     data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 }
 
-static bool filter_expression(ApplicationState* data, str_t expr, md_bitfield_t* mask, bool* is_dynamic = NULL, char* error_buf = NULL, int error_cap = 0) {
+static bool filter_expression(ApplicationState* data, const md_system_t* sys, const float* x, const float* y, const float* z, str_t expr, md_bitfield_t* mask, bool* is_dynamic = NULL, char* error_buf = NULL, int error_cap = 0) {
     if (data->mold.sys.atom.count == 0) return false;    
     
     bool success = false;
 
     if (md_semaphore_aquire(&data->script.ir_semaphore)) {
         defer { md_semaphore_release(&data->script.ir_semaphore); };
-        return md_filter(mask, expr, &data->mold.sys, data->script.ir, is_dynamic, error_buf, error_cap);
+        return md_filter(mask, expr, sys, x, y, z, data->script.ir, is_dynamic, error_buf, error_cap);
     }
 
     return success;
@@ -2742,7 +2742,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
-
+            ImGui::Checkbox("Structure Export", &data->structure_export.show_window);
 
             viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowDrawMenu);
 
@@ -4068,7 +4068,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
         if (data->selection.query.query_invalid) {
             data->selection.query.query_invalid = false;
-            data->selection.query.query_ok = filter_expression(data, str_from_cstr(data->selection.query.buf), &data->selection.query.mask, NULL, data->selection.query.error, sizeof(data->selection.query.error));
+            data->selection.query.query_ok = filter_expression(data, &data->mold.sys, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z, str_from_cstr(data->selection.query.buf), &data->selection.query.mask, NULL, data->selection.query.error, sizeof(data->selection.query.error));
             query_frame = data->animation.frame;
 
             if (data->selection.query.query_ok) {
@@ -7402,7 +7402,7 @@ static void export_pdb_structure(md_file_o* file, const md_system_t* sys, const 
     }
 }
 */
-/*
+
 void draw_structure_export_window(ApplicationState* data) {
     ASSERT(data);
 
@@ -7417,7 +7417,7 @@ void draw_structure_export_window(ApplicationState* data) {
         static const char* atom_mask_options[] = {
             "Active Selection",
             "Visible Atoms",
-            "Query"
+            "Query",
             "All Atoms",
         };
 
@@ -7431,7 +7431,7 @@ void draw_structure_export_window(ApplicationState* data) {
             "xyz"
         };
 
-        ImGui::PushItemWidth(200);
+        //ImGui::PushItemWidth(200);
 
         struct_exp.selected_atom_filter = CLAMP(struct_exp.selected_atom_filter, 0, ARRAY_SIZE(atom_mask_options) - 1);
         ImGui::Combo("Atoms to Export", &struct_exp.selected_atom_filter, atom_mask_options, (int)ARRAY_SIZE(atom_mask_options));
@@ -7440,19 +7440,29 @@ void draw_structure_export_window(ApplicationState* data) {
             auto& query = struct_exp.query;
             bool valid = query.is_valid;
 
+            if (!md_bitfield_validate(&query.mask)) {
+                md_bitfield_init(&query.mask, frame_alloc);
+            }
+            
             if (!valid) ImGui::PushInvalid();
             ImGui::InputQuery("Query", query.buf, sizeof(query.buf), query.is_valid, query.error);
             if (!valid) ImGui::PopInvalid();
-
+            
             query.requires_evaluation |= ImGui::IsItemEdited();
             bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
-
+            
             if (query.requires_evaluation) {
-                query.is_valid = filter_expression(data, str_from_cstr(query.buf), &query.mask, &query.is_dynamic, data->selection.query.error, sizeof(data->selection.query.error));
+                md_bitfield_clear(&query.mask);
+                query.is_valid = filter_expression(data, &data->mold.sys, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z, str_from_cstr(query.buf), &query.mask, &query.is_dynamic, data->selection.query.error, sizeof(data->selection.query.error));
+                query.requires_evaluation = false;
+            }
+
+            if (ImGui::IsWindowHovered()) {
+                // Clear highlight mask
+                md_bitfield_clear(&data->selection.highlight_mask);
             }
 
             if (query.is_valid && preview) {
-                md_bitfield_clear(&data->selection.highlight_mask);
                 md_bitfield_copy(&data->selection.highlight_mask, &query.mask);
             }
         }
@@ -7465,30 +7475,29 @@ void draw_structure_export_window(ApplicationState* data) {
         struct_exp.selected_file_format = CLAMP(struct_exp.selected_file_format, 0, ARRAY_SIZE(file_formats) - 1);
         ImGui::Combo("File Format", &struct_exp.selected_file_format, file_formats, ARRAY_SIZE(file_formats));
 
-        ImGui::PopItemWidth();
+        //ImGui::PopItemWidth();
 
-        auto extract_atom_indices = [](int* out_atom_indices, size_t out_cap, int frame_idx, void* user_data) -> size_t {
-            ApplicationState* data = (ApplicationState*)user_data;
+        auto extract_atom_indices = [data](int* out_atom_indices, size_t atom_index_cap, const float* x, const float* y, const float* z) -> size_t {
             switch (data->structure_export.selected_atom_filter) {
                 case 0: { // Active Selection
-                    return md_bitfield_iter_extract_indices(out_atom_indices, out_cap, md_bitfield_iter_create(&data->selection.selection_mask));
+                    return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->selection.selection_mask));
                 } break;
                 case 1: { // Visible Atoms
-                    return md_bitfield_iter_extract_indices(out_atom_indices, out_cap, md_bitfield_iter_create(&data->representation.visibility_mask));
+                    return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->representation.visibility_mask));
                 } break;
                 case 2: { // Query
                     if (data->structure_export.query.is_dynamic) {
-                        data->structure_export.query.is_valid = filter_expression(data, str_from_cstr(data->structure_export.query.buf), &data->structure_export.query.mask, &data->structure_export.query.is_dynamic, data->selection.query.error, sizeof(data->selection.query.error));
+                        data->structure_export.query.is_valid = filter_expression(data, &data->mold.sys, x, y, z, str_from_cstr(data->structure_export.query.buf), &data->structure_export.query.mask, &data->structure_export.query.is_dynamic, data->selection.query.error, sizeof(data->selection.query.error));
                     }
                     if (!data->structure_export.query.is_valid) {
                         LOG_ERROR("Cannot export structure, the query expression is invalid: " STR_FMT, STR_ARG(str_from_cstr(data->structure_export.query.error)));
                         return 0;
                     } else {
-                        return md_bitfield_iter_extract_indices(out_atom_indices, out_cap, md_bitfield_iter_create(&data->structure_export.query.mask));
+                        return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->structure_export.query.mask));
                     }
                 } break;
                 case 3: { // All Atoms
-                    for (size_t i = 0; i < data->mold.sys.atom.count && i < out_cap; ++i) {
+                    for (size_t i = 0; i < data->mold.sys.atom.count && i < atom_index_cap; ++i) {
                         out_atom_indices[i] = (int)i;
                     }
                     return data->mold.sys.atom.count;
@@ -7496,9 +7505,35 @@ void draw_structure_export_window(ApplicationState* data) {
                 default: {
                     LOG_ERROR("Invalid atom filter selection.");
                 } break;
-                return 0;
             }
+            return 0;
         };
+
+        md_array(int32_t) frame_indices = 0;
+        if (traj) {
+            switch (struct_exp.selected_traj_filter) {
+                case 0: { // All Frames
+                    size_t num_frames = md_trajectory_num_frames(traj);
+                    for (size_t i = 0; i < num_frames; ++i) {
+                        md_array_push(frame_indices, (int32_t)i, frame_alloc);
+                    }
+                } break;
+                case 1: { // Current Frame
+                    int32_t current_frame = (int)(data->animation.frame + 0.5); // Round to nearest
+                    md_array_push(frame_indices, current_frame, frame_alloc);
+                } break;
+                case 2: { // Active Frame Range
+                    int beg = data->timeline.filter.beg_frame;
+                    int end = data->timeline.filter.end_frame;
+                    for (int i = beg; i <= end; ++i) {
+                        md_array_push(frame_indices, (int32_t)i, frame_alloc);
+                    }
+                } break;
+                default: {
+                    LOG_ERROR("Invalid trajectory filter selection.");
+                } break;
+            }
+        }
 
         if (ImGui::Button("Export")) {
             char path_buf[1024];
@@ -7507,36 +7542,43 @@ void draw_structure_export_window(ApplicationState* data) {
                 str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
                 md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
                 if (file) {
-                    switch (struct_exp.selected_traj_filter) {
-                        case 0: { // All Frames
-                            size_t num_frames = traj ? md_trajectory_num_frames(traj) : 1;
-                            struct_exp.frame_indices = md_array_create(int32_t, num_frames, frame_alloc);
-                            for (size_t i = 0; i < num_frames; ++i) {
-                                struct_exp.frame_indices[i] = (int32_t)i;
-                            }
-                        } break;
-                        case 1: { // Current Frame
-                            struct_exp.frame_indices = md_array_create(int32_t, 1, frame_alloc);
-                            struct_exp.frame_indices[0] = data->mold.current_frame;
-                        } break;
-                        case 2: { // Active Frame Range
-                            int beg = MIN(data->mold.frame_range_beg, data->mold.frame_range_end);
-                            int end = MAX(data->mold.frame_range_beg, data->mold.frame_range_end);
-                            size_t num_frames = (size_t)(end - beg + 1);
-                            struct_exp.frame_indices = md_array_create(int32_t, num_frames, frame_alloc);
-                            for (size_t i = 0; i < num_frames; ++i) {
-                                struct_exp.frame_indices[i] = (int32_t)(beg + (int)i);
-                            }
+                    // Write header for file format
+                    switch (struct_exp.selected_file_format) {
+                        case 0: { // XYZ
+                            // No header needed
                         } break;
                         default: {
-                            LOG_ERROR("Invalid trajectory filter selection.");
+                            LOG_ERROR("Unsupported export format: '" STR_FMT "'", STR_ARG(ext));
                         } break;
                     }
-                    if (str_eq(ext, STR_LIT("xyz"))) {
-                        export_xyz_structure(file, &data->mold.sys, traj, atom_indices, num_atoms, frame_indices, num_frames);
-                    } else {
-                        LOG_ERROR("Unsupported export format: '" STR_FMT "'", STR_ARG(ext));
+
+                    // Write body
+                    md_array(int32_t) atom_indices = 0;
+                    md_array_ensure(atom_indices, sys->atom.count, frame_alloc);
+
+                    md_array(int) atomic_numbers = md_array_create(int, sys->atom.count, frame_alloc);
+                    for (size_t i = 0; i < sys->atom.count; ++i) {
+                        atomic_numbers[i] = md_atom_atomic_number(&sys->atom, i);
                     }
+
+                    size_t num_frames = md_array_size(frame_indices);
+                    if (num_frames > 0) {
+                        float* x = (float*)md_alloc(frame_alloc, sizeof(float) * sys->atom.count);
+                        float* y = (float*)md_alloc(frame_alloc, sizeof(float) * sys->atom.count);
+                        float* z = (float*)md_alloc(frame_alloc, sizeof(float) * sys->atom.count);
+
+                        for (size_t f = 0; f < num_frames; ++f) {
+                            int frame_idx = frame_indices[f];
+                            if (!md_trajectory_load_frame(traj, frame_idx, NULL, x, y, z)) {
+                                LOG_ERROR("Failed to load frame %d from trajectory for structure export.", frame_idx);
+                                continue;
+                            }
+
+                            size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), x, y, z);
+                            xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                        }
+                    }
+
                     md_file_close(file);
                 } else {
                     LOG_ERROR("Failed to open file '" STR_FMT "' for writing.", STR_ARG(path));
@@ -7546,7 +7588,6 @@ void draw_structure_export_window(ApplicationState* data) {
     }
     ImGui::End();
 }
-*/
 
 static void update_md_buffers(ApplicationState* data) {
     ASSERT(data);
@@ -8087,7 +8128,8 @@ static void load_workspace(ApplicationState* data, str_t filename) {
             if (!str_empty(lbl) && elem) {
                 add_atom_elem_mapping(data, lbl, (md_element_t)elem);
             }
-        } else if (str_eq(section, STR_LIT("Script"))) {
+        } */
+        else if (str_eq(section, STR_LIT("Script"))) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Text"))) {
@@ -8096,8 +8138,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
                     editor.SetText(std::string(str.ptr, str.len));
                 }
             }
-            
-        } */
+        }
         else if (str_eq(section, STR_LIT("Selection"))) {
             str_t ident, arg;
             str_t label = {};
@@ -8612,7 +8653,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         }
 
         if (rep->filt_is_dirty) {
-            rep->filt_is_valid = filter_expression(state, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+            rep->filt_is_valid = filter_expression(state, &state->mold.sys, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
             rep->filt_is_dirty = false;
         }
 

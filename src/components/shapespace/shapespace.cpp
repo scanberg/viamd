@@ -360,7 +360,7 @@ struct Shapespace : viamd::EventHandler {
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
-                if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.sys, app_state->script.ir, NULL, error, sizeof(error), arena)) {
+                if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.sys, app_state->mold.sys.atom.x, app_state->mold.sys.atom.y, app_state->mold.sys.atom.z, app_state->script.ir, NULL, error, sizeof(error), arena)) {
                     eval_hash = hash;
 
                     input_valid = true;                    
