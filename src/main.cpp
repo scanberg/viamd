@@ -7441,7 +7441,7 @@ void draw_structure_export_window(ApplicationState* data) {
             bool valid = query.is_valid;
 
             if (!md_bitfield_validate(&query.mask)) {
-                md_bitfield_init(&query.mask, frame_alloc);
+                md_bitfield_init(&query.mask, persistent_alloc);
             }
             
             if (!valid) ImGui::PushInvalid();
@@ -7453,7 +7453,18 @@ void draw_structure_export_window(ApplicationState* data) {
             
             if (query.requires_evaluation) {
                 md_bitfield_clear(&query.mask);
-                query.is_valid = filter_expression(data, &data->mold.sys, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z, str_from_cstr(query.buf), &query.mask, &query.is_dynamic, data->selection.query.error, sizeof(data->selection.query.error));
+                query.is_valid = filter_expression(
+                    data,
+                    &data->mold.sys,
+                    data->mold.sys.atom.x,
+                    data->mold.sys.atom.y,
+                    data->mold.sys.atom.z,
+                    str_from_cstr(query.buf),
+                    &query.mask,
+                    &query.is_dynamic,
+                    query.error,
+                    sizeof(query.error)
+                );
                 query.requires_evaluation = false;
             }
 
@@ -7487,7 +7498,19 @@ void draw_structure_export_window(ApplicationState* data) {
                 } break;
                 case 2: { // Query
                     if (data->structure_export.query.is_dynamic) {
-                        data->structure_export.query.is_valid = filter_expression(data, &data->mold.sys, x, y, z, str_from_cstr(data->structure_export.query.buf), &data->structure_export.query.mask, &data->structure_export.query.is_dynamic, data->selection.query.error, sizeof(data->selection.query.error));
+                        // IMPORTANT: Clear the previous mask before re-evaluating a dynamic query.
+                        // Otherwise atoms that drop out in subsequent frames remain set from earlier frames.
+                        md_bitfield_clear(&data->structure_export.query.mask);
+                        data->structure_export.query.is_valid = filter_expression(
+                            data,
+                            &data->mold.sys,
+                            x, y, z,
+                            str_from_cstr(data->structure_export.query.buf),
+                            &data->structure_export.query.mask,     
+                            &data->structure_export.query.is_dynamic,
+                            data->structure_export.query.error,
+                            sizeof(data->structure_export.query.error)
+                        );
                     }
                     if (!data->structure_export.query.is_valid) {
                         LOG_ERROR("Cannot export structure, the query expression is invalid: " STR_FMT, STR_ARG(str_from_cstr(data->structure_export.query.error)));
@@ -7509,9 +7532,10 @@ void draw_structure_export_window(ApplicationState* data) {
             return 0;
         };
 
-        md_array(int32_t) frame_indices = 0;
-        if (traj) {
-            switch (struct_exp.selected_traj_filter) {
+        if (ImGui::Button("Export")) {
+            md_array(int32_t) frame_indices = 0;
+            if (traj) {
+                switch (struct_exp.selected_traj_filter) {
                 case 0: { // All Frames
                     size_t num_frames = md_trajectory_num_frames(traj);
                     for (size_t i = 0; i < num_frames; ++i) {
@@ -7532,14 +7556,13 @@ void draw_structure_export_window(ApplicationState* data) {
                 default: {
                     LOG_ERROR("Invalid trajectory filter selection.");
                 } break;
+                }
             }
-        }
 
-        if (ImGui::Button("Export")) {
-            char path_buf[1024];
+            char path_buf[1024] = { 0 };
             str_t ext = str_from_cstr(file_formats[struct_exp.selected_file_format]);
             if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
-                str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+                str_t path = str_from_cstrn(path_buf, sizeof(path_buf));
                 md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
                 if (file) {
                     // Write header for file format
@@ -7578,7 +7601,16 @@ void draw_structure_export_window(ApplicationState* data) {
                             xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
                         }
                     }
+                    else {
+                        // Single frame from system
+                        float* x = sys->atom.x;
+                        float* y = sys->atom.y;
+                        float* z = sys->atom.z;
+                        size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), x, y, z);
+						xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                    }
 
+                    LOG_INFO("Successfully exported structure to: '" STR_FMT "'", STR_ARG(path));
                     md_file_close(file);
                 } else {
                     LOG_ERROR("Failed to open file '" STR_FMT "' for writing.", STR_ARG(path));
