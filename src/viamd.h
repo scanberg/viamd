@@ -799,6 +799,21 @@ struct ApplicationState {
         uint64_t ir_fingerprint = 0;
     } script;
 
+    struct {
+        bool show_window = false;
+        int selected_atom_filter = 0;
+        int selected_traj_filter = 0;
+        int selected_file_format = 0;
+        struct {
+            char buf[256] = "";
+            char error[256] = "";
+            md_bitfield_t mask = {0};
+            bool is_valid = false;
+            bool is_dynamic = false;
+            bool requires_evaluation = false;
+        } query;
+    } structure_export;
+
     bool show_script_window = true;
     bool show_debug_window = false;
     bool show_property_export_window = false;
