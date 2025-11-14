@@ -271,7 +271,62 @@ static void compute_group_density(double out_group_densities[], const int* ao_to
 }
 
 // Voronoi segmentation
-static void grid_segment_and_attribute(float* out_group_values, size_t group_cap, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, const float* grid_values, const md_grid_t& grid) {
+static void grid_segment_and_attribute_to_point(double out_point_value[], const vec4_t point_xyzr[], size_t num_points, const float* grid_values, const md_grid_t& grid) {
+    float step_x[3] = {
+        grid.orientation[0][0] * grid.spacing[0],
+        grid.orientation[0][1] * grid.spacing[0],
+        grid.orientation[0][2] * grid.spacing[0],
+    };
+
+    float step_y[3] = {
+        grid.orientation[1][0] * grid.spacing[1],
+        grid.orientation[1][1] * grid.spacing[1],
+        grid.orientation[1][2] * grid.spacing[1],
+    };
+
+    float step_z[3] = {
+        grid.orientation[2][0] * grid.spacing[2],
+        grid.orientation[2][1] * grid.spacing[2],
+        grid.orientation[2][2] * grid.spacing[2],
+    };
+
+    mat4_t index_to_world = compute_index_to_world_mat(grid.orientation, grid.origin, grid.spacing);
+
+    for (int iz = 0; iz < grid.dim[2]; ++iz) {
+        for (int iy = 0; iy < grid.dim[1]; ++iy) {
+            for (int ix = 0; ix < grid.dim[0]; ++ix) {
+                int index = ix + iy * grid.dim[0] + iz * grid.dim[0] * grid.dim[1];
+                float value = grid_values[index];
+
+                // Skip if its does not contribute
+                if (value == 0.0f) continue;
+
+                vec4_t coord = index_to_world * vec4_set((float)ix, (float)iy, (float)iz, 1.0f);
+                coord.w = 0.0f;
+
+                float  min_dist = FLT_MAX;
+                size_t point_idx = 0;
+
+                // find closest point to grid point
+                for (size_t i = 0; i < num_points; ++i) {
+                    vec4_t point = point_xyzr[i];
+                    float r = point.w;
+                    point.w = 0.0f;
+
+                    float dist = vec4_distance_squared(coord, point) - r * r;
+                    if (dist < min_dist) {
+                        min_dist = dist;
+                        point_idx = i;
+                    }
+                }
+
+                out_point_value[point_idx] += value;
+            }
+        }
+    }
+}
+
+static void grid_segment_and_attribute_to_group(float* out_group_values, size_t group_cap, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, const float* grid_values, const md_grid_t& grid) {
     float step_x[3] = {
         grid.orientation[0][0] * grid.spacing[0],
         grid.orientation[0][1] * grid.spacing[0],
@@ -1914,17 +1969,25 @@ struct VeloxChem : viamd::EventHandler {
 
         // @TODO: This should be performed as a range task in parallel
         task_system::ID segment_task = task_system::create_pool_task(STR_LIT("##Segment Volume"), [data = payload]() {
-#if DEBUG
-            double sum = 0.0;
-            size_t len = md_grid_num_points(&data->args.grid);
-            for (size_t i = 0; i < len; ++i) {
-                sum += data->args.grid_data[i];
-            }
-            MD_LOG_DEBUG("SUM: %g", sum);
-#endif
 
             MD_LOG_DEBUG("Starting segmentation of volume");
-            grid_segment_and_attribute(data->dst_group_values, data->num_groups, data->point_group_idx, data->point_xyzr, data->num_points, data->args.grid_data, data->args.grid);
+            double* point_values = (double*)md_vm_arena_push_zero_array(data->arena, double, data->num_points);
+            grid_segment_and_attribute_to_point(point_values, data->point_xyzr, data->num_points, data->args.grid_data, data->args.grid);
+
+            // Accumulate values into groups
+            for (size_t i = 0; i < data->num_points; ++i) {
+                uint32_t group_idx = data->point_group_idx[i];
+                if (group_idx >= data->num_groups) {
+                    continue;
+                }
+                data->dst_group_values[group_idx] += (float)point_values[i];
+            }
+
+            // Print out point values for debugging
+            for (size_t i = 0; i < data->num_points; ++i) {
+                printf(" %zu: Value = %f\n", i, point_values[i]);
+            }
+
             MD_LOG_DEBUG("Finished segmentation of volume");
 
             md_vm_arena_destroy(data->arena);
@@ -5474,6 +5537,30 @@ struct VeloxChem : viamd::EventHandler {
                     {
                         task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
+                            // Print out the groups and the values for debugging
+#if 1
+                            printf("Computed Transition Matrix for NTO index %d\n", nto->sel_nto_idx);
+                            printf("Number of Groups: %zu\n", nto->group.count);
+                            printf("Atom to Group Mapping:\n");
+                            for (size_t i = 0; i < nto->num_atoms; i++) {
+                                printf("    Atom %zu: Group %u\n", i, nto->atom_group_idx[i]);
+                            }
+                            printf("Transition Matrix:\n");
+                            for (size_t i = 0; i < nto->group.count; i++) {
+                                printf("  From Group %zu:\n", i);
+                                for (size_t j = 0; j < nto->group.count; j++) {
+                                    printf("    To Group %zu: %f\n", j, nto->transition_matrix[i * nto->group.count + j]);
+                                }
+                            }
+                            printf("Group Densities (Particle):\n");
+                            for (size_t i = 0; i < nto->group.count; i++) {
+                                printf("    Group %zu: %f\n", i, nto->transition_density_part[i]);
+                            }
+                            printf("Group Densities (Hole):\n");
+                            for (size_t i = 0; i < nto->group.count; i++) {
+                                printf("    Group %zu: %f\n", i, nto->transition_density_hole[i]);
+                            }
+#endif          
                         });
 
                         task_system::set_task_dependency(compute_matrix_task, seg_attach);
