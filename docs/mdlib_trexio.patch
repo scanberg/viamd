@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e560af9..aa1419c 100644
+index e560af9..f908bf3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -17,6 +17,7 @@ option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
@@ -8,12 +8,12 @@ index e560af9..aa1419c 100644
  option(MD_ENABLE_VLX "Enable Veloxchem Support" OFF)
 +option(MD_ENABLE_TREXIO "Enable TREXIO Support" OFF)
  set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
-
+ 
  set(CMAKE_C_STANDARD 11)
 @@ -142,6 +143,50 @@ if (${MD_ENABLE_VLX})
      set (MD_DEFINES ${MD_DEFINES} MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
  endif()
-
+ 
 +if (${MD_ENABLE_TREXIO})
 +    # Build TREXIO from source (download release tarball)
 +    # Using release tarball instead of git repository because it contains pre-generated source files
@@ -69,10 +69,10 @@ index e560af9..aa1419c 100644
  endif()
 diff --git a/src/md_trexio.c b/src/md_trexio.c
 new file mode 100644
-index 0000000..0013cc9
+index 0000000..47432cc
 --- /dev/null
 +++ b/src/md_trexio.c
-@@ -0,0 +1,672 @@
+@@ -0,0 +1,901 @@
 +﻿#include "md_trexio.h"
 +
 +#include <core/md_allocator.h>
@@ -469,34 +469,263 @@ index 0000000..0013cc9
 +
 +// GTO extraction functions
 +
++// Helper: Get number of cartesian components for angular momentum l
++static inline int num_cartesian_components(int l) {
++    return ((l + 1) * (l + 2)) / 2;
++}
++
++// Helper: Get cartesian angular momentum (i,j,k) for a given l and component index
++static inline void get_cartesian_ijk(int* i, int* j, int* k, int l, int comp_idx) {
++    // Standard ordering: xx xy xz yy yz zz for l=2, etc.
++    // For l=0: (0,0,0)
++    // For l=1: (1,0,0), (0,1,0), (0,0,1)
++    // For l=2: (2,0,0), (1,1,0), (1,0,1), (0,2,0), (0,1,1), (0,0,2)
++    // For l=3: (3,0,0), (2,1,0), (2,0,1), (1,2,0), (1,1,1), (1,0,2), (0,3,0), (0,2,1), (0,1,2), (0,0,3)
++    
++    int idx = 0;
++    for (int ii = l; ii >= 0; ii--) {
++        for (int jj = l - ii; jj >= 0; jj--) {
++            int kk = l - ii - jj;
++            if (idx == comp_idx) {
++                *i = ii;
++                *j = jj;
++                *k = kk;
++                return;
++            }
++            idx++;
++        }
++    }
++    // Fallback (should never reach here)
++    *i = *j = *k = 0;
++}
++
 +bool md_trexio_extract_ao_data(md_gto_data_t* out_ao_data, const md_trexio_t* trexio,
 +                                 double cutoff_value, md_allocator_i* alloc) {
-+    // This would require implementing the conversion from TREXIO basis data to md_gto_data_t
-+    // This is a placeholder for now
-+    (void)out_ao_data;
-+    (void)trexio;
-+    (void)cutoff_value;
-+    (void)alloc;
-+    MD_LOG_INFO("TREXIO: md_trexio_extract_ao_data not yet implemented");
-+    return false;
++    if (!out_ao_data || !trexio || !alloc) {
++        MD_LOG_ERROR("TREXIO: Invalid parameters for md_trexio_extract_ao_data");
++        return false;
++    }
++
++    if (trexio->basis_shell_num == 0 || trexio->basis_prim_num == 0) {
++        MD_LOG_ERROR("TREXIO: No basis set data available");
++        return false;
++    }
++
++    if (trexio->ao_num == 0) {
++        MD_LOG_ERROR("TREXIO: No AO data available");
++        return false;
++    }
++
++    // Initialize output structure
++    MEMSET(out_ao_data, 0, sizeof(md_gto_data_t));
++
++    // For each AO, we create a CGTO
++    // Each AO is associated with primitives from a shell
++    // TREXIO uses shell-based storage, we need to expand to AO-based storage
++
++    // Count total number of AOs (should match ao_num)
++    size_t total_aos = 0;
++    for (int64_t shell_idx = 0; shell_idx < trexio->basis_shell_num; shell_idx++) {
++        int l = (int)trexio->basis_shell_ang_mom[shell_idx];
++        total_aos += num_cartesian_components(l);
++    }
++
++    if ((int64_t)total_aos != trexio->ao_num) {
++        MD_LOG_INFO("TREXIO: AO count mismatch (calculated %zu, expected %lld)", 
++                    total_aos, (long long)trexio->ao_num);
++    }
++
++    // Process each shell and expand to AOs
++    size_t ao_idx = 0;
++    for (int64_t shell_idx = 0; shell_idx < trexio->basis_shell_num; shell_idx++) {
++        int64_t atom_idx = trexio->basis_nucleus_index[shell_idx];
++        int l = (int)trexio->basis_shell_ang_mom[shell_idx];
++        double shell_factor = trexio->basis_shell_factor[shell_idx];
++        
++        if (atom_idx < 0 || atom_idx >= trexio->nucleus_num) {
++            MD_LOG_ERROR("TREXIO: Invalid atom index %lld in shell %lld", 
++                        (long long)atom_idx, (long long)shell_idx);
++            return false;
++        }
++
++        // Get atom coordinates (convert from Angstrom to Bohr for GTO evaluation)
++        float x = (float)(trexio->nucleus_coord[atom_idx * 3 + 0] * ANGSTROM_TO_BOHR);
++        float y = (float)(trexio->nucleus_coord[atom_idx * 3 + 1] * ANGSTROM_TO_BOHR);
++        float z = (float)(trexio->nucleus_coord[atom_idx * 3 + 2] * ANGSTROM_TO_BOHR);
++
++        // Each shell expands to multiple AOs based on angular momentum
++        int num_aos_in_shell = num_cartesian_components(l);
++        
++        for (int ao_comp = 0; ao_comp < num_aos_in_shell; ao_comp++) {
++            // Get cartesian components for this AO
++            int i, j, k;
++            get_cartesian_ijk(&i, &j, &k, l, ao_comp);
++            
++            // CGTO position and offset
++            vec4_t cgto_xyzr = {x, y, z, 0.0f};
++            uint32_t cgto_offset = (uint32_t)out_ao_data->num_pgtos;
++            
++            double max_radius = 0.0;
++            
++            // Add all primitives for this AO
++            for (int64_t prim_idx = 0; prim_idx < trexio->basis_prim_num; prim_idx++) {
++                if (trexio->basis_shell_index[prim_idx] != shell_idx) {
++                    continue;  // This primitive belongs to a different shell
++                }
++                
++                double alpha = trexio->basis_exponent[prim_idx];
++                double coeff = trexio->basis_coefficient[prim_idx];
++                double prim_factor = trexio->basis_prim_factor[prim_idx];
++                
++                // Combined coefficient (shell_factor * prim_factor * coeff)
++                double combined_coeff = shell_factor * prim_factor * coeff;
++                
++                // Compute radius of influence
++                double radius = md_gto_compute_radius_of_influence(i, j, k, combined_coeff, alpha, cutoff_value);
++                
++                if (radius > 0.0) {
++                    md_pgto_t pgto = {
++                        .coeff = (float)combined_coeff,
++                        .alpha = (float)alpha,
++                        .radius = (float)radius,
++                        .i = (uint8_t)i,
++                        .j = (uint8_t)j,
++                        .k = (uint8_t)k,
++                        .l = (uint8_t)l,
++                    };
++                    
++                    md_array_push(out_ao_data->pgtos, pgto, alloc);
++                    out_ao_data->num_pgtos += 1;
++                    
++                    max_radius = MAX(max_radius, radius);
++                }
++            }
++            
++            // Store CGTO info (even if no primitives passed cutoff, to maintain indexing)
++            cgto_xyzr.w = (float)max_radius;
++            md_array_push(out_ao_data->cgto_xyzr, cgto_xyzr, alloc);
++            md_array_push(out_ao_data->cgto_offset, cgto_offset, alloc);
++            out_ao_data->num_cgtos += 1;
++            
++            ao_idx++;
++        }
++    }
++
++    // Add final offset
++    if (out_ao_data->num_cgtos > 0) {
++        md_array_push(out_ao_data->cgto_offset, (uint32_t)out_ao_data->num_pgtos, alloc);
++    }
++
++    MD_LOG_INFO("TREXIO: Extracted %zu CGTOs with %zu PGTOs from %lld shells", 
++                out_ao_data->num_cgtos, out_ao_data->num_pgtos, 
++                (long long)trexio->basis_shell_num);
++
++    return true;
 +}
 +
 +size_t md_trexio_mo_gto_count(const md_trexio_t* trexio) {
-+    // Placeholder
-+    (void)trexio;
-+    return 0;
++    if (!trexio) return 0;
++    
++    // Upper bound: total number of primitive GTOs across all basis functions
++    // This matches the approach used by VeloxChem
++    size_t count = 0;
++    for (int64_t shell_idx = 0; shell_idx < trexio->basis_shell_num; shell_idx++) {
++        int l = (int)trexio->basis_shell_ang_mom[shell_idx];
++        int num_aos = num_cartesian_components(l);
++        
++        // Count primitives in this shell
++        int64_t num_prims = 0;
++        for (int64_t prim_idx = 0; prim_idx < trexio->basis_prim_num; prim_idx++) {
++            if (trexio->basis_shell_index[prim_idx] == shell_idx) {
++                num_prims++;
++            }
++        }
++        
++        // Each AO in shell has the same set of primitives
++        count += (size_t)(num_aos * num_prims);
++    }
++    
++    return count;
 +}
 +
 +size_t md_trexio_mo_gto_extract(md_gto_t gtos[], const md_trexio_t* trexio,
 +                                 size_t mo_idx, double value_cutoff) {
-+    // This would require implementing the conversion from MO coefficients to GTOs
-+    // This is a placeholder for now
-+    (void)gtos;
-+    (void)trexio;
-+    (void)mo_idx;
-+    (void)value_cutoff;
-+    MD_LOG_INFO("TREXIO: md_trexio_mo_gto_extract not yet implemented");
-+    return 0;
++    if (!gtos || !trexio) {
++        MD_LOG_ERROR("TREXIO: Invalid parameters for md_trexio_mo_gto_extract");
++        return 0;
++    }
++
++    if (mo_idx >= (size_t)trexio->mo_num) {
++        MD_LOG_ERROR("TREXIO: Invalid MO index %zu (max %lld)", mo_idx, (long long)trexio->mo_num - 1);
++        return 0;
++    }
++
++    if (!trexio->mo_coefficient) {
++        MD_LOG_ERROR("TREXIO: No MO coefficients available");
++        return 0;
++    }
++
++    // Extract AO data first (we need this to build the MO GTOs)
++    // Use temporary allocator for AO data
++    md_allocator_i* temp_alloc = md_get_heap_allocator();
++    md_gto_data_t ao_data = {0};
++    
++    if (!md_trexio_extract_ao_data(&ao_data, trexio, value_cutoff, temp_alloc)) {
++        MD_LOG_ERROR("TREXIO: Failed to extract AO data");
++        return 0;
++    }
++
++    // Get MO coefficients for this MO (column mo_idx from coefficient matrix)
++    // Matrix is stored column-major: mo_coefficient[ao_num * mo_num]
++    const double* mo_coeffs = trexio->mo_coefficient + (mo_idx * trexio->ao_num);
++
++    // Build GTOs by combining MO coefficients with AO basis functions
++    size_t gto_count = 0;
++    for (size_t ao_idx = 0; ao_idx < ao_data.num_cgtos; ao_idx++) {
++        double mo_coeff = mo_coeffs[ao_idx];
++        
++        // Skip AOs with negligible contribution
++        if (fabs(mo_coeff) < 1.0e-10) {
++            continue;
++        }
++        
++        uint32_t prim_start = ao_data.cgto_offset[ao_idx];
++        uint32_t prim_end = ao_data.cgto_offset[ao_idx + 1];
++        
++        for (uint32_t prim_idx = prim_start; prim_idx < prim_end; prim_idx++) {
++            const md_pgto_t* pgto = &ao_data.pgtos[prim_idx];
++            
++            // Combined coefficient: MO_coeff * AO_coeff
++            double combined_coeff = mo_coeff * pgto->coeff;
++            
++            // Recompute radius with combined coefficient and cutoff
++            double radius = md_gto_compute_radius_of_influence(
++                pgto->i, pgto->j, pgto->k, combined_coeff, pgto->alpha, value_cutoff);
++            
++            if (radius > 0.0) {
++                gtos[gto_count].x = ao_data.cgto_xyzr[ao_idx].x;
++                gtos[gto_count].y = ao_data.cgto_xyzr[ao_idx].y;
++                gtos[gto_count].z = ao_data.cgto_xyzr[ao_idx].z;
++                gtos[gto_count].coeff = (float)combined_coeff;
++                gtos[gto_count].alpha = pgto->alpha;
++                gtos[gto_count].cutoff = (float)radius;
++                gtos[gto_count].i = pgto->i;
++                gtos[gto_count].j = pgto->j;
++                gtos[gto_count].k = pgto->k;
++                gtos[gto_count].l = pgto->l;
++                gto_count++;
++            }
++        }
++    }
++
++    // Clean up temporary AO data
++    if (ao_data.cgto_xyzr) md_free(temp_alloc, ao_data.cgto_xyzr, ao_data.num_cgtos * sizeof(vec4_t));
++    if (ao_data.cgto_offset) md_free(temp_alloc, ao_data.cgto_offset, (ao_data.num_cgtos + 1) * sizeof(uint32_t));
++    if (ao_data.pgtos) md_free(temp_alloc, ao_data.pgtos, ao_data.num_pgtos * sizeof(md_pgto_t));
++
++    MD_LOG_INFO("TREXIO: Extracted %zu GTOs for MO %zu (cutoff: %g)", gto_count, mo_idx, value_cutoff);
++    
++    return gto_count;
 +}
 +
 +// System initialization
@@ -747,7 +976,7 @@ index 0000000..0013cc9
 +#endif  // MD_TREXIO
 diff --git a/src/md_trexio.h b/src/md_trexio.h
 new file mode 100644
-index 0000000..32c63b3
+index 0000000..649b0a3
 --- /dev/null
 +++ b/src/md_trexio.h
 @@ -0,0 +1,117 @@
