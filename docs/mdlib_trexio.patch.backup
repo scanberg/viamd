@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e560af9..aa1419c 100644
+index e560af9..a3ea36a 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -17,6 +17,7 @@ option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
@@ -10,58 +10,30 @@ index e560af9..aa1419c 100644
  set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
  
  set(CMAKE_C_STANDARD 11)
-@@ -142,6 +143,50 @@ if (${MD_ENABLE_VLX})
+@@ -142,6 +143,22 @@ if (${MD_ENABLE_VLX})
      set (MD_DEFINES ${MD_DEFINES} MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
  endif()
  
 +if (${MD_ENABLE_TREXIO})
-+    # Build TREXIO from source (download release tarball)
-+    # Using release tarball instead of git repository because it contains pre-generated source files
-+    
-+    include(FetchContent)
-+    
-+    message(STATUS "Downloading and building TREXIO from release tarball")
-+    
-+    # Download TREXIO release tarball (version 2.6.0)
-+    FetchContent_Declare(
-+        trexio
-+        URL https://github.com/TREX-CoE/trexio/releases/download/v2.6.0/trexio-2.6.0.tar.gz
-+        URL_HASH SHA256=02b692c7792b4c8d041b1eeacdf144dca333a6ea699f66e911489768586de335
-+    )
-+    
-+    # Configure TREXIO build options before fetching
-+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-+    set(BUILD_STATIC_LIBS ON CACHE BOOL "Build static libraries" FORCE)
-+    set(TREXIO_TESTS OFF CACHE BOOL "Disable TREXIO tests" FORCE)
-+    set(TREXIO_DEVEL OFF CACHE BOOL "Disable TREXIO developer mode" FORCE)
-+    
-+    # Try to find HDF5 for TREXIO (optional)
-+    find_package(HDF5 QUIET COMPONENTS C)
-+    if (HDF5_FOUND)
-+        message(STATUS "HDF5 found, building TREXIO with HDF5 support")
-+        set(ENABLE_HDF5 ON CACHE BOOL "Enable HDF5 support in TREXIO" FORCE)
++    # Try to find TREXIO package
++    find_package(TREXIO QUIET)
++    if (NOT TREXIO_FOUND)
++        message(STATUS "TREXIO library not found via find_package, you may need to install it separately")
++        message(STATUS "See https://github.com/TREX-CoE/trexio for installation instructions")
++        message(FATAL_ERROR "TREXIO support requested but TREXIO library not found")
 +    else()
-+        message(STATUS "HDF5 not found, building TREXIO with text backend only")
-+        set(ENABLE_HDF5 OFF CACHE BOOL "Disable HDF5 support in TREXIO" FORCE)
++        message(STATUS "Found TREXIO: ${TREXIO_LIBRARIES}")
++        set(SRC_FILES ${SRC_FILES} src/md_trexio.c src/md_trexio.h)
++        set(MD_DEFINES ${MD_DEFINES} MD_TREXIO)
++        set(MD_LIBS ${MD_LIBS} ${TREXIO_LIBRARIES})
++        include_directories(${TREXIO_INCLUDE_DIRS})
 +    endif()
-+    
-+    # Make TREXIO available
-+    FetchContent_MakeAvailable(trexio)
-+    
-+    # Add TREXIO source files
-+    set(SRC_FILES ${SRC_FILES} src/md_trexio.c src/md_trexio.h)
-+    set(MD_DEFINES ${MD_DEFINES} MD_TREXIO)
-+    set(MD_LIBS ${MD_LIBS} trexio)
-+    
-+    # Get the TREXIO source directory
-+    FetchContent_GetProperties(trexio SOURCE_DIR TREXIO_SRC_DIR)
-+    include_directories(${TREXIO_SRC_DIR}/include)
 +endif()
 +
  if (MD_ENABLE_NETCDF)
      find_package(NetCDF REQUIRED)
      set(MD_LIBS ${MD_LIBS} NetCDF::NetCDF_C)
-@@ -325,4 +370,5 @@ if (has_parent)
+@@ -325,4 +342,5 @@ if (has_parent)
      set(MD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB} PARENT_SCOPE)
      set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} PARENT_SCOPE)
      set(MD_ENABLE_VLX ${MD_ENABLE_VLX} PARENT_SCOPE)
