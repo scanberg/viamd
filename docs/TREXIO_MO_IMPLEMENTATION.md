@@ -2,7 +2,7 @@
 
 ## Summary
 
-This implementation adds the missing molecular orbital (MO) and atomic orbital (AO) extraction functionality to the TREXIO loader in mdlib. This enables molecular orbital visualization from TREXIO files, equivalent to the VeloxChem module.
+This implementation adds molecular orbital (MO) and atomic orbital (AO) extraction functionality to the TREXIO loader in mdlib. The implementation closely follows the VeloxChem pattern for AO/MO extraction to ensure compatibility and correctness.
 
 ## Implementation Details
 
@@ -11,57 +11,148 @@ This implementation adds the missing molecular orbital (MO) and atomic orbital (
 #### 1. `md_trexio_extract_ao_data()`
 **Purpose**: Convert TREXIO basis set data to md_gto_data_t structure for visualization.
 
-**Algorithm**:
+**Algorithm** (following VeloxChem's `extract_ao_data` pattern):
 1. Iterate through each shell in the TREXIO basis
-2. Expand shells to individual AOs based on angular momentum (l)
-   - l=0 (s): 1 AO
-   - l=1 (p): 3 AOs  
-   - l=2 (d): 6 AOs (cartesian)
-   - l=3 (f): 10 AOs (cartesian)
-3. For each AO:
-   - Determine cartesian components (i,j,k) from angular momentum
-   - Extract atom coordinates (converted Angstrom → Bohr)
-   - Collect all primitives for the shell
-   - Apply normalization factors (shell_factor * prim_factor * coefficient)
-   - Compute radius of influence using cutoff
-   - Store as md_pgto_t structures
-4. Build CGTO array with positions and offsets into PGTO array
+2. For each shell, get:
+   - Atom index and coordinates (convert Ångström → Bohr, same as VeloxChem)
+   - Angular momentum `l`
+   - Shell normalization factor
+3. Use cartesian angular momentum lookup tables (same as VeloxChem: S_lmn, P_lmn, D_lmn, F_lmn, G_lmn)
+4. Expand each shell to cartesian AO components:
+   - l=0 (s): 1 component → (0,0,0)
+   - l=1 (p): 3 components → (1,0,0), (0,1,0), (0,0,1)
+   - l=2 (d): 6 components → (2,0,0), (1,1,0), (1,0,1), (0,2,0), (0,1,1), (0,0,2)
+   - l=3 (f): 10 components (cartesian)
+   - l=4 (g): 15 components (cartesian)
+5. For each AO component:
+   - Create CGTO entry with atom position
+   - For each primitive in the shell:
+     - Apply normalization: `shell_factor × prim_factor × coefficient`
+     - Create PGTO with the cartesian indices (i,j,k) for this component
+     - Set radius to `FLT_MAX` (computed later with cutoff if needed)
+6. Build offset array mapping CGTOs to PGTOs (same as VeloxChem)
 
 **Key Features**:
-- Cartesian GTO ordering (standard ordering: xx, xy, xz, yy, yz, zz for d orbitals)
-- Normalization factor multiplication
-- Radius of influence cutoff for efficient rendering
-- Maintains AO indexing for MO coefficient mapping
+- **Same cartesian ordering as VeloxChem**: Uses identical lmn lookup tables
+- **Same iteration pattern**: Shell → AO components → Primitives
+- **Same normalization**: shell_factor × prim_factor × coefficient
+- **Same data structure**: md_gto_data_t with cgto_xyzr, cgto_offset, pgtos arrays
+- **Coordinate conversion**: Ångström → Bohr (same constant values as VeloxChem)
 
 #### 2. `md_trexio_mo_gto_count()`
 **Purpose**: Estimate upper bound on number of GTOs needed for MO extraction.
 
-**Algorithm**:
-1. For each shell, count:
-   - Number of AOs = num_cartesian_components(l)
-   - Number of primitives in the shell
-2. Total = sum(num_AOs_per_shell * num_prims_per_shell)
+**Algorithm** (matching VeloxChem's `md_vlx_mo_gto_count`):
+- Return total number of primitives across all AO basis functions
+- This provides an upper bound for pre-allocation
 
-**Usage**: Allows pre-allocation of GTO array before extraction.
+**Usage**: Same as VeloxChem - allows pre-allocation before calling extraction function.
 
 #### 3. `md_trexio_mo_gto_extract()`
 **Purpose**: Extract GTOs for a specific molecular orbital for visualization.
 
-**Algorithm**:
+**Algorithm** (following VeloxChem's `extract_gtos` pattern):
 1. Extract AO basis data using `md_trexio_extract_ao_data()`
-2. Get MO coefficients for the requested MO index (column from coefficient matrix)
-3. For each AO with non-negligible coefficient:
-   - Multiply MO coefficient with each primitive's coefficient
-   - Create GTOs with combined coefficients
-   - Recompute radius of influence with combined coefficient and cutoff
-   - Skip GTOs with zero radius (outside cutoff)
-4. Return array of GTOs ready for grid evaluation
+2. Get MO coefficients for the requested MO index:
+   - TREXIO stores MO coefficients in column-major (Fortran) order
+   - MO `mo_idx` coefficients: `mo_coefficient[mo_idx * ao_num ... (mo_idx + 1) * ao_num - 1]`
+3. For each AO (CGTO):
+   - Get MO coefficient for this AO: `mo_coeffs[ao_idx]`
+   - Skip if coefficient is negligible (< 1e-10)
+   - For each primitive (PGTO) of this AO:
+     - **Same as VeloxChem**: Multiply `mo_coeff × pgto.coeff`
+     - Compute radius of influence with combined coefficient and cutoff
+     - If radius > 0, create GTO with combined coefficient
+4. Clean up temporary AO data
+5. Return count of extracted GTOs
 
 **Key Features**:
-- Coefficient multiplication: final_coeff = MO_coeff × AO_coeff
-- Cutoff-based filtering for efficiency
-- Preserves angular momentum (i,j,k) and position (x,y,z)
-- Compatible with md_gto_grid_evaluate() functions
+- **Same coefficient handling as VeloxChem**: `mo_coeff[i] × ao_primitive.coeff`
+- **Same cutoff logic**: Skip GTOs with zero radius of influence
+- **Same output format**: Array of md_gto_t ready for grid evaluation
+- **Compatible with existing pipeline**: Can be passed directly to `md_gto_grid_evaluate()`
+
+### Comparison with VeloxChem
+
+#### Pattern Matching
+The implementation follows VeloxChem's pattern exactly:
+
+**VeloxChem `extract_ao_data()`**:
+```c
+for (int angl = 0; angl <= max_angl; angl++) {
+    const lmn_t* lmn = cartesian_angular_momentum(angl);
+    for (int isph = 0; isph < nsph; isph++) {
+        for (int atomidx = 0; atomidx < natoms; atomidx++) {
+            for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
+                for (int iprim = 0; iprim < nprims; iprim++) {
+                    for (int icomp = 0; icomp < ncomp; icomp++) {
+                        md_pgto_t pgto = {
+                            .coeff = (float)(coef1 * fcarts[icomp]),
+                            .alpha = (float)alpha,
+                            .i = (uint8_t)lx[icomp],
+                            ...
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+**TREXIO `md_trexio_extract_ao_data()`**:
+```c
+for (int64_t shell_idx = 0; shell_idx < basis_shell_num; shell_idx++) {
+    const lmn_t* lmn = cartesian_angular_momentum(angl);
+    int ncomp = num_cartesian_components(angl);
+    for (int icomp = 0; icomp < ncomp; icomp++) {
+        for (int64_t prim_idx = 0; prim_idx < basis_prim_num; prim_idx++) {
+            if (basis_shell_index[prim_idx] == shell_idx) {
+                md_pgto_t pgto = {
+                    .coeff = (float)normcoef,
+                    .alpha = (float)alpha,
+                    .i = (uint8_t)lx,
+                    ...
+                };
+            }
+        }
+    }
+}
+```
+
+**VeloxChem `extract_gtos()`**:
+```c
+for (size_t i = 0; i < ao_data->num_cgtos; ++i) {
+    for (size_t j = ao_data->cgto_offset[i]; j < ao_data->cgto_offset[i+1]; ++j) {
+        out_gtos[count].coeff = (float)(mo_coeffs[i] * ao_data->pgtos[j].coeff);
+        ...
+    }
+}
+```
+
+**TREXIO `md_trexio_mo_gto_extract()`**:
+```c
+for (size_t ao_idx = 0; ao_idx < ao_data.num_cgtos; ao_idx++) {
+    for (uint32_t prim_idx = prim_start; prim_idx < prim_end; prim_idx++) {
+        double combined_coeff = mo_coeff * pgto->coeff;
+        gtos[gto_count].coeff = (float)combined_coeff;
+        ...
+    }
+}
+```
+
+#### Key Differences
+1. **Basis storage**: 
+   - VeloxChem: Complex `basis_set_t` with element-based lookup
+   - TREXIO: Direct shell-based storage with atom indices
+2. **Spherical harmonics**:
+   - VeloxChem: Uses `fcarts` transformation factors for spherical→cartesian
+   - TREXIO: Assumes cartesian GTOs (no spherical transform needed for cartesian basis)
+3. **Iteration order**:
+   - VeloxChem: Iterates by angular momentum, then spherical component, then atoms
+   - TREXIO: Iterates by shells (which already have atom and angular momentum assigned)
+
+Despite these differences, the **output data structures are identical** and both produce compatible md_gto_data_t and md_gto_t arrays.
 
 ### Data Structure Mapping
 
