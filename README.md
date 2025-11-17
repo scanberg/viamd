@@ -27,32 +27,33 @@ To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your mac
 
 VIAMD can be built with support for reading TREXIO quantum chemistry files. TREXIO is an open-source file format used by many quantum chemistry codes (Quantum Package, PySCF, FHI-aims, CP2K, etc.).
 
+TREXIO is automatically downloaded and built from source during the VIAMD build process. No manual installation is required.
+
 #### Prerequisites
-- TREXIO library (>= 2.0.0)
-- HDF5 library (for HDF5 backend support)
+- HDF5 library (optional, for HDF5 backend support)
 
-#### Installing TREXIO
+#### Installing HDF5 (Optional but Recommended)
 
-**Using Conda (Recommended):**
+HDF5 support enables TREXIO to read .h5 files. If HDF5 is not available, TREXIO will build with text backend support only.
+
 ```bash
-conda install -c conda-forge trexio
-```
+# Ubuntu/Debian
+sudo apt-get install libhdf5-dev
 
-**From Source:**
-```bash
-git clone https://github.com/TREX-CoE/trexio.git
-cd trexio
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
-make && sudo make install
+# macOS
+brew install hdf5
+
+# Conda
+conda install -c conda-forge hdf5
 ```
 
 #### Building VIAMD with TREXIO
 
-After installing the TREXIO library, apply the mdlib patch and build with the TREXIO flag:
-
 ```bash
-# Apply mdlib patch
+# Initialize submodules
+git submodule update --init --recursive
+
+# Apply mdlib patch to enable TREXIO support
 cd ext/mdlib
 git apply ../../docs/mdlib_trexio.patch
 cd ../..
@@ -62,6 +63,12 @@ mkdir build && cd build
 cmake -DVIAMD_ENABLE_TREXIO=ON ..
 make
 ```
+
+The build system will automatically:
+1. Download the TREXIO 2.6.0 release tarball
+2. Detect if HDF5 is available on your system
+3. Build TREXIO with HDF5 support (if available) or text-only backend
+4. Link TREXIO statically into VIAMD
 
 **CMake Options:**
 - `-DVIAMD_ENABLE_TREXIO=ON` - Enable TREXIO file format support (default: OFF)

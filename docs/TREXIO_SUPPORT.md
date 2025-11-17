@@ -46,54 +46,53 @@ VIAMD's TREXIO integration currently supports:
 
 ### Prerequisites
 
-1. **TREXIO Library**: Install the TREXIO library (>= 2.0.0)
+TREXIO is automatically downloaded and built from source when you enable TREXIO support in VIAMD. No manual installation is required.
 
-   Using package managers:
-   ```bash
-   # Conda
-   conda install -c conda-forge trexio
-   
-   # Ubuntu/Debian (23.04+)
-   sudo apt-get install libtrexio-dev
-   
-   # From source
-   git clone https://github.com/TREX-CoE/trexio.git
-   cd trexio
-   ./configure --prefix=$HOME/.local
-   make
-   make install
-   ```
+**Optional: HDF5 Library** - For HDF5 backend support (recommended)
 
-2. **Optional: HDF5**: For HDF5 backend support (recommended)
-   ```bash
-   # Ubuntu/Debian
-   sudo apt-get install libhdf5-dev
-   
-   # macOS
-   brew install hdf5
-   
-   # Conda
-   conda install -c conda-forge hdf5
-   ```
+HDF5 support enables TREXIO to read .h5 files. If HDF5 is not available, TREXIO will build with text backend support only (.trexio files).
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install libhdf5-dev
+
+# macOS
+brew install hdf5
+
+# Conda
+conda install -c conda-forge hdf5
+```
 
 ### Compilation
 
-Enable TREXIO support during CMake configuration:
+TREXIO is automatically downloaded and built from source as part of the VIAMD build process:
 
 ```bash
+# Initialize all submodules
+git submodule update --init --recursive
+
+# Apply the mdlib patch to enable TREXIO support
+cd ext/mdlib
+git apply ../../docs/mdlib_trexio.patch
+cd ../..
+
+# Configure and build VIAMD with TREXIO enabled
 mkdir build && cd build
 cmake -DVIAMD_ENABLE_TREXIO=ON ..
 make
 ```
 
+The build system will:
+1. Automatically download the TREXIO 2.6.0 release tarball from GitHub
+2. Detect if HDF5 is available on your system
+3. Build TREXIO with HDF5 support (if available) or text-only backend
+4. Link TREXIO statically into VIAMD
+
 For advanced builds:
 
 ```bash
-# With HDF5 backend (recommended)
-cmake -DVIAMD_ENABLE_TREXIO=ON -DENABLE_HDF5=ON ..
-
-# Text backend only (no HDF5 required)
-cmake -DVIAMD_ENABLE_TREXIO=ON -DENABLE_HDF5=OFF ..
+# Build with explicit HDF5 paths (if HDF5 is in a non-standard location)
+cmake -DVIAMD_ENABLE_TREXIO=ON -DHDF5_ROOT=/path/to/hdf5 ..
 
 # Combined with VeloxChem support
 cmake -DVIAMD_ENABLE_TREXIO=ON -DVIAMD_ENABLE_VELOXCHEM=ON ..
@@ -153,18 +152,33 @@ For full TREXIO specification, see: https://trex-coe.github.io/trexio/
 
 ## Troubleshooting
 
-### TREXIO library not found
+### TREXIO download failed
 
-**Error**: `TREXIO library not found via find_package`
+**Error**: `Failed to download TREXIO` or network errors during CMake configuration
 
 **Solution**: 
-1. Install TREXIO library (see Prerequisites)
-2. If installed in a custom location, set CMake hints:
+1. Check your internet connection
+2. If behind a proxy, configure CMake proxy settings
+3. Alternatively, manually download the tarball:
    ```bash
-   cmake -DVIAMD_ENABLE_TREXIO=ON \
-         -DTREXIO_ROOT=/path/to/trexio/install \
-         ..
+   cd /tmp
+   wget https://github.com/TREX-CoE/trexio/releases/download/v2.6.0/trexio-2.6.0.tar.gz
    ```
+   Then reconfigure CMake (it will use the cached download)
+
+### HDF5 backend not available
+
+**Error**: Cannot open .h5 TREXIO files, only .trexio text files work
+
+**Solution**:
+1. Install HDF5 library (see Prerequisites section)
+2. Reconfigure and rebuild VIAMD:
+   ```bash
+   cd build
+   cmake -DVIAMD_ENABLE_TREXIO=ON ..
+   make
+   ```
+The build system will automatically detect HDF5 and enable HDF5 support in TREXIO.
 
 ### Cannot open .h5 files
 
@@ -174,17 +188,6 @@ For full TREXIO specification, see: https://trex-coe.github.io/trexio/
 - Ensure the file is a valid TREXIO file
 - Try using `.trexio` extension for text format files
 - Check that both `VIAMD_ENABLE_TREXIO` and `VIAMD_ENABLE_VELOXCHEM` are set correctly
-
-### HDF5 backend not available
-
-**Error**: Cannot open .h5 TREXIO files
-
-**Solution**:
-1. Install HDF5 library
-2. Rebuild with HDF5 support:
-   ```bash
-   cmake -DVIAMD_ENABLE_TREXIO=ON -DENABLE_HDF5=ON ..
-   ```
 
 ## Limitations
 
