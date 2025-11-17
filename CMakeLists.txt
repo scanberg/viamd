@@ -121,6 +121,10 @@ if (VIAMD_ENABLE_VELOXCHEM)
     set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp)
 endif()
 
+if (VIAMD_ENABLE_TREXIO)
+    set(COMP_FILES ${COMP_FILES} src/components/trexio/trexio.cpp)
+endif()
+
 set(SHADER_FILES 
     src/shaders/highlight.frag
     src/shaders/scale_hsv.frag
