@@ -21,6 +21,70 @@ For windows, we recommend to use the latest binary available on the [release pag
 ### Ubuntu and MacOs
 To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your machine, you can follow the procedure described in details in the wiki for [Linux](https://github.com/scanberg/viamd/wiki/0.-Building#linux) and [MacOS](https://github.com/scanberg/viamd/wiki/0.-Building#mac).
 
+## Building with Optional Features
+
+### TREXIO Support
+
+VIAMD can be built with support for reading TREXIO quantum chemistry files. TREXIO is an open-source file format used by many quantum chemistry codes (Quantum Package, PySCF, FHI-aims, CP2K, etc.).
+
+TREXIO is automatically downloaded and built from source during the VIAMD build process. No manual installation is required.
+
+#### Prerequisites
+- HDF5 library (optional, for HDF5 backend support)
+
+#### Installing HDF5 (Optional but Recommended)
+
+HDF5 support enables TREXIO to read .h5 files. If HDF5 is not available, TREXIO will build with text backend support only.
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install libhdf5-dev
+
+# macOS
+brew install hdf5
+
+# Conda
+conda install -c conda-forge hdf5
+```
+
+#### Building VIAMD with TREXIO
+
+```bash
+# Initialize submodules
+git submodule update --init --recursive
+
+# Apply mdlib patch to enable TREXIO support
+./scripts/apply_mdlib_trexio_patch.sh
+
+# Configure and build
+mkdir build && cd build
+cmake -DVIAMD_ENABLE_TREXIO=ON ..
+make
+```
+
+**Note:** The patch application script can be run multiple times safely. If you encounter issues with the patch, simply run the script again and it will automatically clean up and reapply the patch.
+
+The build system will automatically:
+1. Download the TREXIO 2.6.0 release tarball
+2. Detect if HDF5 is available on your system
+3. Build TREXIO with HDF5 support (if available) or text-only backend
+4. Link TREXIO statically into VIAMD
+
+**CMake Options:**
+- `-DVIAMD_ENABLE_TREXIO=ON` - Enable TREXIO file format support (default: OFF)
+- `-DVIAMD_ENABLE_VELOXCHEM=ON` - Enable VeloxChem module (default: OFF)
+
+See `docs/TREXIO_SUPPORT.md` for detailed documentation on TREXIO support.
+
+### VeloxChem Support
+
+VIAMD can also be built with VeloxChem support for quantum chemistry calculations:
+
+```bash
+cmake -DVIAMD_ENABLE_VELOXCHEM=ON ..
+make
+```
+
 ## Documentation
 Documentation about VIAMD is available on the github [wiki](https://github.com/scanberg/viamd/wiki). The two first chapters relate to the [visual](https://github.com/scanberg/viamd/wiki/1.-Visual) and [analysis](https://github.com/scanberg/viamd/wiki/2.-Analysis) features respectively, where we highlight the interactive part of software. The third chapter focus on the VIAMD [language](https://github.com/scanberg/viamd/wiki/3.-Language) used for scripting and the fourth chapter propose a serie of [tutorial](https://github.com/scanberg/viamd/wiki/4.-Tutorials) (under construction). 
 
@@ -43,7 +107,8 @@ VIAMD has received constant financial support since 2018 from the Swedish e-Rese
 
 VIAMD is supported by [InfraVis](https://infravis.se/) for specific projets:
 - Parser for LAMMPS file (2301-5217 / 140 hours)
-- Interactice analysis of [VeloxChem](https://veloxchem.org/docs/intro.html) file (interactive analysis of orbitals and spectra plotting) (600 hours) 
+- Interactive analysis of [VeloxChem](https://veloxchem.org/docs/intro.html) file (interactive analysis of orbitals and spectra plotting) (600 hours)
+- Support for [TREXIO](https://github.com/TREX-CoE/trexio) quantum chemistry file format 
 
 <p align="center">
 <img src="https://github.com/scanberg/viamd/assets/38646069/e7245119-3ec4-4b84-9056-7197b3d1448b"  height="75" >

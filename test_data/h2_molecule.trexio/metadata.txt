@@ -1,0 +1,6 @@
+package_version
+test_v1.0
+
+description
+H2 test molecule for VIAMD
+
