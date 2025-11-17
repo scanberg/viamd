@@ -21,6 +21,63 @@ For windows, we recommend to use the latest binary available on the [release pag
 ### Ubuntu and MacOs
 To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your machine, you can follow the procedure described in details in the wiki for [Linux](https://github.com/scanberg/viamd/wiki/0.-Building#linux) and [MacOS](https://github.com/scanberg/viamd/wiki/0.-Building#mac).
 
+## Building with Optional Features
+
+### TREXIO Support
+
+VIAMD can be built with support for reading TREXIO quantum chemistry files. TREXIO is an open-source file format used by many quantum chemistry codes (Quantum Package, PySCF, FHI-aims, CP2K, etc.).
+
+#### Prerequisites
+- TREXIO library (>= 2.0.0)
+- HDF5 library (for HDF5 backend support)
+
+#### Installing TREXIO
+
+**Using Conda (Recommended):**
+```bash
+conda install -c conda-forge trexio
+```
+
+**From Source:**
+```bash
+git clone https://github.com/TREX-CoE/trexio.git
+cd trexio
+mkdir build && cd build
+cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
+make && sudo make install
+```
+
+#### Building VIAMD with TREXIO
+
+After installing the TREXIO library, apply the mdlib patch and build with the TREXIO flag:
+
+```bash
+# Apply mdlib patch
+cd ext/mdlib
+git apply ../../docs/mdlib_trexio.patch
+cd ../..
+
+# Configure and build
+mkdir build && cd build
+cmake -DVIAMD_ENABLE_TREXIO=ON ..
+make
+```
+
+**CMake Options:**
+- `-DVIAMD_ENABLE_TREXIO=ON` - Enable TREXIO file format support (default: OFF)
+- `-DVIAMD_ENABLE_VELOXCHEM=ON` - Enable VeloxChem module (default: OFF)
+
+See `docs/TREXIO_SUPPORT.md` for detailed documentation on TREXIO support.
+
+### VeloxChem Support
+
+VIAMD can also be built with VeloxChem support for quantum chemistry calculations:
+
+```bash
+cmake -DVIAMD_ENABLE_VELOXCHEM=ON ..
+make
+```
+
 ## Documentation
 Documentation about VIAMD is available on the github [wiki](https://github.com/scanberg/viamd/wiki). The two first chapters relate to the [visual](https://github.com/scanberg/viamd/wiki/1.-Visual) and [analysis](https://github.com/scanberg/viamd/wiki/2.-Analysis) features respectively, where we highlight the interactive part of software. The third chapter focus on the VIAMD [language](https://github.com/scanberg/viamd/wiki/3.-Language) used for scripting and the fourth chapter propose a serie of [tutorial](https://github.com/scanberg/viamd/wiki/4.-Tutorials) (under construction). 
 
