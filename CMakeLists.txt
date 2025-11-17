@@ -235,3 +235,6 @@ target_link_libraries(viamd
     ${VIAMD_STDLIBS}
 )
 
+# Add tools subdirectory for diagnostic and development tools
+add_subdirectory(tools/mdlib_allocator_reproducer)
+
