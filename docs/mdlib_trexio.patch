@@ -69,10 +69,10 @@ index e560af9..aa1419c 100644
  endif()
 diff --git a/src/md_trexio.c b/src/md_trexio.c
 new file mode 100644
-index 0000000..4ef0475
+index 0000000..0013cc9
 --- /dev/null
 +++ b/src/md_trexio.c
-@@ -0,0 +1,671 @@
+@@ -0,0 +1,672 @@
 +﻿#include "md_trexio.h"
 +
 +#include <core/md_allocator.h>
@@ -80,6 +80,7 @@ index 0000000..4ef0475
 +#include <core/md_log.h>
 +#include <core/md_str.h>
 +#include <md_system.h>
++#include <md_util.h>
 +
 +#include <string.h>
 +#include <math.h>
@@ -272,7 +273,7 @@ index 0000000..4ef0475
 +    if (rc == TREXIO_SUCCESS && trexio->basis_shell_num > 0) {
 +        rc = trexio_read_basis_prim_num(trexio->file, &trexio->basis_prim_num);
 +        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_WARN("TREXIO: basis_shell_num present but basis_prim_num missing");
++            MD_LOG_INFO("TREXIO: basis_shell_num present but basis_prim_num missing");
 +            goto skip_basis;
 +        }
 +        
@@ -293,13 +294,13 @@ index 0000000..4ef0475
 +        
 +        rc = trexio_read_basis_nucleus_index(trexio->file, trexio->basis_nucleus_index);
 +        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_WARN("TREXIO: Failed to read basis_nucleus_index: %s", trexio_string_of_error(rc));
++            MD_LOG_INFO("TREXIO: Failed to read basis_nucleus_index: %s", trexio_string_of_error(rc));
 +            goto skip_basis;
 +        }
 +        
 +        rc = trexio_read_basis_shell_ang_mom(trexio->file, trexio->basis_shell_ang_mom);
 +        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_WARN("TREXIO: Failed to read basis_shell_ang_mom: %s", trexio_string_of_error(rc));
++            MD_LOG_INFO("TREXIO: Failed to read basis_shell_ang_mom: %s", trexio_string_of_error(rc));
 +            goto skip_basis;
 +        }
 +        
@@ -313,19 +314,19 @@ index 0000000..4ef0475
 +        
 +        rc = trexio_read_basis_shell_index(trexio->file, trexio->basis_shell_index);
 +        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_WARN("TREXIO: Failed to read basis_shell_index: %s", trexio_string_of_error(rc));
++            MD_LOG_INFO("TREXIO: Failed to read basis_shell_index: %s", trexio_string_of_error(rc));
 +            goto skip_basis;
 +        }
 +        
 +        rc = trexio_read_basis_exponent(trexio->file, trexio->basis_exponent);
 +        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_WARN("TREXIO: Failed to read basis_exponent: %s", trexio_string_of_error(rc));
++            MD_LOG_INFO("TREXIO: Failed to read basis_exponent: %s", trexio_string_of_error(rc));
 +            goto skip_basis;
 +        }
 +        
 +        rc = trexio_read_basis_coefficient(trexio->file, trexio->basis_coefficient);
 +        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_WARN("TREXIO: Failed to read basis_coefficient: %s", trexio_string_of_error(rc));
++            MD_LOG_INFO("TREXIO: Failed to read basis_coefficient: %s", trexio_string_of_error(rc));
 +            goto skip_basis;
 +        }
 +        
@@ -352,7 +353,7 @@ index 0000000..4ef0475
 +        trexio->mo_coefficient = (double*)md_alloc(alloc, trexio->ao_num * trexio->mo_num * sizeof(double));
 +        rc = trexio_read_mo_coefficient(trexio->file, trexio->mo_coefficient);
 +        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_WARN("TREXIO: Failed to read mo_coefficient: %s", trexio_string_of_error(rc));
++            MD_LOG_INFO("TREXIO: Failed to read mo_coefficient: %s", trexio_string_of_error(rc));
 +            md_free(alloc, trexio->mo_coefficient, trexio->ao_num * trexio->mo_num * sizeof(double));
 +            trexio->mo_coefficient = NULL;
 +        }
@@ -476,7 +477,7 @@ index 0000000..4ef0475
 +    (void)trexio;
 +    (void)cutoff_value;
 +    (void)alloc;
-+    MD_LOG_WARN("TREXIO: md_trexio_extract_ao_data not yet implemented");
++    MD_LOG_INFO("TREXIO: md_trexio_extract_ao_data not yet implemented");
 +    return false;
 +}
 +
@@ -494,7 +495,7 @@ index 0000000..4ef0475
 +    (void)trexio;
 +    (void)mo_idx;
 +    (void)value_cutoff;
-+    MD_LOG_WARN("TREXIO: md_trexio_mo_gto_extract not yet implemented");
++    MD_LOG_INFO("TREXIO: md_trexio_mo_gto_extract not yet implemented");
 +    return 0;
 +}
 +
@@ -536,38 +537,38 @@ index 0000000..4ef0475
 +        sys->atom.flags[i] = 0;
 +    }
 +    
-+    // Set up atom types based on charges
-+    // This is a simplified approach - could be improved
++    // Initialize atom type arrays
 +    sys->atom.type.count = 0;
++    sys->atom.type.name = NULL;
++    sys->atom.type.z = NULL;
++    sys->atom.type.mass = NULL;
++    sys->atom.type.radius = NULL;
++    sys->atom.type.color = NULL;
++    sys->atom.type.flags = NULL;
 +    
-+    // For now, create one type per unique charge (element)
-+    // In a full implementation, this would use proper element lookup
++    // Set up atom types based on charges and labels
 +    for (size_t i = 0; i < num_atoms; ++i) {
-+        uint8_t element = (uint8_t)charges[i];
++        md_atomic_number_t z = (md_atomic_number_t)charges[i];
 +        
-+        // Find or create atom type
-+        size_t type_idx = 0;
-+        bool found = false;
-+        for (size_t j = 0; j < sys->atom.type.count; ++j) {
-+            if (sys->atom.type.element && sys->atom.type.element[j] == element) {
-+                type_idx = j;
-+                found = true;
-+                break;
-+            }
++        // Try to get element symbol from labels if available
++        str_t elem_symbol = {0};
++        if (labels && labels[i]) {
++            elem_symbol = (str_t){labels[i], strlen(labels[i])};
++        } else {
++            elem_symbol = md_util_element_symbol(z);
 +        }
 +        
-+        if (!found) {
-+            // Create new type
-+            type_idx = sys->atom.type.count++;
-+            
-+            // Reallocate type arrays
-+            sys->atom.type.element = (uint8_t*)md_realloc(alloc, sys->atom.type.element, 
-+                                                           (type_idx) * sizeof(uint8_t),
-+                                                           (type_idx + 1) * sizeof(uint8_t));
-+            sys->atom.type.element[type_idx] = element;
-+        }
++        // Get element properties
++        float mass = md_util_element_atomic_mass(z);
++        float radius = md_util_element_vdw_radius(z);
++        md_flags_t flags = 0;
 +        
-+        sys->atom.type_idx[i] = (md_atom_type_idx_t)type_idx;
++        // Find or add atom type using the helper function
++        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(
++            &sys->atom.type, elem_symbol, z, mass, radius, flags, alloc
++        );
++        
++        sys->atom.type_idx[i] = type_idx;
 +    }
 +    
 +    return true;
