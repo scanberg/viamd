@@ -72,14 +72,31 @@ TREXIO is automatically downloaded and built from source as part of the VIAMD bu
 git submodule update --init --recursive
 
 # Apply the mdlib patch to enable TREXIO support
-cd ext/mdlib
-git apply ../../docs/mdlib_trexio.patch
-cd ../..
+./scripts/apply_mdlib_trexio_patch.sh
 
 # Configure and build VIAMD with TREXIO enabled
 mkdir build && cd build
 cmake -DVIAMD_ENABLE_TREXIO=ON ..
 make
+```
+
+**Note:** The patch application script (`./scripts/apply_mdlib_trexio_patch.sh`) can be run multiple times safely. If you encounter issues with the patch, simply run the script again and it will automatically clean up and reapply the patch.
+
+**Alternative: Manual Patch Application**
+
+If you prefer to apply the patch manually or encounter issues with the script:
+
+```bash
+# From the repository root
+cd ext/mdlib
+
+# If patch was partially applied, clean up first:
+git checkout -- CMakeLists.txt
+rm -f src/md_trexio.c src/md_trexio.h
+
+# Apply the patch
+git apply ../../docs/mdlib_trexio.patch
+cd ../..
 ```
 
 The build system will:

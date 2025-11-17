@@ -54,15 +54,15 @@ conda install -c conda-forge hdf5
 git submodule update --init --recursive
 
 # Apply mdlib patch to enable TREXIO support
-cd ext/mdlib
-git apply ../../docs/mdlib_trexio.patch
-cd ../..
+./scripts/apply_mdlib_trexio_patch.sh
 
 # Configure and build
 mkdir build && cd build
 cmake -DVIAMD_ENABLE_TREXIO=ON ..
 make
 ```
+
+**Note:** The patch application script can be run multiple times safely. If you encounter issues with the patch, simply run the script again and it will automatically clean up and reapply the patch.
 
 The build system will automatically:
 1. Download the TREXIO 2.6.0 release tarball
