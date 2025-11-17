@@ -21,6 +21,9 @@
 #if MD_VLX
 #include <md_vlx.h>
 #endif
+#if MD_TREXIO
+#include <md_trexio.h>
+#endif
 
 #include <string.h>
 
@@ -36,6 +39,9 @@ enum sys_loader_t {
 #if MD_VLX
     SYS_LOADER_VELOXCHEM,
 #endif
+#if MD_TREXIO
+    SYS_LOADER_TREXIO,
+#endif
     SYS_LOADER_COUNT
 };
 
@@ -49,6 +55,9 @@ static const str_t sys_loader_name[] {
 #if MD_VLX
     STR_LIT("VeloxChem"),
 #endif
+#if MD_TREXIO
+    STR_LIT("TREXIO"),
+#endif
 };
 
 static const str_t sys_loader_ext[] {
@@ -61,6 +70,9 @@ static const str_t sys_loader_ext[] {
 #if MD_VLX
     STR_LIT("out;h5"),
 #endif
+#if MD_TREXIO
+    STR_LIT("trexio"),
+#endif
 };
 
 static md_system_loader_i* sys_loader[] = {
@@ -72,6 +84,9 @@ static md_system_loader_i* sys_loader[] = {
     md_lammps_system_loader(),
 #if MD_VLX
     md_vlx_system_loader(),
+#endif
+#if MD_TREXIO
+    md_trexio_system_loader(),
 #endif
 };
 
@@ -215,7 +230,12 @@ static void traj_loader_preload_check(load::LoaderState*, traj_loader_t, str_t, 
 
 namespace load {
 
+#if MD_TREXIO
+#define NUM_ENTRIES 13
+#else
 #define NUM_ENTRIES 12
+#endif
+
 struct table_entry_t {
     str_t name[NUM_ENTRIES];
     str_t ext[NUM_ENTRIES];
@@ -244,7 +264,10 @@ static const table_entry_t table = {
         //STR_LIT("DCD Trajectory (dcd)"),
 #if MD_VLX
         STR_LIT("VeloxChem (out)"),
-        STR_LIT("VeloxChem (h5)")
+        STR_LIT("VeloxChem (h5)"),
+#endif
+#if MD_TREXIO
+        STR_LIT("TREXIO (trexio)"),
 #endif
     },
     {
@@ -261,7 +284,10 @@ static const table_entry_t table = {
         //STR_LIT("dcd"),
 #if MD_VLX
         STR_LIT("out"),
-        STR_LIT("h5")
+        STR_LIT("h5"),
+#endif
+#if MD_TREXIO
+        STR_LIT("trexio"),
 #endif
     },
     { 
@@ -280,6 +306,9 @@ static const table_entry_t table = {
         md_vlx_system_loader(),
         md_vlx_system_loader(),
 #endif
+#if MD_TREXIO
+        md_trexio_system_loader(),
+#endif
     },
 	{ 
         md_pdb_trajectory_loader(),
@@ -294,6 +323,10 @@ static const table_entry_t table = {
         md_lammps_trajectory_loader(),
         //md_dcd_trajectory_loader(),
 #if MD_VLX
+        NULL,
+        NULL,
+#endif
+#if MD_TREXIO
         NULL,
 #endif
     }
