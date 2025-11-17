@@ -2,6 +2,13 @@
 
 This directory contains test TREXIO files for validating VIAMD's TREXIO support.
 
+## Quick Links
+
+- 📘 **[Complete Testing Guide](TESTING_GUIDE.md)** - Comprehensive testing documentation
+- 🔨 **[Build Script](build_and_test.sh)** - Automated build and test
+- ✅ **[Validation Script](validate_trexio.sh)** - Quick setup verification
+- 🧪 **[PySCF Generator](create_pyscf_trexio.py)** - Create files with quantum chemistry data
+
 ## Test Files
 
 ### Text Format (.trexio directories)
