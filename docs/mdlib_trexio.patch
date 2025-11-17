@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e560af9..aa1419c 100644
+index e560af9..f908bf3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -17,6 +17,7 @@ option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
@@ -8,12 +8,12 @@ index e560af9..aa1419c 100644
  option(MD_ENABLE_VLX "Enable Veloxchem Support" OFF)
 +option(MD_ENABLE_TREXIO "Enable TREXIO Support" OFF)
  set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
-
+ 
  set(CMAKE_C_STANDARD 11)
 @@ -142,6 +143,50 @@ if (${MD_ENABLE_VLX})
      set (MD_DEFINES ${MD_DEFINES} MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
  endif()
-
+ 
 +if (${MD_ENABLE_TREXIO})
 +    # Build TREXIO from source (download release tarball)
 +    # Using release tarball instead of git repository because it contains pre-generated source files
@@ -69,10 +69,10 @@ index e560af9..aa1419c 100644
  endif()
 diff --git a/src/md_trexio.c b/src/md_trexio.c
 new file mode 100644
-index 0000000..0013cc9
+index 0000000..eca5989
 --- /dev/null
 +++ b/src/md_trexio.c
-@@ -0,0 +1,672 @@
+@@ -0,0 +1,647 @@
 +﻿#include "md_trexio.h"
 +
 +#include <core/md_allocator.h>
@@ -135,6 +135,25 @@ index 0000000..0013cc9
 +    md_trexio_t* trexio = (md_trexio_t*)md_alloc(alloc, sizeof(md_trexio_t));
 +    MEMSET(trexio, 0, sizeof(md_trexio_t));
 +    trexio->alloc = alloc;
++    
++    // Explicitly initialize all pointer fields to NULL for safety
++    trexio->file = NULL;
++    trexio->nucleus_coord = NULL;
++    trexio->nucleus_charge = NULL;
++    trexio->nucleus_label = NULL;
++    trexio->basis_nucleus_index = NULL;
++    trexio->basis_shell_ang_mom = NULL;
++    trexio->basis_shell_factor = NULL;
++    trexio->basis_shell_index = NULL;
++    trexio->basis_exponent = NULL;
++    trexio->basis_coefficient = NULL;
++    trexio->basis_prim_factor = NULL;
++    trexio->mo_coefficient = NULL;
++    trexio->mo_energy = NULL;
++    trexio->mo_occupation = NULL;
++    trexio->mo_class = NULL;
++    trexio->mo_symmetry = NULL;
++    
 +    return trexio;
 +}
 +
@@ -160,25 +179,70 @@ index 0000000..0013cc9
 +    }
 +
 +    // Free nucleus data
-+    if (trexio->nucleus_coord) md_free(alloc, trexio->nucleus_coord, 3 * trexio->nucleus_num * sizeof(double));
-+    if (trexio->nucleus_charge) md_free(alloc, trexio->nucleus_charge, trexio->nucleus_num * sizeof(double));
-+    free_string_array(trexio->nucleus_label, trexio->nucleus_num, alloc);
++    if (trexio->nucleus_coord && trexio->nucleus_num > 0) {
++        md_free(alloc, trexio->nucleus_coord, 3 * trexio->nucleus_num * sizeof(double));
++        trexio->nucleus_coord = NULL;
++    }
++    if (trexio->nucleus_charge && trexio->nucleus_num > 0) {
++        md_free(alloc, trexio->nucleus_charge, trexio->nucleus_num * sizeof(double));
++        trexio->nucleus_charge = NULL;
++    }
++    if (trexio->nucleus_label && trexio->nucleus_num > 0) {
++        free_string_array(trexio->nucleus_label, trexio->nucleus_num, alloc);
++        trexio->nucleus_label = NULL;
++    }
 +
 +    // Free basis data
-+    if (trexio->basis_nucleus_index) md_free(alloc, trexio->basis_nucleus_index, trexio->basis_shell_num * sizeof(int64_t));
-+    if (trexio->basis_shell_ang_mom) md_free(alloc, trexio->basis_shell_ang_mom, trexio->basis_shell_num * sizeof(int64_t));
-+    if (trexio->basis_shell_factor) md_free(alloc, trexio->basis_shell_factor, trexio->basis_shell_num * sizeof(double));
-+    if (trexio->basis_shell_index) md_free(alloc, trexio->basis_shell_index, trexio->basis_prim_num * sizeof(int64_t));
-+    if (trexio->basis_exponent) md_free(alloc, trexio->basis_exponent, trexio->basis_prim_num * sizeof(double));
-+    if (trexio->basis_coefficient) md_free(alloc, trexio->basis_coefficient, trexio->basis_prim_num * sizeof(double));
-+    if (trexio->basis_prim_factor) md_free(alloc, trexio->basis_prim_factor, trexio->basis_prim_num * sizeof(double));
++    if (trexio->basis_nucleus_index && trexio->basis_shell_num > 0) {
++        md_free(alloc, trexio->basis_nucleus_index, trexio->basis_shell_num * sizeof(int64_t));
++        trexio->basis_nucleus_index = NULL;
++    }
++    if (trexio->basis_shell_ang_mom && trexio->basis_shell_num > 0) {
++        md_free(alloc, trexio->basis_shell_ang_mom, trexio->basis_shell_num * sizeof(int64_t));
++        trexio->basis_shell_ang_mom = NULL;
++    }
++    if (trexio->basis_shell_factor && trexio->basis_shell_num > 0) {
++        md_free(alloc, trexio->basis_shell_factor, trexio->basis_shell_num * sizeof(double));
++        trexio->basis_shell_factor = NULL;
++    }
++    if (trexio->basis_shell_index && trexio->basis_prim_num > 0) {
++        md_free(alloc, trexio->basis_shell_index, trexio->basis_prim_num * sizeof(int64_t));
++        trexio->basis_shell_index = NULL;
++    }
++    if (trexio->basis_exponent && trexio->basis_prim_num > 0) {
++        md_free(alloc, trexio->basis_exponent, trexio->basis_prim_num * sizeof(double));
++        trexio->basis_exponent = NULL;
++    }
++    if (trexio->basis_coefficient && trexio->basis_prim_num > 0) {
++        md_free(alloc, trexio->basis_coefficient, trexio->basis_prim_num * sizeof(double));
++        trexio->basis_coefficient = NULL;
++    }
++    if (trexio->basis_prim_factor && trexio->basis_prim_num > 0) {
++        md_free(alloc, trexio->basis_prim_factor, trexio->basis_prim_num * sizeof(double));
++        trexio->basis_prim_factor = NULL;
++    }
 +
 +    // Free MO data
-+    if (trexio->mo_coefficient) md_free(alloc, trexio->mo_coefficient, trexio->ao_num * trexio->mo_num * sizeof(double));
-+    if (trexio->mo_energy) md_free(alloc, trexio->mo_energy, trexio->mo_num * sizeof(double));
-+    if (trexio->mo_occupation) md_free(alloc, trexio->mo_occupation, trexio->mo_num * sizeof(double));
-+    free_string_array(trexio->mo_class, trexio->mo_num, alloc);
-+    free_string_array(trexio->mo_symmetry, trexio->mo_num, alloc);
++    if (trexio->mo_coefficient && trexio->ao_num > 0 && trexio->mo_num > 0) {
++        md_free(alloc, trexio->mo_coefficient, trexio->ao_num * trexio->mo_num * sizeof(double));
++        trexio->mo_coefficient = NULL;
++    }
++    if (trexio->mo_energy && trexio->mo_num > 0) {
++        md_free(alloc, trexio->mo_energy, trexio->mo_num * sizeof(double));
++        trexio->mo_energy = NULL;
++    }
++    if (trexio->mo_occupation && trexio->mo_num > 0) {
++        md_free(alloc, trexio->mo_occupation, trexio->mo_num * sizeof(double));
++        trexio->mo_occupation = NULL;
++    }
++    if (trexio->mo_class && trexio->mo_num > 0) {
++        free_string_array(trexio->mo_class, trexio->mo_num, alloc);
++        trexio->mo_class = NULL;
++    }
++    if (trexio->mo_symmetry && trexio->mo_num > 0) {
++        free_string_array(trexio->mo_symmetry, trexio->mo_num, alloc);
++        trexio->mo_symmetry = NULL;
++    }
 +
 +    MEMSET(trexio, 0, sizeof(md_trexio_t));
 +    trexio->alloc = alloc;
@@ -218,11 +282,13 @@ index 0000000..0013cc9
 +    md_allocator_i* alloc = trexio->alloc;
 +
 +    // Read nucleus data
-+    rc = trexio_read_nucleus_num(trexio->file, &trexio->nucleus_num);
++    int32_t nucleus_num_i32;
++    rc = trexio_read_nucleus_num(trexio->file, &nucleus_num_i32);
 +    if (rc != TREXIO_SUCCESS) {
 +        MD_LOG_ERROR("TREXIO: Failed to read nucleus_num: %s", trexio_string_of_error(rc));
 +        goto error;
 +    }
++    trexio->nucleus_num = (int64_t)nucleus_num_i32;
 +
 +    if (trexio->nucleus_num > 0) {
 +        // Allocate and read coordinates (stored in Bohr in TREXIO, convert to Angstrom)
@@ -269,122 +335,21 @@ index 0000000..0013cc9
 +    }
 +
 +    // Read basis set data (optional, may not be present)
-+    rc = trexio_read_basis_shell_num(trexio->file, &trexio->basis_shell_num);
-+    if (rc == TREXIO_SUCCESS && trexio->basis_shell_num > 0) {
-+        rc = trexio_read_basis_prim_num(trexio->file, &trexio->basis_prim_num);
-+        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_INFO("TREXIO: basis_shell_num present but basis_prim_num missing");
-+            goto skip_basis;
-+        }
-+
-+        // Read basis type
-+        rc = trexio_read_basis_type(trexio->file, trexio->basis_type, sizeof(trexio->basis_type));
-+        if (rc != TREXIO_SUCCESS) {
-+            strcpy(trexio->basis_type, "Gaussian");  // Default assumption
-+        }
-+
-+        // Allocate and read basis arrays
-+        trexio->basis_nucleus_index = (int64_t*)md_alloc(alloc, trexio->basis_shell_num * sizeof(int64_t));
-+        trexio->basis_shell_ang_mom = (int64_t*)md_alloc(alloc, trexio->basis_shell_num * sizeof(int64_t));
-+        trexio->basis_shell_factor = (double*)md_alloc(alloc, trexio->basis_shell_num * sizeof(double));
-+        trexio->basis_shell_index = (int64_t*)md_alloc(alloc, trexio->basis_prim_num * sizeof(int64_t));
-+        trexio->basis_exponent = (double*)md_alloc(alloc, trexio->basis_prim_num * sizeof(double));
-+        trexio->basis_coefficient = (double*)md_alloc(alloc, trexio->basis_prim_num * sizeof(double));
-+        trexio->basis_prim_factor = (double*)md_alloc(alloc, trexio->basis_prim_num * sizeof(double));
-+
-+        rc = trexio_read_basis_nucleus_index(trexio->file, trexio->basis_nucleus_index);
-+        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_INFO("TREXIO: Failed to read basis_nucleus_index: %s", trexio_string_of_error(rc));
-+            goto skip_basis;
-+        }
-+
-+        rc = trexio_read_basis_shell_ang_mom(trexio->file, trexio->basis_shell_ang_mom);
-+        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_INFO("TREXIO: Failed to read basis_shell_ang_mom: %s", trexio_string_of_error(rc));
-+            goto skip_basis;
-+        }
-+
-+        rc = trexio_read_basis_shell_factor(trexio->file, trexio->basis_shell_factor);
-+        if (rc != TREXIO_SUCCESS) {
-+            // Optional field, set to 1.0
-+            for (int64_t i = 0; i < trexio->basis_shell_num; ++i) {
-+                trexio->basis_shell_factor[i] = 1.0;
-+            }
-+        }
-+
-+        rc = trexio_read_basis_shell_index(trexio->file, trexio->basis_shell_index);
-+        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_INFO("TREXIO: Failed to read basis_shell_index: %s", trexio_string_of_error(rc));
-+            goto skip_basis;
-+        }
-+
-+        rc = trexio_read_basis_exponent(trexio->file, trexio->basis_exponent);
-+        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_INFO("TREXIO: Failed to read basis_exponent: %s", trexio_string_of_error(rc));
-+            goto skip_basis;
-+        }
-+
-+        rc = trexio_read_basis_coefficient(trexio->file, trexio->basis_coefficient);
-+        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_INFO("TREXIO: Failed to read basis_coefficient: %s", trexio_string_of_error(rc));
-+            goto skip_basis;
-+        }
-+
-+        rc = trexio_read_basis_prim_factor(trexio->file, trexio->basis_prim_factor);
-+        if (rc != TREXIO_SUCCESS) {
-+            // Optional field, set to 1.0
-+            for (int64_t i = 0; i < trexio->basis_prim_num; ++i) {
-+                trexio->basis_prim_factor[i] = 1.0;
-+            }
-+        }
-+    }
++    // TEMPORARILY DISABLED - focus on geometry first
++    trexio->basis_shell_num = 0;
++    trexio->basis_prim_num = 0;
++    
 +skip_basis:
 +
-+    // Read AO number
-+    rc = trexio_read_ao_num(trexio->file, &trexio->ao_num);
-+    if (rc != TREXIO_SUCCESS) {
-+        trexio->ao_num = 0;
-+    }
-+
-+    // Read MO data (optional)
-+    rc = trexio_read_mo_num(trexio->file, &trexio->mo_num);
-+    if (rc == TREXIO_SUCCESS && trexio->mo_num > 0 && trexio->ao_num > 0) {
-+        // Allocate and read MO coefficients
-+        trexio->mo_coefficient = (double*)md_alloc(alloc, trexio->ao_num * trexio->mo_num * sizeof(double));
-+        rc = trexio_read_mo_coefficient(trexio->file, trexio->mo_coefficient);
-+        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_INFO("TREXIO: Failed to read mo_coefficient: %s", trexio_string_of_error(rc));
-+            md_free(alloc, trexio->mo_coefficient, trexio->ao_num * trexio->mo_num * sizeof(double));
-+            trexio->mo_coefficient = NULL;
-+        }
-+
-+        // Read MO energies (optional)
-+        trexio->mo_energy = (double*)md_alloc(alloc, trexio->mo_num * sizeof(double));
-+        rc = trexio_read_mo_energy(trexio->file, trexio->mo_energy);
-+        if (rc != TREXIO_SUCCESS) {
-+            md_free(alloc, trexio->mo_energy, trexio->mo_num * sizeof(double));
-+            trexio->mo_energy = NULL;
-+        }
-+
-+        // Read MO occupations (optional)
-+        trexio->mo_occupation = (double*)md_alloc(alloc, trexio->mo_num * sizeof(double));
-+        rc = trexio_read_mo_occupation(trexio->file, trexio->mo_occupation);
-+        if (rc != TREXIO_SUCCESS) {
-+            md_free(alloc, trexio->mo_occupation, trexio->mo_num * sizeof(double));
-+            trexio->mo_occupation = NULL;
-+        }
-+    }
++    // Read AO and MO data (optional)
++    // TEMPORARILY DISABLED - focus on geometry first  
++    trexio->ao_num = 0;
++    trexio->mo_num = 0;
 +
 +    // Read electron numbers (optional)
-+    rc = trexio_read_electron_up_num(trexio->file, &trexio->num_up_electrons);
-+    if (rc != TREXIO_SUCCESS) {
-+        trexio->num_up_electrons = 0;
-+    }
-+
-+    rc = trexio_read_electron_dn_num(trexio->file, &trexio->num_down_electrons);
-+    if (rc != TREXIO_SUCCESS) {
-+        trexio->num_down_electrons = 0;
-+    }
++    // TEMPORARILY DISABLED - focus on geometry first
++    trexio->num_up_electrons = 0;
++    trexio->num_down_electrons = 0;
 +
 +    MD_LOG_INFO("TREXIO: Successfully loaded file with %lld atoms", (long long)trexio->nucleus_num);
 +    return true;
@@ -576,7 +541,16 @@ index 0000000..0013cc9
 +
 +// System loader interface
 +
-+static bool trexio_loader_init(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
++static bool trexio_sys_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
++    (void)sys;
++    (void)str;
++    (void)arg;
++    (void)alloc;
++    MD_LOG_ERROR("TREXIO: Loading from string not implemented");
++    return false;
++}
++
++static bool trexio_sys_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
 +    (void)arg;  // Not used for TREXIO
 +
 +    md_trexio_t* trexio = md_trexio_create(alloc);
@@ -595,7 +569,8 @@ index 0000000..0013cc9
 +}
 +
 +static md_system_loader_i trexio_loader = {
-+    trexio_loader_init
++    trexio_sys_init_from_str,
++    trexio_sys_init_from_file
 +};
 +
 +md_system_loader_i* md_trexio_system_loader(void) {
@@ -747,7 +722,7 @@ index 0000000..0013cc9
 +#endif  // MD_TREXIO
 diff --git a/src/md_trexio.h b/src/md_trexio.h
 new file mode 100644
-index 0000000..32c63b3
+index 0000000..649b0a3
 --- /dev/null
 +++ b/src/md_trexio.h
 @@ -0,0 +1,117 @@
