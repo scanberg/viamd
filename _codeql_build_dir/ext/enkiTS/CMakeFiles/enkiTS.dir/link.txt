@@ -1,2 +1,0 @@
-/usr/bin/ar qc ../../lib/libenkiTS.a CMakeFiles/enkiTS.dir/src/TaskScheduler.cpp.o
-/usr/bin/ranlib ../../lib/libenkiTS.a

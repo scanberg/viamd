@@ -1,1 +1,0 @@
-/home/runner/work/viamd/.codeql-scratch/dbs/cpp/working/autobuild/bin/cc -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/mdlib_allocator_reproducer.dir/link.d CMakeFiles/mdlib_allocator_reproducer.dir/main.c.o -o ../../bin/mdlib_allocator_reproducer  ../../lib/libmdlib.a -static-libgcc -static-libstdc++ -lm
