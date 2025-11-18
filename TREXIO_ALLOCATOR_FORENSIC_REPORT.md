@@ -1,6 +1,6 @@
 # TREXIO Loader Allocator Crash - Forensic Report
 
-**Date:** 2025-11-18  
+**Date:** 2024-11-18  
 **Investigation Branch:** Multiple (PRs #115, #116, #117)  
 **Target Branch:** TREXIO  
 **Repository:** scanberg/viamd
