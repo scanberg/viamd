@@ -89,6 +89,7 @@ add_subdirectory(ext/imgui_notify)
 # Add tools subdirectory if TREXIO is enabled
 if(VIAMD_ENABLE_TREXIO)
     add_subdirectory(tools/mdlib_allocator_reproducer)
+    add_subdirectory(tools/trexio_loader_test)
 endif()
 
 # Copy many of the fields from mdlib
