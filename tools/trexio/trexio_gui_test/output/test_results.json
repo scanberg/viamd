@@ -1,0 +1,52 @@
+{
+  "tests": [
+    {
+      "test": "File exists: /home/runner/work/viamd/viamd/test_data/h2_molecule.trexio",
+      "passed": true,
+      "details": "File found: /home/runner/work/viamd/viamd/test_data/h2_molecule.trexio"
+    },
+    {
+      "test": "File exists: /home/runner/work/viamd/viamd/test_data/h2o_molecule.trexio",
+      "passed": true,
+      "details": "File found: /home/runner/work/viamd/viamd/test_data/h2o_molecule.trexio"
+    },
+    {
+      "test": "File exists: /home/runner/work/viamd/viamd/test_data/ch4_molecule.trexio",
+      "passed": true,
+      "details": "File found: /home/runner/work/viamd/viamd/test_data/ch4_molecule.trexio"
+    },
+    {
+      "test": "TREXIO loadable: h2_molecule.trexio",
+      "passed": true,
+      "details": "TREXIO directory structure valid"
+    },
+    {
+      "test": "Atom count: h2_molecule.trexio == 2",
+      "passed": true,
+      "details": "Expected 2, got 2"
+    },
+    {
+      "test": "TREXIO loadable: h2o_molecule.trexio",
+      "passed": true,
+      "details": "TREXIO directory structure valid"
+    },
+    {
+      "test": "Atom count: h2o_molecule.trexio == 3",
+      "passed": true,
+      "details": "Expected 3, got 3"
+    },
+    {
+      "test": "TREXIO loadable: ch4_molecule.trexio",
+      "passed": true,
+      "details": "TREXIO directory structure valid"
+    },
+    {
+      "test": "Atom count: ch4_molecule.trexio == 5",
+      "passed": true,
+      "details": "Expected 5, got 5"
+    }
+  ],
+  "passed": 9,
+  "failed": 0,
+  "timestamp": "2025-11-18 18:28:54"
+}

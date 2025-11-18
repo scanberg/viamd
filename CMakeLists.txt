@@ -122,7 +122,13 @@ if (VIAMD_ENABLE_VELOXCHEM)
 endif()
 
 if (VIAMD_ENABLE_TREXIO)
-    set(COMP_FILES ${COMP_FILES} src/components/trexio/trexio.cpp)
+    set(COMP_FILES ${COMP_FILES} 
+        src/components/trexio/trexio.cpp
+        src/ui/trexio_panel.cpp
+        src/ui/trexio_panel.h
+        src/trexio/trexio_orbital_grid.cpp
+        src/trexio/trexio_orbital_grid.h
+    )
 endif()
 
 set(SHADER_FILES 
