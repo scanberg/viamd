@@ -60,7 +60,7 @@ struct Trexio {
     void shutdown() {
 #ifdef MD_TREXIO
         if (trexio_data) {
-            md_trexio_free(trexio_data);
+            md_trexio_destroy(trexio_data);
             trexio_data = NULL;
         }
 #endif
@@ -69,26 +69,54 @@ struct Trexio {
     bool load_trexio_file(const char* filename) {
 #ifdef MD_TREXIO
         if (trexio_data) {
-            md_trexio_free(trexio_data);
+            md_trexio_destroy(trexio_data);
             trexio_data = NULL;
         }
 
-        trexio_data = md_trexio_parse_file(filename, allocator);
+        // Create TREXIO object
+        trexio_data = md_trexio_create(allocator);
         if (!trexio_data) {
-            MD_LOG_ERROR("Failed to load TREXIO file: %s", filename);
+            MD_LOG_ERROR("Failed to create TREXIO object");
             return false;
         }
 
-        qc_data.num_atoms = (int)trexio_data->num_atoms;
-        qc_data.num_electrons = trexio_data->num_electrons_up + trexio_data->num_electrons_down;
-        
-        // TODO: Extract MO data when available
-        qc_data.num_mo = 0;
-        qc_data.homo_idx = -1;
-        qc_data.lumo_idx = -1;
+        // Parse the file
+        str_t filename_str = {filename, (int64_t)strlen(filename)};
+        if (!md_trexio_parse_file(trexio_data, filename_str)) {
+            MD_LOG_ERROR("Failed to load TREXIO file: %s", filename);
+            md_trexio_destroy(trexio_data);
+            trexio_data = NULL;
+            return false;
+        }
 
-        MD_LOG_INFO("Loaded TREXIO file: %s (%d atoms, %d electrons)", 
-                    filename, qc_data.num_atoms, qc_data.num_electrons);
+        // Extract data using API functions
+        qc_data.num_atoms = (int)md_trexio_number_of_atoms(trexio_data);
+        qc_data.num_electrons = (int)(md_trexio_num_up_electrons(trexio_data) + 
+                                      md_trexio_num_down_electrons(trexio_data));
+        
+        // Extract MO data if available
+        qc_data.num_mo = (int)md_trexio_mo_num(trexio_data);
+        if (qc_data.num_mo > 0) {
+            qc_data.mo_energies = (double*)md_trexio_mo_energy(trexio_data);
+            qc_data.mo_occupations = (double*)md_trexio_mo_occupation(trexio_data);
+            
+            // Find HOMO and LUMO
+            qc_data.homo_idx = -1;
+            qc_data.lumo_idx = -1;
+            if (qc_data.mo_occupations) {
+                for (int i = 0; i < qc_data.num_mo; ++i) {
+                    if (qc_data.mo_occupations[i] > 0.5) {
+                        qc_data.homo_idx = i;
+                    } else if (qc_data.lumo_idx == -1) {
+                        qc_data.lumo_idx = i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        MD_LOG_INFO("Loaded TREXIO file: %s (%d atoms, %d electrons, %d MOs)", 
+                    filename, qc_data.num_atoms, qc_data.num_electrons, qc_data.num_mo);
         
         return true;
 #else
