@@ -105,7 +105,18 @@ The build system will:
 2. Link against the installed TREXIO library
 3. Enable TREXIO file format support in VIAMD
 
-If CMake cannot find TREXIO, ensure that:
+If CMake cannot find TREXIO automatically, you can specify the TREXIO installation path manually:
+
+```bash
+TREXIO_PREFIX="/path/to/trexio/install"
+cmake -DVIAMD_ENABLE_TREXIO=ON \
+      -DTREXIO_INCLUDE_DIR="$TREXIO_PREFIX/include" \
+      -DTREXIO_LIBRARY="$TREXIO_PREFIX/lib/libtrexio.so" \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      ..
+```
+
+Alternatively, ensure that:
 - TREXIO is installed in a standard location (e.g., `/usr/local`)
 - The `PKG_CONFIG_PATH` environment variable includes the directory with `trexio.pc`
 - On Linux, you've run `sudo ldconfig` after installing TREXIO
