@@ -1,0 +1,42 @@
+{
+  "description": "Expected grid statistics for test validation",
+  "note": "These are reference values for automated testing. Actual values may vary slightly due to numerical precision.",
+  "test_cases": [
+    {
+      "file": "h2_molecule.trexio",
+      "mo_index": 0,
+      "grid_resolution": [32, 32, 32],
+      "expected_stats": {
+        "min_range": [-1.0, 0.0],
+        "max_range": [0.0, 1.0],
+        "mean_range": [-0.1, 0.1],
+        "tolerance": 0.5,
+        "note": "HOMO of H2, symmetric distribution"
+      }
+    },
+    {
+      "file": "h2o_molecule.trexio",
+      "mo_index": 4,
+      "grid_resolution": [32, 32, 32],
+      "expected_stats": {
+        "min_range": [-2.0, 0.0],
+        "max_range": [0.0, 2.0],
+        "mean_range": [-0.2, 0.2],
+        "tolerance": 1.0,
+        "note": "HOMO of H2O"
+      }
+    }
+  ],
+  "validation_criteria": {
+    "grid_file_format": {
+      "magic": "0x4754524F",
+      "version": 1,
+      "header_size": 48
+    },
+    "performance": {
+      "max_time_32cubed": 60,
+      "max_time_64cubed": 300,
+      "note": "Maximum computation time in seconds"
+    }
+  }
+}

@@ -1,0 +1,91 @@
+name: TREXIO GUI Test
+
+on:
+  push:
+    branches:
+      - main
+      - TREXIO
+      - 'copilot/*trexio*'
+  pull_request:
+    branches:
+      - main
+      - TREXIO
+
+jobs:
+  trexio-gui-test:
+    name: TREXIO GUI Headless Test
+    runs-on: ubuntu-24.04
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libgtk-3-dev pkgconf \
+            libgl1-mesa-dev libglu1-mesa-dev xorg-dev \
+            libhdf5-dev \
+            xvfb \
+            python3
+      
+      - name: Install TREXIO library
+        run: |
+          wget -q https://github.com/TREX-CoE/trexio/releases/download/v2.6.0/trexio-2.6.0.tar.gz
+          tar -xzf trexio-2.6.0.tar.gz
+          cd trexio-2.6.0
+          ./configure --prefix=/usr/local
+          make -j4
+          sudo make install
+          sudo ldconfig
+          pkg-config --modversion trexio
+      
+      - name: Configure CMake with TREXIO
+        run: |
+          mkdir build
+          cd build
+          cmake -DVIAMD_ENABLE_TREXIO=ON ..
+      
+      - name: Build viamd
+        run: |
+          cd build
+          make -j4
+      
+      - name: Run headless tests
+        run: |
+          cd tools/trexio/trexio_gui_test
+          python3 run_tests.py
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: trexio-gui-test-results
+          path: |
+            tools/trexio/trexio_gui_test/output/
+            tools/trexio/debug-*.log
+            orbital_*.grid
+          retention-days: 30
+      
+      - name: Check test results
+        run: |
+          cd tools/trexio/trexio_gui_test/output
+          if [ -f test_results.json ]; then
+            echo "Test results found"
+            python3 -m json.tool test_results.json
+            
+            # Check if any tests failed
+            FAILED=$(python3 -c "import json; data=json.load(open('test_results.json')); print(data.get('failed', 0))")
+            if [ "$FAILED" -ne "0" ]; then
+              echo "Tests failed: $FAILED"
+              exit 1
+            fi
+            echo "All tests passed!"
+          else
+            echo "No test results found"
+            exit 1
+          fi
