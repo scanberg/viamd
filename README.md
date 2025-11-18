@@ -27,12 +27,17 @@ To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your mac
 
 VIAMD can be built with support for reading TREXIO quantum chemistry files. TREXIO is an open-source file format used by many quantum chemistry codes (Quantum Package, PySCF, FHI-aims, CP2K, etc.).
 
-TREXIO is automatically downloaded and built from source during the VIAMD build process. No manual installation is required.
-
 #### Prerequisites
-- HDF5 library (optional, for HDF5 backend support)
 
-#### Installing HDF5 (Optional but Recommended)
+**Required:**
+- TREXIO library (v2.6.0 or later) - Must be installed separately before building VIAMD
+
+**Optional:**
+- HDF5 library (for HDF5 backend support, recommended)
+
+#### Installing Prerequisites
+
+**HDF5 (Optional but Recommended)**
 
 HDF5 support enables TREXIO to read .h5 files. If HDF5 is not available, TREXIO will build with text backend support only.
 
@@ -45,6 +50,34 @@ brew install hdf5
 
 # Conda
 conda install -c conda-forge hdf5
+```
+
+**TREXIO Library (Required)**
+
+Install TREXIO before building VIAMD:
+
+```bash
+# Download and build TREXIO
+wget https://github.com/TREX-CoE/trexio/releases/download/v2.6.0/trexio-2.6.0.tar.gz
+tar -xzf trexio-2.6.0.tar.gz
+cd trexio-2.6.0
+./configure --prefix=/usr/local
+make
+sudo make install
+sudo ldconfig  # Update library cache (Linux only)
+
+# Verify installation
+pkg-config --modversion trexio
+```
+
+Alternatively, use a package manager if available:
+
+```bash
+# Conda
+conda install -c conda-forge trexio
+
+# Spack
+spack install trexio
 ```
 
 #### Building VIAMD with TREXIO
@@ -64,11 +97,15 @@ make
 
 **Note:** The patch application script can be run multiple times safely. If you encounter issues with the patch, simply run the script again and it will automatically clean up and reapply the patch.
 
-The build system will automatically:
-1. Download the TREXIO 2.6.0 release tarball
-2. Detect if HDF5 is available on your system
-3. Build TREXIO with HDF5 support (if available) or text-only backend
-4. Link TREXIO statically into VIAMD
+The build system will:
+1. Detect if TREXIO is installed on your system
+2. Link against the installed TREXIO library
+3. Enable TREXIO file format support in VIAMD
+
+If CMake cannot find TREXIO, ensure that:
+- TREXIO is installed in a standard location (e.g., `/usr/local`)
+- The `PKG_CONFIG_PATH` environment variable includes the directory with `trexio.pc`
+- On Linux, you've run `sudo ldconfig` after installing TREXIO
 
 **CMake Options:**
 - `-DVIAMD_ENABLE_TREXIO=ON` - Enable TREXIO file format support (default: OFF)
