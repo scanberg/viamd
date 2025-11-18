@@ -1,6 +1,6 @@
-up_num
-1
-
-dn_num
-1
-
+electron_num_isSet 1 
+electron_num 2 
+electron_up_num_isSet 1 
+electron_up_num 1 
+electron_dn_num_isSet 1 
+electron_dn_num 1 
