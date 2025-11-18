@@ -26,6 +26,40 @@ The tool will be located at `build/tools/mdlib_allocator_reproducer/mdlib_alloca
 
 ## Running
 
+### Using the Helper Script (Recommended)
+
+The easiest way to run the reproducer and capture output is using the provided script:
+
+```bash
+# From the viamd root directory
+./scripts/run_trexio_allocator_repro.sh
+```
+
+This script will:
+- Build the reproducer (or use an existing build with `SKIP_BUILD=1`)
+- Run 100 iterations by default
+- Capture all output to `tools/mdlib_allocator_reproducer/repro-output.txt`
+- Display a summary of results
+
+**Environment variables:**
+- `ITERATIONS=N` - Number of iterations to run (default: 100)
+- `ENABLE_ASAN=1` - Enable AddressSanitizer for memory error detection
+- `SKIP_BUILD=1` - Skip the build step and use existing build
+- `BUILD_DIR=/path/to/build` - Specify build directory (default: ./build)
+
+**Examples:**
+
+```bash
+# Run with 1000 iterations
+ITERATIONS=1000 ./scripts/run_trexio_allocator_repro.sh
+
+# Run with AddressSanitizer
+ENABLE_ASAN=1 ./scripts/run_trexio_allocator_repro.sh
+
+# Use existing build and run 500 iterations
+SKIP_BUILD=1 ITERATIONS=500 ./scripts/run_trexio_allocator_repro.sh
+```
+
 ### Basic Usage
 
 Run a single iteration of the allocation pattern:
@@ -98,6 +132,20 @@ The tool produces detailed diagnostic output for each step:
 ## Integration with CI
 
 This tool can be integrated into CI pipelines to catch allocator regressions:
+
+```yaml
+- name: Test mdlib allocator
+  run: |
+    ./scripts/run_trexio_allocator_repro.sh
+    
+- name: Upload reproducer output
+  uses: actions/upload-artifact@v3
+  with:
+    name: allocator-repro-output
+    path: tools/mdlib_allocator_reproducer/repro-output.txt
+```
+
+Or run directly:
 
 ```yaml
 - name: Test mdlib allocator
