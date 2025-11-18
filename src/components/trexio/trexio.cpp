@@ -52,7 +52,7 @@ struct Trexio {
         MD_LOG_INFO("TREXIO Component initialized");
         return true;
 #else
-        MD_LOG_WARN("TREXIO Component: Compiled without TREXIO support");
+        MD_LOG_INFO("TREXIO Component: Compiled without TREXIO support");
         return false;
 #endif
     }
