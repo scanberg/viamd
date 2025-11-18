@@ -833,9 +833,9 @@ struct VeloxChem : viamd::EventHandler {
                     case ElectronicStructureType::ElectronDensity:
                     {
                         if (use_gpu_path) {
-                            data.output_written = compute_electron_density_GPU(data.dst_volume->tex_id, grid);
+                            data.output_written = compute_electron_density_GPU(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA);
                         } else {
-                            data.output_written = (compute_electron_density_async(data.dst_volume->tex_id, grid) != task_system::INVALID_ID);
+                            data.output_written = (compute_electron_density_async(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA) != task_system::INVALID_ID);
                         }
                         break;
                     }
@@ -1377,10 +1377,11 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // The full electron density that includes all orbitals weighted by their occupancy
-    bool compute_electron_density_GPU(uint32_t vol_tex, const md_grid_t& grid, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
+    bool compute_electron_density_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(8));
         defer { md_vm_arena_destroy(alloc); };
 
+        #if 0
         md_orbital_data_t orb_data = {0};
         if (!extract_electron_density_orb_data(&orb_data, cutoff_value, alloc)) {
             return false;
@@ -1388,11 +1389,28 @@ struct VeloxChem : viamd::EventHandler {
 
         // Dispatch Compute shader evaluation
         md_gto_grid_evaluate_orb_GPU(vol_tex, &grid, &orb_data, MD_GTO_EVAL_MODE_PSI_SQUARED);
+        #endif
+
+        md_gto_data_t gto_data = {0};
+        if (!md_vlx_scf_extract_gto_data(&gto_data, vlx, cutoff_value, alloc)) {
+            MD_LOG_ERROR("Failed to extract gto data for electron density");
+            return false;
+        }
+
+        size_t matrix_size = md_vlx_scf_density_matrix_size(vlx);
+        float* density_matrix = (float*)md_vm_arena_push(alloc, sizeof(float) * matrix_size * matrix_size);
+        if (!md_vlx_scf_extract_density_matrix_data(density_matrix, vlx, mo_type)) {
+            MD_LOG_ERROR("Failed to extract density matrix data");
+            return false;
+        }
+
+        // Use the density matrix and calculate density directly
+        md_gto_grid_evaluate_matrix_GPU(vol_tex, &grid, &gto_data, density_matrix, matrix_size);
 
         return true;
     }
 
-    task_system::ID compute_electron_density_async(uint32_t vol_tex, const md_grid_t& grid, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    task_system::ID compute_electron_density_async(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
         md_orbital_data_t orb_data = {0};
@@ -4047,9 +4065,9 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     case ElectronicStructureType::ElectronDensity:
                         if (use_gpu_path) {
-                            compute_electron_density_GPU(vol.tex_id, grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
+                            compute_electron_density_GPU(vol.tex_id, grid, MD_VLX_MO_TYPE_ALPHA);
                         } else {
-                            task = compute_electron_density_async(vol.tex_id, grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
+                            task = compute_electron_density_async(vol.tex_id, grid, MD_VLX_MO_TYPE_ALPHA);
                         }
                         break;
                     default:
