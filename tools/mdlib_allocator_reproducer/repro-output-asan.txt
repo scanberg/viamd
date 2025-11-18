@@ -1,0 +1,3657 @@
+[DIAGNOSTIC] mdlib Allocator Reproducer Started
+[DIAGNOSTIC] Iterations: 50
+[DIAGNOSTIC] ========================================
+[DIAGNOSTIC] 
+--- Iteration 1/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000010
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000040
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000030
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000090
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000040
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000070
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000050
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000070
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000090
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000010
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000100
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000020
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000000b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000000d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 1 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 2/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000000f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000100
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000110
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000170
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000000a0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000000d0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000130
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000150
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000170
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000050
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000001e0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000080
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000190
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000001b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 2 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 3/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000001d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c0000001c0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000001f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000250
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000100
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000130
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000210
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000230
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000250
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000090
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000002c0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000000e0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000270
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000290
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 3 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 4/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000002b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000280
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000002d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000330
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000160
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000190
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000002f0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000310
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000330
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000000d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000003a0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000140
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000350
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000370
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 4 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 5/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000390
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000340
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000003b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000410
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000001c0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000001f0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000003d0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000003f0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000410
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000110
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000480
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000001a0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000430
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000450
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 5 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 6/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000470
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000400
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000490
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000004f0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000220
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000250
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000004b0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000004d0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000004f0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000150
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000560
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000200
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000510
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000530
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 6 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 7/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000550
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c0000004c0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000570
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000005d0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000280
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000002b0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000590
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000005b0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000005d0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000190
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000640
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000260
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000005f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000610
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 7 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 8/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000630
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000580
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000650
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000006b0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000002e0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000310
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000670
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000690
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000006b0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000001d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000720
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000002c0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000006d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000006f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 8 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 9/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000710
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000640
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000730
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000790
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000340
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000370
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000750
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000770
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000790
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000210
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000800
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000320
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000007b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000007d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 9 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 10/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000007f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000700
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000810
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000870
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000003a0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000003d0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000830
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000850
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000870
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000250
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000008e0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000380
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000890
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000008b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 10 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 11/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000008d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c0000007c0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000008f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000950
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000400
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000430
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000910
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000930
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000950
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000290
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000009c0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000003e0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000970
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000990
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 11 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 12/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000009b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000880
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000009d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000a30
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000460
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000490
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000009f0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000a10
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000a30
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000002d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000aa0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000440
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000a50
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000a70
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 12 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 13/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000a90
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000940
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000ab0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000b10
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000004c0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000004f0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000ad0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000af0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000b10
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000310
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000b80
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000004a0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000b30
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000b50
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 13 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 14/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000b70
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000a00
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000b90
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000bf0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000520
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000550
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000bb0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000bd0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000bf0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000350
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000c60
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000500
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000c10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000c30
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 14 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 15/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000c50
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000ac0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000c70
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000cd0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000580
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000005b0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000c90
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000cb0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000cd0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000390
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000d40
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000560
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000cf0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000d10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 15 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 16/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000d30
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000b80
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000d50
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000db0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000005e0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000610
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000d70
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000d90
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000db0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000003d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000e20
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000005c0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000dd0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000df0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 16 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 17/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000e10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000c40
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000e30
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000e90
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000640
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000670
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000e50
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000e70
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000e90
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000410
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000f00
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000620
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000eb0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000ed0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 17 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 18/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000ef0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000d00
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000f10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000000f70
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000006a0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000006d0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000000f30
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000000f50
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000000f70
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000450
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000000fe0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000680
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000f90
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000fb0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 18 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 19/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000fd0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000dc0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000000ff0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001050
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000700
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000730
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001010
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001030
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001050
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000490
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000010c0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000006e0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001070
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001090
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 19 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 20/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000010b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000e80
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000010d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001130
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000760
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000790
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000010f0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001110
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001130
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000004d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000011a0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000740
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001150
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001170
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 20 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 21/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001190
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000000f40
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000011b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001210
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000007c0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000007f0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000011d0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000011f0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001210
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000510
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001280
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000007a0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001230
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001250
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 21 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 22/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001270
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001000
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001290
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000012f0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000820
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000850
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000012b0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000012d0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000012f0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000550
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001360
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000800
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001310
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001330
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 22 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 23/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001350
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c0000010c0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001370
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000013d0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000880
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000008b0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001390
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000013b0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000013d0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000590
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001440
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000860
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000013f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001410
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 23 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 24/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001430
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001180
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001450
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000014b0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000008e0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000910
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001470
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001490
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000014b0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000005d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001520
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000008c0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000014d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000014f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 24 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 25/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001510
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001240
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001530
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001590
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000940
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000970
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001550
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001570
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001590
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000610
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001600
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000920
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000015b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000015d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 25 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 26/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000015f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001300
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001610
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001670
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000009a0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000009d0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001630
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001650
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001670
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000650
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000016e0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000980
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001690
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000016b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 26 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 27/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000016d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c0000013c0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000016f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001750
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000a00
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000a30
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001710
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001730
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001750
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000690
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000017c0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000009e0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001770
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001790
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 27 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 28/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000017b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001480
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000017d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001830
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000a60
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000a90
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000017f0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001810
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001830
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000006d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000018a0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000a40
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001850
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001870
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 28 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 29/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001890
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001540
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000018b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001910
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000ac0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000af0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000018d0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000018f0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001910
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000710
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001980
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000aa0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001930
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001950
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 29 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 30/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001970
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001600
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001990
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000019f0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000b20
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000b50
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000019b0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000019d0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000019f0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000750
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001a60
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000b00
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001a10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001a30
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 30 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 31/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001a50
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c0000016c0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001a70
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001ad0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000b80
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000bb0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001a90
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001ab0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001ad0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000790
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001b40
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000b60
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001af0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001b10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 31 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 32/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001b30
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001780
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001b50
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001bb0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000be0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000c10
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001b70
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001b90
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001bb0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000007d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001c20
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000bc0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001bd0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001bf0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 32 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 33/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001c10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001840
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001c30
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001c90
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000c40
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000c70
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001c50
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001c70
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001c90
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000810
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001d00
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000c20
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001cb0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001cd0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 33 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 34/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001cf0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001900
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001d10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001d70
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000ca0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000cd0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001d30
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001d50
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001d70
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000850
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001de0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000c80
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001d90
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001db0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 34 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 35/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001dd0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c0000019c0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001df0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001e50
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000d00
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000d30
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001e10
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001e30
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001e50
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000890
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001ec0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000ce0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001e70
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001e90
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 35 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 36/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001eb0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001a80
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001ed0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000001f30
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000d60
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000d90
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001ef0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001f10
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000001f30
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000008d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000001fa0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000d40
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001f50
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001f70
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 36 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 37/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001f90
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001b40
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000001fb0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000002010
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000dc0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000df0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000001fd0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000001ff0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000002010
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000910
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002080
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000da0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002030
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002050
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 37 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 38/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002070
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001c00
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002090
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000020f0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000e20
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000e50
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000020b0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000020d0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000020f0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000950
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002160
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000e00
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002110
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002130
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 38 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 39/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002150
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001cc0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002170
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000021d0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000e80
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000eb0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002190
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000021b0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000021d0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000990
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002240
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000e60
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000021f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002210
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 39 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 40/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002230
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001d80
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002250
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000022b0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000ee0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000f10
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002270
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000002290
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000022b0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x5040000009d0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002320
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000ec0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000022d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000022f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 40 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 41/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002310
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001e40
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002330
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000002390
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000f40
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000f70
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002350
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000002370
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000002390
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000a10
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002400
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000f20
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000023b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000023d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 41 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 42/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000023f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001f00
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002410
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000002470
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000000fa0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000000fd0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002430
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000002450
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000002470
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000a50
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000024e0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000f80
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002490
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000024b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 42 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 43/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000024d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000001fc0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000024f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000002550
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000001000
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000001030
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002510
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000002530
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000002550
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000a90
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000025c0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000000fe0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002570
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002590
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 43 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 44/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000025b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000002080
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000025d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000002630
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000001060
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000001090
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000025f0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000002610
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000002630
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000ad0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x5070000026a0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000001040
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002650
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002670
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 44 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 45/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002690
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000002140
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000026b0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000002710
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000010c0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000010f0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000026d0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000026f0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000002710
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000b10
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002780
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000010a0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002730
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002750
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 45 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 46/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002770
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000002200
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002790
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000027f0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000001120
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000001150
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x5020000027b0
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000027d0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000027f0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000b50
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002860
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000001100
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002810
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002830
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 46 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 47/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002850
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c0000022c0
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002870
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000028d0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000001180
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000011b0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002890
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x5020000028b0
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000028d0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000b90
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002940
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000001160
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000028f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002910
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 47 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 48/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002930
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000002380
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002950
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x5070000029b0
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000011e0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000001210
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002970
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000002990
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x5020000029b0
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000bd0
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002a20
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x5060000011c0
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000029d0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x5020000029f0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 48 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 49/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002a10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000002440
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002a30
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000002a90
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x503000001240
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x503000001270
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002a50
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000002a70
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000002a90
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000c10
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002b00
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000001220
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002ab0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002ad0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 49 completed successfully
+[DIAGNOSTIC] 
+--- Iteration 50/50 ---
+[DIAGNOSTIC] Calling md_get_heap_allocator()...
+[DIAGNOSTIC]   [After md_get_heap_allocator()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002af0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Creating test data structure...
+[DIAGNOSTIC]   Allocating test_data_t structure (size: 120 bytes)
+[DIAGNOSTIC]   test_data_t allocated at address: 0x50c000002500
+[DIAGNOSTIC]   test_data_t initialized successfully
+[DIAGNOSTIC]   [After create_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002b10
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Simulating TREXIO allocation pattern...
+[DIAGNOSTIC]   Setting nucleus_num = 3
+[DIAGNOSTIC]   Allocating nucleus_coord (72 bytes)...
+[DIAGNOSTIC]   nucleus_coord allocated at: 0x507000002b70
+[DIAGNOSTIC]   nucleus_coord initialized with test data
+[DIAGNOSTIC]   Allocating nucleus_charge (24 bytes)...
+[DIAGNOSTIC]   nucleus_charge allocated at: 0x5030000012a0
+[DIAGNOSTIC]   Allocating nucleus_labels array (24 bytes)...
+[DIAGNOSTIC]   nucleus_labels array allocated at: 0x5030000012d0
+[DIAGNOSTIC]   Allocating nucleus_labels[0] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[0] = "H" at 0x502000002b30
+[DIAGNOSTIC]   Allocating nucleus_labels[1] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[1] = "O" at 0x502000002b50
+[DIAGNOSTIC]   Allocating nucleus_labels[2] (2 bytes)...
+[DIAGNOSTIC]   nucleus_labels[2] = "H" at 0x502000002b70
+[DIAGNOSTIC]   Setting basis_shell_num = 5, basis_prim_num = 10
+[DIAGNOSTIC]   Allocating shell_ang_mom (40 bytes)...
+[DIAGNOSTIC]   shell_ang_mom allocated at: 0x504000000c50
+[DIAGNOSTIC]   Allocating exponent (80 bytes)...
+[DIAGNOSTIC]   exponent allocated at: 0x507000002be0
+[DIAGNOSTIC]   Setting mo_num = 7
+[DIAGNOSTIC]   Allocating mo_energy (56 bytes)...
+[DIAGNOSTIC]   mo_energy allocated at: 0x506000001280
+[DIAGNOSTIC]   All allocations completed successfully
+[DIAGNOSTIC]   [After simulate_trexio_allocations()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002b90
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Freeing test data...
+[DIAGNOSTIC]   Freeing allocated memory...
+[DIAGNOSTIC]   Freeing mo_energy (56 bytes)
+[DIAGNOSTIC]   Freeing exponent (80 bytes)
+[DIAGNOSTIC]   Freeing shell_ang_mom (40 bytes)
+[DIAGNOSTIC]   Freeing nucleus_labels[0]
+[DIAGNOSTIC]   Freeing nucleus_labels[1]
+[DIAGNOSTIC]   Freeing nucleus_labels[2]
+[DIAGNOSTIC]   Freeing nucleus_labels array (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_charge (24 bytes)
+[DIAGNOSTIC]   Freeing nucleus_coord (72 bytes)
+[DIAGNOSTIC]   Freeing test_data_t structure (120 bytes)
+[DIAGNOSTIC]   All memory freed successfully
+[DIAGNOSTIC]   [After free_test_data()]
+[DIAGNOSTIC]     Allocator address: 0x558111e19420
+[DIAGNOSTIC]     Allocator inst:    (nil)
+[DIAGNOSTIC]     Allocator realloc: 0x558111e06460
+[DIAGNOSTIC]     Testing allocator with small allocation...
+[DIAGNOSTIC]     Test allocation successful at: 0x502000002bb0
+[DIAGNOSTIC]     Test free completed
+[DIAGNOSTIC] Iteration 50 completed successfully
+[DIAGNOSTIC] 
+========================================
+[DIAGNOSTIC] All iterations completed successfully!
+[DIAGNOSTIC] No crashes detected in allocator operations.
