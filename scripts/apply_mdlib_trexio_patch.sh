@@ -8,7 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VIAMD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MDLIB_DIR="${VIAMD_ROOT}/ext/mdlib"
-PATCH_FILE="${VIAMD_ROOT}/docs/mdlib_trexio.patch"
+PATCH_FILE="${VIAMD_ROOT}/docs/mdlib_trexio_original.patch"
 
 echo "Applying mdlib TREXIO patch..."
 
@@ -49,10 +49,23 @@ else
 fi
 
 # Apply the patch
-echo "Applying patch..."
+echo "Applying patch from: ${PATCH_FILE}"
 if git apply "${PATCH_FILE}"; then
     echo "Patch applied successfully!"
+    echo ""
+    echo "TREXIO support files added:"
+    echo "  - CMakeLists.txt (modified)"
+    echo "  - src/md_trexio.c (new)"
+    echo "  - src/md_trexio.h (new)"
 else
     echo "Error: Failed to apply patch"
+    echo ""
+    echo "Troubleshooting:"
+    echo "1. Ensure mdlib is at commit 06da5a3:"
+    echo "   cd ${MDLIB_DIR} && git log --oneline -1"
+    echo ""
+    echo "2. Try resetting mdlib and applying again:"
+    echo "   cd ${MDLIB_DIR} && git reset --hard HEAD && git clean -fd"
+    echo "   cd ${VIAMD_ROOT} && ./scripts/apply_mdlib_trexio_patch.sh"
     exit 1
 fi
