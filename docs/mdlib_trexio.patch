@@ -1,78 +1,9 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e560af9..f908bf3 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -17,6 +17,7 @@ option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
- cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
- option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
- option(MD_ENABLE_VLX "Enable Veloxchem Support" OFF)
-+option(MD_ENABLE_TREXIO "Enable TREXIO Support" OFF)
- set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
- 
- set(CMAKE_C_STANDARD 11)
-@@ -142,6 +143,50 @@ if (${MD_ENABLE_VLX})
-     set (MD_DEFINES ${MD_DEFINES} MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
- endif()
- 
-+if (${MD_ENABLE_TREXIO})
-+    # Build TREXIO from source (download release tarball)
-+    # Using release tarball instead of git repository because it contains pre-generated source files
-+
-+    include(FetchContent)
-+
-+    message(STATUS "Downloading and building TREXIO from release tarball")
-+
-+    # Download TREXIO release tarball (version 2.6.0)
-+    FetchContent_Declare(
-+        trexio
-+        URL https://github.com/TREX-CoE/trexio/releases/download/v2.6.0/trexio-2.6.0.tar.gz
-+        URL_HASH SHA256=02b692c7792b4c8d041b1eeacdf144dca333a6ea699f66e911489768586de335
-+    )
-+
-+    # Configure TREXIO build options before fetching
-+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-+    set(BUILD_STATIC_LIBS ON CACHE BOOL "Build static libraries" FORCE)
-+    set(TREXIO_TESTS OFF CACHE BOOL "Disable TREXIO tests" FORCE)
-+    set(TREXIO_DEVEL OFF CACHE BOOL "Disable TREXIO developer mode" FORCE)
-+
-+    # Try to find HDF5 for TREXIO (optional)
-+    find_package(HDF5 QUIET COMPONENTS C)
-+    if (HDF5_FOUND)
-+        message(STATUS "HDF5 found, building TREXIO with HDF5 support")
-+        set(ENABLE_HDF5 ON CACHE BOOL "Enable HDF5 support in TREXIO" FORCE)
-+    else()
-+        message(STATUS "HDF5 not found, building TREXIO with text backend only")
-+        set(ENABLE_HDF5 OFF CACHE BOOL "Disable HDF5 support in TREXIO" FORCE)
-+    endif()
-+
-+    # Make TREXIO available
-+    FetchContent_MakeAvailable(trexio)
-+
-+    # Add TREXIO source files
-+    set(SRC_FILES ${SRC_FILES} src/md_trexio.c src/md_trexio.h)
-+    set(MD_DEFINES ${MD_DEFINES} MD_TREXIO)
-+    set(MD_LIBS ${MD_LIBS} trexio)
-+
-+    # Get the TREXIO source directory
-+    FetchContent_GetProperties(trexio SOURCE_DIR TREXIO_SRC_DIR)
-+    include_directories(${TREXIO_SRC_DIR}/include)
-+endif()
-+
- if (MD_ENABLE_NETCDF)
-     find_package(NetCDF REQUIRED)
-     set(MD_LIBS ${MD_LIBS} NetCDF::NetCDF_C)
-@@ -325,4 +370,5 @@ if (has_parent)
-     set(MD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB} PARENT_SCOPE)
-     set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} PARENT_SCOPE)
-     set(MD_ENABLE_VLX ${MD_ENABLE_VLX} PARENT_SCOPE)
-+    set(MD_ENABLE_TREXIO ${MD_ENABLE_TREXIO} PARENT_SCOPE)
- endif()
-diff --git a/src/md_trexio.c b/src/md_trexio.c
+diff --git src/md_trexio.c src/md_trexio.c
 new file mode 100644
-index 0000000..0625021
+index 0000000..79f437f
 --- /dev/null
-+++ b/src/md_trexio.c
-@@ -0,0 +1,868 @@
++++ src/md_trexio.c
+@@ -0,0 +1,861 @@
 +﻿#include "md_trexio.h"
 +
 +#include <core/md_allocator.h>
@@ -80,11 +11,9 @@ index 0000000..0625021
 +#include <core/md_log.h>
 +#include <core/md_str.h>
 +#include <md_system.h>
-+#include <md_util.h>
 +
 +#include <string.h>
 +#include <math.h>
-+#include <float.h>
 +
 +#ifdef MD_TREXIO
 +#include <trexio.h>
@@ -95,40 +24,40 @@ index 0000000..0625021
 +struct md_trexio_t {
 +    md_allocator_i* alloc;
 +    trexio_t* file;
-+
++    
 +    // Nucleus data
 +    int64_t nucleus_num;
 +    double* nucleus_coord;      // [3 * nucleus_num] in Angstrom
 +    double* nucleus_charge;     // [nucleus_num]
 +    char** nucleus_label;       // [nucleus_num]
 +    double nucleus_repulsion;
-+
++    
 +    // Basis set data
-+    int64_t basis_shell_num;
-+    int64_t basis_prim_num;
++    int32_t basis_shell_num;
++    int32_t basis_prim_num;
 +    char basis_type[32];
-+    int64_t* basis_nucleus_index;   // [basis_shell_num]
-+    int64_t* basis_shell_ang_mom;   // [basis_shell_num]
++    int32_t* basis_nucleus_index;   // [basis_shell_num]
++    int32_t* basis_shell_ang_mom;   // [basis_shell_num]
 +    double* basis_shell_factor;     // [basis_shell_num]
-+    int64_t* basis_shell_index;     // [basis_prim_num]
++    int32_t* basis_shell_index;     // [basis_prim_num]
 +    double* basis_exponent;         // [basis_prim_num]
 +    double* basis_coefficient;      // [basis_prim_num]
 +    double* basis_prim_factor;      // [basis_prim_num]
-+
++    
 +    // AO data
-+    int64_t ao_num;
-+
++    int32_t ao_num;
++    
 +    // MO data
-+    int64_t mo_num;
++    int32_t mo_num;
 +    double* mo_coefficient;     // [ao_num * mo_num]
 +    double* mo_energy;          // [mo_num]
 +    double* mo_occupation;      // [mo_num]
 +    char** mo_class;            // [mo_num]
 +    char** mo_symmetry;         // [mo_num]
-+
++    
 +    // Electron data
-+    int64_t num_up_electrons;
-+    int64_t num_down_electrons;
++    int32_t num_up_electrons;
++    int32_t num_down_electrons;
 +};
 +
 +md_trexio_t* md_trexio_create(md_allocator_i* alloc) {
@@ -136,25 +65,6 @@ index 0000000..0625021
 +    md_trexio_t* trexio = (md_trexio_t*)md_alloc(alloc, sizeof(md_trexio_t));
 +    MEMSET(trexio, 0, sizeof(md_trexio_t));
 +    trexio->alloc = alloc;
-+    
-+    // Explicitly initialize all pointer fields to NULL for safety
-+    trexio->file = NULL;
-+    trexio->nucleus_coord = NULL;
-+    trexio->nucleus_charge = NULL;
-+    trexio->nucleus_label = NULL;
-+    trexio->basis_nucleus_index = NULL;
-+    trexio->basis_shell_ang_mom = NULL;
-+    trexio->basis_shell_factor = NULL;
-+    trexio->basis_shell_index = NULL;
-+    trexio->basis_exponent = NULL;
-+    trexio->basis_coefficient = NULL;
-+    trexio->basis_prim_factor = NULL;
-+    trexio->mo_coefficient = NULL;
-+    trexio->mo_energy = NULL;
-+    trexio->mo_occupation = NULL;
-+    trexio->mo_class = NULL;
-+    trexio->mo_symmetry = NULL;
-+    
 +    return trexio;
 +}
 +
@@ -171,80 +81,35 @@ index 0000000..0625021
 +
 +void md_trexio_reset(md_trexio_t* trexio) {
 +    if (!trexio) return;
-+
++    
 +    md_allocator_i* alloc = trexio->alloc;
-+
++    
 +    if (trexio->file) {
 +        trexio_close(trexio->file);
 +        trexio->file = NULL;
 +    }
-+
++    
 +    // Free nucleus data
-+    if (trexio->nucleus_coord && trexio->nucleus_num > 0) {
-+        md_free(alloc, trexio->nucleus_coord, 3 * trexio->nucleus_num * sizeof(double));
-+        trexio->nucleus_coord = NULL;
-+    }
-+    if (trexio->nucleus_charge && trexio->nucleus_num > 0) {
-+        md_free(alloc, trexio->nucleus_charge, trexio->nucleus_num * sizeof(double));
-+        trexio->nucleus_charge = NULL;
-+    }
-+    if (trexio->nucleus_label && trexio->nucleus_num > 0) {
-+        free_string_array(trexio->nucleus_label, trexio->nucleus_num, alloc);
-+        trexio->nucleus_label = NULL;
-+    }
-+
++    if (trexio->nucleus_coord) md_free(alloc, trexio->nucleus_coord, 3 * trexio->nucleus_num * sizeof(double));
++    if (trexio->nucleus_charge) md_free(alloc, trexio->nucleus_charge, trexio->nucleus_num * sizeof(double));
++    free_string_array(trexio->nucleus_label, trexio->nucleus_num, alloc);
++    
 +    // Free basis data
-+    if (trexio->basis_nucleus_index && trexio->basis_shell_num > 0) {
-+        md_free(alloc, trexio->basis_nucleus_index, trexio->basis_shell_num * sizeof(int64_t));
-+        trexio->basis_nucleus_index = NULL;
-+    }
-+    if (trexio->basis_shell_ang_mom && trexio->basis_shell_num > 0) {
-+        md_free(alloc, trexio->basis_shell_ang_mom, trexio->basis_shell_num * sizeof(int64_t));
-+        trexio->basis_shell_ang_mom = NULL;
-+    }
-+    if (trexio->basis_shell_factor && trexio->basis_shell_num > 0) {
-+        md_free(alloc, trexio->basis_shell_factor, trexio->basis_shell_num * sizeof(double));
-+        trexio->basis_shell_factor = NULL;
-+    }
-+    if (trexio->basis_shell_index && trexio->basis_prim_num > 0) {
-+        md_free(alloc, trexio->basis_shell_index, trexio->basis_prim_num * sizeof(int64_t));
-+        trexio->basis_shell_index = NULL;
-+    }
-+    if (trexio->basis_exponent && trexio->basis_prim_num > 0) {
-+        md_free(alloc, trexio->basis_exponent, trexio->basis_prim_num * sizeof(double));
-+        trexio->basis_exponent = NULL;
-+    }
-+    if (trexio->basis_coefficient && trexio->basis_prim_num > 0) {
-+        md_free(alloc, trexio->basis_coefficient, trexio->basis_prim_num * sizeof(double));
-+        trexio->basis_coefficient = NULL;
-+    }
-+    if (trexio->basis_prim_factor && trexio->basis_prim_num > 0) {
-+        md_free(alloc, trexio->basis_prim_factor, trexio->basis_prim_num * sizeof(double));
-+        trexio->basis_prim_factor = NULL;
-+    }
-+
++    if (trexio->basis_nucleus_index) md_free(alloc, trexio->basis_nucleus_index, trexio->basis_shell_num * sizeof(int32_t));
++    if (trexio->basis_shell_ang_mom) md_free(alloc, trexio->basis_shell_ang_mom, trexio->basis_shell_num * sizeof(int32_t));
++    if (trexio->basis_shell_factor) md_free(alloc, trexio->basis_shell_factor, trexio->basis_shell_num * sizeof(double));
++    if (trexio->basis_shell_index) md_free(alloc, trexio->basis_shell_index, trexio->basis_prim_num * sizeof(int32_t));
++    if (trexio->basis_exponent) md_free(alloc, trexio->basis_exponent, trexio->basis_prim_num * sizeof(double));
++    if (trexio->basis_coefficient) md_free(alloc, trexio->basis_coefficient, trexio->basis_prim_num * sizeof(double));
++    if (trexio->basis_prim_factor) md_free(alloc, trexio->basis_prim_factor, trexio->basis_prim_num * sizeof(double));
++    
 +    // Free MO data
-+    if (trexio->mo_coefficient && trexio->ao_num > 0 && trexio->mo_num > 0) {
-+        md_free(alloc, trexio->mo_coefficient, trexio->ao_num * trexio->mo_num * sizeof(double));
-+        trexio->mo_coefficient = NULL;
-+    }
-+    if (trexio->mo_energy && trexio->mo_num > 0) {
-+        md_free(alloc, trexio->mo_energy, trexio->mo_num * sizeof(double));
-+        trexio->mo_energy = NULL;
-+    }
-+    if (trexio->mo_occupation && trexio->mo_num > 0) {
-+        md_free(alloc, trexio->mo_occupation, trexio->mo_num * sizeof(double));
-+        trexio->mo_occupation = NULL;
-+    }
-+    if (trexio->mo_class && trexio->mo_num > 0) {
-+        free_string_array(trexio->mo_class, trexio->mo_num, alloc);
-+        trexio->mo_class = NULL;
-+    }
-+    if (trexio->mo_symmetry && trexio->mo_num > 0) {
-+        free_string_array(trexio->mo_symmetry, trexio->mo_num, alloc);
-+        trexio->mo_symmetry = NULL;
-+    }
-+
++    if (trexio->mo_coefficient) md_free(alloc, trexio->mo_coefficient, trexio->ao_num * trexio->mo_num * sizeof(double));
++    if (trexio->mo_energy) md_free(alloc, trexio->mo_energy, trexio->mo_num * sizeof(double));
++    if (trexio->mo_occupation) md_free(alloc, trexio->mo_occupation, trexio->mo_num * sizeof(double));
++    free_string_array(trexio->mo_class, trexio->mo_num, alloc);
++    free_string_array(trexio->mo_symmetry, trexio->mo_num, alloc);
++    
 +    MEMSET(trexio, 0, sizeof(md_trexio_t));
 +    trexio->alloc = alloc;
 +}
@@ -258,103 +123,329 @@ index 0000000..0625021
 +
 +bool md_trexio_parse_file(md_trexio_t* trexio, str_t filename) {
 +    if (!trexio) {
-+        MD_LOG_ERROR("TREXIO: Invalid trexio object");
++        MD_LOG_ERROR("TREXIO: Invalid trexio object (NULL pointer)");
 +        return false;
 +    }
-+
++    
++    if (!filename.ptr || filename.len == 0) {
++        MD_LOG_ERROR("TREXIO: Invalid filename");
++        return false;
++    }
++    
 +    // Reset any existing data
 +    md_trexio_reset(trexio);
-+
-+    // Convert str_t to null-terminated string
++    
++    // Convert str_t to null-terminated string (with bounds check)
++    if (filename.len > 4096) {
++        MD_LOG_ERROR("TREXIO: Filename too long (%lld characters, max 4096)", (long long)filename.len);
++        return false;
++    }
++    
 +    char* path = (char*)md_alloc(trexio->alloc, filename.len + 1);
++    if (!path) {
++        MD_LOG_ERROR("TREXIO: Failed to allocate memory for filename");
++        return false;
++    }
 +    MEMCPY(path, filename.ptr, filename.len);
 +    path[filename.len] = '\0';
-+
++    
++    MD_LOG_INFO("TREXIO: Opening file: %s", path);
++    
 +    // Open TREXIO file (auto-detect backend)
 +    trexio_exit_code rc;
 +    trexio->file = trexio_open(path, 'r', TREXIO_AUTO, &rc);
 +    md_free(trexio->alloc, path, filename.len + 1);
-+
++    
 +    if (rc != TREXIO_SUCCESS || !trexio->file) {
-+        MD_LOG_ERROR("TREXIO: Failed to open file: %s", trexio_string_of_error(rc));
++        MD_LOG_ERROR("TREXIO: Failed to open file: %s (error code: %d)", trexio_string_of_error(rc), rc);
 +        return false;
 +    }
-+
++    
 +    md_allocator_i* alloc = trexio->alloc;
-+
-+    // Read nucleus data
-+    int32_t nucleus_num_i32;
-+    rc = trexio_read_nucleus_num(trexio->file, &nucleus_num_i32);
++    
++    // Read nucleus data (required)
++    MD_LOG_INFO("TREXIO: Reading nuclear data...");
++    rc = trexio_read_nucleus_num(trexio->file, &trexio->nucleus_num);
 +    if (rc != TREXIO_SUCCESS) {
-+        MD_LOG_ERROR("TREXIO: Failed to read nucleus_num: %s", trexio_string_of_error(rc));
++        MD_LOG_ERROR("TREXIO: Failed to read nucleus_num (required field): %s", trexio_string_of_error(rc));
 +        goto error;
 +    }
-+    trexio->nucleus_num = (int64_t)nucleus_num_i32;
-+
++    
++    if (trexio->nucleus_num <= 0) {
++        MD_LOG_ERROR("TREXIO: Invalid nucleus_num: %lld (must be > 0)", (long long)trexio->nucleus_num);
++        goto error;
++    }
++    
++    if (trexio->nucleus_num > 1000000) {
++        MD_LOG_ERROR("TREXIO: Nucleus count too large: %lld (max 1000000 for safety)", (long long)trexio->nucleus_num);
++        goto error;
++    }
++    
++    MD_LOG_INFO("TREXIO: Found %lld atoms", (long long)trexio->nucleus_num);
++    
 +    if (trexio->nucleus_num > 0) {
 +        // Allocate and read coordinates (stored in Bohr in TREXIO, convert to Angstrom)
 +        trexio->nucleus_coord = (double*)md_alloc(alloc, 3 * trexio->nucleus_num * sizeof(double));
++        if (!trexio->nucleus_coord) {
++            MD_LOG_ERROR("TREXIO: Failed to allocate memory for coordinates");
++            goto error;
++        }
++        
 +        rc = trexio_read_nucleus_coord(trexio->file, trexio->nucleus_coord);
 +        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_ERROR("TREXIO: Failed to read nucleus_coord: %s", trexio_string_of_error(rc));
++            MD_LOG_ERROR("TREXIO: Failed to read nucleus_coord (required field): %s", trexio_string_of_error(rc));
 +            goto error;
 +        }
-+
-+        // Convert from Bohr to Angstrom
++        
++        // Convert from Bohr to Angstrom and validate coordinates
 +        for (int64_t i = 0; i < 3 * trexio->nucleus_num; ++i) {
 +            trexio->nucleus_coord[i] *= BOHR_TO_ANGSTROM;
-+        }
-+
-+        // Read charges
-+        trexio->nucleus_charge = (double*)md_alloc(alloc, trexio->nucleus_num * sizeof(double));
-+        rc = trexio_read_nucleus_charge(trexio->file, trexio->nucleus_charge);
-+        if (rc != TREXIO_SUCCESS) {
-+            MD_LOG_ERROR("TREXIO: Failed to read nucleus_charge: %s", trexio_string_of_error(rc));
-+            goto error;
-+        }
-+
-+        // Read labels
-+        int32_t max_str_len = 32;
-+        char* labels_buffer = (char*)md_alloc(alloc, trexio->nucleus_num * max_str_len);
-+        rc = trexio_read_nucleus_label(trexio->file, labels_buffer, max_str_len);
-+        if (rc == TREXIO_SUCCESS) {
-+            trexio->nucleus_label = (char**)md_alloc(alloc, trexio->nucleus_num * sizeof(char*));
-+            for (int64_t i = 0; i < trexio->nucleus_num; ++i) {
-+                const char* label = labels_buffer + i * max_str_len;
-+                size_t len = strlen(label);
-+                trexio->nucleus_label[i] = (char*)md_alloc(alloc, len + 1);
-+                MEMCPY(trexio->nucleus_label[i], label, len + 1);
++            // Check for NaN or Inf values
++            if (!isfinite(trexio->nucleus_coord[i])) {
++                MD_LOG_ERROR("TREXIO: Invalid coordinate value at index %lld (NaN or Inf)", (long long)i);
++                goto error;
 +            }
 +        }
-+        md_free(alloc, labels_buffer, trexio->nucleus_num * max_str_len);
++        
++        // Read charges (required)
++        trexio->nucleus_charge = (double*)md_alloc(alloc, trexio->nucleus_num * sizeof(double));
++        if (!trexio->nucleus_charge) {
++            MD_LOG_ERROR("TREXIO: Failed to allocate memory for charges");
++            goto error;
++        }
++        
++        rc = trexio_read_nucleus_charge(trexio->file, trexio->nucleus_charge);
++        if (rc != TREXIO_SUCCESS) {
++            MD_LOG_ERROR("TREXIO: Failed to read nucleus_charge (required field): %s", trexio_string_of_error(rc));
++            goto error;
++        }
++        
++        // Validate charges
++        for (int64_t i = 0; i < trexio->nucleus_num; ++i) {
++            if (trexio->nucleus_charge[i] < 0.0 || trexio->nucleus_charge[i] > 118.0) {
++                MD_LOG_INFO("TREXIO: Warning - unusual nuclear charge %g at atom %lld", 
++                           trexio->nucleus_charge[i], (long long)i);
++            }
++        }
++        
++        // Read labels (optional but recommended)
++        int32_t max_str_len = 32;
++        char* labels_buffer = (char*)md_alloc(alloc, trexio->nucleus_num * max_str_len);
++        if (!labels_buffer) {
++            MD_LOG_INFO("TREXIO: Warning - Failed to allocate memory for labels, skipping");
++        } else {
++            rc = trexio_read_nucleus_label(trexio->file, labels_buffer, max_str_len);
++            if (rc == TREXIO_SUCCESS) {
++                trexio->nucleus_label = (char**)md_alloc(alloc, trexio->nucleus_num * sizeof(char*));
++                if (trexio->nucleus_label) {
++                    for (int64_t i = 0; i < trexio->nucleus_num; ++i) {
++                        const char* label = labels_buffer + i * max_str_len;
++                        size_t len = strnlen(label, max_str_len);  // Use strnlen for safety
++                        if (len > 0) {
++                            trexio->nucleus_label[i] = (char*)md_alloc(alloc, len + 1);
++                            if (trexio->nucleus_label[i]) {
++                                MEMCPY(trexio->nucleus_label[i], label, len);
++                                trexio->nucleus_label[i][len] = '\0';
++                            }
++                        } else {
++                            trexio->nucleus_label[i] = NULL;
++                        }
++                    }
++                }
++            } else {
++                MD_LOG_INFO("TREXIO: Warning - nucleus labels not present (optional field)");
++            }
++            md_free(alloc, labels_buffer, trexio->nucleus_num * max_str_len);
++        }
 +    }
-+
++    
 +    // Read nuclear repulsion energy (optional)
 +    rc = trexio_read_nucleus_repulsion(trexio->file, &trexio->nucleus_repulsion);
 +    if (rc != TREXIO_SUCCESS) {
++        MD_LOG_INFO("TREXIO: Nuclear repulsion energy not present (optional field)");
 +        trexio->nucleus_repulsion = 0.0;
++    } else {
++        MD_LOG_INFO("TREXIO: Nuclear repulsion energy: %g Hartree", trexio->nucleus_repulsion);
 +    }
-+
-+    // Read basis set data (optional, may not be present)
-+    // TEMPORARILY DISABLED - focus on geometry first
-+    trexio->basis_shell_num = 0;
-+    trexio->basis_prim_num = 0;
 +    
++    // Read basis set data (optional, may not be present)
++    MD_LOG_INFO("TREXIO: Reading basis set data (optional)...");
++    rc = trexio_read_basis_shell_num(trexio->file, &trexio->basis_shell_num);
++    if (rc == TREXIO_SUCCESS && trexio->basis_shell_num > 0) {
++        MD_LOG_INFO("TREXIO: Found %d basis shells", (int)trexio->basis_shell_num);
++        
++        // Validate basis shell count
++        if (trexio->basis_shell_num > 100000) {
++            MD_LOG_INFO("TREXIO: Warning - very large basis set (%d shells), may cause performance issues",
++                       (int)trexio->basis_shell_num);
++        }
++        
++        rc = trexio_read_basis_prim_num(trexio->file, &trexio->basis_prim_num);
++        if (rc != TREXIO_SUCCESS) {
++            MD_LOG_INFO("TREXIO: basis_shell_num present but basis_prim_num missing (skipping basis data)");
++            goto skip_basis;
++        }
++        
++        MD_LOG_INFO("TREXIO: Found %d basis primitives", (int)trexio->basis_prim_num);
++        
++        // Read basis type
++        rc = trexio_read_basis_type(trexio->file, trexio->basis_type, sizeof(trexio->basis_type));
++        if (rc != TREXIO_SUCCESS) {
++            strcpy(trexio->basis_type, "Gaussian");  // Default assumption
++        }
++        
++        // Allocate and read basis arrays
++        trexio->basis_nucleus_index = (int32_t*)md_alloc(alloc, trexio->basis_shell_num * sizeof(int32_t));
++        trexio->basis_shell_ang_mom = (int32_t*)md_alloc(alloc, trexio->basis_shell_num * sizeof(int32_t));
++        trexio->basis_shell_factor = (double*)md_alloc(alloc, trexio->basis_shell_num * sizeof(double));
++        trexio->basis_shell_index = (int32_t*)md_alloc(alloc, trexio->basis_prim_num * sizeof(int32_t));
++        trexio->basis_exponent = (double*)md_alloc(alloc, trexio->basis_prim_num * sizeof(double));
++        trexio->basis_coefficient = (double*)md_alloc(alloc, trexio->basis_prim_num * sizeof(double));
++        trexio->basis_prim_factor = (double*)md_alloc(alloc, trexio->basis_prim_num * sizeof(double));
++        
++        rc = trexio_read_basis_nucleus_index(trexio->file, trexio->basis_nucleus_index);
++        if (rc != TREXIO_SUCCESS) {
++            MD_LOG_INFO("TREXIO: Failed to read basis_nucleus_index: %s", trexio_string_of_error(rc));
++            goto skip_basis;
++        }
++        
++        rc = trexio_read_basis_shell_ang_mom(trexio->file, trexio->basis_shell_ang_mom);
++        if (rc != TREXIO_SUCCESS) {
++            MD_LOG_INFO("TREXIO: Failed to read basis_shell_ang_mom: %s", trexio_string_of_error(rc));
++            goto skip_basis;
++        }
++        
++        rc = trexio_read_basis_shell_factor(trexio->file, trexio->basis_shell_factor);
++        if (rc != TREXIO_SUCCESS) {
++            // Optional field, set to 1.0
++            for (int64_t i = 0; i < trexio->basis_shell_num; ++i) {
++                trexio->basis_shell_factor[i] = 1.0;
++            }
++        }
++        
++        rc = trexio_read_basis_shell_index(trexio->file, trexio->basis_shell_index);
++        if (rc != TREXIO_SUCCESS) {
++            MD_LOG_INFO("TREXIO: Failed to read basis_shell_index: %s", trexio_string_of_error(rc));
++            goto skip_basis;
++        }
++        
++        rc = trexio_read_basis_exponent(trexio->file, trexio->basis_exponent);
++        if (rc != TREXIO_SUCCESS) {
++            MD_LOG_INFO("TREXIO: Failed to read basis_exponent: %s", trexio_string_of_error(rc));
++            goto skip_basis;
++        }
++        
++        rc = trexio_read_basis_coefficient(trexio->file, trexio->basis_coefficient);
++        if (rc != TREXIO_SUCCESS) {
++            MD_LOG_INFO("TREXIO: Failed to read basis_coefficient: %s", trexio_string_of_error(rc));
++            goto skip_basis;
++        }
++        
++        rc = trexio_read_basis_prim_factor(trexio->file, trexio->basis_prim_factor);
++        if (rc != TREXIO_SUCCESS) {
++            // Optional field, set to 1.0
++            for (int64_t i = 0; i < trexio->basis_prim_num; ++i) {
++                trexio->basis_prim_factor[i] = 1.0;
++            }
++        }
++    }
 +skip_basis:
-+
-+    // Read AO and MO data (optional)
-+    // TEMPORARILY DISABLED - focus on geometry first  
-+    trexio->ao_num = 0;
-+    trexio->mo_num = 0;
-+
-+    // Read electron numbers (optional)
-+    // TEMPORARILY DISABLED - focus on geometry first
-+    trexio->num_up_electrons = 0;
-+    trexio->num_down_electrons = 0;
-+
++    
++    // Read AO number (optional)
++    MD_LOG_INFO("TREXIO: Reading atomic orbital data (optional)...");
++    rc = trexio_read_ao_num(trexio->file, &trexio->ao_num);
++    if (rc != TREXIO_SUCCESS) {
++        MD_LOG_INFO("TREXIO: AO count not present (optional field)");
++        trexio->ao_num = 0;
++    } else {
++        MD_LOG_INFO("TREXIO: Found %d atomic orbitals", (int)trexio->ao_num);
++    }
++    
++    // Read MO data (optional but commonly present)
++    MD_LOG_INFO("TREXIO: Reading molecular orbital data (optional)...");
++    rc = trexio_read_mo_num(trexio->file, &trexio->mo_num);
++    if (rc == TREXIO_SUCCESS && trexio->mo_num > 0 && trexio->ao_num > 0) {
++        MD_LOG_INFO("TREXIO: Found %d molecular orbitals", (int)trexio->mo_num);
++        
++        // Validate MO/AO sizes for memory safety
++        if ((int64_t)trexio->ao_num * (int64_t)trexio->mo_num > 100000000) {
++            MD_LOG_INFO("TREXIO: Warning - MO coefficient matrix very large (%d x %d), skipping for memory safety",
++                       (int)trexio->ao_num, (int)trexio->mo_num);
++            goto skip_mo;
++        }
++        
++        // Allocate and read MO coefficients
++        size_t mo_coeff_size = (size_t)trexio->ao_num * (size_t)trexio->mo_num * sizeof(double);
++        MD_LOG_INFO("TREXIO: Allocating %.2f MB for MO coefficients", mo_coeff_size / (1024.0 * 1024.0));
++        trexio->mo_coefficient = (double*)md_alloc(alloc, mo_coeff_size);
++        if (!trexio->mo_coefficient) {
++            MD_LOG_INFO("TREXIO: Failed to allocate memory for MO coefficients, skipping");
++            goto skip_mo;
++        }
++        
++        rc = trexio_read_mo_coefficient(trexio->file, trexio->mo_coefficient);
++        if (rc != TREXIO_SUCCESS) {
++            MD_LOG_INFO("TREXIO: Failed to read mo_coefficient: %s", trexio_string_of_error(rc));
++            md_free(alloc, trexio->mo_coefficient, mo_coeff_size);
++            trexio->mo_coefficient = NULL;
++            goto skip_mo;
++        }
++        
++        MD_LOG_INFO("TREXIO: Successfully loaded MO coefficients");
++        
++        // Read MO energies (optional but commonly present)
++        trexio->mo_energy = (double*)md_alloc(alloc, trexio->mo_num * sizeof(double));
++        if (trexio->mo_energy) {
++            rc = trexio_read_mo_energy(trexio->file, trexio->mo_energy);
++            if (rc != TREXIO_SUCCESS) {
++                MD_LOG_INFO("TREXIO: MO energies not present (optional field)");
++                md_free(alloc, trexio->mo_energy, trexio->mo_num * sizeof(double));
++                trexio->mo_energy = NULL;
++            } else {
++                MD_LOG_INFO("TREXIO: Successfully loaded MO energies");
++            }
++        }
++        
++        // Read MO occupations (optional but commonly present)
++        trexio->mo_occupation = (double*)md_alloc(alloc, trexio->mo_num * sizeof(double));
++        if (trexio->mo_occupation) {
++            rc = trexio_read_mo_occupation(trexio->file, trexio->mo_occupation);
++            if (rc != TREXIO_SUCCESS) {
++                MD_LOG_INFO("TREXIO: MO occupations not present (optional field)");
++                md_free(alloc, trexio->mo_occupation, trexio->mo_num * sizeof(double));
++                trexio->mo_occupation = NULL;
++            } else {
++                MD_LOG_INFO("TREXIO: Successfully loaded MO occupations");
++            }
++        }
++    } else if (rc != TREXIO_SUCCESS) {
++        MD_LOG_INFO("TREXIO: MO data not present (optional field)");
++    }
++skip_mo:
++    
++    // Read electron numbers (optional but commonly present)
++    MD_LOG_INFO("TREXIO: Reading electron configuration (optional)...");
++    rc = trexio_read_electron_up_num(trexio->file, &trexio->num_up_electrons);
++    if (rc != TREXIO_SUCCESS) {
++        MD_LOG_INFO("TREXIO: Up-spin electron count not present (optional field)");
++        trexio->num_up_electrons = 0;
++    }
++    
++    rc = trexio_read_electron_dn_num(trexio->file, &trexio->num_down_electrons);
++    if (rc != TREXIO_SUCCESS) {
++        MD_LOG_INFO("TREXIO: Down-spin electron count not present (optional field)");
++        trexio->num_down_electrons = 0;
++    }
++    
++    if (trexio->num_up_electrons > 0 || trexio->num_down_electrons > 0) {
++        MD_LOG_INFO("TREXIO: Electron configuration: %d up, %d down (total: %d)",
++                   (int)trexio->num_up_electrons, (int)trexio->num_down_electrons,
++                   (int)(trexio->num_up_electrons + trexio->num_down_electrons));
++    }
++    
 +    MD_LOG_INFO("TREXIO: Successfully loaded file with %lld atoms", (long long)trexio->nucleus_num);
 +    return true;
-+
++    
 +error:
 +    md_trexio_reset(trexio);
 +    return false;
@@ -435,261 +526,93 @@ index 0000000..0625021
 +
 +// GTO extraction functions
 +
-+// Cartesian angular momentum lookup tables (same as VeloxChem)
-+typedef uint8_t lmn_t[3];
-+
-+static const lmn_t S_lmn[1] = {{0,0,0}};
-+static const lmn_t P_lmn[3] = {{1,0,0}, {0,1,0}, {0,0,1}};
-+static const lmn_t D_lmn[6] = {{2,0,0}, {1,1,0}, {1,0,1}, {0,2,0}, {0,1,1}, {0,0,2}};
-+static const lmn_t F_lmn[10] = {{3,0,0}, {2,1,0}, {2,0,1}, {1,2,0}, {1,1,1}, {1,0,2}, {0,3,0}, {0,2,1}, {0,1,2}, {0,0,3}};
-+static const lmn_t G_lmn[15] = {{4,0,0}, {3,1,0}, {3,0,1}, {2,2,0}, {2,1,1}, {2,0,2}, {1,3,0}, {1,2,1}, {1,1,2}, {1,0,3}, {0,4,0}, {0,3,1}, {0,2,2}, {0,1,3}, {0,0,4}};
-+
-+static inline const lmn_t* cartesian_angular_momentum(int angl) {
-+    switch (angl) {
-+    case 0: return S_lmn;
-+    case 1: return P_lmn;
-+    case 2: return D_lmn;
-+    case 3: return F_lmn;
-+    case 4: return G_lmn;
-+    default: 
-+        ASSERT(false);
-+        return NULL;
-+    }
-+}
-+
-+static inline int num_cartesian_components(int angl) {
-+    return ((angl + 1) * (angl + 2)) / 2;
-+}
-+
-+bool md_trexio_extract_ao_data(md_gto_data_t* out_ao_data, const md_trexio_t* trexio,
++bool md_trexio_extract_ao_data(md_gto_data_t* out_ao_data, const md_trexio_t* trexio, 
 +                                 double cutoff_value, md_allocator_i* alloc) {
-+    if (!out_ao_data || !trexio || !alloc) {
-+        MD_LOG_ERROR("TREXIO: Invalid parameters for md_trexio_extract_ao_data");
-+        return false;
-+    }
-+
-+    if (trexio->basis_shell_num == 0 || trexio->basis_prim_num == 0) {
-+        MD_LOG_ERROR("TREXIO: No basis set data available");
-+        return false;
-+    }
-+
-+    // Initialize output structure
-+    MEMSET(out_ao_data, 0, sizeof(md_gto_data_t));
-+
-+    // Following VeloxChem's pattern: iterate by shell, expand each to AOs with their primitives
-+    // TREXIO stores basis as shells, each shell has primitives and expands to multiple AOs
-+    // based on angular momentum
-+    
-+    for (int64_t shell_idx = 0; shell_idx < trexio->basis_shell_num; shell_idx++) {
-+        int64_t atom_idx = trexio->basis_nucleus_index[shell_idx];
-+        int angl = (int)trexio->basis_shell_ang_mom[shell_idx];
-+        double shell_factor = trexio->basis_shell_factor[shell_idx];
-+        
-+        if (atom_idx < 0 || atom_idx >= trexio->nucleus_num) {
-+            MD_LOG_ERROR("TREXIO: Invalid atom index %lld in shell %lld", 
-+                        (long long)atom_idx, (long long)shell_idx);
-+            return false;
-+        }
-+
-+        // Get atom coordinates - conversion from Ångström to Bohr (same as VeloxChem)
-+        float x = (float)(trexio->nucleus_coord[atom_idx * 3 + 0] * ANGSTROM_TO_BOHR);
-+        float y = (float)(trexio->nucleus_coord[atom_idx * 3 + 1] * ANGSTROM_TO_BOHR);
-+        float z = (float)(trexio->nucleus_coord[atom_idx * 3 + 2] * ANGSTROM_TO_BOHR);
-+
-+        // Get cartesian components for this angular momentum (same as VeloxChem)
-+        const lmn_t* lmn = cartesian_angular_momentum(angl);
-+        int ncomp = num_cartesian_components(angl);
-+        
-+        // For each cartesian component (AO)
-+        for (int icomp = 0; icomp < ncomp; icomp++) {
-+            vec4_t cgto_xyzr = {x, y, z, FLT_MAX};
-+            uint32_t cgto_offset = (uint32_t)out_ao_data->num_pgtos;
-+            
-+            int lx = lmn[icomp][0];
-+            int ly = lmn[icomp][1];
-+            int lz = lmn[icomp][2];
-+            
-+            // Process primitives for this shell (same pattern as VeloxChem)
-+            for (int64_t prim_idx = 0; prim_idx < trexio->basis_prim_num; prim_idx++) {
-+                if (trexio->basis_shell_index[prim_idx] != shell_idx) {
-+                    continue;  // This primitive belongs to a different shell
-+                }
-+                
-+                double alpha = trexio->basis_exponent[prim_idx];
-+                double coeff = trexio->basis_coefficient[prim_idx];
-+                double prim_factor = trexio->basis_prim_factor[prim_idx];
-+                
-+                // Combined normalization coefficient
-+                double normcoef = shell_factor * prim_factor * coeff;
-+                
-+                // Create PGTO (same structure as VeloxChem)
-+                md_pgto_t pgto = {
-+                    .coeff = (float)normcoef,
-+                    .alpha = (float)alpha,
-+                    .radius = FLT_MAX,  // Will be computed later if needed
-+                    .i = (uint8_t)lx,
-+                    .j = (uint8_t)ly,
-+                    .k = (uint8_t)lz,
-+                    .l = (uint8_t)angl,
-+                };
-+                
-+                md_array_push(out_ao_data->pgtos, pgto, alloc);
-+                out_ao_data->num_pgtos += 1;
-+            }
-+            
-+            md_array_push(out_ao_data->cgto_xyzr, cgto_xyzr, alloc);
-+            md_array_push(out_ao_data->cgto_offset, cgto_offset, alloc);
-+            out_ao_data->num_cgtos += 1;
-+        }
-+    }
-+
-+    // Add final offset (same as VeloxChem)
-+    if (out_ao_data->num_cgtos > 0) {
-+        md_array_push(out_ao_data->cgto_offset, (uint32_t)out_ao_data->num_pgtos, alloc);
-+    }
-+
-+    MD_LOG_INFO("TREXIO: Extracted %zu CGTOs with %zu PGTOs from %lld shells", 
-+                out_ao_data->num_cgtos, out_ao_data->num_pgtos, 
-+                (long long)trexio->basis_shell_num);
-+
-+    return true;
++    // This would require implementing the conversion from TREXIO basis data to md_gto_data_t
++    // This is a placeholder for now
++    (void)out_ao_data;
++    (void)trexio;
++    (void)cutoff_value;
++    (void)alloc;
++    MD_LOG_INFO("TREXIO: md_trexio_extract_ao_data not yet implemented");
++    return false;
 +}
 +
 +size_t md_trexio_mo_gto_count(const md_trexio_t* trexio) {
-+    if (!trexio) return 0;
-+    
-+    // Upper bound: total number of primitive GTOs across all basis functions
-+    // This matches the approach used by VeloxChem
-+    size_t count = 0;
-+    for (int64_t shell_idx = 0; shell_idx < trexio->basis_shell_num; shell_idx++) {
-+        int l = (int)trexio->basis_shell_ang_mom[shell_idx];
-+        int num_aos = num_cartesian_components(l);
-+        
-+        // Count primitives in this shell
-+        int64_t num_prims = 0;
-+        for (int64_t prim_idx = 0; prim_idx < trexio->basis_prim_num; prim_idx++) {
-+            if (trexio->basis_shell_index[prim_idx] == shell_idx) {
-+                num_prims++;
-+            }
-+        }
-+        
-+        // Each AO in shell has the same set of primitives
-+        count += (size_t)(num_aos * num_prims);
-+    }
-+    
-+    return count;
++    // Placeholder
++    (void)trexio;
++    return 0;
 +}
 +
-+size_t md_trexio_mo_gto_extract(md_gto_t gtos[], const md_trexio_t* trexio,
++size_t md_trexio_mo_gto_extract(md_gto_t gtos[], const md_trexio_t* trexio, 
 +                                 size_t mo_idx, double value_cutoff) {
-+    if (!gtos || !trexio) {
-+        MD_LOG_ERROR("TREXIO: Invalid parameters for md_trexio_mo_gto_extract");
-+        return 0;
-+    }
-+
-+    if (mo_idx >= (size_t)trexio->mo_num) {
-+        MD_LOG_ERROR("TREXIO: Invalid MO index %zu (max %lld)", mo_idx, (long long)trexio->mo_num - 1);
-+        return 0;
-+    }
-+
-+    if (!trexio->mo_coefficient) {
-+        MD_LOG_ERROR("TREXIO: No MO coefficients available");
-+        return 0;
-+    }
-+
-+    // Extract AO data first (we need this to build the MO GTOs)
-+    // Use temporary allocator for AO data
-+    md_allocator_i* temp_alloc = md_get_heap_allocator();
-+    md_gto_data_t ao_data = {0};
-+    
-+    if (!md_trexio_extract_ao_data(&ao_data, trexio, value_cutoff, temp_alloc)) {
-+        MD_LOG_ERROR("TREXIO: Failed to extract AO data");
-+        return 0;
-+    }
-+
-+    // Get MO coefficients for this MO (column mo_idx from coefficient matrix)
-+    // Matrix is stored column-major: mo_coefficient[ao_num * mo_num]
-+    const double* mo_coeffs = trexio->mo_coefficient + (mo_idx * trexio->ao_num);
-+
-+    // Build GTOs by combining MO coefficients with AO basis functions
-+    size_t gto_count = 0;
-+    for (size_t ao_idx = 0; ao_idx < ao_data.num_cgtos; ao_idx++) {
-+        double mo_coeff = mo_coeffs[ao_idx];
-+        
-+        // Skip AOs with negligible contribution
-+        if (fabs(mo_coeff) < 1.0e-10) {
-+            continue;
-+        }
-+        
-+        uint32_t prim_start = ao_data.cgto_offset[ao_idx];
-+        uint32_t prim_end = ao_data.cgto_offset[ao_idx + 1];
-+        
-+        for (uint32_t prim_idx = prim_start; prim_idx < prim_end; prim_idx++) {
-+            const md_pgto_t* pgto = &ao_data.pgtos[prim_idx];
-+            
-+            // Combined coefficient: MO_coeff * AO_coeff
-+            double combined_coeff = mo_coeff * pgto->coeff;
-+            
-+            // Recompute radius with combined coefficient and cutoff
-+            double radius = md_gto_compute_radius_of_influence(
-+                pgto->i, pgto->j, pgto->k, combined_coeff, pgto->alpha, value_cutoff);
-+            
-+            if (radius > 0.0) {
-+                gtos[gto_count].x = ao_data.cgto_xyzr[ao_idx].x;
-+                gtos[gto_count].y = ao_data.cgto_xyzr[ao_idx].y;
-+                gtos[gto_count].z = ao_data.cgto_xyzr[ao_idx].z;
-+                gtos[gto_count].coeff = (float)combined_coeff;
-+                gtos[gto_count].alpha = pgto->alpha;
-+                gtos[gto_count].cutoff = (float)radius;
-+                gtos[gto_count].i = pgto->i;
-+                gtos[gto_count].j = pgto->j;
-+                gtos[gto_count].k = pgto->k;
-+                gtos[gto_count].l = pgto->l;
-+                gto_count++;
-+            }
-+        }
-+    }
-+
-+    // Clean up temporary AO data
-+    if (ao_data.cgto_xyzr) md_free(temp_alloc, ao_data.cgto_xyzr, ao_data.num_cgtos * sizeof(vec4_t));
-+    if (ao_data.cgto_offset) md_free(temp_alloc, ao_data.cgto_offset, (ao_data.num_cgtos + 1) * sizeof(uint32_t));
-+    if (ao_data.pgtos) md_free(temp_alloc, ao_data.pgtos, ao_data.num_pgtos * sizeof(md_pgto_t));
-+
-+    MD_LOG_INFO("TREXIO: Extracted %zu GTOs for MO %zu (cutoff: %g)", gto_count, mo_idx, value_cutoff);
-+    
-+    return gto_count;
++    // This would require implementing the conversion from MO coefficients to GTOs
++    // This is a placeholder for now
++    (void)gtos;
++    (void)trexio;
++    (void)mo_idx;
++    (void)value_cutoff;
++    MD_LOG_INFO("TREXIO: md_trexio_mo_gto_extract not yet implemented");
++    return 0;
 +}
 +
 +// System initialization
 +
 +bool md_trexio_system_init(md_system_t* sys, const md_trexio_t* trexio, md_allocator_i* alloc) {
-+    if (!sys || !trexio || !alloc) return false;
-+
-+    MEMSET(sys, 0, sizeof(md_system_t));
-+
-+    const size_t num_atoms = md_trexio_number_of_atoms(trexio);
-+    if (num_atoms == 0) {
-+        MD_LOG_ERROR("TREXIO: No atoms in file");
++    if (!sys) {
++        MD_LOG_ERROR("TREXIO: NULL system pointer in system_init");
 +        return false;
 +    }
-+
++    if (!trexio) {
++        MD_LOG_ERROR("TREXIO: NULL trexio pointer in system_init");
++        return false;
++    }
++    if (!alloc) {
++        MD_LOG_ERROR("TREXIO: NULL allocator in system_init");
++        return false;
++    }
++    
++    MEMSET(sys, 0, sizeof(md_system_t));
++    
++    const size_t num_atoms = md_trexio_number_of_atoms(trexio);
++    if (num_atoms == 0) {
++        MD_LOG_ERROR("TREXIO: No atoms in file (cannot initialize system)");
++        return false;
++    }
++    
++    if (num_atoms > 10000000) {
++        MD_LOG_ERROR("TREXIO: Too many atoms (%zu) for safe system initialization", num_atoms);
++        return false;
++    }
++    
++    MD_LOG_INFO("TREXIO: Initializing system with %zu atoms", num_atoms);
++    
 +    const double* coords = md_trexio_atom_coordinates(trexio);
 +    const double* charges = md_trexio_atomic_charges(trexio);
 +    const char** labels = md_trexio_atom_labels(trexio);
-+
-+    if (!coords || !charges) {
-+        MD_LOG_ERROR("TREXIO: Missing required atom data");
++    
++    if (!coords) {
++        MD_LOG_ERROR("TREXIO: Missing required coordinate data");
 +        return false;
 +    }
-+
-+    // Allocate atom data
++    if (!charges) {
++        MD_LOG_ERROR("TREXIO: Missing required charge data");
++        return false;
++    }
++    
++    // Allocate atom data with NULL checks
 +    sys->atom.count = num_atoms;
 +    sys->atom.x = (float*)md_alloc(alloc, num_atoms * sizeof(float));
 +    sys->atom.y = (float*)md_alloc(alloc, num_atoms * sizeof(float));
 +    sys->atom.z = (float*)md_alloc(alloc, num_atoms * sizeof(float));
 +    sys->atom.type_idx = (md_atom_type_idx_t*)md_alloc(alloc, num_atoms * sizeof(md_atom_type_idx_t));
 +    sys->atom.flags = (md_flags_t*)md_alloc(alloc, num_atoms * sizeof(md_flags_t));
-+
++    
++    if (!sys->atom.x || !sys->atom.y || !sys->atom.z || !sys->atom.type_idx || !sys->atom.flags) {
++        MD_LOG_ERROR("TREXIO: Failed to allocate memory for atom data");
++        return false;
++    }
++    
 +    // Copy coordinates
 +    for (size_t i = 0; i < num_atoms; ++i) {
 +        sys->atom.x[i] = (float)coords[i * 3 + 0];
@@ -697,76 +620,102 @@ index 0000000..0625021
 +        sys->atom.z[i] = (float)coords[i * 3 + 2];
 +        sys->atom.flags[i] = 0;
 +    }
-+
-+    // Initialize atom type arrays
++    
++    // Set up atom types based on atomic numbers
 +    sys->atom.type.count = 0;
-+    sys->atom.type.name = NULL;
-+    sys->atom.type.z = NULL;
-+    sys->atom.type.mass = NULL;
-+    sys->atom.type.radius = NULL;
-+    sys->atom.type.color = NULL;
-+    sys->atom.type.flags = NULL;
-+
-+    // Set up atom types based on charges and labels
++    
++    // Create one type per unique element (atomic number)
 +    for (size_t i = 0; i < num_atoms; ++i) {
-+        md_atomic_number_t z = (md_atomic_number_t)charges[i];
-+
-+        // Try to get element symbol from labels if available
-+        str_t elem_symbol = {0};
-+        if (labels && labels[i]) {
-+            elem_symbol = (str_t){labels[i], strlen(labels[i])};
-+        } else {
-+            elem_symbol = md_util_element_symbol(z);
++        md_atomic_number_t atomic_num = (md_atomic_number_t)charges[i];
++        
++        // Validate atomic number
++        if (atomic_num < 1 || atomic_num > 118) {
++            MD_LOG_INFO("TREXIO: Warning - unusual atomic number %d at atom %zu, using as-is", 
++                       (int)atomic_num, i);
 +        }
-+
-+        // Get element properties
-+        float mass = md_util_element_atomic_mass(z);
-+        float radius = md_util_element_vdw_radius(z);
-+        md_flags_t flags = 0;
-+
-+        // Find or add atom type using the helper function
-+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(
-+            &sys->atom.type, elem_symbol, z, mass, radius, flags, alloc
-+        );
-+
-+        sys->atom.type_idx[i] = type_idx;
++        
++        // Find or create atom type
++        size_t type_idx = 0;
++        bool found = false;
++        for (size_t j = 0; j < sys->atom.type.count; ++j) {
++            if (sys->atom.type.z && sys->atom.type.z[j] == atomic_num) {
++                type_idx = j;
++                found = true;
++                break;
++            }
++        }
++        
++        if (!found) {
++            // Create new type
++            type_idx = sys->atom.type.count++;
++            
++            // Reallocate type arrays
++            sys->atom.type.z = (md_atomic_number_t*)md_realloc(alloc, sys->atom.type.z, 
++                                                                (type_idx) * sizeof(md_atomic_number_t),
++                                                                (type_idx + 1) * sizeof(md_atomic_number_t));
++            sys->atom.type.name = (md_label_t*)md_realloc(alloc, sys->atom.type.name,
++                                                           (type_idx) * sizeof(md_label_t),
++                                                           (type_idx + 1) * sizeof(md_label_t));
++            sys->atom.type.mass = (float*)md_realloc(alloc, sys->atom.type.mass,
++                                                      (type_idx) * sizeof(float),
++                                                      (type_idx + 1) * sizeof(float));
++            sys->atom.type.radius = (float*)md_realloc(alloc, sys->atom.type.radius,
++                                                        (type_idx) * sizeof(float),
++                                                        (type_idx + 1) * sizeof(float));
++            
++            sys->atom.type.z[type_idx] = atomic_num;
++            
++            // Set atom name from label if available, otherwise use element symbol
++            if (labels && labels[i]) {
++                const char* label = labels[i];
++                size_t label_len = strlen(label);
++                if (label_len > 6) label_len = 6;  // md_label_t max is 6 chars
++                MEMCPY(sys->atom.type.name[type_idx].buf, label, label_len);
++                sys->atom.type.name[type_idx].buf[label_len] = '\0';
++                sys->atom.type.name[type_idx].len = (uint8_t)label_len;
++            } else {
++                // Use default element name based on atomic number
++                char elem_name[7];
++                int len = snprintf(elem_name, sizeof(elem_name), "%d", atomic_num);
++                if (len > 6) len = 6;
++                MEMCPY(sys->atom.type.name[type_idx].buf, elem_name, len);
++                sys->atom.type.name[type_idx].buf[len] = '\0';
++                sys->atom.type.name[type_idx].len = (uint8_t)len;
++            }
++            
++            // Set default mass and radius (simplified - should use periodic table)
++            sys->atom.type.mass[type_idx] = (float)atomic_num;  // Approximation
++            sys->atom.type.radius[type_idx] = 1.5f;  // Default VdW radius
++        }
++        
++        sys->atom.type_idx[i] = (md_atom_type_idx_t)type_idx;
 +    }
-+
++    
 +    return true;
 +}
 +
 +// System loader interface
 +
-+static bool trexio_sys_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
-+    (void)sys;
-+    (void)str;
-+    (void)arg;
-+    (void)alloc;
-+    MD_LOG_ERROR("TREXIO: Loading from string not implemented");
-+    return false;
-+}
-+
-+static bool trexio_sys_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
++static bool trexio_loader_init(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
 +    (void)arg;  // Not used for TREXIO
-+
++    
 +    md_trexio_t* trexio = md_trexio_create(alloc);
 +    if (!trexio) {
 +        MD_LOG_ERROR("TREXIO: Failed to create TREXIO object");
 +        return false;
 +    }
-+
++    
 +    bool result = false;
 +    if (md_trexio_parse_file(trexio, filename)) {
 +        result = md_trexio_system_init(sys, trexio, alloc);
 +    }
-+
++    
 +    md_trexio_destroy(trexio);
 +    return result;
 +}
 +
 +static md_system_loader_i trexio_loader = {
-+    trexio_sys_init_from_str,
-+    trexio_sys_init_from_file
++    trexio_loader_init
 +};
 +
 +md_system_loader_i* md_trexio_system_loader(void) {
@@ -881,7 +830,7 @@ index 0000000..0625021
 +    return 0;
 +}
 +
-+bool md_trexio_extract_ao_data(md_gto_data_t* out_ao_data, const md_trexio_t* trexio,
++bool md_trexio_extract_ao_data(md_gto_data_t* out_ao_data, const md_trexio_t* trexio, 
 +                                 double cutoff_value, md_allocator_i* alloc) {
 +    (void)out_ao_data;
 +    (void)trexio;
@@ -895,7 +844,7 @@ index 0000000..0625021
 +    return 0;
 +}
 +
-+size_t md_trexio_mo_gto_extract(md_gto_t gtos[], const md_trexio_t* trexio,
++size_t md_trexio_mo_gto_extract(md_gto_t gtos[], const md_trexio_t* trexio, 
 +                                 size_t mo_idx, double value_cutoff) {
 +    (void)gtos;
 +    (void)trexio;
@@ -916,11 +865,11 @@ index 0000000..0625021
 +}
 +
 +#endif  // MD_TREXIO
-diff --git a/src/md_trexio.h b/src/md_trexio.h
+diff --git src/md_trexio.h src/md_trexio.h
 new file mode 100644
-index 0000000..649b0a3
+index 0000000..32c63b3
 --- /dev/null
-+++ b/src/md_trexio.h
++++ src/md_trexio.h
 @@ -0,0 +1,117 @@
 +﻿#pragma once
 +
@@ -988,7 +937,7 @@ index 0000000..649b0a3
 +str_t md_trexio_basis_type(const struct md_trexio_t* trexio);
 +
 +// Extract atomic orbital Gaussian data
-+bool md_trexio_extract_ao_data(md_gto_data_t* out_ao_data, const struct md_trexio_t* trexio,
++bool md_trexio_extract_ao_data(md_gto_data_t* out_ao_data, const struct md_trexio_t* trexio, 
 +                                 double cutoff_value, struct md_allocator_i* alloc);
 +
 +// Molecular orbital data
@@ -1016,7 +965,7 @@ index 0000000..649b0a3
 +// value_cutoff: A cutoff value to calculate effective radius (0 = no cutoff)
 +// Returns the number of GTOs written
 +size_t md_trexio_mo_gto_count(const md_trexio_t* trexio);
-+size_t md_trexio_mo_gto_extract(md_gto_t gtos[], const md_trexio_t* trexio,
++size_t md_trexio_mo_gto_extract(md_gto_t gtos[], const md_trexio_t* trexio, 
 +                                 size_t mo_idx, double value_cutoff);
 +
 +// Electron data
@@ -1030,7 +979,7 @@ index 0000000..649b0a3
 +// System loader interface
 +
 +// Initialize md_system_t from TREXIO data
-+bool md_trexio_system_init(struct md_system_t* sys, const md_trexio_t* trexio,
++bool md_trexio_system_init(struct md_system_t* sys, const md_trexio_t* trexio, 
 +                            struct md_allocator_i* alloc);
 +
 +// Get the system loader interface for TREXIO
