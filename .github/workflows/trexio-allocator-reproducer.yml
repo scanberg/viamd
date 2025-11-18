@@ -1,0 +1,136 @@
+name: TREXIO Allocator Reproducer
+
+# This workflow runs the mdlib allocator reproducer to investigate crashes
+# It can be triggered manually or on push to investigation branches
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: 'Number of iterations to run'
+        required: false
+        default: '100'
+      enable_asan:
+        description: 'Enable AddressSanitizer'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - 'copilot/investigate-trexio-crash'
+      - 'copilot/add-mdlib-allocator-reproducer'
+      - 'debug/trexio-alloc-instrumentation'
+
+jobs:
+  run-reproducer:
+    name: Run Allocator Reproducer
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        config:
+          - name: "Normal"
+            asan: false
+            iterations: 100
+          - name: "ASAN"
+            asan: true
+            iterations: 50
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev
+      
+      - name: Apply TREXIO patch
+        run: |
+          cd ext/mdlib
+          # Extract and apply CMakeLists.txt changes
+          awk '/^diff --git a\/CMakeLists\.txt/,/^diff --git a\/src\/md_trexio\.c/' ../../docs/mdlib_trexio.patch | head -n -1 > /tmp/cmake_only.patch
+          git apply /tmp/cmake_only.patch
+          
+          # Extract md_trexio.c
+          awk '/^\+\+\+ b\/src\/md_trexio\.c/,/^diff --git a\/src\/md_trexio\.h/' ../../docs/mdlib_trexio.patch | grep '^+[^+]' | sed 's/^+//' | sed 's/\xEF\xBB\xBF//g' | head -n -1 > src/md_trexio.c
+          echo "" >> src/md_trexio.c
+          echo "#endif  // MD_TREXIO" >> src/md_trexio.c
+          
+          # Extract md_trexio.h
+          awk '/^\+\+\+ b\/src\/md_trexio\.h/,0' ../../docs/mdlib_trexio.patch | grep '^+[^+]' | sed 's/^+//' | sed 's/\xEF\xBB\xBF//g' > src/md_trexio.h
+      
+      - name: Configure CMake (Normal)
+        if: ${{ !matrix.config.asan }}
+        run: |
+          mkdir -p build
+          cd build
+          cmake -DVIAMD_ENABLE_TREXIO=ON \
+                -DCMAKE_BUILD_TYPE=Debug \
+                ..
+      
+      - name: Configure CMake (ASAN)
+        if: ${{ matrix.config.asan }}
+        run: |
+          mkdir -p build
+          cd build
+          cmake -DVIAMD_ENABLE_TREXIO=ON \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DCMAKE_C_FLAGS="-g -O1 -fsanitize=address,undefined" \
+                -DCMAKE_CXX_FLAGS="-g -O1 -fsanitize=address,undefined" \
+                -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+                ..
+      
+      - name: Build reproducer
+        run: |
+          cd build
+          cmake --build . --target mdlib_allocator_reproducer -j4
+      
+      - name: Run reproducer
+        run: |
+          cd build
+          mkdir -p ../tools/mdlib_allocator_reproducer
+          if [ "${{ matrix.config.asan }}" = "true" ]; then
+            ./bin/mdlib_allocator_reproducer --iterations ${{ matrix.config.iterations }} \
+              > ../tools/mdlib_allocator_reproducer/repro-output-asan-ci.txt 2>&1 || echo "Exit code: $?"
+          else
+            ./bin/mdlib_allocator_reproducer --iterations ${{ matrix.config.iterations }} \
+              > ../tools/mdlib_allocator_reproducer/repro-output-ci.txt 2>&1 || echo "Exit code: $?"
+          fi
+      
+      - name: Check results
+        run: |
+          cd tools/mdlib_allocator_reproducer
+          if [ "${{ matrix.config.asan }}" = "true" ]; then
+            OUTPUT_FILE="repro-output-asan-ci.txt"
+          else
+            OUTPUT_FILE="repro-output-ci.txt"
+          fi
+          
+          echo "=== Reproducer Output Summary ==="
+          tail -50 "$OUTPUT_FILE"
+          echo ""
+          echo "=== Checking for errors ==="
+          if grep -q "All iterations completed successfully" "$OUTPUT_FILE"; then
+            echo "✅ SUCCESS: All iterations completed"
+            exit 0
+          else
+            echo "❌ FAILURE: Reproducer did not complete successfully"
+            exit 1
+          fi
+      
+      - name: Upload reproducer output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mdlib-allocator-reproducer-output-${{ matrix.config.name }}
+          path: tools/mdlib_allocator_reproducer/repro-output*.txt
+          retention-days: 30

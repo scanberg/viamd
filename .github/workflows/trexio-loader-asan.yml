@@ -1,0 +1,193 @@
+name: TREXIO Loader ASAN Test
+
+# This workflow attempts to reproduce the TREXIO loader crash under ASAN
+# This is Step C of the investigation plan
+on:
+  workflow_dispatch:
+    inputs:
+      test_file:
+        description: 'TREXIO test file to use'
+        required: false
+        default: 'test_data/h2o_molecule.trexio'
+  push:
+    branches:
+      - 'copilot/investigate-trexio-crash'
+      - 'debug/trexio-alloc-instrumentation'
+
+jobs:
+  test-loader-asan:
+    name: Test TREXIO Loader with ASAN
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            gfortran
+      
+      - name: Apply TREXIO patch
+        run: |
+          cd ext/mdlib
+          # Extract and apply CMakeLists.txt changes
+          awk '/^diff --git a\/CMakeLists\.txt/,/^diff --git a\/src\/md_trexio\.c/' ../../docs/mdlib_trexio.patch | head -n -1 > /tmp/cmake_only.patch
+          git apply /tmp/cmake_only.patch
+          
+          # Extract md_trexio.c
+          awk '/^\+\+\+ b\/src\/md_trexio\.c/,/^diff --git a\/src\/md_trexio\.h/' ../../docs/mdlib_trexio.patch | grep '^+[^+]' | sed 's/^+//' | sed 's/\xEF\xBB\xBF//g' | head -n -1 > src/md_trexio.c
+          echo "" >> src/md_trexio.c
+          echo "#endif  // MD_TREXIO" >> src/md_trexio.c
+          
+          # Extract md_trexio.h
+          awk '/^\+\+\+ b\/src\/md_trexio\.h/,0' ../../docs/mdlib_trexio.patch | grep '^+[^+]' | sed 's/^+//' | sed 's/\xEF\xBB\xBF//g' > src/md_trexio.h
+      
+      - name: Create simple TREXIO loader test
+        run: |
+          mkdir -p tools/trexio_loader_test
+          cat > tools/trexio_loader_test/test_loader.c << 'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <md_allocator.h>
+          #include <md_trexio.h>
+          
+          int main(int argc, char** argv) {
+              if (argc < 2) {
+                  fprintf(stderr, "Usage: %s <trexio_file>\n", argv[0]);
+                  return 1;
+              }
+              
+              const char* filename = argv[1];
+              printf("Testing TREXIO loader with file: %s\n", filename);
+              
+              // Get allocator
+              md_allocator_i* alloc = md_get_heap_allocator();
+              if (!alloc) {
+                  fprintf(stderr, "ERROR: md_get_heap_allocator() returned NULL\n");
+                  return 1;
+              }
+              printf("Allocator obtained: %p\n", (void*)alloc);
+              
+              // Create TREXIO structure
+              printf("Creating TREXIO structure...\n");
+              md_trexio_t* trexio = md_trexio_create(alloc);
+              if (!trexio) {
+                  fprintf(stderr, "ERROR: md_trexio_create() failed\n");
+                  return 1;
+              }
+              printf("TREXIO structure created: %p\n", (void*)trexio);
+              
+              // Parse file
+              printf("Parsing TREXIO file...\n");
+              bool success = md_trexio_parse_file(trexio, filename, alloc);
+              if (!success) {
+                  fprintf(stderr, "ERROR: md_trexio_parse_file() failed\n");
+                  md_trexio_free(trexio);
+                  return 1;
+              }
+              printf("File parsed successfully\n");
+              
+              // Print basic info
+              printf("Number of atoms: %lld\n", (long long)md_trexio_num_atoms(trexio));
+              
+              // Clean up
+              printf("Cleaning up...\n");
+              md_trexio_free(trexio);
+              printf("Test completed successfully\n");
+              
+              return 0;
+          }
+          EOF
+          
+          cat > tools/trexio_loader_test/CMakeLists.txt << 'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(trexio_loader_test LANGUAGES C)
+          
+          if(NOT TARGET mdlib)
+              message(FATAL_ERROR "mdlib target not found")
+          endif()
+          
+          add_executable(trexio_loader_test test_loader.c)
+          target_link_libraries(trexio_loader_test PRIVATE mdlib)
+          set_property(TARGET trexio_loader_test PROPERTY C_STANDARD 11)
+          EOF
+      
+      - name: Update main CMakeLists.txt
+        run: |
+          sed -i '/add_subdirectory(tools\/mdlib_allocator_reproducer)/a \    add_subdirectory(tools/trexio_loader_test)' CMakeLists.txt
+      
+      - name: Configure with ASAN
+        run: |
+          mkdir -p build
+          cd build
+          cmake -DVIAMD_ENABLE_TREXIO=ON \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DCMAKE_C_FLAGS="-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer" \
+                -DCMAKE_CXX_FLAGS="-g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer" \
+                -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+                ..
+      
+      - name: Build loader test
+        run: |
+          cd build
+          cmake --build . --target trexio_loader_test -j4
+      
+      - name: Run loader test
+        run: |
+          cd build
+          mkdir -p ../tools/trexio-debug-output
+          export ASAN_OPTIONS=detect_leaks=1:halt_on_error=0:log_path=../tools/trexio-debug-output/asan_
+          ./bin/trexio_loader_test ../test_data/h2o_molecule.trexio \
+            > ../tools/trexio-debug-output/trexio-loader-asan-output.txt 2>&1 || true
+          
+          # Also try other test files
+          for file in ../test_data/*.trexio; do
+            if [ -d "$file" ]; then
+              echo "Testing with $file..." >> ../tools/trexio-debug-output/trexio-loader-asan-output.txt
+              ./bin/trexio_loader_test "$file" \
+                >> ../tools/trexio-debug-output/trexio-loader-asan-output.txt 2>&1 || true
+            fi
+          done
+      
+      - name: Analyze results
+        run: |
+          cd tools/trexio-debug-output
+          echo "=== TREXIO Loader Test Results ==="
+          echo ""
+          echo "=== Last 100 lines of output ==="
+          tail -100 trexio-loader-asan-output.txt
+          echo ""
+          
+          if [ -f asan_* ]; then
+            echo "=== ASAN Reports Found ==="
+            cat asan_*
+          else
+            echo "No ASAN reports generated"
+          fi
+          
+          echo ""
+          if grep -q "Test completed successfully" trexio-loader-asan-output.txt; then
+            echo "✅ SUCCESS: Loader test completed"
+          else
+            echo "⚠️  WARNING: Loader test did not complete successfully"
+            echo "This may indicate the crash we're investigating"
+          fi
+      
+      - name: Upload test output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trexio-loader-asan-output
+          path: tools/trexio-debug-output/
+          retention-days: 30
