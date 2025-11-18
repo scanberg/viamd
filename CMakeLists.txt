@@ -126,6 +126,8 @@ if (VIAMD_ENABLE_TREXIO)
         src/components/trexio/trexio.cpp
         src/ui/trexio_panel.cpp
         src/ui/trexio_panel.h
+        src/trexio/trexio_orbital_grid.cpp
+        src/trexio/trexio_orbital_grid.h
     )
 endif()
 

@@ -6,6 +6,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 
 #include "trexio_panel.h"
+#include <trexio/trexio_orbital_grid.h>
 
 #include <event.h>
 #include <viamd.h>
@@ -27,6 +28,7 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <atomic>
 
 #define HARTREE_TO_EV 27.211386245988
 
@@ -74,8 +76,13 @@ struct State {
         
         // Grid computation state
         bool computing = false;
-        float progress = 0.0f;
+        std::atomic<float> progress{0.0f};
         task_system::ID compute_task = task_system::INVALID_ID;
+        std::atomic<bool> cancel_requested{false};
+        
+        // Grid data
+        float* grid_data = nullptr;
+        size_t grid_data_size = 0;
         
         // Grid results
         struct {
@@ -128,6 +135,12 @@ void shutdown() {
     if (state.trexio_data) {
         md_trexio_destroy(state.trexio_data);
         state.trexio_data = nullptr;
+    }
+    
+    if (state.orbital_grid.grid_data) {
+        md_free(state.allocator, state.orbital_grid.grid_data, state.orbital_grid.grid_data_size);
+        state.orbital_grid.grid_data = nullptr;
+        state.orbital_grid.grid_data_size = 0;
     }
     
     if (state.debug_log_file) {
@@ -335,33 +348,137 @@ void draw_orbital_grid_window() {
             ImGui::SeparatorText("Computation");
             
             if (state.orbital_grid.computing) {
-                ImGui::ProgressBar(state.orbital_grid.progress);
+                float prog = state.orbital_grid.progress.load();
+                ImGui::ProgressBar(prog);
+                ImGui::SameLine();
+                ImGui::Text("%.0f%%", prog * 100.0f);
+                
                 if (ImGui::Button("Cancel")) {
+                    state.orbital_grid.cancel_requested = true;
                     task_system::task_interrupt(state.orbital_grid.compute_task);
-                    state.orbital_grid.computing = false;
                 }
             } else {
                 if (ImGui::Button(ICON_FA_PLAY " Compute Grid")) {
-                    // TODO: Implement grid computation
-                    // This would call the orbital grid evaluator module
-                    state.orbital_grid.computing = true;
-                    state.orbital_grid.progress = 0.0f;
-                    
-                    snprintf(state.orbital_grid.log_buffer, sizeof(state.orbital_grid.log_buffer),
-                            "Grid computation not yet implemented.\n"
-                            "Will evaluate MO %d on %dx%dx%d grid.\n"
-                            "Bounds: [%.2f,%.2f] x [%.2f,%.2f] x [%.2f,%.2f]\n",
-                            state.orbital_grid.selected_mo_index,
-                            state.orbital_grid.params.res_x,
-                            state.orbital_grid.params.res_y,
-                            state.orbital_grid.params.res_z,
-                            state.orbital_grid.params.min_x, state.orbital_grid.params.max_x,
-                            state.orbital_grid.params.min_y, state.orbital_grid.params.max_y,
-                            state.orbital_grid.params.min_z, state.orbital_grid.params.max_z);
-                    
-                    // Simulate completion for now
-                    state.orbital_grid.computing = false;
+                    // Clear previous results
                     state.orbital_grid.result.available = false;
+                    state.orbital_grid.log_buffer[0] = '\0';
+                    state.orbital_grid.cancel_requested = false;
+                    
+                    // Allocate grid memory
+                    size_t grid_size = state.orbital_grid.params.res_x * 
+                                      state.orbital_grid.params.res_y * 
+                                      state.orbital_grid.params.res_z;
+                    size_t grid_bytes = grid_size * sizeof(float);
+                    
+                    if (state.orbital_grid.grid_data) {
+                        md_free(state.allocator, state.orbital_grid.grid_data, state.orbital_grid.grid_data_size);
+                    }
+                    
+                    state.orbital_grid.grid_data = (float*)md_alloc(state.allocator, grid_bytes);
+                    state.orbital_grid.grid_data_size = grid_bytes;
+                    
+                    if (!state.orbital_grid.grid_data) {
+                        snprintf(state.orbital_grid.log_buffer, sizeof(state.orbital_grid.log_buffer),
+                                "ERROR: Failed to allocate grid memory (%zu MB)\n",
+                                grid_bytes / (1024 * 1024));
+                        MD_LOG_ERROR("Failed to allocate grid memory");
+                    } else {
+                        state.orbital_grid.computing = true;
+                        state.orbital_grid.progress = 0.0f;
+                        
+                        // Create background task
+                        state.orbital_grid.compute_task = task_system::create_pool_task(
+                            STR_LIT("Compute Orbital Grid"),
+                            []() {
+                                // Progress callback
+                                auto progress_cb = [](float prog, void* user_data) -> bool {
+                                    state.orbital_grid.progress = prog;
+                                    return !state.orbital_grid.cancel_requested.load();
+                                };
+                                
+                                // Log callback
+                                auto log_cb = [](const char* msg, void* user_data) {
+                                    size_t len = strlen(state.orbital_grid.log_buffer);
+                                    size_t remaining = sizeof(state.orbital_grid.log_buffer) - len - 1;
+                                    if (remaining > 0) {
+                                        strncat(state.orbital_grid.log_buffer, msg, remaining);
+                                        strncat(state.orbital_grid.log_buffer, "\n", remaining - strlen(msg));
+                                    }
+                                    log_debug("%s", msg);
+                                };
+                                
+                                // Setup grid parameters
+                                trexio_orbital_grid::BoundingBox bbox;
+                                bbox.min_x = state.orbital_grid.params.min_x;
+                                bbox.max_x = state.orbital_grid.params.max_x;
+                                bbox.min_y = state.orbital_grid.params.min_y;
+                                bbox.max_y = state.orbital_grid.params.max_y;
+                                bbox.min_z = state.orbital_grid.params.min_z;
+                                bbox.max_z = state.orbital_grid.params.max_z;
+                                
+                                trexio_orbital_grid::GridResolution resolution;
+                                resolution.nx = state.orbital_grid.params.res_x;
+                                resolution.ny = state.orbital_grid.params.res_y;
+                                resolution.nz = state.orbital_grid.params.res_z;
+                                
+                                trexio_orbital_grid::GridStats stats;
+                                
+                                // Compute grid
+                                bool success = trexio_orbital_grid::compute_orbital_grid(
+                                    state.trexio_data,
+                                    state.orbital_grid.selected_mo_index,
+                                    bbox,
+                                    resolution,
+                                    state.orbital_grid.grid_data,
+                                    &stats,
+                                    progress_cb,
+                                    log_cb,
+                                    nullptr
+                                );
+                                
+                                if (success && !state.orbital_grid.cancel_requested) {
+                                    // Save results
+                                    state.orbital_grid.result.min_value = stats.min_value;
+                                    state.orbital_grid.result.max_value = stats.max_value;
+                                    state.orbital_grid.result.mean_value = stats.mean_value;
+                                    
+                                    // Generate output filename
+                                    time_t now = time(nullptr);
+                                    struct tm* timeinfo = localtime(&now);
+                                    char timestamp[64];
+                                    strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", timeinfo);
+                                    
+                                    snprintf(state.orbital_grid.result.output_file,
+                                            sizeof(state.orbital_grid.result.output_file),
+                                            "orbital_mo%d_%s.grid",
+                                            state.orbital_grid.selected_mo_index,
+                                            timestamp);
+                                    
+                                    // Save grid to file
+                                    trexio_orbital_grid::save_grid_to_file(
+                                        state.orbital_grid.result.output_file,
+                                        state.orbital_grid.grid_data,
+                                        resolution,
+                                        bbox
+                                    );
+                                    
+                                    state.orbital_grid.result.available = true;
+                                    
+                                    char msg[256];
+                                    snprintf(msg, sizeof(msg), "Grid saved to: %s", 
+                                            state.orbital_grid.result.output_file);
+                                    log_cb(msg, nullptr);
+                                } else if (state.orbital_grid.cancel_requested) {
+                                    log_cb("Computation cancelled by user", nullptr);
+                                }
+                                
+                                state.orbital_grid.computing = false;
+                                state.orbital_grid.progress = 1.0f;
+                            }
+                        );
+                        
+                        task_system::enqueue_task(state.orbital_grid.compute_task);
+                    }
                 }
             }
             
