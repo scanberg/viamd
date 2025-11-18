@@ -86,6 +86,11 @@ add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
 
+# Add tools subdirectory if TREXIO is enabled
+if(VIAMD_ENABLE_TREXIO)
+    add_subdirectory(tools/mdlib_allocator_reproducer)
+endif()
+
 # Copy many of the fields from mdlib
 set(VIAMD_STDLIBS)
 set(VIAMD_FLAGS ${MD_FLAGS})
