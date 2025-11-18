@@ -1,8 +1,13 @@
 # TREXIO Support in VIAMD
 
+> **⚠️ IMPORTANT STATUS NOTICE**  
+> TREXIO support is currently **under development** and is **not yet fully functional**.  
+> Building with `-DVIAMD_ENABLE_TREXIO=ON` will fail due to API compatibility issues.  
+> See [TREXIO_KNOWN_ISSUES.md](TREXIO_KNOWN_ISSUES.md) for details and required fixes.
+
 ## Overview
 
-VIAMD now supports loading quantum chemistry data from TREXIO files. TREXIO is an open-source file format and library for storing and manipulating quantum chemistry data.
+VIAMD has partial support for loading quantum chemistry data from TREXIO files. TREXIO is an open-source file format and library for storing and manipulating quantum chemistry data.
 
 ## What is TREXIO?
 

@@ -25,6 +25,9 @@ To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your mac
 
 ### TREXIO Support
 
+> **⚠️ Status:** TREXIO support is under development and currently **not functional**.  
+> Building with TREXIO enabled will fail. See `docs/TREXIO_KNOWN_ISSUES.md` for details.
+
 VIAMD can be built with support for reading TREXIO quantum chemistry files. TREXIO is an open-source file format used by many quantum chemistry codes (Quantum Package, PySCF, FHI-aims, CP2K, etc.).
 
 #### Prerequisites
