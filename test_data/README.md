@@ -5,9 +5,22 @@ This directory contains test TREXIO files for validating VIAMD's TREXIO support.
 ## Quick Links
 
 - 📘 **[Complete Testing Guide](TESTING_GUIDE.md)** - Comprehensive testing documentation
+- ✅ **[Validation Recipe](VALIDATION_RECIPE.md)** - Step-by-step validation instructions
 - 🔨 **[Build Script](build_and_test.sh)** - Automated build and test
 - ✅ **[Validation Script](validate_trexio.sh)** - Quick setup verification
 - 🧪 **[PySCF Generator](create_pyscf_trexio.py)** - Create files with quantum chemistry data
+
+## Test Status
+
+**Current Status:** Phase 4 Complete - Test infrastructure ready
+
+- ✅ Sample TREXIO files: 3 files (H2, H2O, CH4)
+- ✅ Unit tests created: 6 tests in `ext/mdlib/unittest/test_trexio.c`
+- ✅ Documentation complete: TESTING_GUIDE.md, VALIDATION_RECIPE.md
+- ⚠️ Test execution: 2/6 passing, 4/6 blocked by file format compatibility
+
+**Known Issue:** TREXIO 2.6.0 cannot open manually-created text format files.
+See [VALIDATION_RECIPE.md](VALIDATION_RECIPE.md#known-issues) for details and workarounds.
 
 ## Test Files
 

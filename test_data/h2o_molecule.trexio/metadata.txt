@@ -1,6 +1,12 @@
-package_version
-test_v1.0
-
-description
-H2O water molecule for VIAMD testing
-
+rank_metadata_code 0
+rank_metadata_author 0
+metadata_code_num_isSet 0 
+metadata_author_num_isSet 0 
+metadata_unsafe_isSet 0 
+len_metadata_package_version 6
+metadata_package_version
+2.6.0
+len_metadata_description 0
+metadata_description
+metadata_code
+metadata_author

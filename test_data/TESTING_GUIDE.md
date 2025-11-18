@@ -113,6 +113,11 @@ These files include:
 
 ```bash
 cd build
+./bin/md_unittest --filter=trexio.*
+```
+
+Or with CTest (if tests are discovered):
+```bash
 ctest -V -R trexio
 ```
 
@@ -121,10 +126,12 @@ ctest -V -R trexio
 The unit tests (`ext/mdlib/unittest/test_trexio.c`) include:
 
 1. **create_destroy** - TREXIO object lifecycle
+   - ✅ Status: PASSING
    - Tests object creation and destruction
    - Verifies memory management
 
 2. **parse_h2_text** - H2 molecule parsing
+   - ⚠️ Status: BLOCKED (TREXIO file format issue)
    - Validates atom count (2)
    - Checks atomic charges (both 1.0)
    - Verifies coordinates
@@ -132,21 +139,56 @@ The unit tests (`ext/mdlib/unittest/test_trexio.c`) include:
    - Validates electron configuration
 
 3. **parse_h2o_text** - Water molecule parsing
+   - ⚠️ Status: BLOCKED (TREXIO file format issue)
    - Validates 3 atoms
    - Checks charges (O=8, H=1, H=1)
    - Verifies 10 electrons
 
 4. **system_init_h2** - System initialization
+   - ⚠️ Status: BLOCKED (TREXIO file format issue)
    - Tests md_system_t creation from TREXIO
    - Validates coordinate conversion to float
    - Checks atom count consistency
 
 5. **system_loader** - Loader interface
+   - ⚠️ Status: BLOCKED (TREXIO file format issue)
    - Verifies loader function pointer
    - Tests init function availability
 
-6. **Conditional compilation test**
+6. **disabled_compilation** - Conditional compilation test
+   - ✅ Status: PASSING
    - Ensures tests pass when TREXIO is disabled
+
+### Known Issues
+
+**TREXIO Text Format Compatibility (Issue #TBD)**
+
+The current test data files in text format cannot be opened by TREXIO 2.6.0 library due to format incompatibility:
+
+```
+Error: TREXIO_READONLY when opening text format files
+```
+
+**Workarounds:**
+
+1. **Use Python TREXIO to generate test files:**
+   ```bash
+   pip install trexio
+   cd test_data
+   python3 create_pyscf_trexio.py  # If PySCF is available
+   ```
+
+2. **Use HDF5 format instead** (requires HDF5 library):
+   ```bash
+   cmake -DVIAMD_ENABLE_TREXIO=ON -DENABLE_HDF5=ON ..
+   ```
+
+3. **Generate files with external quantum chemistry code:**
+   - Quantum Package: `qp_run export_trexio molecule.trexio`
+   - PySCF: Use `trexio` Python package to write files
+   - Other codes: CP2K, FHI-aims, etc.
+
+**Resolution:** Pending investigation of TREXIO text format requirements for v2.6.0.
 
 ## Testing Different Backends
 
@@ -157,6 +199,8 @@ cmake -DVIAMD_ENABLE_TREXIO=ON -DENABLE_HDF5=OFF ..
 make
 ./viamd ../test_data/h2_molecule.trexio
 ```
+
+**Note:** Text format files currently have compatibility issues with TREXIO 2.6.0 (see Known Issues above).
 
 **Advantages:**
 - No HDF5 dependency
