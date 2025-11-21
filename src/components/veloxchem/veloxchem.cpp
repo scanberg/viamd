@@ -622,9 +622,11 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (vlx) {
                     draw_orb_window(state);
-                    draw_nto_window(state);
                     draw_summary_window(state);
                     draw_rsp_window(state);
+                    if (md_vlx_rsp_has_nto(vlx)) {
+                        draw_nto_window(state);
+                    }
                     draw_export_window(state);
                 }
                 break;
@@ -635,7 +637,9 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::Checkbox("Summary", &summary.show_window);
                         ImGui::Checkbox("Response", &rsp.show_window);
                         ImGui::Checkbox("Orbital Grid", &orb.show_window);
-                        ImGui::Checkbox("Transition Analysis", &nto.show_window);
+                        if (md_vlx_rsp_has_nto(vlx)) {
+                            ImGui::Checkbox("Transition Analysis", &nto.show_window);
+                        }
                         ImGui::Checkbox("Export", &export_state.show_window);
                         ImGui::EndMenu();
                     }
@@ -716,9 +720,9 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
                 }
-
-                size_t num_excited_states =  md_vlx_rsp_number_of_excited_states(vlx);
-                if (num_excited_states > 0) {
+                
+                size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
+                if (md_vlx_rsp_has_nto(vlx) && num_excited_states > 0) {
                     info.nto.num_orbitals = num_excited_states;
                     md_array_resize(info.nto.label, num_excited_states, info.alloc);
                     for (size_t i = 0; i < num_excited_states; ++i) {
@@ -1397,15 +1401,17 @@ struct VeloxChem : viamd::EventHandler {
             return false;
         }
         
-        size_t matrix_size = md_vlx_scf_density_matrix_size(vlx);
-        float* density_matrix = (float*)md_vm_arena_push(alloc, sizeof(float) * matrix_size * matrix_size);
-        if (!md_vlx_scf_extract_density_matrix_data(density_matrix, vlx, mo_type)) {
+        //size_t matrix_size = md_vlx_scf_density_matrix_size(vlx);
+        size_t matrix_size = md_vlx_scf_upper_triangular_density_matrix_size(vlx);
+        size_t matrix_dim  = md_vlx_scf_density_matrix_size(vlx); 
+        float* density_matrix_data = (float*)md_vm_arena_push(alloc, sizeof(float) * matrix_size);
+        if (!md_vlx_scf_extract_upper_triangular_density_matrix_data(density_matrix_data, vlx, mo_type)) {
             MD_LOG_ERROR("Failed to extract density matrix data");
             return false;
         }
         
         // Use the density matrix and calculate density directly
-        md_gto_grid_evaluate_matrix_GPU(vol_tex, &grid, &gto_data, density_matrix, matrix_size);
+        md_gto_grid_evaluate_matrix_GPU(vol_tex, &grid, &gto_data, density_matrix_data, matrix_dim);
 
         #endif
 
