@@ -1,5 +1,0 @@
-if(EXISTS "/home/runner/work/viamd/viamd/_codeql_build_dir/ext/mdlib/unittest/md_unittest[1]_tests.cmake")
-  include("/home/runner/work/viamd/viamd/_codeql_build_dir/ext/mdlib/unittest/md_unittest[1]_tests.cmake")
-else()
-  add_test(md_unittest_NOT_BUILT md_unittest_NOT_BUILT)
-endif()

@@ -1,2 +1,0 @@
-/usr/bin/ar qc ../../lib/libImGuiColorTextEdit.a CMakeFiles/ImGuiColorTextEdit.dir/TextEditor.cpp.o
-/usr/bin/ranlib ../../lib/libImGuiColorTextEdit.a
