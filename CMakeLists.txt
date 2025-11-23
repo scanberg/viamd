@@ -22,16 +22,13 @@ else()
     set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded$<$<CONFIG:Debug>:Debug>)
 endif()
 
-# GLFW OPTIONS
-option(GLFW_BUILD_EXAMPLES OFF)
-option(GLFW_BUILD_TESTS OFF)
-option(GLFW_BUILD_DOCS OFF)
-option(GLFW_INSTALL OFF)
-option(GLFW_VULKAN_STATIC OFF)
-
-if (UNIX AND NOT APPLE)
-    option(GLFW_BUILD_WAYLAND OFF)
-endif()
+# SDL3 OPTIONS
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL3_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)
+set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
 
 # ENKI OPTIONS
 option(ENKITS_BUILD_C_INTERFACE OFF)
@@ -71,9 +68,8 @@ endif()
 find_package(OpenGL REQUIRED)
 
 add_subdirectory(ext/mdlib)
-add_subdirectory(ext/glfw)
+add_subdirectory(ext/SDL)
 add_subdirectory(ext/imgui)
-add_subdirectory(ext/nativefiledialog)
 add_subdirectory(ext/stb)
 add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
@@ -95,7 +91,7 @@ if (VIAMD_LINK_STDLIB_STATIC)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         set(VIAMD_STDLIBS "-static-libgcc -static-libstdc++")
     endif()
-    set(glfw_LIBRARIES ${VIAMD_STDLIBS})
+    set(SDL3_LIBRARIES ${VIAMD_STDLIBS})
 endif()
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
@@ -217,9 +213,8 @@ set_target_properties(viamd PROPERTIES
 
 target_link_options(viamd PRIVATE ${VIAMD_LINK_FLAGS} $<$<CONFIG:Debug>:${VIAMD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_LINK_FLAGS_REL}>)
 target_link_libraries(viamd
-    glfw
+    SDL3::SDL3-static
     imgui
-    nativefiledialog
     mdlib
     stb
     enkiTS
