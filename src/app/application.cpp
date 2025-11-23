@@ -322,9 +322,8 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
         bool completed;
     };
     
-    static DialogState dialog_state = {NULL, false};
-    dialog_state.result_path = NULL;
-    dialog_state.completed = false;
+    // Use local state instead of static to avoid race conditions
+    DialogState dialog_state = {NULL, false};
     
     SDL_DialogFileFilter* sdl_filters = NULL;
     int filter_count = 0;
@@ -345,18 +344,25 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
         for (size_t i = 0; i <= filter.len; i++) {
             if (i == filter.len || filter.ptr[i] == ',') {
                 size_t ext_len = (filter.ptr + i) - start;
-                char* ext = (char*)md_temp_push(ext_len + 3); // "*.ext\0"
-                snprintf(ext, ext_len + 3, "*.%.*s", (int)ext_len, start);
-                
-                sdl_filters[idx].name = ext;
-                sdl_filters[idx].pattern = ext;
-                idx++;
+                // Validate ext_len and allocate sufficient space
+                if (ext_len > 0 && ext_len < 256) { // reasonable max ext length
+                    char* ext = (char*)md_temp_push(ext_len + 4); // "*.ext\0" (need 4: "*."+len+"\0")
+                    snprintf(ext, ext_len + 4, "*.%.*s", (int)ext_len, start);
+                    
+                    sdl_filters[idx].name = ext;
+                    sdl_filters[idx].pattern = ext;
+                    idx++;
+                }
                 start = filter.ptr + i + 1;
             }
         }
+        // Update filter_count in case some were skipped
+        filter_count = idx;
     }
 
-    auto dialog_callback = [](void* userdata, const char* const* filelist, int filter_idx) {
+    // Use a static function instead of lambda for C compatibility
+    static auto dialog_callback_impl = [](void* userdata, const char* const* filelist, int filter_idx) {
+        (void)filter_idx;
         DialogState* state = (DialogState*)userdata;
         if (filelist && filelist[0]) {
             state->result_path = filelist[0];
@@ -366,7 +372,7 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
 
     if (flags & FileDialogFlag_Open) {
         SDL_ShowOpenFileDialog(
-            dialog_callback,
+            dialog_callback_impl,
             &dialog_state,
             NULL,  // parent window
             sdl_filters,
@@ -376,7 +382,7 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
         );
     } else if (flags & FileDialogFlag_Save) {
         SDL_ShowSaveFileDialog(
-            dialog_callback,
+            dialog_callback_impl,
             &dialog_state,
             NULL,  // parent window
             sdl_filters,
@@ -388,14 +394,14 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
     }
     
     // Wait for dialog to complete (blocking event loop)
+    // Note: SDL3 dialog API is async, so we need to pump events
     while (!dialog_state.completed) {
         SDL_Event event;
-        while (SDL_PollEvent(&event)) {
+        if (SDL_WaitEventTimeout(&event, 10)) {
             if (event.type == SDL_EVENT_QUIT) {
                 return false;
             }
         }
-        SDL_Delay(10);
     }
     
     if (dialog_state.result_path && dialog_state.result_path[0] != '\0') {
