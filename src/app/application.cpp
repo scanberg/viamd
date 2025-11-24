@@ -173,7 +173,6 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
         ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, size * scl, &config, ranges_icons);
     }
 
-    io.Fonts->Build();
     io.FontDefault = io.Fonts->Fonts[4]; // Set default to 18px
 
     if (!ImGui_ImplSDL3_InitForOpenGL(window, gl_context) ||
