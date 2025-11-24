@@ -21,8 +21,13 @@ Texture create_texture_2d(const TextureDesc& desc) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, desc.wrap_s);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, desc.wrap_t);
     
-    glTexImage2D(GL_TEXTURE_2D, 0, desc.internal_format, desc.width, desc.height, 0, 
-                 desc.format, desc.type, desc.data);
+    // Use glTexStorage2D for immutable storage if no data provided, otherwise use glTexImage2D
+    if (desc.data == nullptr) {
+        glTexStorage2D(GL_TEXTURE_2D, 1, desc.internal_format, desc.width, desc.height);
+    } else {
+        glTexImage2D(GL_TEXTURE_2D, 0, desc.internal_format, desc.width, desc.height, 0, 
+                     desc.format, desc.type, desc.data);
+    }
     
     glBindTexture(GL_TEXTURE_2D, 0);
     
