@@ -126,7 +126,6 @@
 #include <cctype>
 #include <fstream>
 #include <sstream>
-#include <iostream>
 
 namespace molden {
 
@@ -394,6 +393,9 @@ SpinType parse_spin_type(const std::string& str) {
 // =============================================================================
 
 namespace {
+
+// Maximum reasonable orbital index to distinguish from coefficient values
+constexpr int MAX_ORBITAL_INDEX = 10000;
 
 /**
  * @brief Trim whitespace from both ends of a string
@@ -869,7 +871,7 @@ bool parse_mo_section(
                 try {
                     int idx = std::stoi(tokens[0]);
                     // If it's a small positive integer, it's probably an index
-                    if (idx > 0 && idx < 10000 && tokens[0].find('.') == std::string::npos) {
+                    if (idx > 0 && idx < MAX_ORBITAL_INDEX && tokens[0].find('.') == std::string::npos) {
                         line_idx++;
                         continue;
                     }
@@ -1031,6 +1033,9 @@ MoldenData parse_molden_file(const std::string& filename, std::string* error_msg
  * This is a convenience wrapper around parse_molden_file that provides
  * a simple C-compatible interface for loading Molden files.
  * 
+ * Note: This function silently discards error messages. Use parse_molden_file()
+ * directly if you need error reporting.
+ * 
  * @param filepath Path to Molden file
  * @return MoldenData structure with parsed data, or empty structure on error
  */
@@ -1039,15 +1044,9 @@ MoldenData load_molden_file(const char* filepath) {
         return MoldenData();
     }
     
-    std::string error;
-    MoldenData data = parse_molden_file(std::string(filepath), &error);
-    
-    if (!error.empty()) {
-        // Log error to stderr for debugging
-        std::cerr << "Molden loader error: " << error << std::endl;
-    }
-    
-    return data;
+    // Parse file without error reporting
+    // Applications that need error details should use parse_molden_file() directly
+    return parse_molden_file(std::string(filepath), nullptr);
 }
 
 } // namespace molden
