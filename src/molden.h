@@ -307,6 +307,56 @@ inline const char* shell_type_to_string(ShellType shell) {
     }
 }
 
+/**
+ * @brief Validate MoldenData structure consistency
+ * 
+ * Checks for valid atoms, basis sets, and molecular orbitals.
+ * @param data The MoldenData to validate
+ * @return true if valid, false otherwise
+ */
+bool validate_molden_data(const MoldenData& data);
+
+/**
+ * @brief Calculate total number of basis functions in a MoldenData structure
+ * 
+ * @param data The MoldenData to analyze
+ * @return Total number of basis functions
+ */
+size_t calculate_total_basis_functions(const MoldenData& data);
+
+/**
+ * @brief Count number of orbitals by spin type
+ * 
+ * @param data The MoldenData to analyze
+ * @param spin The spin type to count (Alpha or Beta)
+ * @return Number of orbitals with specified spin
+ */
+size_t count_orbitals_by_spin(const MoldenData& data, SpinType spin);
+
+/**
+ * @brief Convert element symbol to atomic number
+ * 
+ * @param symbol Element symbol (e.g., "C", "H", "O")
+ * @return Atomic number, or 0 if unknown
+ */
+int32_t element_symbol_to_atomic_number(const std::string& symbol);
+
+/**
+ * @brief Parse shell type from string (handles 'sp' case)
+ * 
+ * @param str Shell type string (e.g., "s", "p", "sp")
+ * @return ShellType enum value
+ */
+ShellType parse_shell_type(const std::string& str);
+
+/**
+ * @brief Convert spin string to SpinType enum
+ * 
+ * @param str Spin string (e.g., "Alpha", "Beta")
+ * @return SpinType enum value
+ */
+SpinType parse_spin_type(const std::string& str);
+
 } // namespace util
 
 } // namespace molden
