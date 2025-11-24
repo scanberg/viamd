@@ -359,4 +359,65 @@ SpinType parse_spin_type(const std::string& str);
 
 } // namespace util
 
+/**
+ * @brief Parse Molden data from string buffer
+ * 
+ * Parses a complete Molden file from a string buffer.
+ * Extracts atoms, basis sets, and molecular orbitals.
+ * 
+ * @param str Input string containing Molden file contents
+ * @param error_msg Optional pointer to string for error messages
+ * @return MoldenData structure with parsed data, or empty structure on error
+ * 
+ * Example usage:
+ * @code
+ *   std::string error;
+ *   MoldenData data = molden::parse_molden_string(file_contents, &error);
+ *   if (data.atoms.empty()) {
+ *       std::cerr << "Parse error: " << error << std::endl;
+ *   }
+ * @endcode
+ */
+MoldenData parse_molden_string(const std::string& str, std::string* error_msg = nullptr);
+
+/**
+ * @brief Parse Molden data from file
+ * 
+ * Reads and parses a Molden file from disk.
+ * 
+ * @param filename Path to Molden file
+ * @param error_msg Optional pointer to string for error messages
+ * @return MoldenData structure with parsed data, or empty structure on error
+ * 
+ * Example usage:
+ * @code
+ *   std::string error;
+ *   MoldenData data = molden::parse_molden_file("molecule.molden", &error);
+ *   if (!molden::util::validate_molden_data(data)) {
+ *       std::cerr << "Invalid data: " << error << std::endl;
+ *   }
+ * @endcode
+ */
+MoldenData parse_molden_file(const std::string& filename, std::string* error_msg = nullptr);
+
+/**
+ * @brief Main loader function for VIAMD integration
+ * 
+ * This is the primary entry point for loading Molden files into VIAMD.
+ * It parses the file and returns the data structure that can be used for
+ * visualization and analysis.
+ * 
+ * @param filepath Path to Molden file
+ * @return MoldenData structure with parsed data, or empty structure on error
+ * 
+ * Example usage:
+ * @code
+ *   MoldenData data = molden::load_molden_file("molecule.molden");
+ *   if (!data.atoms.empty()) {
+ *       // Successfully loaded, use data for visualization
+ *   }
+ * @endcode
+ */
+MoldenData load_molden_file(const char* filepath);
+
 } // namespace molden
