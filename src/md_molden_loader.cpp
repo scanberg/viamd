@@ -105,8 +105,8 @@ static bool molden_to_system(md_system_t* sys, const molden::MoldenData* data, m
     }
     
     // Infer bonds using VDW radii
-    // This uses the mdlib utility function to compute bonds
-    md_util_bond_compute_simple(&sys->bond, &sys->atom, 1.2f, alloc);
+    // This uses the mdlib utility function to compute covalent bonds
+    md_util_system_infer_covalent_bonds(sys, alloc);
     
     MD_LOG_INFO("Loaded Molden file: %zu atoms, %zu bonds", sys->atom.count, sys->bond.count);
     
