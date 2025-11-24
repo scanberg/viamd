@@ -4,12 +4,158 @@
 
 namespace ImGui {
 
-extern template IMGUI_API float RoundScalarWithFormatT<float>(const char* format, ImGuiDataType data_type, float v);
-extern template IMGUI_API float ScaleRatioFromValueT<float, float, float>(ImGuiDataType data_type, float t, float v_min, float v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize);
-extern template IMGUI_API float ScaleValueFromRatioT<float, float, float>(ImGuiDataType data_type, float t, float v_min, float v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize);
+// Copy from within Imgui. This is to avoid an issue where the symbol for the template (float) is not instantiated within Imgui.
+// https://github.com/ocornut/imgui/issues/2036
+template<typename TYPE>
+TYPE ImGui::RoundScalarWithFormatT(const char* format, ImGuiDataType data_type, TYPE v)
+{
+    IM_UNUSED(data_type);
+    IM_ASSERT(data_type == ImGuiDataType_Float || data_type == ImGuiDataType_Double);
+    const char* fmt_start = ImParseFormatFindStart(format);
+    if (fmt_start[0] != '%' || fmt_start[1] == '%') // Don't apply if the value is not visible in the format string
+        return v;
+
+    // Sanitize format
+    char fmt_sanitized[32];
+    ImParseFormatSanitizeForPrinting(fmt_start, fmt_sanitized, IM_ARRAYSIZE(fmt_sanitized));
+    fmt_start = fmt_sanitized;
+
+    // Format value with our rounding, and read back
+    char v_str[64];
+    ImFormatString(v_str, IM_ARRAYSIZE(v_str), fmt_start, v);
+    const char* p = v_str;
+    while (*p == ' ')
+        p++;
+    v = (TYPE)ImAtof(p);
+
+    return v;
+}
+
+// Convert a value v in the output space of a slider into a parametric position on the slider itself (the logical opposite of ScaleValueFromRatioT)
+template<typename TYPE, typename SIGNEDTYPE, typename FLOATTYPE>
+float ImGui::ScaleRatioFromValueT(ImGuiDataType data_type, TYPE v, TYPE v_min, TYPE v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize)
+{
+    if (v_min == v_max)
+        return 0.0f;
+    IM_UNUSED(data_type);
+
+    const TYPE v_clamped = (v_min < v_max) ? ImClamp(v, v_min, v_max) : ImClamp(v, v_max, v_min);
+    if (is_logarithmic)
+    {
+        bool flipped = v_max < v_min;
+
+        if (flipped) // Handle the case where the range is backwards
+            ImSwap(v_min, v_max);
+
+        // Fudge min/max to avoid getting close to log(0)
+        FLOATTYPE v_min_fudged = (ImAbs((FLOATTYPE)v_min) < logarithmic_zero_epsilon) ? ((v_min < 0.0f) ? -logarithmic_zero_epsilon : logarithmic_zero_epsilon) : (FLOATTYPE)v_min;
+        FLOATTYPE v_max_fudged = (ImAbs((FLOATTYPE)v_max) < logarithmic_zero_epsilon) ? ((v_max < 0.0f) ? -logarithmic_zero_epsilon : logarithmic_zero_epsilon) : (FLOATTYPE)v_max;
+
+        // Awkward special cases - we need ranges of the form (-100 .. 0) to convert to (-100 .. -epsilon), not (-100 .. epsilon)
+        if ((v_min == 0.0f) && (v_max < 0.0f))
+            v_min_fudged = -logarithmic_zero_epsilon;
+        else if ((v_max == 0.0f) && (v_min < 0.0f))
+            v_max_fudged = -logarithmic_zero_epsilon;
+
+        float result;
+        if (v_clamped <= v_min_fudged)
+            result = 0.0f; // Workaround for values that are in-range but below our fudge
+        else if (v_clamped >= v_max_fudged)
+            result = 1.0f; // Workaround for values that are in-range but above our fudge
+        else if ((v_min * v_max) < 0.0f) // Range crosses zero, so split into two portions
+        {
+            float zero_point_center = (-(float)v_min) / ((float)v_max - (float)v_min); // The zero point in parametric space.  There's an argument we should take the logarithmic nature into account when calculating this, but for now this should do (and the most common case of a symmetrical range works fine)
+            float zero_point_snap_L = zero_point_center - zero_deadzone_halfsize;
+            float zero_point_snap_R = zero_point_center + zero_deadzone_halfsize;
+            if (v == 0.0f)
+                result = zero_point_center; // Special case for exactly zero
+            else if (v < 0.0f)
+                result = (1.0f - (float)(ImLog(-(FLOATTYPE)v_clamped / logarithmic_zero_epsilon) / ImLog(-v_min_fudged / logarithmic_zero_epsilon))) * zero_point_snap_L;
+            else
+                result = zero_point_snap_R + ((float)(ImLog((FLOATTYPE)v_clamped / logarithmic_zero_epsilon) / ImLog(v_max_fudged / logarithmic_zero_epsilon)) * (1.0f - zero_point_snap_R));
+        }
+        else if ((v_min < 0.0f) || (v_max < 0.0f)) // Entirely negative slider
+            result = 1.0f - (float)(ImLog(-(FLOATTYPE)v_clamped / -v_max_fudged) / ImLog(-v_min_fudged / -v_max_fudged));
+        else
+            result = (float)(ImLog((FLOATTYPE)v_clamped / v_min_fudged) / ImLog(v_max_fudged / v_min_fudged));
+
+        return flipped ? (1.0f - result) : result;
+    }
+    else
+    {
+        // Linear slider
+        return (float)((FLOATTYPE)(SIGNEDTYPE)(v_clamped - v_min) / (FLOATTYPE)(SIGNEDTYPE)(v_max - v_min));
+    }
+}
+
+// Convert a parametric position on a slider into a value v in the output space (the logical opposite of ScaleRatioFromValueT)
+template<typename TYPE, typename SIGNEDTYPE, typename FLOATTYPE>
+TYPE ImGui::ScaleValueFromRatioT(ImGuiDataType data_type, float t, TYPE v_min, TYPE v_max, bool is_logarithmic, float logarithmic_zero_epsilon, float zero_deadzone_halfsize)
+{
+    // We special-case the extents because otherwise our logarithmic fudging can lead to "mathematically correct"
+    // but non-intuitive behaviors like a fully-left slider not actually reaching the minimum value. Also generally simpler.
+    if (t <= 0.0f || v_min == v_max)
+        return v_min;
+    if (t >= 1.0f)
+        return v_max;
+
+    TYPE result = (TYPE)0;
+    if (is_logarithmic)
+    {
+        // Fudge min/max to avoid getting silly results close to zero
+        FLOATTYPE v_min_fudged = (ImAbs((FLOATTYPE)v_min) < logarithmic_zero_epsilon) ? ((v_min < 0.0f) ? -logarithmic_zero_epsilon : logarithmic_zero_epsilon) : (FLOATTYPE)v_min;
+        FLOATTYPE v_max_fudged = (ImAbs((FLOATTYPE)v_max) < logarithmic_zero_epsilon) ? ((v_max < 0.0f) ? -logarithmic_zero_epsilon : logarithmic_zero_epsilon) : (FLOATTYPE)v_max;
+
+        const bool flipped = v_max < v_min; // Check if range is "backwards"
+        if (flipped)
+            ImSwap(v_min_fudged, v_max_fudged);
+
+        // Awkward special case - we need ranges of the form (-100 .. 0) to convert to (-100 .. -epsilon), not (-100 .. epsilon)
+        if ((v_max == 0.0f) && (v_min < 0.0f))
+            v_max_fudged = -logarithmic_zero_epsilon;
+
+        float t_with_flip = flipped ? (1.0f - t) : t; // t, but flipped if necessary to account for us flipping the range
+
+        if ((v_min * v_max) < 0.0f) // Range crosses zero, so we have to do this in two parts
+        {
+            float zero_point_center = (-(float)ImMin(v_min, v_max)) / ImAbs((float)v_max - (float)v_min); // The zero point in parametric space
+            float zero_point_snap_L = zero_point_center - zero_deadzone_halfsize;
+            float zero_point_snap_R = zero_point_center + zero_deadzone_halfsize;
+            if (t_with_flip >= zero_point_snap_L && t_with_flip <= zero_point_snap_R)
+                result = (TYPE)0.0f; // Special case to make getting exactly zero possible (the epsilon prevents it otherwise)
+            else if (t_with_flip < zero_point_center)
+                result = (TYPE)-(logarithmic_zero_epsilon * ImPow(-v_min_fudged / logarithmic_zero_epsilon, (FLOATTYPE)(1.0f - (t_with_flip / zero_point_snap_L))));
+            else
+                result = (TYPE)(logarithmic_zero_epsilon * ImPow(v_max_fudged / logarithmic_zero_epsilon, (FLOATTYPE)((t_with_flip - zero_point_snap_R) / (1.0f - zero_point_snap_R))));
+        }
+        else if ((v_min < 0.0f) || (v_max < 0.0f)) // Entirely negative slider
+            result = (TYPE)-(-v_max_fudged * ImPow(-v_min_fudged / -v_max_fudged, (FLOATTYPE)(1.0f - t_with_flip)));
+        else
+            result = (TYPE)(v_min_fudged * ImPow(v_max_fudged / v_min_fudged, (FLOATTYPE)t_with_flip));
+    }
+    else
+    {
+        // Linear slider
+        const bool is_floating_point = (data_type == ImGuiDataType_Float) || (data_type == ImGuiDataType_Double);
+        if (is_floating_point)
+        {
+            result = ImLerp(v_min, v_max, t);
+        }
+        else if (t < 1.0)
+        {
+            // - For integer values we want the clicking position to match the grab box so we round above
+            //   This code is carefully tuned to work with large values (e.g. high ranges of U64) while preserving this property..
+            // - Not doing a *1.0 multiply at the end of a range as it tends to be lossy. While absolute aiming at a large s64/u64
+            //   range is going to be imprecise anyway, with this check we at least make the edge values matches expected limits.
+            FLOATTYPE v_new_off_f = (SIGNEDTYPE)(v_max - v_min) * t;
+            result = (TYPE)((SIGNEDTYPE)v_min + (SIGNEDTYPE)(v_new_off_f + (FLOATTYPE)(v_min > v_max ? -0.5 : 0.5)));
+        }
+    }
+
+    return result;
+}
 
 // https://github.com/ocornut/imgui/issues/76
-
 bool RangeSliderBehavior(const ImRect& frame_bb, const char* str_id, float* v1, float* v2, float v_min, float v_max, const char* format, ImGuiSliderFlags flags) {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = GetCurrentWindow();
@@ -363,7 +509,7 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
     if (!ImGui::ItemAdd(bb, id, 0, ImGuiItemFlags_NoNav)) 
         return false;
 
-    bool is_hovered = ImGui::ItemHoverable(bb, id, g.LastItemData.InFlags);
+    bool is_hovered = ImGui::ItemHoverable(bb, id, g.LastItemData.ItemFlags);
 
     const float ext = ImMin(ws.x, ws.y) * 1.0f;
     const ImVec2 mid = bb.GetCenter();
