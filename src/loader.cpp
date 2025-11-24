@@ -25,6 +25,7 @@
 #include <string.h>
 
 #include "task_system.h"
+#include "md_molden_loader.h"
 
 enum sys_loader_t {
     SYS_LOADER_UNKNOWN,
@@ -33,6 +34,7 @@ enum sys_loader_t {
     SYS_LOADER_XYZ,
     SYS_LOADER_CIF,
     SYS_LOADER_LAMMPS,
+    SYS_LOADER_MOLDEN,
 #if MD_VLX
     SYS_LOADER_VELOXCHEM,
 #endif
@@ -46,6 +48,7 @@ static const str_t sys_loader_name[] {
     STR_LIT("XYZ"),
     STR_LIT("PDBx/mmCIF (cif)"),
     STR_LIT("LAMMPS (data)"),
+    STR_LIT("Molden"),
 #if MD_VLX
     STR_LIT("VeloxChem"),
 #endif
@@ -58,6 +61,7 @@ static const str_t sys_loader_ext[] {
     STR_LIT("xyz;xmol;arc"),
     STR_LIT("cif"),
     STR_LIT("data"),
+    STR_LIT("molden;mold"),
 #if MD_VLX
     STR_LIT("out;h5"),
 #endif
@@ -70,6 +74,7 @@ static md_system_loader_i* sys_loader[] = {
     md_xyz_system_loader(),
     md_mmcif_system_loader(),
     md_lammps_system_loader(),
+    md_molden_system_loader(),
 #if MD_VLX
     md_vlx_system_loader(),
 #endif
@@ -215,7 +220,7 @@ static void traj_loader_preload_check(load::LoaderState*, traj_loader_t, str_t, 
 
 namespace load {
 
-#define NUM_ENTRIES 12
+#define NUM_ENTRIES 14
 struct table_entry_t {
     str_t name[NUM_ENTRIES];
     str_t ext[NUM_ENTRIES];
@@ -241,6 +246,8 @@ static const table_entry_t table = {
         STR_LIT("PDBx/mmCIF (cif)"),
         STR_LIT("LAMMPS (data)"),
         STR_LIT("LAMMPS Trajectory (lammpstrj)"),
+        STR_LIT("Molden (molden)"),
+        STR_LIT("Molden (mold)"),
         //STR_LIT("DCD Trajectory (dcd)"),
 #if MD_VLX
         STR_LIT("VeloxChem (out)"),
@@ -258,6 +265,8 @@ static const table_entry_t table = {
         STR_LIT("cif"),
         STR_LIT("data"),
         STR_LIT("lammpstrj"),
+        STR_LIT("molden"),
+        STR_LIT("mold"),
         //STR_LIT("dcd"),
 #if MD_VLX
         STR_LIT("out"),
@@ -275,6 +284,8 @@ static const table_entry_t table = {
         md_mmcif_system_loader(),
         md_lammps_system_loader(),
         NULL,
+        md_molden_system_loader(),
+        md_molden_system_loader(),
         //NULL,
 #if MD_VLX
         md_vlx_system_loader(),
@@ -292,6 +303,8 @@ static const table_entry_t table = {
     	NULL,
         NULL,
         md_lammps_trajectory_loader(),
+        NULL,
+        NULL,
         //md_dcd_trajectory_loader(),
 #if MD_VLX
         NULL,
