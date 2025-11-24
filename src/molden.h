@@ -400,4 +400,24 @@ MoldenData parse_molden_string(const std::string& str, std::string* error_msg = 
  */
 MoldenData parse_molden_file(const std::string& filename, std::string* error_msg = nullptr);
 
+/**
+ * @brief Main loader function for VIAMD integration
+ * 
+ * This is the primary entry point for loading Molden files into VIAMD.
+ * It parses the file and returns the data structure that can be used for
+ * visualization and analysis.
+ * 
+ * @param filepath Path to Molden file
+ * @return MoldenData structure with parsed data, or empty structure on error
+ * 
+ * Example usage:
+ * @code
+ *   MoldenData data = molden::load_molden_file("molecule.molden");
+ *   if (!data.atoms.empty()) {
+ *       // Successfully loaded, use data for visualization
+ *   }
+ * @endcode
+ */
+MoldenData load_molden_file(const char* filepath);
+
 } // namespace molden

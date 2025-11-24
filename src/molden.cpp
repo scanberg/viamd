@@ -126,6 +126,7 @@
 #include <cctype>
 #include <fstream>
 #include <sstream>
+#include <iostream>
 
 namespace molden {
 
@@ -1022,6 +1023,31 @@ MoldenData parse_molden_file(const std::string& filename, std::string* error_msg
     file.close();
     
     return parse_molden_string(content, error_msg);
+}
+
+/**
+ * @brief Main loader function for VIAMD integration
+ * 
+ * This is a convenience wrapper around parse_molden_file that provides
+ * a simple C-compatible interface for loading Molden files.
+ * 
+ * @param filepath Path to Molden file
+ * @return MoldenData structure with parsed data, or empty structure on error
+ */
+MoldenData load_molden_file(const char* filepath) {
+    if (!filepath) {
+        return MoldenData();
+    }
+    
+    std::string error;
+    MoldenData data = parse_molden_file(std::string(filepath), &error);
+    
+    if (!error.empty()) {
+        // Log error to stderr for debugging
+        std::cerr << "Molden loader error: " << error << std::endl;
+    }
+    
+    return data;
 }
 
 } // namespace molden
