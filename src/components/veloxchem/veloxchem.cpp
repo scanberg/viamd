@@ -3270,7 +3270,7 @@ struct VeloxChem : viamd::EventHandler {
 
             // LEFT PANE
             {
-                ImGui::BeginChild("left pane", ImVec2(300, 0), ImGuiChildFlags_Border | ImGuiChildFlags_ResizeX);
+                ImGui::BeginChild("left pane", ImVec2(300, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
 
                 ImGui::SameLine();
 
