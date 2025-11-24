@@ -107,7 +107,7 @@ static void ImGui_ImplSDL3_SetClipboardText(void*, const char* text)
     SDL_SetClipboardText(text);
 }
 
-static void ImGui_ImplSDL3_SetPlatformImeData(ImGuiViewport*, ImGuiPlatformImeData* data)
+static void ImGui_ImplSDL3_SetPlatformImeData(ImGuiContext*, ImGuiViewport*, ImGuiPlatformImeData* data)
 {
     ImGui_ImplSDL3_Data* bd = ImGui_ImplSDL3_GetBackendData();
     if (data->WantVisible && bd)
@@ -391,7 +391,10 @@ static bool ImGui_ImplSDL3_Init(SDL_Window* window, SDL_Renderer* renderer, void
     io.SetClipboardTextFn = ImGui_ImplSDL3_SetClipboardText;
     io.GetClipboardTextFn = ImGui_ImplSDL3_GetClipboardText;
     io.ClipboardUserData = nullptr;
-    io.SetPlatformImeDataFn = ImGui_ImplSDL3_SetPlatformImeData;
+    
+    // Set platform dependent data in viewport
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    platform_io.Platform_SetImeDataFn = ImGui_ImplSDL3_SetPlatformImeData;
 
     // Gamepad handling
     bd->GamepadMode = ImGui_ImplSDL3_GamepadMode_AutoFirst;
