@@ -30,6 +30,34 @@ This directory contains example Molden files for testing and demonstration purpo
 
 ## Using These Files
 
+### With VIAMD (Phase 3 - Visualization)
+**Drag-and-Drop Support**:
+Simply drag and drop any .molden or .mold file into the VIAMD window to visualize it.
+
+**File Menu**:
+Use File → Open and select a Molden file to load it.
+
+**What You'll See**:
+- Atoms rendered with CPK coloring (color by element)
+- Covalent bonds inferred from atomic distances
+- Multiple representation modes:
+  - Ball-and-stick (default)
+  - Space-fill (van der Waals spheres)
+  - Licorice (stick model)
+  - And more...
+
+**Camera Controls**:
+- Left-click drag: Rotate view
+- Right-click drag: Pan view
+- Scroll: Zoom in/out
+- Double-click atom: Center view on atom
+
+**Supported Features**:
+- Automatic coordinate conversion (Bohr ↔ Angstrom)
+- Bond inference based on covalent radii
+- Atom selection and highlighting
+- Multiple color schemes
+
 ### With C++
 ```cpp
 #include "molden.h"
