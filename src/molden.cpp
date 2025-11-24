@@ -280,6 +280,8 @@ int32_t element_symbol_to_atomic_number(const std::string& symbol) {
     }
     
     // Two character elements - use a more efficient lookup
+    // Pack two characters into a single uint16_t for fast comparison
+    // Example: "He" -> (('H' << 8) | 'E') = 0x4845
     char c1 = to_upper(symbol[0]);
     char c2 = to_upper(symbol[1]);
     uint16_t key = (static_cast<uint16_t>(c1) << 8) | static_cast<uint16_t>(c2);

@@ -287,10 +287,22 @@ void demonstrate_usage() {
     s_shell.scale_factor = 1.0;
     
     // STO-3G for hydrogen (3 primitives)
-    // Format: {exponent, coefficient, coefficient_sp}
-    s_shell.primitives.push_back(PrimitiveGaussian{3.42525091, 0.15432897, 0.0});
-    s_shell.primitives.push_back(PrimitiveGaussian{0.62391373, 0.53532814, 0.0});
-    s_shell.primitives.push_back(PrimitiveGaussian{0.16885540, 0.44463454, 0.0});
+    // Using designated initializers for clarity (C++20)
+    s_shell.primitives.push_back(PrimitiveGaussian{
+        .exponent = 3.42525091,
+        .coefficient = 0.15432897,
+        .coefficient_sp = 0.0
+    });
+    s_shell.primitives.push_back(PrimitiveGaussian{
+        .exponent = 0.62391373,
+        .coefficient = 0.53532814,
+        .coefficient_sp = 0.0
+    });
+    s_shell.primitives.push_back(PrimitiveGaussian{
+        .exponent = 0.16885540,
+        .coefficient = 0.44463454,
+        .coefficient_sp = 0.0
+    });
     
     basis1.shells.push_back(s_shell);
     data.basis_sets.push_back(basis1);
