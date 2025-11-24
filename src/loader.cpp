@@ -309,6 +309,23 @@ static const table_entry_t table = {
 #if MD_VLX
         NULL,
 #endif
+    },
+    {
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+        FLAG_NONE,
+#if MD_VLX
+        FLAG_NONE,
+#endif
     }
 };
 
