@@ -110,6 +110,7 @@ set(COMP_FILES
     src/components/ramachandran/ramachandran.cpp
     src/components/shapespace/shapespace.cpp
     src/components/dataset/dataset.cpp
+    src/components/particlesystem/particlesystem.cpp
 )
 
 if (VIAMD_ENABLE_VELOXCHEM)
@@ -138,6 +139,10 @@ set(SHADER_FILES
     src/shaders/volume/raycaster.frag
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/blur.frag
+    src/shaders/particlesystem/seed_particles.comp
+    src/shaders/particlesystem/advect_particles.comp
+    src/shaders/particlesystem/render_particles.vert
+    src/shaders/particlesystem/render_particles.frag
 )
 
 # Bake shaders into a single header file

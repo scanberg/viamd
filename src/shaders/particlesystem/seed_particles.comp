@@ -1,0 +1,101 @@
+#version 430 core
+
+#ifndef GROUP_SIZE
+#define GROUP_SIZE 256
+#endif
+
+layout (local_size_x = GROUP_SIZE) in;
+
+struct Particle {
+    vec4 position;      // xyz: position, w: age
+    vec4 velocity;      // xyz: velocity, w: lifetime
+    vec4 trail_pos[8];  // Trail positions for rendering
+};
+
+layout (std430, binding = 0) writeonly buffer particle_buffer {
+    Particle particles[];
+};
+
+layout (std140, binding = 0) uniform seed_params {
+    uvec3 volume_dim;       // Volume dimensions
+    uint  num_particles;    // Number of particles to seed
+    vec3  volume_min;       // Volume AABB min
+    float scalar_min;       // Scalar threshold min
+    vec3  volume_max;       // Volume AABB max
+    float scalar_max;       // Scalar threshold max
+    float min_lifetime;     // Minimum particle lifetime
+    float max_lifetime;     // Maximum particle lifetime
+    uint  random_seed;      // Random seed
+    float _pad0;
+};
+
+layout (binding = 0) uniform sampler3D volume_texture;
+
+// Simple random number generator (PCG)
+uint pcg_hash(uint seed) {
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float random_float(inout uint seed) {
+    seed = pcg_hash(seed);
+    return float(seed) / 4294967296.0;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= num_particles) return;
+    
+    // Initialize random seed with global index and user seed
+    uint seed = random_seed + idx * 1664525u + 1013904223u;
+    
+    // Try multiple times to find a valid position within scalar range
+    const int max_attempts = 32;
+    vec3 pos = vec3(0.0);
+    float scalar_value = 0.0;
+    bool found = false;
+    
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        // Generate random position within volume bounds
+        pos = vec3(
+            volume_min.x + random_float(seed) * (volume_max.x - volume_min.x),
+            volume_min.y + random_float(seed) * (volume_max.y - volume_min.y),
+            volume_min.z + random_float(seed) * (volume_max.z - volume_min.z)
+        );
+        
+        // Convert to texture coordinates [0, 1]
+        vec3 tex_coord = (pos - volume_min) / (volume_max - volume_min);
+        
+        // Sample the scalar value (in w component)
+        vec4 sample_value = texture(volume_texture, tex_coord);
+        scalar_value = sample_value.w;
+        
+        // Check if within desired range
+        if (scalar_value >= scalar_min && scalar_value <= scalar_max) {
+            found = true;
+            break;
+        }
+    }
+    
+    // If no valid position found, place at random position anyway
+    if (!found) {
+        pos = vec3(
+            volume_min.x + random_float(seed) * (volume_max.x - volume_min.x),
+            volume_min.y + random_float(seed) * (volume_max.y - volume_min.y),
+            volume_min.z + random_float(seed) * (volume_max.z - volume_min.z)
+        );
+    }
+    
+    // Generate random lifetime
+    float lifetime = min_lifetime + random_float(seed) * (max_lifetime - min_lifetime);
+    
+    // Initialize particle
+    particles[idx].position = vec4(pos, 0.0);  // age = 0
+    particles[idx].velocity = vec4(0.0, 0.0, 0.0, lifetime);
+    
+    // Initialize trail positions to current position
+    for (int i = 0; i < 8; ++i) {
+        particles[idx].trail_pos[i] = vec4(pos, 0.0);
+    }
+}
