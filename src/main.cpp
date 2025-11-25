@@ -49,6 +49,8 @@
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volumerender_utils.h>
 
+#include <components/particlesystem/particlesystem.h>
+
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 #include <task_system.h>
@@ -768,6 +770,7 @@ int main(int argc, char** argv) {
     postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
     LOG_DEBUG("Initializing volume...");
     volume::initialize();
+    particlesystem::initialize();
     LOG_DEBUG("Initializing task system...");
     const size_t num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? md_os_num_processors() : VIAMD_NUM_WORKER_THREADS;
     task_system::initialize(CLAMP(num_threads, 2, (uint32_t)md_os_num_processors()));
@@ -1514,6 +1517,8 @@ int main(int argc, char** argv) {
     postprocessing::shutdown();
     LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
+    LOG_DEBUG("Shutting down particle system...");
+    particlesystem::shutdown();
     LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
