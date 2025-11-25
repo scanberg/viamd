@@ -1979,6 +1979,26 @@ static void update_density_volume(ApplicationState* data) {
                 data->density_volume.volume_texture.max_value = prop_data->max_value;
             }
             gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop_data->values, GL_R32F);
+            
+            // Example hook for particle system: bind volume texture
+            // NOTE: Current volume texture is single-channel (scalar field only)
+            // For particle system vector fields, you would need a 4-component volume texture
+            // where xyz = gradient/vector field and w = scalar value
+            // Uncomment and modify the following when you have vector field data:
+            /*
+            if (data->density_volume.volume_texture.id) {
+                vec3_t vol_min = {-10.0f, -10.0f, -10.0f}; // Adjust based on your data
+                vec3_t vol_max = { 10.0f,  10.0f,  10.0f}; // Adjust based on your data
+                particlesystem::set_volume_texture(
+                    data->density_volume.volume_texture.id,
+                    data->density_volume.volume_texture.dim[0],
+                    data->density_volume.volume_texture.dim[1],
+                    data->density_volume.volume_texture.dim[2],
+                    vol_min,
+                    vol_max
+                );
+            }
+            */
         }
     }
 }

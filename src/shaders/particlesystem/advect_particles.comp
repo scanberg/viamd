@@ -137,6 +137,7 @@ void main() {
     for (int i = 7; i > 0; --i) {
         particles[idx].trail_pos[i] = particles[idx].trail_pos[i - 1];
     }
+    // Store previous position in trail (w component indicates valid trail point)
     particles[idx].trail_pos[0] = vec4(pos, 1.0);
     
     // Update particle

@@ -11,9 +11,6 @@
 #include <imgui_widgets.h>
 #include <shaders.inl>
 
-#include <vector>
-#include <ctime>
-
 namespace particlesystem {
 
 struct Particle {
@@ -94,6 +91,9 @@ struct ParticleSystem : viamd::EventHandler {
     int volume_dim[3] = {0, 0, 0};
     vec3_t volume_min = {0, 0, 0};
     vec3_t volume_max = {1, 1, 1};
+    
+    // Frame counter for seed diversity
+    uint32_t frame_counter = 0;
     
     ParticleSystem() {
         viamd::event_system_register_handler(*this);
@@ -214,7 +214,8 @@ struct ParticleSystem : viamd::EventHandler {
             params.scalar_max = scalar_max;
             params.min_lifetime = min_lifetime;
             params.max_lifetime = max_lifetime;
-            params.random_seed = (uint32_t)time(nullptr);
+            // Use frame counter for better seed diversity across rapid calls
+            params.random_seed = (frame_counter * 1664525u + 1013904223u);
             
             glBindBuffer(GL_UNIFORM_BUFFER, seed_ubo);
             glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(SeedParams), &params);
@@ -235,23 +236,27 @@ struct ParticleSystem : viamd::EventHandler {
             glUseProgram(0);
         }
         
-        // Prepare render VBO with particle indices
-        std::vector<uint32_t> indices;
-        for (uint32_t i = 0; i < num_particles; ++i) {
-            for (uint32_t j = 0; j <= num_trail_segments; ++j) {
-                indices.push_back(i * (num_trail_segments + 1) + j);
-            }
+        // Prepare render VBO with particle indices (sequential 0, 1, 2, ...)
+        // Each particle has (num_trail_segments + 1) vertices
+        uint32_t vertex_count = num_particles * (num_trail_segments + 1);
+        uint32_t* indices = new uint32_t[vertex_count];
+        for (uint32_t i = 0; i < vertex_count; ++i) {
+            indices[i] = i;
         }
         
         glBindBuffer(GL_ARRAY_BUFFER, render_vbo);
-        glBufferData(GL_ARRAY_BUFFER, indices.size() * sizeof(uint32_t), indices.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, vertex_count * sizeof(uint32_t), indices, GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         
+        delete[] indices;
         initialized = true;
     }
     
     void update_particles(float dt) {
         if (!initialized || !volume_texture || !advect_program) return;
+        
+        // Increment frame counter for seed diversity
+        frame_counter++;
         
         AdvectParams params;
         params.volume_dim[0] = volume_dim[0];
@@ -265,7 +270,8 @@ struct ParticleSystem : viamd::EventHandler {
         params.scalar_max = scalar_max;
         params.min_lifetime = min_lifetime;
         params.max_lifetime = max_lifetime;
-        params.random_seed = (uint32_t)time(nullptr);
+        // Use frame counter for better seed diversity
+        params.random_seed = (frame_counter * 1664525u + 1013904223u);
         
         glBindBuffer(GL_UNIFORM_BUFFER, advect_ubo);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(AdvectParams), &params);

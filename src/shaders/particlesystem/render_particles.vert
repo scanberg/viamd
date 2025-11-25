@@ -54,8 +54,8 @@ void main() {
             return;
         }
         pos = particles[particle_idx].trail_pos[trail_idx].xyz;
-        // Fade out along the trail
-        alpha = 1.0 - float(trail_idx) / float(num_trail_segments);
+        // Fade out along the trail (trail_idx goes from 0 to min(7, num_trail_segments-1))
+        alpha = 1.0 - float(trail_idx) / 8.0;
     }
     
     // Compute normalized age for color variation
