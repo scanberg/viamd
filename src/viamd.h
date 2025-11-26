@@ -311,7 +311,6 @@ struct Volume {
     mat4_t texture_to_world = {};
     vec3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
-    int num_components = 1;
     VolumeFormat format = VolumeFormat::R16_FLOAT;
     uint32_t tex_id = 0;
 };
@@ -324,7 +323,7 @@ struct IsoDesc {
     vec4_t colors[8];
 };
 
-struct EvalAtomProperty {
+struct AtomicPropertyPayload {
     uint64_t property_id = 0;
     int idx = 0; // This is probably rarely applicable
 
@@ -334,7 +333,7 @@ struct EvalAtomProperty {
 };
 
 // Event Payload when an electronic structure is to be evaluated
-struct EvalElectronicStructure {
+struct ElectronicStructurePayload {
     // Input information
     ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
     int major_idx = 0;

@@ -8671,14 +8671,14 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                     8.0f,
                     16.0f,
                 };
-                EvalElectronicStructure data = {
+                ElectronicStructurePayload data = {
                     .type = rep->electronic_structure.type,
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
                     .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
                     .dst_volume = &rep->electronic_structure.vol,
                 };
-                viamd::event_system_broadcast_event(viamd::EventType_RepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
+                viamd::event_system_broadcast_event(viamd::EventType_EvalElectronicStructure, viamd::EventPayloadType_ElectronicStructure, &data);
 
                 if (data.output_written) {
 #if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME

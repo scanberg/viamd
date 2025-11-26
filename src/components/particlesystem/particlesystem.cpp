@@ -326,7 +326,7 @@ struct ParticleSystem : viamd::EventHandler {
         glDisable(GL_BLEND);
     }
     
-    void draw_ui() {
+    void draw_ui(const ApplicationState& app_state) {
         if (!show_window) return;
         
         if (ImGui::Begin("Particle System", &show_window)) {
@@ -334,6 +334,9 @@ struct ParticleSystem : viamd::EventHandler {
             
             ImGui::Separator();
             ImGui::Text("Particle Parameters");
+
+            // @TODO: Enlist all representations which have a volume texture and allow user to select one
+
             
             bool params_changed = false;
             params_changed |= ImGui::SliderInt("Num Particles", (int*)&num_particles, 100, 10000);
@@ -379,11 +382,13 @@ struct ParticleSystem : viamd::EventHandler {
                 }
                 
                 case viamd::EventType_ViamdFrameTick: {
+                    ASSERT(event.payload_type == viamd::EventPayloadType_ApplicationState);
+                    ApplicationState* app_state = (ApplicationState*)event.payload;
                     if (enabled && initialized) {
                         update_particles(timestep);
                     }
                     if (show_window) {
-                        draw_ui();
+                        draw_ui(*app_state);
                     }
                     break;
                 }
