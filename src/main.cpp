@@ -1974,6 +1974,26 @@ static void update_density_volume(ApplicationState* data) {
                 data->density_volume.volume_texture.max_value = prop_data->max_value;
             }
             gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop_data->values, GL_R32F);
+            
+            // Example hook for particle system: bind volume texture
+            // NOTE: Current volume texture is single-channel (scalar field only)
+            // For particle system vector fields, you would need a 4-component volume texture
+            // where xyz = gradient/vector field and w = scalar value
+            // Uncomment and modify the following when you have vector field data:
+            /*
+            if (data->density_volume.volume_texture.id) {
+                vec3_t vol_min = {-10.0f, -10.0f, -10.0f}; // Adjust based on your data
+                vec3_t vol_max = { 10.0f,  10.0f,  10.0f}; // Adjust based on your data
+                particlesystem::set_volume_texture(
+                    data->density_volume.volume_texture.id,
+                    data->density_volume.volume_texture.dim[0],
+                    data->density_volume.volume_texture.dim[1],
+                    data->density_volume.volume_texture.dim[2],
+                    vol_min,
+                    vol_max
+                );
+            }
+            */
         }
     }
 }
@@ -4239,7 +4259,7 @@ static void draw_representations_window(ApplicationState* state) {
                 for (int i = 0; i < (int)RepresentationType::Count; ++i) {
                     if (i == (int)RepresentationType::ElectronicStructure) {
                         // Do not enlist Electronic Structure if there are no orbitals available
-                        if (state->representation.info.alpha.num_orbitals == 0) continue;
+                        if (state->representation.info.electronic_structure.alpha.num_orbitals == 0) continue;
                     }
                     if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                         rep.type = (RepresentationType)i;
@@ -4260,8 +4280,8 @@ static void draw_representations_window(ApplicationState* state) {
                 }
 
                 if (rep.color_mapping == ColorMapping::Property) {
-                    AtomProperty* props = state->representation.info.atom_properties;
-                    int num_props = (int)md_array_size(state->representation.info.atom_properties);
+                    AtomPropertyInfo* props = state->representation.info.atomic_property.properties;
+                    int num_props = (int)md_array_size(state->representation.info.atomic_property.properties);
                     if (num_props > 0) {
                         rep.prop.idx = CLAMP(rep.prop.idx, 0, num_props - 1);
                         if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
@@ -4396,7 +4416,7 @@ static void draw_representations_window(ApplicationState* state) {
                 if (ImGui::BeginCombo("Electronic Structure Type", electronic_structure_type_str[(int)rep.electronic_structure.type], flags)) {
                     for (int n = 0; n < (int)ElectronicStructureType::Count; n++) {
                         bool is_selected = ((int)rep.electronic_structure.type == n);
-                        bool disabled = !((1 << n) & state->representation.info.electronic_structure_type_mask);
+                        bool disabled = !((1 << n) & state->representation.info.electronic_structure.electronic_structure_type_mask);
 
                         if (disabled) ImGui::PushDisabled();
                         if (ImGui::Selectable(electronic_structure_type_str[n], is_selected)) {
@@ -4428,11 +4448,11 @@ static void draw_representations_window(ApplicationState* state) {
                                              rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole);
 
                 if (show_molecular_orbitals) {
-                    if (state->representation.info.alpha.label) {
-                        if (ImGui::BeginCombo("Molecular Orbital Idx", state->representation.info.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
-                            for (int n = 0; n < (int)state->representation.info.alpha.num_orbitals; n++) {
+                    if (state->representation.info.electronic_structure.alpha.label) {
+                        if (ImGui::BeginCombo("Molecular Orbital Idx", state->representation.info.electronic_structure.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
+                            for (int n = 0; n < (int)state->representation.info.electronic_structure.alpha.num_orbitals; n++) {
                                 bool is_selected = (rep.electronic_structure.mo_idx == n);
-                                if (ImGui::Selectable(state->representation.info.alpha.label[n].ptr, is_selected)) {
+                                if (ImGui::Selectable(state->representation.info.electronic_structure.alpha.label[n].ptr, is_selected)) {
                                     if (rep.electronic_structure.mo_idx != n) {
                                         update_rep = true;
                                     }
@@ -4449,11 +4469,11 @@ static void draw_representations_window(ApplicationState* state) {
                 }
 
                 if (show_exited_states) {
-                    if (state->representation.info.nto.label) {
-                        if (ImGui::BeginCombo("Excited State Idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
-                            for (int n = 0; n < (int)state->representation.info.nto.num_orbitals; n++) {
+                    if (state->representation.info.electronic_structure.nto.label) {
+                        if (ImGui::BeginCombo("Excited State Idx", state->representation.info.electronic_structure.nto.label[rep.electronic_structure.nto_idx].ptr)) {
+                            for (int n = 0; n < (int)state->representation.info.electronic_structure.nto.num_orbitals; n++) {
                                 const bool is_selected = (rep.electronic_structure.nto_idx == n);
-                                if (ImGui::Selectable(state->representation.info.nto.label[n].ptr, is_selected)) {
+                                if (ImGui::Selectable(state->representation.info.electronic_structure.nto.label[n].ptr, is_selected)) {
                                     if (rep.electronic_structure.nto_idx != n) {
                                         update_rep = true;
                                     }
@@ -4467,8 +4487,8 @@ static void draw_representations_window(ApplicationState* state) {
                             ImGui::EndCombo();
                         }
                         if (show_lambdas) {
-                            if (state->representation.info.nto.lambda) {
-                                const NaturalTransitionOrbitalLambda& lambda = state->representation.info.nto.lambda[rep.electronic_structure.nto_idx];
+                            if (state->representation.info.electronic_structure.nto.lambda) {
+                                const NaturalTransitionOrbitalLambdaInfo& lambda = state->representation.info.electronic_structure.nto.lambda[rep.electronic_structure.nto_idx];
                                 const int num_lambdas = (int)lambda.num_lambdas;
                                 if (num_lambdas > 0) {
                                     rep.electronic_structure.nto_lambda_idx = CLAMP(rep.electronic_structure.nto_lambda_idx, 0, num_lambdas - 1);
@@ -8401,7 +8421,7 @@ static Representation* create_representation(ApplicationState* data, Representat
     if (!str_empty(filter)) {
         str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
     }
-    rep->electronic_structure.mo_idx = data->representation.info.alpha.homo_idx;
+    rep->electronic_structure.mo_idx = data->representation.info.electronic_structure.alpha.homo_idx;
     init_representation(data, rep);
     update_representation(data, rep);
     return rep;
@@ -8516,10 +8536,10 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 // @TODO: Map colors accordingly
                 //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
 
-                if (md_array_size(state->representation.info.atom_properties) > 0) {
+                if (md_array_size(state->representation.info.atomic_property.properties) > 0) {
                     float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
                     EvalAtomProperty eval = {
-                        .property_id = state->representation.info.atom_properties[rep->prop.idx].id,
+                        .property_id = state->representation.info.atomic_property.properties[rep->prop.idx].id,
                         .idx = 0,
                         .output_written = false,
                         .num_values = num_atoms,
@@ -8619,7 +8639,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
         break;
     case RepresentationType::ElectronicStructure: {
-        size_t num_mos = state->representation.info.alpha.num_orbitals;
+        size_t num_mos = state->representation.info.electronic_structure.alpha.num_orbitals;
         rep->type_is_valid = num_mos > 0;
         if (num_mos > 0) {
             uint64_t orb_idx = 0;
@@ -8651,14 +8671,14 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                     8.0f,
                     16.0f,
                 };
-                EvalElectronicStructure data = {
+                ElectronicStructurePayload data = {
                     .type = rep->electronic_structure.type,
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
                     .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
                     .dst_volume = &rep->electronic_structure.vol,
                 };
-                viamd::event_system_broadcast_event(viamd::EventType_RepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
+                viamd::event_system_broadcast_event(viamd::EventType_EvalElectronicStructure, viamd::EventPayloadType_ElectronicStructure, &data);
 
                 if (data.output_written) {
 #if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
@@ -8711,11 +8731,11 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_alloc);
 
-    size_t num_props = md_array_size(state->representation.info.atom_properties);
+    size_t num_props = md_array_size(state->representation.info.atomic_property.properties);
     if (num_props > 0) {
         rep->prop.idx = 0;
-        rep->prop.range_beg = state->representation.info.atom_properties[0].value_min;
-        rep->prop.range_end = state->representation.info.atom_properties[0].value_max;
+        rep->prop.range_beg = state->representation.info.atomic_property.properties[0].value_min;
+        rep->prop.range_end = state->representation.info.atomic_property.properties[0].value_max;
     }
 
     rep->filt_is_dirty = true;
@@ -8753,7 +8773,7 @@ static void create_default_representations(ApplicationState* state) {
     bool water_present = false;
     bool ligand_present = false;
     bool coarse_grained = false;
-    bool orbitals_present = state->representation.info.alpha.num_orbitals > 0;
+    bool orbitals_present = state->representation.info.electronic_structure.alpha.num_orbitals > 0;
 
     if (state->mold.sys.atom.count > 3'000'000) {
         LOG_INFO("Large system detected, creating default representation for all atoms");
