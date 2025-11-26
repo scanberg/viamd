@@ -97,7 +97,6 @@ struct ParticleSystem : viamd::EventHandler {
     
     ParticleSystem() {
         viamd::event_system_register_handler(*this);
-        initialize_gl_resources();
     }
     
     virtual ~ParticleSystem() {
@@ -117,34 +116,32 @@ struct ParticleSystem : viamd::EventHandler {
         
         // Create compute programs
         seed_program = glCreateProgram();
-        glAttachShader(seed_program, seed_shader);
-        glLinkProgram(seed_program);
-        glDetachShader(seed_program, seed_shader);
+        if (!gl::attach_link_detach(seed_program, &seed_shader, 1)) {
+            glDeleteProgram(seed_program);
+            seed_program = 0;
+        }
         glDeleteShader(seed_shader);
         
         advect_program = glCreateProgram();
-        glAttachShader(advect_program, advect_shader);
-        glLinkProgram(advect_program);
-        glDetachShader(advect_program, advect_shader);
+        if (!gl::attach_link_detach(advect_program, &advect_shader, 1)) {
+            glDeleteProgram(advect_program);
+            advect_program = 0;
+        }
         glDeleteShader(advect_shader);
         
         // Compile render shaders
-        GLuint vert_shader = gl::compile_shader_from_source(
-            {(const char*)render_particles_vert, render_particles_vert_size},
-            GL_VERTEX_SHADER
-        );
-        GLuint frag_shader = gl::compile_shader_from_source(
-            {(const char*)render_particles_frag, render_particles_frag_size},
-            GL_FRAGMENT_SHADER
-        );
+        GLuint vert_shader = gl::compile_shader_from_source( {(const char*)render_particles_vert, render_particles_vert_size}, GL_VERTEX_SHADER );
+        GLuint frag_shader = gl::compile_shader_from_source( {(const char*)render_particles_frag, render_particles_frag_size}, GL_FRAGMENT_SHADER );
         
         // Create render program
         render_program = glCreateProgram();
-        glAttachShader(render_program, vert_shader);
-        glAttachShader(render_program, frag_shader);
-        glLinkProgram(render_program);
-        glDetachShader(render_program, vert_shader);
-        glDetachShader(render_program, frag_shader);
+        {
+            const GLuint shaders[] = { vert_shader, frag_shader };
+            if (!gl::attach_link_detach(render_program, shaders, 2)) {
+                glDeleteProgram(render_program);
+                render_program = 0;
+            }
+        }
         glDeleteShader(vert_shader);
         glDeleteShader(frag_shader);
         
@@ -372,6 +369,7 @@ struct ParticleSystem : viamd::EventHandler {
             switch (event.type) {
                 case viamd::EventType_ViamdInitialize: {
                     // Component initialization
+                    initialize_gl_resources();
                     break;
                 }
                 
@@ -383,6 +381,9 @@ struct ParticleSystem : viamd::EventHandler {
                 case viamd::EventType_ViamdFrameTick: {
                     if (enabled && initialized) {
                         update_particles(timestep);
+                    }
+                    if (show_window) {
+                        draw_ui();
                     }
                     break;
                 }
@@ -417,40 +418,6 @@ struct ParticleSystem : viamd::EventHandler {
     }
 };
 
-static ParticleSystem* g_particle_system = nullptr;
-
-void initialize() {
-    if (!g_particle_system) {
-        g_particle_system = new ParticleSystem();
-    }
-}
-
-void shutdown() {
-    if (g_particle_system) {
-        delete g_particle_system;
-        g_particle_system = nullptr;
-    }
-}
-
-void set_volume_texture(GLuint texture, int dim_x, int dim_y, int dim_z, vec3_t min, vec3_t max) {
-    if (g_particle_system) {
-        g_particle_system->volume_texture = texture;
-        g_particle_system->volume_dim[0] = dim_x;
-        g_particle_system->volume_dim[1] = dim_y;
-        g_particle_system->volume_dim[2] = dim_z;
-        g_particle_system->volume_min = min;
-        g_particle_system->volume_max = max;
-        
-        if (texture && !g_particle_system->initialized) {
-            g_particle_system->initialize_particles();
-        }
-    }
-}
-
-void draw_ui() {
-    if (g_particle_system) {
-        g_particle_system->draw_ui();
-    }
-}
+static ParticleSystem instance = {};
 
 }  // namespace particlesystem
