@@ -1411,7 +1411,7 @@ struct VeloxChem : viamd::EventHandler {
         }
         
         // Use the density matrix and calculate density directly
-        md_gto_grid_evaluate_matrix_GPU(vol_tex, &grid, &gto_data, density_matrix_data, matrix_dim);
+        md_gto_grid_evaluate_matrix_GPU(vol_tex, &grid, &gto_data, density_matrix_data, matrix_dim, false);
 
         #endif
 
