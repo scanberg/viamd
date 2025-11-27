@@ -781,15 +781,20 @@ struct VeloxChem : viamd::EventHandler {
                 // @TODO: Fill in dipole information
                 break;
             }
-            case viamd::EventType_RepresentationEvalElectronicStructure: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_EvalElectronicStructure);
-                EvalElectronicStructure& data = *(EvalElectronicStructure*)e.payload;
+            case viamd::EventType_EvalElectronicStructure: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_ElectronicStructure);
+                ElectronicStructurePayload& data = *(ElectronicStructurePayload*)e.payload;
 
                 if (!data.output_written) {
                     const float samples_per_unit_length = data.samples_per_angstrom * BOHR_TO_ANGSTROM;
                     md_grid_t grid = {};
                     init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
-                    init_volume(data.dst_volume, grid);
+                    VolumeFormat format = VolumeFormat::R32_FLOAT;
+                    if (data.type == ElectronicStructureType::ElectronDensity) {
+                        data.include_gradients = true; // gradients not supported in this path
+						format = VolumeFormat::R32G32B32A32_FLOAT;
+					}
+                    init_volume(data.dst_volume, grid, format);
 
                     switch (data.type) {
                     case ElectronicStructureType::MolecularOrbital:
@@ -837,7 +842,7 @@ struct VeloxChem : viamd::EventHandler {
                     case ElectronicStructureType::ElectronDensity:
                     {
                         if (use_gpu_path) {
-                            data.output_written = compute_electron_density_GPU(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA, data.include_gradients);
+                            data.output_written = compute_electron_density_GPU(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA, DEFAULT_GTO_CUTOFF_VALUE, data.include_gradients);
                         } else {
                             data.output_written = (compute_electron_density_async(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA) != task_system::INVALID_ID);
                         }
@@ -851,9 +856,9 @@ struct VeloxChem : viamd::EventHandler {
 
                 break;
             }
-            case viamd::EventType_RepresentationEvalAtomProperty: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_EvalAtomProperty);
-                EvalAtomProperty& data = *(EvalAtomProperty*)e.payload;
+            case viamd::EventType_EvalAtomicProperty: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_AtomicProperty);
+                AtomicPropertyPayload& data = *(AtomicPropertyPayload*)e.payload;
 
                 switch (data.property_id) {
                 case ATOM_PROPERTY_RESP_CHARGE: {
@@ -1107,15 +1112,28 @@ struct VeloxChem : viamd::EventHandler {
         grid->spacing = voxel_size;
     }
 
-    void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F) {
+    void init_volume(Volume* vol, const md_grid_t& grid, VolumeFormat format = VolumeFormat::R32_FLOAT) {
         ASSERT(vol);
         MEMCPY(vol->dim, grid.dim, sizeof(vol->dim));
         const float scl = BOHR_TO_ANGSTROM;
 
+        GLenum format_gl = 0;
+        switch (format) {
+        case VolumeFormat::R16_FLOAT:           format_gl = GL_R16F;      break;
+        case VolumeFormat::R32_FLOAT:           format_gl = GL_R32F;      break;
+        case VolumeFormat::R32G32B32A32_FLOAT:  format_gl = GL_RGBA32F;   break;
+        case VolumeFormat::R16G16B16A16_FLOAT:  format_gl = GL_RGBA16F;   break;
+        default:
+            MD_LOG_ERROR("Unsupported volume format specified");
+            return;
+        }
+
         vec3_t extent = md_grid_extent(&grid);
         vol->texture_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, extent * scl);
         vol->voxel_size = grid.spacing;
-        gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
+		vol->format = format;
+
+        gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format_gl);
     }
 
     bool compute_nto_GPU(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
@@ -4023,7 +4041,8 @@ struct VeloxChem : viamd::EventHandler {
                     defer { md_vm_arena_destroy(temp_arena); };
 
                     Volume vol = {};
-                    init_volume(&vol, grid, GL_R32F);
+					VolumeFormat format = VolumeFormat::R32_FLOAT;
+                    init_volume(&vol, grid, format);
 
                     task_system::ID task = task_system::INVALID_ID;
 
@@ -4836,8 +4855,8 @@ struct VeloxChem : viamd::EventHandler {
 							num_lambdas++;
                         }
 
-                        init_volume(&nto.vol[NTO_Attachment], nto.grid, GL_R32F);
-                        init_volume(&nto.vol[NTO_Detachment], nto.grid, GL_R32F);
+                        init_volume(&nto.vol[NTO_Attachment], nto.grid);
+                        init_volume(&nto.vol[NTO_Detachment], nto.grid);
 
                         if (use_gpu_path) {
                             compute_attachment_detachment_density_GPU(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Attachment);

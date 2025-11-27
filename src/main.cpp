@@ -8538,14 +8538,14 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 
                 if (md_array_size(state->representation.info.atomic_property.properties) > 0) {
                     float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
-                    EvalAtomProperty eval = {
+                    AtomicPropertyPayload eval = {
                         .property_id = state->representation.info.atomic_property.properties[rep->prop.idx].id,
                         .idx = 0,
                         .output_written = false,
                         .num_values = num_atoms,
                         .dst_values = values,
                     };
-                    viamd::event_system_broadcast_event(viamd::EventType_RepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
+                    viamd::event_system_broadcast_event(viamd::EventType_EvalAtomicProperty, viamd::EventPayloadType_AtomicProperty, &eval);
 
                     if (eval.output_written) {
                         float range_ext = (rep->prop.range_end - rep->prop.range_beg);

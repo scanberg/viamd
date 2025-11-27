@@ -13,49 +13,25 @@
 
 namespace particlesystem {
 
-struct Particle {
-    vec4_t position;       // xyz: position, w: age
-    vec4_t velocity;       // xyz: velocity, w: lifetime
-    vec4_t trail_pos[8];   // Trail positions
-};
-
-struct SeedParams {
-    uint32_t volume_dim[3];
+struct ParticleParams {
+    mat4_t   texture_to_world;
+    float    dt;
+    float    scalar_min;
+    float    scalar_max;
+	float    min_life;
+	float	 max_life;
     uint32_t num_particles;
-    vec3_t volume_min;
-    float scalar_min;
-    vec3_t volume_max;
-    float scalar_max;
-    float min_lifetime;
-    float max_lifetime;
-    uint32_t random_seed;
-    float _pad0;
-};
-
-struct AdvectParams {
-    uint32_t volume_dim[3];
-    uint32_t num_particles;
-    vec3_t volume_min;
-    float dt;
-    vec3_t volume_max;
-    float scalar_min;
-    float scalar_max;
-    float min_lifetime;
-    float max_lifetime;
-    uint32_t random_seed;
+    uint32_t seed;
+    uint32_t _pad[1];
 };
 
 struct RenderParams {
+    mat4_t texture_to_world;
     mat4_t model_view_proj;
-    vec3_t volume_min;
-    float trail_width;
-    vec3_t volume_max;
-    float _pad0;
     vec4_t particle_color;
-    uint32_t num_particles;
-    uint32_t num_trail_segments;
-    uint32_t _pad1;
-    uint32_t _pad2;
+    float particle_size;
+    float max_lifetime;
+    uint32_t _pad[2];
 };
 
 struct ParticleSystem : viamd::EventHandler {
@@ -70,27 +46,22 @@ struct ParticleSystem : viamd::EventHandler {
     float scalar_min = 0.2f;
     float scalar_max = 0.8f;
     float timestep = 0.016f;
-    float trail_width = 5.0f;
+    float particle_size = 5.0f;
     vec4_t particle_color = {1.0f, 1.0f, 1.0f, 0.8f};
-    uint32_t num_trail_segments = 8;
     
     // OpenGL resources
     GLuint particle_buffer = 0;
-    GLuint seed_ubo = 0;
-    GLuint advect_ubo = 0;
+    GLuint params_ubo = 0;
     GLuint render_ubo = 0;
     GLuint render_vao = 0;
-    GLuint render_vbo = 0;
     
-    GLuint seed_program = 0;
     GLuint advect_program = 0;
     GLuint render_program = 0;
     
     // Volume texture reference
     GLuint volume_texture = 0;
     int volume_dim[3] = {0, 0, 0};
-    vec3_t volume_min = {0, 0, 0};
-    vec3_t volume_max = {1, 1, 1};
+    mat4_t volume_texture_to_world = mat4_ident();
     
     // Frame counter for seed diversity
     uint32_t frame_counter = 0;
@@ -104,24 +75,13 @@ struct ParticleSystem : viamd::EventHandler {
     }
     
     void initialize_gl_resources() {
-        // Compile compute shaders
-        GLuint seed_shader = gl::compile_shader_from_source(
-            {(const char*)seed_particles_comp, seed_particles_comp_size},
-            GL_COMPUTE_SHADER
-        );
+        // Compile compute shader
         GLuint advect_shader = gl::compile_shader_from_source(
             {(const char*)advect_particles_comp, advect_particles_comp_size},
             GL_COMPUTE_SHADER
         );
         
-        // Create compute programs
-        seed_program = glCreateProgram();
-        if (!gl::attach_link_detach(seed_program, &seed_shader, 1)) {
-            glDeleteProgram(seed_program);
-            seed_program = 0;
-        }
-        glDeleteShader(seed_shader);
-        
+        // Create compute program
         advect_program = glCreateProgram();
         if (!gl::attach_link_detach(advect_program, &advect_shader, 1)) {
             glDeleteProgram(advect_program);
@@ -145,15 +105,10 @@ struct ParticleSystem : viamd::EventHandler {
         glDeleteShader(vert_shader);
         glDeleteShader(frag_shader);
         
-        // Create uniform buffers
-        glGenBuffers(1, &seed_ubo);
-        glBindBuffer(GL_UNIFORM_BUFFER, seed_ubo);
-        glBufferData(GL_UNIFORM_BUFFER, sizeof(SeedParams), nullptr, GL_DYNAMIC_DRAW);
-        glBindBuffer(GL_UNIFORM_BUFFER, 0);
-        
-        glGenBuffers(1, &advect_ubo);
-        glBindBuffer(GL_UNIFORM_BUFFER, advect_ubo);
-        glBufferData(GL_UNIFORM_BUFFER, sizeof(AdvectParams), nullptr, GL_DYNAMIC_DRAW);
+        // Create uniform buffer (shared by seed and advect)
+        glGenBuffers(1, &params_ubo);
+        glBindBuffer(GL_UNIFORM_BUFFER, params_ubo);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(ParticleParams), nullptr, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
         
         glGenBuffers(1, &render_ubo);
@@ -161,28 +116,15 @@ struct ParticleSystem : viamd::EventHandler {
         glBufferData(GL_UNIFORM_BUFFER, sizeof(RenderParams), nullptr, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
         
-        // Create VAO for rendering
+        // Create empty VAO (required by OpenGL, even though we use SSBO)
         glGenVertexArrays(1, &render_vao);
-        glBindVertexArray(render_vao);
-        
-        glGenBuffers(1, &render_vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, render_vbo);
-        
-        glEnableVertexAttribArray(0);
-        glVertexAttribIPointer(0, 1, GL_UNSIGNED_INT, sizeof(uint32_t), 0);
-        
-        glBindVertexArray(0);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
     
     void cleanup_gl_resources() {
         if (particle_buffer) glDeleteBuffers(1, &particle_buffer);
-        if (seed_ubo) glDeleteBuffers(1, &seed_ubo);
-        if (advect_ubo) glDeleteBuffers(1, &advect_ubo);
+        if (params_ubo) glDeleteBuffers(1, &params_ubo);
         if (render_ubo) glDeleteBuffers(1, &render_ubo);
-        if (render_vbo) glDeleteBuffers(1, &render_vbo);
         if (render_vao) glDeleteVertexArrays(1, &render_vao);
-        if (seed_program) glDeleteProgram(seed_program);
         if (advect_program) glDeleteProgram(advect_program);
         if (render_program) glDeleteProgram(render_program);
     }
@@ -192,91 +134,43 @@ struct ParticleSystem : viamd::EventHandler {
             glDeleteBuffers(1, &particle_buffer);
         }
         
-        // Create particle buffer
+        // Create particle buffer with zero-initialized data
+        // All particles start with life = 0, so they'll be reseeded on first update
+        std::vector<vec4_t> initial_particles(num_particles, vec4_t{0, 0, 0, 0});
+        
         glGenBuffers(1, &particle_buffer);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, particle_buffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(Particle) * num_particles, nullptr, GL_DYNAMIC_DRAW);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(vec4_t) * num_particles, initial_particles.data(), GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         
-        // Seed particles
-        if (volume_texture && seed_program) {
-            SeedParams params;
-            params.volume_dim[0] = volume_dim[0];
-            params.volume_dim[1] = volume_dim[1];
-            params.volume_dim[2] = volume_dim[2];
-            params.num_particles = num_particles;
-            params.volume_min = volume_min;
-            params.volume_max = volume_max;
-            params.scalar_min = scalar_min;
-            params.scalar_max = scalar_max;
-            params.min_lifetime = min_lifetime;
-            params.max_lifetime = max_lifetime;
-            // Use frame counter for better seed diversity across rapid calls
-            params.random_seed = (frame_counter * 1664525u + 1013904223u);
-            
-            glBindBuffer(GL_UNIFORM_BUFFER, seed_ubo);
-            glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(SeedParams), &params);
-            glBindBuffer(GL_UNIFORM_BUFFER, 0);
-            
-            glUseProgram(seed_program);
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particle_buffer);
-            glBindBufferBase(GL_UNIFORM_BUFFER, 0, seed_ubo);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_3D, volume_texture);
-            
-            uint32_t group_count = (num_particles + 255) / 256;
-            glDispatchCompute(group_count, 1, 1);
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-            
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
-            glBindBufferBase(GL_UNIFORM_BUFFER, 0, 0);
-            glUseProgram(0);
-        }
-        
-        // Prepare render VBO with particle indices (sequential 0, 1, 2, ...)
-        // Each particle has (num_trail_segments + 1) vertices
-        uint32_t vertex_count = num_particles * (num_trail_segments + 1);
-        uint32_t* indices = new uint32_t[vertex_count];
-        for (uint32_t i = 0; i < vertex_count; ++i) {
-            indices[i] = i;
-        }
-        
-        glBindBuffer(GL_ARRAY_BUFFER, render_vbo);
-        glBufferData(GL_ARRAY_BUFFER, vertex_count * sizeof(uint32_t), indices, GL_STATIC_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        
-        delete[] indices;
         initialized = true;
     }
     
     void update_particles(float dt) {
         if (!initialized || !volume_texture || !advect_program) return;
+
+        PUSH_GPU_SECTION("Update Particle System")
         
         // Increment frame counter for seed diversity
         frame_counter++;
         
-        AdvectParams params;
-        params.volume_dim[0] = volume_dim[0];
-        params.volume_dim[1] = volume_dim[1];
-        params.volume_dim[2] = volume_dim[2];
-        params.num_particles = num_particles;
-        params.volume_min = volume_min;
-        params.volume_max = volume_max;
+        ParticleParams params = {};
+        params.texture_to_world = volume_texture_to_world;
         params.dt = dt;
         params.scalar_min = scalar_min;
         params.scalar_max = scalar_max;
-        params.min_lifetime = min_lifetime;
-        params.max_lifetime = max_lifetime;
-        // Use frame counter for better seed diversity
-        params.random_seed = (frame_counter * 1664525u + 1013904223u);
+        params.min_life = min_lifetime;
+        params.max_life = max_lifetime;
+        params.num_particles = num_particles;
+        params.seed = (frame_counter * 1664525u + 1013904223u);
         
-        glBindBuffer(GL_UNIFORM_BUFFER, advect_ubo);
-        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(AdvectParams), &params);
+        glBindBuffer(GL_UNIFORM_BUFFER, params_ubo);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(ParticleParams), &params);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
         
         glUseProgram(advect_program);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particle_buffer);
-        glBindBufferBase(GL_UNIFORM_BUFFER, 0, advect_ubo);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 0, params_ubo);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_3D, volume_texture);
         
@@ -287,24 +181,39 @@ struct ParticleSystem : viamd::EventHandler {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
         glBindBufferBase(GL_UNIFORM_BUFFER, 0, 0);
         glUseProgram(0);
+
+        POP_GPU_SECTION()
     }
     
     void render_particles(const mat4_t& view_proj_matrix) {
         if (!initialized || !render_program) return;
         
-        RenderParams params;
+        // Debug: Check if we have particles
+        if (num_particles == 0) {
+            MD_LOG_DEBUG("Particle system: num_particles is 0");
+            return;
+        }
+        
+        PUSH_GPU_SECTION("Draw Particle System")
+
+        RenderParams params = {};
+        params.texture_to_world = volume_texture_to_world;
         params.model_view_proj = view_proj_matrix;
-        params.volume_min = volume_min;
-        params.volume_max = volume_max;
-        params.trail_width = trail_width;
         params.particle_color = particle_color;
-        params.num_particles = num_particles;
-        params.num_trail_segments = num_trail_segments;
+        params.particle_size = particle_size;
+        params.max_lifetime = max_lifetime;
         
         glBindBuffer(GL_UNIFORM_BUFFER, render_ubo);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(RenderParams), &params);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
         
+        // Save and set OpenGL state
+        GLboolean depth_test_enabled = glIsEnabled(GL_DEPTH_TEST);
+        GLboolean depth_mask;
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
+        
+        glDisable(GL_DEPTH_TEST);  // Don't depth test particles
+        glDepthMask(GL_FALSE);      // Don't write to depth buffer
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_PROGRAM_POINT_SIZE);
@@ -314,30 +223,72 @@ struct ParticleSystem : viamd::EventHandler {
         glBindBufferBase(GL_UNIFORM_BUFFER, 0, render_ubo);
         
         glBindVertexArray(render_vao);
-        uint32_t vertex_count = num_particles * (num_trail_segments + 1);
-        glDrawArrays(GL_POINTS, 0, vertex_count);
+        glDrawArrays(GL_POINTS, 0, num_particles);
         glBindVertexArray(0);
         
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
         glBindBufferBase(GL_UNIFORM_BUFFER, 0, 0);
         glUseProgram(0);
         
+        // Restore OpenGL state
         glDisable(GL_PROGRAM_POINT_SIZE);
         glDisable(GL_BLEND);
+        if (depth_test_enabled) glEnable(GL_DEPTH_TEST);
+        glDepthMask(depth_mask);
+
+        POP_GPU_SECTION()
     }
     
     void draw_ui(const ApplicationState& app_state) {
         if (!show_window) return;
         
         if (ImGui::Begin("Particle System", &show_window)) {
-            ImGui::Checkbox("Enabled", &enabled);
+            if (ImGui::Checkbox("Enabled", &enabled)) {
+                if (enabled && !initialized) {
+                    initialize_particles();
+                }
+            }
             
             ImGui::Separator();
             ImGui::Text("Particle Parameters");
 
             // @TODO: Enlist all representations which have a volume texture and allow user to select one
-
+            size_t num_representations = md_array_size(app_state.representation.reps);
             
+            const int cap = 16;
+            const char* volume_names[cap] = { "None" };
+			int volume_rep_indices[cap] = { -1 };
+            int len = 1;
+
+            for (size_t i = 0; i < num_representations && i < cap - 1; ++i) {
+				const Representation& rep = app_state.representation.reps[i];
+                if (rep.electronic_structure.vol.format == VolumeFormat::R16G16B16A16_FLOAT || 
+                    rep.electronic_structure.vol.format == VolumeFormat::R32G32B32A32_FLOAT) {
+                    volume_names[len] = app_state.representation.reps[i].name;
+					volume_rep_indices[len] = (int)i;
+					len++;
+                }
+            }
+
+			static int vol_index = 0;
+            if (ImGui::Combo("Volume Texture", &vol_index, volume_names, len)) {
+                if (vol_index != 0) {
+					int rep_idx = volume_rep_indices[vol_index];
+                    const Representation& rep = app_state.representation.reps[rep_idx];
+                    volume_texture = rep.electronic_structure.vol.tex_id;
+                    volume_dim[0]  = rep.electronic_structure.vol.dim[0];
+                    volume_dim[1]  = rep.electronic_structure.vol.dim[1];
+                    volume_dim[2]  = rep.electronic_structure.vol.dim[2];
+					volume_texture_to_world = rep.electronic_structure.vol.texture_to_world;
+                } else {
+                    volume_texture = 0;
+                    volume_dim[0] = volume_dim[1] = volume_dim[2] = 0;
+                    volume_texture_to_world = mat4_ident();
+                }
+                // Initialize particles when volume changes
+                initialize_particles();
+            }
+
             bool params_changed = false;
             params_changed |= ImGui::SliderInt("Num Particles", (int*)&num_particles, 100, 10000);
             params_changed |= ImGui::SliderFloat("Min Lifetime", &min_lifetime, 0.1f, 10.0f);
@@ -345,19 +296,18 @@ struct ParticleSystem : viamd::EventHandler {
             params_changed |= ImGui::SliderFloat("Scalar Min", &scalar_min, 0.0f, 1.0f);
             params_changed |= ImGui::SliderFloat("Scalar Max", &scalar_max, 0.0f, 1.0f);
             
-            if (params_changed && initialized) {
+            if (params_changed) {
                 initialize_particles();
             }
             
             ImGui::Separator();
             ImGui::Text("Rendering");
-            ImGui::SliderFloat("Trail Width", &trail_width, 1.0f, 20.0f);
+            ImGui::SliderFloat("Particle Size", &particle_size, 1.0f, 20.0f);
             ImGui::ColorEdit4("Particle Color", &particle_color.x);
             
             ImGui::Separator();
             ImGui::Text("Simulation");
             ImGui::SliderFloat("Timestep", &timestep, 0.001f, 0.1f);
-            
             if (ImGui::Button("Reinitialize")) {
                 initialize_particles();
             }
@@ -398,10 +348,7 @@ struct ParticleSystem : viamd::EventHandler {
                         auto* app_state = (ApplicationState*)event.payload;
                         if (app_state) {
                             // Compute view and projection matrices from camera
-                            float aspect = (float)app_state->app.framebuffer.width / (float)app_state->app.framebuffer.height;
-                            mat4_t view = camera_world_to_view_matrix(app_state->view.camera);
-                            mat4_t proj = camera_perspective_projection_matrix(app_state->view.camera, aspect);
-                            mat4_t view_proj = mat4_mul(proj, view);
+                            mat4_t view_proj = app_state->view.param.matrix.curr.proj * app_state->view.param.matrix.curr.view;
                             render_particles(view_proj);
                         }
                     }
