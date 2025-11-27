@@ -7377,17 +7377,26 @@ static void pdb_write_frame(md_file_o* file, const md_system_t* sys, const float
 
         // PDB format:
         // ATOM serial name altLoc resName chainID resSeq iCode x y z occupancy tempFactor element charge
-        md_file_printf(file, "ATOM  %5zu %-4s %c%-3s %c%4d    %8.3f%8.3f%8.3f  1.00  0.00          %-2s\n",
+        md_file_printf(file,
+            "%-6s%5zu %-4s%1c%3s %1c%4d%1c   "
+            "%8.3f%8.3f%8.3f"
+            "%6.2f%6.2f          "
+            "%2s%2s\n",
+            "ATOM",
             i + 1,              // serial number
             name,               // atom name
             ' ',                // altLoc
             resname,            // residue name
             chain_id[0],        // chain ID
             res_seq,            // residue sequence number
+            ' ',                // iCode
             x[idx],             // x coordinate
             y[idx],             // y coordinate
             z[idx],             // z coordinate
-            element             // element symbol
+            1.0,                // occupancy
+            0.0,                // bfactor
+            element,            // element symbol
+            ""                 // charge
         );
     }
     
