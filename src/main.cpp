@@ -7345,63 +7345,58 @@ static void xyz_write_frame(md_file_o* file, const int* atomic_nr, const float* 
     }
 }
 
-/*
-static void pdb_write_frame(md_file_o* file, const md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms) {
+static void pdb_write_frame(md_file_o* file, const md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num) {
+    if (model_num > 0) {
+        md_file_printf(file, "MODEL     %4d\n", model_num);
+    }
+
     for (size_t i = 0; i < num_atoms; ++i) {
         int idx = atom_indices ? atom_indices[i] : (int)i;
-        char element[3] = {0};
-        md_atom_element_symbol(element, sizeof(element), md_atom_atomic_number(&sys->atom, idx));
+        
+        // Get element symbol
+		md_atomic_number_t atomic_nr = md_atom_atomic_number(&sys->atom, idx);
 
-        md_file_printf(file, "ATOM  %5zu %-4s MOL     1    %8.3f%8.3f%8.3f  1.00  0.00          %-2s\n",
-            i + 1,
-            element,
-            x[idx],
-            y[idx],
-            z[idx],
-            element
+		char element[3] = "";
+        str_copy_to_char_buf(element, sizeof(element), md_atomic_number_symbol(atomic_nr));
+        
+        // Get atom name (use element symbol if not available)
+		char name[5] = "";
+		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
+        
+        // Get residue name
+		md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, idx);
+		char resname[5] = "";
+		str_copy_to_char_buf(resname, sizeof(resname), md_comp_name(&sys->comp, res_idx));
+
+		md_seq_id_t res_seq = md_comp_seq_id(&sys->comp, res_idx);
+        
+        // Get chain ID from instance
+        char chain_id[4] = " ";
+        md_inst_idx_t inst_idx = md_system_inst_find_by_atom_idx(sys, idx);
+        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_inst_auth_id(&sys->inst, inst_idx));
+
+        // PDB format:
+        // ATOM serial name altLoc resName chainID resSeq iCode x y z occupancy tempFactor element charge
+        md_file_printf(file, "ATOM  %5zu %-4s %c%-3s %c%4d    %8.3f%8.3f%8.3f  1.00  0.00          %-2s\n",
+            i + 1,              // serial number
+            name,               // atom name
+            ' ',                // altLoc
+            resname,            // residue name
+            chain_id[0],        // chain ID
+            res_seq,            // residue sequence number
+            x[idx],             // x coordinate
+            y[idx],             // y coordinate
+            z[idx],             // z coordinate
+            element             // element symbol
         );
     }
-    md_file_printf(file, "END\n");
-}
-
-static void export_pdb_structure(md_file_o* file, const md_system_t* sys, const md_trajectory_i* traj, const int32_t* atom_indices, size_t num_atoms, const int32_t* frame_indices, size_t num_frames) {
-    ASSERT(file);
-    ASSERT(sys);
-
-    md_allocator_i* alloc = frame_alloc;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(alloc);
-    defer { md_vm_arena_temp_end(temp); };
-
-    // Write PDB header
-    md_file_printf(file, "HEADER    EXPORTED FROM VIAMD\n");
-    md_file_printf(file, "REMARK    Exported from VIAMD\n");
-    md_file_printf(file, "REMARK    Number of atoms: %zu\n", num_atoms);
-    md_file_printf(file, "REMARK    Number of frames: %zu\n", num_frames);
-
-    // Write cell parameters if available
-    if (sys->unitcell.flags != 0) {
-        double a, b, c, alpha, beta, gamma;
-        md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &sys->unitcell);
-        md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
-    }
-
-    if (traj) {
-        float *x = (float*)md_vm_arena_push(alloc, sizeof(float) * sys->atom.count);
-        float *y = (float*)md_vm_arena_push(alloc, sizeof(float) * sys->atom.count);
-        float *z = (float*)md_vm_arena_push(alloc, sizeof(float) * sys->atom.count);
-
-        for (size_t f = 0; f < num_frames; ++f) {
-            int frame_idx = frame_indices ? frame_indices[f] : (int)f;
-            if (!md_trajectory_load_frame(traj, frame_idx, NULL, sys->atom.x, sys->atom.y, sys->atom.z)) {
-                LOG_ERROR("Failed to load frame %d from trajectory for PDB export.", frame_idx);
-                continue;
-            }
-        }
+    
+    if (model_num > 0) {
+        md_file_printf(file, "ENDMDL\n");
     } else {
-        md_trajectory_load_frame(traj, 0, NULL, sys->atom.x, sys->atom.y, sys->atom.z);
+        md_file_printf(file, "END\n");
     }
 }
-*/
 
 void draw_structure_export_window(ApplicationState* data) {
     ASSERT(data);
@@ -7428,7 +7423,8 @@ void draw_structure_export_window(ApplicationState* data) {
         };
 
         static const char* file_formats[] = {
-            "xyz"
+            "xyz",
+            "pdb"
         };
 
         //ImGui::PushItemWidth(200);
@@ -7570,6 +7566,27 @@ void draw_structure_export_window(ApplicationState* data) {
                         case 0: { // XYZ
                             // No header needed
                         } break;
+                        case 1: { // PDB
+                            md_file_printf(file, "HEADER    EXPORTED FROM VIAMD\n");
+                            md_file_printf(file, "REMARK    Exported from VIAMD\n");
+                            
+                            // Write CRYST1 record with unit cell if available
+                            if (traj) {
+                                md_trajectory_frame_header_t frame_header;
+                                int first_frame = md_array_size(frame_indices) > 0 ? frame_indices[0] : 0;
+                                if (md_trajectory_load_frame(traj, first_frame, &frame_header, NULL, NULL, NULL)) {
+                                    if (frame_header.unitcell.flags != 0) {
+                                        double a, b, c, alpha, beta, gamma;
+                                        md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &frame_header.unitcell);
+                                        md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
+                                    }
+                                }
+                            } else if (sys->unitcell.flags != 0) {
+                                double a, b, c, alpha, beta, gamma;
+                                md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &sys->unitcell);
+                                md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
+                            }
+                        } break;
                         default: {
                             LOG_ERROR("Unsupported export format: '" STR_FMT "'", STR_ARG(ext));
                         } break;
@@ -7598,7 +7615,13 @@ void draw_structure_export_window(ApplicationState* data) {
                             }
 
                             size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), x, y, z);
-                            xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                            
+                            if (struct_exp.selected_file_format == 0) { // XYZ
+                                xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                            } else if (struct_exp.selected_file_format == 1) { // PDB
+                                int model_num = (num_frames > 1) ? (int)(f + 1) : 0;
+                                pdb_write_frame(file, sys, x, y, z, atom_indices, num_atoms, model_num);
+                            }
                         }
                     }
                     else {
@@ -7607,7 +7630,12 @@ void draw_structure_export_window(ApplicationState* data) {
                         float* y = sys->atom.y;
                         float* z = sys->atom.z;
                         size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), x, y, z);
-						xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                        
+                        if (struct_exp.selected_file_format == 0) { // XYZ
+                            xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                        } else if (struct_exp.selected_file_format == 1) { // PDB
+                            pdb_write_frame(file, sys, x, y, z, atom_indices, num_atoms, 0);
+                        }
                     }
 
                     LOG_INFO("Successfully exported structure to: '" STR_FMT "'", STR_ARG(path));
