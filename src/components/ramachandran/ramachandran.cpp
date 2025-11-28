@@ -25,6 +25,7 @@
 
 #include "gfx/gl.h"
 #include "gfx/gl_utils.h"
+#include "gfx/gpu.h"
 #include "image.h"
 #include "task_system.h"
 
@@ -390,43 +391,56 @@ static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
 static void rama_rep_init(rama_rep_t* rep) {
     ASSERT(rep);
 
-    glGenTextures(1, &rep->den_tex);
-    glGenTextures(4, rep->map_tex);
-    glGenTextures(4, rep->iso_tex);
+    // Create density texture using GPU API
+    gpu::TextureDesc den_desc = {
+        .width = (int)density_tex_dim,
+        .height = (int)density_tex_dim,
+        .internal_format = GL_RGBA32F,
+        .format = GL_RGBA,
+        .type = GL_FLOAT,
+        .min_filter = GL_LINEAR,
+        .mag_filter = GL_LINEAR,
+        .wrap_s = GL_REPEAT,
+        .wrap_t = GL_REPEAT,
+    };
+    gpu::Texture den_tex = gpu::create_texture_2d(den_desc);
+    rep->den_tex = den_tex.id;
 
-    glBindTexture(GL_TEXTURE_2D, rep->den_tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, density_tex_dim, density_tex_dim);
-
-
+    // Create map textures
+    gpu::TextureDesc map_desc = {
+        .width = (int)tex_dim,
+        .height = (int)tex_dim,
+        .internal_format = GL_RGBA8,
+        .format = GL_RGBA,
+        .type = GL_UNSIGNED_BYTE,
+        .min_filter = GL_LINEAR,
+        .mag_filter = GL_LINEAR,
+        .wrap_s = GL_REPEAT,
+        .wrap_t = GL_REPEAT,
+    };
     for (int i = 0; i < 4; ++i) {
-        glBindTexture(GL_TEXTURE_2D, rep->map_tex[i]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, tex_dim, tex_dim);
+        gpu::Texture map_tex = gpu::create_texture_2d(map_desc);
+        rep->map_tex[i] = map_tex.id;
     }
 
+    // Create iso textures
     for (int i = 0; i < 4; ++i) {
-        glBindTexture(GL_TEXTURE_2D, rep->iso_tex[i]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, tex_dim, tex_dim);
+        gpu::Texture iso_tex = gpu::create_texture_2d(map_desc);
+        rep->iso_tex[i] = iso_tex.id;
     }
-
-    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 static void rama_rep_free(rama_rep_t* rep) {
-    glDeleteTextures(1, &rep->den_tex);
-    glDeleteTextures(4, rep->map_tex);
-    glDeleteTextures(4, rep->iso_tex);
+    gpu::Texture den_tex = {rep->den_tex};
+    gpu::destroy_texture(den_tex);
+    
+    for (int i = 0; i < 4; ++i) {
+        gpu::Texture map_tex = {rep->map_tex[i]};
+        gpu::destroy_texture(map_tex);
+        
+        gpu::Texture iso_tex = {rep->iso_tex[i]};
+        gpu::destroy_texture(iso_tex);
+    }
 }
 
 struct Ramachandran : viamd::EventHandler {
@@ -595,11 +609,13 @@ struct Ramachandran : viamd::EventHandler {
         }
 
         if (!fbo) {
-            glGenFramebuffers(1, &fbo);
+            gpu::Framebuffer fb = gpu::create_framebuffer(tex_dim, tex_dim);
+            fbo = fb.fbo;
         }
 
         if (!vao) {
-            glGenVertexArrays(1, &vao);
+            gpu::VertexArray va = gpu::create_vertex_array();
+            vao = va.vao;
         }
 
         rama_rep_init(&rama_data.ref);

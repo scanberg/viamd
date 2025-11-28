@@ -45,3 +45,4 @@ ext/imgui/docs/
 ext/imgui/examples/
 ext/imgui/misc/
 ext/imgui/.*
+_codeql_build_dir/

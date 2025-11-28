@@ -11,18 +11,16 @@
 #include <core/md_allocator.h>
 
 #include <gfx/gl.h>
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL.h>
 
 #if MD_PLATFORM_WINDOWS
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
+#include <SDL3/SDL_syswm.h>
 #endif
-#include <nfd.h>
 
 #include <imgui.h>
 #include <implot.h>
 
-#include <app/imgui_impl_glfw.h>
+#include <app/imgui_impl_sdl3.h>
 #include <app/imgui_impl_opengl3.h>
 
 // Compressed fonts
@@ -60,40 +58,53 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
 }
 
 bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
-    if (!glfwInit()) {
-        // TODO Throw critical error
-        MD_LOG_ERROR("Error while initializing glfw.");
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+        MD_LOG_ERROR("Error while initializing SDL: %s", SDL_GetError());
         return false;
     }
-    glfwSetErrorCallback(error_callback);
 
     if (width == 0 && height == 0) {
-        int count;
-        GLFWmonitor** monitors = glfwGetMonitors(&count);
-        if (count > 0) {
-            int pos_x, pos_y, dim_x, dim_y;
-            glfwGetMonitorWorkarea(monitors[0], &pos_x, &pos_y, &dim_x, &dim_y);
-            width  = (size_t)(dim_x * 0.9);
-            height = (size_t)(dim_y * 0.8);
+        int display_count = 0;
+        SDL_DisplayID* displays = SDL_GetDisplays(&display_count);
+        if (display_count > 0 && displays) {
+            SDL_Rect usable_bounds;
+            if (SDL_GetDisplayUsableBounds(displays[0], &usable_bounds)) {
+                width  = (size_t)(usable_bounds.w * 0.9);
+                height = (size_t)(usable_bounds.h * 0.8);
+            }
+            SDL_free(displays);
         }
     }
 
 #if MD_PLATFORM_OSX
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
 #endif
+
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+
     // Zero terminated
     str_t ztitle = str_copy(title, md_get_temp_allocator());
-    GLFWwindow* window = glfwCreateWindow((int)width, (int)height, ztitle.ptr, NULL, NULL);
+    SDL_Window* window = SDL_CreateWindow(ztitle.ptr, (int)width, (int)height, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
-        MD_LOG_ERROR("Could not create glfw window.");
+        MD_LOG_ERROR("Could not create SDL window: %s", SDL_GetError());
         return false;
     }
 
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
+    SDL_GLContext gl_context = SDL_GL_CreateContext(window);
+    if (!gl_context) {
+        MD_LOG_ERROR("Could not create OpenGL context: %s", SDL_GetError());
+        SDL_DestroyWindow(window);
+        return false;
+    }
+    
+    SDL_GL_MakeCurrent(window, gl_context);
+    SDL_GL_SetSwapInterval(1);
+    
     if (gl3wInit() != GL3W_OK) {
         MD_LOG_ERROR("Could not load gl functions.");
         return false;
@@ -106,7 +117,10 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
         glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, true);
     }
 
-    glfwGetVersion(&data.internal_ctx.gl_info.version.major, &data.internal_ctx.gl_info.version.minor, &data.internal_ctx.gl_info.version.revision);
+    int version = SDL_GetVersion();
+    data.internal_ctx.gl_info.version.major = SDL_VERSIONNUM_MAJOR(version);
+    data.internal_ctx.gl_info.version.minor = SDL_VERSIONNUM_MINOR(version);
+    data.internal_ctx.gl_info.version.revision = SDL_VERSIONNUM_MICRO(version);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -159,10 +173,9 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
         ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, size * scl, &config, ranges_icons);
     }
 
-    io.Fonts->Build();
     io.FontDefault = io.Fonts->Fonts[4]; // Set default to 18px
 
-    if (!ImGui_ImplGlfw_InitForOpenGL(window, false) ||
+    if (!ImGui_ImplSDL3_InitForOpenGL(window, gl_context) ||
         !ImGui_ImplOpenGL3_Init("#version 150"))
     {
         MD_LOG_ERROR("Failed to initialize ImGui OpenGL");
@@ -176,43 +189,21 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     data.internal_ctx.window.vsync = true;
 
     int w, h;
-    glfwGetFramebufferSize(window, &w, &h);
+    SDL_GetWindowSizeInPixels(window, &w, &h);
     data.internal_ctx.framebuffer.width = w;
     data.internal_ctx.framebuffer.height = h;
 
-    glfwSetMouseButtonCallback(window, ImGui_ImplGlfw_MouseButtonCallback);
-    glfwSetScrollCallback(window, ImGui_ImplGlfw_ScrollCallback);
-    glfwSetKeyCallback(window, ImGui_ImplGlfw_KeyCallback);
-    glfwSetCharCallback(window, ImGui_ImplGlfw_CharCallback);
-
-    glfwSetWindowUserPointer(window, &data.internal_ctx);
-
-    GLFWdropfun drop_cb = [](GLFWwindow* window, int num_files, const char** paths) {
-        Context* ctx = (Context*)glfwGetWindowUserPointer(window);
-        ASSERT(ctx);
-        
-        for (int i = 0; i < num_files; ++i) {
-            MD_LOG_DEBUG("User dropped file: '%s'", paths[i]);
-        }
-
-        str_t* str_paths = (str_t*)md_temp_push(num_files * sizeof(str_t));
-        for (int i = 0; i < num_files; ++i) {
-            str_paths[i] = {paths[i], strlen(paths[i])};
-        }
-        
-        if (ctx->file_drop.callback) {
-            ctx->file_drop.callback((size_t)num_files, str_paths, ctx->file_drop.user_data);
-        }
-    };
-    glfwSetDropCallback(window, drop_cb);
+    SDL_SetPointerProperty(SDL_GetWindowProperties(window), "context", &data.internal_ctx);
     
 #if MD_PLATFORM_WINDOWS
-    HWND hwnd = glfwGetWin32Window(window);
-    HINSTANCE hinst = GetModuleHandle(NULL);
-
-    HICON hIcon = LoadIcon(hinst, "VIAMD_ICON");
-    SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
-    SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+    SDL_PropertiesID props = SDL_GetWindowProperties(window);
+    HWND hwnd = (HWND)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    if (hwnd) {
+        HINSTANCE hinst = GetModuleHandle(NULL);
+        HICON hIcon = LoadIcon(hinst, "VIAMD_ICON");
+        SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+        SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+    }
 #endif
 
     MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
@@ -221,40 +212,69 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
 }
 
 void shutdown(Context* ctx) {
-    glfwDestroyWindow((GLFWwindow*)data.internal_ctx.window.ptr);
+    SDL_Window* window = (SDL_Window*)data.internal_ctx.window.ptr;
+    SDL_GLContext gl_context = SDL_GL_GetCurrentContext();
+    
     ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
-    glfwTerminate();
+    
+    if (gl_context) {
+        SDL_GL_DestroyContext(gl_context);
+    }
+    if (window) {
+        SDL_DestroyWindow(window);
+    }
+    SDL_Quit();
 
     MEMSET(ctx, 0, sizeof(Context));
 }
 
 void update(Context* ctx) {
-    glfwPollEvents();
+    SDL_Window* window = (SDL_Window*)data.internal_ctx.window.ptr;
+    
+    // Process SDL events
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        ImGui_ImplSDL3_ProcessEvent(&event);
+        
+        if (event.type == SDL_EVENT_QUIT) {
+            data.internal_ctx.window.should_close = true;
+        }
+        
+        if (event.type == SDL_EVENT_DROP_FILE) {
+            Context* ctx = (Context*)SDL_GetPointerProperty(SDL_GetWindowProperties(window), "context", NULL);
+            if (ctx && ctx->file_drop.callback && event.drop.data) {
+                MD_LOG_DEBUG("User dropped file: '%s'", event.drop.data);
+                str_t path = {event.drop.data, strlen(event.drop.data)};
+                ctx->file_drop.callback(1, &path, ctx->file_drop.user_data);
+            }
+        }
+    }
 
     ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
     if (ctx->window.width != data.internal_ctx.window.width || ctx->window.height != data.internal_ctx.window.height) {
-        glfwSetWindowSize((GLFWwindow*)ctx->window.ptr, ctx->window.width, ctx->window.height);
+        SDL_SetWindowSize(window, ctx->window.width, ctx->window.height);
         data.internal_ctx.window.width = ctx->window.width;
         data.internal_ctx.window.height = ctx->window.height;
     }
+    
     int w, h;
-    glfwGetFramebufferSize((GLFWwindow*)data.internal_ctx.window.ptr, &w, &h);
+    SDL_GetWindowSizeInPixels(window, &w, &h);
     data.internal_ctx.framebuffer.width = w;
     data.internal_ctx.framebuffer.height = h;
 
-    glfwGetWindowSize((GLFWwindow*)data.internal_ctx.window.ptr, &w, &h);
+    SDL_GetWindowSize(window, &w, &h);
     data.internal_ctx.window.width = w;
     data.internal_ctx.window.height = h;
 
     if (ctx->window.vsync != data.internal_ctx.window.vsync) {
         data.internal_ctx.window.vsync = ctx->window.vsync;
-        glfwSwapInterval((int)ctx->window.vsync);
+        SDL_GL_SetSwapInterval((int)ctx->window.vsync);
     }
 
     if (ctx->file_drop.callback != data.internal_ctx.file_drop.callback) {
@@ -265,21 +285,21 @@ void update(Context* ctx) {
         data.internal_ctx.file_drop.user_data = ctx->file_drop.user_data;
     }
 
-    data.internal_ctx.window.should_close = (bool)glfwWindowShouldClose((GLFWwindow*)data.internal_ctx.window.ptr);
-
-    double t = glfwGetTime();
-    data.internal_ctx.timing.delta_s = (t - data.internal_ctx.timing.total_s);
-    data.internal_ctx.timing.total_s = t;
+    uint64_t t = SDL_GetTicks();
+    double t_s = t / 1000.0;
+    data.internal_ctx.timing.delta_s = (t_s - data.internal_ctx.timing.total_s);
+    data.internal_ctx.timing.total_s = t_s;
 
     MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
 }
 
 void render_imgui(Context* ctx) {
     (void)ctx;
-    GLFWwindow* window = (GLFWwindow*)data.internal_ctx.window.ptr;
+    SDL_Window* window = (SDL_Window*)data.internal_ctx.window.ptr;
+    SDL_GLContext gl_context = SDL_GL_GetCurrentContext();
 
     ImGui::Render();
-    glfwMakeContextCurrent(window);
+    SDL_GL_MakeCurrent(window, gl_context);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     // Update and Render additional Platform Windows
@@ -288,36 +308,109 @@ void render_imgui(Context* ctx) {
         ImGui::RenderPlatformWindowsDefault();
     }
 
-    glfwMakeContextCurrent(window);
+    SDL_GL_MakeCurrent(window, gl_context);
 }
 
-void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
+void swap_buffers(Context* ctx) { 
+    SDL_GL_SwapWindow((SDL_Window*)ctx->window.ptr); 
+}
 
-bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filter) {    
-    nfdchar_t* out_path = NULL;
-    defer { if (out_path) free(out_path); };
-
-    nfdresult_t result = NFD_ERROR;
-
-    const char* default_path = 0;
-
-    // Zero terminated variant
-    str_t zfilt = str_copy(filter, md_get_temp_allocator());
-
-    if (flags & FileDialogFlag_Open) {
-        result = NFD_OpenDialog(zfilt.ptr, default_path, &out_path);
-    } else if (flags & FileDialogFlag_Save) {
-        result = NFD_SaveDialog(zfilt.ptr, default_path, &out_path);
+bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filter) {
+    struct DialogState {
+        const char* result_path;
+        bool completed;
+    };
+    
+    // Use local state instead of static to avoid race conditions
+    DialogState dialog_state = {NULL, false};
+    
+    SDL_DialogFileFilter* sdl_filters = NULL;
+    int filter_count = 0;
+    
+    // Parse filter string (e.g., "jpg,png,bmp")
+    if (filter.ptr && filter.len > 0) {
+        // Count comma-separated items
+        filter_count = 1;
+        for (size_t i = 0; i < filter.len; i++) {
+            if (filter.ptr[i] == ',') filter_count++;
+        }
+        
+        sdl_filters = (SDL_DialogFileFilter*)md_temp_push(filter_count * sizeof(SDL_DialogFileFilter));
+        
+        // Parse extensions
+        const char* start = filter.ptr;
+        int idx = 0;
+        for (size_t i = 0; i <= filter.len; i++) {
+            if (i == filter.len || filter.ptr[i] == ',') {
+                size_t ext_len = (filter.ptr + i) - start;
+                // Validate ext_len and allocate sufficient space
+                if (ext_len > 0 && ext_len < 256) { // reasonable max ext length
+                    char* ext = (char*)md_temp_push(ext_len + 4); // "*.ext\0" (need 4: "*."+len+"\0")
+                    snprintf(ext, ext_len + 4, "*.%.*s", (int)ext_len, start);
+                    
+                    sdl_filters[idx].name = ext;
+                    sdl_filters[idx].pattern = ext;
+                    idx++;
+                }
+                start = filter.ptr + i + 1;
+            }
+        }
+        // Update filter_count in case some were skipped
+        filter_count = idx;
     }
 
-    if (result == NFD_OKAY) {
-        int len = snprintf(str_buf, str_cap, "%s", out_path);
+    // Use a static function instead of lambda for C compatibility
+    static auto dialog_callback_impl = [](void* userdata, const char* const* filelist, int filter_idx) {
+        (void)filter_idx;
+        DialogState* state = (DialogState*)userdata;
+        if (filelist && filelist[0]) {
+            state->result_path = filelist[0];
+        }
+        state->completed = true;
+    };
+
+    if (flags & FileDialogFlag_Open) {
+        SDL_ShowOpenFileDialog(
+            dialog_callback_impl,
+            &dialog_state,
+            NULL,  // parent window
+            sdl_filters,
+            filter_count,
+            NULL,  // default location
+            false  // allow_many
+        );
+    } else if (flags & FileDialogFlag_Save) {
+        SDL_ShowSaveFileDialog(
+            dialog_callback_impl,
+            &dialog_state,
+            NULL,  // parent window
+            sdl_filters,
+            filter_count,
+            NULL   // default location
+        );
+    } else {
+        return false;
+    }
+    
+    // Wait for dialog to complete (blocking event loop)
+    // Note: SDL3 dialog API is async, so we need to pump events
+    while (!dialog_state.completed) {
+        SDL_Event event;
+        if (SDL_WaitEventTimeout(&event, 10)) {
+            if (event.type == SDL_EVENT_QUIT) {
+                return false;
+            }
+        }
+    }
+    
+    if (dialog_state.result_path && dialog_state.result_path[0] != '\0') {
+        int len = snprintf(str_buf, str_cap, "%s", dialog_state.result_path);
+        
         if (flags & FileDialogFlag_Save) {
-            // If the user is saving through the dialogue and there is no extension
-            // In such case we append the first extension found in the filter (if supplied)
+            // If the user is saving and there is no extension, append the first filter extension
             str_t ext;
-            str_t path = str_from_cstr(out_path);
-            if (!extract_ext(&ext, path) && filter) {
+            str_t path = str_from_cstr(dialog_state.result_path);
+            if (!extract_ext(&ext, path) && filter.ptr && filter.len > 0) {
                 // get ext from supplied filter (first match)
                 ext = filter;
                 str_find_char(&ext.len, ext, ',');
@@ -325,17 +418,15 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
             }
         }
         
-        if (0 < len && len < str_cap) {
+        if (0 < len && (size_t)len < str_cap) {
             replace_char(str_buf, len, '\\', '/');
             return true;
         }
-
-        MD_LOG_ERROR("snprintf failed");
+        
+        MD_LOG_ERROR("snprintf failed or buffer too small");
         return false;
-    } else if (result == NFD_ERROR) {
-        MD_LOG_ERROR("%s\n", NFD_GetError());
     }
-    /* fallthrough for NFD_CANCEL */
+    
     return false;
 }
 
