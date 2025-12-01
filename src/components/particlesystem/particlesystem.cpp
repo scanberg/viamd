@@ -15,22 +15,22 @@ namespace particlesystem {
 
 struct ParticleParams {
     mat4_t   texture_to_world;
+    mat4_t   world_to_texture;
     float    dt;
     float    scalar_min;
-    float    scalar_max;
-	float    min_life;
-	float	 max_life;
+    float    grad_magn_min;
+	float    min_lifetime_in_frames;
+	float	 max_lifetime_in_frames;
     uint32_t num_particles;
     uint32_t seed;
-    uint32_t _pad[1];
+    uint32_t max_attempts;
 };
 
 struct RenderParams {
-    mat4_t texture_to_world;
     mat4_t model_view_proj;
     vec4_t particle_color;
     float particle_size;
-    float max_lifetime;
+    float max_lifetime_in_frames;
     uint32_t _pad[2];
 };
 
@@ -40,14 +40,15 @@ struct ParticleSystem : viamd::EventHandler {
     bool initialized = false;
     
     // Particle parameters
-    uint32_t num_particles = 1000;
-    float min_lifetime = 1.0f;
-    float max_lifetime = 5.0f;
-    float scalar_min = 0.2f;
-    float scalar_max = 0.8f;
-    float timestep = 0.016f;
-    float particle_size = 5.0f;
+    uint32_t num_particles = 10000;
+    float min_lifetime_in_frames = 100.0f;
+    float max_lifetime_in_frames = 1000.0f;
+    float scalar_min = 0.02f;
+    float grad_magn_min = 0.01f;
+    float timestep = 10.0f;
+    float particle_size = 2.0f;
     vec4_t particle_color = {1.0f, 1.0f, 1.0f, 0.8f};
+    uint32_t max_attempts = 64;
     
     // OpenGL resources
     GLuint particle_buffer = 0;
@@ -62,6 +63,7 @@ struct ParticleSystem : viamd::EventHandler {
     GLuint volume_texture = 0;
     int volume_dim[3] = {0, 0, 0};
     mat4_t volume_texture_to_world = mat4_ident();
+    mat4_t volume_world_to_texture = mat4_ident();
     
     // Frame counter for seed diversity
     uint32_t frame_counter = 0;
@@ -156,13 +158,15 @@ struct ParticleSystem : viamd::EventHandler {
         
         ParticleParams params = {};
         params.texture_to_world = volume_texture_to_world;
+        params.world_to_texture = volume_world_to_texture;
         params.dt = dt;
         params.scalar_min = scalar_min;
-        params.scalar_max = scalar_max;
-        params.min_life = min_lifetime;
-        params.max_life = max_lifetime;
+        params.grad_magn_min = grad_magn_min;
+        params.min_lifetime_in_frames = min_lifetime_in_frames;
+        params.max_lifetime_in_frames = max_lifetime_in_frames;
         params.num_particles = num_particles;
         params.seed = (frame_counter * 1664525u + 1013904223u);
+        params.max_attempts = max_attempts;
         
         glBindBuffer(GL_UNIFORM_BUFFER, params_ubo);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(ParticleParams), &params);
@@ -197,11 +201,10 @@ struct ParticleSystem : viamd::EventHandler {
         PUSH_GPU_SECTION("Draw Particle System")
 
         RenderParams params = {};
-        params.texture_to_world = volume_texture_to_world;
         params.model_view_proj = view_proj_matrix;
         params.particle_color = particle_color;
         params.particle_size = particle_size;
-        params.max_lifetime = max_lifetime;
+        params.max_lifetime_in_frames = max_lifetime_in_frames;
         
         glBindBuffer(GL_UNIFORM_BUFFER, render_ubo);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(RenderParams), &params);
@@ -280,22 +283,24 @@ struct ParticleSystem : viamd::EventHandler {
                     volume_dim[1]  = rep.electronic_structure.vol.dim[1];
                     volume_dim[2]  = rep.electronic_structure.vol.dim[2];
 					volume_texture_to_world = rep.electronic_structure.vol.texture_to_world;
+                    volume_world_to_texture = mat4_inverse(volume_texture_to_world);
                 } else {
                     volume_texture = 0;
                     volume_dim[0] = volume_dim[1] = volume_dim[2] = 0;
                     volume_texture_to_world = mat4_ident();
+                    volume_world_to_texture = mat4_ident();
                 }
                 // Initialize particles when volume changes
                 initialize_particles();
             }
 
             bool params_changed = false;
-            params_changed |= ImGui::SliderInt("Num Particles", (int*)&num_particles, 100, 10000);
-            params_changed |= ImGui::SliderFloat("Min Lifetime", &min_lifetime, 0.1f, 10.0f);
-            params_changed |= ImGui::SliderFloat("Max Lifetime", &max_lifetime, 0.1f, 10.0f);
-            params_changed |= ImGui::SliderFloat("Scalar Min", &scalar_min, 0.0f, 1.0f);
-            params_changed |= ImGui::SliderFloat("Scalar Max", &scalar_max, 0.0f, 1.0f);
-            
+            params_changed |= ImGui::SliderInt("Num Particles", (int*)&num_particles, 1000, 1000000);
+            ImGui::RangeSliderFloat("Lifetime Range", &min_lifetime_in_frames, &max_lifetime_in_frames, 100.0f, 10000.0f);
+            ImGui::SliderFloat("Scalar Min", &scalar_min, 0.0f, 0.2f, "%.7f");
+            ImGui::SliderFloat("Gradient Magnitude Min", &grad_magn_min, 0.0f, 0.2f, "%.7f");
+            ImGui::SliderInt("Max Attempts", (int*)&max_attempts, 1, 256);
+
             if (params_changed) {
                 initialize_particles();
             }
@@ -307,7 +312,7 @@ struct ParticleSystem : viamd::EventHandler {
             
             ImGui::Separator();
             ImGui::Text("Simulation");
-            ImGui::SliderFloat("Timestep", &timestep, 0.001f, 0.1f);
+            ImGui::SliderFloat("Timestep", &timestep, -1.0f, 1.0f);
             if (ImGui::Button("Reinitialize")) {
                 initialize_particles();
             }

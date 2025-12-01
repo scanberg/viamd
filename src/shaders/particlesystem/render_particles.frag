@@ -2,11 +2,16 @@
 
 in VS_OUT {
     vec4 color;
+    float life;
 } fs_in;
 
 layout (location = 0) out vec4 out_color;
 
 void main() {
+    
+    if (fs_in.life <= 0.0)
+        discard;
+    
     // Create a smooth circular point sprite
     //vec2 coord = gl_PointCoord - vec2(0.5);
     //float dist = length(coord);
