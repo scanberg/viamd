@@ -215,7 +215,7 @@ struct ParticleSystem : viamd::EventHandler {
         GLboolean depth_mask;
         glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
         
-        glDisable(GL_DEPTH_TEST);  // Don't depth test particles
+        glEnable(GL_DEPTH_TEST);  // Don't depth test particles
         glDepthMask(GL_FALSE);      // Don't write to depth buffer
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
