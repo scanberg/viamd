@@ -326,7 +326,7 @@ static void grid_segment_and_attribute_to_point(double out_point_value[], const 
     }
 }
 
-static void voronoi_segment(float* out_values, const vec4_t* point_xyzr, size_t num_points, const float* grid_values, const md_grid_t& grid) {
+static void grid_segment_and_attribute_to_group(float* out_group_values, size_t group_cap, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, const float* grid_values, const md_grid_t& grid) {
     float step_x[3] = {
         grid.orientation[0][0] * grid.spacing[0],
         grid.orientation[0][1] * grid.spacing[0],
@@ -360,22 +360,23 @@ static void voronoi_segment(float* out_values, const vec4_t* point_xyzr, size_t 
                 coord.w = 0.0f;
 
                 float  min_dist = FLT_MAX;
-                size_t dst_idx  = SIZE_MAX;
+                size_t group_idx = 0;
 
                 // find closest point to grid point
                 for (size_t i = 0; i < num_points; ++i) {
                     vec4_t point = point_xyzr[i];
-                    float r2 = point.w * point.w;
+                    float r = point.w;
+                    point.w = 0.0f;
 
-                    float dist = vec4_distance_squared(coord, point) - r2;
+                    float dist = vec4_distance_squared(coord, point) - r * r;
                     if (dist < min_dist) {
                         min_dist = dist;
-                        dst_idx = i;
+                        group_idx = point_group_idx[i];
                     }
                 }
 
-                if (dst_idx < SIZE_MAX) {
-                    out_values[dst_idx] += value;
+                if (group_idx < group_cap) {
+                    out_group_values[group_idx] += value;
                 }
             }
         }
@@ -660,16 +661,15 @@ struct VeloxChem : viamd::EventHandler {
                 reset_data();
                 break;
 
-            case viamd::EventType_RepresentationInfoFill: {
+            case viamd::EventType_ViamdRepresentationInfoFill: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
                 RepresentationInfo& info = *(RepresentationInfo*)e.payload;
-                ElectronicStructureInfo& es_info = info.electronic_structure;
 
-                es_info.alpha.homo_idx = homo_idx[0];
-                es_info.alpha.lumo_idx = lumo_idx[0];
+                info.alpha.homo_idx = homo_idx[0];
+                info.alpha.lumo_idx = lumo_idx[0];
 
-                es_info.beta.homo_idx  = homo_idx[1];
-                es_info.beta.lumo_idx  = lumo_idx[1];
+                info.beta.homo_idx  = homo_idx[1];
+                info.beta.lumo_idx  = lumo_idx[1];
 
                 size_t num_mos = num_molecular_orbitals();
                 if (num_mos) {
@@ -677,21 +677,21 @@ struct VeloxChem : viamd::EventHandler {
                     const double* ene = md_vlx_scf_mo_energy   (vlx, MD_VLX_MO_TYPE_ALPHA);
 
                     if (occ && ene) {
-                        es_info.alpha.num_orbitals = num_mos;
-                        md_array_resize(es_info.alpha.label,       num_mos, info.alloc);
-                        md_array_resize(es_info.alpha.occupation,  num_mos, info.alloc);
-                        md_array_resize(es_info.alpha.energy,      num_mos, info.alloc);
+                        info.alpha.num_orbitals = num_mos;
+                        md_array_resize(info.alpha.label,       num_mos, info.alloc);
+                        md_array_resize(info.alpha.occupation,  num_mos, info.alloc);
+                        md_array_resize(info.alpha.energy,      num_mos, info.alloc);
 
                         for (size_t i = 0; i < num_mos; ++i) {
                             const char* lbl = "";
-                            if (i == es_info.alpha.homo_idx) {
+                            if (i == info.alpha.homo_idx) {
                                 lbl = " (homo)";
-                            } else if (i == es_info.alpha.lumo_idx) {
+                            } else if (i == info.alpha.lumo_idx) {
                                 lbl = " (lumo)";
                             }
-                            es_info.alpha.label[i]      = str_printf(info.alloc, "%zu%s", i + 1, lbl);
-                            es_info.alpha.energy[i]     = ene[i];
-                            es_info.alpha.occupation[i] = occ[i];
+                            info.alpha.label[i]      = str_printf(info.alloc, "%zu%s", i + 1, lbl);
+                            info.alpha.energy[i]     = ene[i];
+                            info.alpha.occupation[i] = occ[i];
                         }
                     }
                 }
@@ -702,35 +702,35 @@ struct VeloxChem : viamd::EventHandler {
                     const double* ene = md_vlx_scf_mo_energy   (vlx, MD_VLX_MO_TYPE_BETA);
 
                     if (occ && ene) {
-                        es_info.beta.num_orbitals = num_mos;
-                        md_array_resize(es_info.beta.label,       num_mos, info.alloc);
-                        md_array_resize(es_info.beta.occupation,  num_mos, info.alloc);
-                        md_array_resize(es_info.beta.energy,      num_mos, info.alloc);
+                        info.beta.num_orbitals = num_mos;
+                        md_array_resize(info.beta.label,       num_mos, info.alloc);
+                        md_array_resize(info.beta.occupation,  num_mos, info.alloc);
+                        md_array_resize(info.beta.energy,      num_mos, info.alloc);
 
                         for (size_t i = 0; i < num_mos; ++i) {
                             const char* lbl = "";
-                            if (i == es_info.beta.homo_idx) {
+                            if (i == info.beta.homo_idx) {
                                 lbl = " (homo)";
-                            } else if (i == es_info.beta.lumo_idx) {
+                            } else if (i == info.beta.lumo_idx) {
                                 lbl = " (lumo)";
                             }
-                            es_info.beta.label[i]      = str_printf(info.alloc, "%zu%s", i + 1, lbl);
-                            es_info.beta.energy[i]     = ene[i];
-                            es_info.beta.occupation[i] = occ[i];
+                            info.beta.label[i]      = str_printf(info.alloc, "%zu%s", i + 1, lbl);
+                            info.beta.energy[i]     = ene[i];
+                            info.beta.occupation[i] = occ[i];
                         }
                     }
                 }
                 
                 size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
                 if (md_vlx_rsp_has_nto(vlx) && num_excited_states > 0) {
-                    es_info.nto.num_orbitals = num_excited_states;
-                    md_array_resize(es_info.nto.label, num_excited_states, info.alloc);
+                    info.nto.num_orbitals = num_excited_states;
+                    md_array_resize(info.nto.label, num_excited_states, info.alloc);
                     for (size_t i = 0; i < num_excited_states; ++i) {
-                        es_info.nto.label[i] = str_printf(info.alloc, "%zu", i + 1);
+                        info.nto.label[i] = str_printf(info.alloc, "%zu", i + 1);
 
                         const double LAMBDA_CUTOFF = 1.0e-3;
                         const double* lambdas = md_vlx_rsp_nto_lambdas(vlx, i);
-                        NaturalTransitionOrbitalLambdaInfo lambda_info = {};
+                        NaturalTransitionOrbitalLambda lambda_info = {};
                         for (size_t j = 0; j < 16; ++j) {
                             if (lambdas[j] < LAMBDA_CUTOFF) break;
                             str_t lbl = str_printf(info.alloc, (const char*)u8"λ[%zu] (%.3f)", j + 1, lambdas[j]);
@@ -738,23 +738,23 @@ struct VeloxChem : viamd::EventHandler {
                             md_array_push(lambda_info.value, lambdas[j], info.alloc);
                             lambda_info.num_lambdas += 1;
                         }
-                        md_array_push(es_info.nto.lambda, lambda_info, info.alloc);
+                        md_array_push(info.nto.lambda, lambda_info, info.alloc);
                     }
                 }
                 
                 if (md_vlx_scf_number_of_molecular_orbitals(vlx) > 0) {
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::MolecularOrbital);
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::MolecularOrbitalDensity);
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::ElectronDensity);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::MolecularOrbital);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::MolecularOrbitalDensity);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::ElectronDensity);
                 }
 
                 if (md_vlx_rsp_number_of_excited_states(vlx) > 0) {
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalParticle);
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalHole);
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalDensityParticle);
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalDensityHole);
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::AttachmentDensity);
-                    es_info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::DetachmentDensity);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalParticle);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalHole);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalDensityParticle);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalDensityHole);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::AttachmentDensity);
+                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::DetachmentDensity);
                 }
 
                 const double* resp_charges = md_vlx_scf_resp_charges(vlx);
@@ -767,7 +767,7 @@ struct VeloxChem : viamd::EventHandler {
                         value_max = MAX(value_max, resp_charges[i]);
                     }
 
-                    AtomPropertyInfo prop = {
+                    AtomProperty prop = {
                         .id = ATOM_PROPERTY_RESP_CHARGE,
                         .label = STR_LIT("Resp Charge"),
                         .num_idx = 0,
@@ -775,26 +775,21 @@ struct VeloxChem : viamd::EventHandler {
                         .value_max = (float)value_max,
                     };
 
-                    md_array_push(info.atomic_property.properties, prop, info.alloc);
+                    md_array_push(info.atom_properties, prop, info.alloc);
                 }
 
                 // @TODO: Fill in dipole information
                 break;
             }
-            case viamd::EventType_EvalElectronicStructure: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ElectronicStructure);
-                ElectronicStructurePayload& data = *(ElectronicStructurePayload*)e.payload;
+            case viamd::EventType_ViamdRepresentationEvalElectronicStructure: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_EvalElectronicStructure);
+                EvalElectronicStructure& data = *(EvalElectronicStructure*)e.payload;
 
                 if (!data.output_written) {
                     const float samples_per_unit_length = data.samples_per_angstrom * BOHR_TO_ANGSTROM;
                     md_grid_t grid = {};
                     init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
-                    VolumeFormat format = VolumeFormat::R32_FLOAT;
-                    if (data.type == ElectronicStructureType::ElectronDensity) {
-                        data.include_gradients = true; // gradients not supported in this path
-						format = VolumeFormat::R32G32B32A32_FLOAT;
-					}
-                    init_volume(data.dst_volume, grid, format);
+                    init_volume(data.dst_volume, grid);
 
                     switch (data.type) {
                     case ElectronicStructureType::MolecularOrbital:
@@ -842,7 +837,7 @@ struct VeloxChem : viamd::EventHandler {
                     case ElectronicStructureType::ElectronDensity:
                     {
                         if (use_gpu_path) {
-                            data.output_written = compute_electron_density_GPU(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA, DEFAULT_GTO_CUTOFF_VALUE, data.include_gradients);
+                            data.output_written = compute_electron_density_GPU(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA);
                         } else {
                             data.output_written = (compute_electron_density_async(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA) != task_system::INVALID_ID);
                         }
@@ -856,9 +851,9 @@ struct VeloxChem : viamd::EventHandler {
 
                 break;
             }
-            case viamd::EventType_EvalAtomicProperty: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_AtomicProperty);
-                AtomicPropertyPayload& data = *(AtomicPropertyPayload*)e.payload;
+            case viamd::EventType_ViamdRepresentationEvalAtomProperty: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_EvalAtomProperty);
+                EvalAtomProperty& data = *(EvalAtomProperty*)e.payload;
 
                 switch (data.property_id) {
                 case ATOM_PROPERTY_RESP_CHARGE: {
@@ -967,7 +962,7 @@ struct VeloxChem : viamd::EventHandler {
                     //gl_mol = md_gl_mol_create(&mol);
 
                     uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
-                    color_atoms_cpk(colors, mol.atom.count, mol);
+                    color_atoms_type(colors, mol.atom.count, mol);
 
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     md_gl_rep_set_color(gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);
@@ -1112,28 +1107,15 @@ struct VeloxChem : viamd::EventHandler {
         grid->spacing = voxel_size;
     }
 
-    void init_volume(Volume* vol, const md_grid_t& grid, VolumeFormat format = VolumeFormat::R32_FLOAT) {
+    void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F) {
         ASSERT(vol);
         MEMCPY(vol->dim, grid.dim, sizeof(vol->dim));
         const float scl = BOHR_TO_ANGSTROM;
 
-        GLenum format_gl = 0;
-        switch (format) {
-        case VolumeFormat::R16_FLOAT:           format_gl = GL_R16F;      break;
-        case VolumeFormat::R32_FLOAT:           format_gl = GL_R32F;      break;
-        case VolumeFormat::R32G32B32A32_FLOAT:  format_gl = GL_RGBA32F;   break;
-        case VolumeFormat::R16G16B16A16_FLOAT:  format_gl = GL_RGBA16F;   break;
-        default:
-            MD_LOG_ERROR("Unsupported volume format specified");
-            return;
-        }
-
         vec3_t extent = md_grid_extent(&grid);
         vol->texture_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, extent * scl);
         vol->voxel_size = grid.spacing;
-		vol->format = format;
-
-        gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format_gl);
+        gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
     }
 
     bool compute_nto_GPU(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
@@ -1399,7 +1381,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // The full electron density that includes all orbitals weighted by their occupancy
-    bool compute_electron_density_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, bool include_gradients = false) {
+    bool compute_electron_density_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(2));
         defer { md_vm_arena_destroy(alloc); };
 
@@ -1429,7 +1411,7 @@ struct VeloxChem : viamd::EventHandler {
         }
         
         // Use the density matrix and calculate density directly
-        md_gto_grid_evaluate_matrix_GPU(vol_tex, &grid, &gto_data, density_matrix_data, matrix_dim, include_gradients);
+        md_gto_grid_evaluate_matrix_GPU(vol_tex, &grid, &gto_data, density_matrix_data, matrix_dim, false);
 
         #endif
 
@@ -4041,8 +4023,7 @@ struct VeloxChem : viamd::EventHandler {
                     defer { md_vm_arena_destroy(temp_arena); };
 
                     Volume vol = {};
-					VolumeFormat format = VolumeFormat::R32_FLOAT;
-                    init_volume(&vol, grid, format);
+                    init_volume(&vol, grid, GL_R32F);
 
                     task_system::ID task = task_system::INVALID_ID;
 
@@ -4855,8 +4836,8 @@ struct VeloxChem : viamd::EventHandler {
 							num_lambdas++;
                         }
 
-                        init_volume(&nto.vol[NTO_Attachment], nto.grid);
-                        init_volume(&nto.vol[NTO_Detachment], nto.grid);
+                        init_volume(&nto.vol[NTO_Attachment], nto.grid, GL_R32F);
+                        init_volume(&nto.vol[NTO_Detachment], nto.grid, GL_R32F);
 
                         if (use_gpu_path) {
                             compute_attachment_detachment_density_GPU(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Attachment);

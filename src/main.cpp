@@ -625,7 +625,7 @@ static void create_screenshot(str_t path);
 
 // Representations
 static Representation* create_representation(ApplicationState* data, RepresentationType type = RepresentationType::SpaceFill,
-                                             ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = STR_LIT("all"));
+                                             ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
 static Representation* clone_representation(ApplicationState* data, const Representation& rep);
 static void remove_representation(ApplicationState*, int idx);
 static void update_representation(ApplicationState*, Representation* rep);
@@ -633,7 +633,9 @@ static void update_representation_info(ApplicationState*);
 static void update_all_representations(ApplicationState*);
 static void init_representation(ApplicationState*, Representation* rep);
 static void init_all_representations(ApplicationState*);
-static void clear_representations(ApplicationState*);
+static void flag_representation_as_dirty(Representation* rep);
+static void flag_all_representations_as_dirty(ApplicationState*);
+static void remove_all_representations(ApplicationState*);
 static void create_default_representations(ApplicationState*);
 static void recompute_atom_visibility_mask(ApplicationState*);
 
@@ -898,7 +900,7 @@ int main(int argc, char** argv) {
                             md_bitfield_reset(&data.representation.visibility_mask);
 
                             if (!data.settings.keep_representations) {
-                                clear_representations(&data);
+                                remove_all_representations(&data);
                                 create_default_representations(&data);
                             }
                             recompute_atom_visibility_mask(&data);
@@ -994,11 +996,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (data.representation.atom_visibility_mask_dirty) {
-            recompute_atom_visibility_mask(&data);
-            data.representation.atom_visibility_mask_dirty = false;
-        }
-
         if (data.animation.mode == PlaybackMode::Playing) {
             data.animation.frame += data.app.timing.delta_s * data.animation.fps;
             data.animation.frame = CLAMP(data.animation.frame, 0.0, max_frame);
@@ -1079,18 +1076,17 @@ int main(int argc, char** argv) {
         if (time_changed) {
             time_stopped = false;
 
-            PUSH_CPU_SECTION("Interpolate Position")
             if (data.mold.traj) {
+                PUSH_CPU_SECTION("Interpolate Position")
                 interpolate_atomic_properties(&data);
+                POP_CPU_SECTION()
             }
-            POP_CPU_SECTION()
 
-            PUSH_CPU_SECTION("Update dynamic representations")
+            PUSH_CPU_SECTION("Flag dynamic representations for update")
             for (size_t i = 0; i < md_array_size(data.representation.reps); ++i) {
                 auto& rep = data.representation.reps[i];
-                if (!rep.enabled) continue;
-                if (rep.dynamic_evaluation || rep.color_mapping == ColorMapping::SecondaryStructure) {
-                    update_representation(&data, &rep);
+                if (rep.enabled && (rep.dynamic_evaluation || rep.color_mapping == ColorMapping::SecondaryStructure)) {
+					flag_representation_as_dirty(&rep);
                 }
             }
             POP_CPU_SECTION()
@@ -1123,7 +1119,7 @@ int main(int argc, char** argv) {
                 if (md_semaphore_try_aquire_n(&data.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
                     defer {
                         md_semaphore_release_n(&data.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
-                        update_all_representations(&data);
+                        flag_all_representations_as_dirty(&data);
                     };
 
                     // Now we hold all semaphores for the script
@@ -1339,6 +1335,14 @@ int main(int argc, char** argv) {
             }
         }
 
+		// Perform once per-frame updates of representations (if required)
+		update_all_representations(&data);
+
+        if (data.representation.atom_visibility_mask_dirty) {
+            recompute_atom_visibility_mask(&data);
+            data.representation.atom_visibility_mask_dirty = false;
+        }
+
         if (data.script.vis.text) {
             PUSH_CPU_SECTION("Draw vis text");
             ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
@@ -1399,17 +1403,23 @@ int main(int argc, char** argv) {
 
         // The motivation for doing this is to reduce the frequency at which we invalidate and upload the atom flag field to the GPU
         // For large systems, this can be a costly operation: Consider a system of 100'000'000 atoms
-        // The the size of each bitfield to represent the mask would be 12.5 MB
-        // Given a throughput of 10GB/s for hash64 results in a time of 1.25 ms per bitfield.
+        // The size of each bitfield to represent the mask would be 12.5 MB
+        // Given a throughput of 10GB/s results in a time of 1.25 ms per bitfield.
 
         uint64_t v_hash = data.representation.visibility_mask_hash;
         uint64_t h_hash = md_bitfield_hash64(&data.selection.highlight_mask, 0);
         uint64_t s_hash = md_bitfield_hash64(&data.selection.selection_mask, 0);
         uint64_t f_hash = v_hash ^ h_hash ^ s_hash;
 
+        uint64_t r_hash = 0;
+        for (size_t i = 0; i < md_array_size(data.representation.reps); ++i) {
+			md_hash64(&data.representation.reps[i], sizeof(Representation), r_hash);
+		}
+
         // These represent the 'current' state so we can compare against it to see if they were modified
         static uint64_t highlight_hash = 0;
         static uint64_t selection_hash = 0;
+        static uint64_t representation_hash = 0;
         static uint64_t flag_hash = 0;
 
         if (h_hash != highlight_hash) {
@@ -1427,6 +1437,12 @@ int main(int argc, char** argv) {
         if (f_hash != flag_hash) {
             flag_hash = f_hash;
             data.mold.dirty_buffers |= MolBit_DirtyFlags;
+        }
+
+        if (r_hash != representation_hash) {
+            representation_hash = r_hash;
+            // enqueue the event here and do not broadcast (stall)
+            viamd::event_system_enqueue_event(viamd::EventType_ViamdRepresentationChanged, viamd::EventPayloadType_ApplicationState, &data);
         }
 
         update_md_buffers(&data);
@@ -1927,15 +1943,12 @@ static void update_density_volume(ApplicationState* data) {
             case ColorMapping::Uniform:
                 color_atoms_uniform(colors, num_atoms, rep.color);
                 break;
-            case ColorMapping::Cpk:
-                color_atoms_cpk(colors, num_atoms, sys);
-                break;
-            case ColorMapping::AtomLabel:
+            case ColorMapping::Type:
                 color_atoms_type(colors, num_atoms, sys);
                 break;
-            case ColorMapping::AtomIndex:
+            case ColorMapping::Serial:
                 color_atoms_idx(colors, num_atoms, sys);
-                break;
+				break;
             case ColorMapping::CompName:
                 color_atoms_comp_name(colors, num_atoms, sys);
                 break;
@@ -1974,26 +1987,6 @@ static void update_density_volume(ApplicationState* data) {
                 data->density_volume.volume_texture.max_value = prop_data->max_value;
             }
             gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop_data->values, GL_R32F);
-            
-            // Example hook for particle system: bind volume texture
-            // NOTE: Current volume texture is single-channel (scalar field only)
-            // For particle system vector fields, you would need a 4-component volume texture
-            // where xyz = gradient/vector field and w = scalar value
-            // Uncomment and modify the following when you have vector field data:
-            /*
-            if (data->density_volume.volume_texture.id) {
-                vec3_t vol_min = {-10.0f, -10.0f, -10.0f}; // Adjust based on your data
-                vec3_t vol_max = { 10.0f,  10.0f,  10.0f}; // Adjust based on your data
-                particlesystem::set_volume_texture(
-                    data->density_volume.volume_texture.id,
-                    data->density_volume.volume_texture.dim[0],
-                    data->density_volume.volume_texture.dim[1],
-                    data->density_volume.volume_texture.dim[2],
-                    vol_min,
-                    vol_max
-                );
-            }
-            */
         }
     }
 }
@@ -2817,7 +2810,7 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
                         md_bitfield_copy(&data->selection.selection_mask, &sel.atom_mask);
-                        update_all_representations(data);
+                        flag_all_representations_as_dirty(data);
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Load the stored selection as the active selection");
@@ -2828,7 +2821,7 @@ static void draw_main_menu(ApplicationState* data) {
                         ImGui::SetTooltip("Store the active selection into this selection");
                         md_bitfield_copy(&sel.atom_mask, &data->selection.selection_mask);
                         data->script.compile_ir = true;
-                        update_all_representations(data);
+                        flag_all_representations_as_dirty(data);
                     }
                     ImGui::SameLine();
                     if (ImGui::DeleteButton("Remove")) {
@@ -3290,7 +3283,7 @@ void draw_load_dataset_window(ApplicationState* data) {
 
             if (load_dataset_from_file(data, param)) {
                 if (sys_loader && !data->settings.keep_representations) {
-                    clear_representations(data);
+                    remove_all_representations(data);
                     create_default_representations(data);
                 }
                 data->animation = {};
@@ -3372,7 +3365,7 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_util_molecule_postprocess(mol, data->mold.sys_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
-    update_all_representations(data);
+    flag_all_representations_as_dirty(data);
 }
 */
 
@@ -4197,7 +4190,7 @@ static void draw_representations_window(ApplicationState* state) {
     }
     ImGui::SameLine();
     if (ImGui::DeleteButton("remove all")) {
-        clear_representations(state);
+        remove_all_representations(state);
     }
     ImGui::Spacing();
     ImGui::Separator();
@@ -4259,7 +4252,7 @@ static void draw_representations_window(ApplicationState* state) {
                 for (int i = 0; i < (int)RepresentationType::Count; ++i) {
                     if (i == (int)RepresentationType::ElectronicStructure) {
                         // Do not enlist Electronic Structure if there are no orbitals available
-                        if (state->representation.info.electronic_structure.alpha.num_orbitals == 0) continue;
+                        if (state->representation.info.alpha.num_orbitals == 0) continue;
                     }
                     if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                         rep.type = (RepresentationType)i;
@@ -4280,8 +4273,8 @@ static void draw_representations_window(ApplicationState* state) {
                 }
 
                 if (rep.color_mapping == ColorMapping::Property) {
-                    AtomPropertyInfo* props = state->representation.info.atomic_property.properties;
-                    int num_props = (int)md_array_size(state->representation.info.atomic_property.properties);
+                    AtomProperty* props = state->representation.info.atom_properties;
+                    int num_props = (int)md_array_size(state->representation.info.atom_properties);
                     if (num_props > 0) {
                         rep.prop.idx = CLAMP(rep.prop.idx, 0, num_props - 1);
                         if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
@@ -4416,7 +4409,7 @@ static void draw_representations_window(ApplicationState* state) {
                 if (ImGui::BeginCombo("Electronic Structure Type", electronic_structure_type_str[(int)rep.electronic_structure.type], flags)) {
                     for (int n = 0; n < (int)ElectronicStructureType::Count; n++) {
                         bool is_selected = ((int)rep.electronic_structure.type == n);
-                        bool disabled = !((1 << n) & state->representation.info.electronic_structure.electronic_structure_type_mask);
+                        bool disabled = !((1 << n) & state->representation.info.electronic_structure_type_mask);
 
                         if (disabled) ImGui::PushDisabled();
                         if (ImGui::Selectable(electronic_structure_type_str[n], is_selected)) {
@@ -4448,11 +4441,11 @@ static void draw_representations_window(ApplicationState* state) {
                                              rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole);
 
                 if (show_molecular_orbitals) {
-                    if (state->representation.info.electronic_structure.alpha.label) {
-                        if (ImGui::BeginCombo("Molecular Orbital Idx", state->representation.info.electronic_structure.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
-                            for (int n = 0; n < (int)state->representation.info.electronic_structure.alpha.num_orbitals; n++) {
+                    if (state->representation.info.alpha.label) {
+                        if (ImGui::BeginCombo("Molecular Orbital Idx", state->representation.info.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
+                            for (int n = 0; n < (int)state->representation.info.alpha.num_orbitals; n++) {
                                 bool is_selected = (rep.electronic_structure.mo_idx == n);
-                                if (ImGui::Selectable(state->representation.info.electronic_structure.alpha.label[n].ptr, is_selected)) {
+                                if (ImGui::Selectable(state->representation.info.alpha.label[n].ptr, is_selected)) {
                                     if (rep.electronic_structure.mo_idx != n) {
                                         update_rep = true;
                                     }
@@ -4469,11 +4462,11 @@ static void draw_representations_window(ApplicationState* state) {
                 }
 
                 if (show_exited_states) {
-                    if (state->representation.info.electronic_structure.nto.label) {
-                        if (ImGui::BeginCombo("Excited State Idx", state->representation.info.electronic_structure.nto.label[rep.electronic_structure.nto_idx].ptr)) {
-                            for (int n = 0; n < (int)state->representation.info.electronic_structure.nto.num_orbitals; n++) {
+                    if (state->representation.info.nto.label) {
+                        if (ImGui::BeginCombo("Excited State Idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
+                            for (int n = 0; n < (int)state->representation.info.nto.num_orbitals; n++) {
                                 const bool is_selected = (rep.electronic_structure.nto_idx == n);
-                                if (ImGui::Selectable(state->representation.info.electronic_structure.nto.label[n].ptr, is_selected)) {
+                                if (ImGui::Selectable(state->representation.info.nto.label[n].ptr, is_selected)) {
                                     if (rep.electronic_structure.nto_idx != n) {
                                         update_rep = true;
                                     }
@@ -4487,8 +4480,8 @@ static void draw_representations_window(ApplicationState* state) {
                             ImGui::EndCombo();
                         }
                         if (show_lambdas) {
-                            if (state->representation.info.electronic_structure.nto.lambda) {
-                                const NaturalTransitionOrbitalLambdaInfo& lambda = state->representation.info.electronic_structure.nto.lambda[rep.electronic_structure.nto_idx];
+                            if (state->representation.info.nto.lambda) {
+                                const NaturalTransitionOrbitalLambda& lambda = state->representation.info.nto.lambda[rep.electronic_structure.nto_idx];
                                 const int num_lambdas = (int)lambda.num_lambdas;
                                 if (num_lambdas > 0) {
                                     rep.electronic_structure.nto_lambda_idx = CLAMP(rep.electronic_structure.nto_lambda_idx, 0, num_lambdas - 1);
@@ -4586,7 +4579,7 @@ static void draw_representations_window(ApplicationState* state) {
         ImGui::PopID();
 
         if (update_rep) {
-            update_representation(state, &rep);
+            flag_representation_as_dirty(&rep);
         }
     }
 
@@ -7365,63 +7358,67 @@ static void xyz_write_frame(md_file_o* file, const int* atomic_nr, const float* 
     }
 }
 
-/*
-static void pdb_write_frame(md_file_o* file, const md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms) {
+static void pdb_write_frame(md_file_o* file, const md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num) {
+    if (model_num > 0) {
+        md_file_printf(file, "MODEL     %4d\n", model_num);
+    }
+
     for (size_t i = 0; i < num_atoms; ++i) {
         int idx = atom_indices ? atom_indices[i] : (int)i;
-        char element[3] = {0};
-        md_atom_element_symbol(element, sizeof(element), md_atom_atomic_number(&sys->atom, idx));
+        
+        // Get element symbol
+		md_atomic_number_t atomic_nr = md_atom_atomic_number(&sys->atom, idx);
 
-        md_file_printf(file, "ATOM  %5zu %-4s MOL     1    %8.3f%8.3f%8.3f  1.00  0.00          %-2s\n",
-            i + 1,
-            element,
-            x[idx],
-            y[idx],
-            z[idx],
-            element
+		char element[3] = "";
+        str_copy_to_char_buf(element, sizeof(element), md_atomic_number_symbol(atomic_nr));
+        
+        // Get atom name (use element symbol if not available)
+		char name[5] = "";
+		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
+        
+        // Get residue name
+		md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, idx);
+		char resname[5] = "";
+		str_copy_to_char_buf(resname, sizeof(resname), md_comp_name(&sys->comp, res_idx));
+
+		md_seq_id_t res_seq = md_comp_seq_id(&sys->comp, res_idx);
+        
+        // Get chain ID from instance
+        char chain_id[4] = " ";
+        md_inst_idx_t inst_idx = md_system_inst_find_by_atom_idx(sys, idx);
+        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_inst_auth_id(&sys->inst, inst_idx));
+
+        // PDB format:
+        // ATOM serial name altLoc resName chainID resSeq iCode x y z occupancy tempFactor element charge
+        md_file_printf(file,
+            "%-6s%5zu %-4s%1c%3s %1c%4d%1c   "
+            "%8.3f%8.3f%8.3f"
+            "%6.2f%6.2f          "
+            "%2s%2s\n",
+            "ATOM",
+            i + 1,              // serial number
+            name,               // atom name
+            ' ',                // altLoc
+            resname,            // residue name
+            chain_id[0],        // chain ID
+            res_seq,            // residue sequence number
+            ' ',                // iCode
+            x[idx],             // x coordinate
+            y[idx],             // y coordinate
+            z[idx],             // z coordinate
+            1.0,                // occupancy
+            0.0,                // bfactor
+            element,            // element symbol
+            ""                 // charge
         );
     }
-    md_file_printf(file, "END\n");
-}
-
-static void export_pdb_structure(md_file_o* file, const md_system_t* sys, const md_trajectory_i* traj, const int32_t* atom_indices, size_t num_atoms, const int32_t* frame_indices, size_t num_frames) {
-    ASSERT(file);
-    ASSERT(sys);
-
-    md_allocator_i* alloc = frame_alloc;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(alloc);
-    defer { md_vm_arena_temp_end(temp); };
-
-    // Write PDB header
-    md_file_printf(file, "HEADER    EXPORTED FROM VIAMD\n");
-    md_file_printf(file, "REMARK    Exported from VIAMD\n");
-    md_file_printf(file, "REMARK    Number of atoms: %zu\n", num_atoms);
-    md_file_printf(file, "REMARK    Number of frames: %zu\n", num_frames);
-
-    // Write cell parameters if available
-    if (sys->unitcell.flags != 0) {
-        double a, b, c, alpha, beta, gamma;
-        md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &sys->unitcell);
-        md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
-    }
-
-    if (traj) {
-        float *x = (float*)md_vm_arena_push(alloc, sizeof(float) * sys->atom.count);
-        float *y = (float*)md_vm_arena_push(alloc, sizeof(float) * sys->atom.count);
-        float *z = (float*)md_vm_arena_push(alloc, sizeof(float) * sys->atom.count);
-
-        for (size_t f = 0; f < num_frames; ++f) {
-            int frame_idx = frame_indices ? frame_indices[f] : (int)f;
-            if (!md_trajectory_load_frame(traj, frame_idx, NULL, sys->atom.x, sys->atom.y, sys->atom.z)) {
-                LOG_ERROR("Failed to load frame %d from trajectory for PDB export.", frame_idx);
-                continue;
-            }
-        }
+    
+    if (model_num > 0) {
+        md_file_printf(file, "ENDMDL\n");
     } else {
-        md_trajectory_load_frame(traj, 0, NULL, sys->atom.x, sys->atom.y, sys->atom.z);
+        md_file_printf(file, "END\n");
     }
 }
-*/
 
 void draw_structure_export_window(ApplicationState* data) {
     ASSERT(data);
@@ -7448,7 +7445,8 @@ void draw_structure_export_window(ApplicationState* data) {
         };
 
         static const char* file_formats[] = {
-            "xyz"
+            "xyz",
+            "pdb"
         };
 
         //ImGui::PushItemWidth(200);
@@ -7590,6 +7588,27 @@ void draw_structure_export_window(ApplicationState* data) {
                         case 0: { // XYZ
                             // No header needed
                         } break;
+                        case 1: { // PDB
+                            md_file_printf(file, "HEADER    EXPORTED FROM VIAMD\n");
+                            md_file_printf(file, "REMARK    Exported from VIAMD\n");
+                            
+                            // Write CRYST1 record with unit cell if available
+                            if (traj) {
+                                md_trajectory_frame_header_t frame_header;
+                                int first_frame = md_array_size(frame_indices) > 0 ? frame_indices[0] : 0;
+                                if (md_trajectory_load_frame(traj, first_frame, &frame_header, NULL, NULL, NULL)) {
+                                    if (frame_header.unitcell.flags != 0) {
+                                        double a, b, c, alpha, beta, gamma;
+                                        md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &frame_header.unitcell);
+                                        md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
+                                    }
+                                }
+                            } else if (sys->unitcell.flags != 0) {
+                                double a, b, c, alpha, beta, gamma;
+                                md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &sys->unitcell);
+                                md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
+                            }
+                        } break;
                         default: {
                             LOG_ERROR("Unsupported export format: '" STR_FMT "'", STR_ARG(ext));
                         } break;
@@ -7618,7 +7637,13 @@ void draw_structure_export_window(ApplicationState* data) {
                             }
 
                             size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), x, y, z);
-                            xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                            
+                            if (struct_exp.selected_file_format == 0) { // XYZ
+                                xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                            } else if (struct_exp.selected_file_format == 1) { // PDB
+                                int model_num = (num_frames > 1) ? (int)(f + 1) : 0;
+                                pdb_write_frame(file, sys, x, y, z, atom_indices, num_atoms, model_num);
+                            }
                         }
                     }
                     else {
@@ -7627,7 +7652,12 @@ void draw_structure_export_window(ApplicationState* data) {
                         float* y = sys->atom.y;
                         float* z = sys->atom.z;
                         size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), x, y, z);
-						xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                        
+                        if (struct_exp.selected_file_format == 0) { // XYZ
+                            xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                        } else if (struct_exp.selected_file_format == 1) { // PDB
+                            pdb_write_frame(file, sys, x, y, z, atom_indices, num_atoms, 0);
+                        }
                     }
 
                     LOG_INFO("Successfully exported structure to: '" STR_FMT "'", STR_ARG(path));
@@ -7824,7 +7854,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 
                 interpolate_atomic_properties(data);
                 data->mold.dirty_buffers |= MolBit_ClearVelocity;
-                update_all_representations(data);
+                flag_all_representations_as_dirty(data);
             });
 
             task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
@@ -7919,7 +7949,6 @@ static void init_molecule_data(ApplicationState* data) {
 
     update_representation_info(data);
     init_all_representations(data);
-    update_all_representations(data);
     data->script.compile_ir = true;
 
 }
@@ -8012,7 +8041,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
 
     // Reset and clear things
     clear_selections(data);
-    clear_representations(data);
+    remove_all_representations(data);
     editor.SetText("");
     data->files.workspace[0]  = '\0';
 
@@ -8421,9 +8450,8 @@ static Representation* create_representation(ApplicationState* data, Representat
     if (!str_empty(filter)) {
         str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
     }
-    rep->electronic_structure.mo_idx = data->representation.info.electronic_structure.alpha.homo_idx;
+    rep->electronic_structure.mo_idx = data->representation.info.alpha.homo_idx;
     init_representation(data, rep);
-    update_representation(data, rep);
     return rep;
 }
 
@@ -8434,7 +8462,6 @@ static Representation* clone_representation(ApplicationState* state, const Repre
     clone->md_rep = {0};
     clone->atom_mask = {0};
     init_representation(state, clone);
-    update_representation(state, clone);
     return clone;
 }
 
@@ -8465,9 +8492,7 @@ static void recompute_atom_visibility_mask(ApplicationState* state) {
 
 static void update_all_representations(ApplicationState* state) {
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        auto& rep = state->representation.reps[i];
-        rep.filt_is_dirty = true;
-        update_representation(state, &rep);
+        update_representation(state, &state->representation.reps[i]);
     }
 }
 
@@ -8480,6 +8505,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     ASSERT(rep);
 
     if (!rep->enabled) return;
+	if (!rep->needs_update) return;
 
     const auto& sys = state->mold.sys;
 	size_t num_atoms = md_system_atom_count(&sys);
@@ -8494,24 +8520,18 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.sys, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
     //}
 
-    bool use_colors = rep_type_uses_atomic_colors(rep->type);
     uint32_t* colors = 0;
-
-
-    if (use_colors) {
+    if (rep_type_uses_atomic_colors(rep->type)) {
         colors = (uint32_t*)md_vm_arena_push(frame_alloc, sizeof(uint32_t) * num_atoms);
 
         switch (rep->color_mapping) {
             case ColorMapping::Uniform:
                 color_atoms_uniform(colors, num_atoms, rep->uniform_color);
                 break;
-            case ColorMapping::Cpk:
-                color_atoms_cpk(colors, num_atoms, sys);
-                break;
-            case ColorMapping::AtomLabel:
+            case ColorMapping::Type:
                 color_atoms_type(colors, num_atoms, sys);
                 break;
-            case ColorMapping::AtomIndex:
+            case ColorMapping::Serial:
                 color_atoms_idx(colors, num_atoms, sys);
                 break;
             case ColorMapping::CompName:
@@ -8536,16 +8556,16 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                 // @TODO: Map colors accordingly
                 //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
 
-                if (md_array_size(state->representation.info.atomic_property.properties) > 0) {
+                if (md_array_size(state->representation.info.atom_properties) > 0) {
                     float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
-                    AtomicPropertyPayload eval = {
-                        .property_id = state->representation.info.atomic_property.properties[rep->prop.idx].id,
+                    EvalAtomProperty eval = {
+                        .property_id = state->representation.info.atom_properties[rep->prop.idx].id,
                         .idx = 0,
                         .output_written = false,
                         .num_values = num_atoms,
                         .dst_values = values,
                     };
-                    viamd::event_system_broadcast_event(viamd::EventType_EvalAtomicProperty, viamd::EventPayloadType_AtomicProperty, &eval);
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
 
                     if (eval.output_written) {
                         float range_ext = (rep->prop.range_end - rep->prop.range_beg);
@@ -8639,7 +8659,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
         break;
     case RepresentationType::ElectronicStructure: {
-        size_t num_mos = state->representation.info.electronic_structure.alpha.num_orbitals;
+        size_t num_mos = state->representation.info.alpha.num_orbitals;
         rep->type_is_valid = num_mos > 0;
         if (num_mos > 0) {
             uint64_t orb_idx = 0;
@@ -8671,14 +8691,14 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                     8.0f,
                     16.0f,
                 };
-                ElectronicStructurePayload data = {
+                EvalElectronicStructure data = {
                     .type = rep->electronic_structure.type,
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
                     .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
                     .dst_volume = &rep->electronic_structure.vol,
                 };
-                viamd::event_system_broadcast_event(viamd::EventType_EvalElectronicStructure, viamd::EventPayloadType_ElectronicStructure, &data);
+                viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
 
                 if (data.output_written) {
 #if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
@@ -8699,7 +8719,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     }
 
-    if (use_colors) {
+    if (colors) {
         if (rep->dynamic_evaluation) {
             rep->filt_is_dirty = true;
         }
@@ -8722,6 +8742,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 #endif
         }
     }
+
+    rep->needs_update = false;
 }
 
 static void init_representation(ApplicationState* state, Representation* rep) {
@@ -8731,14 +8753,14 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, persistent_alloc);
 
-    size_t num_props = md_array_size(state->representation.info.atomic_property.properties);
+    size_t num_props = md_array_size(state->representation.info.atom_properties);
     if (num_props > 0) {
         rep->prop.idx = 0;
-        rep->prop.range_beg = state->representation.info.atomic_property.properties[0].value_min;
-        rep->prop.range_end = state->representation.info.atomic_property.properties[0].value_max;
+        rep->prop.range_beg = state->representation.info.atom_properties[0].value_min;
+        rep->prop.range_end = state->representation.info.atom_properties[0].value_max;
     }
 
-    rep->filt_is_dirty = true;
+	flag_representation_as_dirty(rep);
 }
 
 static void update_representation_info(ApplicationState* state) {
@@ -8750,7 +8772,7 @@ static void update_representation_info(ApplicationState* state) {
     state->representation.info.alloc = alloc;
 
     // Broadcast event to populate info
-    viamd::event_system_broadcast_event(viamd::EventType_RepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
 }
 
 static void init_all_representations(ApplicationState* state) {
@@ -8760,7 +8782,20 @@ static void init_all_representations(ApplicationState* state) {
     }
 }
 
-static void clear_representations(ApplicationState* state) {
+void flag_representation_as_dirty(Representation* rep) {
+    ASSERT(rep);
+    rep->filt_is_dirty = true;
+	rep->needs_update  = true;
+}
+
+void flag_all_representations_as_dirty(ApplicationState* state) {
+    ASSERT(state);
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+		flag_representation_as_dirty(&state->representation.reps[i]);
+    }
+}
+
+static void remove_all_representations(ApplicationState* state) {
     while (md_array_size(state->representation.reps) > 0) {
         remove_representation(state, (int32_t)md_array_size(state->representation.reps) - 1);
     }
@@ -8773,18 +8808,18 @@ static void create_default_representations(ApplicationState* state) {
     bool water_present = false;
     bool ligand_present = false;
     bool coarse_grained = false;
-    bool orbitals_present = state->representation.info.electronic_structure.alpha.num_orbitals > 0;
+    bool orbitals_present = state->representation.info.alpha.num_orbitals > 0;
 
     if (state->mold.sys.atom.count > 3'000'000) {
         LOG_INFO("Large system detected, creating default representation for all atoms");
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
     if (state->mold.sys.comp.count == 0) {
         // No residues present
-        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -8804,7 +8839,7 @@ static void create_default_representations(ApplicationState* state) {
     }
 
     if (coarse_grained) {
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -8819,7 +8854,7 @@ static void create_default_representations(ApplicationState* state) {
             size_t res_count = md_inst_comp_count(&state->mold.sys.inst, 0);
             if (res_count < 20) {
                 type = RepresentationType::BallAndStick;
-                color = ColorMapping::Cpk;
+                color = ColorMapping::Type;
             }
         }
 
@@ -8827,19 +8862,19 @@ static void create_default_representations(ApplicationState* state) {
         snprintf(prot->name, sizeof(prot->name), "protein");
     }
     if (nucleic_present) {
-        Representation* nucl = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("nucleic"));
+        Representation* nucl = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
-        Representation* ion = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("ion"));
+        Representation* ion = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("ion"));
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("not (protein or nucleic or water or ion)"));
+        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("not (protein or nucleic or water or ion)"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
-        Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("water"));
+        Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
         water->scale.x = 0.5f;
         snprintf(water->name, sizeof(water->name), "water");
         water->enabled = false;
@@ -9598,7 +9633,7 @@ static void draw_representations_transparent(ApplicationState* state) {
         }
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
-        update_representation(state, &state->representation.reps[i]);
+		flag_representation_as_dirty(&state->representation.reps[i]);
 #endif
 
         volume::RenderDesc desc = {

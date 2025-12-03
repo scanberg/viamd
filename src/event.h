@@ -34,19 +34,19 @@ enum : EventType {
 
 	//EventType_ViamdFileOpen 	   		= HASH_STR_LIT("VIAMD Open File"),
 
-	//EventType_AnimationFrameChange	= HASH_STR_LIT("Animation Frame Changed"),
+	//EventType_AnimationFrameChange		= HASH_STR_LIT("Animation Frame Changed"),
 
-	EventType_ViamdHoverMaskChanged		= HASH_STR_LIT("Hover Mask Changed"),
-	EventType_ViamdSelectionMaskChanged	= HASH_STR_LIT("Selection Mask Changed"),
+	EventType_ViamdHoverMaskChanged			= HASH_STR_LIT("VIAMD Hover Mask Changed"),
+	EventType_ViamdSelectionMaskChanged		= HASH_STR_LIT("VIAMD Selection Mask Changed"),
+	EventType_ViamdRepresentationChanged	= HASH_STR_LIT("VIAMD Representation Changed"),		// Called when representations have been modified
 
-	EventType_RepresentationInfoFill	= HASH_STR_LIT("Representation Info Fill"),
-	EventType_EvalElectronicStructure	= HASH_STR_LIT("Evaluate ElectronicStructure"),
-	EventType_EvalAtomicProperty		= HASH_STR_LIT("Evaluate AtomicProperty"),
+	EventType_ViamdRepresentationInfoFill					= HASH_STR_LIT("VIAMD Representation Info Fill"),
+	EventType_ViamdRepresentationEvalElectronicStructure	= HASH_STR_LIT("VIAMD Representation Eval ElectronicStructure"),
+	EventType_ViamdRepresentationEvalAtomProperty			= HASH_STR_LIT("VIAMD Representation Eval AtomProperty"),
 
-	//EventType_RepresentationChange	= HASH_STR_LIT("Representation Changed"),
 
-	//EventType_PropertyHovered 		= HASH_STR_LIT("Property Hovered"),
-	//EventType_ScriptChange			= HASH_STR_LIT("Script Changed"),
+	//EventType_PropertyHovered 			= HASH_STR_LIT("Property Hovered"),
+	//EventType_ScriptChange				= HASH_STR_LIT("Script Changed"),
 	//EventType_ScriptEvalStart			= HASH_STR_LIT("Script Evaluation Started"),
 	//EventType_ScriptEvalComplete		= HASH_STR_LIT("Script Evaluation Completed"),
 };
@@ -58,8 +58,8 @@ enum : EventPayloadType {
 	EventPayloadType_Representation				= HASH_STR_LIT("Payload Representation"),
 	EventPayloadType_SerializationState			= HASH_STR_LIT("Payload Serialization State"),
 	EventPayloadType_DeserializationState		= HASH_STR_LIT("Payload Deserialization State"),
-	EventPayloadType_ElectronicStructure		= HASH_STR_LIT("Payload ElectronicStructure"),
-	EventPayloadType_AtomicProperty				= HASH_STR_LIT("Payload AtomProperty"),
+	EventPayloadType_EvalElectronicStructure	= HASH_STR_LIT("Payload Eval ElectronicStructure"),
+	EventPayloadType_EvalAtomProperty			= HASH_STR_LIT("Payload Eval AtomProperty"),
 };
 
 struct Event {
