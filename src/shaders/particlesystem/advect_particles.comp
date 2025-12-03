@@ -1,0 +1,114 @@
+#version 430 core
+
+#ifndef GROUP_SIZE
+#define GROUP_SIZE 256
+#endif
+
+layout (local_size_x = GROUP_SIZE) in;
+
+layout (std430, binding = 0) buffer particle_buffer {
+    vec4 particles[];
+};
+
+layout (std140, binding = 0) uniform particle_params {
+    // Packed to respect std140 alignment and simplify C++ mirroring
+    mat4 texture_to_world;
+    mat4 world_to_texture;
+    float dt;
+    float scalar_min;
+    float grad_magn_min;
+    float min_lifetime_in_frames;
+    float max_lifetime_in_frames;
+    uint  num_particles;
+    uint  random_seed;
+    uint  max_attempts;
+};
+
+layout (binding = 0) uniform sampler3D volume_texture;
+
+// PCG random number generator for reseeding
+uint pcg_hash(uint seed) {
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float random_float(inout uint seed) {
+    seed = pcg_hash(seed);
+    return float(seed) / 4294967296.0;
+}
+
+// Sample vector field at given position
+vec3 sample_vector_field(vec3 world_pos, mat4 world_to_texture) {
+    // Convert world position to texture coordinates [0, 1]
+    vec4 tex_coord_h = world_to_texture * vec4(world_pos, 1.0);
+    vec3 tex_coord = tex_coord_h.xyz / tex_coord_h.w;
+    
+    // Sample the vector field (yzw components contain the gradient)
+    vec4 sample_value = texture(volume_texture, tex_coord);
+    
+    return -sample_value.yzw;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= num_particles) return;
+    
+    // Get current particle state
+    vec3  pos  = particles[idx].xyz;
+    float life = particles[idx].w;
+    
+    // Reseed dead particles
+    if (life <= 0.0) {
+        // Combine frame counter (random_seed) with particle index for unique seed per reseed
+        uint seed = pcg_hash(random_seed + idx);
+        
+        // Try to find valid position within scalar range
+        for (int attempt = 0; attempt < max_attempts; ++attempt) {
+            // Generate random position in texture space [0,1]^3
+            vec3 tex_pos = vec3(
+                random_float(seed),
+                random_float(seed),
+                random_float(seed)
+            );
+            
+            // Transform to world space
+            pos = (texture_to_world * vec4(tex_pos, 1.0)).xyz;
+            
+            // Sample scalar value at texture position
+            vec4 sample_value = texture(volume_texture, tex_pos);
+            float scalar_value = sample_value.x;
+            float grad_magn = length(sample_value.yzw);
+            
+            if (scalar_value >= scalar_min && grad_magn >= grad_magn_min) {
+                break;
+            }
+        }
+        
+        life = min_lifetime_in_frames + random_float(seed) * (max_lifetime_in_frames - min_lifetime_in_frames);
+        particles[idx] = vec4(pos, life);
+    }
+    
+    // Advect particle using RK4 integration
+    vec3 k1 = sample_vector_field(pos, world_to_texture);
+    vec3 k2 = sample_vector_field(pos + k1 * dt * 0.5, world_to_texture);
+    vec3 k3 = sample_vector_field(pos + k2 * dt * 0.5, world_to_texture);
+    vec3 k4 = sample_vector_field(pos + k3 * dt, world_to_texture);
+    
+    vec3 new_vel = (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0;
+    vec3 new_pos = pos + new_vel * dt;
+    
+    // Check bounds: transform to texture space and see if in [0,1]^3
+    vec4 tex_pos_h = world_to_texture * vec4(new_pos, 1.0);
+    vec3 tex_pos = tex_pos_h.xyz / tex_pos_h.w;
+    
+    if (any(lessThan(tex_pos, vec3(0.0))) || any(greaterThan(tex_pos, vec3(1.0)))) {
+        // Kill particle if it escapes - will be reseeded next frame
+        life = 0.0;
+    } else {
+        life = life - 1.0;
+    }
+    
+    // Update particle
+    particles[idx] = vec4(new_pos, life);
+}

@@ -237,25 +237,25 @@ struct DatasetItem {
     md_array(int) sub_items = 0; // Indices into the items of the subcatagories: i.e. for chain -> unique residues types within that chain
 };
 
-struct DipoleMoment {
+struct DipoleMomentInfo {
     size_t num_dipoles = 0;
     str_t* label = nullptr;
     vec3_t* vec  = nullptr;
 };
 
-struct NaturalTransitionOrbitalLambda {
+struct NaturalTransitionOrbitalLambdaInfo {
     size_t num_lambdas = 0;
     str_t* label = nullptr;
     double* value = nullptr;
 };
 
-struct NaturalTransitionOrbital {
+struct NaturalTransitionOrbitalInfo {
     size_t num_orbitals = 0;
     str_t* label = nullptr;
-    NaturalTransitionOrbitalLambda* lambda = nullptr;
+    NaturalTransitionOrbitalLambdaInfo* lambda = nullptr;
 };
 
-struct MolecularOrbital {
+struct MolecularOrbitalInfo {
     size_t homo_idx = 0;
     size_t lumo_idx = 0;
     size_t num_orbitals = 0;
@@ -264,7 +264,7 @@ struct MolecularOrbital {
     double* energy = nullptr;
 };
 
-struct AtomProperty {
+struct AtomPropertyInfo {
     uint64_t id;
     str_t label;
     int num_idx     = 0;
@@ -272,28 +272,44 @@ struct AtomProperty {
     float value_max = 0;
 };
 
+struct ElectronicStructureInfo {
+    MolecularOrbitalInfo alpha;
+    MolecularOrbitalInfo beta;
+    NaturalTransitionOrbitalInfo nto;
+    DipoleMomentInfo electric_dipoles;
+    DipoleMomentInfo magnetic_dipoles;
+    DipoleMomentInfo velocity_dipoles;
+
+    uint32_t electronic_structure_type_mask;
+};
+
+struct AtomicPropertyInfo {
+    md_array(AtomPropertyInfo) properties = 0;
+};
+
 // Struct to fill in for the different components
 // Which provides information of what representations are available for the currently loaded datasets
 struct RepresentationInfo {
-    MolecularOrbital alpha;
-    MolecularOrbital beta;
-    NaturalTransitionOrbital nto;
-    DipoleMoment electric_dipoles;
-    DipoleMoment magnetic_dipoles;
-    DipoleMoment velocity_dipoles;
-
-    uint32_t electronic_structure_type_mask;
-
-    md_array(AtomProperty) atom_properties = nullptr;
+    ElectronicStructureInfo electronic_structure;
+    AtomicPropertyInfo      atomic_property;
 
     md_allocator_i* alloc = nullptr;
 };
 
+enum class VolumeFormat {
+    R16_FLOAT,
+    R16G16_FLOAT,
+    R16G16B16A16_FLOAT,
+    R32_FLOAT,
+    R32G32_FLOAT,
+    R32G32B32A32_FLOAT,
+};
+
 struct Volume {
-    //mat4_t index_to_world   = {};
     mat4_t texture_to_world = {};
     vec3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
+    VolumeFormat format = VolumeFormat::R16_FLOAT;
     uint32_t tex_id = 0;
 };
 
@@ -305,7 +321,7 @@ struct IsoDesc {
     vec4_t colors[8];
 };
 
-struct EvalAtomProperty {
+struct AtomicPropertyPayload {
     uint64_t property_id = 0;
     int idx = 0; // This is probably rarely applicable
 
@@ -315,12 +331,13 @@ struct EvalAtomProperty {
 };
 
 // Event Payload when an electronic structure is to be evaluated
-struct EvalElectronicStructure {
+struct ElectronicStructurePayload {
     // Input information
     ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
     int major_idx = 0;
     int minor_idx = 0;
     float samples_per_angstrom = 4.0f;
+    bool include_gradients = false;
 
     // Output information
     bool output_written = false;
