@@ -309,8 +309,9 @@ struct Dataset : viamd::EventHandler {
             ImGui::Checkbox("Use shorthand component labels", &use_short_labels);
             ImGui::Checkbox("Use author instance labels", &use_auth_labels);
 
-            size_t num_entities = md_system_entity_count(&data.mold.sys);
+            size_t num_entities  = md_system_entity_count(&data.mold.sys);
             size_t num_instances = md_system_inst_count(&data.mold.sys);
+			size_t num_atom_types = md_system_atom_type_count(&data.mold.sys);
 
             if (num_entities && ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
                 const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.4f, ImGui::GetFontSize() * 1.1f);
@@ -410,6 +411,55 @@ struct Dataset : viamd::EventHandler {
                 }
                 ImGui::Separator();
             }
+
+            if (num_entities && ImGui::CollapsingHeader("Atom Types")) {
+                ImGui::Indent();
+                for (size_t i = 0; i < num_atom_types; ++i) {
+                    DatasetItem& item = atom_types[i];
+                    if (i == 0 && item.count == 0) {
+                        // Skip "unknown" atom type if unused
+                        continue;
+					}
+
+                    ImGui::PushID((int)i);
+                    defer { ImGui::PopID(); };
+                    char buf[256];
+                    snprintf(buf, sizeof(buf), "%s (Count: %d, Fraction: %.2f%%)", item.label, item.count, item.fraction * 100.0f);
+                    bool expand_type = ImGui::CollapsingHeader(buf);
+                    if (ImGui::IsItemHovered()) {
+                        md_bitfield_clear(&data.selection.highlight_mask);
+						md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, (uint32_t)md_array_size(item.indices));
+                    }
+                    if (expand_type) {
+                        float* radius = &data.mold.sys.atom.type.radius[i];
+                        const float min_radius = 0.1f;
+                        const float max_radius = 20.0f;
+                        bool rad_changed = ImGui::SliderFloat("Radius", radius, min_radius, max_radius);
+
+						float* mass = &data.mold.sys.atom.type.mass[i];
+                        const float min_mass = 1.0f;
+                        const float max_mass = 500.0f;
+						bool mass_changed = ImGui::SliderFloat("Mass", mass, min_mass, max_mass);
+
+                        ImVec4 color = ImColor(data.mold.sys.atom.type.color[i]);
+                        bool color_changed = ImGui::ColorEdit4("Color", &color.x);
+
+                        if (rad_changed) {
+                            data.mold.dirty_buffers |= MolBit_DirtyRadius;
+                        }
+
+                        if (color_changed) {
+							data.mold.sys.atom.type.color[i] = ImColor(color);
+                            // This is hacky at the moment and there should be a centralized mechanism for this
+                            for (size_t i = 0; i < md_array_size(data.representation.reps); ++i) {
+                                data.representation.reps[i].needs_update = true;
+                            }
+                        }
+                    }
+                }
+                ImGui::Indent();
+            }
+
 
             // Draw the three sections
             //draw_dataset_section("Chain Types",     inst_types,      md_array_size(inst_types),   0);

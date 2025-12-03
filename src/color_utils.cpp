@@ -52,9 +52,8 @@ void color_atoms_cpk(uint32_t* colors, size_t count, const md_system_t& sys) {
 
 void color_atoms_type(uint32_t* colors, size_t count, const md_system_t& sys) {
     for (size_t i = 0; i < count; ++i) {
-        str_t atom_name = md_atom_name(&sys.atom, i);
-        const uint64_t hash = md_hash64_str(atom_name, 0);
-        colors[i] = u32_to_color((uint32_t)hash ^ (uint32_t)(hash >> 32));
+		md_atom_type_idx_t idx = md_atom_type_idx(&sys.atom, i);
+        colors[i] = md_atom_type_color(&sys.atom.type, idx);
     }
 }
 

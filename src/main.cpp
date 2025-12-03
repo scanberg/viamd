@@ -625,7 +625,7 @@ static void create_screenshot(str_t path);
 
 // Representations
 static Representation* create_representation(ApplicationState* data, RepresentationType type = RepresentationType::SpaceFill,
-                                             ColorMapping color_mapping = ColorMapping::Cpk, str_t filter = STR_LIT("all"));
+                                             ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
 static Representation* clone_representation(ApplicationState* data, const Representation& rep);
 static void remove_representation(ApplicationState*, int idx);
 static void update_representation(ApplicationState*, Representation* rep);
@@ -633,7 +633,9 @@ static void update_representation_info(ApplicationState*);
 static void update_all_representations(ApplicationState*);
 static void init_representation(ApplicationState*, Representation* rep);
 static void init_all_representations(ApplicationState*);
-static void clear_representations(ApplicationState*);
+static void flag_representation_as_dirty(Representation* rep);
+static void flag_all_representations_as_dirty(ApplicationState*);
+static void remove_all_representations(ApplicationState*);
 static void create_default_representations(ApplicationState*);
 static void recompute_atom_visibility_mask(ApplicationState*);
 
@@ -898,7 +900,7 @@ int main(int argc, char** argv) {
                             md_bitfield_reset(&data.representation.visibility_mask);
 
                             if (!data.settings.keep_representations) {
-                                clear_representations(&data);
+                                remove_all_representations(&data);
                                 create_default_representations(&data);
                             }
                             recompute_atom_visibility_mask(&data);
@@ -994,11 +996,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (data.representation.atom_visibility_mask_dirty) {
-            recompute_atom_visibility_mask(&data);
-            data.representation.atom_visibility_mask_dirty = false;
-        }
-
         if (data.animation.mode == PlaybackMode::Playing) {
             data.animation.frame += data.app.timing.delta_s * data.animation.fps;
             data.animation.frame = CLAMP(data.animation.frame, 0.0, max_frame);
@@ -1079,18 +1076,17 @@ int main(int argc, char** argv) {
         if (time_changed) {
             time_stopped = false;
 
-            PUSH_CPU_SECTION("Interpolate Position")
             if (data.mold.traj) {
+                PUSH_CPU_SECTION("Interpolate Position")
                 interpolate_atomic_properties(&data);
+                POP_CPU_SECTION()
             }
-            POP_CPU_SECTION()
 
-            PUSH_CPU_SECTION("Update dynamic representations")
+            PUSH_CPU_SECTION("Flag dynamic representations for update")
             for (size_t i = 0; i < md_array_size(data.representation.reps); ++i) {
                 auto& rep = data.representation.reps[i];
-                if (!rep.enabled) continue;
-                if (rep.dynamic_evaluation || rep.color_mapping == ColorMapping::SecondaryStructure) {
-                    update_representation(&data, &rep);
+                if (rep.enabled && (rep.dynamic_evaluation || rep.color_mapping == ColorMapping::SecondaryStructure)) {
+					flag_representation_as_dirty(&rep);
                 }
             }
             POP_CPU_SECTION()
@@ -1123,7 +1119,7 @@ int main(int argc, char** argv) {
                 if (md_semaphore_try_aquire_n(&data.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
                     defer {
                         md_semaphore_release_n(&data.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
-                        update_all_representations(&data);
+                        flag_all_representations_as_dirty(&data);
                     };
 
                     // Now we hold all semaphores for the script
@@ -1339,6 +1335,14 @@ int main(int argc, char** argv) {
             }
         }
 
+		// Perform once per-frame updates of representations (if required)
+		update_all_representations(&data);
+
+        if (data.representation.atom_visibility_mask_dirty) {
+            recompute_atom_visibility_mask(&data);
+            data.representation.atom_visibility_mask_dirty = false;
+        }
+
         if (data.script.vis.text) {
             PUSH_CPU_SECTION("Draw vis text");
             ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
@@ -1399,17 +1403,23 @@ int main(int argc, char** argv) {
 
         // The motivation for doing this is to reduce the frequency at which we invalidate and upload the atom flag field to the GPU
         // For large systems, this can be a costly operation: Consider a system of 100'000'000 atoms
-        // The the size of each bitfield to represent the mask would be 12.5 MB
-        // Given a throughput of 10GB/s for hash64 results in a time of 1.25 ms per bitfield.
+        // The size of each bitfield to represent the mask would be 12.5 MB
+        // Given a throughput of 10GB/s results in a time of 1.25 ms per bitfield.
 
         uint64_t v_hash = data.representation.visibility_mask_hash;
         uint64_t h_hash = md_bitfield_hash64(&data.selection.highlight_mask, 0);
         uint64_t s_hash = md_bitfield_hash64(&data.selection.selection_mask, 0);
         uint64_t f_hash = v_hash ^ h_hash ^ s_hash;
 
+        uint64_t r_hash = 0;
+        for (size_t i = 0; i < md_array_size(data.representation.reps); ++i) {
+			md_hash64(&data.representation.reps[i], sizeof(Representation), r_hash);
+		}
+
         // These represent the 'current' state so we can compare against it to see if they were modified
         static uint64_t highlight_hash = 0;
         static uint64_t selection_hash = 0;
+        static uint64_t representation_hash = 0;
         static uint64_t flag_hash = 0;
 
         if (h_hash != highlight_hash) {
@@ -1427,6 +1437,12 @@ int main(int argc, char** argv) {
         if (f_hash != flag_hash) {
             flag_hash = f_hash;
             data.mold.dirty_buffers |= MolBit_DirtyFlags;
+        }
+
+        if (r_hash != representation_hash) {
+            representation_hash = r_hash;
+            // enqueue the event here and do not broadcast (stall)
+            viamd::event_system_enqueue_event(viamd::EventType_ViamdRepresentationChanged, viamd::EventPayloadType_ApplicationState, &data);
         }
 
         update_md_buffers(&data);
@@ -1927,15 +1943,12 @@ static void update_density_volume(ApplicationState* data) {
             case ColorMapping::Uniform:
                 color_atoms_uniform(colors, num_atoms, rep.color);
                 break;
-            case ColorMapping::Cpk:
-                color_atoms_cpk(colors, num_atoms, sys);
-                break;
-            case ColorMapping::AtomLabel:
+            case ColorMapping::Type:
                 color_atoms_type(colors, num_atoms, sys);
                 break;
-            case ColorMapping::AtomIndex:
+            case ColorMapping::Serial:
                 color_atoms_idx(colors, num_atoms, sys);
-                break;
+				break;
             case ColorMapping::CompName:
                 color_atoms_comp_name(colors, num_atoms, sys);
                 break;
@@ -2797,7 +2810,7 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
                         md_bitfield_copy(&data->selection.selection_mask, &sel.atom_mask);
-                        update_all_representations(data);
+                        flag_all_representations_as_dirty(data);
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Load the stored selection as the active selection");
@@ -2808,7 +2821,7 @@ static void draw_main_menu(ApplicationState* data) {
                         ImGui::SetTooltip("Store the active selection into this selection");
                         md_bitfield_copy(&sel.atom_mask, &data->selection.selection_mask);
                         data->script.compile_ir = true;
-                        update_all_representations(data);
+                        flag_all_representations_as_dirty(data);
                     }
                     ImGui::SameLine();
                     if (ImGui::DeleteButton("Remove")) {
@@ -3270,7 +3283,7 @@ void draw_load_dataset_window(ApplicationState* data) {
 
             if (load_dataset_from_file(data, param)) {
                 if (sys_loader && !data->settings.keep_representations) {
-                    clear_representations(data);
+                    remove_all_representations(data);
                     create_default_representations(data);
                 }
                 data->animation = {};
@@ -3352,7 +3365,7 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_util_molecule_postprocess(mol, data->mold.sys_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
-    update_all_representations(data);
+    flag_all_representations_as_dirty(data);
 }
 */
 
@@ -4177,7 +4190,7 @@ static void draw_representations_window(ApplicationState* state) {
     }
     ImGui::SameLine();
     if (ImGui::DeleteButton("remove all")) {
-        clear_representations(state);
+        remove_all_representations(state);
     }
     ImGui::Spacing();
     ImGui::Separator();
@@ -4566,7 +4579,7 @@ static void draw_representations_window(ApplicationState* state) {
         ImGui::PopID();
 
         if (update_rep) {
-            update_representation(state, &rep);
+            flag_representation_as_dirty(&rep);
         }
     }
 
@@ -7841,7 +7854,7 @@ static void init_trajectory_data(ApplicationState* data) {
                 
                 interpolate_atomic_properties(data);
                 data->mold.dirty_buffers |= MolBit_ClearVelocity;
-                update_all_representations(data);
+                flag_all_representations_as_dirty(data);
             });
 
             task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
@@ -7936,7 +7949,6 @@ static void init_molecule_data(ApplicationState* data) {
 
     update_representation_info(data);
     init_all_representations(data);
-    update_all_representations(data);
     data->script.compile_ir = true;
 
 }
@@ -8029,7 +8041,7 @@ static void load_workspace(ApplicationState* data, str_t filename) {
 
     // Reset and clear things
     clear_selections(data);
-    clear_representations(data);
+    remove_all_representations(data);
     editor.SetText("");
     data->files.workspace[0]  = '\0';
 
@@ -8440,7 +8452,6 @@ static Representation* create_representation(ApplicationState* data, Representat
     }
     rep->electronic_structure.mo_idx = data->representation.info.alpha.homo_idx;
     init_representation(data, rep);
-    update_representation(data, rep);
     return rep;
 }
 
@@ -8451,7 +8462,6 @@ static Representation* clone_representation(ApplicationState* state, const Repre
     clone->md_rep = {0};
     clone->atom_mask = {0};
     init_representation(state, clone);
-    update_representation(state, clone);
     return clone;
 }
 
@@ -8482,9 +8492,7 @@ static void recompute_atom_visibility_mask(ApplicationState* state) {
 
 static void update_all_representations(ApplicationState* state) {
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        auto& rep = state->representation.reps[i];
-        rep.filt_is_dirty = true;
-        update_representation(state, &rep);
+        update_representation(state, &state->representation.reps[i]);
     }
 }
 
@@ -8497,6 +8505,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     ASSERT(rep);
 
     if (!rep->enabled) return;
+	if (!rep->needs_update) return;
 
     const auto& sys = state->mold.sys;
 	size_t num_atoms = md_system_atom_count(&sys);
@@ -8511,24 +8520,18 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.sys, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
     //}
 
-    bool use_colors = rep_type_uses_atomic_colors(rep->type);
     uint32_t* colors = 0;
-
-
-    if (use_colors) {
+    if (rep_type_uses_atomic_colors(rep->type)) {
         colors = (uint32_t*)md_vm_arena_push(frame_alloc, sizeof(uint32_t) * num_atoms);
 
         switch (rep->color_mapping) {
             case ColorMapping::Uniform:
                 color_atoms_uniform(colors, num_atoms, rep->uniform_color);
                 break;
-            case ColorMapping::Cpk:
-                color_atoms_cpk(colors, num_atoms, sys);
-                break;
-            case ColorMapping::AtomLabel:
+            case ColorMapping::Type:
                 color_atoms_type(colors, num_atoms, sys);
                 break;
-            case ColorMapping::AtomIndex:
+            case ColorMapping::Serial:
                 color_atoms_idx(colors, num_atoms, sys);
                 break;
             case ColorMapping::CompName:
@@ -8562,7 +8565,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                         .num_values = num_atoms,
                         .dst_values = values,
                     };
-                    viamd::event_system_broadcast_event(viamd::EventType_RepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
 
                     if (eval.output_written) {
                         float range_ext = (rep->prop.range_end - rep->prop.range_beg);
@@ -8695,7 +8698,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                     .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
                     .dst_volume = &rep->electronic_structure.vol,
                 };
-                viamd::event_system_broadcast_event(viamd::EventType_RepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
+                viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
 
                 if (data.output_written) {
 #if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
@@ -8716,7 +8719,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     }
 
-    if (use_colors) {
+    if (colors) {
         if (rep->dynamic_evaluation) {
             rep->filt_is_dirty = true;
         }
@@ -8739,6 +8742,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 #endif
         }
     }
+
+    rep->needs_update = false;
 }
 
 static void init_representation(ApplicationState* state, Representation* rep) {
@@ -8755,7 +8760,7 @@ static void init_representation(ApplicationState* state, Representation* rep) {
         rep->prop.range_end = state->representation.info.atom_properties[0].value_max;
     }
 
-    rep->filt_is_dirty = true;
+	flag_representation_as_dirty(rep);
 }
 
 static void update_representation_info(ApplicationState* state) {
@@ -8767,7 +8772,7 @@ static void update_representation_info(ApplicationState* state) {
     state->representation.info.alloc = alloc;
 
     // Broadcast event to populate info
-    viamd::event_system_broadcast_event(viamd::EventType_RepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
 }
 
 static void init_all_representations(ApplicationState* state) {
@@ -8777,7 +8782,20 @@ static void init_all_representations(ApplicationState* state) {
     }
 }
 
-static void clear_representations(ApplicationState* state) {
+void flag_representation_as_dirty(Representation* rep) {
+    ASSERT(rep);
+    rep->filt_is_dirty = true;
+	rep->needs_update  = true;
+}
+
+void flag_all_representations_as_dirty(ApplicationState* state) {
+    ASSERT(state);
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+		flag_representation_as_dirty(&state->representation.reps[i]);
+    }
+}
+
+static void remove_all_representations(ApplicationState* state) {
     while (md_array_size(state->representation.reps) > 0) {
         remove_representation(state, (int32_t)md_array_size(state->representation.reps) - 1);
     }
@@ -8794,14 +8812,14 @@ static void create_default_representations(ApplicationState* state) {
 
     if (state->mold.sys.atom.count > 3'000'000) {
         LOG_INFO("Large system detected, creating default representation for all atoms");
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
     if (state->mold.sys.comp.count == 0) {
         // No residues present
-        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -8821,7 +8839,7 @@ static void create_default_representations(ApplicationState* state) {
     }
 
     if (coarse_grained) {
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("all"));
+        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -8836,7 +8854,7 @@ static void create_default_representations(ApplicationState* state) {
             size_t res_count = md_inst_comp_count(&state->mold.sys.inst, 0);
             if (res_count < 20) {
                 type = RepresentationType::BallAndStick;
-                color = ColorMapping::Cpk;
+                color = ColorMapping::Type;
             }
         }
 
@@ -8844,19 +8862,19 @@ static void create_default_representations(ApplicationState* state) {
         snprintf(prot->name, sizeof(prot->name), "protein");
     }
     if (nucleic_present) {
-        Representation* nucl = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("nucleic"));
+        Representation* nucl = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
-        Representation* ion = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("ion"));
+        Representation* ion = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("ion"));
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Cpk, STR_LIT("not (protein or nucleic or water or ion)"));
+        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("not (protein or nucleic or water or ion)"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
-        Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Cpk, STR_LIT("water"));
+        Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
         water->scale.x = 0.5f;
         snprintf(water->name, sizeof(water->name), "water");
         water->enabled = false;
@@ -9615,7 +9633,7 @@ static void draw_representations_transparent(ApplicationState* state) {
         }
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
-        update_representation(state, &state->representation.reps[i]);
+		flag_representation_as_dirty(&state->representation.reps[i]);
 #endif
 
         volume::RenderDesc desc = {

@@ -77,9 +77,8 @@ static const char* representation_type_str[(int)RepresentationType::Count] = {
 
 enum class ColorMapping {
     Uniform,
-    Cpk,
-    AtomLabel,
-    AtomIndex,
+    Type,
+    Serial,
     CompName,
     CompSeqId,
     CompIndex,
@@ -92,9 +91,8 @@ enum class ColorMapping {
 
 static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Uniform Color",
-    "CPK",
-    "Atom Label",
-    "Atom Idx",
+    "Type",
+    "Serial",
     "Res Name",
     "Seq Id",
     "Res Idx",
@@ -335,7 +333,7 @@ struct Representation {
     char filt_error[256] = "";
 
     RepresentationType type = RepresentationType::SpaceFill;
-    ColorMapping color_mapping = ColorMapping::Cpk;
+    ColorMapping color_mapping = ColorMapping::Type;
     md_bitfield_t atom_mask = {};
     md_gl_rep_t md_rep = {};
 #if EXPERIMENTAL_GFX_API
@@ -343,6 +341,7 @@ struct Representation {
 #endif
 
     bool enabled = true;
+	bool needs_update = true;
     bool type_is_valid = false;
     bool filt_is_dirty = true;
     bool filt_is_valid = false;
@@ -647,7 +646,7 @@ struct ApplicationState {
 
         struct {
             RepresentationType type = RepresentationType::BallAndStick;
-            ColorMapping colormap = ColorMapping::Cpk;
+            ColorMapping colormap = ColorMapping::Type;
             float param[4] = {1,1,1,1};
             vec4_t color = {1,1,1,1};
         } rep;
@@ -737,6 +736,7 @@ struct ApplicationState {
         uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
+        bool needs_update = false;
     } representation;
 
     struct {

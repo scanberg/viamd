@@ -661,7 +661,7 @@ struct VeloxChem : viamd::EventHandler {
                 reset_data();
                 break;
 
-            case viamd::EventType_RepresentationInfoFill: {
+            case viamd::EventType_ViamdRepresentationInfoFill: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
                 RepresentationInfo& info = *(RepresentationInfo*)e.payload;
 
@@ -781,7 +781,7 @@ struct VeloxChem : viamd::EventHandler {
                 // @TODO: Fill in dipole information
                 break;
             }
-            case viamd::EventType_RepresentationEvalElectronicStructure: {
+            case viamd::EventType_ViamdRepresentationEvalElectronicStructure: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_EvalElectronicStructure);
                 EvalElectronicStructure& data = *(EvalElectronicStructure*)e.payload;
 
@@ -851,7 +851,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 break;
             }
-            case viamd::EventType_RepresentationEvalAtomProperty: {
+            case viamd::EventType_ViamdRepresentationEvalAtomProperty: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_EvalAtomProperty);
                 EvalAtomProperty& data = *(EvalAtomProperty*)e.payload;
 
@@ -962,7 +962,7 @@ struct VeloxChem : viamd::EventHandler {
                     //gl_mol = md_gl_mol_create(&mol);
 
                     uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
-                    color_atoms_cpk(colors, mol.atom.count, mol);
+                    color_atoms_type(colors, mol.atom.count, mol);
 
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     md_gl_rep_set_color(gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);

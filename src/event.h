@@ -36,14 +36,14 @@ enum : EventType {
 
 	//EventType_AnimationFrameChange		= HASH_STR_LIT("Animation Frame Changed"),
 
-	EventType_ViamdHoverMaskChanged			= HASH_STR_LIT("Hover Mask Changed"),
-	EventType_ViamdSelectionMaskChanged		= HASH_STR_LIT("Selection Mask Changed"),
+	EventType_ViamdHoverMaskChanged			= HASH_STR_LIT("VIAMD Hover Mask Changed"),
+	EventType_ViamdSelectionMaskChanged		= HASH_STR_LIT("VIAMD Selection Mask Changed"),
+	EventType_ViamdRepresentationChanged	= HASH_STR_LIT("VIAMD Representation Changed"),		// Called when representations have been modified
 
-	EventType_RepresentationInfoFill				= HASH_STR_LIT("Representation Info Fill"),
-	EventType_RepresentationEvalElectronicStructure	= HASH_STR_LIT("Representation Eval ElectronicStructure"),
-	EventType_RepresentationEvalAtomProperty		= HASH_STR_LIT("Representation Eval AtomProperty"),
+	EventType_ViamdRepresentationInfoFill					= HASH_STR_LIT("VIAMD Representation Info Fill"),
+	EventType_ViamdRepresentationEvalElectronicStructure	= HASH_STR_LIT("VIAMD Representation Eval ElectronicStructure"),
+	EventType_ViamdRepresentationEvalAtomProperty			= HASH_STR_LIT("VIAMD Representation Eval AtomProperty"),
 
-	//EventType_RepresentationChange		= HASH_STR_LIT("Representation Changed"),
 
 	//EventType_PropertyHovered 			= HASH_STR_LIT("Property Hovered"),
 	//EventType_ScriptChange				= HASH_STR_LIT("Script Changed"),
