@@ -8,6 +8,7 @@
 #include <md_gto.h>
 #include <md_vlx.h>
 #include <md_util.h>
+#include <md_topo.h>
 #include <core/md_vec_math.h>
 #include <core/md_log.h>
 #include <core/md_arena_allocator.h>
@@ -389,6 +390,8 @@ struct VeloxChem : viamd::EventHandler {
 
     bool use_gpu_path = false;
 
+    md_topo_extremum_graph_t graph = { 0 };
+
     // Used for clearing volumes
     uint32_t vol_fbo = 0;
 
@@ -611,6 +614,9 @@ struct VeloxChem : viamd::EventHandler {
                 glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
                 glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
                 use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
+
+				graph.alloc = arena;
+
                 break;
             }
             case viamd::EventType_ViamdShutdown:
@@ -647,6 +653,66 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdRenderTransparent: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+				const ApplicationState& state = *(ApplicationState*)e.payload;
+
+                if (graph.num_vertices > 0) {
+
+				    glBindFramebuffer(GL_FRAMEBUFFER, state.gbuffer.fbo);
+                    // Render topology as points if available
+				    immediate::set_model_view_matrix(state.view.param.matrix.curr.view);
+				    immediate::set_proj_matrix(state.view.param.matrix.curr.proj);
+
+                    glDisable(GL_DEPTH_TEST);
+
+					uint32_t maxima_offset = md_topo_offset_maxima(&graph);
+					uint32_t maxima_count  = graph.num_maxima;
+                    for (size_t i = maxima_offset; i < maxima_offset + maxima_count; ++i) {
+                        vec3_t pos = {graph.vertices[i].x, graph.vertices[i].y, graph.vertices[i].z};
+                        pos *= BOHR_TO_ANGSTROM;
+                        immediate::draw_point(pos, immediate::COLOR_RED);
+                    }
+
+					uint32_t splits_offset = md_topo_offset_split_saddles(&graph);
+					uint32_t splits_count = graph.num_split_saddles;
+                    for (size_t i = splits_offset; i < splits_offset + splits_count; ++i) {
+                        vec3_t pos = {graph.vertices[i].x, graph.vertices[i].y, graph.vertices[i].z};
+                        pos *= BOHR_TO_ANGSTROM;
+                        immediate::draw_point(pos, immediate::COLOR_GREEN);
+					}
+
+					uint32_t minima_offset = md_topo_offset_minima(&graph);
+					uint32_t minima_count = graph.num_minima;
+                    for (size_t i = minima_offset; i < minima_offset + minima_count; ++i) {
+                        vec3_t pos = {graph.vertices[i].x, graph.vertices[i].y, graph.vertices[i].z};
+                        pos *= BOHR_TO_ANGSTROM;
+						immediate::draw_point(pos, immediate::COLOR_BLUE);
+					}
+
+					uint32_t join_saddles_offset = md_topo_offset_join_saddles(&graph);
+					uint32_t join_saddles_count = graph.num_join_saddles;
+                    for (size_t i = join_saddles_offset; i < join_saddles_offset + join_saddles_count; ++i) {
+                        vec3_t pos = {graph.vertices[i].x, graph.vertices[i].y, graph.vertices[i].z};
+                        pos *= BOHR_TO_ANGSTROM;
+                        immediate::draw_point(pos, immediate::COLOR_GRAY);
+					}
+
+                    for (size_t i = 0; i < graph.num_edges; ++i) {
+						uint32_t i0 = graph.edges[i].from;
+						uint32_t i1 = graph.edges[i].to;
+                        vec3_t p0 = { graph.vertices[i0].x,
+                                      graph.vertices[i0].y,
+									  graph.vertices[i0].z };
+                        vec3_t p1 = { graph.vertices[i1].x,
+									  graph.vertices[i1].y,
+                                      graph.vertices[i1].z };
+						p0 *= BOHR_TO_ANGSTROM;
+						p1 *= BOHR_TO_ANGSTROM;
+						immediate::draw_line(p0, p1, immediate::COLOR_BLACK);
+                    }
+
+                    immediate::render();
+                }
+
                 //ApplicationState& state = *(ApplicationState*)e.payload;
                 //draw_orb_volume(state);
                 break;
@@ -789,7 +855,7 @@ struct VeloxChem : viamd::EventHandler {
                     const float samples_per_unit_length = data.samples_per_angstrom * BOHR_TO_ANGSTROM;
                     md_grid_t grid = {};
                     init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
-                    init_volume(data.dst_volume, grid);
+                    init_volume(data.dst_volume, grid, GL_R32F);
 
                     switch (data.type) {
                     case ElectronicStructureType::MolecularOrbital:
@@ -895,6 +961,7 @@ struct VeloxChem : viamd::EventHandler {
         md_gl_rep_destroy(gl_rep);
         md_vlx_destroy(vlx);
         md_arena_allocator_reset(arena);
+        md_topo_extremum_graph_free(&graph);
         vlx = nullptr;
         orb = VeloxChem::Orb{};
         nto = VeloxChem::Nto{};
@@ -1414,6 +1481,16 @@ struct VeloxChem : viamd::EventHandler {
         md_gto_grid_evaluate_matrix_GPU(vol_tex, &grid, &gto_data, density_matrix_data, matrix_dim, false);
 
         #endif
+
+        PUSH_GPU_SECTION("TOPO")
+        
+		md_topo_extremum_graph_free(&graph);
+		if (!md_topo_compute_extremum_graph_GPU(&graph, vol_tex, &grid)) {
+			MD_LOG_ERROR("Failed to compute extremum graph for electron density");
+			return false;
+		}
+
+        POP_GPU_SECTION()
 
         return true;
     }
