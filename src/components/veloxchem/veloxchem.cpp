@@ -2650,57 +2650,83 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     if (ImGui::Button("Simplify Graph")) {
-						md_topo_extremum_graph_t& graph = critical_points.graph;
-						md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-						defer { md_arena_allocator_destroy(temp_alloc); };
-                        
+                        md_topo_extremum_graph_t& graph = critical_points.graph;
+                        md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+                        defer{ md_arena_allocator_destroy(temp_alloc); };
+
                         // Construct adjacency information for each vertex
                         md_array(md_array(int)) vertex_adjacency = md_array_create(md_array(int), graph.num_vertices, temp_alloc);
-						MEMSET(vertex_adjacency, 0, md_array_bytes(vertex_adjacency));
+                        md_array(md_array(int)) vertex_edges = md_array_create(md_array(int), graph.num_vertices, temp_alloc);
+                        MEMSET(vertex_adjacency, 0, md_array_bytes(vertex_adjacency));
+                        MEMSET(vertex_edges, 0, md_array_bytes(vertex_edges));
 
                         for (size_t i = 0; i < graph.num_vertices; ++i) {
-							md_topo_edge_t edge = graph.edges[i];
+                            md_topo_edge_t edge = graph.edges[i];
                             md_array_push(vertex_adjacency[edge.from], (int)i, temp_alloc);
-							md_array_push(vertex_adjacency[edge.to],   (int)i, temp_alloc);
-						}
+                            md_array_push(vertex_adjacency[edge.to], (int)i, temp_alloc);
+                            md_array_push(vertex_edges[edge.from], (int)i, temp_alloc);
+                            md_array_push(vertex_edges[edge.to], (int)i, temp_alloc);
+                        }
 
-						uint32_t split_beg = md_topo_offset_split_saddles(&graph);
-						uint32_t split_end = split_beg + graph.num_split_saddles;
+                        int split_beg = md_topo_offset_split_saddles(&graph);
+                        int split_end = split_beg + graph.num_split_saddles;
 
-                        md_hashset_t multi_maximas = { .allocator = temp_alloc };
+                        md_array(int) vertex_types = md_array_create(int, graph.num_vertices, temp_alloc);
+                        md_topo_extract_vertex_types(vertex_types, md_array_size(vertex_types), &graph);
 
-						md_array(int) vertex_types = md_array_create(int, graph.num_vertices, temp_alloc);
-						md_topo_extract_vertex_types(vertex_types, md_array_size(vertex_types), &graph);
+                        md_array(int) saddle_list = 0;
+                        md_array(int) edges_to_remove = 0;
 
-						// Identify maximas and split multi-saddles (saddles connected to more than two maxima)
-                        md_array(int) multi_saddles = 0;
-                        for (size_t i = split_beg; i < split_end; ++i) {
-							if (md_array_size(vertex_adjacency[i]) > 2) {
-								md_array_push(multi_saddles, (int)i, temp_alloc);
-                                for (size_t j = 0; j < md_array_size(vertex_adjacency[i]); ++j) {
-                                    int vert_idx = vertex_adjacency[i][j];
-                                    if (vertex_types[vert_idx] == MD_TOPO_MAXIMUM) {
-                                        md_hashset_add(&multi_maximas, i);
+                        int maxima_beg = md_topo_offset_maxima(&graph);
+                        int maxima_end = maxima_beg + graph.num_maxima;
+
+                        for (size_t i = maxima_beg; i < maxima_end - 1; ++i) {
+                            for (size_t j = i + 1; j < maxima_end; ++j) {
+                                md_array_shrink(saddle_list, 0);
+
+                                // Find all saddles connecting the pair of maximas
+                                float k_val = -FLT_MAX;
+                                int   k_idx = -1;
+                                for (size_t k = split_beg; k < split_end; ++k) {
+                                    // Test all saddles to see if they connect the pair of maximas
+                                    bool connects_i = false;
+                                    bool connects_j = false;
+                                    for (size_t m = 0; m < md_array_size(vertex_adjacency[k]); ++m) {
+                                        int v = vertex_adjacency[k][m];
+                                        if (v == i) connects_i = true;
+                                        if (v == j) connects_j = true;
+                                    }
+                                    if (connects_i && connects_j) {
+                                        md_array_push(saddle_list, (int)k, temp_alloc);
+
+                                        float val = graph.vertices[k].value;
+                                        if (val > k_val) {
+                                            k_val = val;
+                                            k_idx = (int)k;
+                                        }
                                     }
                                 }
-							}
-						}
 
-                        if (md_array_size(multi_saddles) > 0) {
-                            // Construct array of multi-maximas from set
-                            md_array(int) maxima_list = 0;
-                            for (size_t i = 0; i < multi_maximas.num_buckets; ++i) {
-                                if (md_hashset_skip_index(&multi_maximas, i)) continue;
-                                md_array_push(maxima_list, multi_maximas.keys[i], temp_alloc);
-                            }
+                                // mark all edges for removal except the one with the highest value
+                                for (size_t k = 0; k < md_array_size(saddle_list); ++k) {
+                                    int idx = saddle_list[k];
+                                    if (idx == k_idx) continue;
 
-                            for (size_t i = 0; i < md_array_size(maxima_list) - 1; ++i) {
-                                int vert_i = maxima_list[i];
-                                for (size_t j = i + i; j < md_array_size(maxima_list); ++j) {
-                                    if (i == j) continue;
-                                    //md_topo_simplify_extremum_graph(&graph, maxima_list[i], maxima_list[j], vertex_adjacency, vertex_types);
+                                    for (size_t m = 0; m < md_array_size(vertex_edges[idx]); ++m) {
+                                        int e_idx = vertex_edges[idx][m];
+                                        if (graph.edges[e_idx].from == idx || graph.edges[e_idx].to == idx) {
+                                            md_array_push(edges_to_remove, e_idx, temp_alloc);
+                                        }
+                                    }
                                 }
                             }
+                        }
+
+                        for (size_t i = 0; i < md_array_size(edges_to_remove); ++i) {
+							int idx = edges_to_remove[i];
+                            // Swap-back and pop
+							graph.edges[idx] = graph.edges[graph.num_edges - 1];
+                            graph.num_edges -= 1;
 						}
                     }
 
