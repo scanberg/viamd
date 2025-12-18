@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_vec_math.h>
 
@@ -25,6 +25,7 @@ constexpr uint32_t COLOR_BLUE = 0xffff0000;
 constexpr uint32_t COLOR_YELLOW = 0xff00ffff;
 constexpr uint32_t COLOR_MAGENTA = 0xffff00ff;
 constexpr uint32_t COLOR_CYAN = 0xffffff00;
+constexpr uint32_t COLOR_GRAY = 0xff888888;
 
 constexpr uint32_t DEFAULT_COLOR = COLOR_BLACK;
 

@@ -8,6 +8,7 @@
 #include <md_gto.h>
 #include <md_vlx.h>
 #include <md_util.h>
+#include <md_topo.h>
 #include <core/md_vec_math.h>
 #include <core/md_log.h>
 #include <core/md_arena_allocator.h>
@@ -83,19 +84,19 @@ enum class AttachmentDetachmentType {
     Detachment,
 };
 
-enum class VolumeRes {
-    Low,
-    Mid,
-    High,
-    Count,
-};
-
 enum x_unit_t {
     X_UNIT_EV,
     X_UNIT_NM,
     X_UNIT_CM_INVERSE,
     X_UNIT_HARTREE,
     X_UNIT_COUNT,
+};
+
+// Predefined samples per Ångström for corresponding VolumeRes (Low, Mid, High)
+static const float volume_resolution_samples_per_angstrom[3] = {
+    4.0f,
+    8.0f,
+    16.0f,
 };
 
 static const char* x_unit_str[] = {"Energy (eV)", "Wavelength (nm)", (const char*)u8"Wavenumber (cm⁻¹)", "Energy (hartree)"};
@@ -107,87 +108,6 @@ enum broadening_mode_t {
 };
 
 static const char* broadening_mode_str[] = { "Gaussian", "Lorentzian" };
-
-// Predefined samples per Ångström for corresponding VolumeRes
-static const float vol_res_scl[3] = {
-    4.0f,
-    8.0f,
-    16.0f,
-};
-
-struct OBB {
-    mat3_t orientation;
-    vec3_t min_ext;
-    vec3_t max_ext;
-};
-
-struct AABB {
-    vec3_t min_ext;
-    vec3_t max_ext;
-};
-
-#if 0
-// Compute an oriented bounding box (OBB) for the supplied gto
-static inline OBB compute_gto_obb(const mat3_t& PCA, const md_gto_t* gto, size_t num_gto) {
-    mat4_t Ri  = mat4_from_mat3(PCA);
-
-    // Compute min and maximum extent along the PCA axes
-    vec3_t min_ext = vec3_set1( FLT_MAX);
-    vec3_t max_ext = vec3_set1(-FLT_MAX);
-
-    // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
-    for (size_t i = 0; i < num_gto; ++i) {
-        vec3_t xyz = { gto[i].x, gto[i].y, gto[i].z };
-
-        // The cutoff-radius is computed for a value which is lower than the range of rendered iso-values
-        // So the effective radius is a bit overestimated, thus we scale it back a bit
-        // The quirk here is that the cutoff can be 'Infinite' meaning the GTO should contribute across the entire space
-        // In such case, we need to limit the extent to something, otherwise the box becomes infinite
-        float  r = MIN(gto[i].cutoff * 0.85f, 10.f);
-
-        vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
-        min_ext = vec3_min(min_ext, vec3_sub_f(p, r));
-        max_ext = vec3_max(max_ext, vec3_add_f(p, r));
-    }
-
-    OBB obb = {
-        .basis = mat3_transpose(PCA),
-        .min_ext = min_ext,
-        .max_ext = max_ext,
-    };
-
-    return obb;
-}
-
-// Compute an oriented bounding box (OBB) for the supplied gto
-static inline OBB compute_gto_aabb(const md_gto_t* gto, size_t num_gto) {
-    // Compute min and maximum extent along the axes
-    vec3_t min_ext = vec3_set1( FLT_MAX);
-    vec3_t max_ext = vec3_set1(-FLT_MAX);
-
-    // Find the min and max extend within it
-    for (size_t i = 0; i < num_gto; ++i) {
-        vec3_t xyz = { gto[i].x, gto[i].y, gto[i].z };
-
-        // The cutoff-radius is computed for a value which is lower than the range of rendered iso-values
-        // So the effective radius is a bit overestimated, thus we scale it back a bit
-        // The quirk here is that the cutoff can be 'Infinite' meaning the GTO should contribute across the entire space
-        // In such case, we need to limit the extent to something, otherwise the box becomes infinite
-        float  r = MIN(gto[i].cutoff * 0.85f, 10.f);
-
-        min_ext = vec3_min(min_ext, vec3_sub_f(xyz, r));
-        max_ext = vec3_max(max_ext, vec3_add_f(xyz, r));
-    }
-
-    OBB obb = {
-        .basis = mat3_ident(),
-        .min_ext = min_ext,
-        .max_ext = max_ext,
-    };
-
-    return obb;
-}
-#endif
 
 // Construct texture to world transformation matrix for Volume
 // extent is the extent of the volume (dim * voxel_size)
@@ -326,63 +246,6 @@ static void grid_segment_and_attribute_to_point(double out_point_value[], const 
     }
 }
 
-static void grid_segment_and_attribute_to_group(float* out_group_values, size_t group_cap, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, const float* grid_values, const md_grid_t& grid) {
-    float step_x[3] = {
-        grid.orientation[0][0] * grid.spacing[0],
-        grid.orientation[0][1] * grid.spacing[0],
-        grid.orientation[0][2] * grid.spacing[0],
-    };
-
-    float step_y[3] = {
-        grid.orientation[1][0] * grid.spacing[1],
-        grid.orientation[1][1] * grid.spacing[1],
-        grid.orientation[1][2] * grid.spacing[1],
-    };
-
-    float step_z[3] = {
-        grid.orientation[2][0] * grid.spacing[2],
-        grid.orientation[2][1] * grid.spacing[2],
-        grid.orientation[2][2] * grid.spacing[2],
-    };
-
-    mat4_t index_to_world = compute_index_to_world_mat(grid.orientation, grid.origin, grid.spacing);
-
-    for (int iz = 0; iz < grid.dim[2]; ++iz) {
-        for (int iy = 0; iy < grid.dim[1]; ++iy) {
-            for (int ix = 0; ix < grid.dim[0]; ++ix) {
-                int index = ix + iy * grid.dim[0] + iz * grid.dim[0] * grid.dim[1];
-                float value = grid_values[index];
-
-                // Skip if its does not contribute
-                if (value == 0.0f) continue;
-
-                vec4_t coord = index_to_world * vec4_set((float)ix, (float)iy, (float)iz, 1.0f);
-                coord.w = 0.0f;
-
-                float  min_dist = FLT_MAX;
-                size_t group_idx = 0;
-
-                // find closest point to grid point
-                for (size_t i = 0; i < num_points; ++i) {
-                    vec4_t point = point_xyzr[i];
-                    float r = point.w;
-                    point.w = 0.0f;
-
-                    float dist = vec4_distance_squared(coord, point) - r * r;
-                    if (dist < min_dist) {
-                        min_dist = dist;
-                        group_idx = point_group_idx[i];
-                    }
-                }
-
-                if (group_idx < group_cap) {
-                    out_group_values[group_idx] += value;
-                }
-            }
-        }
-    }
-}
-
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
     md_vlx_t* vlx = nullptr;
@@ -400,12 +263,31 @@ struct VeloxChem : viamd::EventHandler {
     int lumo_idx[2] = {};
 
     // Use same OBB to align all volumes
-    OBB  obb = {};
-    AABB aabb = {};
+    struct OBB {
+        mat3_t orientation = mat3_ident();
+        vec3_t min_ext = {0};
+        vec3_t max_ext = {0};
+    } obb;
+
+    struct AABB {
+        vec3_t min_ext = {0};
+        vec3_t max_ext = {0};
+    } aabb;
 
     struct Summary {
         bool show_window = false;
     } summary;
+
+    struct CriticalPoints {
+        bool enabled = false;
+        uint64_t vol_hash = 0;
+        uint64_t raw_hash = 0;
+        uint64_t simp_hash = 0;
+        md_topo_extremum_graph_t raw_graph = { 0 };
+        md_topo_extremum_graph_t simp_graph = { 0 };
+        Volume density_vol = {0};
+        md_grid_t grid = {0};
+    } critical_points;
 
     struct Opt {
         int hovered = -1;
@@ -611,6 +493,7 @@ struct VeloxChem : viamd::EventHandler {
                 glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
                 glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
                 use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
+
                 break;
             }
             case viamd::EventType_ViamdShutdown:
@@ -647,6 +530,66 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdRenderTransparent: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+				const ApplicationState& state = *(ApplicationState*)e.payload;
+
+                if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
+
+				    glBindFramebuffer(GL_FRAMEBUFFER, state.gbuffer.fbo);
+                    // Render topology as points if available
+				    immediate::set_model_view_matrix(state.view.param.matrix.curr.view);
+				    immediate::set_proj_matrix(state.view.param.matrix.curr.proj);
+
+                    glDisable(GL_DEPTH_TEST);
+
+					uint32_t maxima_offset = md_topo_offset_maxima(&critical_points.simp_graph);
+					uint32_t maxima_count  = critical_points.simp_graph.num_maxima;
+                    for (size_t i = maxima_offset; i < maxima_offset + maxima_count; ++i) {
+                        vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
+                        pos *= BOHR_TO_ANGSTROM;
+                        immediate::draw_point(pos, immediate::COLOR_RED);
+                    }
+
+					uint32_t splits_offset = md_topo_offset_split_saddles(&critical_points.simp_graph);
+					uint32_t splits_count = critical_points.simp_graph.num_split_saddles;
+                    for (size_t i = splits_offset; i < splits_offset + splits_count; ++i) {
+                        vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
+                        pos *= BOHR_TO_ANGSTROM;
+                        immediate::draw_point(pos, immediate::COLOR_GREEN);
+					}
+
+					uint32_t minima_offset = md_topo_offset_minima(&critical_points.simp_graph);
+					uint32_t minima_count = critical_points.simp_graph.num_minima;
+                    for (size_t i = minima_offset; i < minima_offset + minima_count; ++i) {
+                        vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
+                        pos *= BOHR_TO_ANGSTROM;
+						immediate::draw_point(pos, immediate::COLOR_BLUE);
+					}
+
+					uint32_t join_saddles_offset = md_topo_offset_join_saddles(&critical_points.simp_graph);
+					uint32_t join_saddles_count = critical_points.simp_graph.num_join_saddles;
+                    for (size_t i = join_saddles_offset; i < join_saddles_offset + join_saddles_count; ++i) {
+                        vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
+                        pos *= BOHR_TO_ANGSTROM;
+                        immediate::draw_point(pos, immediate::COLOR_CYAN);
+					}
+
+                    for (size_t i = 0; i < critical_points.simp_graph.num_edges; ++i) {
+						uint32_t i0 = critical_points.simp_graph.edges[i].from;
+						uint32_t i1 = critical_points.simp_graph.edges[i].to;
+                        vec3_t p0 = { critical_points.simp_graph.vertices[i0].x,
+                                      critical_points.simp_graph.vertices[i0].y,
+									  critical_points.simp_graph.vertices[i0].z };
+                        vec3_t p1 = { critical_points.simp_graph.vertices[i1].x,
+									  critical_points.simp_graph.vertices[i1].y,
+                                      critical_points.simp_graph.vertices[i1].z };
+						p0 *= BOHR_TO_ANGSTROM;
+						p1 *= BOHR_TO_ANGSTROM;
+						immediate::draw_line(p0, p1, immediate::COLOR_BLACK);
+                    }
+
+                    immediate::render();
+                }
+
                 //ApplicationState& state = *(ApplicationState*)e.payload;
                 //draw_orb_volume(state);
                 break;
@@ -789,7 +732,7 @@ struct VeloxChem : viamd::EventHandler {
                     const float samples_per_unit_length = data.samples_per_angstrom * BOHR_TO_ANGSTROM;
                     md_grid_t grid = {};
                     init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
-                    init_volume(data.dst_volume, grid);
+                    init_volume(data.dst_volume, grid, GL_R32F);
 
                     switch (data.type) {
                     case ElectronicStructureType::MolecularOrbital:
@@ -895,6 +838,12 @@ struct VeloxChem : viamd::EventHandler {
         md_gl_rep_destroy(gl_rep);
         md_vlx_destroy(vlx);
         md_arena_allocator_reset(arena);
+        gl::free_texture(&critical_points.density_vol.tex_id);
+        md_topo_extremum_graph_free(&critical_points.raw_graph);
+        md_topo_extremum_graph_free(&critical_points.simp_graph);
+        critical_points = {};
+        critical_points.raw_graph.alloc = arena;
+        critical_points.simp_graph.alloc = arena;
         vlx = nullptr;
         orb = VeloxChem::Orb{};
         nto = VeloxChem::Nto{};
@@ -991,7 +940,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     // This is the extra padding we apply to the 'bounding volumes'
-                    const float pad = 5.0f;
+                    const float pad = 6.0f;
                     aabb.min_ext -= pad;
                     aabb.max_ext += pad;
 
@@ -2682,6 +2631,280 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 ImGui::TreePop();
             }
+            if (ImGui::TreeNode("Critical Points")) {
+                ImGui::Checkbox("Enable Critical Points Analysis", &critical_points.enabled);
+
+                static VolumeResolution vol_res = VolumeResolution::Mid;
+                ImGui::Combo("Volume Resolution", (int*)&vol_res, "Low\0Mid\0High\0");
+
+                if (critical_points.enabled) {
+                    static bool  reevaluate_graph_per_frame = false;
+                    static bool  enable_simplification = true;
+                    static float simp_threshold = 1.0E-4f;
+
+                    ImGui::Checkbox("Extract graph per frame", &reevaluate_graph_per_frame);
+                    if (reevaluate_graph_per_frame) {
+                        critical_points.raw_hash = 0;
+                    }
+
+                    // Compute a hash of the current state
+                    uint64_t vol_hash = md_hash64(&vol_res, sizeof(vol_res), 0);
+
+                    // Update volume if required
+                    if (critical_points.vol_hash != vol_hash || critical_points.density_vol.tex_id == 0) {
+                        critical_points.vol_hash = vol_hash;
+                        init_grid(&critical_points.grid, obb.orientation, obb.min_ext, obb.max_ext, volume_resolution_samples_per_angstrom[(int)vol_res]);
+                        init_volume(&critical_points.density_vol, critical_points.grid, GL_R32F);
+                        if (!compute_electron_density_GPU(critical_points.density_vol.tex_id, critical_points.grid, MD_VLX_MO_TYPE_ALPHA)) {
+                            MD_LOG_ERROR("Failed to compute electron density volume for critical points analysis");
+                        }
+                    }
+
+                    uint64_t raw_hash = vol_hash;
+
+                    if (critical_points.raw_hash != raw_hash) {
+                        critical_points.raw_hash = raw_hash;
+                        md_topo_extremum_graph_free(&critical_points.raw_graph);
+                        if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, critical_points.density_vol.tex_id, &critical_points.grid, 0.0f)) {
+                            MD_LOG_ERROR("Failed to compute extremum graph for electron density");
+                        }
+                    }
+
+                    ImGui::Checkbox("Enable Graph Simplification", &enable_simplification);
+
+                    uint64_t simp_hash = raw_hash;
+
+                    if (enable_simplification) {
+                        ImGui::SliderFloat("CP threshold", &simp_threshold, 0.0f, 1.0E-2f, "%.6f", ImGuiSliderFlags_Logarithmic);
+                        simp_hash = md_hash64(&simp_threshold, sizeof(simp_threshold), raw_hash);
+                    }
+
+                    if (critical_points.simp_hash != simp_hash) {
+                        critical_points.simp_hash = simp_hash;
+
+                        md_topo_extremum_graph_free(&critical_points.simp_graph);
+                        if (enable_simplification) {
+                            //const md_topo_extremum_graph_t& graph = critical_points.raw_graph;
+                            md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+                            defer{ md_arena_allocator_destroy(temp_alloc); };
+
+                            // Extract explicit vertices and edges to work with
+                            md_array(int) vertex_type       = md_array_create(int, critical_points.raw_graph.num_vertices, temp_alloc);
+                            md_array(md_topo_vert_t) vertex = md_array_create(md_topo_vert_t, critical_points.raw_graph.num_vertices, temp_alloc);
+                            md_array(md_topo_edge_t) edge   = md_array_create(md_topo_edge_t, critical_points.raw_graph.num_edges, temp_alloc);
+
+                            // Construct adjacency information for each vertex
+                            md_array(md_array(int)) vertex_adj = md_array_create(md_array(int), critical_points.raw_graph.num_vertices, temp_alloc);
+
+                            md_topo_extract_vertex_types(vertex_type, md_array_size(vertex_type), &critical_points.raw_graph);
+                            MEMCPY(vertex, critical_points.raw_graph.vertices, md_array_bytes(vertex));
+                            MEMSET(vertex_adj, 0, md_array_bytes(vertex_adj));
+                            MEMCPY(edge, critical_points.raw_graph.edges, md_array_bytes(edge));
+
+                            for (size_t i = 0; i < md_array_size(edge); ++i) {
+                                md_topo_edge_t e = edge[i];
+                                md_array_push(vertex_adj[e.from], (int)e.to, temp_alloc);
+                                md_array_push(vertex_adj[e.to], (int)e.from, temp_alloc);
+                            }
+
+                            // Placeholders
+                            bool threshold_simplification = true;
+                            bool prune_duplicate_saddles  = true;
+
+                            if (threshold_simplification) {
+                                for (int i = 0; i < md_array_size(vertex); ++i) {
+                                    if (vertex[i].value < simp_threshold) {
+                                        vertex_type[i] = 0;  // Mark vertex as dead
+                                    }
+                                }
+                            }
+
+                            if (prune_duplicate_saddles) {
+                                // What we want to do here is to find all pairs of maxima that are connected by multiple saddles
+                                // From this set of saddles, we want to keep only the one with the highest value, and mark the rest for removal
+                                // If there is a saddle that is connected to those two maximas, but also connected to others, we want to reindex it to
+                                // the 'maximum' saddle within the set
+
+                                // Divide multi connected saddles (3+ connections) into single connections
+                                for (int i = 0; i < md_array_size(vertex); ++i) {
+                                    if (vertex_type[i] != MD_TOPO_SPLIT_SADDLE) continue;
+                                    size_t num_adj = md_array_size(vertex_adj[i]);
+                                    if (num_adj <= 2) continue;  // Only interested in saddles with 3 or more connections
+                                    // For each pair of adjacent maxima, create a new saddle vertex
+                                    for (size_t j = 0; j < num_adj - 1; ++j) {
+                                        for (size_t k = j + 1; k < num_adj; ++k) {
+                                            int max_a = vertex_adj[i][j];
+                                            int max_b = vertex_adj[i][k];
+                                            // Create new saddle vertex
+                                            md_topo_vert_t new_saddle = vertex[i];
+                                            md_array_push(vertex, new_saddle, temp_alloc);
+                                            md_array_push(vertex_adj, NULL,   temp_alloc);
+                                            int new_saddle_idx = (int)(md_array_size(vertex) - 1);
+                                            vertex_type[new_saddle_idx] = MD_TOPO_SPLIT_SADDLE;
+                                            // Update adjacency
+                                            md_array_push(vertex_adj[new_saddle_idx], max_a, temp_alloc);
+                                            md_array_push(vertex_adj[new_saddle_idx], max_b, temp_alloc);
+                                            // Update edges
+                                            md_topo_edge_t edge_a = { .from = (uint32_t)max_a, .to = (uint32_t)new_saddle_idx };
+                                            md_topo_edge_t edge_b = { .from = (uint32_t)max_b, .to = (uint32_t)new_saddle_idx };
+                                            md_array_push(edge, edge_a, temp_alloc);
+                                            md_array_push(edge, edge_b, temp_alloc);
+                                        }
+                                    }
+                                    // Mark original saddle as dead
+                                    vertex_type[i] = 0;
+                                }
+
+                                md_array(int) saddle_list = 0;
+
+                                // Iterate over all Maxima pairs
+                                for (size_t i = 0; i < md_array_size(vertex) - 1; ++i) {
+                                    if (vertex_type[i] != MD_TOPO_MAXIMUM) continue;
+                                    for (size_t j = i + 1; j < md_array_size(vertex); ++j) {
+                                        if (vertex_type[j] != MD_TOPO_MAXIMUM) continue;
+
+                                        md_array_shrink(saddle_list, 0);
+
+                                        // Find all saddles connecting the Maxima i and j
+                                        for (size_t k = 0; k < md_array_size(vertex); ++k) {
+                                            if (vertex_type[k] != MD_TOPO_SPLIT_SADDLE) continue;
+                                            // Test all saddles to see if they connect the pair of maximas
+                                            size_t num_adj = md_array_size(vertex_adj[k]);
+                                            if (num_adj != 2) continue;  // Saddles must connect exactly two maxima
+
+                                            bool connects_i = false;
+                                            bool connects_j = false;
+                                            for (size_t m = 0; m < num_adj; ++m) {
+                                                int v = vertex_adj[k][m];
+                                                if (v == i) connects_i = true;
+                                                if (v == j) connects_j = true;
+                                            }
+                                            if (connects_i && connects_j) {
+                                                md_array_push(saddle_list, (int)k, temp_alloc);
+                                            }
+                                        }
+
+                                        // If we found multiple saddles, we need to prune them
+                                        if (md_array_size(saddle_list) > 1) {
+
+                                            float saddle_max = -FLT_MAX;
+                                            int   saddle_max_idx = -1;
+
+                                            // Find maximum saddle
+                                            for (size_t k = 0; k < md_array_size(saddle_list); ++k) {
+                                                int idx = saddle_list[k];
+                                                if (vertex[idx].value > saddle_max) {
+                                                    saddle_max = vertex[idx].value;
+                                                    saddle_max_idx = idx;
+                                                }
+                                            }
+
+                                            // Mark all other saddles as dead
+                                            for (size_t k = 0; k < md_array_size(saddle_list); ++k) {
+                                                int idx = saddle_list[k];
+                                                if (idx == saddle_max_idx) continue;
+                                                vertex_type[idx] = 0;  // Mark saddle as dead
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Construct a new simplified graph
+                            uint32_t num_vertices = 0;
+                            uint32_t num_maxima = 0;
+                            uint32_t num_split_saddles = 0;
+                            uint32_t num_minima = 0;
+                            uint32_t num_join_saddles = 0;
+
+                            // Create a remapping from old to new vertex indices
+                            md_array(int) vertex_remap = md_array_create(int, md_array_size(vertex), temp_alloc);
+                            MEMSET(vertex_remap, -1, md_array_bytes(vertex_remap));
+
+                            for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
+                                int new_idx = 0;
+                                switch (vertex_type[i]) {
+                                    case MD_TOPO_MAXIMUM:      new_idx = num_maxima++;        break;
+                                    case MD_TOPO_SPLIT_SADDLE: new_idx = num_split_saddles++; break;
+                                    case MD_TOPO_MINIMUM:      new_idx = num_minima++;        break;
+                                    case MD_TOPO_JOIN_SADDLE:  new_idx = num_join_saddles++;  break;
+                                    default: continue;
+                                }
+                                vertex_remap[i] = new_idx;
+                                num_vertices++;
+                            }
+
+                            uint32_t offset_maxima = 0;
+                            uint32_t offset_split_saddle = offset_maxima + num_maxima;
+                            uint32_t offset_minima = offset_split_saddle + num_split_saddles;
+                            uint32_t offset_join_saddle = offset_minima + num_minima;
+
+                            // Adjust remapping to global indices
+                            for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
+                                switch (vertex_type[i]) {
+                                    case MD_TOPO_SPLIT_SADDLE: vertex_remap[i] += offset_split_saddle;  break;
+                                    case MD_TOPO_MINIMUM:      vertex_remap[i] += offset_minima;        break;
+                                    case MD_TOPO_JOIN_SADDLE:  vertex_remap[i] += offset_join_saddle;   break;
+                                }
+                            }
+
+                            md_topo_extremum_graph_t& simp_graph = critical_points.simp_graph;
+                            simp_graph.num_vertices         = num_vertices;
+                            simp_graph.num_maxima           = num_maxima;
+                            simp_graph.num_split_saddles    = num_split_saddles;
+                            simp_graph.num_minima           = num_minima;
+                            simp_graph.num_join_saddles     = num_join_saddles;
+
+                            // Allocate vertex data
+                            simp_graph.vertices = (md_topo_vert_t*)md_alloc(simp_graph.alloc, sizeof(md_topo_vert_t) * simp_graph.num_vertices);
+
+                            // Fill in vertex data
+                            for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
+                                int idx = vertex_remap[i];
+                                if (idx != -1) {
+                                    simp_graph.vertices[idx] = vertex[i];
+                                }
+                            }
+
+                            size_t num_edges = 0;
+                            for (size_t i = 0; i < md_array_size(edge); ++i) {
+                                md_topo_edge_t e = edge[i];
+                                if (vertex_remap[e.from] != -1 && vertex_remap[e.to] != -1) {
+                                    num_edges++;
+                                }
+                            }
+
+                            simp_graph.num_edges = num_edges;
+                            simp_graph.edges     = (md_topo_edge_t*)md_alloc(simp_graph.alloc, sizeof(md_topo_edge_t) * simp_graph.num_edges);
+
+                            // Fill in edge data
+                            size_t edge_counter = 0;
+                            for (size_t i = 0; i < md_array_size(edge); ++i) {
+                                md_topo_edge_t old_edge = edge[i];
+                                md_topo_edge_t new_edge;
+                                new_edge.from = vertex_remap[old_edge.from];
+                                new_edge.to   = vertex_remap[old_edge.to];
+                                if (new_edge.from != -1 && new_edge.to != -1) {
+                                    simp_graph.edges[edge_counter++] = new_edge;
+                                }
+                            }
+                        }
+                        else {
+                            md_topo_extremum_graph_copy(&critical_points.simp_graph, &critical_points.raw_graph);
+                        }
+                    }
+
+                    const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
+                    ImGui::Text("Number of Edges:           %zu", graph.num_edges);
+                    ImGui::Text("Number of Critical Points: %zu", graph.num_vertices);
+                    ImGui::Text("\tNumber of Maxima:        %zu", graph.num_maxima);
+                    ImGui::Text("\tNumber of Split Saddles: %zu", graph.num_split_saddles);
+                    ImGui::Text("\tNumber of Minima:        %zu", graph.num_minima);
+                    ImGui::Text("\tNumber of Join Saddles:  %zu", graph.num_join_saddles);
+                }
+
+                ImGui::TreePop();
+            }
         }
         ImGui::End();
     }
@@ -3959,7 +4182,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             int dim[3];
-            compute_dim(dim, extent, vol_res_scl[(int)export_state.resolution] * BOHR_TO_ANGSTROM);
+            compute_dim(dim, extent, volume_resolution_samples_per_angstrom[(int)export_state.resolution] * BOHR_TO_ANGSTROM);
 
             char lbl[32];
             static const char* fmt = (const char*)u8"%s (%i×%i×%i)";
@@ -3967,7 +4190,7 @@ struct VeloxChem : viamd::EventHandler {
             if (ImGui::BeginCombo("Volume Resolution (XYZ)", lbl)) {
                 for (int i = 0; i < IM_ARRAYSIZE(volume_resolution_str); ++i) {
                     const bool is_selected = ((int)export_state.resolution == i);
-                    compute_dim(dim, extent, vol_res_scl[i] * BOHR_TO_ANGSTROM);
+                    compute_dim(dim, extent, volume_resolution_samples_per_angstrom[i] * BOHR_TO_ANGSTROM);
                     snprintf(lbl, sizeof(lbl), fmt, volume_resolution_str[i], dim[0], dim[1], dim[2]);
                     if (ImGui::Selectable(lbl, is_selected)) {
                         export_state.resolution = (VolumeResolution)i;
@@ -4009,7 +4232,7 @@ struct VeloxChem : viamd::EventHandler {
                         return;
                     }
 
-                    const float samples_per_unit_length = vol_res_scl[(int)export_state.resolution] * BOHR_TO_ANGSTROM;
+                    const float samples_per_unit_length = volume_resolution_samples_per_angstrom[(int)export_state.resolution] * BOHR_TO_ANGSTROM;
                     md_grid_t grid = {};
                     if (export_state.use_obb) {
                         init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
@@ -5573,4 +5796,5 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 };
+
 static VeloxChem instance = {};
