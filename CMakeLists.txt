@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
+include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
-INCLUDE(ext/mdlib/cmake/common.cmake)
+project(viamd LANGUAGES C CXX)
 
-project(viamd VERSION 0.1.15 LANGUAGES CXX)
+include(ext/mdlib/cmake/Common.cmake)
 
 # If configured using single configuration generator, set default build type to Release
 if (NOT EXISTS ${CMAKE_BINARY_DIR}/CMakeCache.txt)
@@ -57,18 +58,12 @@ if (VIAMD_ENABLE_VELOXCHEM)
     set(MD_VLX_BASIS_FOLDER "basis")
 endif ()
 
-if (APPLE)
-    # Remove once we have proper support for Apple Silicon?
-    # SET(CMAKE_OSX_ARCHITECTURES "x86_64")
-    if (VIAMD_CREATE_MACOSX_BUNDLE)
-        set(OSX_BUNDLE "MACOSX_BUNDLE")
-        set(MACOSX_BUNDLE_ICON_FILE viamd.icns)
-        set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
-        set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
-    endif()
-endif()
-
 find_package(OpenGL REQUIRED)
+
+option(MD_ENABLE_GPU OFF)
+if (MD_ENABLE_GPU AND APPLE)
+    enable_language(OBJC)
+endif()
 
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
@@ -80,6 +75,8 @@ add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
+
+
 
 # Copy many of the fields from mdlib
 set(VIAMD_STDLIBS)
@@ -152,6 +149,15 @@ source_group("src/component" FILES ${COMP_FILES})
 add_executable(viamd ${OSX_BUNDLE} ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
 
 install(TARGETS viamd DESTINATION bin)
+
+if (APPLE)
+    if (VIAMD_CREATE_MACOSX_BUNDLE)
+        set(OSX_BUNDLE "MACOSX_BUNDLE")
+        set(MACOSX_BUNDLE_ICON_FILE viamd.icns)
+        set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
+        set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    endif()
+endif()
 
 # The question is how this should be treated on Linux...
 # For now we simply don't copy the datasets
