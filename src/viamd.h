@@ -516,8 +516,6 @@ struct ApplicationState {
             float saturation = 0.3f;
         } color;
 
-        //bool selecting = false;
-
         struct {
             char buf[256] = "";
             char error[256] = "";
@@ -751,6 +749,10 @@ struct ApplicationState {
     } settings;
 
     struct {
+        md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
+    } interpolated_properties;
+
+    struct { 
         struct {
             size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions

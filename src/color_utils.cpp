@@ -119,16 +119,34 @@ void color_atoms_sec_str(uint32_t* colors, size_t count, const md_system_t& sys)
     const uint32_t color_helix   = 0xFF22DD22;
     const uint32_t color_sheet   = 0xFFDD2222;
 
-    set_colors(colors, count, color_unknown);
     if (sys.protein_backbone.segment.secondary_structure) {
         for (size_t i = 0; i < sys.protein_backbone.segment.count; i++) {
-            const vec4_t w = convert_color((uint32_t)sys.protein_backbone.segment.secondary_structure[i]);
-            const vec4_t rgba = w.x * convert_color(color_coil) + w.y * convert_color(color_helix) + w.z * convert_color(color_sheet);
-            const uint32_t color = convert_color(rgba);
+            md_secondary_structure_t ss = sys.protein_backbone.segment.secondary_structure[i];
+            uint32_t color = color_unknown;
+            switch (ss) {
+                case MD_SECONDARY_STRUCTURE_HELIX_310:
+                case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
+                case MD_SECONDARY_STRUCTURE_HELIX_PI:
+                    color = color_helix;
+                    break;
+                case MD_SECONDARY_STRUCTURE_BETA_SHEET:
+                case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
+                    color = color_sheet;
+                    break;
+                case MD_SECONDARY_STRUCTURE_COIL:
+                case MD_SECONDARY_STRUCTURE_TURN:
+                case MD_SECONDARY_STRUCTURE_BEND:
+                case MD_SECONDARY_STRUCTURE_UNKNOWN:
+                default:
+                    color = color_coil;
+                    break;
+            }
             md_comp_idx_t res_idx = sys.protein_backbone.segment.comp_idx[i];
             md_urange_t range = md_comp_atom_range(&sys.comp, res_idx);
             set_colors(colors + range.beg, range.end - range.beg, color);
         }
+    } else {
+        set_colors(colors, count, color_unknown);
     }
 }
 
