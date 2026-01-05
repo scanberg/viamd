@@ -121,9 +121,10 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
 #endif
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
-    // io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
     // io.ConfigDockingWithShift = true;
+
     io.ConfigWindowsMoveFromTitleBarOnly = true;
+    //io.ConfigDpiScaleFonts = true;
 
     //float xscale, yscale;
     //glfwGetWindowContentScale(window, &xscale, &yscale);
@@ -134,33 +135,24 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     // Superscripts and Subscripts: 0x2070 - 0x209F
     const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x0370, 0x03FF, 0x2070, 0x209F, 0};
     const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
-    const float font_size[] = {10, 12, 14, 16, 18, 20, 24, 32, 36, 40, 48};
-    const char* font_names[] = {"10", "12", "14", "16", "18", "20", "24", "32", "36", "40", "48"};
-
-    STATIC_ASSERT(ARRAY_SIZE(font_size) == ARRAY_SIZE(font_names), "font_size and font_names must have the same size");
+    const float font_size = 18.0f;
+    const char* font_name = "Dejavu Sans Mono";
+    const float icons_size = font_size * 0.75f; // Scale to better fit buttons
     
-    for (size_t i = 0; i < ARRAY_SIZE(font_size); ++i) {
-        ImFontConfig config;
-        snprintf(config.Name, sizeof(config.Name), "%s", font_names[i]);
-        config.OversampleV = 2;
-        config.OversampleH = 3;
-        config.PixelSnapH = true;
+    ImFontConfig config;
+    snprintf(config.Name, sizeof(config.Name), "%s", font_name);
+    config.OversampleV = 2;
+    config.OversampleH = 3;
+    config.PixelSnapH = true;
 
-        const float size = font_size[i];
+    // CHARACTERS
+    ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)dejavu_sans_mono_compressed_data, dejavu_sans_mono_compressed_size, font_size, &config, ranges_characters);
 
-        // CHARACTERS
-        config.RasterizerMultiply = 1.f;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)dejavu_sans_mono_compressed_data, dejavu_sans_mono_compressed_size, size, &config, ranges_characters);
+    // ICONS
+    config.MergeMode = true;
+    ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, icons_size, &config, ranges_icons);
 
-        // ICONS
-        const float scl = 0.75f; // 0.875f;   // We scale this a bit to better fit within buttons and such.
-        config.RasterizerMultiply = 0.9f;
-        config.MergeMode = true;
-        ImGui::GetIO().Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_compressed_data, fa_solid_compressed_size, size * scl, &config, ranges_icons);
-    }
-
-    io.Fonts->Build();
-    io.FontDefault = io.Fonts->Fonts[4]; // Set default to 18px
+    io.FontDefault = io.Fonts->Fonts[0]; // Set default to 18px
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window, false) ||
         !ImGui_ImplOpenGL3_Init("#version 150"))
