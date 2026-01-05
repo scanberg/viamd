@@ -929,7 +929,7 @@ int main(int argc, char** argv) {
         if (data.structure_export.show_window) draw_structure_export_window(&data);
         if (data.show_debug_window) draw_debug_window(&data);
 
-        //ImGui::ShowDemoWindow();
+        ImGui::ShowDemoWindow();
 
         handle_camera_interaction(&data);
         camera_animate(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
@@ -3017,18 +3017,14 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
 
             // Font
-            ImFont* font_current = ImGui::GetFont();
-            if (ImGui::BeginCombo("Font Size", font_current->GetDebugName()))
-            {
-                ImGuiIO& io = ImGui::GetIO();
-                for (int n = 0; n < io.Fonts->Fonts.Size; n++) {
-                    ImFont* font = io.Fonts->Fonts[n];
-                    ImGui::PushID((void*)font);
-                    if (ImGui::Selectable(font->GetDebugName(), font == font_current))
-                        io.FontDefault = font;
-                    ImGui::PopID();
-                }
-                ImGui::EndCombo();
+            ImGuiStyle& style = ImGui::GetStyle();
+            static const float font_sizes[] = { 10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f, 30.0f, 36.0f, 48.0f, 64.0f, 72.0f };
+            static const char* font_size_names[] = { "10", "12", "14", "16", "18", "20", "24", "30", "36", "48", "64", "72" };
+            static int current_font_size_idx = 4;
+
+            if (ImGui::Combo("Font Size", &current_font_size_idx, font_size_names, (int)ARRAY_SIZE(font_size_names))) {
+                style.FontSizeBase = font_sizes[current_font_size_idx];
+                style._NextFrameFontSizeBase = style.FontSizeBase; // From Demo, seems like a temporary fix
             }
 
             /*
