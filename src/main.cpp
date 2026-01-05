@@ -929,7 +929,7 @@ int main(int argc, char** argv) {
         if (data.structure_export.show_window) draw_structure_export_window(&data);
         if (data.show_debug_window) draw_debug_window(&data);
 
-        ImGui::ShowDemoWindow();
+        //ImGui::ShowDemoWindow();
 
         handle_camera_interaction(&data);
         camera_animate(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
