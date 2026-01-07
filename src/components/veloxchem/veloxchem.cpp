@@ -2901,6 +2901,24 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::Text("\tNumber of Split Saddles: %zu", graph.num_split_saddles);
                     ImGui::Text("\tNumber of Minima:        %zu", graph.num_minima);
                     ImGui::Text("\tNumber of Join Saddles:  %zu", graph.num_join_saddles);
+
+                    if (ImGui::Button("Print Critical Points Info")) {
+                        size_t temp_pos = md_temp_get_pos();
+                        defer{ md_temp_set_pos_back(temp_pos); };
+                        md_array(int) vertex_types = md_array_create(int, critical_points.simp_graph.num_vertices, md_get_temp_allocator());
+                        md_topo_extract_vertex_types(vertex_types, md_array_size(vertex_types), &critical_points.simp_graph);
+                        for (size_t i = 0; i < critical_points.simp_graph.num_vertices; ++i) {
+                            const md_topo_vert_t& v = critical_points.simp_graph.vertices[i];
+							const char* type_cstr = "Unknown";
+                            switch (vertex_types[i]) {
+                            case MD_TOPO_MAXIMUM:      type_cstr = "Maximum";       break;
+                            case MD_TOPO_SPLIT_SADDLE: type_cstr = "Split Saddle";  break;
+                            case MD_TOPO_MINIMUM:      type_cstr = "Minimum";       break;
+                            case MD_TOPO_JOIN_SADDLE:  type_cstr = "Join Saddle";   break;
+                            }
+                            printf("Vertex %zu: Type=%s, Value=%.6f, Pos=(%.4f, %.4f, %.4f)\n", i, type_cstr, v.value, v.x, v.y, v.z);
+                        }
+                    }
                 }
 
                 ImGui::TreePop();
