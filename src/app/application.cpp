@@ -167,10 +167,12 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     data.internal_ctx.window.height = (int)height;
     data.internal_ctx.window.vsync = true;
 
+    
     int w, h;
     glfwGetFramebufferSize(window, &w, &h);
     data.internal_ctx.framebuffer.width = w;
     data.internal_ctx.framebuffer.height = h;
+    glfwGetWindowContentScale(window, &data.internal_ctx.window.scale_factor, NULL);
 
     glfwSetMouseButtonCallback(window, ImGui_ImplGlfw_MouseButtonCallback);
     glfwSetScrollCallback(window, ImGui_ImplGlfw_ScrollCallback);

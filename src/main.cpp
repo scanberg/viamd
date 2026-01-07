@@ -9421,6 +9421,12 @@ static void handle_picking(ApplicationState* data) {
         vec2_t mouse_pos = vec_cast(ImGui::GetMousePos() - ImGui::GetMainViewport()->Pos);
         vec2_t coord = {mouse_pos.x, ImGui::GetMainViewport()->Size.y - mouse_pos.y};
 
+#if MD_PLATFORM_OSX
+        // On macOS with retina displays, we need to scale the mouse coordinates
+        coord.x *= data->app.window.scale_factor;
+        coord.y *= data->app.window.scale_factor;
+#endif
+
 #if PICKING_JITTER_HACK
             static uint32_t frame_idx = 0;
             static uint32_t ref_frame = 0;

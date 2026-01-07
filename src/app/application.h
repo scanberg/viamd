@@ -13,6 +13,7 @@ struct Context {
     struct {
         str_t title;
         unsigned int width, height;
+        float scale_factor;
         bool vsync;
         bool should_close;
         void* ptr;
