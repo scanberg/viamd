@@ -2024,7 +2024,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         MAX(0LL, frame - 1),
         MAX(0LL, frame),
         MIN(frame + 1, last_frame),
-        MIN(frame + 2, last_frame)
+        MIN(frame + 2, last_frame),
     };
 
     const size_t num_threads = task_system::pool_num_threads();
@@ -2353,68 +2353,64 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
 
     if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.secondary_structure) {
-        switch (mode) {
+        md_array_resize(state->interpolated_properties.secondary_structure, sys.protein_backbone.segment.count, state->mold.sys_alloc);
+        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [data = &payload, mode]() {
+            const md_secondary_structure_t* src_ss[4] = {
+                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
+                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
+                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
+                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[3],
+            };
+            const md_secondary_structure_t* src_ss_nearest = data->t < 0.5f ? src_ss[1] : src_ss[2];
+            switch (mode) {
+            default:
+                MD_LOG_DEBUG("Unsupported interpolation mode for secondary structure interpolation");
+                [[fallthrough]];
             case InterpolationMode::Nearest: {
-                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [data = &payload]() {
-                    const md_secondary_structure_t* src_ss[2] = {
-                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
-                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
-                    };
-                    const md_secondary_structure_t* ss = data->t < 0.5f ? src_ss[0] : src_ss[1];
-                    MEMCPY(data->state->mold.sys.protein_backbone.segment.secondary_structure, ss, data->state->mold.sys.protein_backbone.segment.count * sizeof(md_secondary_structure_t));
-                });
-
-                tasks[num_tasks++] = ss_task;
+                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                    md_secondary_structure_t ss = src_ss_nearest[i];
+                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
+                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = ss;
+                    data->state->interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
+                }
                 break;
             }
             case InterpolationMode::Linear: {
-                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
-                    const md_secondary_structure_t* src_ss[2] = {
-                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
-                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
+                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                    md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
+                    md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
+                    md_gl_secondary_structure_t ss_gl_i = {
+                        .helix = lerp(ss_gl[0].helix, ss_gl[1].helix, data->t),
+                        .sheet = lerp(ss_gl[0].sheet, ss_gl[1].sheet, data->t),
                     };
-                    for (size_t i = range_beg; i < range_end; ++i) {
-                        const vec4_t ss_f[2] = {
-                            convert_color((uint32_t)src_ss[0][i]),
-                            convert_color((uint32_t)src_ss[1][i]),
-                        };
-                        const vec4_t ss_res = vec4_lerp(ss_f[0], ss_f[1], data->t);
-                        data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
-                    }
-                });
-
-                tasks[num_tasks++] = ss_task;
+                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
+                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
+                    data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
+                }
                 break;
             }
             case InterpolationMode::CubicSpline: {
-                task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
-                    const md_secondary_structure_t* src_ss[4] = {
-                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
-                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
-                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
-                        (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[3],
+                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                    md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };
+                    md_gl_secondary_structure_t ss_gl[4] = {
+                        md_gl_secondary_structure_convert(ss[0]),
+                        md_gl_secondary_structure_convert(ss[1]),
+                        md_gl_secondary_structure_convert(ss[2]),
+                        md_gl_secondary_structure_convert(ss[3]),
                     };
-                    for (size_t i = range_beg; i < range_end; ++i) {
-                        const vec4_t ss_f[4] = {
-                            convert_color((uint32_t)src_ss[0][i]),
-                            convert_color((uint32_t)src_ss[1][i]),
-                            convert_color((uint32_t)src_ss[2][i]),
-                            convert_color((uint32_t)src_ss[3][i]),
-                        };
-                        const vec4_t ss_res = cubic_spline(ss_f[0], ss_f[1], ss_f[2], ss_f[3], data->t, data->s);
-                        data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = (md_secondary_structure_t)convert_color(ss_res);
-                    }
-                });
-
-                tasks[num_tasks++] = ss_task;
+                    md_gl_secondary_structure_t ss_gl_i = {
+                        .helix = cubic_spline(ss_gl[0].helix, ss_gl[1].helix, ss_gl[2].helix, ss_gl[3].helix, data->t, data->s),
+                        .sheet = cubic_spline(ss_gl[0].sheet, ss_gl[1].sheet, ss_gl[2].sheet, ss_gl[3].sheet, data->t, data->s),
+                    };
+                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
+                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
+                    data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
+                }
                 break;
             }
-            default:
-                ASSERT(false);
-                break;
-        }
+            }
+        });
+        tasks[num_tasks++] = ss_task;
     }
 
     if (num_tasks > 0) {
@@ -3021,18 +3017,14 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
 
             // Font
-            ImFont* font_current = ImGui::GetFont();
-            if (ImGui::BeginCombo("Font Size", font_current->GetDebugName()))
-            {
-                ImGuiIO& io = ImGui::GetIO();
-                for (int n = 0; n < io.Fonts->Fonts.Size; n++) {
-                    ImFont* font = io.Fonts->Fonts[n];
-                    ImGui::PushID((void*)font);
-                    if (ImGui::Selectable(font->GetDebugName(), font == font_current))
-                        io.FontDefault = font;
-                    ImGui::PopID();
-                }
-                ImGui::EndCombo();
+            ImGuiStyle& style = ImGui::GetStyle();
+            static const float font_sizes[] = { 10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f, 30.0f, 36.0f, 48.0f, 64.0f, 72.0f };
+            static const char* font_size_names[] = { "10", "12", "14", "16", "18", "20", "24", "30", "36", "48", "64", "72" };
+            static int current_font_size_idx = 4;
+
+            if (ImGui::Combo("Font Size", &current_font_size_idx, font_size_names, (int)ARRAY_SIZE(font_size_names))) {
+                style.FontSizeBase = font_sizes[current_font_size_idx];
+                style._NextFrameFontSizeBase = style.FontSizeBase; // From Demo, seems like a temporary fix
             }
 
             /*
@@ -7742,8 +7734,9 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
-        if (mol.protein_backbone.segment.secondary_structure) {
-            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)mol.protein_backbone.segment.count, mol.protein_backbone.segment.secondary_structure, 0);
+        const md_array(md_gl_secondary_structure_t) ss_arr = data->interpolated_properties.secondary_structure;
+        if (ss_arr) {
+            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, md_array_size(ss_arr), ss_arr, 0);
         }
     }
 
@@ -7809,15 +7802,12 @@ static void init_trajectory_data(ApplicationState* data) {
             data->trajectory_data.secondary_structure.stride = data->mold.sys.protein_backbone.segment.count;
             data->trajectory_data.secondary_structure.count = data->mold.sys.protein_backbone.segment.count * num_frames;
             md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.sys.protein_backbone.segment.count * num_frames, persistent_alloc);
-            for (size_t i = 0; i < md_array_size(data->trajectory_data.secondary_structure.data); ++i) {
-                data->trajectory_data.secondary_structure.data[i] = MD_SECONDARY_STRUCTURE_COIL;
-            }
-//            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_size(data->trajectory_data.secondary_structure.data) * sizeof (md_secondary_structure_t));
+            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_bytes(data->trajectory_data.secondary_structure.data));
 
             data->trajectory_data.backbone_angles.stride = data->mold.sys.protein_backbone.segment.count;
             data->trajectory_data.backbone_angles.count = data->mold.sys.protein_backbone.segment.count * num_frames;
             md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.sys.protein_backbone.segment.count * num_frames, persistent_alloc);
-            MEMSET(data->trajectory_data.backbone_angles.data, 0, md_array_size(data->trajectory_data.backbone_angles.data) * sizeof (md_backbone_angles_t));
+            MEMSET(data->trajectory_data.backbone_angles.data, 0, md_array_bytes(data->trajectory_data.backbone_angles.data));
 
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
@@ -7828,14 +7818,19 @@ static void init_trajectory_data(ApplicationState* data) {
                 md_system_t mol = data->mold.sys;
 				md_trajectory_i* traj = load::traj::get_raw_trajectory(data->mold.traj);
 
-                const size_t stride = ALIGN_TO(mol.atom.count, 8);
-                const size_t bytes = stride * sizeof(float) * 3;
-                float* coords = (float*)md_alloc(md_get_heap_allocator(), bytes);
-                defer { md_free(md_get_heap_allocator(), coords, bytes); };
+                md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+                defer { md_arena_allocator_destroy(arena); };
+
+                const size_t capacity = ALIGN_TO(mol.atom.count, 16);
+                const size_t bytes = capacity * sizeof(float) * 3;
+                float* coords = (float*)md_alloc(arena, bytes);
+
+                md_array(md_secondary_structure_t) ss = md_array_create(md_secondary_structure_t, mol.protein_backbone.segment.count, arena);
+  
                 // Overwrite the coordinate section, since we will load trajectory frame data into these
-                mol.atom.x = coords + stride * 0;
-                mol.atom.y = coords + stride * 1;
-                mol.atom.z = coords + stride * 2;
+                mol.atom.x = coords + capacity * 0;
+                mol.atom.y = coords + capacity * 1;
+                mol.atom.z = coords + capacity * 2;
 
                 for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                     md_trajectory_load_frame(traj, frame_idx, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
