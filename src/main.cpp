@@ -2411,6 +2411,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             }
         });
         tasks[num_tasks++] = ss_task;
+        state->mold.dirty_buffers |= MolBit_DirtySecondaryStructure;
     }
 
     if (num_tasks > 0) {
@@ -2439,7 +2440,6 @@ static void interpolate_atomic_properties(ApplicationState* state) {
 #endif
 
     state->mold.dirty_buffers |= MolBit_DirtyPosition;
-    state->mold.dirty_buffers |= MolBit_DirtySecondaryStructure;
 }
 
 // #misc
@@ -7735,8 +7735,9 @@ static void update_md_buffers(ApplicationState* data) {
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
         const md_array(md_gl_secondary_structure_t) ss_arr = data->interpolated_properties.secondary_structure;
-        if (ss_arr) {
-            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, md_array_size(ss_arr), ss_arr, 0);
+        size_t len = md_array_size(ss_arr);
+        if (ss_arr && len > 0) {
+            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, len, ss_arr, 0);
         }
     }
 
