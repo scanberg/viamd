@@ -76,10 +76,8 @@ add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
 
-
-
 # Copy many of the fields from mdlib
-set(VIAMD_STDLIBS)
+set(VIAMD_EXTRA_LIBS)
 set(VIAMD_FLAGS ${MD_FLAGS})
 set(VIAMD_FLAGS_DEB ${MD_FLAGS_DEB})
 set(VIAMD_FLAGS_REL ${MD_FLAGS_REL})
@@ -90,10 +88,15 @@ set(VIAMD_DEFINES)
 
 if (VIAMD_LINK_STDLIB_STATIC)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        set(VIAMD_STDLIBS "-static-libgcc -static-libstdc++")
+        set(VIAMD_EXTRA_LIBS "-static-libgcc -static-libstdc++")
     endif()
-    set(glfw_LIBRARIES ${VIAMD_STDLIBS})
+    set(glfw_LIBRARIES ${VIAMD_EXTRA_LIBS})
 endif()
+
+if (UNIX AND NOT APPLE)
+    list(APPEND VIAMD_EXTRA_LIBS X11)
+endif()
+
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     set(VIAMD_FLAGS ${VIAMD_FLAGS} "-fms-extensions") #Silence pesky warnings of anonymous structs in vector types
@@ -233,6 +236,6 @@ target_link_libraries(viamd
     implot
     atomic_queue
     imgui_notify
-    ${VIAMD_STDLIBS}
+    ${VIAMD_EXTRA_LIBS}
 )
 
