@@ -3705,6 +3705,34 @@ void draw_context_popup(ApplicationState* data) {
 #endif
 
     if (ImGui::BeginPopup("AtomContextPopup")) {
+        if (num_atoms_selected == 2) {
+            // Suggest construction of covalent bond
+			int idx[2];
+            MEMCPY(idx, data->selection.single_selection_sequence.idx, sizeof(idx));
+            char buf[256];
+            snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0]+1, idx[1]+1);
+            if (ImGui::MenuItem(buf)) {
+                md_system_bond_insert(&data->mold.sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED, data->mold.sys_alloc);
+				md_system_bond_build_connectivity(&data->mold.sys, data->mold.sys_alloc);
+                data->mold.dirty_buffers |= MolBit_DirtyBonds;
+                ImGui::CloseCurrentPopup();
+			}
+        }
+        if (data->selection.bond_idx.hovered != -1) {
+            // Suggest removal of covalent bond
+            md_bond_idx_t bond_idx = data->selection.bond_idx.hovered;
+			md_atom_pair_t pair = md_bond_pair(&data->mold.sys.bond, bond_idx);
+            if (pair.idx[0] != -1 && pair.idx[1] != -1) {
+                char buf[256];
+                snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", pair.idx[0] + 1, pair.idx[1] + 1);
+                if (ImGui::MenuItem(buf)) {
+                    md_system_bond_remove(&data->mold.sys, bond_idx);
+					md_system_bond_build_connectivity(&data->mold.sys, data->mold.sys_alloc);
+                    data->mold.dirty_buffers |= MolBit_DirtyBonds;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+		}
         if (ImGui::BeginMenu("Script")) {
             bool any_suggestions = false;
             if (num_atoms_selected <= 4 && sss_count > 1) {
@@ -3856,9 +3884,15 @@ void draw_context_popup(ApplicationState* data) {
                 
                 md_array(str_t) suggestions = generate_script_selection_suggestions(ident, bf, &data->mold.sys);
 
+			    char buf[128]; // Buffer for limiting menu item size
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
+					const char* ptr = suggestions[i].ptr;
                     str_t s = suggestions[i];
-                    if (ImGui::MenuItem(s.ptr)) {
+                    if (str_len(s) > 120) {
+						snprintf(buf, sizeof(buf), "%.*s...", 117, s.ptr);
+						ptr = buf;
+                    }
+                    if (ImGui::MenuItem(ptr)) {
                         editor.AppendText("\n");
                         editor.AppendText(s.ptr);
                         ImGui::CloseCurrentPopup();
@@ -9581,6 +9615,15 @@ static void draw_representations_opaque(ApplicationState* data) {
             }
         }
 
+		// MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
+	    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
+        vec3_t half_extents = {
+            0.5f * vec3_length(basis.col[0]),
+            0.5f * vec3_length(basis.col[1]),
+            0.5f * vec3_length(basis.col[2])
+        };
+		float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+
         md_gl_draw_args_t args = {
             .shaders = data->mold.gl_shaders,
             .draw_operations = {
@@ -9594,6 +9637,7 @@ static void draw_representations_opaque(ApplicationState* data) {
                 .prev_view_matrix = &data->view.param.matrix.prev.view.elem[0][0],
                 .prev_proj_matrix = &data->view.param.matrix.prev.proj.elem[0][0],
             },
+            .max_bond_length = min_half_box_extent,
         };
 
         md_gl_draw(&args);

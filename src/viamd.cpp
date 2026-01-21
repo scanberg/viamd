@@ -96,6 +96,8 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
                 {MD_BOND_FLAG_AROMATIC,     "AROMATIC"},
                 {MD_BOND_FLAG_INTER,        "INTER"},
                 {MD_BOND_FLAG_COORDINATE,   "COORD"},
+				{MD_BOND_FLAG_METAL,        "METAL"},
+				{MD_BOND_FLAG_USER_DEFINED, "USER"},
             };
 
             for (size_t i = 0; i < ARRAY_SIZE(bond_flag_map); ++i) {
