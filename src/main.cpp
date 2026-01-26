@@ -3707,16 +3707,20 @@ void draw_context_popup(ApplicationState* data) {
     if (ImGui::BeginPopup("AtomContextPopup")) {
         if (num_atoms_selected == 2) {
             // Suggest construction of covalent bond
-			int idx[2];
+            int idx[2];
             MEMCPY(idx, data->selection.single_selection_sequence.idx, sizeof(idx));
-            char buf[256];
-            snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0]+1, idx[1]+1);
-            if (ImGui::MenuItem(buf)) {
-                md_system_bond_insert(&data->mold.sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED, data->mold.sys_alloc);
-				md_system_bond_build_connectivity(&data->mold.sys, data->mold.sys_alloc);
-                data->mold.dirty_buffers |= MolBit_DirtyBonds;
-                ImGui::CloseCurrentPopup();
-			}
+
+            md_bond_idx_t bond_idx = md_system_bond_find(&data->mold.sys, idx[0], idx[1]);
+            if (bond_idx == -1) {
+                char buf[256];
+                snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
+                if (ImGui::MenuItem(buf)) {
+                    md_system_bond_insert(&data->mold.sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED, data->mold.sys_alloc);
+                    md_system_bond_build_connectivity(&data->mold.sys, data->mold.sys_alloc);
+                    data->mold.dirty_buffers |= MolBit_DirtyBonds;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
         }
         if (data->selection.bond_idx.hovered != -1) {
             // Suggest removal of covalent bond
@@ -9756,6 +9760,15 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
         }
     }
 
+    // MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
+    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
+    vec3_t half_extents = {
+        0.5f * vec3_length(basis.col[0]),
+        0.5f * vec3_length(basis.col[1]),
+        0.5f * vec3_length(basis.col[2])
+    };
+    float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+
     md_gl_draw_args_t args = {
         .shaders = data->mold.gl_shaders_lean_and_mean,
         .draw_operations = {
@@ -9770,6 +9783,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             //.prev_projection_matrix = &data->view.param.matrix.previous.proj[0][0],
         },
         .atom_mask = mask,
+		.max_bond_length = min_half_box_extent,
     };
 
     md_gl_draw(&args);
