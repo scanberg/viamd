@@ -47,16 +47,13 @@ vec4 srand4(vec2 n) {
 const float PI = 3.1415926535;
 const float ONE_OVER_PI = 1.0 / 3.1415926535;
 
-// Cook-Torrance model From here:
-// https://learnopengl.com/PBR/Theory
-
 float FresnelSchlick(float cosTheta, float F0) {
     return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
 float FresnelSchlickRoughness(float cosTheta, float F0, float roughness) {
     return F0 + (max(1.0 - roughness, F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}   
+}
 
 float DistributionGGX(float NdotH, float roughness) {
     float a      = roughness*roughness;
@@ -83,21 +80,21 @@ float GeometrySmith(float NdotV, float NdotL, float roughness) {
 }
 
 vec3 shade(vec3 color, vec3 V, vec3 N) {
-    vec3  L = u_light_dir; 
+    vec3  L = normalize(u_light_dir);
     vec3  H = normalize(L + V);
     float H_dot_V = clamp(dot(H, V), 0.0, 1.0);
     float N_dot_H = clamp(dot(N, H), 0.0, 1.0);
     float N_dot_L = clamp(dot(N, L), 0.0, 1.0);
     float N_dot_V = clamp(dot(N, V), 0.0, 1.0);
 
-    float F0 = u_F0;
-    float roughness = u_roughness;
+    float F0 = clamp(u_F0, 0.0, 1.0);
+    float roughness = clamp(u_roughness, 0.04, 1.0);
     vec3  albedo = color;
 
     vec3 Lo = vec3(0);
 
-    {
-        // Add contribution from directional light
+    // Directional light
+    if (N_dot_L > 0.0) {
         float NDF = DistributionGGX(N_dot_H, roughness);
         float G   = GeometrySmith(N_dot_V, N_dot_L, roughness);
         float F   = FresnelSchlick(H_dot_V, F0);
@@ -109,12 +106,12 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
         Lo += (kD * albedo * ONE_OVER_PI + specular) * u_dir_radiance * N_dot_L;
     }
 
+    // Environment (still simplified; see note above about proper IBL)
     {
-        // Add contribution from environment
         float F = FresnelSchlickRoughness(N_dot_V, F0, roughness);
         float kS = F;
         float kD = 1.0 - kS;
-        Lo += (kD * albedo * ONE_OVER_PI + vec3(kS)) * u_env_radiance; // Multiply with ao here
+        Lo += (kD * albedo * ONE_OVER_PI + vec3(kS)) * u_env_radiance;
     }
 
     return Lo;
@@ -122,16 +119,18 @@ vec3 shade(vec3 color, vec3 V, vec3 N) {
 
 void main() {
     vec3 result = u_bg_color.rgb;
-    
-    vec4 color = texelFetch(u_texture_color, ivec2(gl_FragCoord.xy), 0);
+
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    vec4 color = texelFetch(u_texture_color, pixel, 0);
     if (color.a > 0) {
-        float depth = texelFetch(u_texture_depth, ivec2(gl_FragCoord.xy), 0).x;
-        vec3 normal = decode_normal(texelFetch(u_texture_normal, ivec2(gl_FragCoord.xy), 0).xy);
-        vec4 view_coord = depth_to_view_coord(tc, depth);
+        float depth = texelFetch(u_texture_depth, pixel, 0).x;
+        vec3 normal = decode_normal(texelFetch(u_texture_normal, pixel, 0).xy);
+
+        vec2 tex_coord = (gl_FragCoord.xy + vec2(0.5)) / vec2(textureSize(u_texture_depth, 0));
+        vec4 view_coord = depth_to_view_coord(tex_coord, depth);
 
         // Add noise to reduce banding
-        // Signed random to not affect overall luminance
-        color.rgb = clamp(color.rgb + color.rgb * srand4(tc + u_time).rgb * 0.15, 0.0, 1.0);
+        color.rgb = clamp(color.rgb + color.rgb * srand4(tex_coord + u_time).rgb * 0.15, 0.0, 1.0);
 
         vec3 N = normal;
         vec3 V = -normalize(view_coord.xyz);

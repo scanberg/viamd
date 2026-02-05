@@ -663,7 +663,7 @@ struct ApplicationState {
     struct {
         struct {
             vec3_t color = {1, 1, 1};
-            float intensity = 24.f;
+            float intensity = 24.0f;
         } background;
 
         struct { 
@@ -683,8 +683,8 @@ struct ApplicationState {
 
         struct {
             bool enabled = true;
-            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_Filmic;
-            float exposure = 1.f;
+            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_ACES;
+            float exposure = 1.0f;
             float gamma = 2.2f;
         } tonemapping;
 
