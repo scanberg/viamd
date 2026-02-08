@@ -136,6 +136,58 @@ inline vec3_t Lab_to_XYZ(vec3_t Lab) {
     return {X, Y, Z};
 }
 
+inline vec3_t linear_srgb_to_srgb(vec3_t rgb) {
+    const auto encode = [](float x) {
+        x = CLAMP(x, 0.0f, 1.0f);
+        return (x <= 0.0031308f) ? (12.92f * x) : (1.055f * powf(x, 1.0f / 2.4f) - 0.055f);
+    };
+    return {encode(rgb.x), encode(rgb.y), encode(rgb.z)};
+}
+
+inline vec3_t oklab_to_linear_srgb(vec3_t lab) {
+    // OKLab to LMS cube
+    // Reference: Björn Ottosson (OKLab)
+    const float L = lab.x;
+    const float a = lab.y;
+    const float b = lab.z;
+
+    const float l_ = L + 0.3963377774f * a + 0.2158037573f * b;
+    const float m_ = L - 0.1055613458f * a - 0.0638541728f * b;
+    const float s_ = L - 0.0894841775f * a - 1.2914855480f * b;
+
+    const float l = l_ * l_ * l_;
+    const float m = m_ * m_ * m_;
+    const float s = s_ * s_ * s_;
+
+    // LMS to linear sRGB
+    const float r = +4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s;
+    const float g = -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s;
+    const float bb = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
+
+    return {r, g, bb};
+}
+
+// oklch = {h, c, l} with h in [0,1), l in [0,1]
+// NOTE: The order of the arguments here are H C L, not L C H
+inline vec3_t oklch_to_srgb(vec3_t oklch) {
+    const float h = oklch.x;
+    const float c = oklch.y;
+    const float l = oklch.z;
+
+    const float ang = h * 2.0f * (float)PI;
+    const float a = c * cosf(ang);
+    const float b = c * sinf(ang);
+
+    const vec3_t lab = {l, a, b};
+
+    // Convert to linear sRGB then apply transfer function
+    vec3_t rgb = oklab_to_linear_srgb(lab);
+    rgb = linear_srgb_to_srgb(rgb);
+
+    // Clamp to displayable range (simple gamut handling)
+    return vec3_clamp_f(rgb, 0.0f, 1.0f);
+}
+
 inline vec3_t rgb_to_Lab(vec3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
 inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 
