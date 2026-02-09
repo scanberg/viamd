@@ -2353,7 +2353,9 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
 
     if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.secondary_structure) {
-        md_array_resize(state->interpolated_properties.secondary_structure, sys.protein_backbone.segment.count, state->mold.sys_alloc);
+        if (md_array_size(state->interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
+			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
+        }
         task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [data = &payload, mode]() {
             const md_secondary_structure_t* src_ss[4] = {
                 (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
@@ -7772,10 +7774,10 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
-        const md_array(md_gl_secondary_structure_t) ss_arr = data->interpolated_properties.secondary_structure;
-        size_t len = md_array_size(ss_arr);
-        if (ss_arr && len > 0) {
-            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, len, ss_arr, 0);
+        const md_gl_secondary_structure_t* ss_arr = data->interpolated_properties.secondary_structure;
+        size_t ss_len = md_array_size(ss_arr);
+        if (ss_len > 0) {
+            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, ss_len, ss_arr, 0);
         }
     }
 
@@ -7854,27 +7856,25 @@ static void init_trajectory_data(ApplicationState* data) {
             data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 // Create copy here of molecule since we use the full structure as input
-                md_system_t mol = data->mold.sys;
+                md_system_t sys = data->mold.sys;
 				md_trajectory_i* traj = load::traj::get_raw_trajectory(data->mold.traj);
 
-                md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-                defer { md_arena_allocator_destroy(arena); };
+                md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+                defer { md_vm_arena_destroy(temp_arena); };
 
-                const size_t capacity = ALIGN_TO(mol.atom.count, 16);
-                const size_t bytes = capacity * sizeof(float) * 3;
-                float* coords = (float*)md_alloc(arena, bytes);
-
-                md_array(md_secondary_structure_t) ss = md_array_create(md_secondary_structure_t, mol.protein_backbone.segment.count, arena);
-  
-                // Overwrite the coordinate section, since we will load trajectory frame data into these
-                mol.atom.x = coords + capacity * 0;
-                mol.atom.y = coords + capacity * 1;
-                mol.atom.z = coords + capacity * 2;
+                const size_t capacity = ALIGN_TO(sys.atom.count, 16);
+				float* x = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
+				float* y = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
+				float* z = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
 
                 for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                    md_trajectory_load_frame(traj, frame_idx, NULL, mol.atom.x, mol.atom.y, mol.atom.z);
-                    md_util_backbone_angles_compute(data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx, data->trajectory_data.backbone_angles.stride, &mol);
-                    md_util_backbone_secondary_structure_infer(data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx, data->trajectory_data.secondary_structure.stride, &mol);
+					md_trajectory_frame_header_t frame_header;
+					md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
+					md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
+
+                    md_trajectory_load_frame(traj, frame_idx, &frame_header, x, y, z);
+					md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                    md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
                 }
             });
 
@@ -7929,6 +7929,8 @@ static void free_molecule_data(ApplicationState* data) {
     md_gl_mol_destroy(data->mold.gl_mol);
     MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
+	data->interpolated_properties.secondary_structure = nullptr;
+
     md_bitfield_clear(&data->selection.selection_mask);
     md_bitfield_clear(&data->selection.highlight_mask);
     if (data->script.ir) {
@@ -7962,6 +7964,9 @@ static void init_molecule_data(ApplicationState* data) {
         data->selection.bond_idx.right_click = -1;
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
+        if (data->mold.sys.protein_backbone.segment.count > 0) {
+		    data->interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, data->mold.sys.protein_backbone.segment.count, data->mold.sys_alloc);
+        }
 
 #if EXPERIMENTAL_GFX_API
         const md_system_t& mol = data->mold.sys;
