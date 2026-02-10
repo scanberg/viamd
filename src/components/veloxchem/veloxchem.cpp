@@ -2127,21 +2127,23 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+#if 0
     static inline double lorentzian(double x, double x_0, double gamma) {
         double sigma = gamma / 2;
         double res = (1 / PI) * sigma / (pow((x - x_0), 2) + pow(sigma, 2));
         return res;
     }
 
+    static inline double gaussian(double x, double x_0, double gamma) {
+        double sigma = gamma / 2.3548;
+        return (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(x - x_0, 2) / (2 * pow(sigma, 2)))); 
+    }
+
+#endif
     static inline double phys_lorentzian(double x, double x_0, double gamma, double intensity) {
         double sigma = gamma / 2;
         double res = intensity * pow(sigma, 2) / (pow((x - x_0), 2) + pow(sigma, 2));
         return res;
-    }
-
-    static inline double gaussian(double x, double x_0, double gamma) {
-        double sigma = gamma / 2.3548;
-        return (1 / (sigma * sqrt(2 * PI))) * exp(-(pow(x - x_0, 2) / (2 * pow(sigma, 2)))); 
     }
 
     //TODO: Check that phys_gaussian implementation is actually correct
@@ -2151,6 +2153,49 @@ struct VeloxChem : viamd::EventHandler {
         return intensity * exp(-log(2) * pow(x,2));
     }
 
+    static inline double broaden_normalized(double x, double x_0, double gamma, broadening_mode_t mode) {
+        constexpr double inv_pi = 0.31830988618379067154;
+        constexpr double inv_sqrt_2pi = 0.39894228040143267794;
+        constexpr double inv_fwhm_to_sigma = 0.42466090014400953; // 1 / 2.3548
+
+        const double dx = x - x_0;
+
+        switch (mode) {
+        case BROADENING_MODE_GAUSSIAN: {
+            const double sigma = gamma * inv_fwhm_to_sigma;
+            const double d = dx / sigma;
+            return (inv_sqrt_2pi / sigma) * exp(-0.5 * d * d);
+        }
+        case BROADENING_MODE_LORENTZIAN: {
+            const double sigma = 0.5 * gamma;
+            const double denom = dx * dx + sigma * sigma;
+            return (inv_pi * sigma) / denom;
+        }
+        default:
+            ASSERT(false); // Should not happen
+            return 0.0;
+        }
+    }
+
+    static inline double broaden_physical(double x, double x0, double gamma, broadening_mode_t mode) {
+        constexpr double inv_fwhm_to_sigma = 0.42466090014400953; // 1 / 2.3548
+        const double dx = x - x0;
+        switch (mode) {
+        case BROADENING_MODE_GAUSSIAN: {
+            const double sigma = gamma * inv_fwhm_to_sigma;
+            const double d = dx / sigma;
+            return exp(-0.5 * d * d);
+        }
+        case BROADENING_MODE_LORENTZIAN: {
+            const double sigma = 0.5 * gamma;
+            const double denom = dx * dx + sigma * sigma;
+            return (sigma * sigma) / denom;
+        }
+        default:
+            ASSERT(false); // Should not happen
+            return 0.0;
+		}
+    }
     
     /*
     * We return to this at a later stage
@@ -2175,7 +2220,7 @@ struct VeloxChem : viamd::EventHandler {
 
     */
 
-    static inline void osc_to_eps(double* eps_out, const double* x, size_t num_samples, const double* osc_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
+    static inline void osc_to_eps(double* eps_out, const double* x, size_t num_samples, const double* osc_peaks, const double* x_peaks, size_t num_peaks, broadening_mode_t broadening_mode, double gamma) {
         // Physical constants
         const double c_au = 137.035999;             // speed of light (atomic units used in original expression)
         const double a0_m = 5.29177210903e-11;      // Bohr radius in meters
@@ -2199,7 +2244,7 @@ struct VeloxChem : viamd::EventHandler {
                 // Convert peak center to atomic units and compute the oscillator factor
                 const double x0_au = x_peaks[pi] * eV_to_au;
                 const double peak_factor = osc_peaks[pi] / (x0_au);
-                sum += (*distr_func)(x_au, x0_au, gamma_au) * peak_factor;
+                sum += broaden_normalized(x_au, x0_au, gamma_au, broadening_mode) * peak_factor;
             }
 
             // Convert to molar absorptivity ε (L mol^-1 cm^-1)
@@ -2207,13 +2252,13 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    static inline void rot_to_eps_delta(double* eps_out, const double* x, size_t num_samples, const double* rot_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
+    static inline void rot_to_eps_delta(double* eps_out, const double* x, size_t num_samples, const double* rot_peaks, const double* x_peaks, size_t num_peaks, broadening_mode_t broadening_mode, double gamma) {
         static const double scl = 1.0 / (22.94);
 
         for (size_t si = 0; si < num_samples; si++) {
             double sum = 0;
             for (size_t pi = 0; pi < num_peaks; pi++) {
-                sum += (*distr_func)(x[si], x_peaks[pi], gamma) * rot_peaks[pi] * x_peaks[pi];
+                sum += broaden_normalized(x[si], x_peaks[pi], gamma, broadening_mode) * rot_peaks[pi] * x_peaks[pi];
             }
             
             eps_out[si] = sum * scl;
@@ -2221,177 +2266,19 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline void general_broadening(double* y_out, const double* x, size_t num_samples, const double* y_peaks, const double* x_peaks,
-                                          size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma, double intensity),
-                                          double gamma) {
+                                          size_t num_peaks, broadening_mode_t broadening_mode, double gamma) {
         double integral = 0;
         double dist = x[1] - x[0];
         for (size_t si = 0; si < num_samples; si++) {
             double sum = 0;
-            double b = 0;
             for (size_t pi = 0; pi < num_peaks; pi++) {
-                b = (*distr_func)(x[si], x_peaks[pi], gamma, y_peaks[pi]);
-                sum += b;
+                sum += y_peaks[pi] * broaden_physical(x[si], x_peaks[pi], gamma, broadening_mode);
             }
             y_out[si] = sum;
             integral += y_out[si] * dist;
         }
 
         double i_sum = integral;
-    }
-
-    //Constructs plot limits from peaks
-    static inline ImPlotRect get_plot_limits(const double* x_samples, const double* y_peaks, size_t num_peaks, size_t num_samples, double ext_fac = 0.1) {
-        ImPlotRect lim = { MIN(x_samples[0],x_samples[num_samples - 1]), MAX(x_samples[0],x_samples[num_samples - 1]),0,0};
-        for (size_t i = 0; i < num_peaks; i++) {
-            //Use Contains to check if values are within the limits, or if they should extend the limits
-            if (lim.Y.Max < y_peaks[i]) {
-                lim.Y.Max = y_peaks[i];
-            }
-            else if (lim.Y.Min > y_peaks[i]) {
-                lim.Y.Min = y_peaks[i];
-            }
-        }
-
-        double height = lim.Y.Max - lim.Y.Min;
-        double width = lim.X.Max - lim.X.Min;
-
-        lim.Y.Max += height * ext_fac;
-        lim.Y.Min -= height * ext_fac;
-        lim.X.Max += width * ext_fac;
-        lim.X.Min -= width * ext_fac;
-
-        //The y limits needs to be symmetric so that the spectra is not clipped. For example, if the y peak max is a positive value but the y spectra value is negative, we get issues otherwise. This ensures space for all the data.
-        //This is needed because Y2 scaling is based on the maximum peak value
-        double abs_max_y = MAX(fabs(lim.Y.Min), fabs(lim.Y.Max));
-        lim.Y.Min = -abs_max_y;
-        lim.Y.Max = abs_max_y;
-        return lim;
-    }
-
-    //converts x and y peaks into pixel points in context of the current plot. Use between BeginPlot() and EndPlot()
-    static inline void peaks_to_pixels(ImVec2* pixel_peaks, const double* x_peaks, const double* y_peaks, size_t num_peaks) {
-        for (size_t i = 0; i < num_peaks; i++) {
-            pixel_peaks[i] = ImPlot::PlotToPixels(ImPlotPoint{ x_peaks[i], y_peaks[i] });
-        }
-    }
-
-    static inline int get_hovered_plot_peak(const double* xs, const double* ys, size_t count, double distance_threshold = 10.0) {
-        ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
-        int closest_idx = -1;
-        double closest_dist = DBL_MAX;
-        for (size_t i = 0; i < count; ++i) {
-            double dx = mouse_pos.x - xs[i];
-            double dy = CLAMP(mouse_pos.y, 0.0, ys[i]) - mouse_pos.y;
-            double dist = sqrt(dx * dx + dy * dy);
-            if (dist < distance_threshold && dist < closest_dist) {
-                closest_idx = (int)i;
-                closest_dist = dist;
-            }
-        }
-        return closest_idx;
-    }
-
-    static inline int get_hovered_plot_peak(const double* values, size_t count, double x_base = 0.0, double x_step = 1.0, double distance_threshold = 10.0) {
-        ImPlotPoint mouse_pos = ImGui::GetMousePos();
-        int closest_idx = -1;
-        double closest_dist = DBL_MAX;
-        ImVec2 zero = ImPlot::PlotToPixels(0, 0);
-        for (size_t i = 0; i < count; ++i) {
-            ImVec2 point = ImPlot::PlotToPixels(x_base + i * x_step, values[i]);
-            double dx = mouse_pos.x - point.x;
-            double dy = CLAMP(mouse_pos.y, MIN(zero.y, point.y), MAX(zero.y, point.y)) - mouse_pos.y;
-            double dist = sqrt(dx * dx + dy * dy);
-            if (dist < distance_threshold && dist < closest_dist) {
-                closest_idx = (int)i;
-                closest_dist = dist;
-            }
-        }
-        return closest_idx;
-    }
-
-    // Returns peak index closest to mouse pixel position, assumes that x-values are sorted.
-    static inline int get_hovered_peak(const ImVec2 mouse_pos, const ImVec2* pixel_peaks, const ImVec2* pixel_points, size_t num_peaks, bool y_flipped = false, double proxy_distance = 10.0) {
-        int closest_idx = 0;
-        double x = mouse_pos.x;
-        double y = mouse_pos.y;
-        double y_max = 0;
-        double y_min = 0;
-        double distance_x = 0;
-        double distance_y = 0;
-        double closest_distance = 0;
-        double pixel_y0 = ImPlot::PlotToPixels(0, 0).y;
-
-        //Keep in mind that pixel y is 0 at the top, so you flip the comparison compared to plot y. The code below still seems to work as intended though.
-
-        for (int i = 0; i < num_peaks; i++) {
-            y_max = MAX(pixel_peaks[i].y, pixel_y0);
-            y_min = MIN(pixel_peaks[i].y, pixel_y0);
-
-            //Check if the y location is within the range of y_min,ymax
-            if (y > y_max) {
-                distance_y = fabs(y - y_max);
-                if (y_flipped) {
-                    distance_y = fabs(y - pixel_points[i].y) < distance_y ? fabs(y - pixel_points[i].y) : distance_y;
-                }
-            }
-            else if (y < y_min) {
-                distance_y = fabs(y - y_min);
-                if (!y_flipped) {
-                    distance_y = fabs(y - pixel_points[i].y) < distance_y ? fabs(y - pixel_points[i].y) : distance_y;
-                }
-            }
-            else {
-                distance_y = 0;
-            }
-
-            distance_x = fabs(pixel_peaks[i].x - x);
-
-            // We need a special case for i == 0 to set a reference for comparison, so that closest_distance does not start on 0;
-            if (i == 0 && distance_y == 0 ){
-                closest_distance = distance_x;
-                closest_idx = 0;
-
-            }
-            else if (i == 0) {
-                closest_distance = sqrt(pow(distance_x, 2) + pow(distance_y, 2)); // Is there a better function for doing this? Is this expensive?
-                closest_idx = 0;
-            }
-            else if (distance_y == 0 && distance_x < closest_distance) {
-                closest_distance = fabs(pixel_peaks[i].x - x);
-                closest_idx = i;
-            }
-            else if (sqrt(pow(distance_x, 2) + pow(distance_y, 2)) < closest_distance) {
-                closest_distance = sqrt(pow(distance_x, 2) + pow(distance_y, 2));
-                closest_idx = i;
-                //ImPlot::Annotation()
-            }
-            else if (distance_x > closest_distance){
-                // We are now so far away that a closer bar will not occur, no matter the y value.
-                break;
-            }
-        }
-        return closest_distance < proxy_distance ? closest_idx : -1;
-    }
-
-    // Draws a bar within a plot at x = x, and from y = 0 to y = y, with specified width and color.
-    // It also draws a point at the top with a radius
-    static inline void draw_bar(double x, double y, double bar_width_in_pixels, double point_radius_in_pixels, ImVec4 color) {
-        ImVec2 rect_min = ImPlot::PlotToPixels(x, 0, IMPLOT_AUTO, IMPLOT_AUTO);
-        ImVec2 rect_max = ImPlot::PlotToPixels(x, y, IMPLOT_AUTO, IMPLOT_AUTO);
-
-        rect_min = ImVec2{rect_min.x - (float)bar_width_in_pixels * 0.5f, rect_min.y};
-        rect_max = ImVec2{rect_max.x + (float)bar_width_in_pixels * 0.5f, rect_max.y};
-        ImVec2 pos = ImPlot::PlotToPixels(x, y, IMPLOT_AUTO, IMPLOT_AUTO);
-        float  rad = (float)point_radius_in_pixels;
-
-        ImPlot::PushPlotClipRect();
-        ImDrawList& DrawList = *ImPlot::GetPlotDrawList();
-
-        ImU32 col32 = ImGui::ColorConvertFloat4ToU32(color);
-        DrawList.AddRectFilled(rect_min, rect_max, col32);
-        DrawList.AddCircleFilled(pos, rad, col32);
-
-        ImPlot::PopPlotClipRect();
     }
 
     // Compute a simple display multiplier to map oscillator-strength values (f) to eps for axis-syncing.
@@ -2430,8 +2317,10 @@ struct VeloxChem : viamd::EventHandler {
 
             const ImVec2 mouse_pos = ImGui::GetMousePos();
             const double pixel_tolerance = 7.0;
-            const double min_line_d2  = pow(bar_width_in_pixels * 0.5 + pixel_tolerance, 2);  // 7 pixels tolerance
-            const double min_point_d2 = pow(point_radius_in_pixels + pixel_tolerance, 2);     // 7 pixels tolerance
+            const double min_line_d = (bar_width_in_pixels + 0.5 * pixel_tolerance);
+			const double min_line_d2 = min_line_d * min_line_d;
+            const double min_point_d = (point_radius_in_pixels + pixel_tolerance);
+			const double min_point_d2 = min_point_d * min_point_d;
 
             double min_dist = DBL_MAX;
             for (size_t i = 0; i < num_peaks; i++) {
@@ -2464,17 +2353,33 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         if (ImPlot::BeginItem(title)) {
+            ImPlot::PushPlotClipRect();
+            ImDrawList& DrawList = *ImPlot::GetPlotDrawList();
+			const float rad = (float)point_radius_in_pixels;
+			const float half_bar = (float)bar_width_in_pixels * 0.5f;
             for (int i = 0; i < (int)num_peaks; i++) {
                 const ImPlotNextItemData& s = ImPlot::GetItemData();
                 ImVec4 color = (i == hovered) ? COLOR_PEAK_HOVER : (i == selected) ? COLOR_PEAK_SELECTED : s.Colors[ImPlotCol_Fill];
-                draw_bar(x_values[i], y_values[i], bar_width_in_pixels, point_radius_in_pixels, color);
+                ImU32  col = ImGui::ColorConvertFloat4ToU32(color);
+				ImVec2 btm = ImPlot::PlotToPixels(x_values[i], 0.0, IMPLOT_AUTO, IMPLOT_AUTO);
+				ImVec2 top = ImPlot::PlotToPixels(x_values[i], y_values[i], IMPLOT_AUTO, IMPLOT_AUTO);
+
+                if (half_bar > 0.0f) {
+                    ImVec2 rect_min = ImVec2{ btm.x - half_bar, btm.y };
+                    ImVec2 rect_max = ImVec2{ top.x + half_bar, top.y };
+                    DrawList.AddRectFilled(rect_min, rect_max, col);
+                }
+
+                if (rad > 0.0f) {
+                    DrawList.AddCircleFilled(top, rad, col);
+                }
 
                 if (ImPlot::FitThisFrame()) {
                     ImPlot::FitPoint(ImPlotPoint(x_values[i], 0.0));
                     ImPlot::FitPoint(ImPlotPoint(x_values[i], y_values[i]));
                 }
             }
-
+            ImPlot::PopPlotClipRect();
             ImPlot::EndItem();
         }
     }
@@ -3126,13 +3031,300 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::End();
     }
 
+    void draw_rsp_linear() {
+		int num_excited_states = (int)md_vlx_rsp_number_of_excited_states(vlx);
+        if (ImGui::TreeNode("Absorption Analysis")) {
+            if (rsp.first_plot_rot_ecd) {
+                ImGui::SetNextItemOpen(true);
+            }
+            bool refit  = false;
+            bool recalc = false;
+
+            rsp.hovered = -1;
+
+            const float avail_width = ImGui::GetContentRegionAvail().x;
+            ImGui::PushItemWidth(MIN(avail_width, 200));
+            recalc |= ImGui::SliderScalar((const char*)u8"Broadening γ HWHM (eV)", ImGuiDataType_Double, &rsp.broadening_gamma, &gamma_min, &gamma_max);
+            recalc |= ImGui::Combo("Broadening mode", (int*)(&rsp.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
+            refit  |= ImGui::Combo("X unit", (int*)(&rsp.x_unit), x_unit_full_str, X_UNIT_COUNT);
+            ImGui::PopItemWidth();
+
+            refit  |= recalc;
+
+            const int num_peaks = (int)num_excited_states;
+
+            const double* y_osc_peaks = md_vlx_rsp_oscillator_strengths(vlx);
+            const double* y_cgs_peaks = md_vlx_rsp_rotatory_strengths(vlx);
+            const double* x_abs_ev = md_vlx_rsp_absorption_ev(vlx);
+
+            ImVec2* pixel_osc_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+            ImVec2* pixel_cgs_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+            ImVec2* pixel_osc_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+            ImVec2* pixel_cgs_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
+
+            if (recalc || rsp.first_plot_rot_ecd) {
+                osc_to_eps(rsp.eps, rsp.x_ev_samples, NUM_SAMPLES, y_osc_peaks, x_abs_ev, num_peaks, rsp.broadening_mode, rsp.broadening_gamma * 2);
+                rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, NUM_SAMPLES, y_cgs_peaks, x_abs_ev, num_peaks, rsp.broadening_mode, rsp.broadening_gamma * 2);
+                rsp.y_axis_sync_factor_eps = compute_display_multiplier_from_peaks(rsp.eps, NUM_SAMPLES, y_osc_peaks, num_peaks);
+                rsp.y_axis_sync_factor_ecd = compute_display_multiplier_from_peaks(rsp.ecd, NUM_SAMPLES, y_cgs_peaks, num_peaks);
+            }
+
+            if (refit || rsp.first_plot_rot_ecd) {
+                // Do unit conversions (X axis)
+                convert_values(rsp.x_unit_peaks, x_abs_ev, num_peaks, rsp.x_unit);
+                convert_values(rsp.x_unit_samples, rsp.x_ev_samples, NUM_SAMPLES, rsp.x_unit);
+            }
+
+            // Explicit x axis limits for linking
+            static double x_min = 0.0;
+            static double x_max = 10.0;
+
+            ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+            const ImGuiTreeNodeFlags tree_flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+            if (ImGui::TreeNodeEx("Absorption Plot", tree_flags)) {
+                ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+
+                if (refit || rsp.first_plot_rot_ecd) {
+                    ImPlot::SetNextAxesToFit();
+                }
+
+                if (ImPlot::BeginPlot("Absorption")) {
+                    ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                    ImPlot::SetupAxis(ImAxis_X1, x_unit_full_str[rsp.x_unit]);
+                    ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε (L mol⁻¹ cm⁻¹)");
+                    ImPlot::SetupFinish();
+
+                    ImPlot::SetAxis(ImAxis_Y2);
+                    ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.eps, NUM_SAMPLES);
+
+                    ImPlot::SetAxis(ImAxis_Y1);
+                    plot_peaks("Oscillator Strength", rsp.x_unit_peaks, y_osc_peaks, num_peaks, rsp.selected, rsp.hovered);
+
+                    if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                        double x_val = rsp.x_unit_peaks[rsp.hovered];
+                        double y_val = y_osc_peaks[rsp.hovered];
+                        int state = rsp.hovered + 1;
+                        const char* x_label = x_unit_label_str[rsp.x_unit];
+                        const char* x_unit = x_unit_short_str[rsp.x_unit];
+                        if (ImGui::BeginTooltip()) {
+                            ImGui::Text("State %i: %s = %.2f (%s), f = %.3f", state, x_label, x_val, x_unit, y_val);
+                            ImGui::EndTooltip();
+                        }
+                    }
+
+                    // adjust plot axes before endplot, to keep y-axes in sync
+                    ImPlot::SyncAxesWithPadding(ImAxis_Y2, ImAxis_Y1, rsp.y_axis_sync_factor_eps);
+                    ImPlot::EndPlot();
+                }
+            }
+
+            ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+            if (ImGui::TreeNodeEx("ECD Plot", tree_flags)) {
+                ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+
+                if (refit || rsp.first_plot_rot_ecd) {
+                    ImPlot::SetNextAxesToFit();
+                }
+
+                if (ImPlot::BeginPlot("ECD")) {
+                    ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                    ImPlot::SetupAxis(ImAxis_X1, x_unit_full_str[rsp.x_unit]);
+                    ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
+                    ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
+                    ImPlot::SetupFinish();
+
+                    ImPlot::SetAxis(ImAxis_Y2);
+                    ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.ecd, NUM_SAMPLES);
+
+                    ImPlot::SetAxis(ImAxis_Y1);
+                    plot_peaks("Rotatory Strength", rsp.x_unit_peaks, y_cgs_peaks, num_peaks, rsp.selected, rsp.hovered);
+
+                    if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                        double x_val = rsp.x_unit_peaks[rsp.hovered];
+                        double y_val = y_cgs_peaks[rsp.hovered];
+                        int state = rsp.hovered + 1;
+                        const char* x_label = x_unit_label_str[rsp.x_unit];
+                        const char* x_unit  = x_unit_short_str[rsp.x_unit];
+                        if (ImGui::BeginTooltip()) {
+                            ImGui::Text((const char*)u8"State %i: %s = %.2f (%s), R = %.3f (10⁻⁴⁰ cgs)", state, x_label, x_val, x_unit, y_val);
+                            ImGui::EndTooltip();
+                        }
+                    }
+
+
+                    // adjust plot axes before endplot, to keep zeros aligned
+                    ImPlot::SyncAxesY();
+                    ImPlot::EndPlot();
+                }
+            }
+            rsp.first_plot_rot_ecd = false;
+
+            // Table
+            static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
+                ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Sortable;
+
+            static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_DefaultSort;
+
+            ImVec2 table_size = { 0, 0 };
+
+            const double* x_values = rsp.x_unit_peaks;
+            const double* f_values = y_osc_peaks;
+            const double* r_values = y_cgs_peaks;
+
+            if (ImGui::BeginTable("abs table", 4, flags, table_size, 0)) {
+                ImGui::TableSetupColumn("State", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn(x_unit_full_str[rsp.x_unit], columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn("f", columns_base_flags, 0.0f);
+                ImGui::TableSetupColumn((const char*)u8"R (10⁻⁴⁰ cgs)", columns_base_flags, 0.0f);
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+
+                // TODO: Add sorting to the table once the vibs data structure is properly defined
+
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                bool item_hovered = false;
+                for (int row_n = 0; row_n < (int)num_excited_states; row_n++) {
+
+                    ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                    bool is_sel = row_n == rsp.selected;
+                    bool is_hov = row_n == rsp.hovered;
+                    bool hov_col = false;
+                    ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
+                    ImGui::TableNextColumn();
+
+                    if (is_sel) {
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_BLUE);
+                    }
+                    else {
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                    }
+
+                    char lable[16];
+                    sprintf(lable, "%i", row_n + 1);
+                    if (ImGui::Selectable(lable, is_sel || is_hov, selectable_flags)) {
+                        rsp.selected = (rsp.selected == row_n) ? -1 : row_n;
+                    }
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%12.6f", x_values[row_n]);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%12.6f", f_values[row_n]);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%12.6f", r_values[row_n]);
+
+                    ImGui::PopStyleColor(1);
+                }
+                if (ImGui::IsWindowHovered() && ImGui::TableGetHoveredRow() > 0) {
+                    rsp.hovered = ImGui::TableGetHoveredRow() - 1;
+                }
+                else {
+                    rsp.hovered = -1;
+                }
+
+                ImGui::PopStyleColor(2);
+                ImGui::EndTable();
+            }
+            ImGui::TreePop();
+        }
+    }
+
+    void draw_rsp_cpp() {
+		static double x_min = 0.0;
+		static double x_max = 10.0;
+
+        /*
+        ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+        const ImGuiTreeNodeFlags tree_flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        if (ImGui::TreeNodeEx("Absorption Plot", tree_flags)) {
+            ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+
+            if (rsp.first_plot_rot_ecd) {
+                ImPlot::SetNextAxesToFit();
+            }
+
+            if (ImPlot::BeginPlot("Absorption")) {
+                ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                ImPlot::SetupAxis(ImAxis_X1, x_unit_full_str[rsp.x_unit]);
+                ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
+                ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε (L mol⁻¹ cm⁻¹)");
+                ImPlot::SetupFinish();
+
+                ImPlot::SetAxis(ImAxis_Y2);
+                ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.eps, NUM_SAMPLES);
+
+                ImPlot::SetAxis(ImAxis_Y1);
+                plot_peaks("Oscillator Strength", rsp.x_unit_peaks, y_osc_peaks, num_peaks, rsp.selected, rsp.hovered);
+
+                if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                    double x_val = rsp.x_unit_peaks[rsp.hovered];
+                    double y_val = y_osc_peaks[rsp.hovered];
+                    int state = rsp.hovered + 1;
+                    const char* x_label = x_unit_label_str[rsp.x_unit];
+                    const char* x_unit  = x_unit_short_str[rsp.x_unit];
+                    if (ImGui::BeginTooltip()) {
+                        ImGui::Text("State %i: %s = %.2f (%s), f = %.3f", state, x_label, x_val, x_unit, y_val);
+                        ImGui::EndTooltip();
+                    }
+                }
+
+                // adjust plot axes before endplot, to keep y-axes in sync
+                ImPlot::SyncAxesWithPadding(ImAxis_Y2, ImAxis_Y1, rsp.y_axis_sync_factor_eps);
+                ImPlot::EndPlot();
+            }
+        }
+
+        ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+        if (ImGui::TreeNodeEx("ECD Plot", tree_flags)) {
+            ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+
+            if (refit || rsp.first_plot_rot_ecd) {
+                ImPlot::SetNextAxesToFit();
+            }
+
+            if (ImPlot::BeginPlot("ECD")) {
+                ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                ImPlot::SetupAxis(ImAxis_X1, x_unit_full_str[rsp.x_unit]);
+                ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
+                ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
+                ImPlot::SetupFinish();
+
+                ImPlot::SetAxis(ImAxis_Y2);
+                ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.ecd, NUM_SAMPLES);
+
+                ImPlot::SetAxis(ImAxis_Y1);
+                plot_peaks("Rotatory Strength", rsp.x_unit_peaks, y_cgs_peaks, num_peaks, rsp.selected, rsp.hovered);
+
+                if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                    double x_val = rsp.x_unit_peaks[rsp.hovered];
+                    double y_val = y_cgs_peaks[rsp.hovered];
+                    int state = rsp.hovered + 1;
+                    const char* x_label = x_unit_label_str[rsp.x_unit];
+                    const char* x_unit  = x_unit_short_str[rsp.x_unit];
+                    if (ImGui::BeginTooltip()) {
+                        ImGui::Text((const char*)u8"State %i: %s = %.2f (%s), R = %.3f (10⁻⁴⁰ cgs)", state, x_label, x_val, x_unit, y_val);
+                        ImGui::EndTooltip();
+                    }
+                }
+
+
+                // adjust plot axes before endplot, to keep zeros aligned
+                ImPlot::SyncAxesY();
+                ImPlot::EndPlot();
+            }
+        }
+        rsp.first_plot_rot_ecd = false;
+        */
+    }
+
     void draw_rsp_window(ApplicationState& state) {
         ScopedTemp temp_reset;
 
         if (!rsp.show_window) return;
         size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
-        size_t num_normal_modes = md_vlx_vib_number_of_normal_modes(vlx);
-        if (num_excited_states == 0 && num_normal_modes == 0) return;
+        size_t num_normal_modes   = md_vlx_vib_number_of_normal_modes(vlx);
+		size_t num_frequencies    = md_vlx_rsp_cpp_number_of_frequencies(vlx);
+        if (num_excited_states == 0 && num_normal_modes == 0 && num_frequencies == 0) return;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Response", &rsp.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
@@ -3146,213 +3338,12 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
             
-            if (num_excited_states > 0 && ImGui::TreeNode("Absorption Analysis")) {
-                if (rsp.first_plot_rot_ecd) {
-                    ImGui::SetNextItemOpen(true);
-                }
-                bool refit = false;
-                bool recalc = false;
+            if (num_excited_states > 0) {
+                draw_rsp_linear();
+			}
 
-                rsp.hovered = -1;
-
-                const float avail_width = ImGui::GetContentRegionAvail().x;
-                ImGui::PushItemWidth(MIN(avail_width, 200));
-                recalc |= ImGui::SliderScalar((const char*)u8"Broadening γ HWHM (eV)", ImGuiDataType_Double, &rsp.broadening_gamma, &gamma_min, &gamma_max);
-                recalc |= ImGui::Combo("Broadening mode", (int*)(&rsp.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
-                refit  |= ImGui::Combo("X unit", (int*)(&rsp.x_unit), x_unit_full_str, X_UNIT_COUNT);
-                ImGui::PopItemWidth();
-
-                refit  |= recalc;
-
-                const int num_peaks = (int)num_excited_states;
-
-                const double* y_osc_peaks = md_vlx_rsp_oscillator_strengths(vlx);
-                const double* y_cgs_peaks = md_vlx_rsp_rotatory_strengths(vlx);
-                const double* x_abs_ev = md_vlx_rsp_absorption_ev(vlx);
-
-                ImVec2* pixel_osc_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-                ImVec2* pixel_cgs_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-                ImVec2* pixel_osc_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-                ImVec2* pixel_cgs_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-
-                double (*distr_func)(double x, double x_o, double gamma) = 0;
-                // @NOTE: Do broadening in eV
-                switch (rsp.broadening_mode) {
-                    case BROADENING_MODE_GAUSSIAN:
-                        distr_func = &gaussian;
-                        break;
-                    case BROADENING_MODE_LORENTZIAN:
-                        distr_func = &lorentzian;
-                        break;
-                    default:
-                        ASSERT(false);  // Should not happen
-                        break;
-                }
-
-                if (recalc || rsp.first_plot_rot_ecd) {
-                    osc_to_eps(rsp.eps, rsp.x_ev_samples, NUM_SAMPLES, y_osc_peaks, x_abs_ev, num_peaks, distr_func, rsp.broadening_gamma * 2);
-                    rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, NUM_SAMPLES, y_cgs_peaks, x_abs_ev, num_peaks, distr_func, rsp.broadening_gamma * 2);
-                    rsp.y_axis_sync_factor_eps = compute_display_multiplier_from_peaks(rsp.eps, NUM_SAMPLES, y_osc_peaks, num_peaks);
-                    rsp.y_axis_sync_factor_ecd = compute_display_multiplier_from_peaks(rsp.ecd, NUM_SAMPLES, y_cgs_peaks, num_peaks);
-                }
-
-                if (refit || rsp.first_plot_rot_ecd) {
-                    // Do unit conversions (X axis)
-                    convert_values(rsp.x_unit_peaks, x_abs_ev, num_peaks, rsp.x_unit);
-                    convert_values(rsp.x_unit_samples, rsp.x_ev_samples, NUM_SAMPLES, rsp.x_unit);
-                }
-
-                // Explicit x axis limits for linking
-                static double x_min = 0.0;
-                static double x_max = 10.0;
-
-                ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
-                const ImGuiTreeNodeFlags tree_flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-                if (ImGui::TreeNodeEx("Absorption Plot", tree_flags)) {
-                    ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
-
-                    if (refit || rsp.first_plot_rot_ecd) {
-                        ImPlot::SetNextAxesToFit();
-                    }
-
-                    if (ImPlot::BeginPlot("Absorption")) {
-                        ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                        ImPlot::SetupAxis(ImAxis_X1, x_unit_full_str[rsp.x_unit]);
-                        ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
-                        ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε (L mol⁻¹ cm⁻¹)");
-                        ImPlot::SetupFinish();
-
-                        ImPlot::SetAxis(ImAxis_Y2);
-                        ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.eps, NUM_SAMPLES);
-
-                        ImPlot::SetAxis(ImAxis_Y1);
-                        plot_peaks("Oscillator Strength", rsp.x_unit_peaks, y_osc_peaks, num_peaks, rsp.selected, rsp.hovered);
-
-                        if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
-                            double x_val = rsp.x_unit_peaks[rsp.hovered];
-                            double y_val = y_osc_peaks[rsp.hovered];
-                            int state = rsp.hovered + 1;
-                            const char* x_label = x_unit_label_str[rsp.x_unit];
-                            const char* x_unit = x_unit_short_str[rsp.x_unit];
-                            if (ImGui::BeginTooltip()) {
-                                ImGui::Text("State %i: %s = %.2f (%s), f = %.3f", state, x_label, x_val, x_unit, y_val);
-                                ImGui::EndTooltip();
-                            }
-                        }
-
-                        // adjust plot axes before endplot, to keep y-axes in sync
-                        ImPlot::SyncAxesWithPadding(ImAxis_Y2, ImAxis_Y1, rsp.y_axis_sync_factor_eps);
-                        ImPlot::EndPlot();
-                    }
-                }
-                
-                ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
-                if (ImGui::TreeNodeEx("ECD Plot", tree_flags)) {
-                    ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
-
-                    if (refit || rsp.first_plot_rot_ecd) {
-                        ImPlot::SetNextAxesToFit();
-                    }
-
-                    if (ImPlot::BeginPlot("ECD")) {
-                        ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                        ImPlot::SetupAxis(ImAxis_X1, x_unit_full_str[rsp.x_unit]);
-                        ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"R (10⁻⁴⁰ cgs)", ImPlotAxisFlags_AuxDefault);
-                        ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)");
-                        ImPlot::SetupFinish();
-
-                        ImPlot::SetAxis(ImAxis_Y2);
-                        ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.ecd, NUM_SAMPLES);
-
-                        ImPlot::SetAxis(ImAxis_Y1);
-                        plot_peaks("Rotatory Strength", rsp.x_unit_peaks, y_cgs_peaks, num_peaks, rsp.selected, rsp.hovered);
-
-                        if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
-                            double x_val = rsp.x_unit_peaks[rsp.hovered];
-                            double y_val = y_cgs_peaks[rsp.hovered];
-                            int state = rsp.hovered + 1;
-                            const char* x_label = x_unit_label_str[rsp.x_unit];
-                            const char* x_unit  = x_unit_short_str[rsp.x_unit];
-                            if (ImGui::BeginTooltip()) {
-                                ImGui::Text((const char*)u8"State %i: %s = %.2f (%s), R = %.3f (10⁻⁴⁰ cgs)", state, x_label, x_val, x_unit, y_val);
-                                ImGui::EndTooltip();
-                            }
-                        }
-
-
-                        // adjust plot axes before endplot, to keep zeros aligned
-                        ImPlot::SyncAxesY();
-                        ImPlot::EndPlot();
-                    }
-                }
-                rsp.first_plot_rot_ecd = false;
-
-                // Table
-                static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
-                    ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_Sortable;
-
-                static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_DefaultSort;
-
-                ImVec2 table_size = { 0, 0 };
-
-                const double* x_values = rsp.x_unit_peaks;
-                const double* f_values = y_osc_peaks;
-                const double* r_values = y_cgs_peaks;
-
-                if (ImGui::BeginTable("abs table", 4, flags, table_size, 0)) {
-                    ImGui::TableSetupColumn("State", columns_base_flags, 0.0f);
-                    ImGui::TableSetupColumn(x_unit_full_str[rsp.x_unit], columns_base_flags, 0.0f);
-                    ImGui::TableSetupColumn("f", columns_base_flags, 0.0f);
-                    ImGui::TableSetupColumn((const char*)u8"R (10⁻⁴⁰ cgs)", columns_base_flags, 0.0f);
-                    ImGui::TableSetupScrollFreeze(0, 1);
-                    ImGui::TableHeadersRow();
-
-                    // TODO: Add sorting to the table once the vibs data structure is properly defined
-
-                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                    ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                    bool item_hovered = false;
-                    for (int row_n = 0; row_n < (int)num_excited_states; row_n++) {
-
-                        ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                        bool is_sel = row_n == rsp.selected;
-                        bool is_hov = row_n == rsp.hovered;
-                        bool hov_col = false;
-                        ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
-                        ImGui::TableNextColumn();
-
-                        if (is_sel) {
-                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_BLUE);
-                        }
-                        else {
-                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                        }
-
-                        char lable[16];
-                        sprintf(lable, "%i", row_n + 1);
-                        if (ImGui::Selectable(lable, is_sel || is_hov, selectable_flags)) {
-                            rsp.selected = (rsp.selected == row_n) ? -1 : row_n;
-                        }
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", x_values[row_n]);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", f_values[row_n]);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", r_values[row_n]);
-
-                        ImGui::PopStyleColor(1);
-                    }
-                    if (ImGui::IsWindowHovered() && ImGui::TableGetHoveredRow() > 0) {
-                        rsp.hovered = ImGui::TableGetHoveredRow() - 1;
-                    }
-                    else {
-                        rsp.hovered = -1;
-                    }
-
-                    ImGui::PopStyleColor(2);
-                    ImGui::EndTable();
-                }
-                ImGui::TreePop();
+            if (num_frequencies > 0) {
+                draw_rsp_cpp();
             }
 
             if (num_normal_modes > 0) {
@@ -3387,19 +3378,6 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_normal_modes);
 
-                    double (*distr_func)(double x, double x_o, double gamma, double intensity) = 0;
-                    switch (vib.broadening_mode) {
-                        case BROADENING_MODE_GAUSSIAN:
-                            distr_func = &phys_gaussian;
-                            break;
-                        case BROADENING_MODE_LORENTZIAN:
-                            distr_func = &phys_lorentzian;
-                            break;
-                        default:
-                            ASSERT(false);  // Should not happen
-                            break;
-                    }
-
                     if (vib.first_plot) {
                         // Populate x_values
                         const double x_min = x_values[0] - 100.0;
@@ -3412,7 +3390,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     if (vib.first_plot || recalc) {
-                        general_broadening(vib.y_samples, vib.x_samples, NUM_SAMPLES, y_values, x_values, num_normal_modes, distr_func, vib.gamma * 2);
+                        general_broadening(vib.y_samples, vib.x_samples, NUM_SAMPLES, y_values, x_values, num_normal_modes, vib.broadening_mode, vib.gamma * 2);
                     }
 
                     ImGui::Checkbox("Invert X", &vib.invert_x);
