@@ -9625,13 +9625,21 @@ static void draw_representations_opaque(ApplicationState* data) {
         }
 
 		// MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
-	    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
-        vec3_t half_extents = {
-            0.5f * vec3_length(basis.col[0]),
-            0.5f * vec3_length(basis.col[1]),
-            0.5f * vec3_length(basis.col[2])
-        };
-		float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+        float max_bond_length = 10.0f;
+        if (md_unitcell_flags(&data->mold.sys.unitcell) == 0) {
+            vec3_t aabb_ext = vec3_sub(data->mold.sys_aabb_max, data->mold.sys_aabb_min);
+            max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
+        }
+        else {
+	        mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
+            vec3_t half_extents = {
+                0.5f * vec3_length(basis.col[0]),
+                0.5f * vec3_length(basis.col[1]),
+                0.5f * vec3_length(basis.col[2])
+            };
+		    float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+            max_bond_length = MAX(3.0, min_half_box_extent);
+        }
 
         md_gl_draw_args_t args = {
             .shaders = data->mold.gl_shaders,
@@ -9646,7 +9654,7 @@ static void draw_representations_opaque(ApplicationState* data) {
                 .prev_view_matrix = &data->view.param.matrix.prev.view.elem[0][0],
                 .prev_proj_matrix = &data->view.param.matrix.prev.proj.elem[0][0],
             },
-            .max_bond_length = min_half_box_extent,
+            .max_bond_length = max_bond_length,
         };
 
         md_gl_draw(&args);
@@ -9766,13 +9774,21 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
     }
 
     // MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
-    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
-    vec3_t half_extents = {
-        0.5f * vec3_length(basis.col[0]),
-        0.5f * vec3_length(basis.col[1]),
-        0.5f * vec3_length(basis.col[2])
-    };
-    float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+    float max_bond_length = 10.0f;
+    if (md_unitcell_flags(&data->mold.sys.unitcell) == 0) {
+        vec3_t aabb_ext = vec3_sub(data->mold.sys_aabb_max, data->mold.sys_aabb_min);
+        max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
+    }
+    else {
+	    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
+        vec3_t half_extents = {
+            0.5f * vec3_length(basis.col[0]),
+            0.5f * vec3_length(basis.col[1]),
+            0.5f * vec3_length(basis.col[2])
+        };
+		float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+        max_bond_length = MAX(3.0, min_half_box_extent);
+    }
 
     md_gl_draw_args_t args = {
         .shaders = data->mold.gl_shaders_lean_and_mean,
@@ -9788,7 +9804,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             //.prev_projection_matrix = &data->view.param.matrix.previous.proj[0][0],
         },
         .atom_mask = mask,
-		.max_bond_length = min_half_box_extent,
+		.max_bond_length = max_bond_length,
     };
 
     md_gl_draw(&args);
