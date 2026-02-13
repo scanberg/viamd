@@ -412,7 +412,7 @@ struct Dataset : viamd::EventHandler {
                 ImGui::Separator();
             }
 
-            if (num_entities && ImGui::CollapsingHeader("Atom Types")) {
+            if (num_atom_types && ImGui::CollapsingHeader("Atom Types")) {
                 ImGui::Indent();
                 for (size_t i = 0; i < num_atom_types; ++i) {
                     DatasetItem& item = atom_types[i];
