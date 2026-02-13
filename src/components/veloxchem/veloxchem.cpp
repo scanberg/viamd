@@ -59,6 +59,12 @@
 
 #define U32_MAGENTA IM_COL32(255, 0, 255, 255)
 
+#define U32_VELOXCHEM_GREEN IM_COL32(0, 162, 135, 191)
+#define F32_VELOXCHEM_GREEN {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f}
+
+// Complement to veloxchem green (magentaish)
+#define F32_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
+
 static const uint64_t ATOM_PROPERTY_RESP_CHARGE = HASH_STR_LIT("ATOM PROPERTY RESP CHARGE");
 
 // Broadening min max values
@@ -371,24 +377,21 @@ struct VeloxChem : viamd::EventHandler {
             int8_t hovered_index = -1;
         } group;
 
-        IsoDesc iso_psi = {
-            .enabled = true,
-            .count = 2,
-            .values = {0.05f, -0.05},
-            .colors = {{0.f/255.f,75.f/255.f,135.f/255.f,0.75f}, {255.f/255.f,205.f/255.f,0.f/255.f,0.75f}},
-        };
+        double iso_val = 0.05;
+        
+        vec4_t col_pos = { 0.0f, 0.294f, 0.529f, 0.75f };
+        vec4_t col_neg = { 1.0f, 0.804f, 0.0f,   0.75f };
 
-        IsoDesc iso_den = {
-            .enabled = true,
-            .count = 1,
-            .values = {0.0025f},
-            .colors = {{255.f/255.f,255.f/255.f,255.f/255.f,0.75f}},
-        };
+        vec4_t col_den = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t col_att = F32_VELOXCHEM_GREEN;
+        vec4_t col_det = F32_VELOXCHEM_MAGENTA;
 
         struct {
-            bool enabled = true;
-            vec4_t colors[3] = {{0.f / 255.f, 255.f / 255.f, 255.f / 255.f, 1.f},
-                {255.f / 255.f, 0.f / 255.f, 255.f / 255.f, 1.f}};
+            bool enabled = false;
+            vec4_t colors[3] = {
+                {0.0f, 1.0f, 1.0f, 1.0f},
+                {1.0f, 0.0f, 1.0f, 1.0f}
+            };
             float vector_scale = 1.0f;
             bool show_angle = false;
         } dipole;
@@ -405,6 +408,7 @@ struct VeloxChem : viamd::EventHandler {
 
         float distance_scale = 2.0f;
 
+        bool link_attachment_detachment_density = false;
         bool show_coordinate_system_widget = true;
     } nto;
 
@@ -4850,11 +4854,20 @@ struct VeloxChem : viamd::EventHandler {
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Settings")) {
                     ImGui::Text("Iso Colors");
-                    ImGui::ColorEdit4("##Color Density", nto.iso_den.colors[0].elem);
-                    ImGui::SetItemTooltip("Color Density");
-                    ImGui::ColorEdit4("##Color Positive", nto.iso_psi.colors[0].elem);
+                    ImGui::Checkbox("Link Attachment/Detachment Density Colors", &nto.link_attachment_detachment_density);
+                    if (nto.link_attachment_detachment_density) {
+                        ImGui::ColorEdit4("##Color Density", nto.col_den.elem);
+                        ImGui::SetItemTooltip("Color Density");
+                    } else {
+                        ImGui::ColorEdit4("##Color Attachment", nto.col_att.elem);
+                        ImGui::SetItemTooltip("Color Attachment");
+                        ImGui::ColorEdit4("##Color Detachment", nto.col_det.elem);
+                        ImGui::SetItemTooltip("Color Detachment");
+                    }
+
+                    ImGui::ColorEdit4("##Color Positive", nto.col_pos.elem);
                     ImGui::SetItemTooltip("Color Positive");
-                    ImGui::ColorEdit4("##Color Negative", nto.iso_psi.colors[1].elem);
+                    ImGui::ColorEdit4("##Color Negative", nto.col_neg.elem);
                     ImGui::SetItemTooltip("Color Negative");
 
                     ImGui::Text("Transition Dipole Moments");
@@ -4903,18 +4916,11 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::Spacing();
             const double iso_min = 1.0e-8;
             const double iso_max = 5.0;
-            double iso_val = nto.iso_psi.values[0];
+            
             ImGui::Spacing();
             ImGui::Text((const char*)u8"Iso Value (Ψ²)"); 
-            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &nto.iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Iso Value");
-
-            nto.iso_psi.values[0] =  (float)iso_val;
-            nto.iso_psi.values[1] = -(float)iso_val;
-            nto.iso_psi.count = 2;
-            nto.iso_psi.enabled = true;
-
-            nto.iso_den.values[0] = (float)(iso_val * iso_val);
 
             ImGui::Spacing();
 
@@ -5575,7 +5581,7 @@ struct VeloxChem : viamd::EventHandler {
                 PUSH_GPU_SECTION("Postprocessing")
                 postprocessing::Descriptor postprocess_desc = {
                     .background = {
-                        .color = {24.f, 24.f, 24.f},
+                        .color = state.visuals.background.color * state.visuals.background.intensity,
                     },
                     .tonemapping = {
                         .enabled    = state.visuals.tonemapping.enabled,
@@ -5631,9 +5637,32 @@ struct VeloxChem : viamd::EventHandler {
 
                 PUSH_GPU_SECTION("NTO RAYCAST")
                 for (int i : nto_target_idx) {
-                    const IsoDesc& iso = (i == NTO_Attachment || i == NTO_Detachment) ? nto.iso_den : nto.iso_psi;
+                    bool is_density = (i == NTO_Attachment || i == NTO_Detachment);
+                    
+                    bool enabled = true;
+                    size_t count = is_density ? 1 : 2;
+                    float  values[2];
+                    vec4_t colors[2];
+                    
+                    if (is_density) {
+                        if (nto.link_attachment_detachment_density) {
+                            colors[0] = nto.col_den;
+                        } else {
+                            if (i == NTO_Attachment) {
+                                colors[0] = nto.col_att;
+                            } else {
+                                colors[0] = nto.col_det;
+                            }
+                        }
+                        values[0] = nto.iso_val * nto.iso_val;
+                    } else {
+                        colors[0] = nto.col_pos;
+                        colors[1] = nto.col_neg;
+                        values[0] = nto.iso_val;
+                        values[1] = -nto.iso_val;
+                    }
 
-                    if (iso.enabled) {
+                    if (enabled) {
                         volume::RenderDesc vol_desc = {
                             .render_target = {
                                 .depth  = nto.gbuf.tex.depth,
@@ -5652,10 +5681,10 @@ struct VeloxChem : viamd::EventHandler {
                                 .inv_proj = inv_proj_mat,
                             },
                             .iso = {
-                                .enabled = iso.enabled,
-                                .count   = iso.count,
-                                .values  = iso.values,
-                                .colors  = iso.colors,
+                                .enabled = enabled,
+                                .count   = count,
+                                .values  = values,
+                                .colors  = colors,
                             },
                             .shading = {
                                 .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
