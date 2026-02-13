@@ -1099,7 +1099,6 @@ int main(int argc, char** argv) {
 
         {
             std::string text = editor.GetText();
-            data.script.text = {text.c_str(), text.length()};
             data.script.text_hash = md_hash64(text.c_str(), text.length(), 0);
         }
 
@@ -2236,7 +2235,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             float* x = data->dst_x + range_beg;
             float* y = data->dst_y + range_beg;
             float* z = data->dst_z + range_beg;
-            md_util_pbc(x, y, z, 0, count, &data->unitcell);
+            md_util_pbc(x, y, z, NULL, count, &data->unitcell);
         });
         tasks[num_tasks++] = pbc_task;
     } 
@@ -2356,7 +2355,9 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         if (md_array_size(state->interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
 			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
         }
-        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [data = &payload, mode]() {
+        size_t num_backbone_segments = sys.protein_backbone.segment.count;
+        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            (void)thread_num;
             const md_secondary_structure_t* src_ss[4] = {
                 (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
                 (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
@@ -2369,7 +2370,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 MD_LOG_DEBUG("Unsupported interpolation mode for secondary structure interpolation");
                 [[fallthrough]];
             case InterpolationMode::Nearest: {
-                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss = src_ss_nearest[i];
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = ss;
@@ -2378,7 +2379,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 break;
             }
             case InterpolationMode::Linear: {
-                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
                     md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
                     md_gl_secondary_structure_t ss_gl_i = {
@@ -2392,14 +2393,31 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 break;
             }
             case InterpolationMode::CubicSpline: {
-                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };
+
+
                     md_gl_secondary_structure_t ss_gl[4] = {
                         md_gl_secondary_structure_convert(ss[0]),
                         md_gl_secondary_structure_convert(ss[1]),
                         md_gl_secondary_structure_convert(ss[2]),
                         md_gl_secondary_structure_convert(ss[3]),
                     };
+
+                    auto is_same = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                        return a.helix == b.helix && a.sheet == b.sheet;
+                    };
+
+                    // Cleanup isolated coils temporally to reduce noise during transitions.
+                    // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
+                    // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
+                    if (is_same(ss_gl[0], ss_gl[2]) && is_same(ss_gl[0], ss_gl[3]) && !is_same(ss_gl[1], ss_gl[0])) {
+                        ss_gl[1] = ss_gl[0];
+                    }
+                    if (is_same(ss_gl[1], ss_gl[0]) && is_same(ss_gl[1], ss_gl[3]) && !is_same(ss_gl[2], ss_gl[1])) {
+                        ss_gl[2] = ss_gl[1];
+                    }
+
                     md_gl_secondary_structure_t ss_gl_i = {
                         .helix = cubic_spline(ss_gl[0].helix, ss_gl[1].helix, ss_gl[2].helix, ss_gl[3].helix, data->t, data->s),
                         .sheet = cubic_spline(ss_gl[0].sheet, ss_gl[1].sheet, ss_gl[2].sheet, ss_gl[3].sheet, data->t, data->s),
@@ -2413,6 +2431,30 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             }
         });
         tasks[num_tasks++] = ss_task;
+
+#if 0
+        // Task for cleaning up isolated coils to its neighbors (if the same), to reduce the noise in the secondary structure during transitions. This is a non temporal filtering step
+        task_system::ID ss_cleanup_task = task_system::create_pool_task(STR_LIT("## Cleanup Secondary Structures"), [data = &payload]() {
+            md_gl_secondary_structure_t* ss_gl = data->state->interpolated_properties.secondary_structure;
+            for (size_t i = 0; i < data->state->mold.sys.protein_backbone.range.count; ++i) {
+                size_t range_beg = md_index_range_beg(&data->state->mold.sys.protein_backbone.range, i);
+                for (size_t j = )
+            }
+            for (size_t i = range_beg; i < range_end; ++i) {
+                // Cleanup isolated coils to reduce noise during transitions
+                auto is_same = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                    return a.helix == b.helix && a.sheet == b.sheet;
+                };
+                if (i > 0 && i < data->state->mold.sys.protein_backbone.segment.count - 1) {
+                    if (is_same(ss_gl[i - 1], ss_gl[i + 1]) && !is_same(ss_gl[i], ss_gl[i - 1])) {
+                        ss_gl[i] = ss_gl[i - 1];
+                    }
+                }
+            }
+        });
+        tasks[num_tasks++] = ss_cleanup_task;
+#endif
+
         state->mold.dirty_buffers |= MolBit_DirtySecondaryStructure;
     }
 
@@ -8006,7 +8048,6 @@ static void launch_prefetch_job(ApplicationState* data) {
     });
 
     task_system::ID main_task = task_system::create_main_task(STR_LIT("Prefetch Complete"), [data]() {
-        interpolate_atomic_properties(data);
         data->mold.dirty_buffers |= MolBit_ClearVelocity;
     });
 

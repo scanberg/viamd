@@ -178,36 +178,58 @@ void color_atoms_inst_idx(uint32_t* colors, size_t count, const md_system_t& sys
 }
 
 void color_atoms_sec_str(uint32_t* colors, size_t count, const md_system_t& sys) {
-    const uint32_t color_unknown = 0x22222222;
-    const uint32_t color_coil    = 0xDDDDDDDD;
+    const uint32_t color_unknown = 0xFF555555;
+    const uint32_t color_coil    = 0xFFDDDDDD;
     const uint32_t color_helix   = 0xFF22DD22;
     const uint32_t color_sheet   = 0xFFDD2222;
 
     if (sys.protein_backbone.segment.secondary_structure) {
-        for (size_t i = 0; i < sys.protein_backbone.segment.count; i++) {
-            md_secondary_structure_t ss = sys.protein_backbone.segment.secondary_structure[i];
-            uint32_t color = color_unknown;
-            switch (ss) {
-                case MD_SECONDARY_STRUCTURE_HELIX_310:
-                case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
-                case MD_SECONDARY_STRUCTURE_HELIX_PI:
-                    color = color_helix;
-                    break;
-                case MD_SECONDARY_STRUCTURE_BETA_SHEET:
-                case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
-                    color = color_sheet;
-                    break;
-                case MD_SECONDARY_STRUCTURE_COIL:
-                case MD_SECONDARY_STRUCTURE_TURN:
-                case MD_SECONDARY_STRUCTURE_BEND:
-                case MD_SECONDARY_STRUCTURE_UNKNOWN:
-                default:
-                    color = color_coil;
-                    break;
+        for (size_t i = 0; i < sys.protein_backbone.range.count; ++i) {
+            uint32_t range_beg = sys.protein_backbone.range.offset[i];
+            uint32_t range_end = sys.protein_backbone.range.offset[i+1];
+            uint32_t range_ext = range_end - range_beg;
+
+            size_t temp_pos = md_temp_get_pos();
+            uint32_t* seg_colors = (uint32_t*)md_temp_push(sizeof(uint32_t) * range_ext);
+            for (size_t j = 0; j < range_ext; ++j) {
+                md_secondary_structure_t ss = sys.protein_backbone.segment.secondary_structure[range_beg + j];
+                uint32_t color = color_unknown;
+                switch (ss) {
+                    case MD_SECONDARY_STRUCTURE_HELIX_310:
+                    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
+                    case MD_SECONDARY_STRUCTURE_HELIX_PI:
+                        color = color_helix;
+                        break;
+                    case MD_SECONDARY_STRUCTURE_BETA_SHEET:
+                    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
+                        color = color_sheet;
+                        break;
+                    case MD_SECONDARY_STRUCTURE_COIL:
+                    case MD_SECONDARY_STRUCTURE_TURN:
+                    case MD_SECONDARY_STRUCTURE_BEND:
+                    case MD_SECONDARY_STRUCTURE_UNKNOWN:
+                    default:
+                        color = color_coil;
+                        break;
+                }
+                seg_colors[j] = color;
             }
-            md_comp_idx_t res_idx = sys.protein_backbone.segment.comp_idx[i];
-            md_urange_t range = md_comp_atom_range(&sys.comp, res_idx);
-            set_colors(colors + range.beg, range.end - range.beg, color);
+
+            // Fill isolated coils within sheets to sheet color for better visualization
+            for (size_t j = 0; j < range_ext; ++j) {
+                uint32_t color = seg_colors[j];
+#if 1
+                if (j > 0 && j + 1 < range_ext) {
+                    if (color == color_coil && seg_colors[j-1] == color_sheet && seg_colors[j+1] == color_sheet) {
+                        color = color_sheet;
+                    }
+                }
+#endif
+                md_comp_idx_t res_idx = sys.protein_backbone.segment.comp_idx[range_beg + j];
+                md_urange_t range = md_comp_atom_range(&sys.comp, res_idx);
+                set_colors(colors + range.beg, range.end - range.beg, color);
+            }
+            md_temp_set_pos_back(temp_pos);
         }
     } else {
         set_colors(colors, count, color_unknown);

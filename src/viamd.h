@@ -774,7 +774,6 @@ struct ApplicationState {
         vec4_t text_color       = {1,1,1,1};
         vec4_t text_bg_color    = {0,0,0,0.5f};
 
-        str_t text; // The current text in the texteditor
         uint64_t text_hash;
 
         // A bit confusing and a bit of a hack,
