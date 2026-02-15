@@ -2393,9 +2393,11 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 break;
             }
             case InterpolationMode::CubicSpline: {
+                const md_gl_secondary_structure_t ss_coil = { 0,0 };
+                const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
+
                 for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };
-
 
                     md_gl_secondary_structure_t ss_gl[4] = {
                         md_gl_secondary_structure_convert(ss[0]),
@@ -2404,19 +2406,25 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                         md_gl_secondary_structure_convert(ss[3]),
                     };
 
-                    auto is_same = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                    auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
                         return a.helix == b.helix && a.sheet == b.sheet;
                     };
 
                     // Cleanup isolated coils temporally to reduce noise during transitions.
                     // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
                     // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
-                    if (is_same(ss_gl[0], ss_gl[2]) && is_same(ss_gl[0], ss_gl[3]) && !is_same(ss_gl[1], ss_gl[0])) {
-                        ss_gl[1] = ss_gl[0];
+#if 0
+                    if (is_eq(ss_gl[1], ss_coil)) {
+                        if (is_eq(ss_gl[0], ss_gl[2]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[1], ss_gl[0])) {
+                            ss_gl[1] = ss_gl[0];
+                        }
                     }
-                    if (is_same(ss_gl[1], ss_gl[0]) && is_same(ss_gl[1], ss_gl[3]) && !is_same(ss_gl[2], ss_gl[1])) {
-                        ss_gl[2] = ss_gl[1];
+                    if (is_eq(ss_gl[2], ss_coil)) {
+                        if (is_eq(ss_gl[0], ss_gl[1]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[0])) {
+                            ss_gl[2] = ss_gl[0];
+                        }
                     }
+#endif
 
                     md_gl_secondary_structure_t ss_gl_i = {
                         .helix = cubic_spline(ss_gl[0].helix, ss_gl[1].helix, ss_gl[2].helix, ss_gl[3].helix, data->t, data->s),
@@ -2435,19 +2443,21 @@ static void interpolate_atomic_properties(ApplicationState* state) {
 #if 0
         // Task for cleaning up isolated coils to its neighbors (if the same), to reduce the noise in the secondary structure during transitions. This is a non temporal filtering step
         task_system::ID ss_cleanup_task = task_system::create_pool_task(STR_LIT("## Cleanup Secondary Structures"), [data = &payload]() {
+            // Cleanup isolated coils to reduce noise during transitions
+            auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                return a.helix == b.helix && a.sheet == b.sheet;
+            };
+            const md_gl_secondary_structure_t ss_coil = { 0,0 };
+            const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
+
             md_gl_secondary_structure_t* ss_gl = data->state->interpolated_properties.secondary_structure;
             for (size_t i = 0; i < data->state->mold.sys.protein_backbone.range.count; ++i) {
-                size_t range_beg = md_index_range_beg(&data->state->mold.sys.protein_backbone.range, i);
-                for (size_t j = )
-            }
-            for (size_t i = range_beg; i < range_end; ++i) {
-                // Cleanup isolated coils to reduce noise during transitions
-                auto is_same = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
-                    return a.helix == b.helix && a.sheet == b.sheet;
-                };
-                if (i > 0 && i < data->state->mold.sys.protein_backbone.segment.count - 1) {
-                    if (is_same(ss_gl[i - 1], ss_gl[i + 1]) && !is_same(ss_gl[i], ss_gl[i - 1])) {
-                        ss_gl[i] = ss_gl[i - 1];
+                size_t range_beg = data->state->mold.sys.protein_backbone.range.offset[i];
+                size_t range_end = data->state->mold.sys.protein_backbone.range.offset[i + 1];
+                for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
+                    // Set isolated coils between sheets to sheet to reduce noise during transitions, as this is likely a result of flickering during secondary structure assignment
+                    if (is_eq(ss_gl[j - 1], ss_sheet) && is_eq(ss_gl[j + 1], ss_sheet) && is_eq(ss_gl[j], ss_coil)) {
+                        ss_gl[j] = ss_sheet;
                     }
                 }
             }
