@@ -47,12 +47,17 @@ vec3 ACES(in vec3 c) {
 }
 
 void main() {
-    const float exposure_bias = 0.25;
-
     vec4 in_frag = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
-    vec3 hdr = in_frag.rgb * exposure_bias * u_exposure;
-    vec3 curr = ACESFitted(hdr);
 
-    vec3 color = pow(curr, vec3(1.0 / u_gamma));
+    const float exposure_bias = 0.25;
+    const float white_point = 24.0;
+
+    vec3 hdr = in_frag.rgb * exposure_bias * u_exposure;
+
+    vec3 white_scale = ACESFitted(vec3(white_point * exposure_bias * u_exposure));
+    vec3 color = ACESFitted(hdr) / white_scale;
+    color = clamp(color, 0.0, 1.0);
+
+    color = pow(color, vec3(1.0 / u_gamma));
     out_frag = vec4(color, in_frag.a);
 }

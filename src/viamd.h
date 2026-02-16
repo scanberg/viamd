@@ -7,13 +7,21 @@
 #include <md_script.h>
 #include <md_gl.h>
 
+#include <app/IconsFontAwesome6.h>
 #include <app/application.h>
 #include <gfx/camera.h>
 #include <gfx/camera_utils.h>
 #include <gfx/view_param.h>
 #include <gfx/postprocessing_utils.h>
-#include <task_system.h>
 
+#include <task_system.h>
+#include <loader.h>
+
+#include <TextEditor.h>
+#include <implot.h>
+#include <imgui_notify.h>
+
+#include <bitset>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -27,6 +35,16 @@
 // For gpu profiling
 #define PUSH_GPU_SECTION(lbl) { if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); }
 #define POP_GPU_SECTION()     { if (glPopDebugGroup) glPopDebugGroup(); }
+
+// For logging
+#define VIAMD_LOG_INFO  MD_LOG_INFO
+#define VIAMD_LOG_DEBUG MD_LOG_DEBUG
+#define VIAMD_LOG_ERROR MD_LOG_ERROR
+#define VIAMD_LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
+
+#define DISPLAY_PROPERTY_MAX_POPULATION_SIZE 256
+#define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
+#define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
 
 enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Component, Instance };
@@ -136,7 +154,106 @@ enum MolBit_ {
     MolBit_ClearVelocity            = 0x20,
 };
 
-struct DisplayProperty;
+// This is viamd's representation of a property
+struct DisplayProperty {
+    enum Type {
+        Type_Temporal,
+        Type_Distribution,
+        Type_Volume,
+        Type_Count
+    };
+
+    enum PlotType {
+        PlotType_Line,      // Single line
+        PlotType_Area,      // Shaded area
+        PlotType_Bars,      // Bar chart
+        PlotType_Scatter,   // Scatter plot
+        PlotType_Count
+    };
+
+    enum ColorType {
+        ColorType_Solid,
+        ColorType_Colormap,
+        ColorType_Count
+    };
+
+    // This is the payload passed to getters for display properties
+    struct Payload {
+        DisplayProperty* display_prop;
+        int dim_idx;
+    };
+
+    // Callback signature for printing out the value (when hovering with mouse for example)
+    typedef int (*PrintValue)(char* buf, size_t buf_cap, int sample_idx, Payload* data);
+
+    struct Histogram {
+        int num_bins;
+        int dim = 0;
+        // Can be multidimensional
+        // Total number of entries will be dim * num_bins
+        md_array(float) bins = 0;
+        double x_min;
+        double x_max;
+        double y_min;
+        double y_max;
+        md_allocator_i* alloc;
+    };
+
+    Type type = Type_Temporal;
+
+    char label[32] = "";
+
+    ColorType color_type = ColorType_Solid;
+    ImVec4 color = {1,1,1,1};
+    ImPlotColormap colormap = ImPlotColormap_Plasma;
+    float colormap_alpha = 1.0f;
+
+    PlotType plot_type = PlotType_Line;
+    ImPlotMarker marker_type = ImPlotMarker_Square;
+    float marker_size = 1.0f;
+    double bar_width_scale = 1.0;
+
+    // We need two getters to support areas (min / max)
+    ImPlotGetter getter[2] = {0,0};
+    PrintValue   print_value = 0;
+
+    bool aggregate_histogram = false;
+
+    int dim = 1;                // Number of values per sample
+    int num_samples = 0;        // Number of samples (length of x)
+    const float* y_values = 0;  // Values (y)
+    const float* x_values = 0;  // Corresponding x values
+
+    int num_bins = 128;         // Requested number of bins for histogram
+
+    md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
+    char unit_str[2][32] = {"",""};
+
+    const md_script_eval_t* eval = NULL;
+
+    md_script_property_flags_t prop_flags = MD_SCRIPT_PROPERTY_FLAG_NONE;
+    const md_script_property_data_t* prop_data = NULL;
+    const md_script_vis_payload_o* vis_payload = NULL;
+
+    uint64_t prop_fingerprint = 0;
+
+    // Encodes which temporal subplots this property is visible in
+    uint32_t temporal_subplot_mask = 0;
+
+    // Encodes which distribution subplots this property is visible in
+    uint32_t distribution_subplot_mask = 0;
+
+    bool show_in_volume = false;
+    bool partial_evaluation = false;
+
+    // Encodes which indices of the population to show (if applicable, i.e. dim > 1)
+    std::bitset<DISPLAY_PROPERTY_MAX_POPULATION_SIZE> population_mask = {};
+
+    STATIC_ASSERT(DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS     <= sizeof(temporal_subplot_mask) * 8,     "Cannot fit temporal subplot mask");
+    STATIC_ASSERT(DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS <= sizeof(distribution_subplot_mask) * 8, "Cannot fit distribution subplot mask");
+
+    Histogram hist = {};
+};
 
 struct LoadDatasetWindowState {
     char path_buf[1024] = "";
@@ -226,6 +343,7 @@ struct AtomElementMapping {
 };
 
 // We use this to represent a single entity within the loaded system, e.g. a residue type
+// This is used to represent multiple types, so all fields are not used in all cases
 struct DatasetItem {
     char label[32] = "";
     uint32_t count = 0;
@@ -235,6 +353,16 @@ struct DatasetItem {
     uint64_t key = 0;            // Unique key of the type
     md_array(int) indices = 0;   // Indices into the corresponding structures which are represented by this item: i.e. chain or residue indices (for highlighting)
     md_array(int) sub_items = 0; // Indices into the items of the subcatagories: i.e. for chain -> unique residues types within that chain
+
+    // Atom type only
+    bool use_defaults = true; // Flag if this particular atom type should be linked to the default values stemming for the element (only applicable to atom types with an element, i.e. not coarse grained)
+};
+
+struct ElementDefault {
+    md_element_t element;
+    vec4_t color;
+    float radius;
+    float mass;
 };
 
 struct DipoleMoment {
@@ -312,6 +440,16 @@ struct EvalAtomProperty {
     bool output_written = false;
     size_t num_values = 0;
     float* dst_values = nullptr;
+};
+
+// Loader parameters for loading a system or trajectory, which are passed via the file queue
+struct LoadParam {
+    md_system_loader_i*     sys_loader  = NULL;
+    md_trajectory_loader_i* traj_loader = NULL;
+    str_t file_path = STR_LIT("");
+    bool coarse_grained = false;
+    const void* sys_loader_arg = NULL;
+    LoadTrajectoryFlags traj_loader_flags = 0;
 };
 
 // Event Payload when an electronic structure is to be evaluated
@@ -467,7 +605,8 @@ struct ApplicationState {
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};
 
-        uint32_t dirty_buffers = 0;
+        bool                interpolate_system_state = false;
+        uint32_t            dirty_gpu_buffers = 0;
     } mold;
 
     DisplayProperty* display_properties = nullptr;
@@ -774,7 +913,6 @@ struct ApplicationState {
         vec4_t text_color       = {1,1,1,1};
         vec4_t text_bg_color    = {0,0,0,0.5f};
 
-        str_t text; // The current text in the texteditor
         uint64_t text_hash;
 
         // A bit confusing and a bit of a hack,
@@ -819,6 +957,8 @@ struct ApplicationState {
     bool show_script_window = true;
     bool show_debug_window = false;
     bool show_property_export_window = false;
+
+    TextEditor editor = {};
 };
 
 static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
@@ -951,9 +1091,43 @@ static inline size_t single_selection_sequence_count(const SingleSelectionSequen
     return i;
 }
 
-void draw_info_window(const ApplicationState& state, uint32_t picking_idx);
+static inline uint64_t generate_fingerprint() {
+    return (uint64_t)md_time_current();
+}
 
+void draw_info_window(const ApplicationState& state, uint32_t picking_idx);
 void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
 
 md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx);
 md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx);
+
+void interrupt_async_tasks(ApplicationState* state);
+
+// Dataset loading
+bool load_dataset_from_file(ApplicationState* state, const LoadParam& param);
+void init_molecule_data(ApplicationState* state);
+void init_trajectory_data(ApplicationState* state);
+
+// Workspace
+void load_workspace(ApplicationState* state, str_t file);
+void save_workspace(ApplicationState* state, str_t file);
+
+// Selections
+Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* bf = 0);
+void remove_selection(ApplicationState* state, int idx);
+void remove_all_selections(ApplicationState* state);
+
+// Representations
+Representation* create_representation(ApplicationState* state, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
+Representation* clone_representation(ApplicationState* state, const Representation& rep);
+void remove_representation(ApplicationState* state, int idx);
+void update_representation(ApplicationState* state, Representation* rep);
+void update_representation_info(ApplicationState* state);
+void update_all_representations(ApplicationState* state);
+
+void flag_representation_as_dirty(Representation* rep);
+void flag_all_representations_as_dirty(ApplicationState* state);
+
+void remove_all_representations(ApplicationState* state);
+void create_default_representations(ApplicationState* state);
+void recompute_atom_visibility_mask(ApplicationState* state);

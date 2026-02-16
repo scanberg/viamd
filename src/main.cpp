@@ -9,8 +9,6 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-#define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
-
 #include <cmath>
 #include <string>
 
@@ -53,71 +51,34 @@
 #include <implot_widgets.h>
 #include <task_system.h>
 #include <color_utils.h>
-#include <loader.h>
 #include <image.h>
-#include <app/application.h>
-#include <app/IconsFontAwesome6.h>
-#include <event.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
 
 #include <implot.h>
 #include <implot_internal.h>
-#include <TextEditor.h>
-#include <imgui_notify.h>
 
 #include <stdio.h>
-#include <bitset>
 
 #include <viamd.h>
-#include <serialization_utils.h>
+#include <event.h>
 
-#define MAX_POPULATION_SIZE 256
-#define MAX_TEMPORAL_SUBPLOTS 10
-#define MAX_DISTRIBUTION_SUBPLOTS 10
 #define EXPERIMENTAL_GFX_API 0
-#define PICKING_JITTER_HACK 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define IR_SEMAPHORE_MAX_COUNT 3
 #define MEASURE_EVALUATION_TIME 1
-#define FRAME_ALLOCATOR_BYTES MEGABYTES(256)
+#define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
 
 #define HIGHLIGHT_PULSE_TIME_SCALE  5.0
 #define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
-
-#define LOG_INFO  MD_LOG_INFO
-#define LOG_DEBUG MD_LOG_DEBUG
-#define LOG_ERROR MD_LOG_ERROR
-#define LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
 // Global data for application
 static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
 static md_allocator_i* persistent_alloc = 0;
 
-static TextEditor editor {};
 static bool use_gfx = false;
-
-constexpr str_t header_snippet = STR_LIT(
-R"(#01010110#01001001#01000001#01001101#01000100#01001101#01000001#01001001#01010110#
-#                                                                                #
-#            VIAMD — Visual Interactive Analysis of Molecular Dynamics           #
-#                                                                                #
-#                    github: https://github.com/scanberg/viamd                   #
-#                 manual: https://github.com/scanberg/viamd/wiki                 #
-#                    youtube playlist: https://bit.ly/4aRsPrh                    #
-#                                twitter: @VIAMD_                                #
-#                                                                                #
-#                If you use VIAMD in your research, please cite:                 #
-#   "VIAMD: a Software for Visual Interactive Analysis of Molecular Dynamics"    #
-#       Robin Skånberg, Ingrid Hotz, Anders Ynnerman, and Mathieu Linares        #
-#                 J. Chem. Inf. Model. 2023, 63, 23, 7382–7391                   #
-#                   https://doi.org/10.1021/acs.jcim.3c01033                     #
-#                                                                                #
-#01010110#01001001#01000001#01001101#01000100#01001101#01000001#01001001#01010110#
-
-)");
 
 constexpr str_t shader_output_snippet = STR_LIT(R"(
 layout(location = 0) out vec4 out_color;
@@ -205,118 +166,6 @@ enum MarkerType_{
     MarkerType_Visualization,
 };
 
-// #struct Structure Declarations
-
-// This is viamd's representation of a property
-struct DisplayProperty {
-    enum Type {
-        Type_Temporal,
-        Type_Distribution,
-        Type_Volume,
-        Type_Count
-    };
-
-    enum PlotType {
-        PlotType_Line,      // Single line
-        PlotType_Area,      // Shaded area
-        PlotType_Bars,      // Bar chart
-        PlotType_Scatter,   // Scatter plot
-        PlotType_Count
-    };
-
-    enum ColorType {
-        ColorType_Solid,
-        ColorType_Colormap,
-        ColorType_Count
-    };
-
-    // This is the payload passed to getters for display properties
-    struct Payload {
-        DisplayProperty* display_prop;
-        int dim_idx;
-    };
-
-    // Callback signature for printing out the value (when hovering with mouse for example)
-    typedef int (*PrintValue)(char* buf, size_t buf_cap, int sample_idx, Payload* data);
-
-    struct Histogram {
-        int num_bins;
-        int dim = 0;
-        // Can be multidimensional
-        // Total number of entries will be dim * num_bins
-        md_array(float) bins = 0;
-        double x_min;
-        double x_max;
-        double y_min;
-        double y_max;
-        md_allocator_i* alloc;
-    };
-
-    Type type = Type_Temporal;
-
-    char label[32] = "";
-
-    ColorType color_type = ColorType_Solid;
-    ImVec4 color = {1,1,1,1};
-    ImPlotColormap colormap = ImPlotColormap_Plasma;
-    float colormap_alpha = 1.0f;
-
-    PlotType plot_type = PlotType_Line;
-    ImPlotMarker marker_type = ImPlotMarker_Square;
-    float marker_size = 1.0f;
-    double bar_width_scale = 1.0;
-
-    // We need two getters to support areas (min / max)
-    ImPlotGetter getter[2] = {0,0};
-    PrintValue   print_value = 0;
-
-    bool aggregate_histogram = false;
-
-    int dim = 1;                // Number of values per sample
-    int num_samples = 0;        // Number of samples (length of x)
-    const float* y_values = 0;  // Values (y)
-    const float* x_values = 0;  // Corresponding x values
-
-    int num_bins = 128;         // Requested number of bins for histogram
-
-    md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
-    char unit_str[2][32] = {"",""};
-
-    const md_script_eval_t* eval = NULL;
-
-    md_script_property_flags_t prop_flags = MD_SCRIPT_PROPERTY_FLAG_NONE;
-    const md_script_property_data_t* prop_data = NULL;
-    const md_script_vis_payload_o* vis_payload = NULL;
-
-    uint64_t prop_fingerprint = 0;
-
-    // Encodes which temporal subplots this property is visible in
-    uint32_t temporal_subplot_mask = 0;
-
-    // Encodes which distribution subplots this property is visible in
-    uint32_t distribution_subplot_mask = 0;
-
-    bool show_in_volume = false;
-    bool partial_evaluation = false;
-
-    // Encodes which indices of the population to show (if applicable, i.e. dim > 1)
-    std::bitset<MAX_POPULATION_SIZE> population_mask = {};
-
-    STATIC_ASSERT(MAX_TEMPORAL_SUBPLOTS     <= sizeof(temporal_subplot_mask) * 8,     "Cannot fit temporal subplot mask");
-    STATIC_ASSERT(MAX_DISTRIBUTION_SUBPLOTS <= sizeof(distribution_subplot_mask) * 8, "Cannot fit distribution subplot mask");
-
-    Histogram hist = {};
-};
-
-struct LoadParam {
-    md_system_loader_i*     sys_loader  = NULL;
-    md_trajectory_loader_i* traj_loader = NULL;
-    str_t file_path = STR_LIT("");
-    bool coarse_grained = false;
-    const void* sys_loader_arg = NULL;
-    LoadTrajectoryFlags traj_loader_flags = 0;
-};
-
 const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
     for (size_t i = 0; i < len; ++i) {
         if (str_eq(arr[i], str)) {
@@ -378,10 +227,6 @@ static inline FileQueue::Entry file_queue_pop(FileQueue* queue) {
     FileQueue::Entry front = file_queue_front(queue);
     queue->tail = (queue->tail + 1) % ARRAY_SIZE(queue->arr);
     return front;
-}
-
-static inline uint64_t generate_fingerprint() {
-    return (uint64_t)md_time_current();
 }
 
 static void free_histogram(DisplayProperty::Histogram* hist) {
@@ -565,100 +410,65 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 
 //static void launch_prefetch_job(ApplicationState* data);
 
-static void init_display_properties(ApplicationState* data);
-static void update_display_properties(ApplicationState* data);
+static void init_display_properties(ApplicationState* state);
+static void update_display_properties(ApplicationState* state);
 
-static void update_density_volume(ApplicationState* data);
-static void clear_density_volume(ApplicationState* data);
+static void update_density_volume(ApplicationState* state);
 
-static void interpolate_atomic_properties(ApplicationState* data);
-static void update_view_param(ApplicationState* data);
-static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera = false, bool smooth_transition = false);
+static void update_view_param(ApplicationState* state);
+static void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera = false, bool smooth_transition = false);
 
-static void handle_camera_interaction(ApplicationState* data);
+static void handle_camera_interaction(ApplicationState* state);
 
-//static void init_display_properties(ApplicationState* data);
-//static void update_density_volume_texture(ApplicationState* data);
-static void handle_picking(ApplicationState* data);
+//static void init_display_properties(ApplicationState* state);
+//static void update_density_volume_texture(ApplicationState* state);
+static void handle_picking(ApplicationState* state);
 
-static void fill_gbuffer(ApplicationState* data);
-static void apply_postprocessing(const ApplicationState& data);
+static void fill_gbuffer(ApplicationState* state);
+static void apply_postprocessing(const ApplicationState& state);
+static void draw_representations_opaque(ApplicationState* state);
+static void draw_representations_opaque_lean_and_mean(ApplicationState* state, uint32_t mask = 0xFFFFFFFFU);
+static void draw_representations_transparent(ApplicationState* state);
 
-static void draw_representations_opaque(ApplicationState*);
-static void draw_representations_opaque_lean_and_mean(ApplicationState*, uint32_t mask = 0xFFFFFFFFU);
-static void draw_representations_transparent(ApplicationState*);
+static void draw_load_dataset_window(ApplicationState* state);
+static void draw_main_menu(ApplicationState* state);
+static void draw_context_popup(ApplicationState* state);
+static void draw_selection_query_window(ApplicationState* state);
+static void draw_selection_grow_window(ApplicationState* state);
+static void draw_animation_window(ApplicationState* state);
+static void draw_representations_window(ApplicationState* state);
+static void draw_timeline_window(ApplicationState* state);
+static void draw_distribution_window(ApplicationState* state);
+static void draw_async_task_window(ApplicationState* state);
+static void draw_density_volume_window(ApplicationState* state);
+static void draw_script_editor_window(ApplicationState* state);
 
-static void draw_load_dataset_window(ApplicationState* data);
-static void draw_main_menu(ApplicationState* data);
-static void draw_context_popup(ApplicationState* data);
-static void draw_selection_query_window(ApplicationState* data);
-static void draw_selection_grow_window(ApplicationState* data);
-static void draw_animation_window(ApplicationState* data);
-static void draw_representations_window(ApplicationState* data);
-static void draw_timeline_window(ApplicationState* data);
-static void draw_distribution_window(ApplicationState* data);
-static void draw_async_task_window(ApplicationState* data);
-static void draw_density_volume_window(ApplicationState* data);
-static void draw_script_editor_window(ApplicationState* data);
-
-static void draw_debug_window(ApplicationState* data);
-static void draw_property_export_window(ApplicationState* data);
-static void draw_structure_export_window(ApplicationState* data);
+static void draw_debug_window(ApplicationState* state);
+static void draw_property_export_window(ApplicationState* state);
+static void draw_structure_export_window(ApplicationState* state);
 static void draw_notifications_window();
 
-static void update_md_buffers(ApplicationState* data);
-
-static void init_molecule_data(ApplicationState* data);
-static void init_trajectory_data(ApplicationState* data);
-
-static void interrupt_async_tasks(ApplicationState* data);
-
-static bool load_dataset_from_file(ApplicationState* data, const LoadParam& param);
-
-static void load_workspace(ApplicationState* data, str_t file);
-static void save_workspace(ApplicationState* data, str_t file);
+static void interpolate_system_state(ApplicationState* state);
+static void update_md_buffers(ApplicationState* state);
 
 static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
 static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
 
 static void create_screenshot(str_t path);
 
-// Representations
-static Representation* create_representation(ApplicationState* data, RepresentationType type = RepresentationType::SpaceFill,
-                                             ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
-static Representation* clone_representation(ApplicationState* data, const Representation& rep);
-static void remove_representation(ApplicationState*, int idx);
-static void update_representation(ApplicationState*, Representation* rep);
-static void update_representation_info(ApplicationState*);
-static void update_all_representations(ApplicationState*);
-static void init_representation(ApplicationState*, Representation* rep);
-static void init_all_representations(ApplicationState*);
-static void flag_representation_as_dirty(Representation* rep);
-static void flag_all_representations_as_dirty(ApplicationState*);
-static void remove_all_representations(ApplicationState*);
-static void create_default_representations(ApplicationState*);
-static void recompute_atom_visibility_mask(ApplicationState*);
-
-// Selections
-static Selection* create_selection(ApplicationState* data, str_t name, md_bitfield_t* bf = 0);
-static void remove_selection(ApplicationState* data, int idx);
-static void clear_selections(ApplicationState* data);
-
-static bool filter_expression(ApplicationState* data, const md_system_t* sys, const float* x, const float* y, const float* z, str_t expr, md_bitfield_t* mask, bool* is_dynamic, char* error_str, int error_cap);
-
-static void modify_selection(ApplicationState* data, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
-    ASSERT(data);
-    modify_field(&data->selection.selection_mask, atom_mask, op);
+static void modify_selection(ApplicationState* state, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
+    ASSERT(state);
+    modify_field(&state->selection.selection_mask, atom_mask, op);
 }
 
-static void modify_selection(ApplicationState* data, md_urange_t range, SelectionOperator op = SelectionOperator::Set) {
-    ASSERT(data);
-    modify_field(&data->selection.selection_mask, range, op);
+static void modify_selection(ApplicationState* state, md_urange_t range, SelectionOperator op = SelectionOperator::Set) {
+    ASSERT(state);
+    modify_field(&state->selection.selection_mask, range, op);
 }
 
-static void set_hovered_property(ApplicationState* data, str_t label, int population_idx = -1) {
-    data->hovered_display_property_label = label;
-    data->hovered_display_property_pop_idx = population_idx;
+static void set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1) {
+    state->hovered_display_property_label = label;
+    state->hovered_display_property_pop_idx = population_idx;
 }
 
 int main(int argc, char** argv) {
@@ -719,75 +529,74 @@ int main(int argc, char** argv) {
         }
     };
 
-    md_logger_add(&notification_logger);
+    md_log_register(&notification_logger);
 
-    ApplicationState data;
-    data.allocator.persistent = persistent_alloc;
-    data.allocator.frame = frame_alloc;
-    data.representation.info.alloc = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
-    data.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
-    data.mold.sys_alloc  = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
+    ApplicationState state;
+    state.allocator.persistent = persistent_alloc;
+    state.allocator.frame = frame_alloc;
+    state.representation.info.alloc = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
+    state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
+    state.mold.sys_alloc  = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
 
-    md_bitfield_init(&data.selection.selection_mask, persistent_alloc);
-    md_bitfield_init(&data.selection.highlight_mask, persistent_alloc);
-    md_bitfield_init(&data.selection.query.mask, persistent_alloc);
-    md_bitfield_init(&data.selection.grow.mask, persistent_alloc);
+    md_bitfield_init(&state.selection.selection_mask, persistent_alloc);
+    md_bitfield_init(&state.selection.highlight_mask, persistent_alloc);
+    md_bitfield_init(&state.selection.query.mask, persistent_alloc);
+    md_bitfield_init(&state.selection.grow.mask, persistent_alloc);
 
-    md_bitfield_init(&data.representation.visibility_mask, persistent_alloc);
+    md_bitfield_init(&state.representation.visibility_mask, persistent_alloc);
 
-    md_semaphore_init(&data.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
-
+    md_semaphore_init(&state.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
     // Init platform
-    LOG_DEBUG("Initializing GL...");
-    if (!application::initialize(&data.app, 0, 0, STR_LIT("VIAMD"))) {
-        LOG_ERROR("Could not initialize application...\n");
+    VIAMD_LOG_DEBUG("Initializing GL...");
+    if (!application::initialize(&state.app, 0, 0, STR_LIT("VIAMD"))) {
+        VIAMD_LOG_ERROR("Could not initialize application...\n");
         return -1;
     }
 
-    data.app.window.vsync = true;
-    data.app.file_drop.user_data = &data;
-    data.app.file_drop.callback = [](size_t num_files, const str_t file_paths[], void* user_data) {
-        ApplicationState* data = (ApplicationState*)user_data;
-        ASSERT(data);
+    state.app.window.vsync = true;
+    state.app.file_drop.user_data = &state;
+    state.app.file_drop.callback = [](size_t num_files, const str_t file_paths[], void* user_data) {
+        ApplicationState* state = (ApplicationState*)user_data;
+        ASSERT(state);
 
         for (int i = 0; i < num_files; ++i) {
-            file_queue_push(&data->file_queue, file_paths[i], FileFlags_None);
+            file_queue_push(&state->file_queue, file_paths[i], FileFlags_None);
         }
     };
 
-    LOG_DEBUG("Initializing framebuffer...");
-    init_gbuffer(&data.gbuffer, data.app.framebuffer.width, data.app.framebuffer.height);
+    VIAMD_LOG_DEBUG("Initializing framebuffer...");
+    init_gbuffer(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
 
-    for (int i = 0; i < (int)ARRAY_SIZE(data.view.jitter.sequence); ++i) {
-        data.view.jitter.sequence[i].x = md_halton(i + 1, 2);
-        data.view.jitter.sequence[i].y = md_halton(i + 1, 3);
+    for (int i = 0; i < (int)ARRAY_SIZE(state.view.jitter.sequence); ++i) {
+        state.view.jitter.sequence[i].x = md_halton(i + 1, 2);
+        state.view.jitter.sequence[i].y = md_halton(i + 1, 3);
     }
 
     // Init subsystems
-    LOG_DEBUG("Initializing immediate draw...");
+    VIAMD_LOG_DEBUG("Initializing immediate draw...");
     immediate::initialize();
-    LOG_DEBUG("Initializing post processing...");
-    postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
-    LOG_DEBUG("Initializing volume...");
+    VIAMD_LOG_DEBUG("Initializing post processing...");
+    postprocessing::initialize(state.gbuffer.width, state.gbuffer.height);
+    VIAMD_LOG_DEBUG("Initializing volume...");
     volume::initialize();
-    LOG_DEBUG("Initializing task system...");
+    VIAMD_LOG_DEBUG("Initializing task system...");
     const size_t num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? md_os_num_processors() : VIAMD_NUM_WORKER_THREADS;
     task_system::initialize(CLAMP(num_threads, 2, (uint32_t)md_os_num_processors()));
 
     md_gl_initialize();
-    data.mold.gl_shaders                = md_gl_shaders_create(shader_output_snippet);
-    data.mold.gl_shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
+    state.mold.gl_shaders                = md_gl_shaders_create(shader_output_snippet);
+    state.mold.gl_shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
 
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &data);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &state);
 
 #if EXPERIMENTAL_GFX_API
-    md_gfx_initialize(data.gbuffer.width, data.gbuffer.height, 0);
+    md_gfx_initialize(state.gbuffer.width, state.gbuffer.height, 0);
 #endif
 
     ImGui::init_theme();
 
-    editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
-    editor.SetPalette(TextEditor::GetDarkPalette());
+    state.editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
+    state.editor.SetPalette(TextEditor::GetDarkPalette());
 
     {
 #ifdef VIAMD_DATASET_DIR
@@ -803,8 +612,8 @@ int main(int argc, char** argv) {
             if (md_path_is_valid(path)) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
                 // The motivation is that the dataset may reside in a shared folder on the system that has no write access.
-                file_queue_push(&data.file_queue, path, FileFlags_DisableCacheWrite);
-                editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);\n{lin,plan,iso} = shape_weights(all);");
+                file_queue_push(&state.file_queue, path, FileFlags_DisableCacheWrite);
+                state.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);\n{lin,plan,iso} = shape_weights(all);");
             }
         }
 #endif
@@ -815,7 +624,7 @@ int main(int argc, char** argv) {
             for (int i = 1; i < argc; ++i) {
                 str_t path = str_from_cstr(argv[i]);
                 if (md_path_is_valid(path)) {
-                    file_queue_push(&data.file_queue, path);
+                    file_queue_push(&state.file_queue, path);
                 }
             }
         }
@@ -830,36 +639,37 @@ int main(int argc, char** argv) {
     //bool demo_window = true;
 
     // Main loop
-    while (!data.app.window.should_close) {
-        application::update(&data.app);
+    while (!state.app.window.should_close) {
+        application::update(&state.app);
         
         // This needs to happen first (in imgui events) to enable docking of imgui windows
 #if VIAMD_IMGUI_ENABLE_DOCKSPACE
         ImGui::CreateDockspace();
 #endif
 
-        const size_t num_frames  = md_trajectory_num_frames(data.mold.traj);
+        const size_t num_frames  = md_trajectory_num_frames(state.mold.traj);
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
         const double   max_frame = (double)last_frame;
 
-        if (!file_queue_empty(&data.file_queue) && !data.load_dataset.show_window) {
-            FileQueue::Entry e = file_queue_pop(&data.file_queue);
+        if (!file_queue_empty(&state.file_queue) && !state.load_dataset.show_window) {
+            FileQueue::Entry e = file_queue_pop(&state.file_queue);
 
             str_t ext;
             extract_ext(&ext, e.path);
             const str_t* res = 0;
 
             if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
-                load_workspace(&data, e.path);
+                load_workspace(&state, e.path);
+                reset_view(&state, &state.representation.visibility_mask, false, true);
             } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
                 char buf[1024];
                 str_t base_path = {};
-                if (data.files.workspace[0] != '\0') {
-                    base_path = str_from_cstr(data.files.workspace);
-                } else if (data.files.trajectory[0] != '\0') {
-                    base_path = str_from_cstr(data.files.trajectory);
-                } else if (data.files.molecule[0] != '\0') {
-                    base_path = str_from_cstr(data.files.molecule);
+                if (state.files.workspace[0] != '\0') {
+                    base_path = str_from_cstr(state.files.workspace);
+                } else if (state.files.trajectory[0] != '\0') {
+                    base_path = str_from_cstr(state.files.trajectory);
+                } else if (state.files.molecule[0] != '\0') {
+                    base_path = str_from_cstr(state.files.molecule);
                 } else {
                     md_path_write_cwd(buf, sizeof(buf));
                     base_path = str_from_cstr(buf);
@@ -870,80 +680,80 @@ int main(int argc, char** argv) {
                 MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
                 if (!str_empty(rel_path)) {
                     snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_ARG(rel_path));
-                    TextEditor::Coordinates pos = editor.GetCursorPosition();
+                    TextEditor::Coordinates pos = state.editor.GetCursorPosition();
                     pos.mLine += 1;
-                    editor.SetCursorPosition({0,0});
-                    editor.InsertText(buf);
-                    editor.SetCursorPosition(pos);
+                    state.editor.SetCursorPosition({0,0});
+                    state.editor.InsertText(buf);
+                    state.editor.SetCursorPosition(pos);
                 }
             } else {
-                load::LoaderState state = {};
-                bool success = load::init_loader_state(&state, e.path, frame_alloc);
+                load::LoaderState loader = {};
+                bool success = load::init_loader_state(&loader, e.path, frame_alloc);
 
-                if (!success || (e.flags & FileFlags_ShowDialogue) || (state.flags & LoaderStateFlag_RequiresDialogue)) {
-                    data.load_dataset = LoadDatasetWindowState();
-                    str_copy_to_char_buf(data.load_dataset.path_buf, sizeof(data.load_dataset.path_buf), e.path);
-                    data.load_dataset.path_changed = true;
-                    data.load_dataset.show_window = true;
-                    data.load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
+                if (!success || (e.flags & FileFlags_ShowDialogue) || (loader.flags & LoaderStateFlag_RequiresDialogue)) {
+                    state.load_dataset = LoadDatasetWindowState();
+                    str_copy_to_char_buf(state.load_dataset.path_buf, sizeof(state.load_dataset.path_buf), e.path);
+                    state.load_dataset.path_changed = true;
+                    state.load_dataset.show_window = true;
+                    state.load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
                 } else if (success) {
                     LoadParam param = {};
-                    param.sys_loader  = state.sys_loader;
-                    param.traj_loader = state.traj_loader;
+                    param.sys_loader  = loader.sys_loader;
+                    param.traj_loader = loader.traj_loader;
                     param.file_path      = e.path;
                     param.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                    param.sys_loader_arg = state.sys_loader_arg;
+                    param.sys_loader_arg = loader.sys_loader_arg;
                     param.traj_loader_flags = (e.flags & FileFlags_DisableCacheWrite) ? LoadTrajectoryFlag_DisableCacheWrite : 0;
-                    if (load_dataset_from_file(&data, param)) {
-                        data.animation = {};
+                    if (load_dataset_from_file(&state, param)) {
+                        state.animation = {};
                         if (param.sys_loader) {
-                            md_bitfield_reset(&data.representation.visibility_mask);
+                            md_bitfield_reset(&state.representation.visibility_mask);
 
-                            if (!data.settings.keep_representations) {
-                                remove_all_representations(&data);
-                                create_default_representations(&data);
+                            if (!state.settings.keep_representations) {
+                                remove_all_representations(&state);
+                                create_default_representations(&state);
                             }
-                            recompute_atom_visibility_mask(&data);
-                            interpolate_atomic_properties(&data);
-                            data.mold.dirty_buffers |= MolBit_ClearVelocity;
-                            reset_view(&data, &data.representation.visibility_mask, true, false);
+                            recompute_atom_visibility_mask(&state);
+							state.mold.interpolate_system_state = true;
+                            state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+                            reset_view(&state, &state.representation.visibility_mask, true, false);
                         }
                     }
                 }
             }
         }
 
-        viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &data);
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
         // GUI
-        if (data.show_script_window) draw_script_editor_window(&data);
-        if (data.load_dataset.show_window) draw_load_dataset_window(&data);
-        if (data.representation.show_window) draw_representations_window(&data);
-        if (data.density_volume.show_window) draw_density_volume_window(&data);
-        if (data.distributions.show_window) draw_distribution_window(&data);
-        if (data.timeline.show_window) draw_timeline_window(&data);
+        if (state.show_script_window) draw_script_editor_window(&state);
+        if (state.load_dataset.show_window) draw_load_dataset_window(&state);
+        if (state.representation.show_window) draw_representations_window(&state);
+        if (state.density_volume.show_window) draw_density_volume_window(&state);
+        if (state.distributions.show_window) draw_distribution_window(&state);
+        if (state.timeline.show_window) draw_timeline_window(&state);
 
-        if (data.selection.query.show_window) draw_selection_query_window(&data);
-        if (data.selection.grow.show_window) draw_selection_grow_window(&data);
-        if (data.show_property_export_window) draw_property_export_window(&data);
-        if (data.structure_export.show_window) draw_structure_export_window(&data);
-        if (data.show_debug_window) draw_debug_window(&data);
+        if (state.selection.query.show_window) draw_selection_query_window(&state);
+        if (state.selection.grow.show_window) draw_selection_grow_window(&state);
+        if (state.show_property_export_window) draw_property_export_window(&state);
+        if (state.structure_export.show_window) draw_structure_export_window(&state);
+        if (state.show_debug_window) draw_debug_window(&state);
 
         //ImGui::ShowDemoWindow();
 
-        handle_camera_interaction(&data);
-        camera_animate(&data.view.camera, data.view.animation.target_orientation, data.view.animation.target_position, data.view.animation.target_distance, data.app.timing.delta_s);
-        data.visuals.dof.focus_depth = data.view.camera.focus_distance;
+        handle_camera_interaction(&state);
+        camera_animate(&state.view.camera, state.view.animation.target_orientation, state.view.animation.target_position, state.view.animation.target_distance, state.app.timing.delta_s);
+        state.visuals.dof.focus_depth = state.view.camera.focus_distance;
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
-            set_hovered_property(&data,  STR_LIT(""));
+            set_hovered_property(&state,  STR_LIT(""));
         }
 
-        draw_context_popup(&data);
-        draw_async_task_window(&data);
-        if (data.animation.show_window) draw_animation_window(&data);
-        draw_main_menu(&data);
+        draw_context_popup(&state);
+        draw_async_task_window(&state);
+        if (state.animation.show_window) draw_animation_window(&state);
+        draw_main_menu(&state);
         draw_notifications_window();
 
         // Capture non-window specific keyboard events
@@ -954,33 +764,33 @@ int main(int argc, char** argv) {
             }
 #endif
             if (ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
-                data.script.eval_init = true;
+                state.script.eval_init = true;
             }
 
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
-                data.show_debug_window = true;
+                state.show_debug_window = true;
             }
 
             if (ImGui::IsKeyPressed(KEY_RECOMPILE_SHADERS)) {
-                LOG_INFO("Recompiling shaders and re-initializing volume");
-                postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
+                VIAMD_LOG_INFO("Recompiling shaders and re-initializing volume");
+                postprocessing::initialize(state.gbuffer.width, state.gbuffer.height);
                 volume::initialize();
-                md_gl_shaders_destroy(data.mold.gl_shaders);
-                data.mold.gl_shaders = md_gl_shaders_create(shader_output_snippet);
+                md_gl_shaders_destroy(state.mold.gl_shaders);
+                state.mold.gl_shaders = md_gl_shaders_create(shader_output_snippet);
             }
 
             if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
-                switch (data.animation.mode) {
+                switch (state.animation.mode) {
                     case PlaybackMode::Playing:
-                        data.animation.mode = PlaybackMode::Stopped;
-                        data.mold.dirty_buffers |= MolBit_ClearVelocity;
+                        state.animation.mode = PlaybackMode::Stopped;
+                        state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                         break;
                     case PlaybackMode::Stopped:
-                        data.animation.mode = PlaybackMode::Playing;
-                        if (data.animation.frame == max_frame && data.animation.fps > 0) {
-                            data.animation.frame = 0;
-                        } else if (data.animation.frame == 0 && data.animation.fps < 0) {
-                            data.animation.frame = max_frame;
+                        state.animation.mode = PlaybackMode::Playing;
+                        if (state.animation.frame == max_frame && state.animation.fps > 0) {
+                            state.animation.frame = 0;
+                        } else if (state.animation.frame == 0 && state.animation.fps < 0) {
+                            state.animation.frame = max_frame;
                         }
                         break;
                     default:
@@ -992,49 +802,49 @@ int main(int argc, char** argv) {
             if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME) || ImGui::IsKeyPressed(KEY_SKIP_TO_NEXT_FRAME)) {
                 double step = ImGui::IsKeyDown(ImGuiMod_Ctrl) ? 10.0 : 1.0;
                 if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME)) step = -step;
-                data.animation.frame = CLAMP(data.animation.frame + step, 0.0, max_frame);
+                state.animation.frame = CLAMP(state.animation.frame + step, 0.0, max_frame);
             }
         }
 
-        if (data.animation.mode == PlaybackMode::Playing) {
-            data.animation.frame += data.app.timing.delta_s * data.animation.fps;
-            data.animation.frame = CLAMP(data.animation.frame, 0.0, max_frame);
-            if (data.animation.frame >= max_frame) {
-                data.animation.mode = PlaybackMode::Stopped;
-                data.animation.frame = max_frame;
-            } else if (data.animation.frame <= 0) {
-                data.animation.mode = PlaybackMode::Stopped;
-                data.animation.frame = 0;
+        if (state.animation.mode == PlaybackMode::Playing) {
+            state.animation.frame += state.app.timing.delta_s * state.animation.fps;
+            state.animation.frame = CLAMP(state.animation.frame, 0.0, max_frame);
+            if (state.animation.frame >= max_frame) {
+                state.animation.mode = PlaybackMode::Stopped;
+                state.animation.frame = max_frame;
+            } else if (state.animation.frame <= 0) {
+                state.animation.mode = PlaybackMode::Stopped;
+                state.animation.frame = 0;
             }
 
-            if (data.settings.prefetch_frames) {
-                if (!task_system::task_is_running(data.tasks.prefetch_frames)) {
-                    uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
-                    if (traj_frames > 0 && load::traj::num_cache_frames(data.mold.traj) < traj_frames) {
+            if (state.settings.prefetch_frames) {
+                if (!task_system::task_is_running(state.tasks.prefetch_frames)) {
+                    uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(state.mold.traj);
+                    if (traj_frames > 0 && load::traj::num_cache_frames(state.mold.traj) < traj_frames) {
                         uint32_t frame_beg = 0;
                         uint32_t frame_end = 0;
                         // @NOTE: This is certainly something which can be improved upon.
                         // It prefetches frames in the direction of the animation.
                         // In a more optimal case, it should never yield until it catches up with the number of frames it expects to have as a buffer.
 
-                        int look_ahead = CLAMP((int)load::traj::num_cache_frames(data.mold.traj) / 2, 1, 10);
+                        int look_ahead = CLAMP((int)load::traj::num_cache_frames(state.mold.traj) / 2, 1, 10);
                     
-                        if (data.animation.fps > 0) {
-                            frame_beg = (uint32_t)CLAMP((int)data.animation.frame             , 0, (int)traj_frames);
-                            frame_end = (uint32_t)CLAMP((int)data.animation.frame + look_ahead, 0, (int)traj_frames);
+                        if (state.animation.fps > 0) {
+                            frame_beg = (uint32_t)CLAMP((int)state.animation.frame             , 0, (int)traj_frames);
+                            frame_end = (uint32_t)CLAMP((int)state.animation.frame + look_ahead, 0, (int)traj_frames);
                         } else {
-                            frame_beg = (uint32_t)CLAMP((int)data.animation.frame - look_ahead, 0, (int)traj_frames);
-                            frame_end = (uint32_t)CLAMP((int)data.animation.frame             , 0, (int)traj_frames);
+                            frame_beg = (uint32_t)CLAMP((int)state.animation.frame - look_ahead, 0, (int)traj_frames);
+                            frame_end = (uint32_t)CLAMP((int)state.animation.frame             , 0, (int)traj_frames);
                         }
                         if (frame_beg != frame_end) {
                             uint32_t frame_count = frame_end - frame_beg;
-                            data.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_count, [&data, frame_offset = frame_beg](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
+                            state.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_count, [&state, frame_offset = frame_beg](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;                                
                                 for (uint32_t i = frame_offset + frame_beg; i < frame_offset + frame_end; ++i) {
-                                    md_trajectory_load_frame(data.mold.traj, i, 0, 0, 0, 0);
+                                    md_trajectory_load_frame(state.mold.traj, i, 0, 0, 0, 0);
                                 }
                             });
-                            task_system::enqueue_task(data.tasks.prefetch_frames);
+                            task_system::enqueue_task(state.tasks.prefetch_frames);
                         }
                     }
                 }
@@ -1042,49 +852,44 @@ int main(int argc, char** argv) {
         }
 
         {
-            static auto prev_frame = data.animation.frame;
-            if (data.animation.frame != prev_frame) {
+            static auto prev_frame = state.animation.frame;
+            if (state.animation.frame != prev_frame) {
                 time_changed = true;
-                prev_frame = data.animation.frame;
+                prev_frame = state.animation.frame;
             }
             else {
                 time_changed = false;
             }
         }
 
-        if (data.timeline.filter.temporal_window.enabled) {
-            const double pre_beg = data.timeline.filter.beg_frame;
-            const double pre_end = data.timeline.filter.end_frame;
-            const double half_window_ext = data.timeline.filter.temporal_window.extent_in_frames * 0.5;
-            data.timeline.filter.beg_frame = CLAMP(round(data.animation.frame - half_window_ext), 0.0, max_frame);
-            data.timeline.filter.end_frame = CLAMP(round(data.animation.frame + half_window_ext), 0.0, max_frame);
-            if (data.script.ir && (data.timeline.filter.beg_frame != pre_beg || data.timeline.filter.end_frame != pre_end)) {
-                data.script.evaluate_filt = true;
+        if (state.timeline.filter.temporal_window.enabled) {
+            const double pre_beg = state.timeline.filter.beg_frame;
+            const double pre_end = state.timeline.filter.end_frame;
+            const double half_window_ext = state.timeline.filter.temporal_window.extent_in_frames * 0.5;
+            state.timeline.filter.beg_frame = CLAMP(round(state.animation.frame - half_window_ext), 0.0, max_frame);
+            state.timeline.filter.end_frame = CLAMP(round(state.animation.frame + half_window_ext), 0.0, max_frame);
+            if (state.script.ir && (state.timeline.filter.beg_frame != pre_beg || state.timeline.filter.end_frame != pre_end)) {
+                state.script.evaluate_filt = true;
             }
         }
 
-        if (data.timeline.filter.enabled) {
-            static auto prev_filter_beg = data.timeline.filter.beg_frame;
-            static auto prev_filter_end = data.timeline.filter.end_frame;
-            if (data.timeline.filter.beg_frame != prev_filter_beg || data.timeline.filter.end_frame != prev_filter_end) {
-                prev_filter_beg = data.timeline.filter.beg_frame;
-                prev_filter_end = data.timeline.filter.end_frame;
-                data.timeline.filter.fingerprint = generate_fingerprint();
+        if (state.timeline.filter.enabled) {
+            static auto prev_filter_beg = state.timeline.filter.beg_frame;
+            static auto prev_filter_end = state.timeline.filter.end_frame;
+            if (state.timeline.filter.beg_frame != prev_filter_beg || state.timeline.filter.end_frame != prev_filter_end) {
+                prev_filter_beg = state.timeline.filter.beg_frame;
+                prev_filter_end = state.timeline.filter.end_frame;
+                state.timeline.filter.fingerprint = generate_fingerprint();
             }
         }
 
         if (time_changed) {
+            state.mold.interpolate_system_state = true;
             time_stopped = false;
 
-            if (data.mold.traj) {
-                PUSH_CPU_SECTION("Interpolate Position")
-                interpolate_atomic_properties(&data);
-                POP_CPU_SECTION()
-            }
-
             PUSH_CPU_SECTION("Flag dynamic representations for update")
-            for (size_t i = 0; i < md_array_size(data.representation.reps); ++i) {
-                auto& rep = data.representation.reps[i];
+            for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+                auto& rep = state.representation.reps[i];
                 if (rep.enabled && (rep.dynamic_evaluation || rep.color_mapping == ColorMapping::SecondaryStructure)) {
 					flag_representation_as_dirty(&rep);
                 }
@@ -1093,42 +898,50 @@ int main(int argc, char** argv) {
         } else {
             if (!time_stopped) {
                 time_stopped = true;
-                data.mold.dirty_buffers |= MolBit_DirtyPosition;
+                state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+            }
+        }
+
+        if (state.mold.interpolate_system_state) {
+			state.mold.interpolate_system_state = false;
+            if (state.mold.traj) {
+                PUSH_CPU_SECTION("Interpolate System State")
+                interpolate_system_state(&state);
+                POP_CPU_SECTION()
             }
         }
 
         {
-            std::string text = editor.GetText();
-            data.script.text = {text.c_str(), text.length()};
-            data.script.text_hash = md_hash64(text.c_str(), text.length(), 0);
+            std::string text = state.editor.GetText();
+            state.script.text_hash = md_hash64(text.c_str(), text.length(), 0);
         }
 
-        if (data.script.compile_ir) {
-            data.script.time_since_last_change += data.app.timing.delta_s;
+        if (state.script.compile_ir) {
+            state.script.time_since_last_change += state.app.timing.delta_s;
 
-            editor.ClearMarkers();
-            editor.ClearErrorMarkers();
+            state.editor.ClearMarkers();
+            state.editor.ClearErrorMarkers();
 
-            if (data.script.time_since_last_change > COMPILATION_TIME_DELAY_IN_SECONDS) {
+            if (state.script.time_since_last_change > COMPILATION_TIME_DELAY_IN_SECONDS) {
                 // We cannot recompile while it is evaluating.
                 // Need to interrupt and wait for tasks to finish.
-                if (data.script.full_eval) md_script_eval_interrupt(data.script.full_eval);
-                if (data.script.filt_eval) md_script_eval_interrupt(data.script.filt_eval);
+                if (state.script.full_eval) md_script_eval_interrupt(state.script.full_eval);
+                if (state.script.filt_eval) md_script_eval_interrupt(state.script.filt_eval);
 
                 // Try aquire all semaphores
-                if (md_semaphore_try_aquire_n(&data.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
+                if (md_semaphore_try_aquire_n(&state.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
                     defer {
-                        md_semaphore_release_n(&data.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
-                        flag_all_representations_as_dirty(&data);
+                        md_semaphore_release_n(&state.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
+                        flag_all_representations_as_dirty(&state);
                     };
 
                     // Now we hold all semaphores for the script
-                    data.script.compile_ir = false;
-                    data.script.time_since_last_change = 0;
+                    state.script.compile_ir = false;
+                    state.script.time_since_last_change = 0;
                     
-                    data.script.ir = md_script_ir_create(persistent_alloc);
+                    state.script.ir = md_script_ir_create(persistent_alloc);
 
-                    std::string src = editor.GetText();
+                    std::string src = state.editor.GetText();
                     str_t src_str {src.data(), src.length()};
 
                     char buf[1024];
@@ -1139,34 +952,34 @@ int main(int argc, char** argv) {
                     };
                     
                     str_t cwd = {};
-                    if (data.files.workspace[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(data.files.workspace));
-                    } else if (data.files.trajectory[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(data.files.trajectory));
-                    } else if (data.files.molecule[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(data.files.molecule));
+                    if (state.files.workspace[0] != '\0') {
+                        extract_folder_path(&cwd, str_from_cstr(state.files.workspace));
+                    } else if (state.files.trajectory[0] != '\0') {
+                        extract_folder_path(&cwd, str_from_cstr(state.files.trajectory));
+                    } else if (state.files.molecule[0] != '\0') {
+                        extract_folder_path(&cwd, str_from_cstr(state.files.molecule));
                     }
                     if (!str_empty(cwd)) {
                         md_path_set_cwd(cwd);
                     }
 
-                    const size_t num_stored_selections = md_array_size(data.selection.stored_selections);                       
+                    const size_t num_stored_selections = md_array_size(state.selection.stored_selections);                       
                     for (size_t i = 0; i < num_stored_selections; ++i) {
-                        str_t name = str_from_cstr(data.selection.stored_selections[i].name);
-                        const md_bitfield_t* bf = &data.selection.stored_selections[i].atom_mask;
-                        md_script_ir_add_identifier_bitfield(data.script.ir, name, bf);
+                        str_t name = str_from_cstr(state.selection.stored_selections[i].name);
+                        const md_bitfield_t* bf = &state.selection.stored_selections[i].atom_mask;
+                        md_script_ir_add_identifier_bitfield(state.script.ir, name, bf);
                     }
                     
                     if (src_str) {
-                        md_script_ir_compile_from_source(data.script.ir, src_str, &data.mold.sys, data.mold.traj, NULL);
+                        md_script_ir_compile_from_source(state.script.ir, src_str, &state.mold.sys, state.mold.traj, NULL);
 
-                        const size_t num_errors = md_script_ir_num_errors(data.script.ir);
-                        const md_log_token_t* errors = md_script_ir_errors(data.script.ir);
+                        const size_t num_errors = md_script_ir_num_errors(state.script.ir);
+                        const md_log_token_t* errors = md_script_ir_errors(state.script.ir);
                         
                         for (size_t i = 0; i < num_errors; ++i) {
                             TextEditor::Marker marker = {0};
-                            auto first = editor.GetCharacterCoordinates(errors[i].range.beg);
-                            auto last  = editor.GetCharacterCoordinates(errors[i].range.end);
+                            auto first = state.editor.GetCharacterCoordinates(errors[i].range.beg);
+                            auto last  = state.editor.GetCharacterCoordinates(errors[i].range.end);
                             marker.type = MarkerType_Error;
                             marker.begCol = first.mColumn;
                             marker.endCol = last.mColumn;
@@ -1176,15 +989,15 @@ int main(int argc, char** argv) {
                             marker.text = std::string(errors[i].text.ptr, errors[i].text.len);
                             marker.payload = errors[i].context;
                             marker.line = first.mLine + 1;
-                            editor.AddMarker(marker);
+                            state.editor.AddMarker(marker);
                         }
 
-                        const size_t num_warnings = md_script_ir_num_warnings(data.script.ir);
-                        const md_log_token_t* warnings = md_script_ir_warnings(data.script.ir);
+                        const size_t num_warnings = md_script_ir_num_warnings(state.script.ir);
+                        const md_log_token_t* warnings = md_script_ir_warnings(state.script.ir);
                         for (size_t i = 0; i < num_warnings; ++i) {
                             TextEditor::Marker marker = {0};
-                            auto first = editor.GetCharacterCoordinates(warnings[i].range.beg);
-                            auto last  = editor.GetCharacterCoordinates(warnings[i].range.end);
+                            auto first = state.editor.GetCharacterCoordinates(warnings[i].range.beg);
+                            auto last  = state.editor.GetCharacterCoordinates(warnings[i].range.end);
                             marker.type = MarkerType_Warning;
                             marker.begCol = first.mColumn;
                             marker.endCol = last.mColumn;
@@ -1194,16 +1007,16 @@ int main(int argc, char** argv) {
                             marker.text = std::string(warnings[i].text.ptr, warnings[i].text.len);
                             marker.payload = errors[i].context;
                             marker.line = first.mLine + 1;
-                            editor.AddMarker(marker);
+                            state.editor.AddMarker(marker);
                         }
 
-                        const size_t num_tokens = md_script_ir_num_vis_tokens(data.script.ir);
-                        const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(data.script.ir);
+                        const size_t num_tokens = md_script_ir_num_vis_tokens(state.script.ir);
+                        const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(state.script.ir);
                         for (size_t i = 0; i < num_tokens; ++i) {
                             const md_script_vis_token_t& vis_tok = vis_tokens[i];
                             TextEditor::Marker marker = {0};
-                            auto first = editor.GetCharacterCoordinates(vis_tok.range.beg);
-                            auto last  = editor.GetCharacterCoordinates(vis_tok.range.end);
+                            auto first = state.editor.GetCharacterCoordinates(vis_tok.range.beg);
+                            auto last  = state.editor.GetCharacterCoordinates(vis_tok.range.end);
                             marker.type = MarkerType_Visualization;
                             marker.begCol = first.mColumn;
                             marker.endCol = last.mColumn;
@@ -1213,17 +1026,17 @@ int main(int argc, char** argv) {
                             marker.text = std::string(vis_tok.text.ptr, vis_tok.text.len);
                             marker.payload = (void*)vis_tok.payload;
                             marker.line = first.mLine + 1;
-                            editor.AddMarker(marker);
+                            state.editor.AddMarker(marker);
                         }
 
-                        if (md_script_ir_valid(data.script.ir)) {
-                            uint64_t ir_figerprint = md_script_ir_fingerprint(data.script.ir);
-                            if (data.script.ir_fingerprint != ir_figerprint) {
-                                data.script.ir_fingerprint = ir_figerprint;
+                        if (md_script_ir_valid(state.script.ir)) {
+                            uint64_t ir_figerprint = md_script_ir_fingerprint(state.script.ir);
+                            if (state.script.ir_fingerprint != ir_figerprint) {
+                                state.script.ir_fingerprint = ir_figerprint;
                             }
                         } else {
-                            md_script_ir_free(data.script.ir);
-                            data.script.ir = nullptr;
+                            md_script_ir_free(state.script.ir);
+                            state.script.ir = nullptr;
                         }
                     }
                 }
@@ -1231,52 +1044,52 @@ int main(int argc, char** argv) {
         }
 
         if (num_frames > 0) {
-            if (data.script.eval_init) {
-                if (task_system::task_is_running(data.tasks.evaluate_full)) md_script_eval_interrupt(data.script.full_eval);
-                if (task_system::task_is_running(data.tasks.evaluate_filt)) md_script_eval_interrupt(data.script.filt_eval);
+            if (state.script.eval_init) {
+                if (task_system::task_is_running(state.tasks.evaluate_full)) md_script_eval_interrupt(state.script.full_eval);
+                if (task_system::task_is_running(state.tasks.evaluate_filt)) md_script_eval_interrupt(state.script.filt_eval);
                     
-                if (task_system::task_is_running(data.tasks.evaluate_full) == false &&
-                    task_system::task_is_running(data.tasks.evaluate_filt) == false) {
-                    data.script.eval_init = false;
+                if (task_system::task_is_running(state.tasks.evaluate_full) == false &&
+                    task_system::task_is_running(state.tasks.evaluate_filt) == false) {
+                    state.script.eval_init = false;
 
-                    if (data.script.full_eval) {
-                        md_script_eval_free(data.script.full_eval);
+                    if (state.script.full_eval) {
+                        md_script_eval_free(state.script.full_eval);
                     }
-                    if (data.script.filt_eval) {
-                        md_script_eval_free(data.script.filt_eval);
+                    if (state.script.filt_eval) {
+                        md_script_eval_free(state.script.filt_eval);
                     }
                 
-                    if (md_script_ir_valid(data.script.ir)) {
-                        if (data.script.ir != data.script.eval_ir) {
-                            md_script_ir_free(data.script.eval_ir);
-                            data.script.eval_ir = data.script.ir;
+                    if (md_script_ir_valid(state.script.ir)) {
+                        if (state.script.ir != state.script.eval_ir) {
+                            md_script_ir_free(state.script.eval_ir);
+                            state.script.eval_ir = state.script.ir;
                         }
-                        data.script.full_eval = md_script_eval_create(num_frames, data.script.eval_ir, persistent_alloc);
-                        data.script.filt_eval = md_script_eval_create(num_frames, data.script.eval_ir, persistent_alloc);
+                        state.script.full_eval = md_script_eval_create(num_frames, state.script.eval_ir, state.allocator.persistent);
+                        state.script.filt_eval = md_script_eval_create(num_frames, state.script.eval_ir, state.allocator.persistent);
                     }
 
-                    init_display_properties(&data);
+                    init_display_properties(&state);
 
-                    data.script.evaluate_filt = true;
-                    data.script.evaluate_full = true;
+                    state.script.evaluate_filt = true;
+                    state.script.evaluate_full = true;
                 }
             }
 
-            if (data.script.full_eval && data.script.evaluate_full) {
-                if (task_system::task_is_running(data.tasks.evaluate_full)) {
-                    md_script_eval_interrupt(data.script.full_eval);
+            if (state.script.full_eval && state.script.evaluate_full) {
+                if (task_system::task_is_running(state.tasks.evaluate_full)) {
+                    md_script_eval_interrupt(state.script.full_eval);
                 } else {
-                    if (md_script_ir_valid(data.script.eval_ir) &&
-                        md_script_eval_ir_fingerprint(data.script.full_eval) == md_script_ir_fingerprint(data.script.eval_ir))
+                    if (md_script_ir_valid(state.script.eval_ir) &&
+                        md_script_eval_ir_fingerprint(state.script.full_eval) == md_script_ir_fingerprint(state.script.eval_ir))
                     {
-                        data.script.evaluate_full = false;
-                        md_script_eval_clear_data(data.script.full_eval);
+                        state.script.evaluate_full = false;
+                        md_script_eval_clear_data(state.script.full_eval);
 
-                        if (md_script_ir_property_count(data.script.eval_ir) > 0) {
-                            data.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&data](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
+                        if (md_script_ir_property_count(state.script.eval_ir) > 0) {
+                            state.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&state](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;
-								md_trajectory_i* traj = load::traj::get_raw_trajectory(data.mold.traj);
-                                md_script_eval_frame_range(data.script.full_eval, data.script.eval_ir, &data.mold.sys, traj, frame_beg, frame_end);
+								md_trajectory_i* traj = load::traj::get_raw_trajectory(state.mold.traj);
+                                md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, traj, frame_beg, frame_end);
                             });
                             
 #if MEASURE_EVALUATION_TIME
@@ -1284,87 +1097,74 @@ int main(int argc, char** argv) {
                             task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [t0 = time]() {
                                 uint64_t t1 = md_time_current();
                                 double s = md_time_as_seconds(t1 - t0);
-                                LOG_INFO("Evaluation completed in: %.3fs", s);
+                                VIAMD_LOG_INFO("Evaluation completed in: %.3fs", s);
                             });
 #endif
-                            task_system::set_task_dependency(time_task, data.tasks.evaluate_full);
-                            task_system::enqueue_task(data.tasks.evaluate_full);
+                            task_system::set_task_dependency(time_task, state.tasks.evaluate_full);
+                            task_system::enqueue_task(state.tasks.evaluate_full);
                         }
                     }
                 }
             }
 
-            if (data.script.filt_eval && data.script.evaluate_filt && data.timeline.filter.enabled) {
-                if (task_system::task_is_running(data.tasks.evaluate_filt)) {
-                    md_script_eval_interrupt(data.script.filt_eval);
+            if (state.script.filt_eval && state.script.evaluate_filt && state.timeline.filter.enabled) {
+                if (task_system::task_is_running(state.tasks.evaluate_filt)) {
+                    md_script_eval_interrupt(state.script.filt_eval);
                 } else {
-                    //if (md_semaphore_try_aquire(&data.script.ir_semaphore)) {
-                        if (md_script_ir_valid(data.script.eval_ir) &&
-                            md_script_eval_ir_fingerprint(data.script.filt_eval) == md_script_ir_fingerprint(data.script.eval_ir))
-                        {
-                            data.script.evaluate_filt = false;
-                            md_script_eval_clear_data(data.script.filt_eval);
+                    if (md_script_ir_valid(state.script.eval_ir) &&
+                        md_script_eval_ir_fingerprint(state.script.filt_eval) == md_script_ir_fingerprint(state.script.eval_ir))
+                    {
+                        state.script.evaluate_filt = false;
+                        md_script_eval_clear_data(state.script.filt_eval);
 
-                            if (md_script_ir_property_count(data.script.eval_ir) > 0) {
-                                const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(data.mold.traj);
-                                const uint32_t beg_frame = CLAMP((uint32_t)data.timeline.filter.beg_frame, 0, traj_frames-1);
-                                const uint32_t end_frame = CLAMP((uint32_t)data.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                                if (beg_frame != end_frame) {
-                                    data.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &data](uint32_t beg, uint32_t end, uint32_t thread_num) {
-                                        (void)thread_num;
-                                        md_trajectory_i* traj = load::traj::get_raw_trajectory(data.mold.traj);
-                                        md_script_eval_frame_range(data.script.filt_eval, data.script.eval_ir, &data.mold.sys, traj, offset + beg, offset + end);
-                                    });
-                                    task_system::enqueue_task(data.tasks.evaluate_filt);
-                                }
+                        if (md_script_ir_property_count(state.script.eval_ir) > 0) {
+                            const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(state.mold.traj);
+                            const uint32_t beg_frame = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, traj_frames-1);
+                            const uint32_t end_frame = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
+                            if (beg_frame != end_frame) {
+                                state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
+                                    (void)thread_num;
+                                    md_trajectory_i* traj = load::traj::get_raw_trajectory(state.mold.traj);
+                                    md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, traj, offset + beg, offset + end);
+                                });
+                                task_system::enqueue_task(state.tasks.evaluate_filt);
                             }
-                            
-                            /*
-                            task_system::pool_enqueue(STR_LIT("##Release IR Semaphore"), [](void* user_data)
-                                {
-                                    ApplicationState* data = (ApplicationState*)user_data;
-                                    md_semaphore_release(&data->script.ir_semaphore);
-                                }, &data, data.tasks.evaluate_filt);
-                                */
                         }
-                        //else {
-                        //    md_semaphore_release(&data.script.ir_semaphore);
-                        //}
-                    //}
+                    }
                 }
             }
         }
 
 		// Perform once per-frame updates of representations (if required)
-		update_all_representations(&data);
+		update_all_representations(&state);
 
-        if (data.representation.atom_visibility_mask_dirty) {
-            recompute_atom_visibility_mask(&data);
-            data.representation.atom_visibility_mask_dirty = false;
+        if (state.representation.atom_visibility_mask_dirty) {
+            recompute_atom_visibility_mask(&state);
+            state.representation.atom_visibility_mask_dirty = false;
         }
 
-        if (data.script.vis.text) {
+        if (state.script.vis.text) {
             PUSH_CPU_SECTION("Draw vis text");
             ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
             if (window) {
                 ImDrawList* dl = window->DrawList;
                 ASSERT(dl);
 
-                const vec2_t res = { (float)data.app.window.width, (float)data.app.window.height };
-                const mat4_t mvp = data.view.param.matrix.curr.proj_no_jitter * data.view.param.matrix.curr.view;
+                const vec2_t res = { (float)state.app.window.width, (float)state.app.window.height };
+                const mat4_t mvp = state.view.param.matrix.curr.proj_no_jitter * state.view.param.matrix.curr.view;
 
                 // Script text
-                const ImU32 text_color = convert_color(data.script.text_color);
-                const ImU32 rect_color = convert_color(data.script.text_bg_color);
+                const ImU32 text_color = convert_color(state.script.text_color);
+                const ImU32 rect_color = convert_color(state.script.text_bg_color);
                 const float rect_rounding = 5.f;
                 const ImVec2 rect_padding = ImVec2(4.f, 2.f);
 
-                size_t num_text = md_array_size(data.script.vis.text);
+                size_t num_text = md_array_size(state.script.vis.text);
                 for (size_t i = 0; i < num_text; ++i) {
-                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(data.script.vis.text[i].pos, 1.0f));
+                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(state.script.vis.text[i].pos, 1.0f));
                     const vec4_t c = p / p.w;
 
-                    str_t str = data.script.vis.text[i].str;
+                    str_t str = state.script.vis.text[i].str;
                     const ImVec2 text_size = ImGui::CalcTextSize(str.beg(), str.end());
 
                     if (-1 < c.x && c.x < 1 && -1 < c.y && c.y < 1 && -1 < c.z && c.z < 1) {
@@ -1372,7 +1172,7 @@ int main(int argc, char** argv) {
                         ImVec2 p0 = tc - text_size * 0.5f;
                         ImVec2 p1 = tc + text_size * 0.5f;
                         dl->AddRectFilled(p0 - rect_padding, p1 + rect_padding, rect_color, rect_rounding);
-                        dl->AddText(p0, text_color, data.script.vis.text[i].str.beg(), data.script.vis.text[i].str.end());
+                        dl->AddText(p0, text_color, state.script.vis.text[i].str.beg(), state.script.vis.text[i].str.end());
                     }
                 }
             }
@@ -1380,40 +1180,39 @@ int main(int argc, char** argv) {
         }
 
         if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
-            reset_view(&data, &data.selection.highlight_mask, true, true);
+            reset_view(&state, &state.selection.highlight_mask, true, true);
         }
 
-        bool do_screenshot = !str_empty(data.screenshot.path_to_file);
+        bool do_screenshot = !str_empty(state.screenshot.path_to_file);
 
-        uint32_t gbuffer_target_width  = data.app.framebuffer.width;
-        uint32_t gbuffer_target_height = data.app.framebuffer.height;
+        uint32_t gbuffer_target_width  = state.app.window.width;
+        uint32_t gbuffer_target_height = state.app.window.height;
         if (do_screenshot) {
-            gbuffer_target_width  = data.screenshot.res_x;
-            gbuffer_target_height = data.screenshot.res_y;
+            gbuffer_target_width  = state.screenshot.res_x;
+            gbuffer_target_height = state.screenshot.res_y;
         }
 
         // Resize Framebuffer
-        if ((data.gbuffer.width != gbuffer_target_width || data.gbuffer.height != gbuffer_target_height) &&
+        if ((state.gbuffer.width != gbuffer_target_width || state.gbuffer.height != gbuffer_target_height) &&
             (gbuffer_target_width != 0 && gbuffer_target_height != 0)) {
-            init_gbuffer(&data.gbuffer, gbuffer_target_width, gbuffer_target_height);
-            postprocessing::initialize(data.gbuffer.width, data.gbuffer.height);
+            init_gbuffer(&state.gbuffer, gbuffer_target_width, gbuffer_target_height);
+            postprocessing::initialize(state.gbuffer.width, state.gbuffer.height);
         }
 
-        update_view_param(&data);
-
+        update_view_param(&state);
         // The motivation for doing this is to reduce the frequency at which we invalidate and upload the atom flag field to the GPU
         // For large systems, this can be a costly operation: Consider a system of 100'000'000 atoms
         // The size of each bitfield to represent the mask would be 12.5 MB
         // Given a throughput of 10GB/s results in a time of 1.25 ms per bitfield.
 
-        uint64_t v_hash = data.representation.visibility_mask_hash;
-        uint64_t h_hash = md_bitfield_hash64(&data.selection.highlight_mask, 0);
-        uint64_t s_hash = md_bitfield_hash64(&data.selection.selection_mask, 0);
+        uint64_t v_hash = state.representation.visibility_mask_hash;
+        uint64_t h_hash = md_bitfield_hash64(&state.selection.highlight_mask, 0);
+        uint64_t s_hash = md_bitfield_hash64(&state.selection.selection_mask, 0);
         uint64_t f_hash = v_hash ^ h_hash ^ s_hash;
 
         uint64_t r_hash = 0;
-        for (size_t i = 0; i < md_array_size(data.representation.reps); ++i) {
-			md_hash64(&data.representation.reps[i], sizeof(Representation), r_hash);
+        for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+			md_hash64(&state.representation.reps[i], sizeof(Representation), r_hash);
 		}
 
         // These represent the 'current' state so we can compare against it to see if they were modified
@@ -1425,116 +1224,115 @@ int main(int argc, char** argv) {
         if (h_hash != highlight_hash) {
             highlight_hash = h_hash;
             // enqueue the event here and do not broadcast (stall)
-            viamd::event_system_enqueue_event(viamd::EventType_ViamdHoverMaskChanged, viamd::EventPayloadType_ApplicationState, &data);
+            viamd::event_system_enqueue_event(viamd::EventType_ViamdHoverMaskChanged, viamd::EventPayloadType_ApplicationState, &state);
         }
 
         if (s_hash != selection_hash) {
             selection_hash = s_hash;
             // enqueue the event here and do not broadcast (stall)
-            viamd::event_system_enqueue_event(viamd::EventType_ViamdSelectionMaskChanged, viamd::EventPayloadType_ApplicationState, &data);
+            viamd::event_system_enqueue_event(viamd::EventType_ViamdSelectionMaskChanged, viamd::EventPayloadType_ApplicationState, &state);
         }
 
         if (f_hash != flag_hash) {
             flag_hash = f_hash;
-            data.mold.dirty_buffers |= MolBit_DirtyFlags;
+            state.mold.dirty_gpu_buffers |= MolBit_DirtyFlags;
         }
 
         if (r_hash != representation_hash) {
             representation_hash = r_hash;
             // enqueue the event here and do not broadcast (stall)
-            viamd::event_system_enqueue_event(viamd::EventType_ViamdRepresentationChanged, viamd::EventPayloadType_ApplicationState, &data);
+            viamd::event_system_enqueue_event(viamd::EventType_ViamdRepresentationChanged, viamd::EventPayloadType_ApplicationState, &state);
         }
 
-        update_md_buffers(&data);
-        update_display_properties(&data);
-
-        handle_picking(&data);
-        clear_gbuffer(&data.gbuffer);
-        fill_gbuffer(&data);
+        update_md_buffers(&state);
+        update_display_properties(&state);
+        handle_picking(&state);
+        clear_gbuffer(&state.gbuffer);
+        fill_gbuffer(&state);
 
         glDisable(GL_DEPTH_TEST);
 
-        if (do_screenshot && data.screenshot.hide_gui) {
+        if (do_screenshot && state.screenshot.hide_gui) {
             // Activate gbuffer to store screenshot
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data.gbuffer.fbo);
-            glViewport(0, 0, data.gbuffer.width, data.gbuffer.height);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state.gbuffer.fbo);
+            glViewport(0, 0, state.gbuffer.width, state.gbuffer.height);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
         } else {
             // Activate backbuffer
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glViewport(0, 0, data.app.framebuffer.width, data.app.framebuffer.height);
+            glViewport(0, 0, state.app.framebuffer.width, state.app.framebuffer.height);
             glDrawBuffer(GL_BACK);
             glClear(GL_COLOR_BUFFER_BIT);
         }
 
-        apply_postprocessing(data);
+        apply_postprocessing(state);
 
-        if (do_screenshot && data.screenshot.hide_gui) {
-            data.screenshot.sample_count += 1;
+        if (do_screenshot && state.screenshot.hide_gui) {
+            state.screenshot.sample_count += 1;
 
             ImGui::OpenPopup("Capturing Frame");
             ImVec2 size = ImGui::CalcTextSize("Capturing Frame");
             ImGui::SetNextWindowSize(size * ImVec2(2, 5), ImGuiCond_Always);
             if (ImGui::BeginPopupModal("Capturing Frame", 0, ImGuiWindowFlags_NoResize)) {
-                float fraction = (float)data.screenshot.sample_count / (float)data.screenshot.sample_target;
+                float fraction = (float)state.screenshot.sample_count / (float)state.screenshot.sample_target;
                 ImGui::ProgressBar(fraction);
                 ImGui::EndPopup();
             }
 
-            if (data.screenshot.sample_count == data.screenshot.sample_target) {
-                create_screenshot(data.screenshot.path_to_file);
-                str_free(data.screenshot.path_to_file, persistent_alloc);
-                data.screenshot.path_to_file = {};
-                data.screenshot.sample_count  = 0;
-                data.screenshot.sample_target = 0;
+            if (state.screenshot.sample_count == state.screenshot.sample_target) {
+                create_screenshot(state.screenshot.path_to_file);
+                str_free(state.screenshot.path_to_file, state.allocator.persistent);
+                state.screenshot.path_to_file = {};
+                state.screenshot.sample_count  = 0;
+                state.screenshot.sample_target = 0;
                 ImGui::CloseCurrentPopup();
             }
 
             // Activate backbuffer
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glViewport(0, 0, data.app.framebuffer.width, data.app.framebuffer.height);
+            glViewport(0, 0, state.app.framebuffer.width, state.app.framebuffer.height);
             glDrawBuffer(GL_BACK);
             glClear(GL_COLOR_BUFFER_BIT);
         }
 
         PUSH_GPU_SECTION("Imgui render")
-        application::render_imgui(&data.app);
+        application::render_imgui(&state.app);
         POP_GPU_SECTION()
 
-        if (do_screenshot && !data.screenshot.hide_gui) {
-            create_screenshot(data.screenshot.path_to_file);
-            str_free(data.screenshot.path_to_file, persistent_alloc);
-            data.screenshot.path_to_file = {};
+        if (do_screenshot && !state.screenshot.hide_gui) {
+            create_screenshot(state.screenshot.path_to_file);
+            str_free(state.screenshot.path_to_file, state.allocator.persistent);
+            state.screenshot.path_to_file = {};
         }
 
         viamd::event_system_process_event_queue();
         task_system::execute_main_task_queue();
 
-        md_script_vis_free(&data.script.vis);
+        md_script_vis_free(&state.script.vis);
 
         // Reset frame allocator
         md_vm_arena_reset(frame_alloc);
 
         // Swap buffers
-        application::swap_buffers(&data.app);
+        application::swap_buffers(&state.app);
     }
 
-    interrupt_async_tasks(&data);
+    interrupt_async_tasks(&state);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdShutdown);
 
     // shutdown subsystems
-    LOG_DEBUG("Shutting down immediate draw...");
+    VIAMD_LOG_DEBUG("Shutting down immediate draw...");
     immediate::shutdown();
-    LOG_DEBUG("Shutting down post processing...");
+    VIAMD_LOG_DEBUG("Shutting down post processing...");
     postprocessing::shutdown();
-    LOG_DEBUG("Shutting down volume...");
+    VIAMD_LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
-    LOG_DEBUG("Shutting down task system...");
+    VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
-    destroy_gbuffer(&data.gbuffer);
-    application::shutdown(&data.app);
+    destroy_gbuffer(&state.gbuffer);
+    application::shutdown(&state.app);
 
     return 0;
 }
@@ -1991,13 +1789,7 @@ static void update_density_volume(ApplicationState* data) {
     }
 }
 
-static void clear_density_volume(ApplicationState* state) {
-    md_array_shrink(state->density_volume.gl_reps, 0);
-    md_array_shrink(state->density_volume.rep_model_mats, 0);
-    state->density_volume.model_mat = {0};
-}
-
-static void interpolate_atomic_properties(ApplicationState* state) {
+static void interpolate_system_state(ApplicationState* state) {
     ASSERT(state);
     auto& sys = state->mold.sys;
     const auto& traj = state->mold.traj;
@@ -2222,7 +2014,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                     md_bond_data_clear(bonds);
 
                     md_util_infer_covalent_bonds(bonds, x, y, z, cell, &sys, data->state->mold.sys_alloc);
-                    data->state->mold.dirty_buffers |= MolBit_DirtyBonds;
+                    data->state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 });
                 tasks[num_tasks++] = recalc_bond_task;
             }
@@ -2236,7 +2028,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             float* x = data->dst_x + range_beg;
             float* y = data->dst_y + range_beg;
             float* z = data->dst_z + range_beg;
-            md_util_pbc(x, y, z, 0, count, &data->unitcell);
+            md_util_pbc(x, y, z, NULL, count, &data->unitcell);
         });
         tasks[num_tasks++] = pbc_task;
     } 
@@ -2356,7 +2148,9 @@ static void interpolate_atomic_properties(ApplicationState* state) {
         if (md_array_size(state->interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
 			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
         }
-        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), [data = &payload, mode]() {
+        size_t num_backbone_segments = sys.protein_backbone.segment.count;
+        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            (void)thread_num;
             const md_secondary_structure_t* src_ss[4] = {
                 (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
                 (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
@@ -2369,7 +2163,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 MD_LOG_DEBUG("Unsupported interpolation mode for secondary structure interpolation");
                 [[fallthrough]];
             case InterpolationMode::Nearest: {
-                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss = src_ss_nearest[i];
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = ss;
@@ -2378,7 +2172,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 break;
             }
             case InterpolationMode::Linear: {
-                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
                     md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
                     md_gl_secondary_structure_t ss_gl_i = {
@@ -2392,14 +2186,39 @@ static void interpolate_atomic_properties(ApplicationState* state) {
                 break;
             }
             case InterpolationMode::CubicSpline: {
-                for (size_t i = 0; i < data->state->mold.sys.protein_backbone.segment.count; ++i) {
+                const md_gl_secondary_structure_t ss_coil = { 0,0 };
+                const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
+
+                for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };
+
                     md_gl_secondary_structure_t ss_gl[4] = {
                         md_gl_secondary_structure_convert(ss[0]),
                         md_gl_secondary_structure_convert(ss[1]),
                         md_gl_secondary_structure_convert(ss[2]),
                         md_gl_secondary_structure_convert(ss[3]),
                     };
+
+                    auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                        return a.helix == b.helix && a.sheet == b.sheet;
+                    };
+
+                    // Cleanup isolated coils temporally to reduce noise during transitions.
+                    // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
+                    // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
+#if 0
+                    if (is_eq(ss_gl[1], ss_coil)) {
+                        if (is_eq(ss_gl[0], ss_gl[2]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[1], ss_gl[0])) {
+                            ss_gl[1] = ss_gl[0];
+                        }
+                    }
+                    if (is_eq(ss_gl[2], ss_coil)) {
+                        if (is_eq(ss_gl[0], ss_gl[1]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[0])) {
+                            ss_gl[2] = ss_gl[0];
+                        }
+                    }
+#endif
+
                     md_gl_secondary_structure_t ss_gl_i = {
                         .helix = cubic_spline(ss_gl[0].helix, ss_gl[1].helix, ss_gl[2].helix, ss_gl[3].helix, data->t, data->s),
                         .sheet = cubic_spline(ss_gl[0].sheet, ss_gl[1].sheet, ss_gl[2].sheet, ss_gl[3].sheet, data->t, data->s),
@@ -2413,7 +2232,33 @@ static void interpolate_atomic_properties(ApplicationState* state) {
             }
         });
         tasks[num_tasks++] = ss_task;
-        state->mold.dirty_buffers |= MolBit_DirtySecondaryStructure;
+
+#if 1
+        // Task for cleaning up isolated coils to its neighbors (if the same), to reduce the noise in the secondary structure during transitions. This is a non temporal filtering step
+        task_system::ID ss_cleanup_task = task_system::create_pool_task(STR_LIT("## Cleanup Secondary Structures"), [data = &payload]() {
+            // Cleanup isolated coils to reduce noise during transitions
+            auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                return a.helix == b.helix && a.sheet == b.sheet;
+            };
+            const md_gl_secondary_structure_t ss_coil = { 0,0 };
+            const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
+
+            md_gl_secondary_structure_t* ss_gl = data->state->interpolated_properties.secondary_structure;
+            for (size_t i = 0; i < data->state->mold.sys.protein_backbone.range.count; ++i) {
+                size_t range_beg = data->state->mold.sys.protein_backbone.range.offset[i];
+                size_t range_end = data->state->mold.sys.protein_backbone.range.offset[i + 1];
+                for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
+                    // Set isolated coils between sheets to sheet to reduce noise during transitions, as this is likely a result of flickering during secondary structure assignment
+                    if (is_eq(ss_gl[j - 1], ss_sheet) && is_eq(ss_gl[j + 1], ss_sheet) && is_eq(ss_gl[j], ss_coil)) {
+                        ss_gl[j] = ss_sheet;
+                    }
+                }
+            }
+        });
+        tasks[num_tasks++] = ss_cleanup_task;
+#endif
+
+        state->mold.dirty_gpu_buffers |= MolBit_DirtySecondaryStructure;
     }
 
     if (num_tasks > 0) {
@@ -2441,7 +2286,7 @@ static void interpolate_atomic_properties(ApplicationState* state) {
     }
 #endif
 
-    state->mold.dirty_buffers |= MolBit_DirtyPosition;
+    state->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
 }
 
 // #misc
@@ -2572,19 +2417,6 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
     data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 }
 
-static bool filter_expression(ApplicationState* data, const md_system_t* sys, const float* x, const float* y, const float* z, str_t expr, md_bitfield_t* mask, bool* is_dynamic = NULL, char* error_buf = NULL, int error_cap = 0) {
-    if (data->mold.sys.atom.count == 0) return false;    
-    
-    bool success = false;
-
-    if (md_semaphore_aquire(&data->script.ir_semaphore)) {
-        defer { md_semaphore_release(&data->script.ir_semaphore); };
-        return md_filter(mask, expr, sys, x, y, z, data->script.ir, is_dynamic, error_buf, error_cap);
-    }
-
-    return success;
-}
-
 // ### DRAW WINDOWS ###
 static void draw_main_menu(ApplicationState* data) {
     ASSERT(data);
@@ -2601,6 +2433,7 @@ static void draw_main_menu(ApplicationState* data) {
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, WORKSPACE_FILE_EXTENSION)) {
                     load_workspace(data, str_from_cstr(path_buf));
+                    reset_view(data, &data->representation.visibility_mask, false, true);
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
@@ -2904,7 +2737,7 @@ static void draw_main_menu(ApplicationState* data) {
                         }
                     }
                     else {
-                        LOG_ERROR("Supplied image extension is not supported");
+                        VIAMD_LOG_ERROR("Supplied image extension is not supported");
                     }
                 }
                 ImGui::GetCurrentWindow()->Hidden = true;
@@ -2916,8 +2749,8 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Button("Remove Recenter Target")) {
                     load::traj::set_recenter_target(data->mold.traj, nullptr);
                     load::traj::clear_cache(data->mold.traj);
-                    interpolate_atomic_properties(data);
-                    data->mold.dirty_buffers |= MolBit_ClearVelocity;
+                    data->mold.interpolate_system_state = true;
+                    data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
             }
 
@@ -2975,12 +2808,12 @@ static void draw_main_menu(ApplicationState* data) {
 
                 if (do_pbc) {
 					md_util_system_pbc(&data->mold.sys);
-                    data->mold.dirty_buffers |= MolBit_DirtyPosition;
+                    data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
                 }
 
                 if (do_unwrap) {
 					md_util_system_unwrap(&data->mold.sys);
-                    data->mold.dirty_buffers |= MolBit_DirtyPosition;
+                    data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
                 }
 
                 if (do_bonds) {
@@ -3000,7 +2833,7 @@ static void draw_main_menu(ApplicationState* data) {
                             MD_LOG_DEBUG("RECALCULATING BONDS");
                             md_bond_data_clear(&data->mold.sys.bond);
                             md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, frame_alloc);
-                            data->mold.dirty_buffers |= MolBit_DirtyBonds;
+                            data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                             md_vm_arena_temp_end(temp_pos);
                         }
                     } else {
@@ -3685,14 +3518,14 @@ static str_t create_unique_identifier(const md_script_ir_t* ir, str_t base, md_a
 }
 
 // # context_menu
-void draw_context_popup(ApplicationState* data) {
-    ASSERT(data);
+void draw_context_popup(ApplicationState* state) {
+    ASSERT(state);
 
-    if (!data->mold.sys.atom.count) return;
+    if (!state->mold.sys.atom.count) return;
 
-    const size_t sss_count = single_selection_sequence_count(&data->selection.single_selection_sequence);
-    const size_t num_frames = md_trajectory_num_frames(data->mold.traj);
-    const size_t num_atoms_selected = md_bitfield_popcount(&data->selection.selection_mask);
+    const size_t sss_count = single_selection_sequence_count(&state->selection.single_selection_sequence);
+    const size_t num_frames = md_trajectory_num_frames(state->mold.traj);
+    const size_t num_atoms_selected = md_bitfield_popcount(&state->selection.selection_mask);
 
 #if 0
     // FOR DEBUGGING
@@ -3710,31 +3543,31 @@ void draw_context_popup(ApplicationState* data) {
         if (num_atoms_selected == 2) {
             // Suggest construction of covalent bond
             int idx[2];
-            MEMCPY(idx, data->selection.single_selection_sequence.idx, sizeof(idx));
+            MEMCPY(idx, state->selection.single_selection_sequence.idx, sizeof(idx));
 
-            md_bond_idx_t bond_idx = md_system_bond_find(&data->mold.sys, idx[0], idx[1]);
+            md_bond_idx_t bond_idx = md_system_bond_find(&state->mold.sys, idx[0], idx[1]);
             if (bond_idx == -1) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                 if (ImGui::MenuItem(buf)) {
-                    md_system_bond_insert(&data->mold.sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED, data->mold.sys_alloc);
-                    md_system_bond_build_connectivity(&data->mold.sys, data->mold.sys_alloc);
-                    data->mold.dirty_buffers |= MolBit_DirtyBonds;
+                    md_system_bond_insert(&state->mold.sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED, state->mold.sys_alloc);
+                    md_system_bond_build_connectivity(&state->mold.sys, state->mold.sys_alloc);
+                    state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     ImGui::CloseCurrentPopup();
                 }
             }
         }
-        if (data->selection.bond_idx.hovered != -1) {
+        if (state->selection.bond_idx.hovered != -1) {
             // Suggest removal of covalent bond
-            md_bond_idx_t bond_idx = data->selection.bond_idx.hovered;
-			md_atom_pair_t pair = md_bond_pair(&data->mold.sys.bond, bond_idx);
+            md_bond_idx_t bond_idx = state->selection.bond_idx.hovered;
+			md_atom_pair_t pair = md_bond_pair(&state->mold.sys.bond, bond_idx);
             if (pair.idx[0] != -1 && pair.idx[1] != -1) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", pair.idx[0] + 1, pair.idx[1] + 1);
                 if (ImGui::MenuItem(buf)) {
-                    md_system_bond_remove(&data->mold.sys, bond_idx);
-					md_system_bond_build_connectivity(&data->mold.sys, data->mold.sys_alloc);
-                    data->mold.dirty_buffers |= MolBit_DirtyBonds;
+                    md_system_bond_remove(&state->mold.sys, bond_idx);
+					md_system_bond_build_connectivity(&state->mold.sys, state->mold.sys_alloc);
+                    state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     ImGui::CloseCurrentPopup();
                 }
             }
@@ -3743,12 +3576,11 @@ void draw_context_popup(ApplicationState* data) {
             bool any_suggestions = false;
             if (num_atoms_selected <= 4 && sss_count > 1) {
                 int idx[4];
-                MEMCPY(idx, data->selection.single_selection_sequence.idx, sizeof(idx));
-
+                MEMCPY(idx, state->selection.single_selection_sequence.idx, sizeof(idx));
                 // Check if all selected atoms are within the same residue
-                md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&data->mold.sys.comp, idx[0]);
+                md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&state->mold.sys.comp, idx[0]);
                 for (size_t i = 1; i < sss_count; ++i) {
-                    md_comp_idx_t ri = md_comp_find_by_atom_idx(&data->mold.sys.comp, idx[i]);
+                    md_comp_idx_t ri = md_comp_find_by_atom_idx(&state->mold.sys.comp, idx[i]);
                     if (res_idx != ri) {
                         res_idx = -1;
                         break;
@@ -3758,100 +3590,100 @@ void draw_context_popup(ApplicationState* data) {
                 any_suggestions = true;
                 char buf[256] = "";
                 if (sss_count == 2) {
-                    str_t ident = create_unique_identifier(data->script.ir, STR_LIT("dist"), frame_alloc);
+                    str_t ident = create_unique_identifier(state->script.ir, STR_LIT("dist"), frame_alloc);
 
                     snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1);
                     if (ImGui::MenuItem(buf)) {
-                        editor.AppendText("\n");
-                        editor.AppendText(buf);
+                        state->editor.AppendText("\n");
+                        state->editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
                     }
 
                     if (res_idx != -1) {
-                        const md_urange_t range = md_comp_atom_range(&data->mold.sys.comp, res_idx);
+                        const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, res_idx);
                         idx[0] -= range.beg;
                         idx[1] -= range.beg;
 
                         snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
+                            state->editor.AppendText("\n");
+                            state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
-                        const int32_t resid = md_comp_seq_id(&data->mold.sys.comp, res_idx);
+                        const int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
+                            state->editor.AppendText("\n");
+                            state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
-                        str_t resname = md_comp_name(&data->mold.sys.comp, res_idx);
+                        str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
-                                editor.AppendText("\n");
-                                editor.AppendText(buf);
+                                state->editor.AppendText("\n");
+                                state->editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
                             }
                         }
                     }
                 }
                 else if(sss_count == 3) {
-                    str_t ident = create_unique_identifier(data->script.ir, STR_LIT("ang"), frame_alloc);
+                    str_t ident = create_unique_identifier(state->script.ir, STR_LIT("ang"), frame_alloc);
 
                     snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1);
                     if (ImGui::MenuItem(buf)) {
-                        editor.AppendText("\n");
-                        editor.AppendText(buf);
+                        state->editor.AppendText("\n");
+                        state->editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
                     }
 
                     if (res_idx != -1) {
-                        const md_urange_t range = md_comp_atom_range(&data->mold.sys.comp, res_idx);
+                        const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, res_idx);
                         idx[0] -= range.beg;
                         idx[1] -= range.beg;
                         idx[2] -= range.beg;
 
                         snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
+                            state->editor.AppendText("\n");
+                            state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
-                        int32_t resid = md_comp_seq_id(&data->mold.sys.comp, res_idx);
+                        int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
+                            state->editor.AppendText("\n");
+                            state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
-                        str_t resname = md_comp_name(&data->mold.sys.comp, res_idx);
+                        str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
-                                editor.AppendText("\n");
-                                editor.AppendText(buf);
+                                state->editor.AppendText("\n");
+                                state->editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
                             }
                         }
                     }
                 }
                 else if(sss_count == 4) {
-                    str_t ident = create_unique_identifier(data->script.ir, STR_LIT("dih"), frame_alloc);
+                    str_t ident = create_unique_identifier(state->script.ir, STR_LIT("dih"), frame_alloc);
 
                     snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
                     if (ImGui::MenuItem(buf)) {
-                        editor.AppendText("\n");
-                        editor.AppendText(buf);
+                        state->editor.AppendText("\n");
+                        state->editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
                     }
 
                     if (res_idx != -1) {
-                        const md_urange_t range = md_comp_atom_range(&data->mold.sys.comp, res_idx);
+                        const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, res_idx);
                         idx[0] -= range.beg;
                         idx[1] -= range.beg;
                         idx[2] -= range.beg;
@@ -3859,25 +3691,25 @@ void draw_context_popup(ApplicationState* data) {
 
                         snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
+                            state->editor.AppendText("\n");
+                            state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
-                        int32_t resid = md_comp_seq_id(&data->mold.sys.comp, res_idx);
+                        int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            editor.AppendText("\n");
-                            editor.AppendText(buf);
+                            state->editor.AppendText("\n");
+                            state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
 
-                        str_t resname = md_comp_name(&data->mold.sys.comp, res_idx);
+                        str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
-                                editor.AppendText("\n");
-                                editor.AppendText(buf);
+                                state->editor.AppendText("\n");
+                                state->editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
                             }
                         }
@@ -3885,10 +3717,10 @@ void draw_context_popup(ApplicationState* data) {
                 }
             }
             if (num_atoms_selected >= 1) {
-                const md_bitfield_t* bf = &data->selection.selection_mask;
-                str_t ident = create_unique_identifier(data->script.ir, STR_LIT("sel"), frame_alloc);
+                const md_bitfield_t* bf = &state->selection.selection_mask;
+                str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), frame_alloc);
                 
-                md_array(str_t) suggestions = generate_script_selection_suggestions(ident, bf, &data->mold.sys);
+                md_array(str_t) suggestions = generate_script_selection_suggestions(ident, bf, &state->mold.sys);
 
 			    char buf[128]; // Buffer for limiting menu item size
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
@@ -3899,8 +3731,8 @@ void draw_context_popup(ApplicationState* data) {
 						ptr = buf;
                     }
                     if (ImGui::MenuItem(ptr)) {
-                        editor.AppendText("\n");
-                        editor.AppendText(s.ptr);
+                        state->editor.AppendText("\n");
+                        state->editor.AppendText(s.ptr);
                         ImGui::CloseCurrentPopup();
                     }
                 }
@@ -3949,9 +3781,9 @@ void draw_context_popup(ApplicationState* data) {
         }
         */
 
-        if (data->selection.atom_idx.right_click != -1 && num_frames > 0) {
+        if (state->selection.atom_idx.right_click != -1 && num_frames > 0) {
             if (ImGui::BeginMenu("Recenter Trajectory...")) {
-                const int idx = data->selection.atom_idx.right_click;
+                const int idx = state->selection.atom_idx.right_click;
 
                 md_bitfield_t mask = {0};
                 md_bitfield_init(&mask, frame_alloc);
@@ -3962,20 +3794,20 @@ void draw_context_popup(ApplicationState* data) {
                     md_bitfield_set_bit(&mask, idx);
                 }
 
-                const md_comp_idx_t comp_idx = md_comp_find_by_atom_idx(&data->mold.sys.comp, idx);
+                const md_comp_idx_t comp_idx = md_comp_find_by_atom_idx(&state->mold.sys.comp, idx);
                 if (comp_idx != -1) {
                     apply |= ImGui::MenuItem("on Residue");
                     if (ImGui::IsItemHovered()) {
-                        const md_urange_t range = md_comp_atom_range(&data->mold.sys.comp, comp_idx);
+                        const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, comp_idx);
                         md_bitfield_set_range(&mask, range.beg, range.end);
                     }
                 }
 
-                const md_inst_idx_t chain_idx = md_system_inst_find_by_atom_idx(&data->mold.sys, idx);
+                const md_inst_idx_t chain_idx = md_system_inst_find_by_atom_idx(&state->mold.sys, idx);
                 if (chain_idx != -1) {
                     apply |= ImGui::MenuItem("on Chain");
                     if (ImGui::IsItemHovered()) {
-                        const auto range = md_system_inst_atom_range(&data->mold.sys, chain_idx);
+                        const auto range = md_system_inst_atom_range(&state->mold.sys, chain_idx);
                         md_bitfield_set_range(&mask, range.beg, range.end);
                     }
                 }
@@ -3983,18 +3815,17 @@ void draw_context_popup(ApplicationState* data) {
                 if (num_atoms_selected > 0) {
                     apply |= ImGui::MenuItem("on Selection");
                     if (ImGui::IsItemHovered()) {
-                        md_bitfield_copy(&mask, &data->selection.selection_mask);
+                        md_bitfield_copy(&mask, &state->selection.selection_mask);
                     }
                 }
 
                 if (!md_bitfield_empty(&mask)) {
-                    md_bitfield_copy(&data->selection.highlight_mask, &mask);
-
+                    md_bitfield_copy(&state->selection.highlight_mask, &mask);
                     if (apply) {
-                        load::traj::set_recenter_target(data->mold.traj, &mask);
-                        load::traj::clear_cache(data->mold.traj);
-                        interpolate_atomic_properties(data);
-                        data->mold.dirty_buffers |= MolBit_ClearVelocity;
+                        load::traj::set_recenter_target(state->mold.traj, &mask);
+                        load::traj::clear_cache(state->mold.traj);
+                        state->mold.interpolate_system_state = true;
+                        state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                         ImGui::CloseCurrentPopup();
                     }
                 }
@@ -4003,23 +3834,23 @@ void draw_context_popup(ApplicationState* data) {
         }
         if (ImGui::BeginMenu("Selection")) {
             if (ImGui::MenuItem("Invert")) {
-                md_bitfield_not_inplace(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
+                md_bitfield_not_inplace(&state->selection.selection_mask, 0, state->mold.sys.atom.count);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
-                md_bitfield_not(&data->selection.highlight_mask, &data->selection.selection_mask, 0, data->mold.sys.atom.count);
+                md_bitfield_not(&state->selection.highlight_mask, &state->selection.selection_mask, 0, state->mold.sys.atom.count);
             }
             if (ImGui::MenuItem("Query")) {
-                data->selection.query.show_window = true;
+                state->selection.query.show_window = true;
                 ImGui::CloseCurrentPopup();
             }
             if (num_atoms_selected > 0) {
                 if (ImGui::MenuItem("Grow")) {
-                    data->selection.grow.show_window = true;
+                    state->selection.grow.show_window = true;
                     ImGui::CloseCurrentPopup();
                 }
                 if (ImGui::MenuItem("Clear")) {
-                    md_bitfield_clear(&data->selection.selection_mask);
+                    md_bitfield_clear(&state->selection.selection_mask);
                 }
             }
             ImGui::EndMenu();
@@ -4113,7 +3944,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
         if (data->selection.query.query_invalid) {
             data->selection.query.query_invalid = false;
-            data->selection.query.query_ok = filter_expression(data, &data->mold.sys, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z, str_from_cstr(data->selection.query.buf), &data->selection.query.mask, NULL, data->selection.query.error, sizeof(data->selection.query.error));
+            data->selection.query.query_ok = md_filter(&data->selection.query.mask, str_from_cstr(data->selection.query.buf), &data->mold.sys, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error));
             query_frame = data->animation.frame;
 
             if (data->selection.query.query_ok) {
@@ -4168,8 +3999,8 @@ static void draw_animation_window(ApplicationState* data) {
             for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
                 if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
                     data->animation.interpolation = (InterpolationMode)i;
-                    data->mold.dirty_buffers |= MolBit_ClearVelocity;
-                    interpolate_atomic_properties(data);
+					data->mold.interpolate_system_state = true;
+                    data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
             }
             ImGui::EndCombo();
@@ -4229,7 +4060,7 @@ static void draw_representations_window(ApplicationState* state) {
     for (int rep_idx = 0; rep_idx < (int)md_array_size(state->representation.reps); rep_idx++) {
         bool update_rep = false;
         Representation& rep = state->representation.reps[rep_idx];
-        const float item_width = MAX(ImGui::GetContentRegionAvail().x - 125.f, 100.f);
+        //const float item_width = MAX(ImGui::GetContentRegionAvail().x - 125.f, 100.f);
         char label[128];
         snprintf(label, sizeof(label), "%s###ID", rep.name);
 
@@ -4764,7 +4595,7 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
                 y_vals[i] = (args.value_filter.min < val && val < args.value_filter.max) ? args.values.max_y : -INFINITY;
             }
 
-            const ImVec4 filter_frame_color = ImVec4(1,1,1,1);
+            const ImVec4 filter_frame_color = ImVec4(1, 1, 1, 1);
             ImPlot::SetNextFillStyle(filter_frame_color, 0.15f);
             ImPlot::PlotShaded("##value_filter", args.values.x, y_vals, args.values.count, -INFINITY);
         }
@@ -5035,8 +4866,8 @@ static void draw_timeline_window(ApplicationState* data) {
                         ImGui::Selectable(dp.label);
 
                         if (ImGui::IsItemHovered()) {
-                            if ((dp.dim > MAX_POPULATION_SIZE)) {
-                                ImGui::SetTooltip("The property has a large population, only the first %i items will be shown", MAX_POPULATION_SIZE);
+                            if ((dp.dim > DISPLAY_PROPERTY_MAX_POPULATION_SIZE)) {
+                                ImGui::SetTooltip("The property has a large population, only the first %i items will be shown", DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
                             }
                             visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             set_hovered_property(data, str_from_cstr(dp.label));
@@ -5068,9 +4899,9 @@ static void draw_timeline_window(ApplicationState* data) {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Subplots")) {
-                ImGui::SliderInt("Num Subplots", &num_subplots, 1, MAX_TEMPORAL_SUBPLOTS);
+                ImGui::SliderInt("Num Subplots", &num_subplots, 1, DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {
-                    num_subplots = CLAMP(num_subplots + 1, 1, MAX_TEMPORAL_SUBPLOTS);
+                    num_subplots = CLAMP(num_subplots + 1, 1, DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS);
                 }
                 ImGui::EndMenu();
             }
@@ -5205,7 +5036,7 @@ static void draw_timeline_window(ApplicationState* data) {
                             };
                             
                             if (prop.temporal_subplot_mask & (1 << i)) {
-                                const int dim = CLAMP(1, prop.dim, MAX_POPULATION_SIZE);
+                                const int dim = CLAMP(1, prop.dim, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
                                 for (int k = 0; k < dim; ++k) {
                                     if (dim > 1 && !(prop.population_mask.test(k))) {
                                         continue;
@@ -5428,7 +5259,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                                 const float sz = ImGui::GetFontSize() * 1.5f;
                                 ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
-                                for (int k = 0; k < MIN(dp.dim, MAX_POPULATION_SIZE); ++k) {
+                                for (int k = 0; k < MIN(dp.dim, DISPLAY_PROPERTY_MAX_POPULATION_SIZE); ++k) {
                                     char lbl[32];
                                     snprintf(lbl, sizeof(lbl), "%d", k+1);
                                     if (ImGui::Selectable(lbl, dp.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
@@ -5454,7 +5285,7 @@ static void draw_timeline_window(ApplicationState* data) {
                             const float  hov_fill_alpha  = 1.25f;
                             const float  hov_line_weight = 2.0f;
                             const float  hov_col_scl = 1.5f;
-                            const int    population_size = CLAMP(dp.dim, 1, MAX_POPULATION_SIZE);
+                            const int    population_size = CLAMP(dp.dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
 
                             ImVec4 color = {};
                             ImVec4 marker_line_color = {};
@@ -5517,7 +5348,7 @@ static void draw_timeline_window(ApplicationState* data) {
                         };
 
                         // Draw regular lines
-                        const int population_size = CLAMP(dp.dim, 1, MAX_POPULATION_SIZE);
+                        const int population_size = CLAMP(dp.dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
                         for (int k = 0; k < population_size; ++k) {
                             if (population_size > 1 && !dp.population_mask.test(k)) {
                                 continue;
@@ -5664,9 +5495,9 @@ static void draw_distribution_window(ApplicationState* data) {
             }
 
             if (ImGui::BeginMenu("Subplots")) {
-                ImGui::SliderInt("Num Subplots", &num_subplots, 1, MAX_DISTRIBUTION_SUBPLOTS);
+                ImGui::SliderInt("Num Subplots", &num_subplots, 1, DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {
-                    num_subplots = CLAMP(num_subplots + 1, 1, MAX_DISTRIBUTION_SUBPLOTS);
+                    num_subplots = CLAMP(num_subplots + 1, 1, DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS);
                 }
                 ImGui::EndMenu();
             }
@@ -5761,13 +5592,13 @@ static void draw_distribution_window(ApplicationState* data) {
                             };
 
                             if (prop.distribution_subplot_mask & (1 << i)) {
-                                for (int k = 0; k < MIN(prop.hist.dim, MAX_POPULATION_SIZE); ++k) {
+                                for (int k = 0; k < MIN(prop.hist.dim, DISPLAY_PROPERTY_MAX_POPULATION_SIZE); ++k) {
                                     if (prop.hist.dim > 1 && !prop.population_mask.test(k)) {
                                         continue;
                                     }
                                     payload.dim_idx = k;
                                     double d = DBL_MAX;
-                                    const double layer = j + k / (double)(MAX_POPULATION_SIZE - 1);
+                                    const double layer = j + k / (double)(DISPLAY_PROPERTY_MAX_POPULATION_SIZE - 1);
                                     const double layer_dist = ((num_props - layer) / num_props) * (max_rad * 0.1);
 
                                     switch (prop.plot_type) {
@@ -5994,7 +5825,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
                                 const float sz = ImGui::GetFontSize() * 1.5f;
                                 ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
-                                for (int k = 0; k < MIN(dp.hist.dim, MAX_POPULATION_SIZE); ++k) {
+                                for (int k = 0; k < MIN(dp.hist.dim, DISPLAY_PROPERTY_MAX_POPULATION_SIZE); ++k) {
                                     char lbl[32];
                                     snprintf(lbl, sizeof(lbl), "%d", k+1);
                                     if (ImGui::Selectable(lbl, dp.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
@@ -6021,7 +5852,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             const float  hov_fill_alpha  = 1.25f;
                             const float  hov_line_weight = 2.0f;
                             const float  hov_col_scl = 1.5f;
-                            const int    population_size = CLAMP(dp.hist.dim, 1, MAX_POPULATION_SIZE);
+                            const int    population_size = CLAMP(dp.hist.dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
                             const double bar_width = (dp.hist.x_max - dp.hist.x_min) / (dp.hist.num_bins);
 
                             ImVec4 color = {};
@@ -6079,7 +5910,7 @@ static void draw_distribution_window(ApplicationState* data) {
                         };
                         
                         if (dp.hist.num_bins > 0) {
-                            const int dim = CLAMP(dp.hist.dim, 1, MAX_POPULATION_SIZE);
+                            const int dim = CLAMP(dp.hist.dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
                             for (int k = 0; k < dim; ++k) {
                                 if (dp.hist.dim > 1 && !dp.population_mask.test(k)) {
                                     continue;
@@ -6771,11 +6602,11 @@ static void draw_debug_window(ApplicationState* data) {
     ImGui::End();
 }
 
-static void draw_script_editor_window(ApplicationState* data) {
-    ASSERT(data);
+static void draw_script_editor_window(ApplicationState* state) {
+    ASSERT(state);
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Script Editor", &data->show_script_window, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
+    if (ImGui::Begin("Script Editor", &state->show_script_window, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::SetWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
         if (ImGui::BeginMenuBar())
         {
@@ -6785,11 +6616,11 @@ static void draw_script_editor_window(ApplicationState* data) {
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, STR_LIT("txt"))) {
                         str_t txt = load_textfile(str_from_cstr(path_buf), frame_alloc);
                         std::string str(txt.ptr, txt.len);
-                        editor.SetText(str);
+                        state->editor.SetText(str);
                     }
                 }
                 if (ImGui::MenuItem("Save")) {
-                    auto textToSave = editor.GetText();
+                    auto textToSave = state->editor.GetText();
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("txt"))) {
                         str_t path = str_t{path_buf, strnlen(path_buf, sizeof(path_buf))};
                         md_file_o* file = md_file_open(path, MD_FILE_WRITE);
@@ -6797,67 +6628,66 @@ static void draw_script_editor_window(ApplicationState* data) {
                             md_file_write(file, textToSave.c_str(), textToSave.length());
                             md_file_close(file);
                         } else {
-                            LOG_ERROR("Failed to open file '%s' for saving script", path_buf);
+                            VIAMD_LOG_ERROR("Failed to open file '%s' for saving script", path_buf);
                         }
                     }
                 }
                 if (ImGui::MenuItem("Export")) {
-                    data->show_property_export_window = true;
+                    state->show_property_export_window = true;
                 }
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Edit")) {
-                bool ro = editor.IsReadOnly();
+                bool ro = state->editor.IsReadOnly();
                 if (ImGui::MenuItem("Read-only mode", nullptr, &ro))
-                    editor.SetReadOnly(ro);
+                    state->editor.SetReadOnly(ro);
                 ImGui::Separator();
 
-                if (ImGui::MenuItem("Undo", "ALT-Backspace", nullptr, !ro && editor.CanUndo()))
-                    editor.Undo();
-                if (ImGui::MenuItem("Redo", "Ctrl-Y", nullptr, !ro && editor.CanRedo()))
-                    editor.Redo();
+                if (ImGui::MenuItem("Undo", "ALT-Backspace", nullptr, !ro && state->editor.CanUndo()))
+                    state->editor.Undo();
+                if (ImGui::MenuItem("Redo", "Ctrl-Y", nullptr, !ro && state->editor.CanRedo()))
+                    state->editor.Redo();
 
                 ImGui::Separator();
 
-                if (ImGui::MenuItem("Copy", "Ctrl-C", nullptr, editor.HasSelection()))
-                    editor.Copy();
-                if (ImGui::MenuItem("Cut", "Ctrl-X", nullptr, !ro && editor.HasSelection()))
-                    editor.Cut();
-                if (ImGui::MenuItem("Delete", "Del", nullptr, !ro && editor.HasSelection()))
-                    editor.Delete();
+                if (ImGui::MenuItem("Copy", "Ctrl-C", nullptr, state->editor.HasSelection()))
+                    state->editor.Copy();
+                if (ImGui::MenuItem("Cut", "Ctrl-X", nullptr, !ro && state->editor.HasSelection()))
+                    state->editor.Cut();
+                if (ImGui::MenuItem("Delete", "Del", nullptr, !ro && state->editor.HasSelection()))
+                    state->editor.Delete();
                 if (ImGui::MenuItem("Paste", "Ctrl-V", nullptr, !ro && ImGui::GetClipboardText() != nullptr))
-                    editor.Paste();
+                    state->editor.Paste();
 
                 ImGui::Separator();
 
                 if (ImGui::MenuItem("Select all", nullptr, nullptr))
-                    editor.SetSelection(TextEditor::Coordinates(), TextEditor::Coordinates(editor.GetTotalLines(), 0));
+                    state->editor.SetSelection(TextEditor::Coordinates(), TextEditor::Coordinates(state->editor.GetTotalLines(), 0));
 
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Settings")) {
                 if (ImGui::MenuItem("Dark palette"))
-                    editor.SetPalette(TextEditor::GetDarkPalette());
+                    state->editor.SetPalette(TextEditor::GetDarkPalette());
                 if (ImGui::MenuItem("Light palette"))
-                    editor.SetPalette(TextEditor::GetLightPalette());
+                    state->editor.SetPalette(TextEditor::GetLightPalette());
                 if (ImGui::MenuItem("Retro blue palette"))
-                    editor.SetPalette(TextEditor::GetRetroBluePalette());
+                    state->editor.SetPalette(TextEditor::GetRetroBluePalette());
                 ImGui::Separator();
-                ImGui::ColorEdit4("Point Color",    data->script.point_color.elem);
-                ImGui::ColorEdit4("Line Color",     data->script.line_color.elem);
-                ImGui::ColorEdit4("Triangle Color", data->script.triangle_color.elem);
-                ImGui::ColorEdit4("Text Color",     data->script.text_color.elem);
-                ImGui::ColorEdit4("Text Bg Color",  data->script.text_bg_color.elem);
-
+                ImGui::ColorEdit4("Point Color",    state->script.point_color.elem);
+                ImGui::ColorEdit4("Line Color",     state->script.line_color.elem);
+                ImGui::ColorEdit4("Triangle Color", state->script.triangle_color.elem);
+                ImGui::ColorEdit4("Text Color",     state->script.text_color.elem);
+                ImGui::ColorEdit4("Text Bg Color",  state->script.text_bg_color.elem);
                 ImGui::EndMenu();
             }
 
             ImGui::EndMenuBar();
         }
 
-        if (editor.IsTextChanged()) {
-            data->script.compile_ir = true;
-            data->script.time_since_last_change = 0;
+        if (state->editor.IsTextChanged()) {
+            state->script.compile_ir = true;
+            state->script.time_since_last_change = 0;
         }
 
         const ImVec2 content_size = ImGui::GetContentRegionAvail();
@@ -6866,18 +6696,17 @@ static void draw_script_editor_window(ApplicationState* data) {
         const ImVec2 btn_size = ImGui::CalcItemSize(ImVec2(0,0), label_size.x + ImGui::GetStyle().FramePadding.x * 2.0f, label_size.y + ImGui::GetStyle().FramePadding.y * 2.0f);
         const ImVec2 text_size(content_size - ImVec2(0, btn_size.y + ImGui::GetStyle().ItemSpacing.y));
 
-        editor.Render("TextEditor", text_size);
+        state->editor.Render("TextEditor", text_size);
         bool editor_hovered = ImGui::IsItemHovered();
         bool eval = false;
-        if (editor.IsFocused() && ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
+        if (state->editor.IsFocused() && ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
             eval = true;
         }
 
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
-        const bool valid = md_script_ir_valid(data->script.ir) && md_trajectory_num_frames(data->mold.traj) > 0;
-
+        const bool valid = md_script_ir_valid(state->script.ir) && md_trajectory_num_frames(state->mold.traj) > 0;  
         if (!valid) ImGui::PushDisabled();
         if (ImGui::Button(btn_text, btn_size)) {
             eval = true;
@@ -6885,36 +6714,35 @@ static void draw_script_editor_window(ApplicationState* data) {
         if (!valid) ImGui::PopDisabled();
 
         if (eval && valid) {
-            data->script.eval_init = true;
+            state->script.eval_init = true;
         }
 
         if (editor_hovered) {
-            md_bitfield_clear(&data->selection.highlight_mask);
+            md_bitfield_clear(&state->selection.highlight_mask);
         }
 
-        const TextEditor::Marker* hovered_marker = editor.GetHoveredMarker();
+        const TextEditor::Marker* hovered_marker = state->editor.GetHoveredMarker();
         if (hovered_marker) {
             if (!hovered_marker->text.empty()) {
                 ImGui::BeginTooltip();
                 ImGui::Text("%.*s", (int)hovered_marker->text.length(), hovered_marker->text.c_str());
-                if (data->script.sub_idx != -1) {
-                    ImGui::Text("Currently inspected idx: %i", data->script.sub_idx + 1);
+                if (state->script.sub_idx != -1) {
+                    ImGui::Text("Currently inspected idx: %i", state->script.sub_idx + 1);
                 }
                 ImGui::EndTooltip();
             }
             if (hovered_marker->payload) {
-                if (md_semaphore_try_aquire(&data->script.ir_semaphore)) {
-                    defer { md_semaphore_release(&data->script.ir_semaphore); };
+                if (md_semaphore_try_aquire(&state->script.ir_semaphore)) {
+                    defer { md_semaphore_release(&state->script.ir_semaphore); };
 
                     if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
                         const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
-                        md_bitfield_copy(&data->selection.highlight_mask, bf);
+                        md_bitfield_copy(&state->selection.highlight_mask, bf);
                     }
                     else if (hovered_marker->type == MarkerType_Visualization) {
                         // Clear hovered property
-                        set_hovered_property(data, STR_LIT(""));
-
-                        if (md_script_ir_valid(data->script.ir)) {
+                        set_hovered_property(state, STR_LIT(""));
+                        if (md_script_ir_valid(state->script.ir)) {
                             const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
                             str_t payload_ident = md_script_payload_ident(payload);
                             size_t payload_dim  = md_script_payload_dim(payload); 
@@ -6924,12 +6752,12 @@ static void draw_script_editor_window(ApplicationState* data) {
                                 if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
                                     delta *= 10;
                                 }
-                                data->script.sub_idx += delta;
-                                data->script.sub_idx = CLAMP(data->script.sub_idx, -1, (int)payload_dim - 1);
+                                state->script.sub_idx += delta;
+                                state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)payload_dim - 1);
                             }
 
-                            visualize_payload(data, payload, data->script.sub_idx, 0);
-                            set_hovered_property(data, payload_ident, data->script.sub_idx);
+                            visualize_payload(state, payload, state->script.sub_idx, 0);
+                            set_hovered_property(state, payload_ident, state->script.sub_idx);
                         }
                     }
 
@@ -6937,12 +6765,12 @@ static void draw_script_editor_window(ApplicationState* data) {
                     bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
                     if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
                         SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
-                        modify_selection(data, &data->selection.highlight_mask, op);
+                        modify_selection(state, &state->selection.highlight_mask, op);
                     }
                 }
             }
         } else {
-            data->script.sub_idx = -1;
+            state->script.sub_idx = -1;
         }
     }
     ImGui::End();
@@ -6956,7 +6784,7 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
 
     md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
     if (!file) {
-        LOG_ERROR("Failed to open file '" STR_FMT "' to write data.", STR_ARG(filename));
+        VIAMD_LOG_ERROR("Failed to open file '" STR_FMT "' to write data.", STR_ARG(filename));
         return false;
     }    
 
@@ -6993,7 +6821,7 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
     }
 
     md_file_close(file);
-    LOG_SUCCESS("Successfully exported XVG file to '%.*s'", (int)filename.len, filename.ptr);
+    VIAMD_LOG_SUCCESS("Successfully exported XVG file to '%.*s'", (int)filename.len, filename.ptr);
     return true;
 }
 
@@ -7005,7 +6833,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
 
     md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
     if (!file) {
-        LOG_ERROR("Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
+        VIAMD_LOG_ERROR("Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
         return false;
     }
     
@@ -7022,7 +6850,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     }
 
     md_file_close(file);
-    LOG_SUCCESS("Successfully exported CSV file to '%.*s'", (int)filename.len, filename.ptr);
+    VIAMD_LOG_SUCCESS("Successfully exported CSV file to '%.*s'", (int)filename.len, filename.ptr);
     return true;
 }
 
@@ -7031,12 +6859,12 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
     if (!prop_data) {
-        LOG_ERROR("Export Cube: The property to be exported did not exist");
+        VIAMD_LOG_ERROR("Export Cube: The property to be exported did not exist");
         return false;
     }
 
     if (!vis_payload) {
-        LOG_ERROR("Export Cube: Missing input visualization data");
+        VIAMD_LOG_ERROR("Export Cube: Missing input visualization data");
         return false;
     }
 
@@ -7057,10 +6885,6 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
     md_script_vis_t vis = { 0 };
     md_script_vis_init(&vis, frame_alloc);
     defer { md_script_vis_free(&vis); };
-    
-    //if (md_semaphore_aquire(&data.script.ir_semaphore)) {
-    //    defer { md_semaphore_release(&data.script.ir_semaphore); };
-
         
     if (md_script_ir_valid(data.script.eval_ir)) {
         md_script_vis_ctx_t ctx = {
@@ -7074,7 +6898,7 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
     if (result == true) {
         md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
         if (!file) {
-            LOG_ERROR("Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
+            VIAMD_LOG_ERROR("Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
             return false;
         }
 
@@ -7137,7 +6961,7 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
 
         md_file_close(file);
     } else {
-        LOG_ERROR("Failed to visualize volume for export.");
+        VIAMD_LOG_ERROR("Failed to visualize volume for export.");
         return false;
     }
 
@@ -7273,7 +7097,7 @@ static void draw_property_export_window(ApplicationState* data) {
                 if (dp.type == DisplayProperty::Type_Volume) {
                     if (str_eq(file_extension, STR_LIT("cube"))) {
                         if (export_cube(*data, dp.prop_data, dp.vis_payload, path)) {
-                            LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", dp.label, STR_ARG(path));
+                            VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", dp.label, STR_ARG(path));
                         }
                     }
                 } else {
@@ -7362,7 +7186,7 @@ static void draw_property_export_window(ApplicationState* data) {
                         }
                         if (!str_empty(out_str)) {
                             md_file_write(file, out_str.ptr, out_str.len);
-                            LOG_SUCCESS("Successfully exported property '%s' to '%.*s'", dp.label, (int)path.len, path.ptr);
+                            VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '%.*s'", dp.label, (int)path.len, path.ptr);
                         }
                         md_file_close(file);
                     }
@@ -7503,14 +7327,14 @@ void draw_structure_export_window(ApplicationState* data) {
             
             if (query.requires_evaluation) {
                 md_bitfield_clear(&query.mask);
-                query.is_valid = filter_expression(
-                    data,
+                query.is_valid = md_filter(
+                    &query.mask,
+                    str_from_cstr(query.buf),
                     &data->mold.sys,
                     data->mold.sys.atom.x,
                     data->mold.sys.atom.y,
                     data->mold.sys.atom.z,
-                    str_from_cstr(query.buf),
-                    &query.mask,
+                    data->script.ir,
                     &query.is_dynamic,
                     query.error,
                     sizeof(query.error)
@@ -7551,19 +7375,19 @@ void draw_structure_export_window(ApplicationState* data) {
                         // IMPORTANT: Clear the previous mask before re-evaluating a dynamic query.
                         // Otherwise atoms that drop out in subsequent frames remain set from earlier frames.
                         md_bitfield_clear(&data->structure_export.query.mask);
-                        data->structure_export.query.is_valid = filter_expression(
-                            data,
+                        data->structure_export.query.is_valid = md_filter(
+                            &data->structure_export.query.mask,
+                            str_from_cstr(data->structure_export.query.buf),
                             &data->mold.sys,
                             x, y, z,
-                            str_from_cstr(data->structure_export.query.buf),
-                            &data->structure_export.query.mask,     
+                            data->script.ir,
                             &data->structure_export.query.is_dynamic,
                             data->structure_export.query.error,
                             sizeof(data->structure_export.query.error)
                         );
                     }
                     if (!data->structure_export.query.is_valid) {
-                        LOG_ERROR("Cannot export structure, the query expression is invalid: " STR_FMT, STR_ARG(str_from_cstr(data->structure_export.query.error)));
+                        VIAMD_LOG_ERROR("Cannot export structure, the query expression is invalid: " STR_FMT, STR_ARG(str_from_cstr(data->structure_export.query.error)));
                         return 0;
                     } else {
                         return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->structure_export.query.mask));
@@ -7576,7 +7400,7 @@ void draw_structure_export_window(ApplicationState* data) {
                     return data->mold.sys.atom.count;
                 } break;
                 default: {
-                    LOG_ERROR("Invalid atom filter selection.");
+                    VIAMD_LOG_ERROR("Invalid atom filter selection.");
                 } break;
             }
             return 0;
@@ -7604,7 +7428,7 @@ void draw_structure_export_window(ApplicationState* data) {
                     }
                 } break;
                 default: {
-                    LOG_ERROR("Invalid trajectory filter selection.");
+                    VIAMD_LOG_ERROR("Invalid trajectory filter selection.");
                 } break;
                 }
             }
@@ -7642,7 +7466,7 @@ void draw_structure_export_window(ApplicationState* data) {
                             }
                         } break;
                         default: {
-                            LOG_ERROR("Unsupported export format: '" STR_FMT "'", STR_ARG(ext));
+                            VIAMD_LOG_ERROR("Unsupported export format: '" STR_FMT "'", STR_ARG(ext));
                         } break;
                     }
 
@@ -7664,7 +7488,7 @@ void draw_structure_export_window(ApplicationState* data) {
                         for (size_t f = 0; f < num_frames; ++f) {
                             int frame_idx = frame_indices[f];
                             if (!md_trajectory_load_frame(traj, frame_idx, NULL, x, y, z)) {
-                                LOG_ERROR("Failed to load frame %d from trajectory for structure export.", frame_idx);
+                                VIAMD_LOG_ERROR("Failed to load frame %d from trajectory for structure export.", frame_idx);
                                 continue;
                             }
 
@@ -7692,10 +7516,10 @@ void draw_structure_export_window(ApplicationState* data) {
                         }
                     }
 
-                    LOG_INFO("Successfully exported structure to: '" STR_FMT "'", STR_ARG(path));
+                    VIAMD_LOG_INFO("Successfully exported structure to: '" STR_FMT "'", STR_ARG(path));
                     md_file_close(file);
                 } else {
-                    LOG_ERROR("Failed to open file '" STR_FMT "' for writing.", STR_ARG(path));
+                    VIAMD_LOG_ERROR("Failed to open file '" STR_FMT "' for writing.", STR_ARG(path));
                 }
             }
         }
@@ -7709,10 +7533,10 @@ static void update_md_buffers(ApplicationState* data) {
 
     if (mol.atom.count == 0) return;
 
-    if (data->mold.dirty_buffers & MolBit_DirtyPosition) {
+    if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
         const vec3_t pbc_ext = md_unitcell_diag_vec3(&data->mold.sys.unitcell);
         md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        if (!(data->mold.dirty_buffers & MolBit_ClearVelocity)) {
+        if (!(data->mold.dirty_gpu_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
         }
 #if EXPERIMENTAL_GFX_API
@@ -7721,11 +7545,11 @@ static void update_md_buffers(ApplicationState* data) {
 #endif
     }
 
-    if (data->mold.dirty_buffers & MolBit_ClearVelocity) {
+    if (data->mold.dirty_gpu_buffers & MolBit_ClearVelocity) {
         md_gl_mol_zero_velocity(data->mold.gl_mol);
     }
 
-    if (data->mold.dirty_buffers & MolBit_DirtyRadius) {
+    if (data->mold.dirty_gpu_buffers & MolBit_DirtyRadius) {
         md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
         defer { md_vm_arena_temp_end(tmp); };
 
@@ -7738,7 +7562,7 @@ static void update_md_buffers(ApplicationState* data) {
 #endif
     }
 
-    if (data->mold.dirty_buffers & MolBit_DirtyFlags) {
+    if (data->mold.dirty_gpu_buffers & MolBit_DirtyFlags) {
         md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
         defer { md_vm_arena_temp_end(tmp); };
 
@@ -7769,227 +7593,19 @@ static void update_md_buffers(ApplicationState* data) {
         md_gl_mol_set_atom_flags(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
     }
 
-    if (data->mold.dirty_buffers & MolBit_DirtyBonds) {
+    if (data->mold.dirty_gpu_buffers & MolBit_DirtyBonds) {
         md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_atom_pair_t));
     }
 
-    if (data->mold.dirty_buffers & MolBit_DirtySecondaryStructure) {
+    if (data->mold.dirty_gpu_buffers & MolBit_DirtySecondaryStructure) {
         const md_gl_secondary_structure_t* ss_arr = data->interpolated_properties.secondary_structure;
         size_t ss_len = md_array_size(ss_arr);
         if (ss_len > 0) {
-            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, ss_len, ss_arr, 0);
+            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)ss_len, ss_arr, 0);
         }
     }
 
-    data->mold.dirty_buffers = 0;
-}
-
-static void interrupt_async_tasks(ApplicationState* data) {
-    task_system::pool_interrupt_running_tasks();
-
-    if (data->script.full_eval) md_script_eval_interrupt(data->script.full_eval);
-    if (data->script.filt_eval) md_script_eval_interrupt(data->script.filt_eval);
-
-    task_system::pool_wait_for_completion();
-}
-
-// #trajectorydata
-static void free_trajectory_data(ApplicationState* data) {
-    ASSERT(data);
-    interrupt_async_tasks(data);
-
-    if (data->mold.traj) {
-        load::traj::close(data->mold.traj);
-        data->mold.traj = nullptr;
-    }
-    data->files.trajectory[0] = '\0';
-    
-    data->mold.sys.unitcell = {};
-    md_array_free(data->timeline.x_values,  persistent_alloc);
-    md_array_free(data->display_properties, persistent_alloc);
-
-    md_array_free(data->trajectory_data.backbone_angles.data,     persistent_alloc);
-    md_array_free(data->trajectory_data.secondary_structure.data, persistent_alloc);
-}
-
-static void init_trajectory_data(ApplicationState* data) {
-    size_t num_frames = md_trajectory_num_frames(data->mold.traj);
-    if (num_frames > 0) {
-        size_t min_frame = 0;
-        size_t max_frame = num_frames - 1;
-        md_trajectory_header_t header;
-        md_trajectory_get_header(data->mold.traj, &header);
-        
-        double min_time = header.frame_times[0];
-        double max_time = header.frame_times[num_frames - 1];
-
-        data->timeline.view_range = {min_time, max_time};
-        data->timeline.filter.beg_frame = min_frame;
-        data->timeline.filter.end_frame = max_frame;
-
-        md_array_resize(data->timeline.x_values, num_frames, persistent_alloc);
-        for (size_t i = 0; i < num_frames; ++i) {
-            data->timeline.x_values[i] = header.frame_times[i];
-        }
-
-        data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
-        int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
-
-        md_trajectory_frame_header_t frame_header;
-        md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z);
-        data->mold.sys.unitcell = frame_header.unitcell;
-
-        if (data->mold.sys.protein_backbone.segment.count > 0) {
-            data->trajectory_data.secondary_structure.stride = data->mold.sys.protein_backbone.segment.count;
-            data->trajectory_data.secondary_structure.count = data->mold.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.sys.protein_backbone.segment.count * num_frames, persistent_alloc);
-            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_bytes(data->trajectory_data.secondary_structure.data));
-
-            data->trajectory_data.backbone_angles.stride = data->mold.sys.protein_backbone.segment.count;
-            data->trajectory_data.backbone_angles.count = data->mold.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.sys.protein_backbone.segment.count * num_frames, persistent_alloc);
-            MEMSET(data->trajectory_data.backbone_angles.data, 0, md_array_bytes(data->trajectory_data.backbone_angles.data));
-
-            // Launch work to compute the values
-            task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
-
-            data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
-                // Create copy here of molecule since we use the full structure as input
-                md_system_t sys = data->mold.sys;
-				md_trajectory_i* traj = load::traj::get_raw_trajectory(data->mold.traj);
-
-                md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-                defer { md_vm_arena_destroy(temp_arena); };
-
-                const size_t capacity = ALIGN_TO(sys.atom.count, 16);
-				float* x = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
-				float* y = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
-				float* z = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
-
-                for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-					md_trajectory_frame_header_t frame_header;
-					md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
-					md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
-
-                    md_trajectory_load_frame(traj, frame_idx, &frame_header, x, y, z);
-					md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
-                    md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
-                }
-            });
-
-            uint64_t time = (uint64_t)md_time_current();
-            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time]() {
-                uint64_t t1 = (uint64_t)md_time_current();
-                double elapsed = md_time_as_seconds(t1 - t0);
-                MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
-                data->trajectory_data.backbone_angles.fingerprint = generate_fingerprint();
-                data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
-                
-                interpolate_atomic_properties(data);
-                data->mold.dirty_buffers |= MolBit_ClearVelocity;
-                flag_all_representations_as_dirty(data);
-            });
-
-            task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
-            task_system::enqueue_task(data->tasks.backbone_computations);
-        }
-
-        data->mold.dirty_buffers |= MolBit_DirtyPosition;
-        data->mold.dirty_buffers |= MolBit_ClearVelocity;
-
-        // Prefetch frames
-        //launch_prefetch_job(data);
-    }
-}
-
-static bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_loader_i* loader, LoadTrajectoryFlags flags) {
-    md_trajectory_i* traj = load::traj::open_file(filename, loader, &data->mold.sys, persistent_alloc, flags);
-    if (traj) {
-        free_trajectory_data(data);
-        data->mold.traj = traj;
-        str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), filename);
-        init_trajectory_data(data);
-        data->animation.frame = 0;
-        return true;
-    }
-
-    return false;
-}
-
-// #moleculedata
-static void free_molecule_data(ApplicationState* data) {
-    ASSERT(data);
-    interrupt_async_tasks(data);
-
-    //md_molecule_free(&data->mold.sys, persistent_alloc);
-    md_arena_allocator_reset(data->mold.sys_alloc);
-    MEMSET(&data->mold.sys, 0, sizeof(data->mold.sys));
-
-    md_gl_mol_destroy(data->mold.gl_mol);
-    MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
-
-	data->interpolated_properties.secondary_structure = nullptr;
-
-    md_bitfield_clear(&data->selection.selection_mask);
-    md_bitfield_clear(&data->selection.highlight_mask);
-    if (data->script.ir) {
-        md_script_ir_free(data->script.ir);
-        data->script.ir = nullptr;
-    }
-    if (data->script.eval_ir && data->script.eval_ir != data->script.ir) {
-        md_script_ir_free(data->script.eval_ir);
-        data->script.eval_ir = nullptr;
-    }
-    if (data->script.full_eval) {
-        md_script_eval_free(data->script.full_eval);
-        data->script.full_eval = nullptr;
-    }
-    if (data->script.filt_eval) {
-        md_script_eval_free(data->script.filt_eval);
-        data->script.filt_eval = nullptr;
-    }
-    clear_density_volume(data);
-
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyFree, viamd::EventPayloadType_ApplicationState, data);
-}
-
-static void init_molecule_data(ApplicationState* data) {
-    if (data->mold.sys.atom.count) {
-
-        data->picking.idx = INVALID_PICKING_IDX;
-        data->selection.atom_idx.hovered = -1;
-        data->selection.atom_idx.right_click = -1;
-        data->selection.bond_idx.hovered = -1;
-        data->selection.bond_idx.right_click = -1;
-
-        data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
-        if (data->mold.sys.protein_backbone.segment.count > 0) {
-		    data->interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, data->mold.sys.protein_backbone.segment.count, data->mold.sys_alloc);
-        }
-
-#if EXPERIMENTAL_GFX_API
-        const md_system_t& mol = data->mold.sys;
-        vec3_t& aabb_min = data->mold.sys_aabb_min;
-        vec3_t& aabb_max = data->mold.sys_aabb_max;
-        md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
-
-        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
-        if (mol.instance.count > 0) {
-            md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
-            md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
-        }
-#endif
-    }
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, viamd::EventPayloadType_ApplicationState, data);
-
-    update_representation_info(data);
-    init_all_representations(data);
-    data->script.compile_ir = true;
-
+    data->mold.dirty_gpu_buffers = 0;
 }
 
 static void launch_prefetch_job(ApplicationState* data) {
@@ -8006,419 +7622,11 @@ static void launch_prefetch_job(ApplicationState* data) {
     });
 
     task_system::ID main_task = task_system::create_main_task(STR_LIT("Prefetch Complete"), [data]() {
-        interpolate_atomic_properties(data);
-        data->mold.dirty_buffers |= MolBit_ClearVelocity;
+        data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
     });
 
     task_system::set_task_dependency(main_task, data->tasks.prefetch_frames);
     task_system::enqueue_task(data->tasks.prefetch_frames);
-}
-
-static bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
-    ASSERT(data);
-
-    str_t path_to_file = md_path_make_canonical(param.file_path, frame_alloc);
-    if (path_to_file) {
-        if (param.sys_loader) {
-            interrupt_async_tasks(data);
-            free_trajectory_data(data);
-            free_molecule_data(data);
-
-            if (!param.sys_loader->init_from_file(&data->mold.sys, path_to_file, param.sys_loader_arg, data->mold.sys_alloc)) {
-                LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
-                return false;
-            }
-            LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
-
-            str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), path_to_file);
-            data->files.coarse_grained = param.coarse_grained;
-            // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
-            md_util_postprocess_flags_t flags = param.coarse_grained ? 0 : MD_UTIL_POSTPROCESS_ALL;
-            md_util_molecule_postprocess(&data->mold.sys, data->mold.sys_alloc, flags);
-            init_molecule_data(data);
-
-            // @NOTE: Some files contain both atomic coordinates and trajectory
-            if (param.traj_loader) {
-                LOG_INFO("File may also contain trajectory, attempting to load trajectory");
-            } else {
-                return true;
-            }
-        }
-
-        if (param.traj_loader) {
-            if (!data->mold.sys.atom.count) {
-                LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
-                return false;
-            }
-            interrupt_async_tasks(data);
-
-            bool success = load_trajectory_data(data, path_to_file, param.traj_loader, param.traj_loader_flags);
-            if (success) {
-                LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
-                return true;
-            } else {
-                if (param.sys_loader && param.traj_loader) {
-                    // Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
-                    return true;
-                }
-                LOG_ERROR("Failed to opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
-            }
-        }
-    }
-
-    return false;
-}
-
-static void load_workspace(ApplicationState* data, str_t filename) {
-    str_t txt = load_textfile(filename, frame_alloc);
-    defer { str_free(txt, frame_alloc); };
-
-    if (str_empty(txt)) {
-        LOG_ERROR("Could not open workspace file: '" STR_FMT "'", STR_ARG(filename));
-        return;
-    }
-
-    // Reset and clear things
-    clear_selections(data);
-    remove_all_representations(data);
-    editor.SetText("");
-    data->files.workspace[0]  = '\0';
-
-    data->animation = {};
-    reset_view(data, &data->representation.visibility_mask, false, true);
-
-    str_t new_molecule_file   = {};
-    str_t new_trajectory_file = {};
-    bool  new_coarse_grained  = false;
-    double new_frame = 0;
-
-    str_t folder = {};
-    extract_folder_path(&folder, filename);
-
-    viamd::deserialization_state_t state = {
-        .filename = filename,
-        .text = txt,
-    };
-    str_t section;
-    while (viamd::next_section_header(section, state)) {
-        if (str_eq(section, STR_LIT("Files")) || str_eq(section, STR_LIT("File"))) {
-            str_t ident, arg;
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("MoleculeFile"))) {
-                    str_t file;
-                    viamd::extract_str(file, arg);
-                    if (!str_empty(file)) {
-                        md_strb_t path = md_strb_create(frame_alloc);
-                        path += folder;
-                        path += file;
-                        new_molecule_file = md_path_make_canonical(path, frame_alloc);
-                    }
-                } else if (str_eq(ident, STR_LIT("TrajectoryFile"))) {
-                    str_t file;
-                    viamd::extract_str(file, arg);
-                    if (!str_empty(file)) {
-                        md_strb_t path = md_strb_create(frame_alloc);
-                        path += folder;
-                        path += file;
-                        new_trajectory_file = md_path_make_canonical(path, frame_alloc);
-                    }
-                } else if (str_eq(ident, STR_LIT("CoarseGrained"))) {
-                    viamd::extract_bool(new_coarse_grained, arg);
-                }
-            }
-        } else if (str_eq(section, STR_LIT("Animation"))) {
-            str_t ident, arg;
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Frame"))) {
-                    viamd::extract_dbl(new_frame, arg);
-                } else if (str_eq(ident, STR_LIT("Fps"))) {
-                    viamd::extract_flt(data->animation.fps, arg);
-                } else if (str_eq(ident, STR_LIT("Interpolation"))) {
-                    int mode;
-                    viamd::extract_int(mode, arg);
-                    data->animation.interpolation = (InterpolationMode)mode;
-                }
-            }
-        } else if (str_eq(section, STR_LIT("RenderSettings"))) {
-            str_t ident, arg;
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("SsaoEnabled"))) {
-                    viamd::extract_bool(data->visuals.ssao.enabled, arg);
-                } else if (str_eq(ident, STR_LIT("SsaoIntensity"))) {
-                    viamd::extract_flt(data->visuals.ssao.intensity, arg);
-                } else if (str_eq(ident, STR_LIT("SsaoRadius"))) {
-                    viamd::extract_flt(data->visuals.ssao.radius, arg);
-                } else if (str_eq(ident, STR_LIT("SsaoBias"))) {
-                    viamd::extract_flt(data->visuals.ssao.bias, arg);
-                } else if (str_eq(ident, STR_LIT("DofEnabled"))) {
-                    viamd::extract_bool(data->visuals.dof.enabled, arg);
-                } else if (str_eq(ident, STR_LIT("DofFocusScale"))) {
-                    viamd::extract_flt(data->visuals.dof.focus_scale, arg);
-                }
-            }
-        } else if (str_eq(section, STR_LIT("Camera"))) {
-            str_t ident, arg;
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Position"))) {
-                    viamd::extract_vec3(data->view.camera.position, arg);
-                } else if (str_eq(ident, STR_LIT("Orientation"))) {
-                    viamd::extract_quat(data->view.camera.orientation, arg);
-                } else if (str_eq(ident, STR_LIT("Distance"))) {
-                    viamd::extract_flt(data->view.camera.focus_distance, arg);
-                } else if (str_eq(ident, STR_LIT("Rotation"))) {
-                    // DEPRECATED
-                    viamd::extract_quat(data->view.camera.orientation, arg);
-                }
-            }
-        } else if (str_eq(section, STR_LIT("Representation"))) {
-            Representation* rep = create_representation(data);
-            str_t ident, arg;
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Name"))) {
-                    viamd::extract_to_char_buf(rep->name, sizeof(rep->name), arg);
-                } else if (str_eq(ident, STR_LIT("Filter"))) {
-                    viamd::extract_to_char_buf(rep->filt, sizeof(rep->filt), arg);
-                } else if (str_eq(ident, STR_LIT("Enabled"))) {
-                    viamd::extract_bool(rep->enabled, arg);
-                } else if (str_eq(ident, STR_LIT("Type"))) {
-                    int type;
-                    viamd::extract_int(type, arg);
-                    type = CLAMP(type, 0, (int)RepresentationType::Count);
-                    rep->type = (RepresentationType)type;
-                } else if (str_eq(ident, STR_LIT("ColorMapping"))) {
-                    int mapping;
-                    viamd::extract_int(mapping, arg);
-                    mapping = CLAMP(mapping, 0, (int)ColorMapping::Count);
-                    rep->color_mapping = (ColorMapping)mapping;
-                } else if (str_eq(ident, STR_LIT("StaticColor"))) {
-                    viamd::extract_flt_vec(rep->uniform_color.elem, 4, arg);
-                } else if (str_eq(ident, STR_LIT("Saturation"))) {
-                    viamd::extract_flt(rep->saturation, arg);
-                } else if (str_eq(ident, STR_LIT("Radius"))) {
-                    // DEPRECATED
-                    viamd::extract_flt(rep->scale.x, arg);
-                } else if (str_eq(ident, STR_LIT("Tension"))) {
-                    // DEPRECATED
-                } else if (str_eq(ident, STR_LIT("Width"))) {
-                    viamd::extract_flt(rep->scale.x, arg);
-                } else if (str_eq(ident, STR_LIT("Thickness"))) {
-                    viamd::extract_flt(rep->scale.y, arg);
-                } else if (str_eq(ident, STR_LIT("Param"))) {
-                    viamd::extract_flt_vec(rep->scale.elem, 4, arg);
-                } else if (str_eq(ident, STR_LIT("DynamicEval"))) {
-                    viamd::extract_bool(rep->dynamic_evaluation, arg);
-                } else if (str_eq(ident, STR_LIT("OrbIdx"))) {
-                    viamd::extract_int(rep->electronic_structure.mo_idx, arg);
-                } else if (str_eq(ident, STR_LIT("OrbMoIdx"))) {
-                    viamd::extract_int(rep->electronic_structure.mo_idx, arg);
-                } else if (str_eq(ident, STR_LIT("OrbNtoIdx"))) {
-                    viamd::extract_int(rep->electronic_structure.nto_idx, arg);
-                } else if (str_eq(ident, STR_LIT("OrbRes"))) {
-                    int res;
-                    viamd::extract_int(res, arg);
-                    rep->electronic_structure.resolution = (VolumeResolution)res;
-                } else if (str_eq(ident, STR_LIT("OrbType"))) {
-                    int type;
-                    viamd::extract_int(type, arg);
-                    rep->electronic_structure.type = (ElectronicStructureType)type;
-                } else if (str_eq(ident, STR_LIT("OrbIso"))) {
-                    viamd::extract_flt(rep->electronic_structure.iso_psi.values[0], arg);
-                    rep->electronic_structure.iso_psi.values[1] = - rep->electronic_structure.iso_psi.values[0];
-                    rep->electronic_structure.iso_den.values[0] = rep->electronic_structure.iso_psi.values[0] * rep->electronic_structure.iso_psi.values[0];
-                } else if (str_eq(ident, STR_LIT("OrbColPos"))) {
-                    viamd::extract_vec4(rep->electronic_structure.iso_psi.colors[0], arg);
-                } else if (str_eq(ident, STR_LIT("OrbColNeg"))) {
-                    viamd::extract_vec4(rep->electronic_structure.iso_psi.colors[1], arg);
-                } else if (str_eq(ident, STR_LIT("OrbColDen"))) {
-                    viamd::extract_vec4(rep->electronic_structure.iso_den.colors[0], arg);
-                }
-            }
-        }
-        /*else if (str_eq(section, STR_LIT("AtomElementMapping"))) {
-            str_t lbl = {};
-            int elem = 0;
-            str_t ident, arg;
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Label"))) {
-                    viamd::extract_str(lbl, arg);
-                } else if (str_eq(ident, STR_LIT("Element"))) {
-                    viamd::extract_int(elem, arg);
-                }
-            }
-            if (!str_empty(lbl) && elem) {
-                add_atom_elem_mapping(data, lbl, (md_element_t)elem);
-            }
-        } */
-        else if (str_eq(section, STR_LIT("Script"))) {
-            str_t ident, arg;
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Text"))) {
-                    str_t str;
-                    viamd::extract_str(str, arg);
-                    editor.SetText(std::string(str.ptr, str.len));
-                }
-            }
-        }
-        else if (str_eq(section, STR_LIT("Selection"))) {
-            str_t ident, arg;
-            str_t label = {};
-            str_t mask_base64 = {};
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Label"))) {
-                    viamd::extract_str(label, arg);
-                } else if (str_eq(ident, STR_LIT("Mask"))) {
-                    viamd::extract_str(mask_base64, arg);
-                }
-            }
-            if (!str_empty(label) && !str_empty(mask_base64)) {
-                Selection* sel = create_selection(data, label);
-                md_bitfield_deserialize(&sel->atom_mask, mask_base64.ptr, mask_base64.len);
-            }
-        } else {
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserialize, viamd::EventPayloadType_DeserializationState, &state);
-        }
-    }
-
-    data->view.animation.target_position    = data->view.camera.position;
-    data->view.animation.target_orientation = data->view.camera.orientation;
-    data->view.animation.target_distance    = data->view.camera.focus_distance;
-    
-    str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
-    
-    data->files.coarse_grained  = new_coarse_grained;
-
-    load::LoaderState loader_state = {};
-    load::init_loader_state(&loader_state, new_molecule_file, frame_alloc);
-
-    LoadParam param = {};
-    param.file_path = new_molecule_file;
-    param.sys_loader = loader_state.sys_loader;
-    param.traj_loader = loader_state.traj_loader;
-    param.coarse_grained = new_coarse_grained;
-    param.sys_loader_arg = loader_state.sys_loader_arg;
-
-    if (new_molecule_file && load_dataset_from_file(data, param)) {
-        str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), new_molecule_file);
-    } else {
-        data->files.molecule[0]   = '\0';
-    }
-
-    if (new_trajectory_file) {
-        load::init_loader_state(&loader_state, new_trajectory_file, frame_alloc);
-        param.sys_loader = 0;
-        param.traj_loader = loader_state.traj_loader;
-        param.file_path = new_trajectory_file;
-        if (load_dataset_from_file(data, param)) {
-            str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), new_trajectory_file);
-        }
-        data->animation.frame = new_frame;
-    } else {
-        data->files.trajectory[0] = '\0';
-    }
-
-    //apply_atom_elem_mappings(data);
-}
-
-static void save_workspace(ApplicationState* data, str_t filename) {
-    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
-    if (!file) {
-        LOG_ERROR("Could not open workspace file for writing: '%.*s", (int)filename.len, filename.ptr);
-        return;
-    }
-    defer { md_file_close(file); };
-
-    viamd::serialization_state_t state {
-        .filename = filename,
-        .sb = md_strb_create(frame_alloc),
-    };
-
-    // Write big ass header
-    state.sb += header_snippet;
-    state.sb += '\n';
-
-    str_t mol_file  = md_path_make_relative(filename, str_from_cstr(data->files.molecule),   frame_alloc);
-    str_t traj_file = md_path_make_relative(filename, str_from_cstr(data->files.trajectory), frame_alloc);
-
-    viamd::write_section_header(state, STR_LIT("Files"));
-    viamd::write_str(state, STR_LIT("MoleculeFile"), mol_file);
-    viamd::write_str(state, STR_LIT("TrajectoryFile"), traj_file);
-    viamd::write_int(state, STR_LIT("CoarseGrained"), data->files.coarse_grained);
-
-    viamd::write_section_header(state, STR_LIT("Animation"));
-    viamd::write_dbl(state, STR_LIT("Frame"), data->animation.frame);
-    viamd::write_flt(state, STR_LIT("Fps"), data->animation.fps);
-    viamd::write_int(state, STR_LIT("Interpolation"), (int)data->animation.interpolation);
-
-    viamd::write_section_header(state, STR_LIT("RenderSettings"));
-    viamd::write_bool(state, STR_LIT("SsaoEnabled"), data->visuals.ssao.enabled);
-    viamd::write_flt(state, STR_LIT("SsaoIntensity"), data->visuals.ssao.intensity);
-    viamd::write_flt(state, STR_LIT("SsaoRadius"), data->visuals.ssao.radius);
-    viamd::write_bool(state, STR_LIT("DofEnabled"), data->visuals.dof.enabled);
-    viamd::write_flt(state, STR_LIT("DofFocusScale"), data->visuals.dof.focus_scale);
-
-    viamd::write_section_header(state, STR_LIT("Camera"));
-    viamd::write_vec3(state, STR_LIT("Position"), data->view.camera.position);
-    viamd::write_quat(state, STR_LIT("Orientation"), data->view.camera.orientation);
-    viamd::write_flt(state,  STR_LIT("Distance"), data->view.camera.focus_distance);
-    viamd::write_int(state,  STR_LIT("Mode"), (int)data->view.mode);
-
-
-    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-        const Representation& rep = data->representation.reps[i];
-        viamd::write_section_header(state, STR_LIT("Representation"));
-        viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
-        viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filt));
-        viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
-        viamd::write_int(state,  STR_LIT("Type"), (int)rep.type);
-        viamd::write_int(state,  STR_LIT("ColorMapping"), (int)rep.color_mapping);
-        viamd::write_vec4(state, STR_LIT("StaticColor"), rep.uniform_color);
-        viamd::write_flt(state,  STR_LIT("Saturation"), rep.saturation);
-        viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
-        viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
-
-        if (rep.type == RepresentationType::ElectronicStructure) {
-            viamd::write_int(state,  STR_LIT("ElectronicStructureMoIdx"),    rep.electronic_structure.mo_idx);
-            viamd::write_int(state,  STR_LIT("ElectronicStructureNtoIdx"),   rep.electronic_structure.nto_idx);
-            viamd::write_int(state,  STR_LIT("ElectronicStructureType"),(int)rep.electronic_structure.type);
-            viamd::write_int(state,  STR_LIT("ElectronicStructureRes"), (int)rep.electronic_structure.resolution);
-            viamd::write_flt(state,  STR_LIT("ElectronicStructureIso"),      rep.electronic_structure.iso_psi.values[0]);
-            viamd::write_vec4(state, STR_LIT("ElectronicStructureColPos"),   rep.electronic_structure.iso_psi.colors[0]);
-            viamd::write_vec4(state, STR_LIT("ElectronicStructureColNeg"),   rep.electronic_structure.iso_psi.colors[1]);
-            viamd::write_vec4(state, STR_LIT("ElectronicStructureColDen"),   rep.electronic_structure.iso_den.colors[0]);
-        }
-    }
-
-    // TODO: Move atom element remappings to dataset component
-    /*
-    for (size_t i = 0; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
-        const AtomElementMapping& mapping = data->dataset.atom_element_remappings[i];
-        viamd::write_section_header(state, STR_LIT("AtomElementMapping"));
-        viamd::write_str(state, STR_LIT("Label"), str_from_cstr(mapping.lbl));
-        viamd::write_int(state, STR_LIT("Element"), mapping.elem);
-    }
-    */
-
-    {
-        std::string text = editor.GetText();
-        viamd::write_section_header(state, STR_LIT("Script"));
-        viamd::write_str(state, STR_LIT("Text"), str_t{text.c_str(), text.size()});
-    }
-
-    for (size_t i = 0; i < md_array_size(data->selection.stored_selections); ++i) {
-        const Selection& sel = data->selection.stored_selections[i];
-        size_t cap = md_bitfield_serialize_size_in_bytes(&sel.atom_mask);
-        char* buf = (char*)md_vm_arena_push(frame_alloc, cap);
-        size_t len = md_bitfield_serialize(buf, &sel.atom_mask);
-        str_t encoded_mask = {buf, len};
-        viamd::write_section_header(state, STR_LIT("Selection"));
-        viamd::write_str(state, STR_LIT("Label"), str_from_cstr(sel.name));
-        viamd::write_str(state, STR_LIT("Mask"),  encoded_mask);
-    }
-
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdSerialize, viamd::EventPayloadType_SerializationState, &state);
-
-    str_t text = md_strb_to_str(state.sb);
-    md_file_write(file, str_ptr(text), str_len(text));
 }
 
 void create_screenshot(str_t path) {
@@ -8472,503 +7680,11 @@ void create_screenshot(str_t path) {
     } else if (str_eq_cstr_ignore_case(ext, "bmp")) {
         image_write_bmp(path, rgba, width, height);
     } else {
-        LOG_ERROR("Non supported file-extension '" STR_FMT "' when saving screenshot", STR_ARG(ext));
+        VIAMD_LOG_ERROR("Non supported file-extension '" STR_FMT "' when saving screenshot", STR_ARG(ext));
         return;
     }
 
-    LOG_SUCCESS("Screenshot saved to: '" STR_FMT "'", STR_ARG(path));
-}
-
-// #representation
-static Representation* create_representation(ApplicationState* data, RepresentationType type, ColorMapping color_mapping, str_t filter) {
-    ASSERT(data);
-    md_array_push(data->representation.reps, Representation(), persistent_alloc);
-    Representation* rep = md_array_last(data->representation.reps);
-    rep->type = type;
-    rep->color_mapping = color_mapping;
-    if (!str_empty(filter)) {
-        str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
-    }
-    rep->electronic_structure.mo_idx = data->representation.info.alpha.homo_idx;
-    init_representation(data, rep);
-    return rep;
-}
-
-static Representation* clone_representation(ApplicationState* state, const Representation& rep) {
-    ASSERT(state);
-    md_array_push(state->representation.reps, rep, persistent_alloc);
-    Representation* clone = md_array_last(state->representation.reps);
-    clone->md_rep = {0};
-    clone->atom_mask = {0};
-    init_representation(state, clone);
-    return clone;
-}
-
-static void remove_representation(ApplicationState* state, int idx) {
-    ASSERT(state);
-    ASSERT(idx < md_array_size(state->representation.reps));
-    auto& rep = state->representation.reps[idx];
-    md_bitfield_free(&rep.atom_mask);
-    md_gl_rep_destroy(rep.md_rep);
-    if (rep.electronic_structure.vol.tex_id != 0) gl::free_texture(&rep.electronic_structure.vol.tex_id);
-    if (rep.electronic_structure.dvr.tf_tex != 0) gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
-    md_array_swap_back_and_pop(state->representation.reps, idx);
-    recompute_atom_visibility_mask(state);
-}
-
-static void recompute_atom_visibility_mask(ApplicationState* state) {
-    ASSERT(state);
-    auto& mask = state->representation.visibility_mask;
-
-    md_bitfield_clear(&mask);
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        auto& rep = state->representation.reps[i];
-        if (!rep.enabled) continue;
-        md_bitfield_or_inplace(&mask, &rep.atom_mask);
-    }
-    state->representation.visibility_mask_hash = md_bitfield_hash64(&mask, 0);
-}
-
-static void update_all_representations(ApplicationState* state) {
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        update_representation(state, &state->representation.reps[i]);
-    }
-}
-
-static bool rep_type_uses_atomic_colors(RepresentationType type) {
-    return type != RepresentationType::ElectronicStructure;
-}
-
-static void update_representation(ApplicationState* state, Representation* rep) {
-    ASSERT(state);
-    ASSERT(rep);
-
-    if (!rep->enabled) return;
-	if (!rep->needs_update) return;
-
-    const auto& sys = state->mold.sys;
-	size_t num_atoms = md_system_atom_count(&sys);
-
-    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-    defer { md_vm_arena_temp_end(tmp); };
-
-    const size_t bytes = state->mold.sys.atom.count * sizeof(uint32_t);
-
-    //md_script_property_t prop = {0};
-    //if (rep->color_mapping == ColorMapping::Property) {
-        //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.sys, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
-    //}
-
-    uint32_t* colors = 0;
-    if (rep_type_uses_atomic_colors(rep->type)) {
-        colors = (uint32_t*)md_vm_arena_push(frame_alloc, sizeof(uint32_t) * num_atoms);
-
-        switch (rep->color_mapping) {
-            case ColorMapping::Uniform:
-                color_atoms_uniform(colors, num_atoms, rep->uniform_color);
-                break;
-            case ColorMapping::Type:
-                color_atoms_type(colors, num_atoms, sys);
-                break;
-            case ColorMapping::Serial:
-                color_atoms_idx(colors, num_atoms, sys);
-                break;
-            case ColorMapping::CompName:
-                color_atoms_comp_name(colors, num_atoms, sys);
-                break;
-            case ColorMapping::CompSeqId:
-                color_atoms_comp_seq_id(colors, num_atoms, sys);
-                break;
-            case ColorMapping::CompIndex:
-                color_atoms_comp_idx(colors, num_atoms, sys);
-                break;
-            case ColorMapping::InstId:
-                color_atoms_inst_id(colors, num_atoms, sys);
-                break;
-            case ColorMapping::InstIndex:
-                color_atoms_inst_idx(colors, num_atoms, sys);
-                break;
-            case ColorMapping::SecondaryStructure:
-                color_atoms_sec_str(colors, num_atoms, sys);
-                break;
-            case ColorMapping::Property:
-                // @TODO: Map colors accordingly
-                //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
-
-                if (md_array_size(state->representation.info.atom_properties) > 0) {
-                    float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
-                    EvalAtomProperty eval = {
-                        .property_id = state->representation.info.atom_properties[rep->prop.idx].id,
-                        .idx = 0,
-                        .output_written = false,
-                        .num_values = num_atoms,
-                        .dst_values = values,
-                    };
-                    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
-
-                    if (eval.output_written) {
-                        float range_ext = (rep->prop.range_end - rep->prop.range_beg);
-                        range_ext = MAX(range_ext, 0.001f);
-                        for (size_t i = 0; i < num_atoms; ++i) {
-                            float t = (values[i] - rep->prop.range_beg) / range_ext;
-                            colors[i] = ImPlot::SampleColormapU32(ImClamp(t, 0.0f, 1.0f), rep->prop.colormap);
-                        }
-                    } else {
-                        MD_LOG_DEBUG("No output written for EvalAtomProperty event");
-                        MEMSET(colors, 0xFFFFFFFFu, bytes);
-                    }
-                } else {
-                    MEMSET(colors, 0xFFFFFFFFu, bytes);
-                }
-    #if 0
-                if (rep->prop) {
-                    MEMSET(colors, 0xFFFFFFFF, bytes);
-                    md_script_pro
-                    const float* values = rep->prop->data.values;
-                    if (rep->prop->data.aggregate) {
-                        const int dim = rep->prop->data.dim[0];
-                        md_script_vis_t vis = {0};
-                        bool result = false;
-                    
-                    //if (md_semaphore_aquire(&data->script.ir_semaphore)) {
-                    //    defer { md_semaphore_release(&data->script.ir_semaphore); };
-                        
-                        if (md_script_ir_valid(state->script.eval_ir)) {
-                            md_script_vis_init(&vis, frame_alloc);
-                            md_script_vis_ctx_t ctx = {
-                                .ir = state->script.eval_ir,
-                                .mol = &state->mold.sys,
-                                .traj = state->mold.traj,
-                            };
-                            result = md_script_vis_eval_payload(&vis, rep->prop->vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS);
-                        }
-                    //}
-                    if (result) {
-                        if (dim == (int)md_array_size(vis.structure)) {
-                            int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
-                            int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
-                            float frame_fract = fractf((float)state->animation.frame);
-
-                            md_bitfield_t mask = {0};
-                            md_bitfield_init(&mask, frame_alloc);
-                            for (int i = 0; i < dim; ++i) {
-                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structure[i]);
-                                float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
-                                float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
-                                ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
-                                color_atoms_uniform(colors, mol.atom.count, vec_cast(color), &mask);
-                            }
-                        }
-                    }
-                } else {
-                    int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
-                    int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
-                    float value = lerpf(values[i0], values[i1], fractf((float)state->animation.frame));
-                    float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
-                    ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
-                    color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
-                }
-            } else {
-                color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
-            }
-#endif
-            break;
-        default:
-            ASSERT(false);
-            break;
-        }
-    }
-
-    if (rep->saturation != 1.0f) {
-        scale_saturation(colors, num_atoms, rep->saturation);
-    }
-
-    switch (rep->type) {
-    case RepresentationType::SpaceFill:
-        rep->type_is_valid = sys.atom.count > 0;
-        break;
-    case RepresentationType::Licorice:
-        rep->type_is_valid = sys.bond.count > 0;
-        break;
-    case RepresentationType::BallAndStick:
-        rep->type_is_valid = sys.atom.count > 0;
-        break;
-    case RepresentationType::Ribbons:
-    case RepresentationType::Cartoon:
-        rep->type_is_valid = sys.protein_backbone.range.count > 0;
-        break;
-    case RepresentationType::ElectronicStructure: {
-        size_t num_mos = state->representation.info.alpha.num_orbitals;
-        rep->type_is_valid = num_mos > 0;
-        if (num_mos > 0) {
-            uint64_t orb_idx = 0;
-            uint64_t sub_idx = 0;
-
-            switch(rep->electronic_structure.type) {
-            case ElectronicStructureType::MolecularOrbital:
-            case ElectronicStructureType::MolecularOrbitalDensity:
-                orb_idx = rep->electronic_structure.mo_idx;
-                break;
-            case ElectronicStructureType::NaturalTransitionOrbitalParticle:
-            case ElectronicStructureType::NaturalTransitionOrbitalHole:
-            case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
-            case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
-                orb_idx = rep->electronic_structure.nto_idx;
-                sub_idx = rep->electronic_structure.nto_lambda_idx;
-                break;
-            case ElectronicStructureType::AttachmentDensity:
-            case ElectronicStructureType::DetachmentDensity:
-                orb_idx = rep->electronic_structure.nto_idx;
-                break;
-            default:
-                break;
-            }
-            uint64_t vol_hash = (uint64_t)rep->electronic_structure.type | ((uint64_t)rep->electronic_structure.resolution << 8) | (orb_idx << 24) | (sub_idx << 48);
-            if (vol_hash != rep->electronic_structure.vol_hash) {
-                const float samples_per_angstrom[(int)VolumeResolution::Count] = {
-                    4.0f,
-                    8.0f,
-                    16.0f,
-                };
-                EvalElectronicStructure data = {
-                    .type = rep->electronic_structure.type,
-                    .major_idx = (int)orb_idx,
-                    .minor_idx = (int)sub_idx,
-                    .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
-                    .dst_volume = &rep->electronic_structure.vol,
-                };
-                viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
-
-                if (data.output_written) {
-#if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
-                    rep->electronic_structure.vol_hash = vol_hash;
-#endif
-                }
-            }
-        }
-        uint64_t tf_hash = md_hash64(&rep->electronic_structure.dvr.colormap, sizeof(rep->electronic_structure.dvr.colormap), 0);
-        if (tf_hash != rep->electronic_structure.tf_hash) {
-            rep->electronic_structure.tf_hash = tf_hash;
-            volume::compute_transfer_function_texture_simple(&rep->electronic_structure.dvr.tf_tex, rep->electronic_structure.dvr.colormap);
-        }
-        break;
-    }
-    default:
-        ASSERT(false);
-        break;
-    }
-
-    if (colors) {
-        if (rep->dynamic_evaluation) {
-            rep->filt_is_dirty = true;
-        }
-
-        if (rep->filt_is_dirty) {
-            rep->filt_is_valid = filter_expression(state, &state->mold.sys, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, str_from_cstr(rep->filt), &rep->atom_mask, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
-            rep->filt_is_dirty = false;
-        }
-
-        if (rep->filt_is_valid) {
-            filter_colors(colors, num_atoms, &rep->atom_mask);
-            state->representation.atom_visibility_mask_dirty = true;
-            md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
-
- #if EXPERIMENTAL_GFX_API
-            md_gfx_rep_attr_t attributes = {};
-            attributes.spacefill.radius_scale = 1.0f;
-            md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
-            md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
-#endif
-        }
-    }
-
-    rep->needs_update = false;
-}
-
-static void init_representation(ApplicationState* state, Representation* rep) {
-#if EXPERIMENTAL_GFX_API
-    rep->gfx_rep = md_gfx_rep_create(state->mold.sys.atom.count);
-#endif
-    rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
-    md_bitfield_init(&rep->atom_mask, persistent_alloc);
-
-    size_t num_props = md_array_size(state->representation.info.atom_properties);
-    if (num_props > 0) {
-        rep->prop.idx = 0;
-        rep->prop.range_beg = state->representation.info.atom_properties[0].value_min;
-        rep->prop.range_end = state->representation.info.atom_properties[0].value_max;
-    }
-
-	flag_representation_as_dirty(rep);
-}
-
-static void update_representation_info(ApplicationState* state) {
-    md_allocator_i* alloc = state->representation.info.alloc;
-    md_arena_allocator_reset(alloc);
-
-    // Clear info, maintain allocator
-    state->representation.info = {};
-    state->representation.info.alloc = alloc;
-
-    // Broadcast event to populate info
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
-}
-
-static void init_all_representations(ApplicationState* state) {
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        auto& rep = state->representation.reps[i];
-        init_representation(state, &rep);
-    }
-}
-
-void flag_representation_as_dirty(Representation* rep) {
-    ASSERT(rep);
-    rep->filt_is_dirty = true;
-	rep->needs_update  = true;
-}
-
-void flag_all_representations_as_dirty(ApplicationState* state) {
-    ASSERT(state);
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-		flag_representation_as_dirty(&state->representation.reps[i]);
-    }
-}
-
-static void remove_all_representations(ApplicationState* state) {
-    while (md_array_size(state->representation.reps) > 0) {
-        remove_representation(state, (int32_t)md_array_size(state->representation.reps) - 1);
-    }
-}
-
-static void create_default_representations(ApplicationState* state) {
-    bool amino_acid_present = false;
-    bool nucleic_present = false;
-    bool ion_present = false;
-    bool water_present = false;
-    bool ligand_present = false;
-    bool coarse_grained = false;
-    bool orbitals_present = state->representation.info.alpha.num_orbitals > 0;
-
-    if (state->mold.sys.atom.count > 3'000'000) {
-        LOG_INFO("Large system detected, creating default representation for all atoms");
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
-        snprintf(rep->name, sizeof(rep->name), "default");
-        goto done;
-    }
-
-    if (state->mold.sys.comp.count == 0) {
-        // No residues present
-        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
-        snprintf(rep->name, sizeof(rep->name), "default");
-        goto done;
-    }
-
-	// TODO: Redo this check with entities instead of atom flags
-    for (size_t i = 0; i < state->mold.sys.atom.count; ++i) {
-        uint32_t flags = state->mold.sys.atom.flags[i];
-        if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
-        if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
-        if (flags & MD_FLAG_ION) ion_present = true;
-        if (flags & MD_FLAG_WATER) water_present = true;
-        if (flags & MD_FLAG_COARSE_GRAINED) coarse_grained = true;
-
-        if (!(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_ION | MD_FLAG_WATER))) {
-            ligand_present = true;
-        }
-    }
-
-    if (coarse_grained) {
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
-        snprintf(rep->name, sizeof(rep->name), "default");
-        goto done;
-    }
-
-    if (amino_acid_present) {
-        RepresentationType type = RepresentationType::Cartoon;
-        ColorMapping color = ColorMapping::SecondaryStructure;
-
-        if (state->mold.sys.inst.count > 1) {
-            color = ColorMapping::InstId;
-        } else {
-            size_t res_count = md_inst_comp_count(&state->mold.sys.inst, 0);
-            if (res_count < 20) {
-                type = RepresentationType::BallAndStick;
-                color = ColorMapping::Type;
-            }
-        }
-
-        Representation* prot = create_representation(state, type, color, STR_LIT("protein"));
-        snprintf(prot->name, sizeof(prot->name), "protein");
-    }
-    if (nucleic_present) {
-        Representation* nucl = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("nucleic"));
-        snprintf(nucl->name, sizeof(nucl->name), "nucleic");
-    }
-    if (ion_present) {
-        Representation* ion = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("ion"));
-        snprintf(ion->name, sizeof(ion->name), "ion");
-    }
-    if (ligand_present) {
-        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("not (protein or nucleic or water or ion)"));
-        snprintf(ligand->name, sizeof(ligand->name), "ligand");
-    }
-    if (water_present) {
-        Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
-        water->scale.x = 0.5f;
-        snprintf(water->name, sizeof(water->name), "water");
-        water->enabled = false;
-        if (!amino_acid_present && !nucleic_present && !ligand_present) {
-            water->enabled = true;
-        }
-    }
-
-done:
-    if (orbitals_present) {
-        Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
-        snprintf(rep->name, sizeof(rep->name), "electronic structure");
-        rep->enabled = true;
-    }
-
-    recompute_atom_visibility_mask(state);
-}
-
-// #selection
-static Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* atom_mask) {
-    ASSERT(state);
-    Selection sel;
-    str_copy_to_char_buf(sel.name, sizeof(sel.name), name);
-    md_bitfield_init(&sel.atom_mask, persistent_alloc);
-    if (atom_mask) {
-        md_bitfield_copy(&sel.atom_mask, atom_mask);
-    }
-    md_array_push(state->selection.stored_selections, sel, persistent_alloc);
-    return md_array_last(state->selection.stored_selections);
-}
-
-static void clear_selections(ApplicationState* state) {
-    md_array_shrink(state->selection.stored_selections, 0);
-}
-
-#if 0
-    static Selection* clone_selection(ApplicationState * data, const Selection& src) {
-        ASSERT(data);
-        Selection clone;
-        clone.name = src.name;
-        bitfield::init(&clone.atom_mask, data->selection.selection_mask);
-        return &data->selection.stored_selections.push_back(clone);
-    }
-#endif
-
-static void remove_selection(ApplicationState* state, int idx) {
-    ASSERT(state);
-    if (idx < 0 || (int)md_array_size(state->selection.stored_selections) <= idx) {
-        LOG_ERROR("Index [%i] out of range when trying to remove selection", idx);
-    }
-    auto item = &state->selection.stored_selections[idx];
-    md_bitfield_free(&item->atom_mask);
-    
-    state->selection.stored_selections[idx] = *md_array_last(state->selection.stored_selections);
-    md_array_pop(state->selection.stored_selections);
+    VIAMD_LOG_SUCCESS("Screenshot saved to: '" STR_FMT "'", STR_ARG(path));
 }
 
 // #camera-control
@@ -9471,29 +8187,8 @@ static void handle_picking(ApplicationState* data) {
         coord.y *= data->app.window.scale_factor;
 #endif
 
-#if PICKING_JITTER_HACK
-            static uint32_t frame_idx = 0;
-            static uint32_t ref_frame = 0;
-            frame_idx = (frame_idx + 1) % JITTER_SEQUENCE_SIZE;
-            // @NOTE: If we have jittering applied, we cannot? retreive the original pixel value (without the jitter)
-            // Solution, pick one reference frame out of the jittering sequence and use that one...
-            // Ugly hack but works... However, it introduces a noticable latency in picking
-
-            if (data->app.input.mouse.moving) {
-                ref_frame = frame_idx;
-            }
-
-            if (ref_frame == frame_idx || data->view.param.jitter.curr == vec2_t{0, 0}) {
-                data->picking = read_picking_data(data->gbuffer, (int32_t)round(coord.x), (int32_t)round(coord.y));
-                if (data->picking.idx != INVALID_PICKING_IDX)
-                    data->picking.idx = CLAMP(data->picking.idx, 0U, (uint32_t)data->mold.sys.atom.count - 1U);
-                const vec4_t viewport = {0, 0, (float)data->gbuffer.width, (float)data->gbuffer.height};
-                data->picking.world_coord = mat4_unproject({coord.x, coord.y, data->picking.depth}, data->view.param.matrix.inv.view_proj, viewport);
-            }
-#else
-            const mat4_t inv_MVP = data->view.param.matrix.inv.view * data->view.param.matrix.inv.proj;
-            extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);
-#endif
+        const mat4_t inv_MVP = data->view.param.matrix.inv.view * data->view.param.matrix.inv.proj;
+        extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);
         data->selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
         data->selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
 
@@ -9625,13 +8320,21 @@ static void draw_representations_opaque(ApplicationState* data) {
         }
 
 		// MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
-	    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
-        vec3_t half_extents = {
-            0.5f * vec3_length(basis.col[0]),
-            0.5f * vec3_length(basis.col[1]),
-            0.5f * vec3_length(basis.col[2])
-        };
-		float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+        float max_bond_length = 10.0f;
+        if (md_unitcell_flags(&data->mold.sys.unitcell) == 0) {
+            vec3_t aabb_ext = vec3_sub(data->mold.sys_aabb_max, data->mold.sys_aabb_min);
+            max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
+        }
+        else {
+	        mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
+            vec3_t half_extents = {
+                0.5f * vec3_length(basis.col[0]),
+                0.5f * vec3_length(basis.col[1]),
+                0.5f * vec3_length(basis.col[2])
+            };
+		    float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+            max_bond_length = MAX(3.0, min_half_box_extent);
+        }
 
         md_gl_draw_args_t args = {
             .shaders = data->mold.gl_shaders,
@@ -9646,7 +8349,7 @@ static void draw_representations_opaque(ApplicationState* data) {
                 .prev_view_matrix = &data->view.param.matrix.prev.view.elem[0][0],
                 .prev_proj_matrix = &data->view.param.matrix.prev.proj.elem[0][0],
             },
-            .max_bond_length = min_half_box_extent,
+            .max_bond_length = max_bond_length,
         };
 
         md_gl_draw(&args);
@@ -9766,13 +8469,21 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
     }
 
     // MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
-    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
-    vec3_t half_extents = {
-        0.5f * vec3_length(basis.col[0]),
-        0.5f * vec3_length(basis.col[1]),
-        0.5f * vec3_length(basis.col[2])
-    };
-    float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+    float max_bond_length = 10.0f;
+    if (md_unitcell_flags(&data->mold.sys.unitcell) == 0) {
+        vec3_t aabb_ext = vec3_sub(data->mold.sys_aabb_max, data->mold.sys_aabb_min);
+        max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
+    }
+    else {
+	    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
+        vec3_t half_extents = {
+            0.5f * vec3_length(basis.col[0]),
+            0.5f * vec3_length(basis.col[1]),
+            0.5f * vec3_length(basis.col[2])
+        };
+		float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
+        max_bond_length = MAX(3.0, min_half_box_extent);
+    }
 
     md_gl_draw_args_t args = {
         .shaders = data->mold.gl_shaders_lean_and_mean,
@@ -9788,7 +8499,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             //.prev_projection_matrix = &data->view.param.matrix.previous.proj[0][0],
         },
         .atom_mask = mask,
-		.max_bond_length = min_half_box_extent,
+		.max_bond_length = max_bond_length,
     };
 
     md_gl_draw(&args);
