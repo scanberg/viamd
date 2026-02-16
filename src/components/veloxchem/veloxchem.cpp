@@ -2491,7 +2491,7 @@ struct VeloxChem : viamd::EventHandler {
             state.mold.sys.atom.y[i] = (float)coords[i].y;
             state.mold.sys.atom.z[i] = (float)coords[i].z;
         }
-        state.mold.dirty_buffers |= flags;
+        state.mold.dirty_gpu_buffers |= flags;
     }
 
     void draw_summary_window(ApplicationState& state) {
@@ -3522,7 +3522,7 @@ struct VeloxChem : viamd::EventHandler {
                                 state.mold.sys.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
                                 state.mold.sys.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
-                            state.mold.dirty_buffers |= MolBit_DirtyPosition;
+                            state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
                             vib.coord_modified = true;
                         }
                     }
@@ -3533,7 +3533,7 @@ struct VeloxChem : viamd::EventHandler {
                             state.mold.sys.atom.y[i] = (float)atom_coord[i].y;
                             state.mold.sys.atom.z[i] = (float)atom_coord[i].z;
                         }
-                        state.mold.dirty_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+                        state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                         vib.coord_modified = false;
                     }
 
