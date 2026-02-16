@@ -164,16 +164,22 @@ static inline void compute_dim(int out_dim[3], const vec3_t& in_ext, float sampl
 }
 
 // Attribute charge contributions encoded in the ao coefficients and overlap matrix to atoms or groups
+// This is a mulliken-like scheme: group charge = sum_k lam_k * sum_{mu in group} sum_nu S[mu,nu] * a_k[nu] * a_k[mu]
+// The downsides of this scheme are that it can produce negative contributions and is not invariant to unitary transformations of the occupied space,
+// but it is simple and fast to compute. More sophisticated schemes could be implemented in the future if desired.
 // a: ao coefficients of NTO (num_lambdas x num_ao) array
 // S: overlap matrix (num_ao x num_ao) array (row-major)
-static void attribute_charge(double out_charge[], const int* ao_to_idx, const double* lambdas, const double** a, const double* S, size_t num_lambdas, size_t num_ao) {
+static void attribute_charge_mulliken(double out_charge[], const int* ao_to_idx, const double* lambdas, const double** a, const double* S, size_t num_lambdas, size_t num_ao) {
 
     // Temporary buffer for r[mu] = sum_nu S[mu,nu] * a_k[nu]
 	size_t temp_pos = md_temp_get_pos();
     double *r = (double*)md_temp_push(num_ao * sizeof(double));
     ASSERT(r);
 
-    for (int k = 0; k < num_lambdas; ++k) {
+    const int nl = (int)num_lambdas;
+    const int na = (int)num_ao;
+
+    for (int k = 0; k < nl; ++k) {
         double lam = lambdas[k];
 
         const double* ak = a[k];
@@ -182,14 +188,14 @@ static void attribute_charge(double out_charge[], const int* ao_to_idx, const do
 		MEMSET(r, 0, num_ao * sizeof(double));
 
         // r = S * ak  (row-major S)
-        for (int mu = 0; mu < num_ao; ++mu) {
+        for (int mu = 0; mu < na; ++mu) {
             double a_mu = ak[mu];
-            const double *S_row = &S[mu * num_ao];
+            const double *S_row = &S[mu * na];
             // Diagonal term
             r[mu] += S_row[mu] * a_mu;
 
             // Upper-triangular terms
-            for (int nu = mu + 1; nu < num_ao; ++nu) {
+            for (int nu = mu + 1; nu < na; ++nu) {
                 double s = S_row[nu];
                 r[mu] += s * ak[nu];
                 r[nu] += s * a_mu;
@@ -197,13 +203,117 @@ static void attribute_charge(double out_charge[], const int* ao_to_idx, const do
         }
 
         // accumulate group contributions
-        for (int mu = 0; mu < num_ao; ++mu) {
+        for (int mu = 0; mu < na; ++mu) {
             int idx = ao_to_idx[mu];
             out_charge[idx] += lam * ak[mu] * r[mu];
         }
     }
 
 	md_temp_set_pos_back(temp_pos);
+}
+
+// Dense Cholesky decomposition (lower-triangular) for symmetric positive definite A (row-major).
+// Computes L such that (A + jitter*I) = L*L^T.
+// Returns false if decomposition fails.
+static bool cholesky_decompose_lower(double* L, const double* A, size_t n, double jitter) {
+    ASSERT(L);
+    ASSERT(A);
+
+    MEMSET(L, 0, sizeof(double) * n * n);
+
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j <= i; ++j) {
+            double sum = A[i * n + j];
+            if (i == j && jitter != 0.0) {
+                sum += jitter;
+            }
+
+            for (size_t k = 0; k < j; ++k) {
+                sum -= L[i * n + k] * L[j * n + k];
+            }
+
+            if (i == j) {
+                if (!(sum > 0.0)) {
+                    return false;
+                }
+                L[i * n + i] = sqrt(sum);
+            } else {
+                double denom = L[j * n + j];
+                if (!(denom > 0.0)) {
+                    return false;
+                }
+                L[i * n + j] = sum / denom;
+            }
+        }
+    }
+
+    return true;
+}
+
+// Compute group "charges" using an orthonormalized basis derived from overlap S.
+// Uses Cholesky orthogonalization: S = L L^T, a' = L^T a, group += lam * (a'_mu)^2.
+// This guarantees non-negative per-group contributions (up to numerical noise).
+static void attribute_charge_cholesky_orthonormalized(
+    double out_charge[],
+    const int* ao_to_idx,
+    const double* lambdas,
+    const double** a,
+    const double* S,
+    size_t num_lambdas,
+    size_t num_ao)
+{
+    size_t temp_pos = md_temp_get_pos();
+
+    double* L = (double*)md_temp_push(sizeof(double) * num_ao * num_ao);
+    double* y = (double*)md_temp_push(sizeof(double) * num_ao);
+    ASSERT(L && y);
+
+    double max_diag = 0.0;
+    for (size_t i = 0; i < num_ao; ++i) {
+        max_diag = MAX(max_diag, std::fabs(S[i * num_ao + i]));
+    }
+    if (max_diag == 0.0) max_diag = 1.0;
+
+    // Try without jitter first, then with increasing jitter to handle near linear dependence.
+    bool ok = cholesky_decompose_lower(L, S, num_ao, 0.0);
+    if (!ok) {
+        double jitter = max_diag * 1.0e-14;
+        for (int attempt = 0; attempt < 6 && !ok; ++attempt) {
+            ok = cholesky_decompose_lower(L, S, num_ao, jitter);
+            jitter *= 10.0;
+        }
+    }
+
+    if (!ok) {
+        // Fall back to Mulliken-like scheme if Cholesky fails.
+        attribute_charge_mulliken(out_charge, ao_to_idx, lambdas, a, S, num_lambdas, num_ao);
+        md_temp_set_pos_back(temp_pos);
+        return;
+    }
+
+    for (size_t k = 0; k < num_lambdas; ++k) {
+        const double lam = lambdas[k];
+        const double* ak = a[k];
+        if (lam == 0.0) continue;
+
+        // y = L^T * ak
+        // L is lower => L^T upper: y[i] = sum_{j=i..n-1} L[j,i] * ak[j]
+        for (size_t i = 0; i < num_ao; ++i) {
+            double sum = 0.0;
+            for (size_t j = i; j < num_ao; ++j) {
+                sum += L[j * num_ao + i] * ak[j];
+            }
+            y[i] = sum;
+        }
+
+        for (size_t mu = 0; mu < num_ao; ++mu) {
+            const int idx = ao_to_idx[mu];
+            const double v = y[mu];
+            out_charge[idx] += lam * (v * v);
+        }
+    }
+
+    md_temp_set_pos_back(temp_pos);
 }
 
 // Voronoi segmentation
@@ -4527,24 +4637,33 @@ struct VeloxChem : viamd::EventHandler {
             part_sum += part_charges[i];
         }
 
+        // Guard against invalid inputs; leaves matrix as-is (typically zeroed by caller)
+        if (!(hole_sum > 0.0) || !(part_sum > 0.0)) {
+            return;
+        }
+
         for (size_t i = 0; i < num_groups; i++) {
             // percentages
-            double gsCharge = hole_charges[i] / hole_sum;
-            double esCharge = part_charges[i] / part_sum;
+            double gs_charge = hole_charges[i] / hole_sum;
+            double es_charge = part_charges[i] / part_sum;
 
-            if (gsCharge > esCharge) {
+            if (gs_charge > es_charge) {
                 donors[num_donors++] = (int)i;
             } else {
                 acceptors[num_acceptors++] = (int)i;
             }
 
-            out_matrix[i * num_groups + i] = (float)MIN(gsCharge, esCharge);
-            charge_diff[i] = esCharge - gsCharge;
+            out_matrix[i * num_groups + i] = (float)MIN(gs_charge, es_charge);
+            charge_diff[i] = es_charge - gs_charge;
         }
 
         double total_acceptor_charge = 0;
         for (int i = 0; i < num_acceptors; i++) {
             total_acceptor_charge += charge_diff[acceptors[i]];
+        }
+
+        if (!(total_acceptor_charge > 0.0) || !std::isfinite(total_acceptor_charge)) {
+            return;
         }
 
         for (int i = 0; i < num_donors; i++) {
@@ -5815,8 +5934,9 @@ struct VeloxChem : viamd::EventHandler {
                         }
 					}
 
-					attribute_charge(group_density_part, ao_to_group, lambdas, a_part, S, num_lambdas, num_aos);
-					attribute_charge(group_density_hole, ao_to_group, lambdas, a_hole, S, num_lambdas, num_aos);
+					attribute_charge_mulliken(group_density_part, ao_to_group, lambdas, a_part, S, num_lambdas, num_aos);
+                    attribute_charge_cholesky_orthonormalized(group_density_part, ao_to_group, lambdas, a_part, S, num_lambdas, num_aos);
+                    attribute_charge_cholesky_orthonormalized(group_density_hole, ao_to_group, lambdas, a_hole, S, num_lambdas, num_aos);
                     for (size_t g1 = 0; g1 < nto.group.count; g1++) {
                         nto.transition_density_part[g1] = (float)group_density_part[g1];
                         nto.transition_density_hole[g1] = (float)group_density_hole[g1];
