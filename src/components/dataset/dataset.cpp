@@ -412,52 +412,87 @@ struct Dataset : viamd::EventHandler {
                 ImGui::Separator();
             }
 
-            if (num_atom_types && ImGui::CollapsingHeader("Atom Types")) {
-                ImGui::Indent();
-                for (size_t i = 0; i < num_atom_types; ++i) {
-                    DatasetItem& item = atom_types[i];
-                    if (i == 0 && item.count == 0) {
-                        // Skip "unknown" atom type if unused
-                        continue;
-					}
-
-                    ImGui::PushID((int)i);
-                    defer { ImGui::PopID(); };
-                    char buf[256];
-                    snprintf(buf, sizeof(buf), "%s (Count: %d, Fraction: %.2f%%)", item.label, item.count, item.fraction * 100.0f);
-                    bool expand_type = ImGui::CollapsingHeader(buf);
-                    if (ImGui::IsItemHovered()) {
-                        md_bitfield_clear(&data.selection.highlight_mask);
-						md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, (uint32_t)md_array_size(item.indices));
-                    }
-                    if (expand_type) {
-                        float* radius = &data.mold.sys.atom.type.radius[i];
-                        const float min_radius = 0.1f;
-                        const float max_radius = 20.0f;
-                        bool rad_changed = ImGui::SliderFloat("Radius", radius, min_radius, max_radius);
-
-						float* mass = &data.mold.sys.atom.type.mass[i];
-                        const float min_mass = 1.0f;
-                        const float max_mass = 500.0f;
-						bool mass_changed = ImGui::SliderFloat("Mass", mass, min_mass, max_mass);
-
-                        ImVec4 color = ImColor(data.mold.sys.atom.type.color[i]);
-                        bool color_changed = ImGui::ColorEdit4("Color", &color.x);
-
-                        if (rad_changed) {
-                            data.mold.dirty_buffers |= MolBit_DirtyRadius;
+            if (num_atom_types) {
+                if (ImGui::CollapsingHeader("Atom Types")) {
+                    ImGui::Indent();
+                    for (size_t i = 0; i < num_atom_types; ++i) {
+                        DatasetItem& item = atom_types[i];
+                        if (i == 0 && item.count == 0) {
+                            // Skip sentinel "unknown" atom type if unused
+                            continue;
                         }
 
-                        if (color_changed) {
-							data.mold.sys.atom.type.color[i] = ImColor(color);
-                            // This is hacky at the moment and there should be a centralized mechanism for this
-                            for (size_t i = 0; i < md_array_size(data.representation.reps); ++i) {
-                                data.representation.reps[i].needs_update = true;
+                        ImGui::PushID((int)i);
+                        defer{ ImGui::PopID(); };
+                        char buf_num[32];
+						snprintf(buf_num, sizeof(buf_num), "%d (%.2f%%)", item.count, item.fraction * 100.0f);
+                        char buf_tot[256];
+                        snprintf(buf_tot, sizeof(buf_tot), "%-8s %20s", item.label, buf_num);
+                        bool expand_type = ImGui::CollapsingHeader(buf_tot);
+                        if (ImGui::IsItemHovered()) {
+                            md_bitfield_clear(&data.selection.highlight_mask);
+                            md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, (uint32_t)md_array_size(item.indices));
+                        }
+                        if (expand_type) {
+							bool radius_changed = false;
+                            bool color_changed  = false;
+                            bool mass_changed   = false;
+                            if (!(data.mold.sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED)) {
+                                if (ImGui::Checkbox("Use element defaults", &item.use_defaults)) {
+                                    if (item.use_defaults) {
+										// If the user enables the use_defaults flag then we should set the values back to the element defaults
+                                        md_element_t elem = data.mold.sys.atom.type.z[i];
+										data.mold.sys.atom.type.radius[i] = md_util_element_vdw_radius(elem);
+										data.mold.sys.atom.type.mass[i]   = md_util_element_atomic_mass(elem);
+										data.mold.sys.atom.type.color[i]  = md_util_element_cpk_color(elem);
+										radius_changed = true;
+                                        color_changed = true;
+										mass_changed = true;
+                                    }
+                                }
+                            } else {
+								item.use_defaults = false; // Coarse grained types always have custom properties
+                            }
+
+                            if (item.use_defaults) {
+                                ImGui::PushDisabled();
+                            }
+                            float* radius = &data.mold.sys.atom.type.radius[i];
+                            const float min_radius = 0.1f;
+                            const float max_radius = 20.0f;
+                            radius_changed |= ImGui::SliderFloat("Radius", radius, min_radius, max_radius);
+
+                            float* mass = &data.mold.sys.atom.type.mass[i];
+                            const float min_mass = 1.0f;
+                            const float max_mass = 500.0f;
+                            mass_changed |= ImGui::SliderFloat("Mass", mass, min_mass, max_mass);
+
+                            ImVec4 color = ImColor(data.mold.sys.atom.type.color[i]);
+                            color_changed |= ImGui::ColorEdit4("Color", &color.x);
+
+                            if (item.use_defaults) {
+                                ImGui::PopDisabled();
+							}
+
+                            if (radius_changed) {
+                                data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
+                            }
+
+                            if (color_changed) {
+                                data.mold.sys.atom.type.color[i] = ImColor(color);
+                                // @NOTE: Only the color within representations needs to be updated, not the filter.
+                                flag_all_representations_as_dirty(&data);
                             }
                         }
                     }
+                    ImGui::Unindent();
                 }
-                ImGui::Indent();
+
+                if (ImGui::CollapsingHeader("Element Defaults")) {
+                    ImGui::Indent();
+                    for (size_t i = 0; i < md_array_size(comp_types); ++i) {
+                        DatasetItem& item = comp_types[i];
+						char buf_num[32];
             }
 
 
