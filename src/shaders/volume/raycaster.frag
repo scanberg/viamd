@@ -6,10 +6,6 @@
 #  define MAX_ISOVALUE_COUNT 8
 #endif // MAX_ISOVALUE_COUNT
 
-#if !defined SHOW_ONLY_FIRST_ISO_HITS
-#  define SHOW_ONLY_FIRST_ISO_HITS 0
-#endif
-
 struct IsovalueParameters {
     float values[MAX_ISOVALUE_COUNT];
     vec4  colors[MAX_ISOVALUE_COUNT];
@@ -87,7 +83,9 @@ vec4 classify(in float density) {
 }
 
 vec4 compositing(in vec4 dstColor, in vec4 srcColor, in float tIncr) {
-    srcColor.a = 1.0 - pow(1.0 - srcColor.a, tIncr * REF_SAMPLING_RATE);
+    float w = max(tIncr, 0.0) * REF_SAMPLING_RATE;
+    float a = clamp(srcColor.a, 0.0, 1.0);
+    srcColor.a = 1.0 - pow(max(1.0 - a, 1e-6), w);
     // pre-multiplied alpha
     srcColor.rgb *= srcColor.a;
     return dstColor + (1.0 - dstColor.a) * srcColor;
@@ -144,20 +142,21 @@ float GeometrySmith(float NdotV, float NdotL, float roughness) {
 }
 
 vec4 shade(vec4 color, vec3 V, vec3 N) {
+    V = normalize(V);
+    N = normalize(N);
     vec3  H = normalize(L + V);
     float H_dot_V = max(0.0, dot(H, V));
     float N_dot_H = max(0.0, dot(N, H));
     float N_dot_L = max(0.0, dot(N, L));
     float N_dot_V = max(0.0, dot(N, V));
 
-    float F0 = u_F0;
-    float roughness = u_roughness;
+    float F0 = clamp(u_F0, 0.0, 0.999);
+    float roughness = clamp(u_roughness, 0.04, 1.0);
     vec3  dir_radiance = u_dir_radiance;
     vec3  env_radiance = u_env_radiance;
 
-    // Premultiply albedo with the alpha of the surface
-    vec3  albedo = color.rgb * color.a;
-    float alpha = color.a;
+    vec3  albedo = color.rgb;
+    float alpha = clamp(color.a, 0.0, 1.0);
 
     vec3 Lo = vec3(0);
 
@@ -218,12 +217,21 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
     float sampleDelta = (currentSample - prevSample);
     hit = false;
 
-    // check if the isovalue is lying in between current and previous sample
-    // found isosurface if differences between current/prev sample and isovalue have different signs
-    if ((isovalue - currentSample) * (isovalue - prevSample) < 0) {
+    // Avoid unstable interpolation / sign tests when the field is (almost) constant across the segment.
+    if (abs(sampleDelta) < 1e-6) {
+        return result;
+    }
+
+    // Stabilized crossing test with tolerance to reduce grazing/tangent popping.
+    float s0 = prevSample - isovalue;
+    float s1 = currentSample - isovalue;
+    bool crossed = (s0 * s1 < 0.0);
+    bool nearHit = (abs(s0) <= 1e-5) || (abs(s1) <= 1e-5);
+    if (crossed || nearHit) {
 
         // apply linear interpolation between current and previous sample to obtain location of isosurface
         float a = (currentSample - isovalue) / sampleDelta;
+        a = clamp(a, 0.0, 1.0);
         // if a == 1, isosurface was already computed for previous sampling position
         if (a >= 1.0) {
             hit = true;
@@ -260,8 +268,11 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         isocolor = shade(isocolor, isoposView, normal);
         isocolor.rgb = Tonemap(isocolor.rgb);
 
-        // blend isosurface color with result accumulated so far
-        result += (1.0 - result.a) * isocolor;
+        // Premultiply for consistent "over" compositing with DVR.
+        vec4 surf = isocolor;
+        surf.a = clamp(surf.a, 0.0, 1.0);
+        surf.rgb *= surf.a;
+        result = result + (1.0 - result.a) * surf;
         hit = true;
     }
 
@@ -271,19 +282,13 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
 vec4 drawIsosurfaces(in vec4 curResult,
                      in float voxel, in float previousVoxel,
                      in vec3 rayPosition, in vec3 rayDirection,
-                     inout float t, inout float tIncr, inout uint iso_surface_hit) {
+                     inout float t, inout float tIncr) {
     // in case of zero isovalues return current color
     vec4 result = curResult;
     float raySegmentLen = tIncr;
     bool hit;
 
 #if MAX_ISOVALUE_COUNT == 1
-#if SHOW_ONLY_FIRST_ISO_HITS
-    if (iso_surface_hit & 1U) {
-        //t = 1.0e19;
-        return result;
-    }
-#endif
     result = drawIsosurface(result, u_iso.values[0], u_iso.colors[0],
                             voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
 #else // MAX_ISOVALUE_COUNT
@@ -292,29 +297,13 @@ vec4 drawIsosurfaces(in vec4 curResult,
         for (int i = 0; i < u_iso.count; ++i) {
             vec4 res = drawIsosurface(result, u_iso.values[i], u_iso.colors[i],
                                       voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
-#if SHOW_ONLY_FIRST_ISO_HITS
-            if (hit) {
-                uint bit = 1U << uint(i);
-                result = ((iso_surface_hit & bit) == 0U) ? res : result;
-                iso_surface_hit = iso_surface_hit | bit;
-            }
-#else
             result = res;
-#endif
         }
     } else {
         for (int i = u_iso.count; i > 0; --i) {
             vec4 res = drawIsosurface(result, u_iso.values[i - 1], u_iso.colors[i - 1],
                                   voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
-#if SHOW_ONLY_FIRST_ISO_HITS
-            if (hit) {
-                uint bit = 1U << uint(i);
-                result = ((iso_surface_hit & bit) == 0U) ? res : result;
-                iso_surface_hit = iso_surface_hit | bit;
-            }
-#else
             result = res;
-#endif
         }
     }
 #endif // MAX_ISOVALUE_COUNT
@@ -359,16 +348,22 @@ void main() {
 
     vec4 result = vec4(0);
     float density = 0.0;
-    uint iso_surface_hit = 0U;
     vec3 samplePos = entryPos;
 
+    float lastDensity = getVoxel(entryPos);
+    density = lastDensity;
+    float lastT = 0.0;
+
     while (t < tEnd) {
+        t = min(t, tEnd);
         samplePos = entryPos + t * dir;
         float prevDensity = density;
         density = getVoxel(samplePos);
+        lastDensity = prevDensity;
+        lastT = t;
 
 #if defined(INCLUDE_ISO)
-        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr, iso_surface_hit);
+        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr);
 #endif 
 
 #if defined(INCLUDE_DVR)
@@ -377,14 +372,37 @@ void main() {
             result = compositing(result, srcColor, tIncr);
         }
 #endif
-
         if (result.a > ERT_THRESHOLD) {
-            t = tEnd;
-        } else {
-            // make sure that tIncr has the correct length since drawIsoSurface will modify it
-            tIncr = baseIncr;
-            t += tIncr;
+            break;
         }
+
+        // make sure that tIncr has the correct length since drawIsoSurface will modify it
+        tIncr = baseIncr;
+        t += tIncr;
+    }
+
+    // Always take a final sample exactly at the exit to stabilize boundary behavior.
+    // This is deterministic w.r.t. jitter and helps avoid missing an isosurface right at tEnd.
+    {
+        vec3 exitSamplePos = exitPos;
+        float exitDensity = getVoxel(exitSamplePos);
+
+#if defined(INCLUDE_ISO)
+        // Bracket the last segment [lastT, tEnd].
+        float isoT = tEnd;
+        float isoTIncr = max(tEnd - lastT, 0.0);
+        if (isoTIncr > 0.0) {
+            result = drawIsosurfaces(result, exitDensity, density, exitSamplePos, dir, isoT, isoTIncr);
+        }
+#endif
+
+#if defined(INCLUDE_DVR)
+        // Do not add additional emission/absorption at the boundary; "cap" sample has zero weight.
+        vec4 exitColor = classify(exitDensity);
+        if (exitColor.a > 0.0) {
+            result = compositing(result, exitColor, 0.0);
+        }
+#endif
     }
 
     out_color = result;
