@@ -337,34 +337,6 @@ struct Selection {
     md_bitfield_t atom_mask{};
 };
 
-struct AtomElementMapping {
-    char lbl[31] = "";
-    md_element_t elem = 0;
-};
-
-// We use this to represent a single entity within the loaded system, e.g. a residue type
-// This is used to represent multiple types, so all fields are not used in all cases
-struct DatasetItem {
-    char label[32] = "";
-    uint32_t count = 0;
-    float fraction = 0;
-    
-    // Extended metadata for popups
-    uint64_t key = 0;            // Unique key of the type
-    md_array(int) indices = 0;   // Indices into the corresponding structures which are represented by this item: i.e. chain or residue indices (for highlighting)
-    md_array(int) sub_items = 0; // Indices into the items of the subcatagories: i.e. for chain -> unique residues types within that chain
-
-    // Atom type only
-    bool use_defaults = true; // Flag if this particular atom type should be linked to the default values stemming for the element (only applicable to atom types with an element, i.e. not coarse grained)
-};
-
-struct ElementDefault {
-    md_element_t element;
-    vec4_t color;
-    float radius;
-    float mass;
-};
-
 struct DipoleMoment {
     size_t num_dipoles = 0;
     str_t* label = nullptr;
