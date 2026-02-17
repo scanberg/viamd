@@ -445,7 +445,7 @@ struct Dataset : viamd::EventHandler {
                         bool color_changed = ImGui::ColorEdit4("Color", &color.x);
 
                         if (rad_changed) {
-                            data.mold.dirty_buffers |= MolBit_DirtyRadius;
+                            data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
                         }
 
                         if (color_changed) {

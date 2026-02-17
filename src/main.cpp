@@ -1185,8 +1185,8 @@ int main(int argc, char** argv) {
 
         bool do_screenshot = !str_empty(state.screenshot.path_to_file);
 
-        uint32_t gbuffer_target_width  = state.app.window.width;
-        uint32_t gbuffer_target_height = state.app.window.height;
+        uint32_t gbuffer_target_width  = state.app.framebuffer.width;
+        uint32_t gbuffer_target_height = state.app.framebuffer.height;
         if (do_screenshot) {
             gbuffer_target_width  = state.screenshot.res_x;
             gbuffer_target_height = state.screenshot.res_y;
