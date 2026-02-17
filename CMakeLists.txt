@@ -131,6 +131,7 @@ set(SHADER_FILES
     src/shaders/dof/dof_half_res_prepass.frag
     src/shaders/dof/dof.frag
     src/shaders/velocity/blit_velocity.frag
+    src/shaders/velocity/blit_velocity_dilate.frag
     src/shaders/velocity/blit_tilemax.frag
     src/shaders/velocity/blit_neighbormax.frag
     src/shaders/volume/entryexit.vert

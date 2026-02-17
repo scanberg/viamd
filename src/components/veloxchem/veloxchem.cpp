@@ -3511,18 +3511,45 @@ struct VeloxChem : viamd::EventHandler {
 
                     // Check selected state
                     if (vib.selected != -1) {
-                        // Animation
+                        // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const double scl = vib.displacement_amp_scl * 0.25 * sin(vib.t);
                         const dvec3_t* norm_modes = md_vlx_vib_normal_mode(vlx, vib.selected);
 
                         if (norm_modes) {
+
+#if 0
+                            ScopedTemp temp_reset;
+
+                            const double scl = vib.displacement_amp_scl * 1.0;
+
+                            float* vx = (float*)md_temp_push(sizeof(float) * num_atoms);
+                            float* vy = (float*)md_temp_push(sizeof(float) * num_atoms);
+                            float* vz = (float*)md_temp_push(sizeof(float) * num_atoms);
+
+                            for (size_t i = 0; i < num_atoms; i++) {
+                                /*
+                                state.mold.sys.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                state.mold.sys.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                state.mold.sys.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                */
+                                vx[i] = (float)(norm_modes[i].x * scl);
+                                vy[i] = (float)(norm_modes[i].y * scl);
+                                vz[i] = (float)(norm_modes[i].z * scl);
+                            }
+
+                            //md_gl_mol_set_atom_position(state.mold.gl_mol, 0, num_atoms, state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, 0);
+                            md_gl_mol_set_atom_velocity(state.mold.gl_mol, 0, num_atoms, vx, vy, vz, 0);
+                            
+
+#else
+                            const double scl = vib.displacement_amp_scl * 0.25 * sin(vib.t);
                             for (size_t i = 0; i < num_atoms; i++) {
                                 state.mold.sys.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
                                 state.mold.sys.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
                                 state.mold.sys.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
                             state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+#endif
                             vib.coord_modified = true;
                         }
                     }

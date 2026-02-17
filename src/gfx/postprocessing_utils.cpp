@@ -75,6 +75,7 @@ static struct {
         GLuint fbo = 0;
         GLuint tex_tilemax = 0;
         GLuint tex_neighbormax = 0;
+        GLuint tex_dilate = 0;
         int32_t tex_width = 0;
         int32_t tex_height = 0;
     } velocity;
@@ -850,6 +851,14 @@ struct {
     } uniform_loc;
 } blit_neighbormax;
 
+struct {
+    GLuint program = 0;
+    struct {
+        GLint tex_vel = -1;
+        GLint texel_size = -1;
+    } uniform_loc;
+} blit_dilate;
+
 void initialize(int32_t width, int32_t height) {
     {
         blit_velocity.program = setup_program_from_source(STR_LIT("screen-space velocity"), {(const char*)blit_velocity_frag, blit_velocity_frag_size});
@@ -868,6 +877,11 @@ void initialize(int32_t width, int32_t height) {
         blit_neighbormax.program = setup_program_from_source(STR_LIT("neighbormax"), {(const char*)blit_neighbormax_frag, blit_neighbormax_frag_size});
         blit_neighbormax.uniform_loc.tex_vel = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel");
         blit_neighbormax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel_texel_size");
+    }
+    {
+        blit_dilate.program = setup_program_from_source(STR_LIT("velocity dilate"), { (const char*)blit_velocity_dilate_frag, blit_velocity_dilate_frag_size });
+        blit_dilate.uniform_loc.tex_vel = glGetUniformLocation(blit_dilate.program, "u_tex_vel");
+        blit_dilate.uniform_loc.texel_size = glGetUniformLocation(blit_dilate.program, "u_texel_size");
     }
 
     if (!gl.velocity.tex_tilemax) {
@@ -897,11 +911,20 @@ void initialize(int32_t width, int32_t height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
+    glBindTexture(GL_TEXTURE_2D, gl.velocity.tex_dilate);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     if (!gl.velocity.fbo) {
         glGenFramebuffers(1, &gl.velocity.fbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.velocity.fbo);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.velocity.tex_tilemax, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.velocity.tex_neighbormax, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gl.velocity.tex_dilate, 0);  // For dilation pass
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             MD_LOG_ERROR("Something went wrong in creating framebuffer for velocity");
@@ -912,8 +935,12 @@ void initialize(int32_t width, int32_t height) {
 
 void shutdown() {
     if (blit_velocity.program) glDeleteProgram(blit_velocity.program);
+    if (blit_tilemax.program) glDeleteProgram(blit_tilemax.program);
+    if (blit_neighbormax.program) glDeleteProgram(blit_neighbormax.program);
+    if (blit_dilate.program) glDeleteProgram(blit_dilate.program);
     if (gl.velocity.tex_tilemax) glDeleteTextures(1, &gl.velocity.tex_tilemax);
     if (gl.velocity.tex_neighbormax) glDeleteTextures(1, &gl.velocity.tex_neighbormax);
+    if (gl.velocity.tex_dilate) glDeleteTextures(1, &gl.velocity.tex_dilate);
     if (gl.velocity.fbo) glDeleteFramebuffers(1, &gl.velocity.fbo);
 }
 }  // namespace velocity
@@ -1499,6 +1526,22 @@ void blit_neighbormax(GLuint velocity_tex, int tex_width, int tex_height) {
     glUseProgram(velocity::blit_neighbormax.program);
     glUniform1i(velocity::blit_neighbormax.uniform_loc.tex_vel, 0);
     glUniform2fv(velocity::blit_neighbormax.uniform_loc.tex_vel_texel_size, 1, &texel_size.x);
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
+void blit_velocity_dilate(GLuint velocity_tex, int tex_width, int tex_height) {
+    ASSERT(glIsTexture(velocity_tex));
+    const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, velocity_tex);
+
+    glUseProgram(velocity::blit_dilate.program);
+    glUniform1i(velocity::blit_dilate.uniform_loc.tex_vel, 0);
+    glUniform2fv(velocity::blit_dilate.uniform_loc.texel_size, 1, &texel_size.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
