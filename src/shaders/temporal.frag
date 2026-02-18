@@ -284,14 +284,14 @@ vec2 sample_velocity_dilated(sampler2D tex, vec2 uv, int support) {
 }
 
 vec4 sample_color_motion(sampler2D tex, vec2 uv, vec2 ss_vel) {
-	const int taps = 3;// on either side!
+	const int taps = 5;// on either side!
 	vec2 v = 0.5 * ss_vel;
 
 	// Apply some noise offset
 	// This breaks up some of the 'trailing shell' artifacts and makes it more noise like
 	float srand = PDsrand(uv + vec2(u_time, u_time));
 	vec2 vtap = v / taps;
-	vec2 pos0 = uv + srand * v * 0.1;
+	vec2 pos0 = uv + srand * vtap * 0.5;
 	vec4 accu = vec4(0);
 	float wsum = 0.0;
 
