@@ -4395,22 +4395,15 @@ static void draw_representations_window(ApplicationState* state) {
                     }
                 }
 #endif
-
-                //ImGui::Checkbox("Enable Iso-Surface", &rep.electronic_structure.vol.iso.enabled);
                 switch (rep.electronic_structure.type) {
                 case ElectronicStructureType::MolecularOrbital:
                 case ElectronicStructureType::NaturalTransitionOrbitalParticle:
                 case ElectronicStructureType::NaturalTransitionOrbitalHole: {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
-                    double iso_val = rep.electronic_structure.iso_psi.values[0];
-                    if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
-                        rep.electronic_structure.iso_psi.values[0] =  (float)iso_val;
-                        rep.electronic_structure.iso_psi.values[1] = -(float)iso_val;
-                        rep.electronic_structure.iso_den.values[0] =  (float)(iso_val * iso_val);
-                    }
-                    ImGui::ColorEdit4("Color Positive", rep.electronic_structure.iso_psi.colors[0].elem);
-                    ImGui::ColorEdit4("Color Negative", rep.electronic_structure.iso_psi.colors[1].elem);
+                    ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::ColorEdit4("Color Positive", rep.electronic_structure.col_psi_pos.elem);
+                    ImGui::ColorEdit4("Color Negative", rep.electronic_structure.col_psi_neg.elem);
                     break;
                 }
                 case ElectronicStructureType::MolecularOrbitalDensity:
@@ -4421,15 +4414,18 @@ static void draw_representations_window(ApplicationState* state) {
                 case ElectronicStructureType::ElectronDensity: {
                     const double iso_min = 1.0e-8;
                     const double iso_max = 5.0;
-                    double iso_val = rep.electronic_structure.iso_den.values[0];
+                    double iso_val = rep.electronic_structure.iso_value * rep.electronic_structure.iso_value;
                     if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
-                        rep.electronic_structure.iso_psi.values[0] =  (float)sqrt(iso_val);
-                        rep.electronic_structure.iso_psi.values[1] = -(float)sqrt(iso_val);
-                        rep.electronic_structure.iso_den.values[0] =  (float)iso_val;
-                        rep.electronic_structure.iso_den.values[1] =  (float)iso_val;
+                        rep.electronic_structure.iso_value = sqrt(iso_val);
                     }
-                    ImGui::ColorEdit4("Color Density",  rep.electronic_structure.iso_den.colors[0].elem);
-                    rep.electronic_structure.iso_den.colors[1] = rep.electronic_structure.iso_den.colors[0];
+                    if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                        ImGui::ColorEdit4("Color Attachment", rep.electronic_structure.col_att.elem);
+                    }
+                    else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                        ImGui::ColorEdit4("Color Detachment", rep.electronic_structure.col_det.elem);
+                    } else {
+                        ImGui::ColorEdit4("Color Density",  rep.electronic_structure.col_den.elem);
+                    }
                     break;
                 }
                 default:
@@ -8370,13 +8366,18 @@ static void draw_representations_transparent(ApplicationState* state) {
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::ElectronicStructure) continue;
 
-        const IsoDesc* iso = nullptr;
+        IsoDesc iso = {};
+        iso.enabled = true;
 
         switch (rep.electronic_structure.type) {
         case ElectronicStructureType::MolecularOrbital:
         case ElectronicStructureType::NaturalTransitionOrbitalParticle:
         case ElectronicStructureType::NaturalTransitionOrbitalHole:
-            iso = &rep.electronic_structure.iso_psi;
+            iso.count = 2;
+            iso.values[0] =  rep.electronic_structure.iso_value;
+            iso.values[1] = -rep.electronic_structure.iso_value;
+            iso.colors[0] =  rep.electronic_structure.col_psi_pos;
+            iso.colors[1] =  rep.electronic_structure.col_psi_neg;
             break;
         case ElectronicStructureType::MolecularOrbitalDensity:
         case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
@@ -8384,7 +8385,15 @@ static void draw_representations_transparent(ApplicationState* state) {
         case ElectronicStructureType::AttachmentDensity:
         case ElectronicStructureType::DetachmentDensity:
         case ElectronicStructureType::ElectronDensity:
-            iso = &rep.electronic_structure.iso_den;
+            iso.count = 1;
+            iso.values[0] = rep.electronic_structure.iso_value * rep.electronic_structure.iso_value;
+            if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                iso.colors[0] = rep.electronic_structure.col_att;
+            } else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                iso.colors[0] = rep.electronic_structure.col_det;
+            } else {
+                iso.colors[0] = rep.electronic_structure.col_den;
+            }
             break;
         default:
             ASSERT(false);
@@ -8419,10 +8428,10 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .enabled = state->visuals.temporal_aa.enabled,
             },
             .iso = {
-                .enabled = iso->enabled,
-                .count   = iso->count,
-                .values  = iso->values,
-                .colors  = iso->colors,
+                .enabled = iso.enabled,
+                .count   = iso.count,
+                .values  = iso.values,
+                .colors  = iso.colors,
             },
             .dvr = {
                 .enabled = rep.electronic_structure.dvr.enabled,

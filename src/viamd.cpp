@@ -586,30 +586,30 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_flt_vec(rep->scale.elem, 4, arg);
                 } else if (str_eq(ident, STR_LIT("DynamicEval"))) {
                     viamd::extract_bool(rep->dynamic_evaluation, arg);
-                } else if (str_eq(ident, STR_LIT("OrbIdx"))) {
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureMoIdx"))) {
                     viamd::extract_int(rep->electronic_structure.mo_idx, arg);
-                } else if (str_eq(ident, STR_LIT("OrbMoIdx"))) {
-                    viamd::extract_int(rep->electronic_structure.mo_idx, arg);
-                } else if (str_eq(ident, STR_LIT("OrbNtoIdx"))) {
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoIdx"))) {
                     viamd::extract_int(rep->electronic_structure.nto_idx, arg);
-                } else if (str_eq(ident, STR_LIT("OrbRes"))) {
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureRes"))) {
                     int res;
                     viamd::extract_int(res, arg);
                     rep->electronic_structure.resolution = (VolumeResolution)res;
-                } else if (str_eq(ident, STR_LIT("OrbType"))) {
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureType"))) {
                     int type;
                     viamd::extract_int(type, arg);
                     rep->electronic_structure.type = (ElectronicStructureType)type;
-                } else if (str_eq(ident, STR_LIT("OrbIso"))) {
-                    viamd::extract_flt(rep->electronic_structure.iso_psi.values[0], arg);
-                    rep->electronic_structure.iso_psi.values[1] = - rep->electronic_structure.iso_psi.values[0];
-                    rep->electronic_structure.iso_den.values[0] = rep->electronic_structure.iso_psi.values[0] * rep->electronic_structure.iso_psi.values[0];
-                } else if (str_eq(ident, STR_LIT("OrbColPos"))) {
-                    viamd::extract_vec4(rep->electronic_structure.iso_psi.colors[0], arg);
-                } else if (str_eq(ident, STR_LIT("OrbColNeg"))) {
-                    viamd::extract_vec4(rep->electronic_structure.iso_psi.colors[1], arg);
-                } else if (str_eq(ident, STR_LIT("OrbColDen"))) {
-                    viamd::extract_vec4(rep->electronic_structure.iso_den.colors[0], arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureIso"))) {
+                    viamd::extract_dbl(rep->electronic_structure.iso_value, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureColPos"))) {
+                    viamd::extract_vec4(rep->electronic_structure.col_psi_pos, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureColNeg"))) {
+                    viamd::extract_vec4(rep->electronic_structure.col_psi_neg, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureColDen"))) {
+                    viamd::extract_vec4(rep->electronic_structure.col_den, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureColAtt"))) {
+                    viamd::extract_vec4(rep->electronic_structure.col_att, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureColDet"))) {
+                    viamd::extract_vec4(rep->electronic_structure.col_det, arg);
                 }
             }
         }
@@ -782,10 +782,12 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
             viamd::write_int(state,  STR_LIT("ElectronicStructureNtoIdx"),   rep.electronic_structure.nto_idx);
             viamd::write_int(state,  STR_LIT("ElectronicStructureType"),(int)rep.electronic_structure.type);
             viamd::write_int(state,  STR_LIT("ElectronicStructureRes"), (int)rep.electronic_structure.resolution);
-            viamd::write_flt(state,  STR_LIT("ElectronicStructureIso"),      rep.electronic_structure.iso_psi.values[0]);
-            viamd::write_vec4(state, STR_LIT("ElectronicStructureColPos"),   rep.electronic_structure.iso_psi.colors[0]);
-            viamd::write_vec4(state, STR_LIT("ElectronicStructureColNeg"),   rep.electronic_structure.iso_psi.colors[1]);
-            viamd::write_vec4(state, STR_LIT("ElectronicStructureColDen"),   rep.electronic_structure.iso_den.colors[0]);
+            viamd::write_dbl(state,  STR_LIT("ElectronicStructureIso"),      rep.electronic_structure.iso_value);
+            viamd::write_vec4(state, STR_LIT("ElectronicStructureColPos"),   rep.electronic_structure.col_psi_pos);
+            viamd::write_vec4(state, STR_LIT("ElectronicStructureColNeg"),   rep.electronic_structure.col_psi_neg);
+            viamd::write_vec4(state, STR_LIT("ElectronicStructureColDen"),   rep.electronic_structure.col_den);
+            viamd::write_vec4(state, STR_LIT("ElectronicStructureColAtt"),   rep.electronic_structure.col_att);
+            viamd::write_vec4(state, STR_LIT("ElectronicStructureColDet"),   rep.electronic_structure.col_det);
         }
     }
 

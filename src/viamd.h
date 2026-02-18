@@ -442,7 +442,7 @@ struct Representation {
     char filt[256] = "all";
     char filt_error[256] = "";
 
-    RepresentationType type = RepresentationType::SpaceFill;
+    RepresentationType type = RepresentationType::BallAndStick;
     ColorMapping color_mapping = ColorMapping::Type;
     md_bitfield_t atom_mask = {};
     md_gl_rep_t md_rep = {};
@@ -470,19 +470,15 @@ struct Representation {
         Volume vol = {};
         VolumeResolution resolution = VolumeResolution::Mid;
 
-        IsoDesc iso_psi {
-            .enabled = true,
-            .count   = 2,
-            .values  = {0.05f, -0.05},
-            .colors  = {{0.f/255.f,75.f/255.f,135.f/255.f,0.75f}, {255.f/255.f,205.f/255.f,0.f/255.f,0.75f}},
-        };
+        // Shared for all electronic structure representations
+        double iso_value = 0.05;
 
-        IsoDesc iso_den {
-            .enabled = true,
-            .count   = 1,
-            .values  = {0.0025f},
-            .colors  = {{255.f/255.f,255.f/255.f,255.f/255.f,0.75f}},
-        };
+        // These are default values for different volume types.
+        vec4_t col_psi_pos = {0.f/255.f,75.f/255.f,135.f/255.f,0.75f};
+        vec4_t col_psi_neg = {255.f/255.f,205.f/255.f,0.f/255.f,0.75f};
+        vec4_t col_den     = {255.f/255.f,255.f/255.f,255.f/255.f,0.75f};
+        vec4_t col_att     = {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f};
+        vec4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
 
         struct {
             bool enabled = false;
