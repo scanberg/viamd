@@ -17,6 +17,8 @@
 #include <task_system.h>
 #include <loader.h>
 
+#define IMGUI_DEFINE_MATH_OPERATORS
+
 #include <TextEditor.h>
 #include <implot.h>
 #include <imgui_notify.h>

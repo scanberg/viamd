@@ -10,6 +10,7 @@
 #include <md_system.h>
 #include <md_util.h>
 
+#include <imgui.h>
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 
@@ -296,12 +297,130 @@ struct Dataset : viamd::EventHandler {
         if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
             // Shift + click on element header to select all atom types that use this element
             // Since the hover should already contain the correct selection we can just copy it to the filter mask to achieve this
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
-            } else if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+            } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                 md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
             }
         }
+    }
+
+    // Return the row in the periodic table for a given atomic number
+    static inline int element_row(int z) {
+        if (z == 0) return 9; // Placeholder for unknown elements
+
+        if (z <= 2) return 0;
+        if (z <= 10) return 1;
+        if (z <= 18) return 2;
+        if (z <= 36) return 3;
+        if (z <= 54) return 4;
+
+        if (57 <= z && z <= 71) return 8; // Lanthanides
+        if (89 <= z && z <= 103) return 9; // Actinides
+
+        if (z <= 86) return 5;
+
+        return 6; // For actinides and beyond
+    }
+
+    // Return the column in the periodic table for a given atomic number
+    static inline int element_col(int z) {
+        if (z == 0) return 0; // Placeholder for unknown elements
+        if (z == 1) return 0;
+        if (z == 2) return 17;
+        if (z <= 4)  return z - 3;
+        if (z <= 10) return z + 7;
+
+        if (z <= 12) return z - 11;
+        if (z <= 18) return z - 1;
+        if (z <= 36) return (z - 1) % 18;
+        if (z <= 54) return (z - 1) % 18;
+        if (z <= 56) return (z - 1) % 18;
+        if (z <= 71) return (z - 57) % 18 + 2; // Lanthanides
+        if (z <= 86) return z - 69;
+        if (z <= 88) return z - 87;
+        if (z <= 103) return (z - 89) % 18 + 2; // Actinides
+        if (z <= 118) return (z - 101) % 18;
+
+        return 0;
+    }
+
+    struct PeriodicTableResult {
+        bool hovered = false;
+        bool clicked = false;
+        int  z = -1;
+    };
+
+    static bool element_button(const char* lbl, vec4_t color) {
+        const float button_size = ImGui::GetFontSize() * 1.5f;
+        const vec4_t color_hover  = vec4_clamp(color + vec4_set1(0.2f), vec4_set1(0.0f), vec4_set1(1.0f));
+        const vec4_t color_active = color * vec4_set(0.8f, 0.8f, 0.8f, 1.0f);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(color.x, color.y, color.z, color.w));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(color_hover.x,  color_hover.y,  color_hover.z,  1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(color_active.x, color_active.y, color_active.z, 1.0f));
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1));
+
+        bool clicked = ImGui::Button(lbl, ImVec2(button_size, button_size));
+
+        ImGui::PopStyleColor(5);
+		ImGui::PopStyleVar();
+
+		return clicked;
+    }
+
+    // If `enabled_mask` is non-null: bit=1 means enabled.
+    // Returns per-frame interaction info.
+    static PeriodicTableResult periodic_table_widget(const ElementDefault* elem_defs, const uint64_t enabled_mask[2] = nullptr) {
+        PeriodicTableResult res = {};
+
+        const int width  = 18;
+        const int height = 10;
+        const float button_size = ImGui::GetFontSize() * 1.5f;
+        const float spacing = ImGui::GetStyle().ItemSpacing.x * 0.25f;
+
+        ImVec2 offset = ImGui::GetCursorPos();
+        ImGui::Dummy(ImVec2(width * (button_size + spacing), height * (button_size + spacing)));
+
+        for (int z = 0; z < MD_Z_Count; ++z) {
+            int row = element_row(z);
+            int col = element_col(z);
+
+            ImGui::PushID(z);
+            ImGui::SetCursorPos(offset + ImVec2(col * (button_size + spacing), row * (button_size + spacing)));
+
+            bool disabled = enabled_mask ? !(enabled_mask[z / 64] & (1ULL << (z % 64))) : false;
+
+            const ElementDefault& def = elem_defs[z];
+            const vec4_t color = def.color;
+            const str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
+
+			ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 0.25f);
+
+            if (disabled) ImGui::BeginDisabled();
+			if (element_button(str_ptr(sym), color)) {
+                res.clicked = true;
+                res.z = z;
+            }
+            if (disabled) ImGui::EndDisabled();
+
+            ImGui::PopStyleVar();
+
+            // Interaction is queried after the item
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                res.hovered = true;
+                res.z = z;
+            }
+
+            str_t name = md_atomic_number_name((md_atomic_number_t)z);
+            ImGui::SetItemTooltip("%d: " STR_FMT, z, STR_ARG(name));
+
+            ImGui::PopID();
+        }
+
+        return res;
     }
 
     void draw(ApplicationState& data) {
@@ -489,15 +608,26 @@ struct Dataset : viamd::EventHandler {
                         char buf_num[32];
 						snprintf(buf_num, sizeof(buf_num), "%d (%.2f%%)", item.count, item.fraction * 100.0f);
                         char buf_tot[256];
-                        snprintf(buf_tot, sizeof(buf_tot), "%-8s %20s", item.label, buf_num);
+                        snprintf(buf_tot, sizeof(buf_tot), "%-4s %10s", item.label, buf_num);
                         bool expand = ImGui::CollapsingHeader(buf_tot);
                         if (ImGui::IsItemHovered()) {
                             md_bitfield_clear(&data.selection.highlight_mask);
                             md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, (uint32_t)md_array_size(item.indices));
-                            handle_item_click(data);
+                            if (ImGui::IsItemClicked()) {
+                                handle_item_click(data);
+                            }
                         }
                         if (expand) {
+                            bool coarse_grained = data.mold.sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED;
+                            if (ImGui::Checkbox("Coarse Grained", &coarse_grained)) {
+                                if (coarse_grained) {
+                                    data.mold.sys.atom.type.flags[i] |=  MD_FLAG_COARSE_GRAINED;
+                                } else {
+                                    data.mold.sys.atom.type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
+                                }
+                            }
                             if (!(data.mold.sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED)) {
+								str_t symbol = md_atomic_number_symbol((md_atomic_number_t)data.mold.sys.atom.type.z[i]);
                                 if (ImGui::Checkbox("Use element defaults", &item.use_defaults)) {
                                     if (item.use_defaults) {
 										// If the user enables the use_defaults flag then we should set the values back to the element defaults
@@ -509,6 +639,30 @@ struct Dataset : viamd::EventHandler {
                                         color_changed = true;
 										mass_changed = true;
                                     }
+                                }
+                                if (item.use_defaults) {
+                                    ImGui::SameLine();
+                                    int z = data.mold.sys.atom.type.z[i];
+                                    vec4_t color = element_defaults[z].color;
+                                    if (element_button(str_ptr(symbol), color)) {
+                                        ImGui::OpenPopup("Element Popup");
+                                    }
+                                }
+                                if (ImGui::BeginPopup("Element Popup")) {
+                                    PeriodicTableResult table_res = periodic_table_widget(element_defaults);
+                                    if (table_res.clicked) {
+                                        int z = table_res.z;
+                                        data.mold.sys.atom.type.z[i] = (md_atomic_number_t)table_res.z;
+                                        data.mold.sys.atom.type.color[i] = u32_from_vec4(element_defaults[z].color);
+                                        data.mold.sys.atom.type.radius[i] = element_defaults[z].radius;
+                                        data.mold.sys.atom.type.mass[i] = element_defaults[z].mass;
+
+										radius_changed = true;
+										color_changed = true;
+										mass_changed = true;
+                                        ImGui::CloseCurrentPopup();
+                                    }
+									ImGui::EndPopup();
                                 }
                             } else {
 								item.use_defaults = false; // Coarse grained types always have custom properties
@@ -537,72 +691,80 @@ struct Dataset : viamd::EventHandler {
                     ImGui::Unindent();
                 }
 
-                // Keep track of how many types that rely on element defaults
-                bool any_defaults = false;
-                int elem_default_count[128] = { 0 };
+                // Keep track of what elements are used in the system
+				uint64_t elem_mask[2] = { 0 };
 
                 for (size_t i = 0; i < num_atom_types; ++i) {
                     int z = data.mold.sys.atom.type.z[i];
-                    if (atom_types[i].use_defaults) {
-                        elem_default_count[z] += atom_types[i].count;
-                        any_defaults = true;
+                    if (atom_types[i].use_defaults && atom_types[i].count > 0) {
+						elem_mask[z / 64] |= (1ULL << (z % 64));
                     }
                 }
 
-                if (any_defaults && ImGui::CollapsingHeader("Elements")) {
+                if ((elem_mask[0] || elem_mask[1]) && ImGui::CollapsingHeader("Element Defaults")) {
                     ImGui::Indent();
 
-                    // Iterate over all elements that are present in the system and display their defaults
-                    for (int z = 0; z < MD_Z_Count; ++z) {
-                        if (elem_default_count[z] == 0) continue;
-                        str_t label = md_atomic_number_symbol((md_atomic_number_t)z);
-                        bool expand = ImGui::CollapsingHeader(str_ptr(label));
-                        if (ImGui::IsItemHovered()) {
-                            // Highlight all atom types that use this element
-                            md_bitfield_clear(&data.selection.highlight_mask);
+                    static int z = -1;
+					PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
+					if (table_res.hovered) {
+                        md_bitfield_clear(&data.selection.highlight_mask);
+                        for (size_t i = 0; i < num_atom_types; ++i) {
+							const DatasetItem& item = atom_types[i];
+                            if (data.mold.sys.atom.type.z[i] == table_res.z) {
+                                md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, (uint32_t)md_array_size(item.indices));
+                            }
+                        }
+                        handle_item_click(data);
+
+                        if (table_res.clicked && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                            ImGui::OpenPopup("Element Popup");
+							z = table_res.z;
+                        }
+                    }
+
+                    if (ImGui::BeginPopup("Element Popup")) {
+                        str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
+                        str_t name = md_atomic_number_name((md_atomic_number_t)z);
+                        char buf[64];
+                        snprintf(buf, sizeof(buf), "%d: %s (%s)", z, str_ptr(name), str_ptr(sym));
+                        ImGui::Text("%s", buf);
+                        ImGui::Separator();
+
+                        ElementDefault& elem_def = element_defaults[z];
+
+                        if (ImGui::ColorEdit3("Color", elem_def.color.elem)) {
+                            // Iterate and set color for all atom types that use this element and have use_defaults = true
                             for (size_t i = 0; i < num_atom_types; ++i) {
-                                if (data.mold.sys.atom.type.z[i] == z) {
-                                    md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)atom_types[i].indices, (uint32_t)md_array_size(atom_types[i].indices));
+                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
+                                    data.mold.sys.atom.type.color[i] = u32_from_vec4(elem_def.color);
                                 }
                             }
-                            handle_item_click(data);
+                            color_changed = true;
                         }
-                        if (expand) {
-                            float* radius = &element_defaults[z].radius;
-                            if (ImGui::SliderFloat("Radius", radius, min_radius, max_radius)) {
-                                // Radius changed. Update all atom types that use this element and have use_defaults = true
-                                for (size_t i = 0; i < num_atom_types; ++i) {
-                                    if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                        data.mold.sys.atom.type.radius[i] = *radius;
-                                    }
+                        if (ImGui::InputFloat("Van der Waals Radius", &elem_def.radius)) {
+                            // Iterate and set radius for all atom types that use this element and have use_defaults = true
+                            for (size_t i = 0; i < num_atom_types; ++i) {
+                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
+                                    data.mold.sys.atom.type.radius[i] = elem_def.radius;
                                 }
-                                radius_changed = true;
                             }
-
-                            float* mass = &element_defaults[z].mass;
-                            if (ImGui::SliderFloat("Mass", mass, min_mass, max_mass)) {
-                                // Mass changed. Update all atom types that use this element and have use_defaults = true
-                                for (size_t i = 0; i < num_atom_types; ++i) {
-                                    if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                        data.mold.sys.atom.type.mass[i] = *mass;
-                                    }
-                                }
-                                mass_changed = true;
-                            }
-
-                            if (ImGui::ColorEdit4("Color", element_defaults[z].color.elem)) {
-                                // Color changed. Update all atom types that use this element and have use_defaults = true
-                                for (size_t i = 0; i < num_atom_types; ++i) {
-                                    if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                        data.mold.sys.atom.type.color[i] = u32_from_vec4(element_defaults[z].color);
-                                    }
-                                }
-                                color_changed = true;
-                            }
+                            radius_changed = true;
                         }
+                        if (ImGui::InputFloat("Atomic Mass", &elem_def.mass)) {
+                            // Iterate and set mass for all atom types that use this element and have use_defaults = true
+                            for (size_t i = 0; i < num_atom_types; ++i) {
+                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
+                                    data.mold.sys.atom.type.mass[i] = elem_def.mass;
+                                }
+                            }
+                            mass_changed = true;
+                        }
+
+                        ImGui::EndPopup();
                     }
                     ImGui::Unindent();
                 }
+
                 if (radius_changed) {
                     data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
                 }
