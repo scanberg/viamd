@@ -4431,6 +4431,9 @@ static void draw_representations_window(ApplicationState* state) {
                 default:
                     ASSERT(false);
                 }
+				const double min_scale =  0.0;
+                const double max_scale = 10.0;
+				ImGui::SliderScalar("Optical Density Scale", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density_scale, &min_scale, &max_scale, "%.3f", ImGuiSliderFlags_Logarithmic);
             }
             ImGui::TreePop();
         }
@@ -8432,7 +8435,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .count   = iso.count,
                 .values  = iso.values,
                 .colors  = iso.colors,
-                .optical_density_scale = 0.01f,
+                .optical_density_scale = (float)rep.electronic_structure.iso_optical_density_scale,
             },
             .dvr = {
                 .enabled = rep.electronic_structure.dvr.enabled,
