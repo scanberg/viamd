@@ -847,6 +847,7 @@ struct {
     GLuint program = 0;
     struct {
         GLint tex_vel = -1;
+        GLint tex_linear_depth = -1;
         GLint tex_vel_texel_size = -1;
     } uniform_loc;
 } blit_neighbormax;
@@ -876,6 +877,7 @@ void initialize(int32_t width, int32_t height) {
     {
         blit_neighbormax.program = setup_program_from_source(STR_LIT("neighbormax"), {(const char*)blit_neighbormax_frag, blit_neighbormax_frag_size});
         blit_neighbormax.uniform_loc.tex_vel = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel");
+        blit_neighbormax.uniform_loc.tex_linear_depth = glGetUniformLocation(blit_neighbormax.program, "u_tex_linear_depth");
         blit_neighbormax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel_texel_size");
     }
     {
@@ -1516,15 +1518,20 @@ void blit_tilemax(GLuint velocity_tex, int tex_width, int tex_height) {
     glUseProgram(0);
 }
 
-void blit_neighbormax(GLuint velocity_tex, int tex_width, int tex_height) {
+void blit_neighbormax(GLuint velocity_tex, GLuint linear_depth_tex, int tex_width, int tex_height) {
     ASSERT(glIsTexture(velocity_tex));
+    ASSERT(glIsTexture(linear_depth_tex));
     const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, velocity_tex);
 
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
+
     glUseProgram(velocity::blit_neighbormax.program);
     glUniform1i(velocity::blit_neighbormax.uniform_loc.tex_vel, 0);
+    glUniform1i(velocity::blit_neighbormax.uniform_loc.tex_linear_depth, 1);
     glUniform2fv(velocity::blit_neighbormax.uniform_loc.tex_vel_texel_size, 1, &texel_size.x);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1896,7 +1903,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
         PUSH_GPU_SECTION("Velocity: Neighbormax") {
             glDrawBuffer(GL_COLOR_ATTACHMENT1);
-            blit_neighbormax(gl.velocity.tex_tilemax, gl.velocity.tex_width, gl.velocity.tex_height);
+            blit_neighbormax(gl.velocity.tex_tilemax, gl.linear_depth.texture, gl.velocity.tex_width, gl.velocity.tex_height);
         }
         POP_GPU_SECTION()
     }
