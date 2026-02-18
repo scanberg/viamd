@@ -1,4 +1,4 @@
-#version 330 core
+#version 410 core
 
 #define SHADING_ENABLED
 
@@ -20,6 +20,7 @@ layout (std140) uniform UniformData {
 
     vec2  u_inv_res;
     float u_time;
+    float u_iso_optical_density_scale;
 
     vec3  u_clip_plane_min;
     float u_tf_min;
@@ -212,7 +213,8 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
 vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColor, 
                     in float currentSample, in float prevSample,
                     in vec3 rayPosition, in vec3 rayDirection, 
-                    in float t, in float raySegmentLen, inout float tIncr, out bool hit) {
+                    in float t, in float raySegmentLen, inout float tIncr,
+                    in uint isoIdx, inout uint insideMask, out bool hit) {
     vec4 result = curResult;
     float sampleDelta = (currentSample - prevSample);
     hit = false;
@@ -273,6 +275,9 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
         surf.a = clamp(surf.a, 0.0, 1.0);
         surf.rgb *= surf.a;
         result = result + (1.0 - result.a) * surf;
+
+        // Crossing flips whether the current ray segment is inside this isosurface.
+        insideMask ^= (1u << isoIdx);
         hit = true;
     }
 
@@ -282,7 +287,8 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
 vec4 drawIsosurfaces(in vec4 curResult,
                      in float voxel, in float previousVoxel,
                      in vec3 rayPosition, in vec3 rayDirection,
-                     inout float t, inout float tIncr) {
+                     inout float t, inout float tIncr,
+                     inout uint insideMask) {
     // in case of zero isovalues return current color
     vec4 result = curResult;
     float raySegmentLen = tIncr;
@@ -290,19 +296,22 @@ vec4 drawIsosurfaces(in vec4 curResult,
 
 #if MAX_ISOVALUE_COUNT == 1
     result = drawIsosurface(result, u_iso.values[0], u_iso.colors[0],
-                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
+                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr,
+                            0u, insideMask, hit);
 #else // MAX_ISOVALUE_COUNT
     // multiple isosurfaces, need to determine order of traversal
     if (voxel - previousVoxel > 0) {
         for (int i = 0; i < u_iso.count; ++i) {
             vec4 res = drawIsosurface(result, u_iso.values[i], u_iso.colors[i],
-                                      voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
+                                      voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr,
+                                      uint(i), insideMask, hit);
             result = res;
         }
     } else {
         for (int i = u_iso.count; i > 0; --i) {
             vec4 res = drawIsosurface(result, u_iso.values[i - 1], u_iso.colors[i - 1],
-                                  voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr, hit);
+                                  voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr,
+                                  uint(i - 1), insideMask, hit);
             result = res;
         }
     }
@@ -321,6 +330,42 @@ vec2 PDnrand2( vec2 n ) {
 vec2 encode_normal (vec3 n) {
    float p = sqrt(n.z * 8 + 8);
    return n.xy / p + 0.5;
+}
+
+uint getInsideIsosurfaceMask(in float density) {
+    uint mask = 0u;
+    float d = abs(density);
+#if MAX_ISOVALUE_COUNT == 1
+    if (d >= abs(u_iso.values[0])) {
+        mask |= (1u << 0u);
+    }
+#else
+    for (int i = 0; i < u_iso.count; ++i) {
+        if (d >= abs(u_iso.values[i])) {
+            mask |= (1u << uint(i));
+        }
+    }
+#endif // MAX_ISOVALUE_COUNT
+    return mask;
+}
+
+vec4 applyIsoInteriorAttenuation(in vec4 curResult, in float opticalDepth) {
+    vec4 result = curResult;
+    float tau = max(opticalDepth, 0.0);
+    if (tau <= 0.0) {
+        return result;
+    }
+
+    float transmittance = exp(-tau);
+    vec4 absorptionOnly = vec4(0.0, 0.0, 0.0, 1.0 - clamp(transmittance, 0.0, 1.0));
+    result = result + (1.0 - result.a) * absorptionOnly;
+    return result;
+}
+
+float segmentLengthWorld(in vec3 rayDirectionTex, in float segmentLengthTex) {
+    vec3 deltaTex = rayDirectionTex * max(segmentLengthTex, 0.0);
+    vec3 deltaView = (u_model_to_view_mat * vec4(deltaTex, 0.0)).xyz;
+    return length(deltaView);
 }
 
 void main() {
@@ -354,6 +399,9 @@ void main() {
     density = lastDensity;
     float lastT = 0.0;
 
+    // Per-ray state of which isosurfaces are currently enclosing the sample point.
+    uint insideMask = getInsideIsosurfaceMask(density);
+
     while (t < tEnd) {
         t = min(t, tEnd);
         samplePos = entryPos + t * dir;
@@ -363,7 +411,7 @@ void main() {
         lastT = t;
 
 #if defined(INCLUDE_ISO)
-        result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr);
+    result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr, insideMask);
 #endif 
 
 #if defined(INCLUDE_DVR)
@@ -372,6 +420,19 @@ void main() {
             result = compositing(result, srcColor, tIncr);
         }
 #endif
+
+#if defined(INCLUDE_ISO)
+        // Apply Beer-Lambert attenuation while traversing interior of isosurfaces.
+        if (u_iso_optical_density_scale > 0.0) {
+            int insideCount = bitCount(insideMask);
+            if (insideCount > 0) {
+                float worldLen = segmentLengthWorld(dir, tIncr);
+                float opticalDepth = u_iso_optical_density_scale * float(insideCount) * worldLen * REF_SAMPLING_RATE;
+                result = applyIsoInteriorAttenuation(result, opticalDepth);
+            }
+        }
+#endif
+
         if (result.a > ERT_THRESHOLD) {
             break;
         }
@@ -392,7 +453,7 @@ void main() {
         float isoT = tEnd;
         float isoTIncr = max(tEnd - lastT, 0.0);
         if (isoTIncr > 0.0) {
-            result = drawIsosurfaces(result, exitDensity, density, exitSamplePos, dir, isoT, isoTIncr);
+            result = drawIsosurfaces(result, exitDensity, density, exitSamplePos, dir, isoT, isoTIncr, insideMask);
         }
 #endif
 
@@ -401,6 +462,17 @@ void main() {
         vec4 exitColor = classify(exitDensity);
         if (exitColor.a > 0.0) {
             result = compositing(result, exitColor, 0.0);
+        }
+#endif
+
+#if defined(INCLUDE_ISO)
+        if (u_iso_optical_density_scale > 0.0) {
+            int insideCount = bitCount(insideMask);
+            if (insideCount > 0) {
+                float worldLen = segmentLengthWorld(dir, max(tEnd - lastT, 0.0));
+                float opticalDepth = u_iso_optical_density_scale * float(insideCount) * worldLen * REF_SAMPLING_RATE;
+                result = applyIsoInteriorAttenuation(result, opticalDepth);
+            }
         }
 #endif
     }

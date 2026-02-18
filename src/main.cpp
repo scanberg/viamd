@@ -8432,6 +8432,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .count   = iso.count,
                 .values  = iso.values,
                 .colors  = iso.colors,
+                .optical_density_scale = 0.01f,
             },
             .dvr = {
                 .enabled = rep.electronic_structure.dvr.enabled,

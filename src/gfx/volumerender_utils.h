@@ -76,6 +76,7 @@ struct RenderDesc {
         size_t count = 0;
         const float* values = NULL;
         const vec4_t* colors = NULL;
+        float optical_density_scale = 0.0f;
     } iso;
 
     struct {

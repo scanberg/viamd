@@ -25,7 +25,7 @@
 
 static constexpr str_t v_shader_src_fs_quad = STR_LIT(
     R"(
-#version 150 core
+#version 410 core
 
 out vec2 tc;
 
@@ -43,7 +43,7 @@ void main() {
 
 static constexpr str_t f_shader_src_median = STR_LIT(
 R"(
-#version 150 core
+#version 410 core
 
 uniform sampler2D T;
 
@@ -126,7 +126,7 @@ struct UniformData {
 
     vec2_t inv_res;
     float time;
-    float _pad0;
+    float optical_density_scale;
 
     vec3_t clip_volume_min;
     float tf_min;
@@ -420,6 +420,7 @@ void render_volume(const RenderDesc& desc) {
     data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
     data.inv_res = {1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height)};
     data.time = time;
+    data.optical_density_scale = MAX(desc.iso.optical_density_scale, 0.0f);
     data.clip_volume_min = desc.clip_volume.min;
     data.tf_min = tf_min;
     data.clip_volume_max = desc.clip_volume.max;
