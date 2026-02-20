@@ -429,6 +429,7 @@ struct LoadParam {
 // Event Payload when an electronic structure is to be evaluated
 struct EvalElectronicStructure {
     // Input information
+    const md_system_t* system = 0;
     ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
     int major_idx = 0;
     int minor_idx = 0;

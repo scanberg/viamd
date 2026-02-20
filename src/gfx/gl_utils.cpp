@@ -5,6 +5,7 @@
 #include <core/md_str_builder.h>
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "gl_utils.h"
 
@@ -324,78 +325,201 @@ bool gl::free_texture(GLuint* texture) {
     return true;
 }
 
-static inline void get_pixel_channel_type(GLenum& channel, GLenum& type, GLenum format) {
+static inline bool get_pixel_channel_type(GLenum& channel, GLenum& type, GLenum format) {
     switch (format) {
     case GL_RGBA8:
         channel = GL_RGBA;
         type = GL_UNSIGNED_BYTE;
-        break;
+        return true;
     case GL_RGBA32F:
         channel = GL_RGBA;
         type = GL_FLOAT;
-        break;
+        return true;
     case GL_R32F:
         channel = GL_RED;
         type = GL_FLOAT;
-        break;
+        return true;
     default:
         channel = 0;
         type = 0;
     }
+    return false;
 }
 
-bool gl::set_texture_1D_data(GLuint texture, const void* data, GLenum format) {
+static inline size_t get_bytes_per_pixel(GLenum format) {
+    switch (format) {
+    case GL_RGBA8:
+        return 4 * sizeof(uint8_t);
+    case GL_RGBA32F:
+        return 4 * sizeof(float);
+    case GL_R32F:
+        return sizeof(float);
+    default:
+        return 0;
+    }
+}
+
+bool gl::set_texture_1D_data(GLuint texture, int level, const void* data, GLenum format) {
     if (!glIsTexture(texture)) return false;
 
     GLenum pixel_channel = 0;
     GLenum pixel_type = 0;
 
-    get_pixel_channel_type(pixel_channel, pixel_type, format);
-    if (pixel_channel == 0 || pixel_type == 0) return false;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
 
     int w;
     glBindTexture(GL_TEXTURE_1D, texture);
     glGetTexLevelParameteriv(GL_TEXTURE_1D, 0, GL_TEXTURE_WIDTH, &w);
-    glTexSubImage1D(GL_TEXTURE_1D, 0, 0, w, pixel_channel, pixel_type, data);
+    glTexSubImage1D(GL_TEXTURE_1D, level, 0, w, pixel_channel, pixel_type, data);
     glBindTexture(GL_TEXTURE_1D, 0);
     
     return true;
 }
 
-bool gl::set_texture_2D_data(GLuint texture, const void* data, GLenum format) {
+bool gl::set_texture_2D_data(GLuint texture, int level, const void* data, GLenum format) {
     if (!glIsTexture(texture)) return false;
 
     GLenum pixel_channel = 0;
     GLenum pixel_type = 0;
 
-    get_pixel_channel_type(pixel_channel, pixel_type, format);
-    if (pixel_channel == 0 || pixel_type == 0) return false;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
 
     int w, h;
     glBindTexture(GL_TEXTURE_2D, texture);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, pixel_channel, pixel_type, data);
+    glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, w, h, pixel_channel, pixel_type, data);
 
     return true;
 }
 
-bool gl::set_texture_3D_data(GLuint texture, const void* data, GLenum format) {
+bool gl::set_texture_3D_data(GLuint texture, int level, const void* data, GLenum format) {
     if (!glIsTexture(texture)) return false;
 
     GLenum pixel_channel = 0;
     GLenum pixel_type = 0;
 
-    get_pixel_channel_type(pixel_channel, pixel_type, format);
-    if (pixel_channel == 0 || pixel_type == 0) return false;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
 
     int w, h, d;
     glBindTexture(GL_TEXTURE_3D, texture);
     glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &w);
     glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
     glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &d);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
+
+    glTexSubImage3D(GL_TEXTURE_3D, level, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
     glBindTexture(GL_TEXTURE_3D, 0);
 
     return true;
+}
+
+bool gl::clear_texture_1D(GLuint texture, int level) {
+    if (!glIsTexture(texture)) return false;
+
+    glBindTexture(GL_TEXTURE_1D, texture);
+
+    GLenum format = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_1D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
+
+    bool result = false;
+
+    if (glClearTexImage) {
+        float clear_value[4] = { 0 };
+        glClearTexImage(texture, level, pixel_channel, pixel_type, clear_value);
+        result = true;
+    }
+    else {
+        int w;
+        glGetTexLevelParameteriv(GL_TEXTURE_1D, 0, GL_TEXTURE_WIDTH,  &w);
+        size_t bytes = w * get_bytes_per_pixel(format);
+        if (bytes > 0) {
+            void* data = calloc(bytes, 1);
+            glTexSubImage1D(GL_TEXTURE_1D, level, 0, w, pixel_channel, pixel_type, data);
+            free(data);
+            result = true;
+        }
+    }
+
+    glBindTexture(GL_TEXTURE_1D, 0);
+    return result;
+}
+
+bool gl::clear_texture_2D(GLuint texture, int level) {
+    if (!glIsTexture(texture)) return false;
+    
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    GLenum format = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
+
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
+
+    bool result = false;
+
+    if (glClearTexImage) {
+        float clear_value[4] = { 0 };
+        glClearTexImage(texture, level, pixel_channel, pixel_type, clear_value);
+        result = true;
+    }
+    else {
+        int w, h;
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+
+        size_t bytes = w * h * get_bytes_per_pixel(format);
+        if (bytes > 0) {
+            void* data = calloc(bytes, 1);
+            glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, w, h, pixel_channel, pixel_type, data);
+            free(data);
+            result = true;
+        }
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return result;
+}
+
+bool gl::clear_texture_3D(GLuint texture, int level) {
+    if (!glIsTexture(texture)) return false;
+    
+    glBindTexture(GL_TEXTURE_3D, texture);
+
+    GLenum format = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
+
+    bool result = false;
+
+    if (glClearTexImage) {
+        float clear_value[4] = { 0 };
+        glClearTexImage(texture, level, pixel_channel, pixel_type, clear_value);
+        result = true;
+    }
+    else {
+        int w, h, d;
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &d);
+
+        size_t bytes = w * h * d * get_bytes_per_pixel(format);
+        if (bytes > 0) {
+            void* data = calloc(bytes, 1);
+            glTexSubImage3D(GL_TEXTURE_3D, level, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
+            free(data);
+            result = true;
+        }
+    }
+
+    glBindTexture(GL_TEXTURE_3D, 0);
+    return result;
 }

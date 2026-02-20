@@ -1126,6 +1126,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     16.0f,
                 };
                 EvalElectronicStructure data = {
+                    .system = &state->mold.sys,
                     .type = rep->electronic_structure.type,
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
@@ -1135,9 +1136,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                 viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
 
                 if (data.output_written) {
-#if !VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
                     rep->electronic_structure.vol_hash = vol_hash;
-#endif
                 }
             }
         }
@@ -1203,6 +1202,7 @@ void flag_representation_as_dirty(Representation* rep) {
     ASSERT(rep);
     rep->filt_is_dirty = true;
     rep->needs_update  = true;
+    rep->electronic_structure.vol_hash = 0;
 }
 
 void flag_all_representations_as_dirty(ApplicationState* state) {

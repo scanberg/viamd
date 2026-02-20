@@ -1784,7 +1784,7 @@ static void update_density_volume(ApplicationState* data) {
                 MEMCPY(data->density_volume.volume_texture.dim, dim, sizeof(dim));
                 data->density_volume.volume_texture.max_value = prop_data->max_value;
             }
-            gl::set_texture_3D_data(data->density_volume.volume_texture.id, prop_data->values, GL_R32F);
+            gl::set_texture_3D_data(data->density_volume.volume_texture.id, 0, prop_data->values, GL_R32F);
         }
     }
 }
@@ -7542,6 +7542,7 @@ static void update_md_buffers(ApplicationState* data) {
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
 #endif
+        viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, data, 0);
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_ClearVelocity) {

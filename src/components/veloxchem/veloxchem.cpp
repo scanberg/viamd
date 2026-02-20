@@ -268,9 +268,6 @@ struct VeloxChem : viamd::EventHandler {
 
     bool use_gpu_path = false;
 
-    // Used for clearing volumes
-    uint32_t vol_fbo = 0;
-
     // GL representations
     //md_gl_mol_t gl_mol = {};
     md_gl_rep_t gl_rep = {};
@@ -450,6 +447,7 @@ struct VeloxChem : viamd::EventHandler {
         float displacement_freq_scl = 1.0f;
         bool invert_x = true;
         bool invert_y = false;
+        bool displace_aos = false;
 
         double x_samples[NUM_SAMPLES] = {}; // in cm^-1
         double y_samples[NUM_SAMPLES] = {};
@@ -493,6 +491,19 @@ struct VeloxChem : viamd::EventHandler {
 
     size_t num_natural_transition_orbitals() const {
         return md_vlx_rsp_number_of_excited_states(vlx);
+    }
+
+    void gtos_overwrite_coordinates(md_gto_t* gtos, size_t num_gtos, const float* x, const float* y, const float* z) {
+        const int* ao_to_atom_idx = md_vlx_ao_to_atom_idx(vlx);
+
+        for (size_t i = 0; i < num_gtos; ++i) {
+            int ao_idx   = gtos[i]._pad;
+            int atom_idx = ao_to_atom_idx[ao_idx];
+
+            gtos[i].x = (float)x[atom_idx] * ANGSTROM_TO_BOHR;
+            gtos[i].y = (float)y[atom_idx] * ANGSTROM_TO_BOHR;
+            gtos[i].z = (float)z[atom_idx] * ANGSTROM_TO_BOHR;
+        }
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final {
@@ -787,7 +798,7 @@ struct VeloxChem : viamd::EventHandler {
                     {
                         AttachmentDetachmentType nto_type = (data.type == ElectronicStructureType::AttachmentDensity) ? AttachmentDetachmentType::Attachment : AttachmentDetachmentType::Detachment;
                         if (use_gpu_path) {
-                            data.output_written = compute_attachment_detachment_density_GPU(data.dst_volume->tex_id, grid, data.major_idx, nto_type);
+                            data.output_written = compute_attachment_detachment_density_GPU(data.dst_volume->tex_id, grid, data.major_idx, nto_type, DEFAULT_GTO_CUTOFF_VALUE, data.system);
                         } else {
                             data.output_written = (compute_attachment_detachment_density_async(data.dst_volume->tex_id, grid, data.major_idx, nto_type) != task_system::INVALID_ID);
                         }
@@ -894,8 +905,6 @@ struct VeloxChem : viamd::EventHandler {
                 
                 if (md_vlx_parse_file(vlx, filename)) {
                     MD_LOG_INFO("Successfully loaded VeloxChem data");
-
-                    if (!vol_fbo) glGenFramebuffers(1, &vol_fbo);
 
                     // Scf
                     //scf.show_window = true;
@@ -1135,6 +1144,7 @@ struct VeloxChem : viamd::EventHandler {
                 MD_LOG_ERROR("Failed to extract NTO gto for nto index: %zu and lambda: %zu", nto_idx, i);
                 return false;
             }
+
             size_t num_pruned = md_gto_cutoff_compute_and_filter(temp_gtos, num_temp_gtos, cutoff);
             md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
             md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
@@ -1207,13 +1217,24 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // Compute attachment / detachment density
-    bool compute_attachment_detachment_density_GPU(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, AttachmentDetachmentType type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
-        md_allocator_i* alloc = md_vm_arena_create(MEGABYTES(64));
-        defer { md_vm_arena_destroy(alloc); };
+    bool compute_attachment_detachment_density_GPU(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, AttachmentDetachmentType type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, const md_system_t* system = nullptr) {
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+        defer { md_arena_allocator_destroy(alloc); };
 
         md_orbital_data_t orb_data = {0};
         if (!extract_attachment_detachment_orb_data(&orb_data, cutoff_value, type, nto_idx, alloc)) {
             return false;
+        }
+
+        if (vib.displace_aos && system) {
+            // If system is provided, we overwrite the GTO coordinates with the atom coordinates supplied by the system
+            for (size_t orb_idx = 0; orb_idx < orb_data.num_orbs; ++orb_idx) {
+                size_t gto_beg = orb_data.orb_offsets[orb_idx];
+                size_t gto_end = orb_data.orb_offsets[orb_idx + 1];
+                size_t num_gtos = gto_end - gto_beg;
+                md_gto_t* gtos = orb_data.gtos + gto_beg;
+                gtos_overwrite_coordinates(gtos, num_gtos, system->atom.x, system->atom.y, system->atom.z);
+            }
         }
 
         // Dispatch Compute shader evaluation
@@ -1258,7 +1279,7 @@ struct VeloxChem : viamd::EventHandler {
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
             if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
-                gl::set_texture_3D_data(data->tex, data->args.grid_data, GL_R32F);
+                gl::set_texture_3D_data(data->tex, 0, data->args.grid_data, GL_R32F);
             }
 
             md_vm_arena_destroy(data->arena);
@@ -1308,7 +1329,7 @@ struct VeloxChem : viamd::EventHandler {
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
             if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
-                gl::set_texture_3D_data(data->tex, data->args.grid_data, GL_R32F);
+                gl::set_texture_3D_data(data->tex, 0, data->args.grid_data, GL_R32F);
             }
 
             md_vm_arena_destroy(data->alloc);
@@ -1393,11 +1414,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         // Clear volume texture
-        const float zero[4] = {0,0,0,0};
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, vol_fbo);
-        glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, vol_tex, 0);
-        glClearBufferfv(GL_COLOR, 0, zero);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        gl::clear_texture_3D(vol_tex, 0);
 
         struct Payload {
             AsyncGridEvalArgs args;
@@ -1424,7 +1441,7 @@ struct VeloxChem : viamd::EventHandler {
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
             if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
-                gl::set_texture_3D_data(data->tex, data->args.grid_data, GL_R32F);
+                gl::set_texture_3D_data(data->tex, 0, data->args.grid_data, GL_R32F);
             }
 
             md_vm_arena_destroy(data->arena);
@@ -1478,7 +1495,7 @@ struct VeloxChem : viamd::EventHandler {
             // Ensure that the dimensions of the texture have not changed during evaluation
             int dim[3];
             if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
-                gl::set_texture_3D_data(data->tex, data->args.grid_data, GL_R32F);
+                gl::set_texture_3D_data(data->tex, 0, data->args.grid_data, GL_R32F);
             }
 
             md_vm_arena_destroy(data->arena);
@@ -3147,6 +3164,12 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     ImGui::EndMenu();
                 }
+                if (num_normal_modes > 0) {
+                    if (ImGui::BeginMenu("Settings")) {
+                        ImGui::Checkbox("VIB: Displace Atomic Orbitals", &vib.displace_aos);
+                        ImGui::EndMenu();
+                    }
+                }
                 ImGui::EndMenuBar();
             }
             
@@ -3444,9 +3467,9 @@ struct VeloxChem : viamd::EventHandler {
                     int idx = vib.selected + 1;
                     ImGui::SliderInt("Index", &idx, 0, (int)num_normal_modes);
                     vib.selected = CLAMP(idx - 1, -1, (int)num_normal_modes - 1);
-                    ImGui::SliderFloat((const char*)"Amplitude", &vib.displacement_amp_scl, 0.25f, 2.0f);
+                    ImGui::SliderFloat((const char*)"Amplitude", &vib.displacement_amp_scl, 0.25f, 5.0f);
                     ImGui::SetItemTooltip("Displacement Amplitude Scale");
-                    ImGui::SliderFloat((const char*)"Frequency", &vib.displacement_freq_scl, 0.25f, 2.0f);
+                    ImGui::SliderFloat((const char*)"Frequency", &vib.displacement_freq_scl, 0.25f, 5.0f);
                     ImGui::SetItemTooltip("Displacement Frequency Scale");
                     ImGui::PopItemWidth();
 
@@ -3551,6 +3574,15 @@ struct VeloxChem : viamd::EventHandler {
                             state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
 #endif
                             vib.coord_modified = true;
+
+                            if (vib.displace_aos) {
+                                size_t num_reps = md_array_size(state.representation.reps);
+                                for (size_t i = 0; i < num_reps; ++i) {
+                                    if (state.representation.reps[i].type == RepresentationType::ElectronicStructure) {
+                                        flag_representation_as_dirty(&state.representation.reps[i]);
+                                    }
+                                }
+                            }
                         }
                     }
                     // If all is deselected, reset coords once

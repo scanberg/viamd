@@ -297,7 +297,7 @@ void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float
     }
 
     gl::init_texture_2D(tex, res, 1, GL_RGBA8);
-    gl::set_texture_2D_data(*tex, pixel_data, GL_RGBA8);
+    gl::set_texture_2D_data(*tex, 0, pixel_data, GL_RGBA8);
 
     md_temp_set_pos_back(temp_pos);
 }
@@ -341,7 +341,7 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
     }
 
     gl::init_texture_2D(tex, res, 1, GL_RGBA8);
-    gl::set_texture_2D_data(*tex, pixel_data, GL_RGBA8);
+    gl::set_texture_2D_data(*tex, 0, pixel_data, GL_RGBA8);
 
     md_temp_set_pos_back(temp_pos);
 }

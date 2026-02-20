@@ -1358,7 +1358,7 @@ struct Ramachandran : viamd::EventHandler {
 
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update rama texture"), [data = user_data]() {
             if (data->complete) {
-                gl::set_texture_2D_data(data->rep->den_tex, data->density_tex, GL_RGBA32F);
+                gl::set_texture_2D_data(data->rep->den_tex, 0, data->density_tex, GL_RGBA32F);
             }
             md_free(data->alloc, data, data->alloc_size);
         });
