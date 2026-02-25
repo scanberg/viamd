@@ -229,6 +229,38 @@ static inline FileQueue::Entry file_queue_pop(FileQueue* queue) {
     return front;
 }
 
+static void visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0) {
+    md_script_vis_ctx_t ctx = {
+        .ir   = state->script.eval_ir,
+        .mol  = &state->mold.sys,
+        .traj = state->mold.traj,
+    };
+    state->script.vis = {0};
+    md_script_vis_init(&state->script.vis, frame_alloc);
+
+    if (md_script_vis_eval_payload(&state->script.vis, payload, subidx, &ctx, flags)) {
+        if (!md_bitfield_empty(&state->script.vis.atom_mask)) {
+            md_bitfield_copy(&state->selection.highlight_mask, &state->script.vis.atom_mask);
+        }
+    }
+}
+
+static void visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0) {
+    md_script_vis_ctx_t ctx = {
+        .ir   = state->script.eval_ir,
+        .mol  = &state->mold.sys,
+        .traj = state->mold.traj,
+    };
+    state->script.vis = {0};
+    md_script_vis_init(&state->script.vis, frame_alloc);
+
+    if (md_script_vis_eval_string(&state->script.vis, str, &ctx, flags)) {
+        if (!md_bitfield_empty(&state->script.vis.atom_mask)) {
+            md_bitfield_copy(&state->selection.highlight_mask, &state->script.vis.atom_mask);
+        }
+    }
+}
+
 static void free_histogram(DisplayProperty::Histogram* hist) {
     ASSERT(hist);
     ASSERT(hist->alloc);
@@ -3598,6 +3630,10 @@ void draw_context_popup(ApplicationState* state) {
                         state->editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
                     }
+                    if (ImGui::IsItemHovered()) {
+                        str_t str = str_from_cstr(buf);
+                        visualize_str(state, str);
+                    }
 
                     if (res_idx != -1) {
                         const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, res_idx);
@@ -3610,6 +3646,10 @@ void draw_context_popup(ApplicationState* state) {
                             state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
+                        if (ImGui::IsItemHovered()) {
+                            str_t str = str_from_cstr(buf);
+                            visualize_str(state, str);
+                        }
 
                         const int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, resid);
@@ -3617,6 +3657,10 @@ void draw_context_popup(ApplicationState* state) {
                             state->editor.AppendText("\n");
                             state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            str_t str = str_from_cstr(buf);
+                            visualize_str(state, str);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3626,6 +3670,10 @@ void draw_context_popup(ApplicationState* state) {
                                 state->editor.AppendText("\n");
                                 state->editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                str_t str = str_from_cstr(buf);
+                                visualize_str(state, str);
                             }
                         }
                     }
@@ -3638,6 +3686,10 @@ void draw_context_popup(ApplicationState* state) {
                         state->editor.AppendText("\n");
                         state->editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        str_t str = str_from_cstr(buf);
+                        visualize_str(state, str);
                     }
 
                     if (res_idx != -1) {
@@ -3652,6 +3704,10 @@ void draw_context_popup(ApplicationState* state) {
                             state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
+                        if (ImGui::IsItemHovered()) {
+                            str_t str = str_from_cstr(buf);
+                            visualize_str(state, str);
+                        }
 
                         int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, resid);
@@ -3659,6 +3715,10 @@ void draw_context_popup(ApplicationState* state) {
                             state->editor.AppendText("\n");
                             state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            str_t str = str_from_cstr(buf);
+                            visualize_str(state, str);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3668,6 +3728,10 @@ void draw_context_popup(ApplicationState* state) {
                                 state->editor.AppendText("\n");
                                 state->editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                str_t str = str_from_cstr(buf);
+                                visualize_str(state, str);
                             }
                         }
                     }
@@ -3680,6 +3744,10 @@ void draw_context_popup(ApplicationState* state) {
                         state->editor.AppendText("\n");
                         state->editor.AppendText(buf);
                         ImGui::CloseCurrentPopup();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        str_t str = str_from_cstr(buf);
+                        visualize_str(state, str);
                     }
 
                     if (res_idx != -1) {
@@ -3695,6 +3763,10 @@ void draw_context_popup(ApplicationState* state) {
                             state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
                         }
+                        if (ImGui::IsItemHovered()) {
+                            str_t str = str_from_cstr(buf);
+                            visualize_str(state, str);
+                        }
 
                         int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
@@ -3702,6 +3774,10 @@ void draw_context_popup(ApplicationState* state) {
                             state->editor.AppendText("\n");
                             state->editor.AppendText(buf);
                             ImGui::CloseCurrentPopup();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            str_t str = str_from_cstr(buf);
+                            visualize_str(state, str);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3711,6 +3787,10 @@ void draw_context_popup(ApplicationState* state) {
                                 state->editor.AppendText("\n");
                                 state->editor.AppendText(buf);
                                 ImGui::CloseCurrentPopup();
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                str_t str = str_from_cstr(buf);
+                                visualize_str(state, str);
                             }
                         }
                     }
@@ -4805,22 +4885,6 @@ static float distance_to_linesegment(vec2_t line_beg, vec2_t line_end, vec2_t po
         return vec2_dist(point, line_end);
     } else {
         return vec2_dist(point, vec2_add(line_beg, vec2_mul_f(v, t)));
-    }
-}
-
-static void visualize_payload(ApplicationState* data, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags) {
-    md_script_vis_ctx_t ctx = {
-        .ir   = data->script.eval_ir,
-        .mol  = &data->mold.sys,
-        .traj = data->mold.traj,
-    };
-    data->script.vis = {0};
-    md_script_vis_init(&data->script.vis, frame_alloc);
-
-    if (md_script_vis_eval_payload(&data->script.vis, payload, subidx, &ctx, flags)) {
-        if (!md_bitfield_empty(&data->script.vis.atom_mask)) {
-            md_bitfield_copy(&data->selection.highlight_mask, &data->script.vis.atom_mask);
-        }
     }
 }
 
