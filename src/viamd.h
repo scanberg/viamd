@@ -899,9 +899,6 @@ struct ApplicationState {
         md_script_eval_t* filt_eval = nullptr;
         md_script_vis_t vis = {};
 
-        // Semaphore to control access to IR
-        md_semaphore_t ir_semaphore = {};
-
         // Controls current subindex being visualized (if array)
         int sub_idx = -1;
 

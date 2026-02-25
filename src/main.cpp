@@ -67,7 +67,6 @@
 #define EXPERIMENTAL_GFX_API 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
-#define IR_SEMAPHORE_MAX_COUNT 3
 #define MEASURE_EVALUATION_TIME 1
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
 
@@ -553,10 +552,10 @@ int main(int argc, char** argv) {
                 break;
             }
             if (toast_type != ImGuiToastType_None) {
-                md_mutex_lock(&state.lock);
-                defer { md_mutex_unlock(&state.lock); };
                 // @NOTE: This needs to be protected with a mutex as it pushes to an internal vector
+                md_mutex_lock(&state.lock);
                 ImGui::InsertNotification(ImGuiToast(toast_type, (uint64_t)(NOTIFICATION_DISPLAY_TIME_IN_SECONDS * 1000), msg));
+                md_mutex_unlock(&state.lock);
             }
         }
     };
@@ -577,7 +576,6 @@ int main(int argc, char** argv) {
 
     md_bitfield_init(&state.representation.visibility_mask, persistent_alloc);
 
-    md_semaphore_init(&state.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
     // Init platform
     VIAMD_LOG_DEBUG("Initializing GL...");
     if (!application::initialize(&state.app, 0, 0, STR_LIT("VIAMD"))) {
@@ -770,6 +768,12 @@ int main(int argc, char** argv) {
         if (state.show_property_export_window) draw_property_export_window(&state);
         if (state.structure_export.show_window) draw_structure_export_window(&state);
         if (state.show_debug_window) draw_debug_window(&state);
+        if (state.animation.show_window) draw_animation_window(&state);
+
+        draw_context_popup(&state);
+        draw_async_task_window(&state);
+        draw_main_menu(&state);
+        draw_notifications_window();
 
         //ImGui::ShowDemoWindow();
 
@@ -781,12 +785,6 @@ int main(int argc, char** argv) {
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
             set_hovered_property(&state,  STR_LIT(""));
         }
-
-        draw_context_popup(&state);
-        draw_async_task_window(&state);
-        if (state.animation.show_window) draw_animation_window(&state);
-        draw_main_menu(&state);
-        draw_notifications_window();
 
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
@@ -961,9 +959,8 @@ int main(int argc, char** argv) {
                 if (state.script.filt_eval) md_script_eval_interrupt(state.script.filt_eval);
 
                 // Try aquire all semaphores
-                if (md_semaphore_try_aquire_n(&state.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT)) {
+                {
                     defer {
-                        md_semaphore_release_n(&state.script.ir_semaphore, IR_SEMAPHORE_MAX_COUNT);
                         flag_all_representations_as_dirty(&state);
                     };
 
@@ -3632,7 +3629,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str);
+                        visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                     }
 
                     if (res_idx != -1) {
@@ -3648,7 +3645,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str);
+                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                         }
 
                         const int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
@@ -3660,7 +3657,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str);
+                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3673,7 +3670,7 @@ void draw_context_popup(ApplicationState* state) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str);
+                                visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             }
                         }
                     }
@@ -3689,7 +3686,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str);
+                        visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                     }
 
                     if (res_idx != -1) {
@@ -3706,7 +3703,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str);
+                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                         }
 
                         int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
@@ -3718,7 +3715,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str);
+                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3731,7 +3728,7 @@ void draw_context_popup(ApplicationState* state) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str);
+                                visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             }
                         }
                     }
@@ -3747,7 +3744,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str);
+                        visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                     }
 
                     if (res_idx != -1) {
@@ -3765,7 +3762,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str);
+                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                         }
 
                         int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
@@ -3777,7 +3774,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str);
+                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3790,7 +3787,7 @@ void draw_context_popup(ApplicationState* state) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str);
+                                visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             }
                         }
                     }
@@ -6631,12 +6628,7 @@ static void draw_debug_window(ApplicationState* data) {
     ASSERT(data);
 
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Debug", &data->show_debug_window)) {
-        size_t sema_count = 0;
-        if (md_semaphore_query_count(&data->script.ir_semaphore, &sema_count)) {
-            ImGui::Text("Script IR semaphore count: %i", (int)sema_count);
-        }
-        
+    if (ImGui::Begin("Debug", &data->show_debug_window)) {       
         task_system::ID tasks[256]; 
         size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
         if (num_tasks > 0) {
@@ -6795,41 +6787,37 @@ static void draw_script_editor_window(ApplicationState* state) {
                 ImGui::EndTooltip();
             }
             if (hovered_marker->payload) {
-                if (md_semaphore_try_aquire(&state->script.ir_semaphore)) {
-                    defer { md_semaphore_release(&state->script.ir_semaphore); };
+                if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
+                    const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
+                    md_bitfield_copy(&state->selection.highlight_mask, bf);
+                }
+                else if (hovered_marker->type == MarkerType_Visualization) {
+                    // Clear hovered property
+                    set_hovered_property(state, STR_LIT(""));
+                    if (md_script_ir_valid(state->script.ir)) {
+                        const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
+                        str_t payload_ident = md_script_payload_ident(payload);
+                        size_t payload_dim  = md_script_payload_dim(payload); 
 
-                    if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
-                        const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
-                        md_bitfield_copy(&state->selection.highlight_mask, bf);
-                    }
-                    else if (hovered_marker->type == MarkerType_Visualization) {
-                        // Clear hovered property
-                        set_hovered_property(state, STR_LIT(""));
-                        if (md_script_ir_valid(state->script.ir)) {
-                            const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
-                            str_t payload_ident = md_script_payload_ident(payload);
-                            size_t payload_dim  = md_script_payload_dim(payload); 
-
-                            if (payload_dim > 1) {
-                                int delta = (int)ImGui::GetIO().MouseWheel;
-                                if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                                    delta *= 10;
-                                }
-                                state->script.sub_idx += delta;
-                                state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)payload_dim - 1);
+                        if (payload_dim > 1) {
+                            int delta = (int)ImGui::GetIO().MouseWheel;
+                            if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                                delta *= 10;
                             }
-
-                            visualize_payload(state, payload, state->script.sub_idx, 0);
-                            set_hovered_property(state, payload_ident, state->script.sub_idx);
+                            state->script.sub_idx += delta;
+                            state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)payload_dim - 1);
                         }
-                    }
 
-                    bool lm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-                    bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
-                    if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
-                        SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
-                        modify_selection(state, &state->selection.highlight_mask, op);
+                        visualize_payload(state, payload, state->script.sub_idx, 0);
+                        set_hovered_property(state, payload_ident, state->script.sub_idx);
                     }
+                }
+
+                bool lm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+                if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
+                    SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
+                    modify_selection(state, &state->selection.highlight_mask, op);
                 }
             }
         } else {
