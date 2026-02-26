@@ -69,6 +69,7 @@
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define MEASURE_EVALUATION_TIME 1
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
+#define VIS_FLAGS (MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY | MD_SCRIPT_VISUALIZE_TEXT)
 
 #define HIGHLIGHT_PULSE_TIME_SCALE  5.0
 #define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
@@ -151,11 +152,6 @@ enum LegendColorMapMode_ {
     LegendColorMapMode_Opaque,
     LegendColorMapMode_Transparent,
     LegendColorMapMode_Split,
-};
-
-enum RepBit_ {
-    RepBit_DirtyColor   = 0x1,
-    RepBit_DirtyFilter  = 0x2
 };
 
 enum MarkerType_{
@@ -3629,7 +3625,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                        visualize_str(state, str, VIS_FLAGS);
                     }
 
                     if (res_idx != -1) {
@@ -3645,7 +3641,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            visualize_str(state, str, VIS_FLAGS);
                         }
 
                         const int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
@@ -3657,7 +3653,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            visualize_str(state, str, VIS_FLAGS);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3670,7 +3666,7 @@ void draw_context_popup(ApplicationState* state) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                visualize_str(state, str, VIS_FLAGS);
                             }
                         }
                     }
@@ -3686,7 +3682,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                        visualize_str(state, str, VIS_FLAGS);
                     }
 
                     if (res_idx != -1) {
@@ -3703,7 +3699,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            visualize_str(state, str, VIS_FLAGS);
                         }
 
                         int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
@@ -3715,7 +3711,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            visualize_str(state, str, VIS_FLAGS);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3728,7 +3724,7 @@ void draw_context_popup(ApplicationState* state) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                visualize_str(state, str, VIS_FLAGS);
                             }
                         }
                     }
@@ -3744,7 +3740,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                        visualize_str(state, str, VIS_FLAGS);
                     }
 
                     if (res_idx != -1) {
@@ -3762,7 +3758,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            visualize_str(state, str, VIS_FLAGS);
                         }
 
                         int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
@@ -3774,7 +3770,7 @@ void draw_context_popup(ApplicationState* state) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            visualize_str(state, str, VIS_FLAGS);
                         }
 
                         str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
@@ -3787,7 +3783,7 @@ void draw_context_popup(ApplicationState* state) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                visualize_str(state, str, VIS_FLAGS);
                             }
                         }
                     }
