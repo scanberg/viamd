@@ -8161,10 +8161,6 @@ static void fill_gbuffer(ApplicationState* data) {
 
     const md_script_vis_t& vis = data->script.vis;
 
-    const uint32_t point_color      = convert_color(data->script.point_color);
-    const uint32_t line_color       = convert_color(data->script.line_color);
-    const uint32_t triangle_color   = convert_color(data->script.triangle_color);
-
     if (vis.points) {
         immediate::draw_points_v((immediate::Vertex*)vis.points, md_array_size(vis.points), data->script.point_color);
     }
