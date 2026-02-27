@@ -179,6 +179,7 @@ void main() {
   // Compute projection of disk of radius control.R into screen space
 #if AO_PERSPECTIVE
     float radius_pixels = control.radius_to_screen / view_position.z;
+    radius_pixels = max(radius_pixels, 3.0); // Avoid sampling the same pixel multiple times for nearby geometry
 #else 
     float radius_pixels = control.radius_to_screen;
 #endif

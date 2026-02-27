@@ -388,7 +388,7 @@ void initialize_rnd_tex(GLuint rnd_tex) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-float compute_sharpness(float radius) { return 20.f / sqrtf(radius); }
+float compute_sharpness(float radius) { return 1.0f / sqrtf(radius); }
 
 void initialize(int width, int height) {
     gl.ssao.hbao.program_persp = setup_program_from_source(STR_LIT("ssao persp"), {(const char*)ssao_frag, ssao_frag_size}, STR_LIT("#define AO_PERSPECTIVE 1"));
