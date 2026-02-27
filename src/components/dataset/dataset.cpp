@@ -612,7 +612,7 @@ struct Dataset : viamd::EventHandler {
                         bool expand = ImGui::CollapsingHeader(buf_tot);
                         if (ImGui::IsItemHovered()) {
                             md_bitfield_clear(&data.selection.highlight_mask);
-                            md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, (uint32_t)md_array_size(item.indices));
+                            md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
                             if (ImGui::IsItemClicked()) {
                                 handle_item_click(data);
                             }
@@ -711,7 +711,7 @@ struct Dataset : viamd::EventHandler {
                         for (size_t i = 0; i < num_atom_types; ++i) {
 							const DatasetItem& item = atom_types[i];
                             if (data.mold.sys.atom.type.z[i] == table_res.z) {
-                                md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, (uint32_t)md_array_size(item.indices));
+                                md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
                             }
                         }
                         handle_item_click(data);
