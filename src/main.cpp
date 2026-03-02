@@ -6793,7 +6793,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                     if (md_script_ir_valid(state->script.ir)) {
                         const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
                         str_t payload_ident = md_script_payload_ident(payload);
-                        size_t payload_dim  = md_script_payload_dim(payload); 
+                        int payload_dim  = md_script_payload_dim(payload); 
 
                         if (payload_dim > 1) {
                             int delta = (int)ImGui::GetIO().MouseWheel;
