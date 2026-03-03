@@ -7,6 +7,7 @@ const float KERNEL_RADIUS = 3;
 uniform float u_sharpness;
 uniform float u_zmax;
 uniform vec2  u_inv_res_dir; // either set x to 1/width or y to 1/height
+
 uniform sampler2D u_tex_ao;
 uniform sampler2D u_tex_linear_depth;
 
