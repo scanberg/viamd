@@ -177,21 +177,6 @@ static struct {
         } blur;
     } ssao;
 
-#if 0
-    struct {
-        GLuint tex_ao[2] = {};
-        GLuint tex_rand  = 0;
-		GLuint buf_ubo   = 0;
-
-        GLuint fbo       = 0;
-
-		GLuint program_persp    = 0;
-		GLuint program_ortho    = 0;
-        GLuint program_blur     = 0;
-        GLuint program_upsample  = 0;
-    } gtao;
-#endif
-
     struct {
         GLuint program = 0;
         struct {
@@ -369,243 +354,6 @@ static GLuint setup_program_from_source(str_t name, str_t f_shader_src, str_t de
     return program;
 }
 
-#if 0
-namespace gtao {
-struct UBOData {
-    float proj_info[4];
-    float inv_full_res[2];
-    float proj_scl;
-    float z_max;
-};
-
-static void setup_ubo_data(UBOData* data, int width, int height, const float proj_mat[4][4]) {
-    ASSERT(data);
-
-    if (!is_orthographic_proj_matrix(proj_mat)) {
-        // Persp
-        data->proj_info[0]  = 2.0f / (proj_mat[0][0]);                      // (x) * (R - L)/N
-        data->proj_info[1]  = 2.0f / (proj_mat[1][1]);                      // (y) * (T - B)/N
-        data->proj_info[2]  = -(1.0f - proj_mat[2][0]) / proj_mat[0][0];    // L/N
-        data->proj_info[3]  = -(1.0f + proj_mat[2][1]) / proj_mat[1][1];    // B/N
-        data->z_max         = proj_mat[3][2] / (proj_mat[2][2] + 1.0f);
-    }
-    else {
-        // Ortho
-        data->proj_info[0] = 2.0f / (proj_mat[0][0]);                       // ((x) * R - L)
-        data->proj_info[1] = 2.0f / (proj_mat[1][1]);                       // ((y) * T - B)
-        data->proj_info[2] = -(1.0f + proj_mat[3][0]) / proj_mat[0][0];     // L
-        data->proj_info[3] = -(1.0f - proj_mat[3][1]) / proj_mat[1][1];     // B
-        data->z_max = (-2.0f + proj_mat[3][2]) / proj_mat[2][2];
-    }
-
-    data->proj_scl = height * proj_mat[1][1] * 0.5f;
-    data->inv_full_res[0] = 1.0f / (float)width;
-    data->inv_full_res[1] = 1.0f / (float)height;
-}
-
-void initialize(int width, int height) {
-    gl.gtao.program_persp    = setup_program_from_source(STR_LIT("gtao persp"), { (const char*)gtao_frag, gtao_frag_size }, STR_LIT("#define AO_PERSPECTIVE 1"));
-    gl.gtao.program_ortho    = setup_program_from_source(STR_LIT("gtao ortho"), { (const char*)gtao_frag, gtao_frag_size }, STR_LIT("#define AO_PERSPECTIVE 0"));
-    gl.gtao.program_upsample = setup_program_from_source(STR_LIT("gtao upsample"), { (const char*)upsample_frag, upsample_frag_size });
-
-    if (!gl.gtao.fbo)       glGenFramebuffers(1, &gl.gtao.fbo);
-    if (!gl.gtao.tex_rand)  glGenTextures(1, &gl.gtao.tex_rand);
-    if (!gl.gtao.tex_ao[0]) glGenTextures(2, gl.gtao.tex_ao);
-    if (!gl.gtao.buf_ubo)   glGenBuffers(1, &gl.gtao.buf_ubo);
-
-    const int half_width  = MAX(1, width  / 2);
-    const int half_height = MAX(1, height / 2);
-
-    glBindTexture(GL_TEXTURE_2D, gl.gtao.tex_rand);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R16, 64, 64, 0, GL_RED, GL_UNSIGNED_SHORT, bluenoise_64x64_data);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-    glBindTexture(GL_TEXTURE_2D, gl.gtao.tex_ao[0]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, half_width, half_height, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, gl.gtao.tex_ao[1]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, half_width, half_height, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.gtao.fbo);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.gtao.tex_ao[0], 0);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.gtao.tex_ao[1], 0);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-
-    glBindBuffer(GL_UNIFORM_BUFFER, gl.gtao.buf_ubo);
-    glBufferData(GL_UNIFORM_BUFFER, sizeof(gtao::UBOData), nullptr, GL_DYNAMIC_DRAW);
-
-	glBindBuffer(GL_UNIFORM_BUFFER, 0);
-}
-
-void shutdown() {
-    if (gl.gtao.fbo)            glDeleteFramebuffers(1, &gl.gtao.fbo);
-    if (gl.gtao.tex_rand)       glDeleteTextures(1, &gl.gtao.tex_rand);
-    if (gl.gtao.tex_ao[0])      glDeleteTextures(2, gl.gtao.tex_ao);
-    if (gl.gtao.buf_ubo)        glDeleteBuffers(1, &gl.gtao.buf_ubo);
-    if (gl.gtao.program_persp)  glDeleteProgram(gl.gtao.program_persp);
-    if (gl.gtao.program_ortho)  glDeleteProgram(gl.gtao.program_ortho);
-    if (gl.gtao.program_blur)   glDeleteProgram(gl.gtao.program_blur);
-}
-
-
-void compute(GLuint linear_depth_tex, GLuint normal_tex, const float proj_mat[4][4]) {
-    ASSERT(glIsTexture(linear_depth_tex));
-    ASSERT(glIsTexture(normal_tex));
-
-    GLint last_fbo;
-    GLint last_viewport[4];
-    GLint last_draw_buffer;
-    GLint last_scissor_box[4];
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
-    glGetIntegerv(GL_VIEWPORT, last_viewport);
-    glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
-    glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
-
-    int width  = last_viewport[2];
-    int height = last_viewport[3];
-
-	int half_width  = width  / 2;
-	int half_height = height / 2;
-
-    glBindVertexArray(gl.vao);
-
-    UBOData ubo_data = {};
-    setup_ubo_data(&ubo_data, half_width, half_height, proj_mat);
-
-    glBindBuffer(GL_UNIFORM_BUFFER, gl.gtao.buf_ubo);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UBOData), &ubo_data);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-
-    GLuint draw_buffers[2] {
-        GL_COLOR_ATTACHMENT0,
-        GL_COLOR_ATTACHMENT2,
-    };
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.gtao.fbo);
-    glDrawBuffers(2, draw_buffers);
-    glViewport(0, 0, half_width, half_height);
-    glScissor (0, 0, half_width, half_height);
-    glClearColor(1, 1, 1, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    GLuint program = is_orthographic_proj_matrix(proj_mat) ? gl.gtao.program_ortho : gl.gtao.program_persp;
-
-    PUSH_GPU_SECTION("GTAO")
-    glUseProgram(program);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, normal_tex);
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, gl.gtao.tex_rand);
-
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.gtao.buf_ubo);
-
-	int block_index = glGetUniformBlockIndex(program, "uUbo");
-	int depth_loc   = glGetUniformLocation(program, "uDepth");
-	int normal_loc  = glGetUniformLocation(program, "uNormal");
-	int random_loc  = glGetUniformLocation(program, "uRandom");
-
-    glUniformBlockBinding(program, block_index, 0);
-    glUniform1i(depth_loc, 0);
-    glUniform1i(normal_loc, 1);
-    glUniform1i(random_loc, 2);
-
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    POP_GPU_SECTION()
-
-	const float inv_full_res_x = 1.0f / (float)width;
-	const float inv_full_res_y = 1.0f / (float)height;
-	const float inv_half_res_x = 1.0f / (float)half_width;
-	const float inv_half_res_y = 1.0f / (float)half_height;
-	const float sharpness = 0.1f;
-
-#if 1
-
-    PUSH_GPU_SECTION("GTAO BLUR");
-	program = gl.ssao.blur.program;
-    glUseProgram(program);
-
-    glUniform1i(glGetUniformLocation(program, "u_tex_linear_depth"), 0);
-    glUniform1i(glGetUniformLocation(program, "u_tex_ao"), 1);
-    glUniform1f(glGetUniformLocation(program, "u_sharpness"), sharpness);
-    glUniform1f(glGetUniformLocation(program, "u_zmax"), ubo_data.z_max);
-
-    // BLUR FIRST
-    PUSH_GPU_SECTION("1st")
-    glUniform2f(glGetUniformLocation(program, "u_inv_res_dir"), inv_half_res_x, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT1);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, gl.gtao.tex_ao[0]);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    POP_GPU_SECTION()
-
-    // BLUR SECOND
-    PUSH_GPU_SECTION("2nd")
-    glUniform2f(glGetUniformLocation(program, "u_inv_res_dir"), 0, inv_half_res_y);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, gl.gtao.tex_ao[1]);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    POP_GPU_SECTION()
-
-	POP_GPU_SECTION()
-
-#endif
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ZERO, GL_SRC_COLOR);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
-    glDrawBuffer(last_draw_buffer);
-    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
-    glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
-
-	// UPSAMPLE
-#if 1
-	PUSH_GPU_SECTION("GTAO UPSAMPLE")
-    program = gl.gtao.program_upsample;
-    glUseProgram(program);
-
-    glUniform1i(glGetUniformLocation(program, "uDepth"), 0);
-    glUniform1i(glGetUniformLocation(program, "uAO"), 1);
-    glUniform2f(glGetUniformLocation(program, "u_inv_full_res"), inv_full_res_x, inv_full_res_y);
-    glUniform2f(glGetUniformLocation(program, "u_inv_half_res"), inv_half_res_x, inv_half_res_y);
-    glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, gl.gtao.tex_ao[0]);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-
-	POP_GPU_SECTION()
-#else
-	blit_texture(gl.gtao.tex_ao[0]);
-#endif
-
-    glDisable(GL_BLEND);
-    glBindVertexArray(0);
-}
-
-};
-
-#endif
-
 namespace ssao {
 #ifndef AO_RANDOM_TEX_SIZE
 #define AO_RANDOM_TEX_SIZE 4
@@ -730,7 +478,7 @@ void initialize_rnd_tex(GLuint rnd_tex) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-float compute_sharpness(float radius) { return 1.0f / sqrtf(radius); }
+float compute_sharpness(float radius) { return 4.0f / sqrtf(radius); }
 
 void initialize(int width, int height) {
     gl.ssao.hbao.program_persp = setup_program_from_source(STR_LIT("ssao persp"), {(const char*)ssao_frag, ssao_frag_size}, STR_LIT("#define AO_PERSPECTIVE 1"));
@@ -1497,7 +1245,6 @@ void initialize(int width, int height) {
     gl.tex_width = width;
     gl.tex_height = height;
 
-	//gtao::initialize(width, height);
     ssao::initialize(width, height);
     dof::initialize(width, height);
     velocity::initialize(width, height);
@@ -2321,8 +2068,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("SSAO")
-            compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj.elem, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias);
-            //gtao::compute(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj.elem);
+        compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj.elem, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias);
         POP_GPU_SECTION()
     }
 
