@@ -139,6 +139,8 @@ set(SHADER_FILES
     src/shaders/volume/raycaster.frag
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/blur.frag
+    src/shaders/ssao/gtao.frag
+    src/shaders/ssao/upsample.frag
 )
 
 # Bake shaders into a single header file

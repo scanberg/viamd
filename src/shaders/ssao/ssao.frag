@@ -40,34 +40,6 @@ uniform sampler2D u_tex_random;
 in vec2 tc;
 out vec4 out_frag;
 
-
-float rand(vec2 n) {
-    return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453);
-}
-vec2 rand2(vec2 n) {
-    return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* vec2(43758.5453, 28001.8384));
-}
-vec3 rand3(vec2 n) {
-    return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* vec3(43758.5453, 28001.8384, 50849.4141 ));
-}
-vec4 rand4(vec2 n) {
-    return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* vec4(43758.5453, 28001.8384, 50849.4141, 12996.89));
-}
-
-
-float srand(vec2 n) {
-    return rand(n) * 2.0 - 1.0;
-}
-vec2 srand2(vec2 n) {
-    return rand2(n) * 2.0 - 1.0;
-}
-vec3 srand3(vec2 n) {
-    return rand3(n) * 2.0 - 1.0;
-}
-vec4 srand4(vec2 n) {
-    return rand4(n) * 2.0 - 1.0;
-}
-
 vec3 uv_to_view(vec2 uv, float eye_z) {
 #if AO_PERSPECTIVE
     return vec3((uv * control.proj_info.xy + control.proj_info.zw) * eye_z, eye_z);
@@ -91,11 +63,20 @@ vec3 decode_normal(vec2 enc) {
     return n;
 }
 
-vec3 fetch_view_normal(vec2 uv) {
+vec3 fetch_view_normal() {
     vec2 enc = texelFetch(u_tex_normal, ivec2(gl_FragCoord.xy), 0).xy;
-    //vec2 enc = textureLod(u_tex_normal, uv, 0).xy;
     vec3 n = decode_normal(enc);
     return n * vec3(1,1,-1);
+}
+
+vec3 compute_view_space_normal(const vec2 uv, const vec3 origin) {
+    vec2 uvdx = uv + vec2(control.inv_full_res.x, 0.0);
+    vec2 uvdy = uv + vec2(0.0, control.inv_full_res.y);
+    vec3 px = fetch_view_pos(uvdx, 0.0);
+    vec3 py = fetch_view_pos(uvdy, 0.0);
+    vec3 dpdx = px - origin;
+    vec3 dpdy = py - origin;
+    return -normalize(cross(dpdx, dpdy));
 }
 
 //----------------------------------------------------------------------------------
@@ -112,7 +93,7 @@ float falloff(float dist2) {
 float compute_pixel_obscurance(vec3 P, vec3 N, vec3 S) {
     vec3 V = S - P;
     float VdotV = dot(V, V);
-    float NdotV = dot(N, V) * 1.0/sqrt(VdotV);
+    float NdotV = dot(N, V) * inversesqrt(VdotV);
 
     float falloff_mult = max(0.0, falloff(VdotV));
     return max(0.0, NdotV - control.n_dot_v_bias) * falloff_mult;
@@ -124,10 +105,10 @@ vec2 rotate_sample(vec2 sample, vec2 cos_sin) {
 }
 
 //----------------------------------------------------------------------------------
-vec4 get_jitter(vec2 uv) {
+vec4 get_jitter() {
     // (cos(Alpha),sin(Alpha),rand1,rand2)
-    vec2 coord = gl_FragCoord.xy / AO_RANDOM_TEX_SIZE;
-    vec4 jitter = textureLod(u_tex_random, coord, 0);
+    ivec2 coord = ivec2(gl_FragCoord.xy) & (AO_RANDOM_TEX_SIZE - 1);
+    vec4 jitter = texelFetch(u_tex_random, coord, 0);
 
     return jitter;
 }
@@ -135,29 +116,31 @@ vec4 get_jitter(vec2 uv) {
 //----------------------------------------------------------------------------------
 float compute_ao(vec2 full_res_uv, float radius_pixels, vec4 jitter, vec3 view_position, vec3 view_normal) {
     const float global_mip_offset = -4.3; // -4.3 is recomended in the intel ASSAO implementation
-    float mip_offset = log2(radius_pixels) + global_mip_offset;
+    float mip_offset = log2(radius_pixels * 4) + global_mip_offset;
 
     float weight_sum = 0.0;
     float ao = 0.0;
 
     // Create a checkerboard mask offset to alternate the samples for neighboring pixels
     ivec2 coord = ivec2(gl_FragCoord.xy);
-    int offset = (coord.x + (coord.y & 1)) & 1;
-    int stride = 2;
+
+    // Use jitter.z to pick a different subset of the 32 pattern per pixel.
+    // Map signed [-1,1] -> [0,31]
+    int offset = int(floor((jitter.z * 0.5 + 0.5) * 32.0)) & 31;
+    int stride = 1;
+
+    float uv_scale = 0.5 + 0.5 * (0.5 + jitter.w * 0.5); // [0.5,1] to reduce the chance of sampling the same depth pixel multiple times for nearby geometry
 
     for (int i = 0; i < AO_NUM_SAMPLES; i++) {
         vec4 sample = control.sample_pattern[(offset + i * stride) & 31];
-        vec2 uv = rotate_sample(sample.xy, jitter.xy) * jitter.z;
+        vec2 uv = rotate_sample(sample.xy, jitter.xy) * uv_scale * radius_pixels;
         float weight_scale = sample.z;
         float mip_level = mip_offset + sample.w;
-        // Experimental term to mix the correct view_normal with a flat one directly facing the viewer
-        // It is blended with respect to distance from the sample center
-        // This is to reduce the emphasis of the sample normal when sampling further away, 
-        // which yields more plausible ambient occlusion to 'larger' cavities.
-
-        //vec3 normal = mix(view_normal, vec3(0,0,-1), dot(sample.xy, sample.xy));
         
-        vec2 snapped_uv = round(radius_pixels * uv) * control.inv_full_res + full_res_uv;
+        // Skip snapping, it causes artifacts (noisy motion) in large scale scenes
+        // Snapping is probably only relevant when rendering in lower resolution, which we don't do
+        //vec2 snapped_uv = round(uv) * control.inv_full_res + full_res_uv;
+        vec2 snapped_uv = uv * control.inv_full_res + full_res_uv;
         vec3 view_sample = fetch_view_pos(snapped_uv, mip_level);
         ao += compute_pixel_obscurance(view_position, view_normal, view_sample) * weight_scale;
         weight_sum += weight_scale;
@@ -170,22 +153,26 @@ float compute_ao(vec2 full_res_uv, float radius_pixels, vec4 jitter, vec3 view_p
 //----------------------------------------------------------------------------------
 void main() {
     float view_z = texelFetch(u_tex_linear_depth, ivec2(gl_FragCoord.xy), 0).x;
-    if (view_z > control.z_max) discard;
+    if (view_z > control.z_max) {
+        out_frag = vec4(1,1,1,1);
+        return;
+    }
 
     vec2 uv = tc;
     vec3 view_position = uv_to_view(uv, view_z);
-    vec3 view_normal = fetch_view_normal(uv);
+    vec3 view_normal = fetch_view_normal();
 
   // Compute projection of disk of radius control.R into screen space
 #if AO_PERSPECTIVE
     float radius_pixels = control.radius_to_screen / view_position.z;
-    radius_pixels = max(radius_pixels, 3.0); // Avoid sampling the same pixel multiple times for nearby geometry
 #else 
     float radius_pixels = control.radius_to_screen;
 #endif
-  // Get jitter vector for the current full-res pixel
-  vec4 jitter = get_jitter(uv);
-  float ao = compute_ao(uv, radius_pixels, jitter, view_position, view_normal);
+    radius_pixels = max(radius_pixels, 3.0); // Avoid sampling the same pixel multiple times for nearby geometry
 
-  out_frag = vec4(vec3(pow(ao, control.pow_exponent)), 1);
+    // Get jitter vector for the current full-res pixel
+    vec4 jitter = get_jitter();
+    float ao = compute_ao(uv, radius_pixels, jitter, view_position, view_normal);
+
+    out_frag = vec4(vec3(pow(ao, control.pow_exponent)), 1);
 }
