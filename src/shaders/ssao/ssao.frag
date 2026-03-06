@@ -69,6 +69,16 @@ vec3 fetch_view_normal() {
     return n * vec3(1,1,-1);
 }
 
+vec3 compute_view_space_normal(const vec2 uv, const vec3 origin) {
+    vec2 uvdx = uv + vec2(control.inv_full_res.x, 0.0);
+    vec2 uvdy = uv + vec2(0.0, control.inv_full_res.y);
+    vec3 px = fetch_view_pos(uvdx, 0.0);
+    vec3 py = fetch_view_pos(uvdy, 0.0);
+    vec3 dpdx = px - origin;
+    vec3 dpdy = py - origin;
+    return -normalize(cross(dpdx, dpdy));
+}
+
 //----------------------------------------------------------------------------------
 float falloff(float dist2) {
     // 1 scalar mad instruction
@@ -143,7 +153,10 @@ float compute_ao(vec2 full_res_uv, float radius_pixels, vec4 jitter, vec3 view_p
 //----------------------------------------------------------------------------------
 void main() {
     float view_z = texelFetch(u_tex_linear_depth, ivec2(gl_FragCoord.xy), 0).x;
-    if (view_z > control.z_max) discard;
+    if (view_z > control.z_max) {
+        out_frag = vec4(1,1,1,1);
+        return;
+    }
 
     vec2 uv = tc;
     vec3 view_position = uv_to_view(uv, view_z);

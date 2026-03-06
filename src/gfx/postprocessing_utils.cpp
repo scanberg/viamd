@@ -177,6 +177,7 @@ static struct {
         } blur;
     } ssao;
 
+#if 0
     struct {
         GLuint tex_ao[2] = {};
         GLuint tex_rand  = 0;
@@ -189,6 +190,7 @@ static struct {
         GLuint program_blur     = 0;
         GLuint program_upsample  = 0;
     } gtao;
+#endif
 
     struct {
         GLuint program = 0;
@@ -367,6 +369,7 @@ static GLuint setup_program_from_source(str_t name, str_t f_shader_src, str_t de
     return program;
 }
 
+#if 0
 namespace gtao {
 struct UBOData {
     float proj_info[4];
@@ -601,6 +604,8 @@ void compute(GLuint linear_depth_tex, GLuint normal_tex, const float proj_mat[4]
 
 };
 
+#endif
+
 namespace ssao {
 #ifndef AO_RANDOM_TEX_SIZE
 #define AO_RANDOM_TEX_SIZE 4
@@ -618,14 +623,10 @@ struct HBAOData {
 
     vec4_t proj_info;
 
-    uint32_t sample_count;
-    uint32_t frame_index;
-    uint32_t _pad[2];  // Pad to vec4 alignment
-
     vec4_t sample_pattern[32];
 };
 
-void setup_ubo_hbao_data(HBAOData* data, int width, int height, const mat4_t& proj_mat, float intensity, float radius, float bias) {
+void setup_ubo_hbao_data(HBAOData* data, int width, int height, const float proj_mat[4][4], float intensity, float radius, float bias) {
     ASSERT(data);
 
     // From intel ASSAO
@@ -668,38 +669,31 @@ void setup_ubo_hbao_data(HBAOData* data, int width, int height, const mat4_t& pr
     float proj_scl;
     float z_max;
 
-    const float* proj_data = &proj_mat.elem[0][0];
-    const bool ortho = is_orthographic_proj_matrix(proj_mat.elem);
-    const float x = proj_mat.elem[2][2];
-    const float y = proj_mat.elem[3][2];
-    if (!ortho) {
+    if (!is_orthographic_proj_matrix(proj_mat)) {
         // Persp
         proj_info = {
-            2.0f / (proj_data[4 * 0 + 0]),                          // (x) * (R - L)/N
-            2.0f / (proj_data[4 * 1 + 1]),                          // (y) * (T - B)/N
-            -(1.0f - proj_data[4 * 2 + 0]) / proj_data[4 * 0 + 0],  // L/N
-            -(1.0f + proj_data[4 * 2 + 1]) / proj_data[4 * 1 + 1]   // B/N
+            2.0f / (proj_mat[0][0]),                    // (x) * (R - L)/N
+            2.0f / (proj_mat[1][1]),                    // (y) * (T - B)/N
+            -(1.0f - proj_mat[2][0]) / proj_mat[0][0],  // L/N
+            -(1.0f + proj_mat[2][1]) / proj_mat[1][1]   // B/N
         };
 
         // proj_scl = float(height) / (math::tan(fovy * 0.5f) * 2.0f);
-        proj_scl = float(height) * proj_data[4 * 1 + 1] * 0.5f;
-        z_max = (float)(y / (x + 1.0));
+        proj_scl = float(height) * proj_mat[1][1] * 0.5f;
+        z_max = (float)(proj_mat[3][2] / (proj_mat[2][2] + 1.0));
     } else {
         // Ortho
         proj_info = {
-            2.0f / (proj_data[4 * 0 + 0]),                          // ((x) * R - L)
-            2.0f / (proj_data[4 * 1 + 1]),                          // ((y) * T - B)
-            -(1.0f + proj_data[4 * 3 + 0]) / proj_data[4 * 0 + 0],  // L
-            -(1.0f - proj_data[4 * 3 + 1]) / proj_data[4 * 1 + 1]   // B
+            2.0f / (proj_mat[0][0]),                    // ((x) * R - L)
+            2.0f / (proj_mat[1][1]),                    // ((y) * T - B)
+            -(1.0f + proj_mat[3][0]) / proj_mat[0][0],  // L
+            -(1.0f - proj_mat[3][1]) / proj_mat[1][1]   // B
         };
         proj_scl = float(height) / proj_info.y;
-        z_max = (float)((-2.0 + y) / x);
+        z_max = (float)((-2.0 + proj_mat[3][2]) / proj_mat[2][2]);
     }
 
     float r = radius * METERS_TO_VIEWSPACE;
-
-    static uint32_t frame_index = 0;
-    frame_index++;
 
     data->radius_to_screen = r * 0.5f * proj_scl;
     data->neg_inv_r2 = -1.f / (r * r);
@@ -709,8 +703,6 @@ void setup_ubo_hbao_data(HBAOData* data, int width, int height, const mat4_t& pr
     data->ao_multiplier = 1.f / (1.f - data->n_dot_v_bias);
     data->pow_exponent = MAX(intensity, 0.f);
     data->proj_info = proj_info;
-    data->sample_count = 16;
-    data->frame_index = frame_index;
     MEMCPY(&data->sample_pattern, SAMPLE_PATTERN, sizeof(SAMPLE_PATTERN));
 
 }
@@ -1505,7 +1497,7 @@ void initialize(int width, int height) {
     gl.tex_width = width;
     gl.tex_height = height;
 
-	gtao::initialize(width, height);
+	//gtao::initialize(width, height);
     ssao::initialize(width, height);
     dof::initialize(width, height);
     velocity::initialize(width, height);
@@ -1570,7 +1562,7 @@ void downsample_depth(GLuint linear_depth_tex, int src_lod) {
     glBindVertexArray(0);
 }
 
-void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj_matrix, float intensity, float radius, float bias) {
+void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const float proj_mat[4][4], float intensity, float radius, float bias) {
     ASSERT(glIsTexture(linear_depth_tex));
     ASSERT(glIsTexture(normal_tex));
 
@@ -1586,14 +1578,14 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const mat4_t& proj
     int width  = last_viewport[2];
     int height = last_viewport[3];
 
-    const bool ortho = is_orthographic_proj_matrix(proj_matrix.elem);
+    const bool ortho = is_orthographic_proj_matrix(proj_mat);
     const float sharpness = ssao::compute_sharpness(radius);
     const vec2_t inv_res = vec2_t{ 1.f / (float)width, 1.f / (float)height };
 
     glBindVertexArray(gl.vao);
 
     ssao::HBAOData ubo_data = {};
-    ssao::setup_ubo_hbao_data(&ubo_data, width, height, proj_matrix, intensity, radius, bias);
+    ssao::setup_ubo_hbao_data(&ubo_data, width, height, proj_mat, intensity, radius, bias);
     glBindBuffer(GL_UNIFORM_BUFFER, gl.ssao.ubo_hbao_data);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(ssao::HBAOData), &ubo_data);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
@@ -2329,7 +2321,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("SSAO")
-            compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias);
+            compute_ssao(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj.elem, desc.ambient_occlusion.intensity, desc.ambient_occlusion.radius, desc.ambient_occlusion.bias);
             //gtao::compute(gl.linear_depth.texture, desc.input_textures.normal, view_param.matrix.curr.proj.elem);
         POP_GPU_SECTION()
     }
@@ -2467,7 +2459,7 @@ void init_gbuffer(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.picking);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
