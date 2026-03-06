@@ -26,6 +26,10 @@ layout(std140) uniform uUbo {
     GTAOData ubo;
 };
 
+vec2 rand2(vec2 n) {
+    return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* vec2(43758.5453, 28001.8384));
+}
+
 vec3 UvToView(vec2 uv, float eye_z) {
 #if AO_PERSPECTIVE
     return vec3((uv * ubo.projInfo.xy + ubo.projInfo.zw) * eye_z, eye_z);
@@ -58,6 +62,8 @@ float integrateSliceGTAO_Log( vec2 uv, vec3 viewPos, vec3 viewNormal, vec2 dir, 
     float pixelSize = pixelFootprint(viewPos.z);
     float RminWorld = RminPixels * pixelSize;
     float RmaxWorld = RmaxPixels * pixelSize;
+
+    vec2 jitter = rand2(gl_FragCoord.xy);
 
     // View direction (point -> camera)
     vec3 V = normalize(-viewPos);
@@ -110,10 +116,10 @@ float integrateSliceGTAO_Log( vec2 uv, vec3 viewPos, vec3 viewNormal, vec2 dir, 
     for (int i = 0; i < steps; ++i) {
         float distWorld = logStepDistance(i, steps, RminWorld, RmaxWorld);
         float distPixels = distWorld / pixelSize;
+        distPixels *= jitter.y * 0.5 + 0.5;
 
         // Compute LOD from projected pixel radius
-        float lod = clamp(log2(distPixels) + lodBias, 1.0, 8.0);
-        lod = 0.0;
+        float lod = clamp(log2(distPixels) + lodBias, 0.0, 0.0);
         vec2 uvOffset = dir * (distPixels * ubo.invRes);
 
         // + direction
@@ -164,7 +170,7 @@ void main() {
     const int   num_steps = 4;
 
     vec2 uv = gl_FragCoord.xy * ubo.invRes;
-    ivec2 randomUv = ivec2(gl_FragCoord.xy) & 63;
+    ivec2 randomUv = ivec2(gl_FragCoord.xy) & 3;
 
     float depth  = textureLod(uDepth,  uv, 0).r;
     vec2  normal = textureLod(uNormal, uv, 0).rg;

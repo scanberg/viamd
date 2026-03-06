@@ -32,9 +32,12 @@ float blur_function(vec2 uv, float r, float center_c, float center_d, inout floa
 void main()
 {
     float center_d = texture(u_tex_linear_depth, tc).x;
-    if (center_d > u_zmax) discard;
-
     float center_c = texture(u_tex_ao, tc).x;
+
+    if (center_d > u_zmax) {
+        out_frag = vec4(vec3(center_c), 1.0);
+        return;
+    }
 
     float c_total = center_c;
     float w_total = 1.0;
