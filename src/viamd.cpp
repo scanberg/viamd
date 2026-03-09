@@ -39,20 +39,20 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         str_t elem = z ? md_util_element_name(z)   : str_t{};
         str_t symb = z ? md_util_element_symbol(z) : str_t{};
 
-        int comp_idx = md_comp_find_by_atom_idx(&sys.comp, atom_idx);
+        int comp_idx = md_component_find_by_atom_idx(&sys.component, atom_idx);
         str_t comp_name = {};
         int comp_seq_id = 0;
         if (comp_idx != -1) {
-            comp_name   = md_comp_name(&sys.comp, comp_idx);
-            comp_seq_id = md_comp_seq_id(&sys.comp, comp_idx);
-            md_urange_t range = md_comp_atom_range(&sys.comp, comp_idx);
+            comp_name   = md_component_name(&sys.component, comp_idx);
+            comp_seq_id = md_component_seq_id(&sys.component, comp_idx);
+            md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
             local_idx = atom_idx - range.beg;
         }
 
-        int inst_idx = md_system_inst_find_by_atom_idx(&sys, atom_idx);
+        int inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx);
         str_t chain_id = {};
         if (inst_idx != -1) {
-            chain_id = md_inst_id(&sys.inst, inst_idx);
+            chain_id = md_instance_id(&sys.instance, inst_idx);
         }
 
         // External indices begin with 1 not 0
@@ -109,7 +109,6 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
                 {MD_BOND_FLAG_TRIPLE,       "TRIPLE"},
                 {MD_BOND_FLAG_QUADRUPLE,    "QUADRUPLE"},
                 {MD_BOND_FLAG_AROMATIC,     "AROMATIC"},
-                {MD_BOND_FLAG_INTER,        "INTER"},
                 {MD_BOND_FLAG_COORDINATE,   "COORD"},
 				{MD_BOND_FLAG_METAL,        "METAL"},
 				{MD_BOND_FLAG_USER_DEFINED, "USER"},
@@ -117,7 +116,7 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
 
             for (size_t i = 0; i < ARRAY_SIZE(bond_flag_map); ++i) {
                 if (flags & bond_flag_map[i].flag) {
-                    len += snprintf(bond_flags_buf + len, 256 - len, "%s ", bond_flag_map[i].label);
+                    len += snprintf(bond_flags_buf + len, sizeof(bond_flags_buf) - len, "%s ", bond_flag_map[i].label);
                 }
             }
             
@@ -1235,7 +1234,7 @@ void create_default_representations(ApplicationState* state) {
         goto done;
     }
 
-    if (state->mold.sys.comp.count == 0) {
+    if (state->mold.sys.component.count == 0) {
         // No residues present
         Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
@@ -1266,10 +1265,10 @@ void create_default_representations(ApplicationState* state) {
         RepresentationType type = RepresentationType::Cartoon;
         ColorMapping color = ColorMapping::SecondaryStructure;
 
-        if (state->mold.sys.inst.count > 1) {
+        if (state->mold.sys.instance.count > 1) {
             color = ColorMapping::InstId;
         } else {
-            size_t res_count = md_inst_comp_count(&state->mold.sys.inst, 0);
+            size_t res_count = md_instance_comp_count(&state->mold.sys.instance, 0);
             if (res_count < 20) {
                 type = RepresentationType::BallAndStick;
                 color = ColorMapping::Type;

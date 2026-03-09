@@ -981,16 +981,16 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
     case SelectionGranularity::Atom:
         break;
     case SelectionGranularity::Component:
-        for (size_t i = 0; i < md_system_comp_count(&sys); ++i) {
-            md_urange_t range = md_system_comp_atom_range(&sys, i);
+        for (size_t i = 0; i < md_system_component_count(&sys); ++i) {
+            md_urange_t range = md_system_component_atom_range(&sys, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
                 md_bitfield_set_range(mask, range.beg, range.end);
             }
         }
         break;
     case SelectionGranularity::Instance:
-        for (size_t i = 0; i < md_system_inst_count(&sys); ++i) {
-            md_urange_t range = md_system_inst_atom_range(&sys, i);
+        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
+            md_urange_t range = md_system_instance_atom_range(&sys, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
                 md_bitfield_set_range(mask, range.beg, range.end);
             }

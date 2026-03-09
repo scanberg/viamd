@@ -902,8 +902,8 @@ struct Ramachandran : viamd::EventHandler {
 
                                 if (is_selecting[plot_idx]) {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
-                                        md_comp_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[idx];
-										md_urange_t range = md_comp_atom_range(&sys.comp, comp_idx);
+                                        md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[idx];
+										md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
                                         if (range.beg != range.end) {
                                             modify_field(highlight_mask, range, SelectionOperator::Or);
                                         }
@@ -924,14 +924,14 @@ struct Ramachandran : viamd::EventHandler {
 
                             if (mouse_hover_idx != -1) {
                                 if (mouse_hover_idx < (int64_t)sys.protein_backbone.segment.count) {
-                                    md_comp_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[mouse_hover_idx];
-									md_urange_t range = md_comp_atom_range(&sys.comp, comp_idx);
+                                    md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[mouse_hover_idx];
+									md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
                                     if (range.beg != range.end) {
                                         modify_field(highlight_mask, range, SelectionOperator::Or);
                                         grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
 									}
-									str_t lbl = md_comp_name(&sys.comp, comp_idx);
-									md_seq_id_t seq_id = md_comp_seq_id(&sys.comp, comp_idx);
+									str_t lbl = md_component_name(&sys.component, comp_idx);
+									md_sequence_id_t seq_id = md_component_seq_id(&sys.component, comp_idx);
                                     ImGui::SetTooltip("res[%d]: %.*s %d", comp_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
                                 }
                             }

@@ -2062,7 +2062,7 @@ static void interpolate_system_state(ApplicationState* state) {
         task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
             for (uint32_t i = range_beg; i < range_end; ++i) {
-                int32_t* s_idx = md_index_range_beg(&data->state->mold.sys.structure, i);
+                int*     s_idx = md_index_range_ptr(&data->state->mold.sys.structure, i);
                 size_t   s_len = md_index_range_size(&data->state->mold.sys.structure, i);
                 md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unitcell);
             }
@@ -3332,14 +3332,14 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     bool within_same_comp = true;
     bool within_same_inst = true;
 
-    md_inst_idx_t inst_idx = -1;
-    md_comp_idx_t comp_idx = -1;
+    md_instance_idx_t inst_idx = -1;
+    md_component_idx_t comp_idx = -1;
 
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
         uint64_t a_idx = md_bitfield_iter_idx(&it);
-        int32_t  i_idx = md_system_inst_find_by_atom_idx(sys, a_idx);
-        int32_t  c_idx = md_system_comp_find_by_atom_idx(sys, a_idx);
+        int32_t  i_idx = md_system_instance_find_by_atom_idx(sys, a_idx);
+        int32_t  c_idx = md_system_component_find_by_atom_idx(sys, a_idx);
 
         if (inst_idx == -1 && comp_idx != -1) {
             inst_idx = i_idx;
@@ -3378,7 +3378,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     };
 
     if (comp_idx != -1 && within_same_comp) {
-        const md_urange_t range = md_comp_atom_range(&sys->comp, comp_idx);
+        const md_urange_t range = md_component_atom_range(&sys->component, comp_idx);
         if (popcount != range.end - range.beg) {
             md_strb_reset(&sb);
             sb += ident;
@@ -3387,7 +3387,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             // Subset of residue is selected
             write_atom_remainder(sb, bf, range.beg);
             if (md_strb_len(sb) < 512) {
-                str_t resname = md_comp_name(&sys->comp, comp_idx);
+                str_t resname = md_component_name(&sys->component, comp_idx);
                 md_strb_fmt(&sb, " in resname(\"" STR_FMT "\");", STR_ARG(resname));
                 md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
             }
@@ -3395,7 +3395,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     }
 
     else if (inst_idx != -1 && within_same_inst) {
-        const md_urange_t range = md_system_inst_atom_range(sys, inst_idx);
+        const md_urange_t range = md_system_instance_atom_range(sys, inst_idx);
         if (popcount != range.end - range.beg) {
             md_strb_reset(&sb);
             sb += ident;
@@ -3404,7 +3404,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
             // Subset of chain is selected
             write_atom_remainder(sb, bf, range.beg);
             if (md_strb_len(sb) < 512) {
-				str_t inst_id = md_inst_id(&sys->inst, inst_idx);
+				str_t inst_id = md_instance_id(&sys->instance, inst_idx);
 				md_strb_fmt(&sb, " in chain(\"" STR_FMT "\");", STR_ARG(inst_id));
                 md_array_push(suggestions, str_copy(md_strb_to_str(sb), frame_alloc), frame_alloc);
             }
@@ -3417,9 +3417,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     md_array(int) complete_chains = 0;
     md_array(int) complete_residues = 0;
     
-    if (sys->inst.count) {
-        for (size_t i = 0; i < sys->inst.count; ++i) {    
-            const md_urange_t range = md_system_inst_atom_range(sys, i);
+    if (sys->instance.count) {
+        for (size_t i = 0; i < sys->instance.count; ++i) {    
+            const md_urange_t range = md_system_instance_atom_range(sys, i);
             if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
                 md_array_push(complete_chains, (int)i, frame_alloc);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
@@ -3427,9 +3427,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         }
     }
 
-    if (sys->comp.count) {
-        for (size_t i = 0; i < sys->comp.count; ++i) {    
-            const md_urange_t range = md_comp_atom_range(&sys->comp, i);
+    if (sys->component.count) {
+        for (size_t i = 0; i < sys->component.count; ++i) {    
+            const md_urange_t range = md_component_atom_range(&sys->component, i);
             if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
                 md_array_push(complete_residues, (int)i, frame_alloc);
                 md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
@@ -3466,7 +3466,7 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         sb += ident;
         sb += " = residue(";
         for (size_t i = 0; i < md_array_size(complete_chains); ++i) {
-            md_urange_t range = md_inst_comp_range(&sys->inst, complete_chains[i]);
+            md_urange_t range = md_instance_component_range(&sys->instance, complete_chains[i]);
             md_strb_fmt(&sb, "%i:%i,", range.beg + 1, range.end);
         }
         if (complete_residues) {
@@ -3603,9 +3603,9 @@ void draw_context_popup(ApplicationState* state) {
                 int idx[4];
                 MEMCPY(idx, state->selection.single_selection_sequence.idx, sizeof(idx));
                 // Check if all selected atoms are within the same residue
-                md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&state->mold.sys.comp, idx[0]);
+                md_component_idx_t res_idx = md_component_find_by_atom_idx(&state->mold.sys.component, idx[0]);
                 for (size_t i = 1; i < sss_count; ++i) {
-                    md_comp_idx_t ri = md_comp_find_by_atom_idx(&state->mold.sys.comp, idx[i]);
+                    md_component_idx_t ri = md_component_find_by_atom_idx(&state->mold.sys.component, idx[i]);
                     if (res_idx != ri) {
                         res_idx = -1;
                         break;
@@ -3629,7 +3629,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
 
                     if (res_idx != -1) {
-                        const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, res_idx);
+                        const md_urange_t range = md_component_atom_range(&state->mold.sys.component, res_idx);
                         idx[0] -= range.beg;
                         idx[1] -= range.beg;
 
@@ -3644,7 +3644,7 @@ void draw_context_popup(ApplicationState* state) {
                             visualize_str(state, str, VIS_FLAGS);
                         }
 
-                        const int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
+                        const int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, resid);
                         if (ImGui::MenuItem(buf)) {
                             state->editor.AppendText("\n");
@@ -3656,7 +3656,7 @@ void draw_context_popup(ApplicationState* state) {
                             visualize_str(state, str, VIS_FLAGS);
                         }
 
-                        str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
+                        str_t resname = md_component_name(&state->mold.sys.component, res_idx);
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
@@ -3686,7 +3686,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
 
                     if (res_idx != -1) {
-                        const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, res_idx);
+                        const md_urange_t range = md_component_atom_range(&state->mold.sys.component, res_idx);
                         idx[0] -= range.beg;
                         idx[1] -= range.beg;
                         idx[2] -= range.beg;
@@ -3702,7 +3702,7 @@ void draw_context_popup(ApplicationState* state) {
                             visualize_str(state, str, VIS_FLAGS);
                         }
 
-                        int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
+                        int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, resid);
                         if (ImGui::MenuItem(buf)) {
                             state->editor.AppendText("\n");
@@ -3714,7 +3714,7 @@ void draw_context_popup(ApplicationState* state) {
                             visualize_str(state, str, VIS_FLAGS);
                         }
 
-                        str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
+                        str_t resname = md_component_name(&state->mold.sys.component, res_idx);
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
@@ -3744,7 +3744,7 @@ void draw_context_popup(ApplicationState* state) {
                     }
 
                     if (res_idx != -1) {
-                        const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, res_idx);
+                        const md_urange_t range = md_component_atom_range(&state->mold.sys.component, res_idx);
                         idx[0] -= range.beg;
                         idx[1] -= range.beg;
                         idx[2] -= range.beg;
@@ -3761,7 +3761,7 @@ void draw_context_popup(ApplicationState* state) {
                             visualize_str(state, str, VIS_FLAGS);
                         }
 
-                        int32_t resid = md_comp_seq_id(&state->mold.sys.comp, res_idx);
+                        int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
                         if (ImGui::MenuItem(buf)) {
                             state->editor.AppendText("\n");
@@ -3773,7 +3773,7 @@ void draw_context_popup(ApplicationState* state) {
                             visualize_str(state, str, VIS_FLAGS);
                         }
 
-                        str_t resname = md_comp_name(&state->mold.sys.comp, res_idx);
+                        str_t resname = md_component_name(&state->mold.sys.component, res_idx);
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
@@ -3867,20 +3867,20 @@ void draw_context_popup(ApplicationState* state) {
                     md_bitfield_set_bit(&mask, idx);
                 }
 
-                const md_comp_idx_t comp_idx = md_comp_find_by_atom_idx(&state->mold.sys.comp, idx);
+                const md_component_idx_t comp_idx = md_component_find_by_atom_idx(&state->mold.sys.component, idx);
                 if (comp_idx != -1) {
                     apply |= ImGui::MenuItem("on Residue");
                     if (ImGui::IsItemHovered()) {
-                        const md_urange_t range = md_comp_atom_range(&state->mold.sys.comp, comp_idx);
+                        const md_urange_t range = md_component_atom_range(&state->mold.sys.component, comp_idx);
                         md_bitfield_set_range(&mask, range.beg, range.end);
                     }
                 }
 
-                const md_inst_idx_t chain_idx = md_system_inst_find_by_atom_idx(&state->mold.sys, idx);
+                const md_instance_idx_t chain_idx = md_system_instance_find_by_atom_idx(&state->mold.sys, idx);
                 if (chain_idx != -1) {
                     apply |= ImGui::MenuItem("on Chain");
                     if (ImGui::IsItemHovered()) {
-                        const auto range = md_system_inst_atom_range(&state->mold.sys, chain_idx);
+                        const auto range = md_system_instance_atom_range(&state->mold.sys, chain_idx);
                         md_bitfield_set_range(&mask, range.beg, range.end);
                     }
                 }
@@ -7280,16 +7280,16 @@ static void pdb_write_frame(md_file_o* file, const md_system_t* sys, const float
 		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
         
         // Get residue name
-		md_comp_idx_t res_idx = md_comp_find_by_atom_idx(&sys->comp, idx);
+		md_component_idx_t res_idx = md_component_find_by_atom_idx(&sys->component, idx);
 		char resname[5] = "";
-		str_copy_to_char_buf(resname, sizeof(resname), md_comp_name(&sys->comp, res_idx));
+		str_copy_to_char_buf(resname, sizeof(resname), md_component_name(&sys->component, res_idx));
 
-		md_seq_id_t res_seq = md_comp_seq_id(&sys->comp, res_idx);
+		md_sequence_id_t res_seq = md_component_seq_id(&sys->component, res_idx);
         
         // Get chain ID from instance
         char chain_id[4] = " ";
-        md_inst_idx_t inst_idx = md_system_inst_find_by_atom_idx(sys, idx);
-        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_inst_auth_id(&sys->inst, inst_idx));
+        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(sys, idx);
+        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_instance_auth_id(&sys->instance, inst_idx));
 
         // PDB format:
         // ATOM serial name altLoc resName chainID resSeq iCode x y z occupancy tempFactor element charge

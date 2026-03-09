@@ -143,11 +143,11 @@ struct Dataset : viamd::EventHandler {
 
         const md_system_t& sys = data.mold.sys;
 
-        size_t atom_type_count = md_atom_type_count(&sys.atom.type);
-        size_t atom_count = md_atom_count(&sys.atom);
-        size_t comp_count = md_comp_count(&sys.comp);
-        size_t inst_count = md_inst_count(&sys.inst);
-		size_t entity_count = md_entity_count(&sys.entity);
+        size_t atom_type_count  = md_system_atom_type_count(&sys);
+        size_t atom_count       = md_system_atom_count(&sys);
+        size_t comp_count       = md_system_component_count(&sys);
+        size_t inst_count       = md_system_instance_count(&sys);
+		size_t entity_count     = md_system_entity_count(&sys);
 
         if (atom_count == 0) return;
 
@@ -181,10 +181,10 @@ struct Dataset : viamd::EventHandler {
 
         // Process components - group by name + atom type sequence
         for (size_t i = 0; i < comp_count; ++i) {
-            str_t comp_name = md_comp_name(&sys.comp, i);
+            str_t comp_name = md_component_name(&sys.component, i);
 
             md_array_shrink(sequence, 0);
-            md_urange_t range = md_comp_atom_range(&sys.comp, i);
+            md_urange_t range = md_component_atom_range(&sys.component, i);
             for (int j = range.beg; j < range.end; ++j) {
                 int ai = sys.atom.type_idx[j];
                 md_array_push(sequence, ai, temp_arena);
@@ -211,7 +211,7 @@ struct Dataset : viamd::EventHandler {
                 md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
             }
 
-            size_t comp_atom_count = md_comp_atom_count(&sys.comp, i);
+            size_t comp_atom_count = md_component_atom_count(&sys.component, i);
 
             item->count += 1;
             item->fraction += (float)(comp_atom_count / (double)atom_count);
@@ -221,10 +221,10 @@ struct Dataset : viamd::EventHandler {
         // Process chains - key = residue type sequence
         if (comp_count > 0 && inst_count > 0) {
             for (size_t i = 0; i < inst_count; ++i) {
-                str_t inst_id = md_inst_id(&sys.inst, i);
+                str_t inst_id = md_instance_id(&sys.instance, i);
 
                 md_array_shrink(sequence, 0);
-                md_urange_t range = md_inst_comp_range(&sys.inst, i);
+                md_urange_t range = md_instance_component_range(&sys.instance, i);
                 for (int j = range.beg; j < range.end; ++j) {
                     int res_type_idx = comp_idx_type[j];
                     md_array_push(sequence, res_type_idx, temp_arena);
@@ -250,7 +250,7 @@ struct Dataset : viamd::EventHandler {
                     md_array_push_array(item->sub_items, sequence, md_array_size(sequence), arena);
                 }
 
-                size_t chain_atom_count = md_system_inst_atom_count(&sys, i);
+                size_t chain_atom_count = md_system_instance_atom_count(&sys, i);
 
                 item->count += 1;
                 item->fraction += (float)(chain_atom_count / (double)atom_count);
@@ -430,8 +430,8 @@ struct Dataset : viamd::EventHandler {
         if (ImGui::Begin("Dataset", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             ImGui::Text("System: %s", data.files.molecule);
             ImGui::Text("Num entities:   %9zu", data.mold.sys.entity.count);
-            ImGui::Text("Num instances:  %9zu", data.mold.sys.inst.count);
-            ImGui::Text("Num components: %9zu", data.mold.sys.comp.count);
+            ImGui::Text("Num instances:  %9zu", data.mold.sys.instance.count);
+            ImGui::Text("Num components: %9zu", data.mold.sys.component.count);
             ImGui::Text("Num atoms:      %9zu", data.mold.sys.atom.count);
 
             ImGui::Separator();
@@ -472,14 +472,21 @@ struct Dataset : viamd::EventHandler {
             }
 
             static bool use_short_labels = true;
-            static bool use_auth_labels  = true;
 
-            ImGui::Checkbox("Use shorthand component labels", &use_short_labels);
-            ImGui::Checkbox("Use author instance labels", &use_auth_labels);
+            bool has_nucleic_acids = false;
+            bool has_amino_acids = false;
 
-            size_t num_entities  = md_system_entity_count(&data.mold.sys);
-            size_t num_instances = md_system_inst_count(&data.mold.sys);
+            size_t num_entities   = md_system_entity_count(&data.mold.sys);
+            size_t num_instances  = md_system_instance_count(&data.mold.sys);
 			size_t num_atom_types = md_system_atom_type_count(&data.mold.sys);
+
+            for (size_t i = 0; i < num_entities; ++i) {
+                md_flags_t entity_flags = md_entity_flags(&data.mold.sys.entity, i);
+                if (entity_flags & MD_FLAG_AMINO_ACID) has_amino_acids = true;
+                if (entity_flags & MD_FLAG_NUCLEOTIDE) has_nucleic_acids = true;
+            }
+
+            ImGui::Checkbox("Use single letter codes for amino and nucleic acids", &use_short_labels);
 
             if (num_entities && ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
                 const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.4f, ImGui::GetFontSize() * 1.1f);
@@ -489,6 +496,7 @@ struct Dataset : viamd::EventHandler {
                     str_t entity_id   = md_entity_id(&data.mold.sys.entity, ent_idx);
                     str_t entity_desc = md_entity_description(&data.mold.sys.entity, ent_idx);
                     md_flags_t entity_flags = md_entity_flags(&data.mold.sys.entity, ent_idx);
+                    bool short_comp_label = (entity_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) && use_short_labels;
 
                     snprintf(buf, sizeof(buf), STR_FMT ": " STR_FMT, STR_ARG(entity_id), STR_ARG(entity_desc));
                     ImGui::Indent();
@@ -497,8 +505,8 @@ struct Dataset : viamd::EventHandler {
                     if (ImGui::IsItemHovered()) {
                         md_bitfield_clear(&data.selection.highlight_mask);
                         for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
-                            if (md_inst_entity_idx(&data.mold.sys.inst, inst_idx) == (int)ent_idx) {
-                                md_urange_t range = md_system_inst_atom_range(&data.mold.sys, inst_idx);
+                            if (md_instance_entity_idx(&data.mold.sys.instance, inst_idx) == (int)ent_idx) {
+                                md_urange_t range = md_system_instance_atom_range(&data.mold.sys, inst_idx);
                                 md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
                             }
                         }
@@ -507,32 +515,34 @@ struct Dataset : viamd::EventHandler {
                     if (expand_entity) {
                         ImGui::Indent();
                         for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
-                            if (md_inst_entity_idx(&data.mold.sys.inst, inst_idx) != (int)ent_idx) continue;
+                            if (md_instance_entity_idx(&data.mold.sys.instance, inst_idx) != (int)ent_idx) continue;
                             ImGui::PushID((int)inst_idx);  // avoid ID collisions if names repeat
                             defer { ImGui::PopID(); };
 
-                            str_t inst_id = STR_LIT("");
-                            if (use_auth_labels) {
-                                inst_id = md_inst_auth_id(&data.mold.sys.inst, inst_idx);
-                            } else {
-                                inst_id = md_inst_id(&data.mold.sys.inst, inst_idx);
-                            }
+                            str_t inst_id = md_instance_id(&data.mold.sys.instance, inst_idx);
+                            str_t auth_id = md_instance_auth_id(&data.mold.sys.instance, inst_idx);
 
-                            snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(inst_id));
+                            // If auth_id is supplied then show both assigned and author-provided IDs, otherwise just show the instance ID
+                            if (!str_empty(auth_id)) {
+                                snprintf(buf, sizeof(buf), STR_FMT " (" STR_FMT ")", STR_ARG(inst_id), STR_ARG(auth_id));
+                            } else {
+                                snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(inst_id));
+                            }
                             bool expand_inst = ImGui::CollapsingHeader(buf);
                             if (ImGui::IsItemHovered()) {
                                 md_bitfield_clear(&data.selection.highlight_mask);
-                                md_urange_t range = md_system_inst_atom_range(&data.mold.sys, inst_idx);
+                                md_urange_t range = md_system_instance_atom_range(&data.mold.sys, inst_idx);
                                 md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
                                 handle_item_click(data);
                             }
                             if (expand_inst) {
                                 const ImGuiStyle& style = ImGui::GetStyle();
-                                md_urange_t range = md_system_inst_comp_range(&data.mold.sys, inst_idx);
+                                md_urange_t range = md_system_instance_comp_range(&data.mold.sys, inst_idx);
 
                                 for (size_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
-                                    str_t comp_name = md_comp_name(&data.mold.sys.comp, comp_idx);
-                                    if (use_short_labels) {
+                                    str_t comp_name = md_component_name(&data.mold.sys.component, comp_idx);
+
+                                    if (short_comp_label) {
                                         uint32_t color = component_color(comp_name);
                                         comp_name = convert_to_short(comp_name);
                                         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
@@ -559,17 +569,17 @@ struct Dataset : viamd::EventHandler {
                                     ImGui::PopID();
 
                                     if (ImGui::IsItemHovered()) {
-                                        ImGui::SetTooltip("%d", md_comp_seq_id(&data.mold.sys.comp, comp_idx));
+                                        ImGui::SetTooltip("%d", md_component_seq_id(&data.mold.sys.component, comp_idx));
                                     }
 
-                                    if (use_short_labels) {
+                                    if (short_comp_label) {
                                         ImGui::PopStyleVar();
                                         ImGui::PopStyleColor(2);
                                     }
 
                                     if (ImGui::IsItemHovered()) {
                                         md_bitfield_clear(&data.selection.highlight_mask);
-                                        md_urange_t atom_range = md_system_comp_atom_range(&data.mold.sys, comp_idx);
+                                        md_urange_t atom_range = md_system_component_atom_range(&data.mold.sys, comp_idx);
                                         md_bitfield_set_range(&data.selection.highlight_mask, atom_range.beg, atom_range.end);
                                         handle_item_click(data);
                                     }
