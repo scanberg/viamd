@@ -22,13 +22,12 @@ static void init_all_representations(ApplicationState* state);
 
 void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
     const auto& sys = state.mold.sys;
-
     if (picking_idx == INVALID_PICKING_IDX) return;
+    
+	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
+    defer { md_vm_arena_temp_end(temp); };
 
     md_strb_t sb = md_strb_create(state.allocator.frame);
-    defer {
-        md_strb_free(&sb);
-    };
 
     if (picking_idx < sys.atom.count) {
         int atom_idx = picking_idx;
@@ -50,36 +49,82 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         }
 
         int inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx);
-        str_t chain_id = {};
+        str_t inst_id = {};
+		str_t auth_id = {};
         if (inst_idx != -1) {
-            chain_id = md_instance_id(&sys.instance, inst_idx);
+            inst_id = md_instance_id(&sys.instance, inst_idx);
+			auth_id = md_instance_auth_id(&sys.instance, inst_idx);
         }
 
-        // External indices begin with 1 not 0
-        md_strb_fmt(&sb, "atom[%i][%i]: %.*s %.*s %.*s (%.2f, %.2f, %.2f)\n", atom_idx + 1, local_idx + 1, STR_ARG(type), STR_ARG(elem), STR_ARG(symb), pos.x, pos.y, pos.z);
-        if (comp_idx != -1) {
-            md_strb_fmt(&sb, "res[%i]: %.*s %i\n", comp_idx + 1, STR_ARG(comp_name), comp_seq_id);
+        // @NOTE(Robin): External indices begin with 1 not 0
+		if (state.selection.granularity == SelectionGranularity::Atom) {
+            md_strb_fmt(&sb, "atom[%i]", atom_idx + 1);
+            if (comp_idx != -1) {
+                md_strb_fmt(&sb, "[%i]: ", local_idx + 1);
+            } else {
+				md_strb_push_cstr(&sb, ": ");
+            }
+            md_strb_push_str(&sb, type);
+            if (z) {
+                md_strb_fmt(&sb, "%.*s %.*s ", STR_ARG(elem), STR_ARG(symb));
+            }
+            md_strb_fmt(&sb, "(%.3f, %.3f, %.3f)\n", pos.x, pos.y, pos.z);    
+        }
+        
+        if (comp_idx != -1 && (state.selection.granularity == SelectionGranularity::Atom || state.selection.granularity == SelectionGranularity::Component)) {
+            md_strb_fmt(&sb, "comp[%i]", comp_idx + 1);
+            if (comp_name) {
+                md_strb_fmt(&sb, ": " STR_FMT, STR_ARG(comp_name));
+            }
+			md_strb_fmt(&sb, " (seq_id: %i)\n", comp_seq_id);
         }
         if (inst_idx != -1) {
-            md_strb_fmt(&sb, "chain[%i]: %.*s\n", inst_idx + 1, STR_ARG(chain_id));
+            md_strb_fmt(&sb, "inst[%i]", inst_idx + 1);
+            if (inst_id) {
+                md_strb_fmt(&sb, ": " STR_FMT, STR_ARG(inst_id));
+            }
+			if (auth_id) {
+                md_strb_fmt(&sb, " (" STR_FMT ")", STR_ARG(auth_id));
+            }
+            md_strb_push_char(&sb, '\n');
         }
 
-        uint32_t flags = sys.atom.flags[atom_idx];
+        uint32_t flags = 0;
+
+        if (state.selection.granularity == SelectionGranularity::Atom) {
+			flags = md_system_atom_flags(&sys, atom_idx);
+		} else if (state.selection.granularity == SelectionGranularity::Component && comp_idx != -1) {
+			flags = md_system_component_flags(&sys, comp_idx);
+        } else if (state.selection.granularity == SelectionGranularity::Instance && inst_idx != -1) {
+			flags = md_system_instance_flags(&sys, inst_idx);
+        }
+
+		const uint32_t TERM_N = MD_FLAG_AMINO_ACID   | MD_FLAG_TERMINAL_BEG;
+		const uint32_t TERM_C = MD_FLAG_AMINO_ACID   | MD_FLAG_TERMINAL_END;
+		const uint32_t TERM_5 = MD_FLAG_NUCLEIC_ACID | MD_FLAG_TERMINAL_BEG;
+		const uint32_t TERM_3 = MD_FLAG_NUCLEIC_ACID | MD_FLAG_TERMINAL_END;
+
         if (flags) {
             sb += "flags: ";
-            if (flags & MD_FLAG_HETERO)             { sb += "HETERO "; }
-            if (flags & MD_FLAG_AMINO_ACID)         { sb += "AMINO "; }
-            //if (flags & MD_FLAG_SIDE_CHAIN)         { sb += "SIDE_CHAIN "; }
-            if (flags & MD_FLAG_NUCLEOTIDE)         { sb += "NUCLEOTIDE "; }
-            if (flags & MD_FLAG_NUCLEOBASE)         { sb += "NUCLEOBASE "; }
-            //if (flags & MD_FLAG_NUCLEOSIDE)         { sb += "NUCLEOSIDE "; }
-            if (flags & MD_FLAG_WATER)              { sb += "WATER "; }
-            if (flags & MD_FLAG_ION)                { sb += "ION "; }
-            if (flags & MD_FLAG_BACKBONE)           { sb += "BACKBONE "; }
-            if (flags & MD_FLAG_SP)                 { sb += "SP "; }
-            if (flags & MD_FLAG_SP2)                { sb += "SP2 "; }
-            if (flags & MD_FLAG_SP3)                { sb += "SP3 "; }
-            if (flags & MD_FLAG_AROMATIC)           { sb += "AROMATIC "; }
+            if (flags & MD_FLAG_HETERO)         { sb += "HETERO "; }
+			if (flags & MD_FLAG_POLYPEPTIDE)    { sb += "POLYPEPTIDE "; }
+            if (flags & MD_FLAG_AMINO_ACID)     { sb += "AMINO-ACID "; }
+            if (flags & MD_FLAG_SIDE_CHAIN)     { sb += "SIDE-CHAIN "; }
+			if (flags & MD_FLAG_NUCLEIC_ACID)   { sb += "NUCLEIC-ACID "; }
+            if (flags & MD_FLAG_NUCLEOTIDE)     { sb += "NUCLEOTIDE "; }
+            if (flags & MD_FLAG_NUCLEOSIDE)     { sb += "NUCLEOSIDE "; }
+            if (flags & MD_FLAG_NUCLEOBASE)     { sb += "NUCLEOBASE "; }
+            if (flags & MD_FLAG_WATER)          { sb += "WATER "; }
+            if (flags & MD_FLAG_ION)            { sb += "ION "; }
+            if (flags & MD_FLAG_BACKBONE)       { sb += "BACKBONE "; }
+            if ((flags & TERM_N) == TERM_N)     { sb += "N-TERMINUS "; }
+            if ((flags & TERM_C) == TERM_C)     { sb += "C-TERMINUS "; }
+			if ((flags & TERM_5) == TERM_5)     { sb += "5'-TERMINUS "; }
+			if ((flags & TERM_3) == TERM_3)     { sb += "3'-TERMINUS "; }
+            if (flags & MD_FLAG_SP)             { sb += "SP "; }
+            if (flags & MD_FLAG_SP2)            { sb += "SP2 "; }
+            if (flags & MD_FLAG_SP3)            { sb += "SP3 "; }
+            if (flags & MD_FLAG_AROMATIC)       { sb += "AROMATIC "; }
             sb += "\n";
         }
         /*
