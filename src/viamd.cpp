@@ -264,8 +264,8 @@ void init_trajectory_data(ApplicationState* data) {
         double max_time = header.frame_times[num_frames - 1];
 
         data->timeline.view_range = {min_time, max_time};
-        data->timeline.filter.beg_frame = min_frame;
-        data->timeline.filter.end_frame = max_frame;
+        data->timeline.filter.beg_frame = (double)min_frame;
+        data->timeline.filter.end_frame = (double)max_frame;
 
         md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
         for (size_t i = 0; i < num_frames; ++i) {
