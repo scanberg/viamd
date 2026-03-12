@@ -1834,6 +1834,7 @@ static void interpolate_system_state(ApplicationState* state) {
         if (curr_nearest_frame == nearest_frame) {
             return;
         }
+        state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
     }
     curr_nearest_frame = nearest_frame;
 
@@ -2833,12 +2834,12 @@ static void draw_main_menu(ApplicationState* data) {
 
                 if (do_pbc) {
 					md_util_system_pbc(&data->mold.sys);
-                    data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+                    data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                 }
 
                 if (do_unwrap) {
 					md_util_system_unwrap(&data->mold.sys);
-                    data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+                    data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                 }
 
                 if (do_bonds) {

@@ -984,7 +984,7 @@ void initialize(int32_t width, int32_t height) {
         glGenTextures(1, &gl.velocity.tex_neighbormax);
     }
 
-    gl.velocity.tex_width = width / VEL_TILE_SIZE;
+    gl.velocity.tex_width  = width  / VEL_TILE_SIZE;
     gl.velocity.tex_height = height / VEL_TILE_SIZE;
 
     glBindTexture(GL_TEXTURE_2D, gl.velocity.tex_tilemax);

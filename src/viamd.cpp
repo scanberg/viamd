@@ -65,6 +65,7 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
 				md_strb_push_cstr(&sb, ": ");
             }
             md_strb_push_str(&sb, type);
+			md_strb_push_char(&sb, ' ');
             if (z) {
                 md_strb_fmt(&sb, "%.*s %.*s ", STR_ARG(elem), STR_ARG(symb));
             }
