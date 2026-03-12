@@ -575,6 +575,7 @@ struct ApplicationState {
 #endif
         md_system_t         sys = {};
         md_trajectory_i*    traj = nullptr;
+        load::traj::FrameCache frame_cache = {};
 
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};

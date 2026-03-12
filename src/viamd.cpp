@@ -344,7 +344,7 @@ void init_trajectory_data(ApplicationState* data) {
 }
 
 bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_loader_i* loader, LoadTrajectoryFlags flags) {
-    md_trajectory_i* traj = load::traj::open_file(filename, loader, &data->mold.sys, data->allocator.persistent, flags);
+    md_trajectory_i* traj = load::traj::open_file(filename, loader, &data->mold.sys, data->allocator.persistent, &data->mold.frame_cache, flags);
     if (traj) {
         free_trajectory_data(data);
         data->mold.traj = traj;
