@@ -142,15 +142,15 @@ static struct {
         GLuint fbo = 0;
         GLuint tex_tilemax = 0;
         GLuint tex_neighbormax = 0;
-        GLuint tex_dilate = 0;
         int32_t tex_width = 0;
         int32_t tex_height = 0;
     } velocity;
 
     struct {
-        GLuint fbo_full = 0;
-        GLuint fbo_half = 0;
-        GLuint fbo_quarter = 0;
+        GLuint fbo_0 = 0;
+        GLuint fbo_1 = 0;
+        GLuint fbo_2 = 0;
+        GLuint fbo_3 = 0;
         GLuint texture = 0;
         struct {
             GLuint program_persp = 0;
@@ -929,7 +929,7 @@ struct {
     GLuint program = 0;
     struct {
         GLint tex_vel = -1;
-        GLint tex_vel_texel_size = -1;
+        GLint tex_linear_depth = -1;
     } uniform_loc;
 } blit_tilemax;
 
@@ -962,7 +962,7 @@ void initialize(int32_t width, int32_t height) {
         str_t defines = STR_LIT("#define TILE_SIZE " STRINGIFY_VAL(VEL_TILE_SIZE));
         blit_tilemax.program = setup_program_from_source(STR_LIT("tilemax"), {(const char*)blit_tilemax_frag, blit_tilemax_frag_size}, defines);
         blit_tilemax.uniform_loc.tex_vel = glGetUniformLocation(blit_tilemax.program, "u_tex_vel");
-        blit_tilemax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_tilemax.program, "u_tex_vel_texel_size");
+        blit_tilemax.uniform_loc.tex_linear_depth = glGetUniformLocation(blit_tilemax.program, "u_tex_linear_depth");
     }
     {
         blit_neighbormax.program = setup_program_from_source(STR_LIT("neighbormax"), {(const char*)blit_neighbormax_frag, blit_neighbormax_frag_size});
@@ -989,8 +989,8 @@ void initialize(int32_t width, int32_t height) {
 
     glBindTexture(GL_TEXTURE_2D, gl.velocity.tex_tilemax);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, gl.velocity.tex_width, gl.velocity.tex_height, 0, GL_RG, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -1003,20 +1003,11 @@ void initialize(int32_t width, int32_t height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    glBindTexture(GL_TEXTURE_2D, gl.velocity.tex_dilate);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
     if (!gl.velocity.fbo) {
         glGenFramebuffers(1, &gl.velocity.fbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.velocity.fbo);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.velocity.tex_tilemax, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.velocity.tex_neighbormax, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gl.velocity.tex_dilate, 0);  // For dilation pass
         GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             MD_LOG_ERROR("Something went wrong in creating framebuffer for velocity");
@@ -1032,7 +1023,6 @@ void shutdown() {
     if (blit_dilate.program) glDeleteProgram(blit_dilate.program);
     if (gl.velocity.tex_tilemax) glDeleteTextures(1, &gl.velocity.tex_tilemax);
     if (gl.velocity.tex_neighbormax) glDeleteTextures(1, &gl.velocity.tex_neighbormax);
-    if (gl.velocity.tex_dilate) glDeleteTextures(1, &gl.velocity.tex_dilate);
     if (gl.velocity.fbo) glDeleteFramebuffers(1, &gl.velocity.fbo);
 }
 }  // namespace velocity
@@ -1132,46 +1122,56 @@ void initialize(int width, int height) {
     {
         glGenTextures(1, &gl.linear_depth.texture);
         glBindTexture(GL_TEXTURE_2D, gl.linear_depth.texture);
-        glTexStorage2D(GL_TEXTURE_2D, 3, GL_R16F, width, height);
+        glTexStorage2D(GL_TEXTURE_2D, 4, GL_R16F, width, height);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 2);
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 3);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
     {
         GLenum status = 0;
-        if (!gl.linear_depth.fbo_full)
-            glGenFramebuffers(1, &gl.linear_depth.fbo_full);
+        if (!gl.linear_depth.fbo_0)
+            glGenFramebuffers(1, &gl.linear_depth.fbo_0);
 
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_full);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 0);
         status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             MD_LOG_ERROR("Something went wrong in creating framebuffer for depth linearization");
         }
 
-        if (!gl.linear_depth.fbo_half)
-            glGenFramebuffers(1, &gl.linear_depth.fbo_half);
+        if (!gl.linear_depth.fbo_1)
+            glGenFramebuffers(1, &gl.linear_depth.fbo_1);
 
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_half);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_1);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 1);
         status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             MD_LOG_ERROR("Something went wrong in creating framebuffer for half linear depth");
         }
 
-        if (!gl.linear_depth.fbo_quarter)
-            glGenFramebuffers(1, &gl.linear_depth.fbo_quarter);
+        if (!gl.linear_depth.fbo_2)
+            glGenFramebuffers(1, &gl.linear_depth.fbo_2);
 
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_quarter);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_2);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 2);
         status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
             MD_LOG_ERROR("Something went wrong in creating framebuffer for quarter linear depth");
+        }
+
+        if (!gl.linear_depth.fbo_3)
+            glGenFramebuffers(1, &gl.linear_depth.fbo_3);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_3);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 3);
+        status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            MD_LOG_ERROR("Something went wrong in creating framebuffer for eighth linear depth");
         }
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -1621,28 +1621,31 @@ void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
     const vec2_t res = view_param.resolution;
     const vec2_t jitter_uv_cur = view_param.jitter.curr / res;
     const vec2_t jitter_uv_prev = view_param.jitter.prev / res;
-    const vec4_t jitter_uv = {jitter_uv_cur.x, jitter_uv_cur.y, jitter_uv_prev.x, jitter_uv_prev.y};
+    vec4_t jitter_uv = {jitter_uv_cur.x, jitter_uv_cur.y, jitter_uv_prev.x, jitter_uv_prev.y};
 
     glUseProgram(velocity::blit_velocity.program);
 	glUniform1i(velocity::blit_velocity.uniform_loc.tex_depth, 0);
     glUniformMatrix4fv(velocity::blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat, 1, GL_FALSE, &curr_clip_to_prev_clip_mat.elem[0][0]);
-    glUniform4fv(velocity::blit_velocity.uniform_loc.jitter_uv, 1, &jitter_uv.x);
+    glUniform4fv(velocity::blit_velocity.uniform_loc.jitter_uv, 1, jitter_uv.elem);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
     glUseProgram(0);
 }
 
-void blit_tilemax(GLuint velocity_tex, int tex_width, int tex_height) {
+void blit_tilemax(GLuint velocity_tex, GLuint linear_depth_tex) {
     ASSERT(glIsTexture(velocity_tex));
-    const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
+    ASSERT(glIsTexture(linear_depth_tex));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, velocity_tex);
 
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
+
     glUseProgram(velocity::blit_tilemax.program);
     glUniform1i(velocity::blit_tilemax.uniform_loc.tex_vel, 0);
-    glUniform2fv(velocity::blit_tilemax.uniform_loc.tex_vel_texel_size, 1, &texel_size.x);
+    glUniform1i(velocity::blit_tilemax.uniform_loc.tex_linear_depth, 1);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -1976,6 +1979,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     static float time = 0.f;
     time = time + 0.01f;
     if (time > 100.f) time -= 100.f;
+    //time = 0.0f;
     //static unsigned int frame = 0;
     //frame = frame + 1;
 
@@ -2006,7 +2010,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
     glBindVertexArray(gl.vao);
 
     PUSH_GPU_SECTION("Linearize Depth") {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_full);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_0);
         glClearColor(far_dist,0,0,0);
         glClear(GL_COLOR_BUFFER_BIT);
         compute_linear_depth(desc.input_textures.depth, near_dist, far_dist, ortho);
@@ -2015,10 +2019,15 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     if (desc.ambient_occlusion.enabled) {
         PUSH_GPU_SECTION("Generate Linear Depth Mipmaps") {
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_half);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_1);
+            glViewport(0, 0, gl.tex_width / 2, gl.tex_height / 2);
             downsample_depth(gl.linear_depth.texture, 0);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_quarter);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_2);
+            glViewport(0, 0, gl.tex_width / 4, gl.tex_height / 4);
             downsample_depth(gl.linear_depth.texture, 1);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo_3);
+            glViewport(0, 0, gl.tex_width / 8, gl.tex_height / 8);
+            downsample_depth(gl.linear_depth.texture, 2);
         }
         POP_GPU_SECTION()
     }
@@ -2027,10 +2036,12 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.velocity.fbo);
         glViewport(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
         glScissor(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
+        glClearColor(0,0,0,0);
+        glClear(GL_COLOR_BUFFER_BIT);
 
         PUSH_GPU_SECTION("Velocity: Tilemax") {
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            blit_tilemax(desc.input_textures.velocity, gl.tex_width, gl.tex_height);
+            blit_tilemax(desc.input_textures.velocity, gl.linear_depth.texture);
         }
         POP_GPU_SECTION()
 
@@ -2185,15 +2196,15 @@ void init_gbuffer(GBuffer* gbuf, int width, int height) {
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.normal);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.velocity);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 

@@ -4,7 +4,6 @@ uniform sampler2D u_tex_depth;
 uniform mat4 u_curr_clip_to_prev_clip_mat;
 uniform vec4 u_jitter_uv;
 
-in  vec2 tc;
 out vec4 out_ss_vel;
 
 void main() {
@@ -16,8 +15,8 @@ void main() {
         return;
     }
 
-    vec2 p_uv = tc;
-    vec3 p_vs = vec3(tc, d);
+    vec2 p_uv = (gl_FragCoord.xy + vec2(0.5)) / vec2(textureSize(u_tex_depth, 0));
+    vec3 p_vs = vec3(p_uv, d);
     vec4 p_cs = vec4(p_vs * 2.0 - 1.0, 1.0); // [0, 1] -> [-1, 1]
     
 	vec4 q_cs = u_curr_clip_to_prev_clip_mat * p_cs;

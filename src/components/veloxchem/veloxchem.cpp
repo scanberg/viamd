@@ -932,7 +932,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     md_system_t mol = { 0 };
                     md_vlx_system_init(&mol, vlx, state.allocator.frame);
-                    md_util_molecule_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
+                    md_util_system_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
                     //gl_mol = md_gl_mol_create(&mol);
 
                     uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
@@ -1781,7 +1781,7 @@ struct VeloxChem : viamd::EventHandler {
                 float percentage = curve_percentages[index];
                 if (percentage > 0) {
                     char label[16];
-                    sprintf(label, "%3.2f%%", curve_percentages[start_i * nto->group.count + end_i] * 100);
+                    snprintf(label, sizeof(label), "%3.2f%%", curve_percentages[start_i * nto->group.count + end_i] * 100);
                     const ImVec2 label_size = ImGui::CalcTextSize(label);
                     draw_aligned_text(draw_list, label, midpoint, {0.5, 0.5});
                 }
@@ -2674,9 +2674,9 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                         }
 
-                        char lable[16];
-                        sprintf(lable, "%i", row_n + 1);
-                        ImGui::Selectable(lable, is_sel || is_hov, selectable_flags);
+                        char label[16];
+                        snprintf(label, sizeof(label), "%i", row_n + 1);
+                        ImGui::Selectable(label, is_sel || is_hov, selectable_flags);
                         if (ImGui::TableGetHoveredRow() == row_n + 1) {
                             if (state.mold.sys.atom.count > row_n) {
                                 md_bitfield_clear(&state.selection.highlight_mask);
@@ -3355,9 +3355,9 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                         }
 
-                        char lable[16];
-                        sprintf(lable, "%i", row_n + 1);
-                        if (ImGui::Selectable(lable, is_sel || is_hov, selectable_flags)) {
+                        char label[16];
+                        snprintf(label, sizeof(label), "%i", row_n + 1);
+                        if (ImGui::Selectable(label, is_sel || is_hov, selectable_flags)) {
                             rsp.selected = (rsp.selected == row_n) ? -1 : row_n;
                         }
                         ImGui::TableNextColumn();
@@ -3508,9 +3508,9 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                             }
 
-                            char lable[16];
-                            sprintf(lable, "%i", row_n + 1);
-                            if (ImGui::Selectable(lable, is_sel || is_hov, selectable_flags)) {
+                            char label[16];
+                            snprintf(label, sizeof(label), "%i", row_n + 1);
+                            if (ImGui::Selectable(label, is_sel || is_hov, selectable_flags)) {
                                 vib.selected = (vib.selected == row_n) ? -1 : row_n;
                             }
                             ImGui::TableNextColumn();
@@ -4851,7 +4851,7 @@ struct VeloxChem : viamd::EventHandler {
             MEMCPY(nto.group.label[i], nto.group.label[i + 1], sizeof(nto.group.label[i]));
         }
         nto.group.count--;
-        sprintf(nto.group.label[nto.group.count], "Group %i", (int)nto.group.count);
+        snprintf(nto.group.label[nto.group.count], sizeof(nto.group.label[nto.group.count]), "Group %i", (int)nto.group.count);
         nto.group.color[nto.group.count] = deleted_color;
     }
 

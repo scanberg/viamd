@@ -437,7 +437,7 @@ struct Dataset : viamd::EventHandler {
             ImGui::Separator();
 
             if (data.mold.sys.unitcell.flags) {
-                md_flags_t flags = data.mold.sys.unitcell.flags;
+                md_unitcell_flags_t flags = data.mold.sys.unitcell.flags;
                 bool ortho = flags & MD_UNITCELL_ORTHO;
                 bool tricl = flags & MD_UNITCELL_TRICLINIC;
                 ImGui::Text("Unitcell %s", ortho ? "Orthorhombic" : tricl ? "Triclinic" : "");

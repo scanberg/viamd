@@ -1,7 +1,7 @@
 #version 150 core
 
 #ifndef DILATE_RADIUS
-#define DILATE_RADIUS 2
+#define DILATE_RADIUS 3
 #endif
 
 uniform sampler2D u_tex_vel;

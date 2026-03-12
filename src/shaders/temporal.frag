@@ -522,11 +522,11 @@ void main() {
 	vec4 to_buffer = resolve_color(color_temporal);
 	
 #if USE_MOTION_BLUR
-	#if USE_MOTION_BLUR_NEIGHBORMAX
-		ss_vel = u_motion_scale * texture(u_tex_vel_neighbormax, uv).xy;
-	#else
-		ss_vel = u_motion_scale * ss_vel;
-	#endif
+  #if USE_MOTION_BLUR_NEIGHBORMAX
+    ss_vel = u_motion_scale * texture(u_tex_vel_neighbormax, uv).xy;
+  #else
+    ss_vel = u_motion_scale * ss_vel;
+  #endif
 
 	float vel_mag = length(ss_vel * u_texel_size.zw);
 	const float vel_trust_full = 2.0;  // 2.0

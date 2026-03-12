@@ -138,13 +138,13 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
     else if (picking_idx >= 0x80000000) {
         int bond_idx = picking_idx & 0x7FFFFFFF;
         if (0 <= bond_idx && bond_idx < (int)sys.bond.count) {
-            md_atom_pair_t pair = sys.bond.pairs[bond_idx];
-            md_flags_t    flags = sys.bond.flags[bond_idx];
+            md_atom_pair_t   pair = sys.bond.pairs[bond_idx];
+            md_bond_flags_t flags = sys.bond.flags[bond_idx];
             char bond_flags_buf[256] = {};
             int  len = 0;
 
             typedef struct {
-                md_flags_t flag;
+                md_bond_flags_t flag;
                 const char* label;
             } bond_flag_label_t;
 
@@ -455,8 +455,8 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
             str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), path_to_file);
             data->files.coarse_grained = param.coarse_grained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
-            md_util_postprocess_flags_t flags = param.coarse_grained ? 0 : MD_UTIL_POSTPROCESS_ALL;
-            md_util_molecule_postprocess(&data->mold.sys, data->mold.sys_alloc, flags);
+            md_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
+            md_util_system_postprocess(&data->mold.sys, data->mold.sys_alloc, flags);
             init_molecule_data(data);
 
             // @NOTE: Some files contain both atomic coordinates and trajectory
