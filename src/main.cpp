@@ -772,7 +772,7 @@ int main(int argc, char** argv) {
                 // Try aquire all semaphores
                 {
                     defer {
-                        flag_all_representations_as_dirty(&state);
+                        flag_all_representations_as_dirty(current_dataset(state));
                     };
 
                     // Now we hold all semaphores for the script
@@ -976,10 +976,10 @@ int main(int argc, char** argv) {
         }
 
 		// Perform once per-frame updates of representations (if required)
-		update_all_representations(&state);
+		update_all_representations(&state, current_dataset(state));
 
         if (current_dataset(state).representation.atom_visibility_mask_dirty) {
-            recompute_atom_visibility_mask(&state);
+            recompute_atom_visibility_mask(current_dataset(state));
             current_dataset(state).representation.atom_visibility_mask_dirty = false;
         }
 
@@ -1022,7 +1022,7 @@ int main(int argc, char** argv) {
         }
 
         if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
-            reset_view(&state, &current_dataset(state).selection.highlight_mask, true, true);
+            reset_view(&state, current_dataset(state), &current_dataset(state).selection.highlight_mask, true, true);
         }
 
         bool do_screenshot = !str_empty(state.screenshot.path_to_file);
@@ -1714,7 +1714,7 @@ static void draw_main_menu(ApplicationState* data) {
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, WORKSPACE_FILE_EXTENSION)) {
                     load_workspace(data, str_from_cstr(path_buf));
-                    reset_view(data, &current_dataset(*data).representation.visibility_mask, false, true);
+                    reset_view(data, current_dataset(*data), &current_dataset(*data).representation.visibility_mask, false, true);
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
@@ -1755,7 +1755,7 @@ static void draw_main_menu(ApplicationState* data) {
         */
         if (ImGui::BeginMenu("Visuals")) {
             if (ImGui::Button("Reset View")) {
-                reset_view(data, &current_dataset(*data).representation.visibility_mask, true, true);
+                reset_view(data, current_dataset(*data), &current_dataset(*data).representation.visibility_mask, true, true);
             }
             ImGui::Separator();
             ImGui::Checkbox("Vsync", &data->app.window.vsync);
@@ -1923,7 +1923,7 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
                         md_bitfield_copy(&current_dataset(*data).selection.selection_mask, &sel.atom_mask);
-                        flag_all_representations_as_dirty(data);
+                        flag_all_representations_as_dirty(current_dataset(*data));
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Load the stored selection as the active selection");
@@ -1934,12 +1934,12 @@ static void draw_main_menu(ApplicationState* data) {
                         ImGui::SetTooltip("Store the active selection into this selection");
                         md_bitfield_copy(&sel.atom_mask, &current_dataset(*data).selection.selection_mask);
                         data->script.compile_ir = true;
-                        flag_all_representations_as_dirty(data);
+                        flag_all_representations_as_dirty(current_dataset(*data));
                     }
                     ImGui::SameLine();
                     if (ImGui::DeleteButton("Remove")) {
                         ImGui::SetTooltip("Remove this selection");
-                        remove_selection(data, i);
+                        remove_selection(current_dataset(*data), i);
                     }
                     ImGui::PopID();
                 }
@@ -1947,7 +1947,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
                     snprintf(name_buf, sizeof(name_buf), "sel%i", (int)md_array_size(current_dataset(*data).selection.stored_selections) + 1);
-                    create_selection(data, str_from_cstr(name_buf), &current_dataset(*data).selection.selection_mask);
+                    create_selection(data, current_dataset(*data), str_from_cstr(name_buf), &current_dataset(*data).selection.selection_mask);
                 }
 
                 //ImGui::PopItemFlag();
@@ -2387,11 +2387,11 @@ void draw_load_dataset_window(ApplicationState* data) {
 
             if (load_dataset_from_file(data, param)) {
                 if (sys_loader) {
-                    remove_all_representations(data);
-                    create_default_representations(data);
+                    remove_all_representations(current_dataset(*data));
+                    create_default_representations(data, current_dataset(*data));
                 }
                 current_dataset(*data).animation = {};
-                reset_view(data, &current_dataset(*data).representation.visibility_mask, true, true);
+                reset_view(data, current_dataset(*data), &current_dataset(*data).representation.visibility_mask, true, true);
             }
         }
             [[fallthrough]];
@@ -2469,7 +2469,7 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_util_system_postprocess(mol, current_dataset(*data).sys_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
     current_dataset(*data).dirty_buffers |= MolBit_DirtyBonds;
 
-    flag_all_representations_as_dirty(data);
+    flag_all_representations_as_dirty(current_dataset(*data));
 }
 */
 
@@ -3374,11 +3374,11 @@ static void draw_representations_window(ApplicationState* state) {
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     ImGui::Begin("Representations", &state->show_representation_window, ImGuiWindowFlags_NoFocusOnAppearing);
     if (ImGui::Button("create new")) {
-        create_representation(state);
+        create_representation(state, current_dataset(*state));
     }
     ImGui::SameLine();
     if (ImGui::DeleteButton("remove all")) {
-        remove_all_representations(state);
+        remove_all_representations(current_dataset(*state));
     }
     ImGui::Spacing();
     ImGui::Separator();
@@ -3417,14 +3417,14 @@ static void draw_representations_window(ApplicationState* state) {
         }
         ImGui::SameLine(0, spacing);
         if (ImGui::Button(ICON_FA_COPY, btn_size)) {
-            clone_representation(state, rep);
+            clone_representation(state, current_dataset(*state), rep);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Duplicate");
         }
         ImGui::SameLine(0, spacing);
         if (ImGui::DeleteButton(ICON_FA_XMARK, btn_size)) {
-            remove_representation(state, rep_idx);
+            remove_representation(current_dataset(*state), rep_idx);
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Remove");
@@ -7200,7 +7200,7 @@ static void handle_camera_interaction(ApplicationState* state) {
                         const vec3_t forward = current.view.camera.orientation * vec3_t{0, 0, 1};
                         current.view.animation.target_position = state->picking.world_coord + forward * dist;
                     } else {
-                        reset_view(state, &current.representation.visibility_mask, true, true);
+                        reset_view(state, current, &current.representation.visibility_mask, true, true);
                     }
                 }
 

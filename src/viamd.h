@@ -1159,28 +1159,28 @@ void init_trajectory_data(ApplicationState* state);
 void load_workspace(ApplicationState* state, str_t file);
 void save_workspace(ApplicationState* state, str_t file);
 
-// Selections
-Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* bf = 0);
-void remove_selection(ApplicationState* state, int idx);
-void remove_all_selections(ApplicationState* state);
+// Selections (dataset-level)
+Selection* create_selection(ApplicationState* state, Dataset& dataset, str_t name, md_bitfield_t* bf = 0);
+void remove_selection(Dataset& dataset, int idx);
+void remove_all_selections(Dataset& dataset);
 
-// Representations
-Representation* create_representation(ApplicationState* state, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
-Representation* clone_representation(ApplicationState* state, const Representation& rep);
-void remove_representation(ApplicationState* state, int idx);
-void update_representation(ApplicationState* state, Representation* rep);
-void update_representation_info(ApplicationState* state);
-void update_all_representations(ApplicationState* state);
+// Representations (dataset-level or mixed with state for allocators/script)
+Representation* create_representation(ApplicationState* state, Dataset& dataset, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
+Representation* clone_representation(ApplicationState* state, Dataset& dataset, const Representation& rep);
+void remove_representation(Dataset& dataset, int idx);
+void update_representation(ApplicationState* state, Dataset& dataset, Representation* rep);
+void update_representation_info(Dataset& dataset);
+void update_all_representations(ApplicationState* state, Dataset& dataset);
 
 void flag_representation_as_dirty(Representation* rep);
-void flag_all_representations_as_dirty(ApplicationState* state);
+void flag_all_representations_as_dirty(Dataset& dataset);
 
-void remove_all_representations(ApplicationState* state);
-void create_default_representations(ApplicationState* state);
-void recompute_atom_visibility_mask(ApplicationState* state);
+void remove_all_representations(Dataset& dataset);
+void create_default_representations(ApplicationState* state, Dataset& dataset);
+void recompute_atom_visibility_mask(Dataset& dataset);
 
 // System state
 void interpolate_system_state(ApplicationState* state);
 
 // View
-void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera = false, bool smooth_transition = false);
+void reset_view(ApplicationState* state, Dataset& dataset, const md_bitfield_t* target, bool move_camera = false, bool smooth_transition = false);

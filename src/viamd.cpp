@@ -27,7 +27,7 @@ const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
     return NULL;
 }
 
-static void init_all_representations(ApplicationState* state);
+static void init_all_representations(ApplicationState* state, Dataset& dataset);
 
 // Helper: (re-)initialise the per-dataset bitfields that reside in dataset.alloc.
 // Must be called after the arena is created and after any arena reset so that these
@@ -336,12 +336,13 @@ void free_trajectory_data(ApplicationState* state) {
 }
 
 void init_trajectory_data(ApplicationState* data) {
-    size_t num_frames = md_trajectory_num_frames(current_dataset(*data).traj);
+    Dataset& ds = current_dataset(*data);
+    size_t num_frames = md_trajectory_num_frames(ds.traj);
     if (num_frames > 0) {
         size_t min_frame = 0;
         size_t max_frame = num_frames - 1;
         md_trajectory_header_t header;
-        md_trajectory_get_header(current_dataset(*data).traj, &header);
+        md_trajectory_get_header(ds.traj, &header);
 
         double min_time = header.frame_times[0];
         double max_time = header.frame_times[num_frames - 1];
@@ -355,23 +356,23 @@ void init_trajectory_data(ApplicationState* data) {
             data->timeline.x_values[i] = header.frame_times[i];
         }
 
-        current_dataset(*data).animation.frame = CLAMP(current_dataset(*data).animation.frame, (double)min_frame, (double)max_frame);
-        int64_t frame_idx = CLAMP((int64_t)(current_dataset(*data).animation.frame + 0.5), 0, (int64_t)max_frame);
+        ds.animation.frame = CLAMP(ds.animation.frame, (double)min_frame, (double)max_frame);
+        int64_t frame_idx = CLAMP((int64_t)(ds.animation.frame + 0.5), 0, (int64_t)max_frame);
 
         md_trajectory_frame_header_t frame_header;
-        md_trajectory_load_frame(current_dataset(*data).traj, frame_idx, &frame_header, current_dataset(*data).sys.atom.x, current_dataset(*data).sys.atom.y, current_dataset(*data).sys.atom.z);
-        current_dataset(*data).sys.unitcell = frame_header.unitcell;
+        md_trajectory_load_frame(ds.traj, frame_idx, &frame_header, ds.sys.atom.x, ds.sys.atom.y, ds.sys.atom.z);
+        ds.sys.unitcell = frame_header.unitcell;
 
-        if (current_dataset(*data).sys.protein_backbone.segment.count > 0) {
-            current_dataset(*data).trajectory_data.secondary_structure.stride = current_dataset(*data).sys.protein_backbone.segment.count;
-            current_dataset(*data).trajectory_data.secondary_structure.count = current_dataset(*data).sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(current_dataset(*data).trajectory_data.secondary_structure.data, current_dataset(*data).sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(current_dataset(*data).trajectory_data.secondary_structure.data, 0, md_array_bytes(current_dataset(*data).trajectory_data.secondary_structure.data));
+        if (ds.sys.protein_backbone.segment.count > 0) {
+            ds.trajectory_data.secondary_structure.stride = ds.sys.protein_backbone.segment.count;
+            ds.trajectory_data.secondary_structure.count = ds.sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(ds.trajectory_data.secondary_structure.data, ds.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(ds.trajectory_data.secondary_structure.data, 0, md_array_bytes(ds.trajectory_data.secondary_structure.data));
 
-            current_dataset(*data).trajectory_data.backbone_angles.stride = current_dataset(*data).sys.protein_backbone.segment.count;
-            current_dataset(*data).trajectory_data.backbone_angles.count = current_dataset(*data).sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(current_dataset(*data).trajectory_data.backbone_angles.data, current_dataset(*data).sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(current_dataset(*data).trajectory_data.backbone_angles.data, 0, md_array_bytes(current_dataset(*data).trajectory_data.backbone_angles.data));
+            ds.trajectory_data.backbone_angles.stride = ds.sys.protein_backbone.segment.count;
+            ds.trajectory_data.backbone_angles.count = ds.sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(ds.trajectory_data.backbone_angles.data, ds.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(ds.trajectory_data.backbone_angles.data, 0, md_array_bytes(ds.trajectory_data.backbone_angles.data));
 
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
@@ -411,7 +412,7 @@ void init_trajectory_data(ApplicationState* data) {
 
 				current_dataset(*data).interpolate_system_state = true;
                 current_dataset(*data).dirty_gpu_buffers |= MolBit_ClearVelocity;
-                flag_all_representations_as_dirty(data);
+                flag_all_representations_as_dirty(current_dataset(*data));
             });
 
             task_system::set_task_dependency(main_task, data->tasks.backbone_computations);
@@ -442,39 +443,40 @@ bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_
 }
 
 void init_molecule_data(ApplicationState* data) {
-    if (current_dataset(*data).sys.atom.count) {
+    Dataset& dataset = current_dataset(*data);
+    if (dataset.sys.atom.count) {
 
         data->picking.idx = INVALID_PICKING_IDX;
-        current_dataset(*data).selection.atom_idx.hovered = -1;
-        current_dataset(*data).selection.atom_idx.right_click = -1;
-        current_dataset(*data).selection.bond_idx.hovered = -1;
-        current_dataset(*data).selection.bond_idx.right_click = -1;
+        dataset.selection.atom_idx.hovered = -1;
+        dataset.selection.atom_idx.right_click = -1;
+        dataset.selection.bond_idx.hovered = -1;
+        dataset.selection.bond_idx.right_click = -1;
 
-        current_dataset(*data).gl_mol = md_gl_mol_create(&current_dataset(*data).sys);
-        if (current_dataset(*data).sys.protein_backbone.segment.count > 0) {
-            current_dataset(*data).interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, current_dataset(*data).sys.protein_backbone.segment.count, current_dataset(*data).alloc);
+        dataset.gl_mol = md_gl_mol_create(&dataset.sys);
+        if (dataset.sys.protein_backbone.segment.count > 0) {
+            dataset.interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, dataset.sys.protein_backbone.segment.count, dataset.alloc);
         }
 
 #if EXPERIMENTAL_GFX_API
-        const md_system_t& mol = current_dataset(*data).sys;
-        vec3_t& aabb_min = current_dataset(*data).sys_aabb_min;
-        vec3_t& aabb_max = current_dataset(*data).sys_aabb_max;
+        const md_system_t& mol = dataset.sys;
+        vec3_t& aabb_min = dataset.sys_aabb_min;
+        vec3_t& aabb_max = dataset.sys_aabb_max;
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
-        current_dataset(*data).gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
-        md_gfx_structure_set_atom_position(current_dataset(*data).gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_atom_radius(current_dataset(*data).gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(current_dataset(*data).gfx_structure, &current_dataset(*data).sys_aabb_min, &current_dataset(*data).sys_aabb_max);
+        dataset.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
+        md_gfx_structure_set_atom_position(dataset.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_gfx_structure_set_atom_radius(dataset.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
+        md_gfx_structure_set_aabb(dataset.gfx_structure, &dataset.sys_aabb_min, &dataset.sys_aabb_max);
         if (mol.instance.count > 0) {
-            md_gfx_structure_set_instance_atom_ranges(current_dataset(*data).gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
-            md_gfx_structure_set_instance_transforms(current_dataset(*data).gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
+            md_gfx_structure_set_instance_atom_ranges(dataset.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
+            md_gfx_structure_set_instance_transforms(dataset.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
         }
 #endif
     }
     viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, viamd::EventPayloadType_ApplicationState, data);
 
-    update_representation_info(data);
-    init_all_representations(data);
+    update_representation_info(dataset);
+    init_all_representations(data, dataset);
     data->script.compile_ir = true;
 
 }
@@ -534,16 +536,18 @@ void process_file_queue(ApplicationState* state) {
 
         if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
             load_workspace(state, e.path);
-            reset_view(state, &current_dataset(*state).representation.visibility_mask, false, true);
+            Dataset& ds = current_dataset(*state);
+            reset_view(state, ds, &ds.representation.visibility_mask, false, true);
         } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
             char buf[1024];
             str_t base_path = {};
+            const Dataset& ds = current_dataset(*state);
             if (!str_empty(state->workspace_path)) {
                 base_path = state->workspace_path;
-            } else if (!str_empty(current_dataset(*state).traj_path)) {
-                base_path = current_dataset(*state).traj_path;
-            } else if (!str_empty(current_dataset(*state).sys_path)) {
-                base_path = current_dataset(*state).sys_path;
+            } else if (!str_empty(ds.traj_path)) {
+                base_path = ds.traj_path;
+            } else if (!str_empty(ds.sys_path)) {
+                base_path = ds.sys_path;
             } else {
                 md_path_write_cwd(buf, sizeof(buf));
                 base_path = str_from_cstr(buf);
@@ -579,17 +583,18 @@ void process_file_queue(ApplicationState* state) {
                 param.sys_loader_arg = loader.sys_loader_arg;
                 param.traj_loader_flags = (e.flags & FileFlags_DisableCacheWrite) ? MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE : MD_TRAJECTORY_FLAG_NONE;
                 if (load_dataset_from_file(state, param)) {
-                    current_dataset(*state).animation = {};
+                    Dataset& ds = current_dataset(*state);
+                    ds.animation = {};
                     if (param.sys_loader) {
-                        md_bitfield_reset(&current_dataset(*state).representation.visibility_mask);
+                        md_bitfield_reset(&ds.representation.visibility_mask);
 
-                        remove_all_representations(state);
-                        create_default_representations(state);
+                        remove_all_representations(ds);
+                        create_default_representations(state, ds);
 
-                        recompute_atom_visibility_mask(state);
-						current_dataset(*state).interpolate_system_state = true;
-                        current_dataset(*state).dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        reset_view(state, &current_dataset(*state).representation.visibility_mask, true, false);
+                        recompute_atom_visibility_mask(ds);
+                        ds.interpolate_system_state = true;
+                        ds.dirty_gpu_buffers |= MolBit_ClearVelocity;
+                        reset_view(state, ds, &ds.representation.visibility_mask, true, false);
                     }
                 }
             }
@@ -685,8 +690,9 @@ void reset_state(ApplicationState* state) {
     state->workspace_path = {};
 
     // Reset and clear things
-    remove_all_selections(state);
-    remove_all_representations(state);
+    Dataset& ds = current_dataset(*state);
+    remove_all_selections(ds);
+    remove_all_representations(ds);
     state->editor.SetText("");
     state->workspace_path = {};
 }
@@ -791,7 +797,7 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
                 }
             }
         } else if (str_eq(section, STR_LIT("Representation"))) {
-            Representation* rep = create_representation(app_state);
+            Representation* rep = create_representation(app_state, current_dataset(*app_state));
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Name"))) {
@@ -891,7 +897,7 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
                 }
             }
             if (!str_empty(label) && !str_empty(mask_base64)) {
-                Selection* sel = create_selection(app_state, label);
+                Selection* sel = create_selection(app_state, current_dataset(*app_state), label);
                 md_bitfield_deserialize(&sel->atom_mask, mask_base64.ptr, mask_base64.len);
             }
         } else {
@@ -1065,7 +1071,7 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
 
 
 // --- SELECTION ---
-Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* atom_mask) {
+Selection* create_selection(ApplicationState* state, Dataset& dataset, str_t name, md_bitfield_t* atom_mask) {
     ASSERT(state);
     Selection sel;
     str_copy_to_char_buf(sel.name, sizeof(sel.name), name);
@@ -1073,97 +1079,95 @@ Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* 
     if (atom_mask) {
         md_bitfield_copy(&sel.atom_mask, atom_mask);
     }
-    md_array_push(current_dataset(*state).selection.stored_selections, sel, state->allocator.persistent);
-    return md_array_last(current_dataset(*state).selection.stored_selections);
+    md_array_push(dataset.selection.stored_selections, sel, state->allocator.persistent);
+    return md_array_last(dataset.selection.stored_selections);
 }
 
-void remove_all_selections(ApplicationState* state) {
-    md_array_shrink(current_dataset(*state).selection.stored_selections, 0);
+void remove_all_selections(Dataset& dataset) {
+    md_array_shrink(dataset.selection.stored_selections, 0);
 }
 
-void remove_selection(ApplicationState* state, int idx) {
-    ASSERT(state);
-    if (idx < 0 || (int)md_array_size(current_dataset(*state).selection.stored_selections) <= idx) {
+void remove_selection(Dataset& dataset, int idx) {
+    if (idx < 0 || (int)md_array_size(dataset.selection.stored_selections) <= idx) {
         VIAMD_LOG_ERROR("Index [%i] out of range when trying to remove selection", idx);
+        return;
     }
-    auto item = &current_dataset(*state).selection.stored_selections[idx];
+    auto item = &dataset.selection.stored_selections[idx];
     md_bitfield_free(&item->atom_mask);
 
-    current_dataset(*state).selection.stored_selections[idx] = *md_array_last(current_dataset(*state).selection.stored_selections);
-    md_array_pop(current_dataset(*state).selection.stored_selections);
+    dataset.selection.stored_selections[idx] = *md_array_last(dataset.selection.stored_selections);
+    md_array_pop(dataset.selection.stored_selections);
 }
 
 // --- Representation ---
 
-static void init_representation(ApplicationState* state, Representation* rep) {
+static void init_representation(ApplicationState* state, Dataset& dataset, Representation* rep) {
 #if EXPERIMENTAL_GFX_API
-    rep->gfx_rep = md_gfx_rep_create(current_dataset(*state).sys.atom.count);
+    rep->gfx_rep = md_gfx_rep_create(dataset.sys.atom.count);
 #endif
-    rep->md_rep = md_gl_rep_create(current_dataset(*state).gl_mol);
+    rep->md_rep = md_gl_rep_create(dataset.gl_mol);
     md_bitfield_init(&rep->atom_mask, state->allocator.persistent);
 
-    size_t num_props = md_array_size(current_dataset(*state).representation.info.atom_properties);
+    size_t num_props = md_array_size(dataset.representation.info.atom_properties);
     if (num_props > 0) {
         rep->prop.idx = 0;
-        rep->prop.range_beg = current_dataset(*state).representation.info.atom_properties[0].value_min;
-        rep->prop.range_end = current_dataset(*state).representation.info.atom_properties[0].value_max;
+        rep->prop.range_beg = dataset.representation.info.atom_properties[0].value_min;
+        rep->prop.range_end = dataset.representation.info.atom_properties[0].value_max;
     }
 
     flag_representation_as_dirty(rep);
 }
 
-Representation* create_representation(ApplicationState* state, RepresentationType type, ColorMapping color_mapping, str_t filter) {
+Representation* create_representation(ApplicationState* state, Dataset& dataset, RepresentationType type, ColorMapping color_mapping, str_t filter) {
     ASSERT(state);
-    md_array_push(current_dataset(*state).representation.reps, Representation(), state->allocator.persistent);
-    Representation* rep = md_array_last(current_dataset(*state).representation.reps);
+    md_array_push(dataset.representation.reps, Representation(), state->allocator.persistent);
+    Representation* rep = md_array_last(dataset.representation.reps);
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
         str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
     }
-    rep->electronic_structure.mo_idx = (int)current_dataset(*state).representation.info.alpha.homo_idx;
-    init_representation(state, rep);
+    rep->electronic_structure.mo_idx = (int)dataset.representation.info.alpha.homo_idx;
+    init_representation(state, dataset, rep);
     return rep;
 }
 
-Representation* clone_representation(ApplicationState* state, const Representation& rep) {
+Representation* clone_representation(ApplicationState* state, Dataset& dataset, const Representation& rep) {
     ASSERT(state);
-    md_array_push(current_dataset(*state).representation.reps, rep, state->allocator.persistent);
-    Representation* clone = md_array_last(current_dataset(*state).representation.reps);
+    md_array_push(dataset.representation.reps, rep, state->allocator.persistent);
+    Representation* clone = md_array_last(dataset.representation.reps);
     clone->md_rep = {0};
     clone->atom_mask = {0};
-    init_representation(state, clone);
+    init_representation(state, dataset, clone);
     return clone;
 }
 
-void remove_representation(ApplicationState* state, int idx) {
-    ASSERT(state);
-    ASSERT(idx < md_array_size(current_dataset(*state).representation.reps));
-    auto& rep = current_dataset(*state).representation.reps[idx];
+void remove_representation(Dataset& dataset, int idx) {
+    ASSERT(idx < (int)md_array_size(dataset.representation.reps));
+    auto& rep = dataset.representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_rep_destroy(rep.md_rep);
     if (rep.electronic_structure.vol.tex_id != 0) gl::free_texture(&rep.electronic_structure.vol.tex_id);
     if (rep.electronic_structure.dvr.tf_tex != 0) gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
-    md_array_swap_back_and_pop(current_dataset(*state).representation.reps, idx);
-    recompute_atom_visibility_mask(state);
+    md_array_swap_back_and_pop(dataset.representation.reps, idx);
+    recompute_atom_visibility_mask(dataset);
 }
 
-void recompute_atom_visibility_mask(ApplicationState* state) {
-    ASSERT(state);
-    auto& mask = current_dataset(*state).representation.visibility_mask;
+void recompute_atom_visibility_mask(Dataset& dataset) {
+    auto& mask = dataset.representation.visibility_mask;
 
     md_bitfield_clear(&mask);
-    for (size_t i = 0; i < md_array_size(current_dataset(*state).representation.reps); ++i) {
-        auto& rep = current_dataset(*state).representation.reps[i];
+    for (size_t i = 0; i < md_array_size(dataset.representation.reps); ++i) {
+        auto& rep = dataset.representation.reps[i];
         if (!rep.enabled) continue;
         md_bitfield_or_inplace(&mask, &rep.atom_mask);
     }
-    current_dataset(*state).representation.visibility_mask_hash = md_bitfield_hash64(&mask, 0);
+    dataset.representation.visibility_mask_hash = md_bitfield_hash64(&mask, 0);
 }
 
-void update_all_representations(ApplicationState* state) {
-    for (size_t i = 0; i < md_array_size(current_dataset(*state).representation.reps); ++i) {
-        update_representation(state, &current_dataset(*state).representation.reps[i]);
+void update_all_representations(ApplicationState* state, Dataset& dataset) {
+    for (size_t i = 0; i < md_array_size(dataset.representation.reps); ++i) {
+        update_representation(state, dataset, &dataset.representation.reps[i]);
     }
 }
 
@@ -1171,14 +1175,14 @@ static inline bool rep_type_uses_atomic_colors(RepresentationType type) {
     return type != RepresentationType::ElectronicStructure;
 }
 
-void update_representation(ApplicationState* state, Representation* rep) {
+void update_representation(ApplicationState* state, Dataset& dataset, Representation* rep) {
     ASSERT(state);
     ASSERT(rep);
 
     if (!rep->enabled) return;
     if (!rep->needs_update) return;
 
-    const auto& sys = current_dataset(*state).sys;
+    const auto& sys = dataset.sys;
     size_t num_atoms = md_system_atom_count(&sys);
 
     md_allocator_i* frame_alloc = state->allocator.frame;
@@ -1229,10 +1233,10 @@ void update_representation(ApplicationState* state, Representation* rep) {
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
 
-            if (md_array_size(current_dataset(*state).representation.info.atom_properties) > 0) {
+            if (md_array_size(dataset.representation.info.atom_properties) > 0) {
                 float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
                 EvalAtomProperty eval = {
-                    .property_id = current_dataset(*state).representation.info.atom_properties[rep->prop.idx].id,
+                    .property_id = dataset.representation.info.atom_properties[rep->prop.idx].id,
                     .idx = 0,
                     .output_written = false,
                     .num_values = num_atoms,
@@ -1271,17 +1275,17 @@ void update_representation(ApplicationState* state, Representation* rep) {
                         md_script_vis_init(&vis, frame_alloc);
                         md_script_vis_ctx_t ctx = {
                             .ir = state->script.eval_ir,
-                            .mol = &current_dataset(*state).sys,
-                            .traj = current_dataset(*state).traj,
+                            .mol = &dataset.sys,
+                            .traj = dataset.traj,
                         };
                         result = md_script_vis_eval_payload(&vis, rep->prop->vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS);
                     }
                     //}
                     if (result) {
                         if (dim == (int)md_array_size(vis.structure)) {
-                            int i0 = CLAMP((int)current_dataset(*state).animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
-                            int i1 = CLAMP((int)current_dataset(*state).animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
-                            float frame_fract = fractf((float)current_dataset(*state).animation.frame);
+                            int i0 = CLAMP((int)dataset.animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
+                            int i1 = CLAMP((int)dataset.animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
+                            float frame_fract = fractf((float)dataset.animation.frame);
 
                             md_bitfield_t mask = {0};
                             md_bitfield_init(&mask, frame_alloc);
@@ -1295,9 +1299,9 @@ void update_representation(ApplicationState* state, Representation* rep) {
                         }
                     }
                 } else {
-                    int i0 = CLAMP((int)current_dataset(*state).animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
-                    int i1 = CLAMP((int)current_dataset(*state).animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
-                    float value = lerpf(values[i0], values[i1], fractf((float)current_dataset(*state).animation.frame));
+                    int i0 = CLAMP((int)dataset.animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
+                    int i1 = CLAMP((int)dataset.animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
+                    float value = lerpf(values[i0], values[i1], fractf((float)dataset.animation.frame));
                     float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
                     ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
                     color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
@@ -1332,7 +1336,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
         break;
     case RepresentationType::ElectronicStructure: {
-        size_t num_mos = current_dataset(*state).representation.info.alpha.num_orbitals;
+        size_t num_mos = dataset.representation.info.alpha.num_orbitals;
         rep->type_is_valid = num_mos > 0;
         if (num_mos > 0) {
             uint64_t orb_idx = 0;
@@ -1365,7 +1369,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     16.0f,
                 };
                 EvalElectronicStructure data = {
-                    .system = &current_dataset(*state).sys,
+                    .system = &dataset.sys,
                     .type = rep->electronic_structure.type,
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
@@ -1397,13 +1401,13 @@ void update_representation(ApplicationState* state, Representation* rep) {
         }
 
         if (rep->filt_is_dirty) {
-			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &current_dataset(*state).sys, current_dataset(*state).sys.atom.x, current_dataset(*state).sys.atom.y, current_dataset(*state).sys.atom.z, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &dataset.sys, dataset.sys.atom.x, dataset.sys.atom.y, dataset.sys.atom.z, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
             rep->filt_is_dirty = false;
         }
 
         if (rep->filt_is_valid) {
             filter_colors(colors, num_atoms, &rep->atom_mask);
-            current_dataset(*state).representation.atom_visibility_mask_dirty = true;
+            dataset.representation.atom_visibility_mask_dirty = true;
             md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
 
 #if EXPERIMENTAL_GFX_API
@@ -1418,22 +1422,22 @@ void update_representation(ApplicationState* state, Representation* rep) {
     rep->needs_update = false;
 }
 
-void update_representation_info(ApplicationState* state) {
-    md_allocator_i* alloc = current_dataset(*state).representation.info.alloc;
+void update_representation_info(Dataset& dataset) {
+    md_allocator_i* alloc = dataset.representation.info.alloc;
     md_arena_allocator_reset(alloc);
 
     // Clear info, maintain allocator
-    current_dataset(*state).representation.info = {};
-    current_dataset(*state).representation.info.alloc = alloc;
+    dataset.representation.info = {};
+    dataset.representation.info.alloc = alloc;
 
     // Broadcast event to populate info
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &current_dataset(*state).representation.info);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &dataset.representation.info);
 }
 
-static void init_all_representations(ApplicationState* state) {
-    for (size_t i = 0; i < md_array_size(current_dataset(*state).representation.reps); ++i) {
-        auto& rep = current_dataset(*state).representation.reps[i];
-        init_representation(state, &rep);
+static void init_all_representations(ApplicationState* state, Dataset& dataset) {
+    for (size_t i = 0; i < md_array_size(dataset.representation.reps); ++i) {
+        auto& rep = dataset.representation.reps[i];
+        init_representation(state, dataset, &rep);
     }
 }
 
@@ -1444,46 +1448,45 @@ void flag_representation_as_dirty(Representation* rep) {
     rep->electronic_structure.vol_hash = 0;
 }
 
-void flag_all_representations_as_dirty(ApplicationState* state) {
-    ASSERT(state);
-    for (size_t i = 0; i < md_array_size(current_dataset(*state).representation.reps); ++i) {
-        flag_representation_as_dirty(&current_dataset(*state).representation.reps[i]);
+void flag_all_representations_as_dirty(Dataset& dataset) {
+    for (size_t i = 0; i < md_array_size(dataset.representation.reps); ++i) {
+        flag_representation_as_dirty(&dataset.representation.reps[i]);
     }
 }
 
-void remove_all_representations(ApplicationState* state) {
-    while (md_array_size(current_dataset(*state).representation.reps) > 0) {
-        remove_representation(state, (int32_t)md_array_size(current_dataset(*state).representation.reps) - 1);
+void remove_all_representations(Dataset& dataset) {
+    while (md_array_size(dataset.representation.reps) > 0) {
+        remove_representation(dataset, (int32_t)md_array_size(dataset.representation.reps) - 1);
     }
 }
 
 
-void create_default_representations(ApplicationState* state) {
+void create_default_representations(ApplicationState* state, Dataset& dataset) {
     bool amino_acid_present = false;
     bool nucleic_present = false;
     bool ion_present = false;
     bool water_present = false;
     bool ligand_present = false;
     bool coarse_grained = false;
-    bool orbitals_present = current_dataset(*state).representation.info.alpha.num_orbitals > 0;
+    bool orbitals_present = dataset.representation.info.alpha.num_orbitals > 0;
 
-    if (current_dataset(*state).sys.atom.count > 3'000'000) {
+    if (dataset.sys.atom.count > 3'000'000) {
         VIAMD_LOG_INFO("Large system detected, creating default representation for all atoms");
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
+        Representation* rep = create_representation(state, dataset, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
-    if (current_dataset(*state).sys.component.count == 0) {
+    if (dataset.sys.component.count == 0) {
         // No residues present
-        Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
+        Representation* rep = create_representation(state, dataset, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
     // TODO: Redo this check with entities instead of atom flags
-    for (size_t i = 0; i < current_dataset(*state).sys.atom.count; ++i) {
-        uint32_t flags = current_dataset(*state).sys.atom.flags[i];
+    for (size_t i = 0; i < dataset.sys.atom.count; ++i) {
+        uint32_t flags = dataset.sys.atom.flags[i];
         if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
         if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
         if (flags & MD_FLAG_ION) ion_present = true;
@@ -1496,7 +1499,7 @@ void create_default_representations(ApplicationState* state) {
     }
 
     if (coarse_grained) {
-        Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
+        Representation* rep = create_representation(state, dataset, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
@@ -1505,33 +1508,33 @@ void create_default_representations(ApplicationState* state) {
         RepresentationType type = RepresentationType::Cartoon;
         ColorMapping color = ColorMapping::SecondaryStructure;
 
-        if (current_dataset(*state).sys.instance.count > 1) {
+        if (dataset.sys.instance.count > 1) {
             color = ColorMapping::InstId;
         } else {
-            size_t res_count = md_instance_comp_count(&current_dataset(*state).sys.instance, 0);
+            size_t res_count = md_instance_comp_count(&dataset.sys.instance, 0);
             if (res_count < 20) {
                 type = RepresentationType::BallAndStick;
                 color = ColorMapping::Type;
             }
         }
 
-        Representation* prot = create_representation(state, type, color, STR_LIT("protein"));
+        Representation* prot = create_representation(state, dataset, type, color, STR_LIT("protein"));
         snprintf(prot->name, sizeof(prot->name), "protein");
     }
     if (nucleic_present) {
-        Representation* nucl = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("nucleic"));
+        Representation* nucl = create_representation(state, dataset, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
     if (ion_present) {
-        Representation* ion = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("ion"));
+        Representation* ion = create_representation(state, dataset, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("ion"));
         snprintf(ion->name, sizeof(ion->name), "ion");
     }
     if (ligand_present) {
-        Representation* ligand = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("not (protein or nucleic or water or ion)"));
+        Representation* ligand = create_representation(state, dataset, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("not (protein or nucleic or water or ion)"));
         snprintf(ligand->name, sizeof(ligand->name), "ligand");
     }
     if (water_present) {
-        Representation* water = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
+        Representation* water = create_representation(state, dataset, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("water"));
         water->scale.x = 0.5f;
         snprintf(water->name, sizeof(water->name), "water");
         water->enabled = false;
@@ -1542,12 +1545,12 @@ void create_default_representations(ApplicationState* state) {
 
 done:
     if (orbitals_present) {
-        Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
+        Representation* rep = create_representation(state, dataset, RepresentationType::ElectronicStructure);
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
         rep->enabled = true;
     }
 
-    recompute_atom_visibility_mask(state);
+    recompute_atom_visibility_mask(dataset);
 }
 
 void interpolate_system_state(ApplicationState* state) {
@@ -2051,17 +2054,15 @@ void interpolate_system_state(ApplicationState* state) {
     current_dataset(*state).dirty_gpu_buffers |= MolBit_DirtyPosition;
 }
 
-void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera, bool smooth_transition) {
+void reset_view(ApplicationState* state, Dataset& dataset, const md_bitfield_t* target, bool move_camera, bool smooth_transition) {
     ASSERT(state);
 
     md_allocator_i* temp_arena = state->allocator.frame;
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(temp_arena);
     defer { md_vm_arena_temp_end(tmp); };
 
-    Dataset& current = current_dataset(*state);
-
-    if (!current.sys.atom.count) return;
-    const auto& sys = current.sys;
+    if (!dataset.sys.atom.count) return;
+    const auto& sys = dataset.sys;
     size_t popcount = 0;
     if (target) {
         popcount = md_bitfield_popcount(target);
@@ -2107,14 +2108,14 @@ void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_
     camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, basis, min_ext, max_ext);
 
     if (move_camera) {
-        current.view.animation.target_position    = optimal_pos;
-        current.view.animation.target_orientation = optimal_ori;
-        current.view.animation.target_distance    = optimal_dist;
+        dataset.view.animation.target_position    = optimal_pos;
+        dataset.view.animation.target_orientation = optimal_ori;
+        dataset.view.animation.target_distance    = optimal_dist;
 
         if (!smooth_transition) {
-            current.view.camera.position       = optimal_pos;
-            current.view.camera.orientation    = optimal_ori;
-            current.view.camera.focus_distance = optimal_dist;
+            dataset.view.camera.position       = optimal_pos;
+            dataset.view.camera.orientation    = optimal_ori;
+            dataset.view.camera.focus_distance = optimal_dist;
         }
     }
 
@@ -2122,7 +2123,7 @@ void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_
     const float  max_cell_ext = vec3_reduce_max(cell_ext);
     const float  max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
 
-    current.view.camera.near_plane = 1.0f;
-    current.view.camera.far_plane = 100000.0f;
-    current.view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
+    dataset.view.camera.near_plane = 1.0f;
+    dataset.view.camera.far_plane = 100000.0f;
+    dataset.view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 }

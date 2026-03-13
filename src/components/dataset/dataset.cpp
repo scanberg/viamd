@@ -781,7 +781,7 @@ struct Dataset : viamd::EventHandler {
 
                 if (color_changed) {
                     // @NOTE: Only the color within representations needs to be updated, not the filter.
-                    flag_all_representations_as_dirty(&data);
+                    flag_all_representations_as_dirty(current_dataset(data));
                 }
             }
 
