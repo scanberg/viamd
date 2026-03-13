@@ -21,7 +21,7 @@
 static void init_all_representations(ApplicationState* state);
 
 void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
-    const auto& sys = state.mold.sys;
+    const auto& sys = current_dataset(state).sys;
     if (picking_idx == INVALID_PICKING_IDX) return;
     
 	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
@@ -57,7 +57,7 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         }
 
         // @NOTE(Robin): External indices begin with 1 not 0
-		if (state.selection.granularity == SelectionGranularity::Atom) {
+		if (current_dataset(state).selection.granularity == SelectionGranularity::Atom) {
             md_strb_fmt(&sb, "atom[%i]", atom_idx + 1);
             if (comp_idx != -1) {
                 md_strb_fmt(&sb, "[%i]: ", local_idx + 1);
@@ -72,7 +72,7 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
             md_strb_fmt(&sb, "(%.3f, %.3f, %.3f)\n", pos.x, pos.y, pos.z);    
         }
         
-        if (comp_idx != -1 && (state.selection.granularity == SelectionGranularity::Atom || state.selection.granularity == SelectionGranularity::Component)) {
+        if (comp_idx != -1 && (current_dataset(state).selection.granularity == SelectionGranularity::Atom || current_dataset(state).selection.granularity == SelectionGranularity::Component)) {
             md_strb_fmt(&sb, "comp[%i]", comp_idx + 1);
             if (comp_name) {
                 md_strb_fmt(&sb, ": " STR_FMT, STR_ARG(comp_name));
@@ -92,11 +92,11 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
 
         uint32_t flags = 0;
 
-        if (state.selection.granularity == SelectionGranularity::Atom) {
+        if (current_dataset(state).selection.granularity == SelectionGranularity::Atom) {
 			flags = md_system_atom_flags(&sys, atom_idx);
-		} else if (state.selection.granularity == SelectionGranularity::Component && comp_idx != -1) {
+		} else if (current_dataset(state).selection.granularity == SelectionGranularity::Component && comp_idx != -1) {
 			flags = md_system_component_flags(&sys, comp_idx);
-        } else if (state.selection.granularity == SelectionGranularity::Instance && inst_idx != -1) {
+        } else if (current_dataset(state).selection.granularity == SelectionGranularity::Instance && inst_idx != -1) {
 			flags = md_system_instance_flags(&sys, inst_idx);
         }
 
@@ -238,27 +238,28 @@ void free_trajectory_data(ApplicationState* state) {
     ASSERT(state);
     interrupt_async_tasks(state);
 
-    if (state->mold.traj) {
-        load::traj::close(state->mold.traj);
-        state->mold.traj = nullptr;
+    Dataset& dataset = current_dataset(*state);
+    if (dataset.traj) {
+        load::traj::close(dataset.traj);
+        dataset.traj = nullptr;
     }
-    state->files.trajectory[0] = '\0';
+    dataset.traj_path = {};
 
-    state->mold.sys.unitcell = {};
+    dataset.sys.unitcell = {};
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
     md_array_free(state->display_properties, state->allocator.persistent);
 
-    md_array_free(state->trajectory_data.backbone_angles.data,     state->allocator.persistent);
-    md_array_free(state->trajectory_data.secondary_structure.data, state->allocator.persistent);
+    md_array_free(dataset.trajectory_data.backbone_angles.data,     state->allocator.persistent);
+    md_array_free(dataset.trajectory_data.secondary_structure.data, state->allocator.persistent);
 }
 
 void init_trajectory_data(ApplicationState* data) {
-    size_t num_frames = md_trajectory_num_frames(data->mold.traj);
+    size_t num_frames = md_trajectory_num_frames(current_dataset(*data).traj);
     if (num_frames > 0) {
         size_t min_frame = 0;
         size_t max_frame = num_frames - 1;
         md_trajectory_header_t header;
-        md_trajectory_get_header(data->mold.traj, &header);
+        md_trajectory_get_header(current_dataset(*data).traj, &header);
 
         double min_time = header.frame_times[0];
         double max_time = header.frame_times[num_frames - 1];
@@ -272,23 +273,23 @@ void init_trajectory_data(ApplicationState* data) {
             data->timeline.x_values[i] = header.frame_times[i];
         }
 
-        data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
-        int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
+        current_dataset(*data).animation.frame = CLAMP(current_dataset(*data).animation.frame, (double)min_frame, (double)max_frame);
+        int64_t frame_idx = CLAMP((int64_t)(current_dataset(*data).animation.frame + 0.5), 0, (int64_t)max_frame);
 
         md_trajectory_frame_header_t frame_header;
-        md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z);
-        data->mold.sys.unitcell = frame_header.unitcell;
+        md_trajectory_load_frame(current_dataset(*data).traj, frame_idx, &frame_header, current_dataset(*data).sys.atom.x, current_dataset(*data).sys.atom.y, current_dataset(*data).sys.atom.z);
+        current_dataset(*data).sys.unitcell = frame_header.unitcell;
 
-        if (data->mold.sys.protein_backbone.segment.count > 0) {
-            data->trajectory_data.secondary_structure.stride = data->mold.sys.protein_backbone.segment.count;
-            data->trajectory_data.secondary_structure.count = data->mold.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_bytes(data->trajectory_data.secondary_structure.data));
+        if (current_dataset(*data).sys.protein_backbone.segment.count > 0) {
+            current_dataset(*data).trajectory_data.secondary_structure.stride = current_dataset(*data).sys.protein_backbone.segment.count;
+            current_dataset(*data).trajectory_data.secondary_structure.count = current_dataset(*data).sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(current_dataset(*data).trajectory_data.secondary_structure.data, current_dataset(*data).sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(current_dataset(*data).trajectory_data.secondary_structure.data, 0, md_array_bytes(current_dataset(*data).trajectory_data.secondary_structure.data));
 
-            data->trajectory_data.backbone_angles.stride = data->mold.sys.protein_backbone.segment.count;
-            data->trajectory_data.backbone_angles.count = data->mold.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(data->trajectory_data.backbone_angles.data, 0, md_array_bytes(data->trajectory_data.backbone_angles.data));
+            current_dataset(*data).trajectory_data.backbone_angles.stride = current_dataset(*data).sys.protein_backbone.segment.count;
+            current_dataset(*data).trajectory_data.backbone_angles.count = current_dataset(*data).sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(current_dataset(*data).trajectory_data.backbone_angles.data, current_dataset(*data).sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(current_dataset(*data).trajectory_data.backbone_angles.data, 0, md_array_bytes(current_dataset(*data).trajectory_data.backbone_angles.data));
 
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
@@ -296,8 +297,8 @@ void init_trajectory_data(ApplicationState* data) {
             data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 // Create copy here of molecule since we use the full structure as input
-                md_system_t sys = data->mold.sys;
-                md_trajectory_i* traj = load::traj::get_raw_trajectory(data->mold.traj);
+                md_system_t sys = current_dataset(*data).sys;
+                md_trajectory_i* traj = load::traj::get_raw_trajectory(current_dataset(*data).traj);
 
                 md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
                 defer { md_vm_arena_destroy(temp_arena); };
@@ -309,12 +310,12 @@ void init_trajectory_data(ApplicationState* data) {
 
                 for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                     md_trajectory_frame_header_t frame_header;
-                    md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
-                    md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
+                    md_backbone_angles_t* bb_dst = current_dataset(*data).trajectory_data.backbone_angles.data + current_dataset(*data).trajectory_data.backbone_angles.stride * frame_idx;
+                    md_secondary_structure_t* ss_dst = current_dataset(*data).trajectory_data.secondary_structure.data + current_dataset(*data).trajectory_data.secondary_structure.stride * frame_idx;
 
                     md_trajectory_load_frame(traj, frame_idx, &frame_header, x, y, z);
-                    md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
-                    md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                    md_util_backbone_angles_compute(bb_dst, current_dataset(*data).trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                    md_util_backbone_secondary_structure_infer(ss_dst, current_dataset(*data).trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
                 }
                 });
 
@@ -323,11 +324,11 @@ void init_trajectory_data(ApplicationState* data) {
                 uint64_t t1 = (uint64_t)md_time_current();
                 double elapsed = md_time_as_seconds(t1 - t0);
                 MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
-                data->trajectory_data.backbone_angles.fingerprint     = generate_fingerprint();
-                data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
+                current_dataset(*data).trajectory_data.backbone_angles.fingerprint     = generate_fingerprint();
+                current_dataset(*data).trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
 
-				data->mold.interpolate_system_state = true;
-                data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+				current_dataset(*data).interpolate_system_state = true;
+                current_dataset(*data).dirty_gpu_buffers |= MolBit_ClearVelocity;
                 flag_all_representations_as_dirty(data);
             });
 
@@ -335,8 +336,8 @@ void init_trajectory_data(ApplicationState* data) {
             task_system::enqueue_task(data->tasks.backbone_computations);
         }
 
-        data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
-        data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        current_dataset(*data).dirty_gpu_buffers |= MolBit_DirtyPosition;
+        current_dataset(*data).dirty_gpu_buffers |= MolBit_ClearVelocity;
 
         // Prefetch frames
         //launch_prefetch_job(data);
@@ -344,13 +345,14 @@ void init_trajectory_data(ApplicationState* data) {
 }
 
 bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_loader_i* loader, LoadTrajectoryFlags flags) {
-    md_trajectory_i* traj = load::traj::open_file(filename, loader, &data->mold.sys, data->allocator.persistent, &data->mold.frame_cache, flags);
+    Dataset& dataset = current_dataset(*data);
+    md_trajectory_i* traj = load::traj::open_file(filename, loader, &dataset.sys, data->allocator.persistent, flags);
     if (traj) {
         free_trajectory_data(data);
-        data->mold.traj = traj;
-        str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), filename);
+        dataset.traj = traj;
+        dataset.traj_path = str_copy(filename, data->allocator.persistent);
         init_trajectory_data(data);
-        data->animation.frame = 0;
+        dataset.animation.frame = 0;
         return true;
     }
 
@@ -358,32 +360,32 @@ bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_
 }
 
 void init_molecule_data(ApplicationState* data) {
-    if (data->mold.sys.atom.count) {
+    if (current_dataset(*data).sys.atom.count) {
 
         data->picking.idx = INVALID_PICKING_IDX;
-        data->selection.atom_idx.hovered = -1;
-        data->selection.atom_idx.right_click = -1;
-        data->selection.bond_idx.hovered = -1;
-        data->selection.bond_idx.right_click = -1;
+        current_dataset(*data).selection.atom_idx.hovered = -1;
+        current_dataset(*data).selection.atom_idx.right_click = -1;
+        current_dataset(*data).selection.bond_idx.hovered = -1;
+        current_dataset(*data).selection.bond_idx.right_click = -1;
 
-        data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
-        if (data->mold.sys.protein_backbone.segment.count > 0) {
-            data->interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, data->mold.sys.protein_backbone.segment.count, data->mold.sys_alloc);
+        current_dataset(*data).gl_mol = md_gl_mol_create(&current_dataset(*data).sys);
+        if (current_dataset(*data).sys.protein_backbone.segment.count > 0) {
+            current_dataset(*data).interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, current_dataset(*data).sys.protein_backbone.segment.count, current_dataset(*data).sys_alloc);
         }
 
 #if EXPERIMENTAL_GFX_API
-        const md_system_t& mol = data->mold.sys;
-        vec3_t& aabb_min = data->mold.sys_aabb_min;
-        vec3_t& aabb_max = data->mold.sys_aabb_max;
+        const md_system_t& mol = current_dataset(*data).sys;
+        vec3_t& aabb_min = current_dataset(*data).sys_aabb_min;
+        vec3_t& aabb_max = current_dataset(*data).sys_aabb_max;
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
-        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
+        current_dataset(*data).gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
+        md_gfx_structure_set_atom_position(current_dataset(*data).gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_gfx_structure_set_atom_radius(current_dataset(*data).gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
+        md_gfx_structure_set_aabb(current_dataset(*data).gfx_structure, &current_dataset(*data).sys_aabb_min, &current_dataset(*data).sys_aabb_max);
         if (mol.instance.count > 0) {
-            md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
-            md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
+            md_gfx_structure_set_instance_atom_ranges(current_dataset(*data).gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
+            md_gfx_structure_set_instance_transforms(current_dataset(*data).gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
         }
 #endif
     }
@@ -404,18 +406,19 @@ static inline void clear_density_volume(ApplicationState* state) {
 void free_molecule_data(ApplicationState* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
+    Dataset& dataset = current_dataset(*data);
 
-    //md_molecule_free(&data->mold.sys, persistent_alloc);
-    md_arena_allocator_reset(data->mold.sys_alloc);
-    MEMSET(&data->mold.sys, 0, sizeof(data->mold.sys));
+    md_arena_allocator_reset(dataset.sys_alloc);
+    MEMSET(&dataset.sys, 0, sizeof(dataset.sys));
 
-    md_gl_mol_destroy(data->mold.gl_mol);
-    MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
+    md_gl_mol_destroy(dataset.gl_mol);
+    dataset.sys_path = {};
+    dataset.coarse_grained = false;
 
-    data->interpolated_properties.secondary_structure = nullptr;
+    dataset.interpolated_properties.secondary_structure = nullptr;
 
-    md_bitfield_clear(&data->selection.selection_mask);
-    md_bitfield_clear(&data->selection.highlight_mask);
+    md_bitfield_clear(&dataset.selection.selection_mask);
+    md_bitfield_clear(&dataset.selection.highlight_mask);
     if (data->script.ir) {
         md_script_ir_free(data->script.ir);
         data->script.ir = nullptr;
@@ -439,6 +442,7 @@ void free_molecule_data(ApplicationState* data) {
 
 bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
     ASSERT(data);
+    Dataset& dataset = current_dataset(*data);
 
     str_t path_to_file = md_path_make_canonical(param.file_path, data->allocator.frame);
     if (path_to_file) {
@@ -447,17 +451,17 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
             free_trajectory_data(data);
             free_molecule_data(data);
 
-            if (!param.sys_loader->init_from_file(&data->mold.sys, path_to_file, param.sys_loader_arg, data->mold.sys_alloc)) {
+            if (!param.sys_loader->init_from_file(&dataset.sys, path_to_file, param.sys_loader_arg, dataset.sys_alloc)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return false;
             }
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
-            str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), path_to_file);
-            data->files.coarse_grained = param.coarse_grained;
+            dataset.sys_path = str_copy(path_to_file, data->allocator.persistent);
+            dataset.coarse_grained = param.coarse_grained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
             md_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
-            md_util_system_postprocess(&data->mold.sys, data->mold.sys_alloc, flags);
+            md_util_system_postprocess(&dataset.sys, dataset.sys_alloc, flags);
             init_molecule_data(data);
 
             // @NOTE: Some files contain both atomic coordinates and trajectory
@@ -469,7 +473,7 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
         }
 
         if (param.traj_loader) {
-            if (!data->mold.sys.atom.count) {
+            if (!dataset.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
                 return false;
             }
@@ -507,9 +511,9 @@ void load_workspace(ApplicationState* data, str_t filename) {
     remove_all_selections(data);
     remove_all_representations(data);
     data->editor.SetText("");
-    data->files.workspace[0]  = '\0';
+    data->workspace_path = {};
 
-    data->animation = {};
+    current_dataset(*data).animation = {};
 
     str_t new_molecule_file   = {};
     str_t new_trajectory_file = {};
@@ -556,28 +560,28 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 if (str_eq(ident, STR_LIT("Frame"))) {
                     viamd::extract_dbl(new_frame, arg);
                 } else if (str_eq(ident, STR_LIT("Fps"))) {
-                    viamd::extract_flt(data->animation.fps, arg);
+                    viamd::extract_flt(current_dataset(*data).animation.fps, arg);
                 } else if (str_eq(ident, STR_LIT("Interpolation"))) {
                     int mode;
                     viamd::extract_int(mode, arg);
-                    data->animation.interpolation = (InterpolationMode)mode;
+                    current_dataset(*data).animation.interpolation = (InterpolationMode)mode;
                 }
             }
         } else if (str_eq(section, STR_LIT("RenderSettings"))) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("SsaoEnabled"))) {
-                    viamd::extract_bool(data->visuals.ssao.enabled, arg);
+                    viamd::extract_bool(current_dataset(*data).visuals.ssao.enabled, arg);
                 } else if (str_eq(ident, STR_LIT("SsaoIntensity"))) {
-                    viamd::extract_flt(data->visuals.ssao.intensity, arg);
+                    viamd::extract_flt(current_dataset(*data).visuals.ssao.intensity, arg);
                 } else if (str_eq(ident, STR_LIT("SsaoRadius"))) {
-                    viamd::extract_flt(data->visuals.ssao.radius, arg);
+                    viamd::extract_flt(current_dataset(*data).visuals.ssao.radius, arg);
                 } else if (str_eq(ident, STR_LIT("SsaoBias"))) {
-                    viamd::extract_flt(data->visuals.ssao.bias, arg);
+                    viamd::extract_flt(current_dataset(*data).visuals.ssao.bias, arg);
                 } else if (str_eq(ident, STR_LIT("DofEnabled"))) {
-                    viamd::extract_bool(data->visuals.dof.enabled, arg);
+                    viamd::extract_bool(current_dataset(*data).visuals.dof.enabled, arg);
                 } else if (str_eq(ident, STR_LIT("DofFocusScale"))) {
-                    viamd::extract_flt(data->visuals.dof.focus_scale, arg);
+                    viamd::extract_flt(current_dataset(*data).visuals.dof.focus_scale, arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("Camera"))) {
@@ -707,9 +711,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
     data->view.animation.target_orientation = data->view.camera.orientation;
     data->view.animation.target_distance    = data->view.camera.focus_distance;
     
-    str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
-    
-    data->files.coarse_grained  = new_coarse_grained;
+    data->workspace_path = str_copy(filename, data->allocator.persistent);
+    current_dataset(*data).coarse_grained  = new_coarse_grained;
 
     load::LoaderState loader_state = {};
     load::init_loader_state(&loader_state, new_molecule_file, data->allocator.frame);
@@ -722,9 +725,9 @@ void load_workspace(ApplicationState* data, str_t filename) {
     param.sys_loader_arg = loader_state.sys_loader_arg;
 
     if (new_molecule_file && load_dataset_from_file(data, param)) {
-        str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), new_molecule_file);
+        current_dataset(*data).sys_path = str_copy(new_molecule_file, data->allocator.persistent);
     } else {
-        data->files.molecule[0]   = '\0';
+        current_dataset(*data).sys_path = {};
     }
 
     if (new_trajectory_file) {
@@ -733,11 +736,11 @@ void load_workspace(ApplicationState* data, str_t filename) {
         param.traj_loader = loader_state.traj_loader;
         param.file_path = new_trajectory_file;
         if (load_dataset_from_file(data, param)) {
-            str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), new_trajectory_file);
+            current_dataset(*data).traj_path = str_copy(new_trajectory_file, data->allocator.persistent);
         }
-        data->animation.frame = new_frame;
+        current_dataset(*data).animation.frame = new_frame;
     } else {
-        data->files.trajectory[0] = '\0';
+        current_dataset(*data).traj_path = {};
     }
 
     //apply_atom_elem_mappings(data);
@@ -782,25 +785,26 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     state.sb += header_snippet;
     state.sb += '\n';
 
-    str_t mol_file  = md_path_make_relative(filename, str_from_cstr(app_state->files.molecule),   temp_alloc);
-    str_t traj_file = md_path_make_relative(filename, str_from_cstr(app_state->files.trajectory), temp_alloc);
+    const Dataset& dataset = current_dataset(*app_state);
+    str_t mol_file  = md_path_make_relative(filename, dataset.sys_path, temp_alloc);
+    str_t traj_file = md_path_make_relative(filename, dataset.traj_path, temp_alloc);
 
     viamd::write_section_header(state, STR_LIT("Files"));
     viamd::write_str(state, STR_LIT("MoleculeFile"), mol_file);
     viamd::write_str(state, STR_LIT("TrajectoryFile"), traj_file);
-    viamd::write_int(state, STR_LIT("CoarseGrained"), app_state->files.coarse_grained);
+    viamd::write_int(state, STR_LIT("CoarseGrained"), dataset.coarse_grained);
 
     viamd::write_section_header(state, STR_LIT("Animation"));
-    viamd::write_dbl(state, STR_LIT("Frame"), app_state->animation.frame);
-    viamd::write_flt(state, STR_LIT("Fps"), app_state->animation.fps);
-    viamd::write_int(state, STR_LIT("Interpolation"), (int)app_state->animation.interpolation);
+    viamd::write_dbl(state, STR_LIT("Frame"), dataset.animation.frame);
+    viamd::write_flt(state, STR_LIT("Fps"), dataset.animation.fps);
+    viamd::write_int(state, STR_LIT("Interpolation"), (int)dataset.animation.interpolation);
 
     viamd::write_section_header(state, STR_LIT("RenderSettings"));
-    viamd::write_bool(state, STR_LIT("SsaoEnabled"), app_state->visuals.ssao.enabled);
-    viamd::write_flt(state, STR_LIT("SsaoIntensity"), app_state->visuals.ssao.intensity);
-    viamd::write_flt(state, STR_LIT("SsaoRadius"), app_state->visuals.ssao.radius);
-    viamd::write_bool(state, STR_LIT("DofEnabled"), app_state->visuals.dof.enabled);
-    viamd::write_flt(state, STR_LIT("DofFocusScale"), app_state->visuals.dof.focus_scale);
+    viamd::write_bool(state, STR_LIT("SsaoEnabled"), dataset.visuals.ssao.enabled);
+    viamd::write_flt(state, STR_LIT("SsaoIntensity"), dataset.visuals.ssao.intensity);
+    viamd::write_flt(state, STR_LIT("SsaoRadius"), dataset.visuals.ssao.radius);
+    viamd::write_bool(state, STR_LIT("DofEnabled"), dataset.visuals.dof.enabled);
+    viamd::write_flt(state, STR_LIT("DofFocusScale"), dataset.visuals.dof.focus_scale);
 
     viamd::write_section_header(state, STR_LIT("Camera"));
     viamd::write_vec3(state, STR_LIT("Position"), app_state->view.camera.position);
@@ -809,8 +813,8 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_int(state,  STR_LIT("Mode"), (int)app_state->view.mode);
 
 
-    for (size_t i = 0; i < md_array_size(app_state->representation.reps); ++i) {
-        const Representation& rep = app_state->representation.reps[i];
+    for (size_t i = 0; i < md_array_size(dataset.representation.reps); ++i) {
+        const Representation& rep = dataset.representation.reps[i];
         viamd::write_section_header(state, STR_LIT("Representation"));
         viamd::write_str(state,  STR_LIT("Name"), str_from_cstr(rep.name));
         viamd::write_str(state,  STR_LIT("Filter"), str_from_cstr(rep.filt));
@@ -852,8 +856,8 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_str(state, STR_LIT("Text"), str_t{text.c_str(), text.size()});
     }
 
-    for (size_t i = 0; i < md_array_size(app_state->selection.stored_selections); ++i) {
-        const Selection& sel = app_state->selection.stored_selections[i];
+    for (size_t i = 0; i < md_array_size(dataset.selection.stored_selections); ++i) {
+        const Selection& sel = dataset.selection.stored_selections[i];
         size_t cap = md_bitfield_serialize_size_in_bytes(&sel.atom_mask);
         char* buf = (char*)md_vm_arena_push(temp_alloc, cap);
         size_t len = md_bitfield_serialize(buf, &sel.atom_mask);
@@ -879,40 +883,40 @@ Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* 
     if (atom_mask) {
         md_bitfield_copy(&sel.atom_mask, atom_mask);
     }
-    md_array_push(state->selection.stored_selections, sel, state->allocator.persistent);
-    return md_array_last(state->selection.stored_selections);
+    md_array_push(current_dataset(*state).selection.stored_selections, sel, state->allocator.persistent);
+    return md_array_last(current_dataset(*state).selection.stored_selections);
 }
 
 void remove_all_selections(ApplicationState* state) {
-    md_array_shrink(state->selection.stored_selections, 0);
+    md_array_shrink(current_dataset(*state).selection.stored_selections, 0);
 }
 
 void remove_selection(ApplicationState* state, int idx) {
     ASSERT(state);
-    if (idx < 0 || (int)md_array_size(state->selection.stored_selections) <= idx) {
+    if (idx < 0 || (int)md_array_size(current_dataset(*state).selection.stored_selections) <= idx) {
         VIAMD_LOG_ERROR("Index [%i] out of range when trying to remove selection", idx);
     }
-    auto item = &state->selection.stored_selections[idx];
+    auto item = &current_dataset(*state).selection.stored_selections[idx];
     md_bitfield_free(&item->atom_mask);
 
-    state->selection.stored_selections[idx] = *md_array_last(state->selection.stored_selections);
-    md_array_pop(state->selection.stored_selections);
+    current_dataset(*state).selection.stored_selections[idx] = *md_array_last(current_dataset(*state).selection.stored_selections);
+    md_array_pop(current_dataset(*state).selection.stored_selections);
 }
 
 // --- Representation ---
 
 static void init_representation(ApplicationState* state, Representation* rep) {
 #if EXPERIMENTAL_GFX_API
-    rep->gfx_rep = md_gfx_rep_create(state->mold.sys.atom.count);
+    rep->gfx_rep = md_gfx_rep_create(current_dataset(*state).sys.atom.count);
 #endif
-    rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
+    rep->md_rep = md_gl_rep_create(current_dataset(*state).gl_mol);
     md_bitfield_init(&rep->atom_mask, state->allocator.persistent);
 
-    size_t num_props = md_array_size(state->representation.info.atom_properties);
+    size_t num_props = md_array_size(current_dataset(*state).representation.info.atom_properties);
     if (num_props > 0) {
         rep->prop.idx = 0;
-        rep->prop.range_beg = state->representation.info.atom_properties[0].value_min;
-        rep->prop.range_end = state->representation.info.atom_properties[0].value_max;
+        rep->prop.range_beg = current_dataset(*state).representation.info.atom_properties[0].value_min;
+        rep->prop.range_end = current_dataset(*state).representation.info.atom_properties[0].value_max;
     }
 
     flag_representation_as_dirty(rep);
@@ -920,22 +924,22 @@ static void init_representation(ApplicationState* state, Representation* rep) {
 
 Representation* create_representation(ApplicationState* state, RepresentationType type, ColorMapping color_mapping, str_t filter) {
     ASSERT(state);
-    md_array_push(state->representation.reps, Representation(), state->allocator.persistent);
-    Representation* rep = md_array_last(state->representation.reps);
+    md_array_push(current_dataset(*state).representation.reps, Representation(), state->allocator.persistent);
+    Representation* rep = md_array_last(current_dataset(*state).representation.reps);
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!str_empty(filter)) {
         str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
     }
-    rep->electronic_structure.mo_idx = (int)state->representation.info.alpha.homo_idx;
+    rep->electronic_structure.mo_idx = (int)current_dataset(*state).representation.info.alpha.homo_idx;
     init_representation(state, rep);
     return rep;
 }
 
 Representation* clone_representation(ApplicationState* state, const Representation& rep) {
     ASSERT(state);
-    md_array_push(state->representation.reps, rep, state->allocator.persistent);
-    Representation* clone = md_array_last(state->representation.reps);
+    md_array_push(current_dataset(*state).representation.reps, rep, state->allocator.persistent);
+    Representation* clone = md_array_last(current_dataset(*state).representation.reps);
     clone->md_rep = {0};
     clone->atom_mask = {0};
     init_representation(state, clone);
@@ -944,32 +948,32 @@ Representation* clone_representation(ApplicationState* state, const Representati
 
 void remove_representation(ApplicationState* state, int idx) {
     ASSERT(state);
-    ASSERT(idx < md_array_size(state->representation.reps));
-    auto& rep = state->representation.reps[idx];
+    ASSERT(idx < md_array_size(current_dataset(*state).representation.reps));
+    auto& rep = current_dataset(*state).representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_rep_destroy(rep.md_rep);
     if (rep.electronic_structure.vol.tex_id != 0) gl::free_texture(&rep.electronic_structure.vol.tex_id);
     if (rep.electronic_structure.dvr.tf_tex != 0) gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
-    md_array_swap_back_and_pop(state->representation.reps, idx);
+    md_array_swap_back_and_pop(current_dataset(*state).representation.reps, idx);
     recompute_atom_visibility_mask(state);
 }
 
 void recompute_atom_visibility_mask(ApplicationState* state) {
     ASSERT(state);
-    auto& mask = state->representation.visibility_mask;
+    auto& mask = current_dataset(*state).representation.visibility_mask;
 
     md_bitfield_clear(&mask);
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        auto& rep = state->representation.reps[i];
+    for (size_t i = 0; i < md_array_size(current_dataset(*state).representation.reps); ++i) {
+        auto& rep = current_dataset(*state).representation.reps[i];
         if (!rep.enabled) continue;
         md_bitfield_or_inplace(&mask, &rep.atom_mask);
     }
-    state->representation.visibility_mask_hash = md_bitfield_hash64(&mask, 0);
+    current_dataset(*state).representation.visibility_mask_hash = md_bitfield_hash64(&mask, 0);
 }
 
 void update_all_representations(ApplicationState* state) {
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        update_representation(state, &state->representation.reps[i]);
+    for (size_t i = 0; i < md_array_size(current_dataset(*state).representation.reps); ++i) {
+        update_representation(state, &current_dataset(*state).representation.reps[i]);
     }
 }
 
@@ -984,7 +988,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
     if (!rep->enabled) return;
     if (!rep->needs_update) return;
 
-    const auto& sys = state->mold.sys;
+    const auto& sys = current_dataset(*state).sys;
     size_t num_atoms = md_system_atom_count(&sys);
 
     md_allocator_i* frame_alloc = state->allocator.frame;
@@ -996,7 +1000,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
 
     //md_script_property_t prop = {0};
     //if (rep->color_mapping == ColorMapping::Property) {
-    //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.sys, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
+    //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &current_dataset(*data).sys, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
     //}
 
     uint32_t* colors = 0;
@@ -1035,10 +1039,10 @@ void update_representation(ApplicationState* state, Representation* rep) {
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
 
-            if (md_array_size(state->representation.info.atom_properties) > 0) {
+            if (md_array_size(current_dataset(*state).representation.info.atom_properties) > 0) {
                 float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
                 EvalAtomProperty eval = {
-                    .property_id = state->representation.info.atom_properties[rep->prop.idx].id,
+                    .property_id = current_dataset(*state).representation.info.atom_properties[rep->prop.idx].id,
                     .idx = 0,
                     .output_written = false,
                     .num_values = num_atoms,
@@ -1077,17 +1081,17 @@ void update_representation(ApplicationState* state, Representation* rep) {
                         md_script_vis_init(&vis, frame_alloc);
                         md_script_vis_ctx_t ctx = {
                             .ir = state->script.eval_ir,
-                            .mol = &state->mold.sys,
-                            .traj = state->mold.traj,
+                            .mol = &current_dataset(*state).sys,
+                            .traj = current_dataset(*state).traj,
                         };
                         result = md_script_vis_eval_payload(&vis, rep->prop->vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS);
                     }
                     //}
                     if (result) {
                         if (dim == (int)md_array_size(vis.structure)) {
-                            int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
-                            int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
-                            float frame_fract = fractf((float)state->animation.frame);
+                            int i0 = CLAMP((int)current_dataset(*state).animation.frame + 0, 0, (int)rep->prop->data.num_values / dim - 1);
+                            int i1 = CLAMP((int)current_dataset(*state).animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
+                            float frame_fract = fractf((float)current_dataset(*state).animation.frame);
 
                             md_bitfield_t mask = {0};
                             md_bitfield_init(&mask, frame_alloc);
@@ -1101,9 +1105,9 @@ void update_representation(ApplicationState* state, Representation* rep) {
                         }
                     }
                 } else {
-                    int i0 = CLAMP((int)state->animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
-                    int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
-                    float value = lerpf(values[i0], values[i1], fractf((float)state->animation.frame));
+                    int i0 = CLAMP((int)current_dataset(*state).animation.frame + 0, 0, (int)rep->prop->data.num_values - 1);
+                    int i1 = CLAMP((int)current_dataset(*state).animation.frame + 1, 0, (int)rep->prop->data.num_values - 1);
+                    float value = lerpf(values[i0], values[i1], fractf((float)current_dataset(*state).animation.frame));
                     float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
                     ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
                     color_atoms_uniform(colors, mol.atom.count, vec_cast(color));
@@ -1138,7 +1142,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
         break;
     case RepresentationType::ElectronicStructure: {
-        size_t num_mos = state->representation.info.alpha.num_orbitals;
+        size_t num_mos = current_dataset(*state).representation.info.alpha.num_orbitals;
         rep->type_is_valid = num_mos > 0;
         if (num_mos > 0) {
             uint64_t orb_idx = 0;
@@ -1171,7 +1175,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     16.0f,
                 };
                 EvalElectronicStructure data = {
-                    .system = &state->mold.sys,
+                    .system = &current_dataset(*state).sys,
                     .type = rep->electronic_structure.type,
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
@@ -1203,13 +1207,13 @@ void update_representation(ApplicationState* state, Representation* rep) {
         }
 
         if (rep->filt_is_dirty) {
-			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &current_dataset(*state).sys, current_dataset(*state).sys.atom.x, current_dataset(*state).sys.atom.y, current_dataset(*state).sys.atom.z, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
             rep->filt_is_dirty = false;
         }
 
         if (rep->filt_is_valid) {
             filter_colors(colors, num_atoms, &rep->atom_mask);
-            state->representation.atom_visibility_mask_dirty = true;
+            current_dataset(*state).representation.atom_visibility_mask_dirty = true;
             md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
 
 #if EXPERIMENTAL_GFX_API
@@ -1225,20 +1229,20 @@ void update_representation(ApplicationState* state, Representation* rep) {
 }
 
 void update_representation_info(ApplicationState* state) {
-    md_allocator_i* alloc = state->representation.info.alloc;
+    md_allocator_i* alloc = current_dataset(*state).representation.info.alloc;
     md_arena_allocator_reset(alloc);
 
     // Clear info, maintain allocator
-    state->representation.info = {};
-    state->representation.info.alloc = alloc;
+    current_dataset(*state).representation.info = {};
+    current_dataset(*state).representation.info.alloc = alloc;
 
     // Broadcast event to populate info
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &current_dataset(*state).representation.info);
 }
 
 static void init_all_representations(ApplicationState* state) {
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        auto& rep = state->representation.reps[i];
+    for (size_t i = 0; i < md_array_size(current_dataset(*state).representation.reps); ++i) {
+        auto& rep = current_dataset(*state).representation.reps[i];
         init_representation(state, &rep);
     }
 }
@@ -1252,14 +1256,14 @@ void flag_representation_as_dirty(Representation* rep) {
 
 void flag_all_representations_as_dirty(ApplicationState* state) {
     ASSERT(state);
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        flag_representation_as_dirty(&state->representation.reps[i]);
+    for (size_t i = 0; i < md_array_size(current_dataset(*state).representation.reps); ++i) {
+        flag_representation_as_dirty(&current_dataset(*state).representation.reps[i]);
     }
 }
 
 void remove_all_representations(ApplicationState* state) {
-    while (md_array_size(state->representation.reps) > 0) {
-        remove_representation(state, (int32_t)md_array_size(state->representation.reps) - 1);
+    while (md_array_size(current_dataset(*state).representation.reps) > 0) {
+        remove_representation(state, (int32_t)md_array_size(current_dataset(*state).representation.reps) - 1);
     }
 }
 
@@ -1271,16 +1275,16 @@ void create_default_representations(ApplicationState* state) {
     bool water_present = false;
     bool ligand_present = false;
     bool coarse_grained = false;
-    bool orbitals_present = state->representation.info.alpha.num_orbitals > 0;
+    bool orbitals_present = current_dataset(*state).representation.info.alpha.num_orbitals > 0;
 
-    if (state->mold.sys.atom.count > 3'000'000) {
+    if (current_dataset(*state).sys.atom.count > 3'000'000) {
         VIAMD_LOG_INFO("Large system detected, creating default representation for all atoms");
         Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
-    if (state->mold.sys.component.count == 0) {
+    if (current_dataset(*state).sys.component.count == 0) {
         // No residues present
         Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
@@ -1288,8 +1292,8 @@ void create_default_representations(ApplicationState* state) {
     }
 
     // TODO: Redo this check with entities instead of atom flags
-    for (size_t i = 0; i < state->mold.sys.atom.count; ++i) {
-        uint32_t flags = state->mold.sys.atom.flags[i];
+    for (size_t i = 0; i < current_dataset(*state).sys.atom.count; ++i) {
+        uint32_t flags = current_dataset(*state).sys.atom.flags[i];
         if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
         if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
         if (flags & MD_FLAG_ION) ion_present = true;
@@ -1311,10 +1315,10 @@ void create_default_representations(ApplicationState* state) {
         RepresentationType type = RepresentationType::Cartoon;
         ColorMapping color = ColorMapping::SecondaryStructure;
 
-        if (state->mold.sys.instance.count > 1) {
+        if (current_dataset(*state).sys.instance.count > 1) {
             color = ColorMapping::InstId;
         } else {
-            size_t res_count = md_instance_comp_count(&state->mold.sys.instance, 0);
+            size_t res_count = md_instance_comp_count(&current_dataset(*state).sys.instance, 0);
             if (res_count < 20) {
                 type = RepresentationType::BallAndStick;
                 color = ColorMapping::Type;

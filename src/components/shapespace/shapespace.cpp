@@ -176,7 +176,7 @@ struct Shapespace : viamd::EventHandler {
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered()) {
                 if (input_valid) {
-                    md_bitfield_copy(&app_state->selection.highlight_mask, &joined_bitfield);
+                    md_bitfield_copy(&current_dataset(*app_state).selection.highlight_mask, &joined_bitfield);
                 } else if (error[0] != '\0') {
                     ImGui::SetTooltip("%s", error);
                 }
@@ -291,7 +291,7 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::PopStyleVar(2);
 
                 if (ImPlot::IsPlotHovered()) {
-                    md_bitfield_clear(&app_state->selection.highlight_mask);
+                    md_bitfield_clear(&current_dataset(*app_state).selection.highlight_mask);
                 }
 
                 // Redraw hovered index
@@ -308,7 +308,7 @@ struct Shapespace : viamd::EventHandler {
                     vec2_t* coordinates = coords + offset;
                     ImPlot::PlotScatterG("##hovered structure", getter, coordinates, count);
                     if (hovered_structure_idx < (int)md_array_size(bitfields)) {
-                        md_bitfield_copy(&app_state->selection.highlight_mask, &bitfields[hovered_structure_idx]);
+                        md_bitfield_copy(&current_dataset(*app_state).selection.highlight_mask, &bitfields[hovered_structure_idx]);
                     }
                 }
                 if (hovered_point_idx != -1) {
@@ -326,11 +326,11 @@ struct Shapespace : viamd::EventHandler {
                     ImGui::SetTooltip("%s", buf);
 
                     if (structure_idx < (int)md_array_size(bitfields)) {
-                        md_bitfield_copy(&app_state->selection.highlight_mask, &bitfields[structure_idx]);
+                        md_bitfield_copy(&current_dataset(*app_state).selection.highlight_mask, &bitfields[structure_idx]);
                     }
 
                     if (ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseClicked[0]) {
-                        app_state->animation.frame = frame_idx;
+                        current_dataset(*app_state).animation.frame = frame_idx;
                     }
                 }
                 ImPlot::PopStyleColor();
@@ -356,11 +356,11 @@ struct Shapespace : viamd::EventHandler {
                 joined_bitfield = {0};
                 md_bitfield_init(&joined_bitfield, arena);
 
-				md_trajectory_i* traj = load::traj::get_raw_trajectory(app_state->mold.traj);
+				md_trajectory_i* traj = load::traj::get_raw_trajectory(current_dataset(*app_state).traj);
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
-                if (md_filter_evaluate(&bitfields, str_from_cstr(input), &app_state->mold.sys, app_state->mold.sys.atom.x, app_state->mold.sys.atom.y, app_state->mold.sys.atom.z, app_state->script.ir, NULL, error, sizeof(error), arena)) {
+                if (md_filter_evaluate(&bitfields, str_from_cstr(input), &current_dataset(*app_state).sys, current_dataset(*app_state).sys.atom.x, current_dataset(*app_state).sys.atom.y, current_dataset(*app_state).sys.atom.z, app_state->script.ir, NULL, error, sizeof(error), arena)) {
                     eval_hash = hash;
 
                     input_valid = true;                    
@@ -385,7 +385,7 @@ struct Shapespace : viamd::EventHandler {
                     evaluate_task = task_system::create_pool_task(STR_LIT("Eval Shape Space"), (uint32_t)num_frames, [shapespace = this, traj](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                         (void)thread_num;
                         ApplicationState* app_state = shapespace->app_state;
-                        const size_t stride = ALIGN_TO(app_state->mold.sys.atom.count, 8);
+                        const size_t stride = ALIGN_TO(current_dataset(*app_state).sys.atom.count, 8);
                         const size_t bytes = stride * 3 * sizeof(float);
                         md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
                         defer { md_arena_allocator_destroy(alloc); };
@@ -397,7 +397,7 @@ struct Shapespace : viamd::EventHandler {
                         float* w = 0;
                         if (shapespace->use_mass) {
                             w = (float*)md_arena_allocator_push(alloc, stride * sizeof(float));
-                            md_atom_extract_masses(w, 0, app_state->mold.sys.atom.count, &app_state->mold.sys.atom);
+                            md_atom_extract_masses(w, 0, current_dataset(*app_state).sys.atom.count, &current_dataset(*app_state).sys.atom);
                         }
 
                         const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
@@ -419,8 +419,8 @@ struct Shapespace : viamd::EventHandler {
                                     xyzw[dst_idx++] = vec4_set(x[src_idx], y[src_idx], z[src_idx], w ? w[src_idx] : 1.0f);
                                 }
 
-                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &app_state->mold.sys.unitcell);
-                                md_util_deperiodize_vec4(xyzw, count, com, &app_state->mold.sys.unitcell);
+                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &current_dataset(*app_state).sys.unitcell);
+                                md_util_deperiodize_vec4(xyzw, count, com, &current_dataset(*app_state).sys.unitcell);
 
                                 const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                                 const vec3_t weights = md_util_shape_weights(&M);
@@ -449,7 +449,7 @@ struct Shapespace : viamd::EventHandler {
             defer { md_arena_allocator_destroy(temp_arena); };
 
             // @TODO: add unit to time (if available)
-            md_unit_t time_unit = md_trajectory_time_unit(app_state->mold.traj);
+            md_unit_t time_unit = md_trajectory_time_unit(current_dataset(*app_state).traj);
 
             str_t x_label = STR_LIT("Frame");
             if (!md_unit_empty(time_unit)) {

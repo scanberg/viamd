@@ -535,6 +535,7 @@ struct Dataset {
     char identifier[64] = "dataset";
 
     md_allocator_i*     alloc = nullptr;
+    md_allocator_i*     sys_alloc = nullptr;
     md_gl_mol_t         gl_mol = {}; // gl molecule handle
 #if EXPERIMENTAL_GFX_API
     md_gfx_handle_t     gfx_structure = {};
@@ -546,7 +547,11 @@ struct Dataset {
 
     str_t sys_path  = STR_LIT("");
     str_t traj_path = STR_LIT("");
+    bool coarse_grained = false;
 
+    vec3_t              sys_aabb_min = {};
+    vec3_t              sys_aabb_max = {};
+    bool                interpolate_system_state = false;
     bool                dirty_system_state = false;
     uint32_t            dirty_gpu_buffers = 0;
 
@@ -963,6 +968,10 @@ struct ApplicationState {
 };
 
 static inline Dataset& current_dataset(ApplicationState& state) {
+    return state.dataset.datasets[state.dataset.current_idx];
+}
+
+static inline const Dataset& current_dataset(const ApplicationState& state) {
     return state.dataset.datasets[state.dataset.current_idx];
 }
 

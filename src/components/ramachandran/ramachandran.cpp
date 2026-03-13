@@ -634,8 +634,8 @@ struct Ramachandran : viamd::EventHandler {
             md_array_shrink(rama_type_indices[2], 0);
             md_array_shrink(rama_type_indices[3], 0);
 
-            for (uint32_t i = 0; i < (uint32_t)md_array_size(state.mold.sys.protein_backbone.segment.rama_type); ++i) {
-                switch (state.mold.sys.protein_backbone.segment.rama_type[i]) {
+            for (uint32_t i = 0; i < (uint32_t)md_array_size(current_dataset(state).sys.protein_backbone.segment.rama_type); ++i) {
+                switch (current_dataset(state).sys.protein_backbone.segment.rama_type[i]) {
                 case MD_RAMACHANDRAN_TYPE_GENERAL: md_array_push(rama_type_indices[0], i, arena); break;
                 case MD_RAMACHANDRAN_TYPE_GLYCINE: md_array_push(rama_type_indices[1], i, arena); break;
                 case MD_RAMACHANDRAN_TYPE_PROLINE: md_array_push(rama_type_indices[2], i, arena); break;
@@ -650,18 +650,18 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void update(ApplicationState& state) {
-        if (show_window && state.mold.sys.protein_backbone.segment.count > 0) {
-            const size_t num_frames = md_trajectory_num_frames(state.mold.traj);
+        if (show_window && current_dataset(state).sys.protein_backbone.segment.count > 0) {
+            const size_t num_frames = md_trajectory_num_frames(current_dataset(state).traj);
             if (num_frames > 0) {
-                if (full_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
+                if (full_fingerprint != current_dataset(state).trajectory_data.backbone_angles.fingerprint) {
                     if (!task_system::task_is_running(compute_density_full)) {
-                        full_fingerprint = state.trajectory_data.backbone_angles.fingerprint;
+                        full_fingerprint = current_dataset(state).trajectory_data.backbone_angles.fingerprint;
 
                         const uint32_t frame_beg = 0;
                         const uint32_t frame_end = (uint32_t)num_frames;
-                        const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
+                        const uint32_t frame_stride = (uint32_t)current_dataset(state).trajectory_data.backbone_angles.stride;
 
-                        compute_density_full = rama_rep_compute_density(&rama_data.full, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
+                        compute_density_full = rama_rep_compute_density(&rama_data.full, current_dataset(state).trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
                     } else {
                         task_system::task_interrupt(compute_density_full);
                     }
@@ -673,9 +673,9 @@ struct Ramachandran : viamd::EventHandler {
 
                         const uint32_t frame_beg = MIN((uint32_t)state.timeline.filter.beg_frame, (uint32_t)num_frames - 1);
                         const uint32_t frame_end = MIN((uint32_t)state.timeline.filter.end_frame + 1, (uint32_t)num_frames);
-                        const uint32_t frame_stride = (uint32_t)state.trajectory_data.backbone_angles.stride;
+                        const uint32_t frame_stride = (uint32_t)current_dataset(state).trajectory_data.backbone_angles.stride;
 
-                        compute_density_filt = rama_rep_compute_density(&rama_data.filt, state.trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
+                        compute_density_filt = rama_rep_compute_density(&rama_data.filt, current_dataset(state).trajectory_data.backbone_angles.data, frame_beg, frame_end, frame_stride);
                     }
                     else {
                         task_system::task_interrupt(compute_density_filt);
@@ -762,9 +762,9 @@ struct Ramachandran : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
 
-            const auto& sys = state.mold.sys;
-            md_bitfield_t* selection_mask = &state.selection.selection_mask;
-            md_bitfield_t* highlight_mask = &state.selection.highlight_mask;
+            const auto& sys = current_dataset(state).sys;
+            md_bitfield_t* selection_mask = &current_dataset(state).selection.selection_mask;
+            md_bitfield_t* highlight_mask = &current_dataset(state).selection.highlight_mask;
 
             const int plot_offset = MAX(0, layout_mode - 1);
             const int plot_cols = (layout_mode == 0) ? 2 : 1;
@@ -919,7 +919,7 @@ struct Ramachandran : viamd::EventHandler {
                             }
 
                             if (is_selecting[plot_idx]) {
-                                grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
+                                grow_mask_by_selection_granularity(highlight_mask, current_dataset(state).selection.granularity, sys);
                             }
 
                             if (mouse_hover_idx != -1) {
@@ -928,7 +928,7 @@ struct Ramachandran : viamd::EventHandler {
 									md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
                                     if (range.beg != range.end) {
                                         modify_field(highlight_mask, range, SelectionOperator::Or);
-                                        grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
+                                        grow_mask_by_selection_granularity(highlight_mask, current_dataset(state).selection.granularity, sys);
 									}
 									str_t lbl = md_component_name(&sys.component, comp_idx);
 									md_sequence_id_t seq_id = md_component_seq_id(&sys.component, comp_idx);

@@ -6,7 +6,6 @@
 #include <core/md_simd.h>
 #include <core/md_bitfield.h>
 #include <core/md_parse.h>
-#include <core/md_lru_cache.inl>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_xtc.h>
@@ -24,10 +23,6 @@
 #include <string.h>
 
 #include "task_system.h"
-
-#ifndef md_lru_cache_validate
-#define md_lru_cache_validate md_lru_cache8_validate
-#endif
 
 enum sys_loader_t {
     SYS_LOADER_UNKNOWN,
@@ -119,9 +114,7 @@ struct LoadedTrajectory {
     const md_system_t* mol;
     md_trajectory_loader_i* loader;
     md_trajectory_i* traj;
-    load::traj::FrameCache* cache;
     md_allocator_i*  alloc;
-    size_t           num_cache_frames;
 
     md_array(int32_t) recenter_indices;
 };
@@ -136,93 +129,6 @@ static inline LoadedTrajectory* get_loaded_trajectory(md_trajectory_i* traj) {
         return (LoadedTrajectory*)traj->inst;
     }
     return nullptr;
-}
-
-static inline void frame_cache_touch(load::traj::FrameCache* cache, int32_t slot_idx) {
-    ASSERT(cache);
-    md_lru_cache8_t lru = (md_lru_cache8_t)cache->lru;
-    md_lru_cache8_set_mru(lru, slot_idx);
-    cache->lru = (uint64_t)lru;
-}
-
-static inline int32_t frame_cache_lru_slot(const load::traj::FrameCache* cache) {
-    ASSERT(cache);
-    md_lru_cache8_t lru = (md_lru_cache8_t)cache->lru;
-    return (int32_t)md_lru_cache8_get_lru(lru);
-}
-
-static void frame_cache_clear(load::traj::FrameCache* cache) {
-    if (!cache) return;
-
-    md_lru_cache8_t lru = 0;
-    md_lru_cache8_init(lru);
-    cache->lru = (uint64_t)lru;
-
-    for (size_t i = 0; i < load::traj::FrameCacheCapacity; ++i) {
-        cache->slots[i].frame_idx = -1;
-        cache->slots[i].header = {};
-    }
-}
-
-static void frame_cache_free(load::traj::FrameCache* cache) {
-    if (!cache) return;
-
-    if (cache->coord_buffer) {
-        const size_t coord_count = load::traj::FrameCacheCapacity * cache->coord_stride * 3;
-        md_free(cache->alloc, cache->coord_buffer, coord_count * sizeof(float));
-    }
-
-    *cache = {};
-}
-
-static bool frame_cache_init(load::traj::FrameCache* cache, md_trajectory_i* traj, const md_system_t* mol, md_allocator_i* alloc) {
-    ASSERT(cache);
-    ASSERT(traj);
-    ASSERT(mol);
-    ASSERT(alloc);
-
-    frame_cache_free(cache);
-
-    cache->traj = traj;
-    cache->alloc = alloc;
-    cache->coord_stride = ALIGN_TO(mol->atom.count, 16);
-    cache->num_frames = MIN(md_trajectory_num_frames(traj), (size_t)load::traj::FrameCacheCapacity);
-
-    const size_t coord_count = load::traj::FrameCacheCapacity * cache->coord_stride * 3;
-    if (coord_count) {
-        cache->coord_buffer = (float*)md_alloc(alloc, coord_count * sizeof(float));
-        if (!cache->coord_buffer) {
-            MD_LOG_ERROR("Failed to allocate trajectory frame cache");
-            frame_cache_free(cache);
-            return false;
-        }
-    }
-
-    for (size_t i = 0; i < load::traj::FrameCacheCapacity; ++i) {
-        float* ptr = cache->coord_buffer ? cache->coord_buffer + i * cache->coord_stride * 3 : nullptr;
-        cache->slots[i].frame_idx = -1;
-        cache->slots[i].header = {};
-        cache->slots[i].x = ptr ? ptr + 0 * cache->coord_stride : nullptr;
-        cache->slots[i].y = ptr ? ptr + 1 * cache->coord_stride : nullptr;
-        cache->slots[i].z = ptr ? ptr + 2 * cache->coord_stride : nullptr;
-    }
-
-    frame_cache_clear(cache);
-    return true;
-}
-
-static bool ensure_frame_cache(LoadedTrajectory* loaded_traj) {
-    ASSERT(loaded_traj);
-
-    if (!loaded_traj->cache) {
-        return false;
-    }
-
-    if (loaded_traj->cache->traj != loaded_traj->traj) {
-        return frame_cache_init(loaded_traj->cache, loaded_traj->traj, loaded_traj->mol, loaded_traj->alloc);
-    }
-
-    return true;
 }
 
 static void apply_recenter(LoadedTrajectory* loaded_traj, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
@@ -478,6 +384,30 @@ md_trajectory_loader_i* loader_from_ext(str_t ext) {
     return NULL;
 }
 
+bool get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
+    LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
+    return md_trajectory_get_header(loaded_traj->traj, header);
+}
+
+bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* out_header, float* out_x, float* out_y, float* out_z) {
+    ASSERT(inst);
+    LoadedTrajectory* loaded_traj = (LoadedTrajectory*)inst;
+    ASSERT(0 <= idx && idx < (int64_t)md_trajectory_num_frames(loaded_traj->traj));
+
+    if ((out_x || out_y || out_z) && !(out_x && out_y && out_z))  {
+        MD_LOG_ERROR("One coordinate stream (x,y,z) was null, when attempting to read out coordinates");
+        return false;
+    }
+
+    md_trajectory_frame_header_t header = {};
+    md_trajectory_frame_header_t* header_ptr = out_header ? out_header : ((out_x && out_y && out_z) ? &header : nullptr);
+    const bool result = md_trajectory_load_frame(loaded_traj->traj, idx, header_ptr, out_x, out_y, out_z);
+    if (result && out_x && out_y && out_z) {
+        apply_recenter(loaded_traj, header_ptr, out_x, out_y, out_z);
+    }
+    return result;
+}
+
 md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_system_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags) {
     ASSERT(mol);
     ASSERT(alloc);
@@ -513,10 +443,8 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
     inst->mol = mol;
     inst->loader = loader;
     inst->traj = internal_traj;
-    inst->cache = frame_cache;
     inst->recenter_indices = 0;
     inst->alloc = alloc;
-    inst->num_cache_frames = MIN(md_trajectory_num_frames(internal_traj), (size_t)load::traj::FrameCacheCapacity);
 
     // We only overload load frame and decode frame data to apply PBC upon loading data
     traj->inst = (md_trajectory_o*)inst;
@@ -530,7 +458,6 @@ bool close(md_trajectory_i* traj) {
     if (traj) {
         LoadedTrajectory* loaded_traj = get_loaded_trajectory(traj);
         if (loaded_traj) {
-            frame_cache_free(loaded_traj->cache);
             md_array_free(loaded_traj->recenter_indices, loaded_traj->alloc);
             loaded_traj->loader->destroy(loaded_traj->traj);
             md_free(loaded_traj->alloc, loaded_traj, sizeof(LoadedTrajectory));
@@ -551,6 +478,42 @@ md_trajectory_i* get_raw_trajectory(md_trajectory_i* traj) {
         MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
     }
 	return nullptr;
+}
+
+bool has_recenter_target(md_trajectory_i* traj) {
+    LoadedTrajectory* loaded_traj = get_loaded_trajectory(traj);
+    if (loaded_traj) {
+        return md_array_size(loaded_traj->recenter_indices) > 0;
+    }
+    return false;
+}
+
+bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask) {
+    ASSERT(traj);
+
+    LoadedTrajectory* loaded_traj = get_loaded_trajectory(traj);
+    if (loaded_traj) {
+        if (atom_mask) {
+            const size_t count = md_bitfield_popcount(atom_mask);
+            md_array_resize(loaded_traj->recenter_indices, count, loaded_traj->alloc);
+            md_bitfield_iter_extract_indices(loaded_traj->recenter_indices, count, md_bitfield_iter_create(atom_mask));
+        } else {
+            md_array_shrink(loaded_traj->recenter_indices, 0);
+        }
+        return true;
+    }
+    MD_LOG_ERROR("Supplied trajectory was not loaded with loader");
+    return false;
+}
+
+bool clear_cache(md_trajectory_i* traj) {
+    (void)traj;
+    return true;
+}
+
+size_t num_cache_frames(md_trajectory_i* traj) {
+    (void)traj;
+    return 0;
 }
 
 }  // namespace traj

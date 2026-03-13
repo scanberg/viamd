@@ -141,7 +141,7 @@ struct Dataset : viamd::EventHandler {
 
         md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
 
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = current_dataset(data).sys;
 
         size_t atom_type_count  = md_system_atom_type_count(&sys);
         size_t atom_count       = md_system_atom_count(&sys);
@@ -298,9 +298,9 @@ struct Dataset : viamd::EventHandler {
             // Shift + click on element header to select all atom types that use this element
             // Since the hover should already contain the correct selection we can just copy it to the filter mask to achieve this
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                md_bitfield_or_inplace(&current_dataset(state).selection.selection_mask, &current_dataset(state).selection.highlight_mask);
             } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                md_bitfield_andnot_inplace(&current_dataset(state).selection.selection_mask, &current_dataset(state).selection.highlight_mask);
             }
         }
     }
@@ -428,47 +428,47 @@ struct Dataset : viamd::EventHandler {
 
         ImGui::SetNextWindowSize(ImVec2(500, 600), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Dataset", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-            ImGui::Text("System: %s", data.files.molecule);
-            ImGui::Text("Num entities:   %9zu", data.mold.sys.entity.count);
-            ImGui::Text("Num instances:  %9zu", data.mold.sys.instance.count);
-            ImGui::Text("Num components: %9zu", data.mold.sys.component.count);
-            ImGui::Text("Num atoms:      %9zu", data.mold.sys.atom.count);
+            ImGui::Text("System: " STR_FMT, STR_ARG(current_dataset(data).sys_path));
+            ImGui::Text("Num entities:   %9zu", current_dataset(data).sys.entity.count);
+            ImGui::Text("Num instances:  %9zu", current_dataset(data).sys.instance.count);
+            ImGui::Text("Num components: %9zu", current_dataset(data).sys.component.count);
+            ImGui::Text("Num atoms:      %9zu", current_dataset(data).sys.atom.count);
 
             ImGui::Separator();
 
-            if (data.mold.sys.unitcell.flags) {
-                md_unitcell_flags_t flags = data.mold.sys.unitcell.flags;
+            if (current_dataset(data).sys.unitcell.flags) {
+                md_unitcell_flags_t flags = current_dataset(data).sys.unitcell.flags;
                 bool ortho = flags & MD_UNITCELL_ORTHO;
                 bool tricl = flags & MD_UNITCELL_TRICLINIC;
                 ImGui::Text("Unitcell %s", ortho ? "Orthorhombic" : tricl ? "Triclinic" : "");
                 if (flags & MD_UNITCELL_ORTHO) {
                     ImGui::Indent();
-                    ImGui::Text("X: %f %s", data.mold.sys.unitcell.x, flags & MD_UNITCELL_PBC_X ? "(pbc)" : "");
-                    ImGui::Text("Y: %f %s", data.mold.sys.unitcell.y, flags & MD_UNITCELL_PBC_Y ? "(pbc)" : "");
-                    ImGui::Text("Z: %f %s", data.mold.sys.unitcell.z, flags & MD_UNITCELL_PBC_Z ? "(pbc)" : "");
+                    ImGui::Text("X: %f %s", current_dataset(data).sys.unitcell.x, flags & MD_UNITCELL_PBC_X ? "(pbc)" : "");
+                    ImGui::Text("Y: %f %s", current_dataset(data).sys.unitcell.y, flags & MD_UNITCELL_PBC_Y ? "(pbc)" : "");
+                    ImGui::Text("Z: %f %s", current_dataset(data).sys.unitcell.z, flags & MD_UNITCELL_PBC_Z ? "(pbc)" : "");
                     ImGui::Unindent();
                 } else if (flags & MD_UNITCELL_TRICLINIC) {
                     ImGui::Indent();
-                    ImGui::Text("X:  %f", data.mold.sys.unitcell.x);
-                    ImGui::Text("XY: %f", data.mold.sys.unitcell.xy);
-                    ImGui::Text("XZ: %f", data.mold.sys.unitcell.xz);
-                    ImGui::Text("Y:  %f", data.mold.sys.unitcell.y);
-                    ImGui::Text("YZ: %f", data.mold.sys.unitcell.yz);
-                    ImGui::Text("Z:  %f", data.mold.sys.unitcell.z);
+                    ImGui::Text("X:  %f", current_dataset(data).sys.unitcell.x);
+                    ImGui::Text("XY: %f", current_dataset(data).sys.unitcell.xy);
+                    ImGui::Text("XZ: %f", current_dataset(data).sys.unitcell.xz);
+                    ImGui::Text("Y:  %f", current_dataset(data).sys.unitcell.y);
+                    ImGui::Text("YZ: %f", current_dataset(data).sys.unitcell.yz);
+                    ImGui::Text("Z:  %f", current_dataset(data).sys.unitcell.z);
                     ImGui::Unindent();
                 } 
                 ImGui::Separator();
             }
 
-            if (data.files.trajectory[0] != '\0') {
-                ImGui::Text("Trajectory data: %s", data.files.trajectory);
-                ImGui::Text("Num frames:    %9zu", md_trajectory_num_frames(data.mold.traj));
-                ImGui::Text("Num atoms:     %9zu", md_trajectory_num_atoms(data.mold.traj));
+            if (!str_empty(current_dataset(data).traj_path)) {
+                ImGui::Text("Trajectory data: " STR_FMT, STR_ARG(current_dataset(data).traj_path));
+                ImGui::Text("Num frames:    %9zu", md_trajectory_num_frames(current_dataset(data).traj));
+                ImGui::Text("Num atoms:     %9zu", md_trajectory_num_atoms(current_dataset(data).traj));
                 ImGui::Separator();
             }
 
             if (ImGui::IsWindowHovered()) {
-                md_bitfield_clear(&data.selection.highlight_mask);
+                md_bitfield_clear(&current_dataset(data).selection.highlight_mask);
             }
 
             static bool use_short_labels = true;
@@ -476,12 +476,12 @@ struct Dataset : viamd::EventHandler {
             bool has_nucleic_acids = false;
             bool has_amino_acids = false;
 
-            size_t num_entities   = md_system_entity_count(&data.mold.sys);
-            size_t num_instances  = md_system_instance_count(&data.mold.sys);
-			size_t num_atom_types = md_system_atom_type_count(&data.mold.sys);
+            size_t num_entities   = md_system_entity_count(&current_dataset(data).sys);
+            size_t num_instances  = md_system_instance_count(&current_dataset(data).sys);
+			size_t num_atom_types = md_system_atom_type_count(&current_dataset(data).sys);
 
             for (size_t i = 0; i < num_entities; ++i) {
-                md_flags_t entity_flags = md_entity_flags(&data.mold.sys.entity, i);
+                md_flags_t entity_flags = md_entity_flags(&current_dataset(data).sys.entity, i);
                 if (entity_flags & MD_FLAG_AMINO_ACID) has_amino_acids = true;
                 if (entity_flags & MD_FLAG_NUCLEOTIDE) has_nucleic_acids = true;
             }
@@ -493,9 +493,9 @@ struct Dataset : viamd::EventHandler {
 
                 for (size_t ent_idx = 0; ent_idx < num_entities; ++ent_idx) {
                     char buf[256];
-                    str_t entity_id   = md_entity_id(&data.mold.sys.entity, ent_idx);
-                    str_t entity_desc = md_entity_description(&data.mold.sys.entity, ent_idx);
-                    md_flags_t entity_flags = md_entity_flags(&data.mold.sys.entity, ent_idx);
+                    str_t entity_id   = md_entity_id(&current_dataset(data).sys.entity, ent_idx);
+                    str_t entity_desc = md_entity_description(&current_dataset(data).sys.entity, ent_idx);
+                    md_flags_t entity_flags = md_entity_flags(&current_dataset(data).sys.entity, ent_idx);
                     bool short_comp_label = (entity_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) && use_short_labels;
 
                     snprintf(buf, sizeof(buf), STR_FMT ": " STR_FMT, STR_ARG(entity_id), STR_ARG(entity_desc));
@@ -503,11 +503,11 @@ struct Dataset : viamd::EventHandler {
 
                     bool expand_entity = ImGui::CollapsingHeader(buf);
                     if (ImGui::IsItemHovered()) {
-                        md_bitfield_clear(&data.selection.highlight_mask);
+                        md_bitfield_clear(&current_dataset(data).selection.highlight_mask);
                         for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
-                            if (md_instance_entity_idx(&data.mold.sys.instance, inst_idx) == (int)ent_idx) {
-                                md_urange_t range = md_system_instance_atom_range(&data.mold.sys, inst_idx);
-                                md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
+                            if (md_instance_entity_idx(&current_dataset(data).sys.instance, inst_idx) == (int)ent_idx) {
+                                md_urange_t range = md_system_instance_atom_range(&current_dataset(data).sys, inst_idx);
+                                md_bitfield_set_range(&current_dataset(data).selection.highlight_mask, range.beg, range.end);
                             }
                         }
                         handle_item_click(data);
@@ -515,12 +515,12 @@ struct Dataset : viamd::EventHandler {
                     if (expand_entity) {
                         ImGui::Indent();
                         for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
-                            if (md_instance_entity_idx(&data.mold.sys.instance, inst_idx) != (int)ent_idx) continue;
+                            if (md_instance_entity_idx(&current_dataset(data).sys.instance, inst_idx) != (int)ent_idx) continue;
                             ImGui::PushID((int)inst_idx);  // avoid ID collisions if names repeat
                             defer { ImGui::PopID(); };
 
-                            str_t inst_id = md_instance_id(&data.mold.sys.instance, inst_idx);
-                            str_t auth_id = md_instance_auth_id(&data.mold.sys.instance, inst_idx);
+                            str_t inst_id = md_instance_id(&current_dataset(data).sys.instance, inst_idx);
+                            str_t auth_id = md_instance_auth_id(&current_dataset(data).sys.instance, inst_idx);
 
                             // If auth_id is supplied then show both assigned and author-provided IDs, otherwise just show the instance ID
                             if (!str_empty(auth_id)) {
@@ -530,17 +530,17 @@ struct Dataset : viamd::EventHandler {
                             }
                             bool expand_inst = ImGui::CollapsingHeader(buf);
                             if (ImGui::IsItemHovered()) {
-                                md_bitfield_clear(&data.selection.highlight_mask);
-                                md_urange_t range = md_system_instance_atom_range(&data.mold.sys, inst_idx);
-                                md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
+                                md_bitfield_clear(&current_dataset(data).selection.highlight_mask);
+                                md_urange_t range = md_system_instance_atom_range(&current_dataset(data).sys, inst_idx);
+                                md_bitfield_set_range(&current_dataset(data).selection.highlight_mask, range.beg, range.end);
                                 handle_item_click(data);
                             }
                             if (expand_inst) {
                                 const ImGuiStyle& style = ImGui::GetStyle();
-                                md_urange_t range = md_system_instance_comp_range(&data.mold.sys, inst_idx);
+                                md_urange_t range = md_system_instance_comp_range(&current_dataset(data).sys, inst_idx);
 
                                 for (size_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
-                                    str_t comp_name = md_component_name(&data.mold.sys.component, comp_idx);
+                                    str_t comp_name = md_component_name(&current_dataset(data).sys.component, comp_idx);
 
                                     if (short_comp_label) {
                                         uint32_t color = component_color(comp_name);
@@ -569,7 +569,7 @@ struct Dataset : viamd::EventHandler {
                                     ImGui::PopID();
 
                                     if (ImGui::IsItemHovered()) {
-                                        ImGui::SetTooltip("%d", md_component_seq_id(&data.mold.sys.component, comp_idx));
+                                        ImGui::SetTooltip("%d", md_component_seq_id(&current_dataset(data).sys.component, comp_idx));
                                     }
 
                                     if (short_comp_label) {
@@ -578,9 +578,9 @@ struct Dataset : viamd::EventHandler {
                                     }
 
                                     if (ImGui::IsItemHovered()) {
-                                        md_bitfield_clear(&data.selection.highlight_mask);
-                                        md_urange_t atom_range = md_system_component_atom_range(&data.mold.sys, comp_idx);
-                                        md_bitfield_set_range(&data.selection.highlight_mask, atom_range.beg, atom_range.end);
+                                        md_bitfield_clear(&current_dataset(data).selection.highlight_mask);
+                                        md_urange_t atom_range = md_system_component_atom_range(&current_dataset(data).sys, comp_idx);
+                                        md_bitfield_set_range(&current_dataset(data).selection.highlight_mask, atom_range.beg, atom_range.end);
                                         handle_item_click(data);
                                     }
                                 }
@@ -621,30 +621,30 @@ struct Dataset : viamd::EventHandler {
                         snprintf(buf_tot, sizeof(buf_tot), "%-4s %10s", item.label, buf_num);
                         bool expand = ImGui::CollapsingHeader(buf_tot);
                         if (ImGui::IsItemHovered()) {
-                            md_bitfield_clear(&data.selection.highlight_mask);
-                            md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
+                            md_bitfield_clear(&current_dataset(data).selection.highlight_mask);
+                            md_bitfield_set_indices_u32(&current_dataset(data).selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
                             if (ImGui::IsItemClicked()) {
                                 handle_item_click(data);
                             }
                         }
                         if (expand) {
-                            bool coarse_grained = data.mold.sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED;
+                            bool coarse_grained = current_dataset(data).sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED;
                             if (ImGui::Checkbox("Coarse Grained", &coarse_grained)) {
                                 if (coarse_grained) {
-                                    data.mold.sys.atom.type.flags[i] |=  MD_FLAG_COARSE_GRAINED;
+                                    current_dataset(data).sys.atom.type.flags[i] |=  MD_FLAG_COARSE_GRAINED;
                                 } else {
-                                    data.mold.sys.atom.type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
+                                    current_dataset(data).sys.atom.type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
                                 }
                             }
-                            if (!(data.mold.sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED)) {
-								str_t symbol = md_atomic_number_symbol((md_atomic_number_t)data.mold.sys.atom.type.z[i]);
+                            if (!(current_dataset(data).sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED)) {
+								str_t symbol = md_atomic_number_symbol((md_atomic_number_t)current_dataset(data).sys.atom.type.z[i]);
                                 if (ImGui::Checkbox("Use element defaults", &item.use_defaults)) {
                                     if (item.use_defaults) {
 										// If the user enables the use_defaults flag then we should set the values back to the element defaults
-                                        md_element_t elem = data.mold.sys.atom.type.z[i];
-										data.mold.sys.atom.type.radius[i] = md_util_element_vdw_radius(elem);
-										data.mold.sys.atom.type.mass[i]   = md_util_element_atomic_mass(elem);
-										data.mold.sys.atom.type.color[i]  = md_util_element_cpk_color(elem);
+                                        md_element_t elem = current_dataset(data).sys.atom.type.z[i];
+										current_dataset(data).sys.atom.type.radius[i] = md_util_element_vdw_radius(elem);
+										current_dataset(data).sys.atom.type.mass[i]   = md_util_element_atomic_mass(elem);
+										current_dataset(data).sys.atom.type.color[i]  = md_util_element_cpk_color(elem);
 										radius_changed = true;
                                         color_changed = true;
 										mass_changed = true;
@@ -652,7 +652,7 @@ struct Dataset : viamd::EventHandler {
                                 }
                                 if (item.use_defaults) {
                                     ImGui::SameLine();
-                                    int z = data.mold.sys.atom.type.z[i];
+                                    int z = current_dataset(data).sys.atom.type.z[i];
                                     vec4_t color = element_defaults[z].color;
                                     if (element_button(str_ptr(symbol), color)) {
                                         ImGui::OpenPopup("Element Popup");
@@ -662,10 +662,10 @@ struct Dataset : viamd::EventHandler {
                                     PeriodicTableResult table_res = periodic_table_widget(element_defaults);
                                     if (table_res.clicked) {
                                         int z = table_res.z;
-                                        data.mold.sys.atom.type.z[i] = (md_atomic_number_t)table_res.z;
-                                        data.mold.sys.atom.type.color[i] = u32_from_vec4(element_defaults[z].color);
-                                        data.mold.sys.atom.type.radius[i] = element_defaults[z].radius;
-                                        data.mold.sys.atom.type.mass[i] = element_defaults[z].mass;
+                                        current_dataset(data).sys.atom.type.z[i] = (md_atomic_number_t)table_res.z;
+                                        current_dataset(data).sys.atom.type.color[i] = u32_from_vec4(element_defaults[z].color);
+                                        current_dataset(data).sys.atom.type.radius[i] = element_defaults[z].radius;
+                                        current_dataset(data).sys.atom.type.mass[i] = element_defaults[z].mass;
 
 										radius_changed = true;
 										color_changed = true;
@@ -681,15 +681,15 @@ struct Dataset : viamd::EventHandler {
                             if (item.use_defaults) {
                                 ImGui::PushDisabled();
                             }
-                            float* radius = &data.mold.sys.atom.type.radius[i];
+                            float* radius = &current_dataset(data).sys.atom.type.radius[i];
                             radius_changed |= ImGui::SliderFloat("Radius", radius, min_radius, max_radius);
 
-                            float* mass = &data.mold.sys.atom.type.mass[i];
+                            float* mass = &current_dataset(data).sys.atom.type.mass[i];
                             mass_changed |= ImGui::SliderFloat("Mass", mass, min_mass, max_mass);
 
-                            ImVec4 color = ImColor(data.mold.sys.atom.type.color[i]);
+                            ImVec4 color = ImColor(current_dataset(data).sys.atom.type.color[i]);
                             if (ImGui::ColorEdit4("Color", &color.x)) {
-                                data.mold.sys.atom.type.color[i] = ImColor(color);
+                                current_dataset(data).sys.atom.type.color[i] = ImColor(color);
                                 color_changed = true;
                             }
 
@@ -705,7 +705,7 @@ struct Dataset : viamd::EventHandler {
 				uint64_t elem_mask[2] = { 0 };
 
                 for (size_t i = 0; i < num_atom_types; ++i) {
-                    int z = data.mold.sys.atom.type.z[i];
+                    int z = current_dataset(data).sys.atom.type.z[i];
                     if (atom_types[i].use_defaults && atom_types[i].count > 0) {
 						elem_mask[z / 64] |= (1ULL << (z % 64));
                     }
@@ -717,11 +717,11 @@ struct Dataset : viamd::EventHandler {
                     static int z = -1;
 					PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
 					if (table_res.hovered) {
-                        md_bitfield_clear(&data.selection.highlight_mask);
+                        md_bitfield_clear(&current_dataset(data).selection.highlight_mask);
                         for (size_t i = 0; i < num_atom_types; ++i) {
 							const DatasetItem& item = atom_types[i];
-                            if (data.mold.sys.atom.type.z[i] == table_res.z) {
-                                md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
+                            if (current_dataset(data).sys.atom.type.z[i] == table_res.z) {
+                                md_bitfield_set_indices_u32(&current_dataset(data).selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
                             }
                         }
                         handle_item_click(data);
@@ -745,8 +745,8 @@ struct Dataset : viamd::EventHandler {
                         if (ImGui::ColorEdit3("Color", elem_def.color.elem)) {
                             // Iterate and set color for all atom types that use this element and have use_defaults = true
                             for (size_t i = 0; i < num_atom_types; ++i) {
-                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                    data.mold.sys.atom.type.color[i] = u32_from_vec4(elem_def.color);
+                                if (current_dataset(data).sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
+                                    current_dataset(data).sys.atom.type.color[i] = u32_from_vec4(elem_def.color);
                                 }
                             }
                             color_changed = true;
@@ -754,8 +754,8 @@ struct Dataset : viamd::EventHandler {
                         if (ImGui::InputFloat("Van der Waals Radius", &elem_def.radius)) {
                             // Iterate and set radius for all atom types that use this element and have use_defaults = true
                             for (size_t i = 0; i < num_atom_types; ++i) {
-                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                    data.mold.sys.atom.type.radius[i] = elem_def.radius;
+                                if (current_dataset(data).sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
+                                    current_dataset(data).sys.atom.type.radius[i] = elem_def.radius;
                                 }
                             }
                             radius_changed = true;
@@ -763,8 +763,8 @@ struct Dataset : viamd::EventHandler {
                         if (ImGui::InputFloat("Atomic Mass", &elem_def.mass)) {
                             // Iterate and set mass for all atom types that use this element and have use_defaults = true
                             for (size_t i = 0; i < num_atom_types; ++i) {
-                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                    data.mold.sys.atom.type.mass[i] = elem_def.mass;
+                                if (current_dataset(data).sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
+                                    current_dataset(data).sys.atom.type.mass[i] = elem_def.mass;
                                 }
                             }
                             mass_changed = true;
@@ -776,7 +776,7 @@ struct Dataset : viamd::EventHandler {
                 }
 
                 if (radius_changed) {
-                    data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
+                    current_dataset(data).dirty_gpu_buffers |= MolBit_DirtyRadius;
                 }
 
                 if (color_changed) {
