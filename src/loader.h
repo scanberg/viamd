@@ -50,40 +50,9 @@ namespace mol {
 }
 
 namespace traj {
-    enum : size_t { FrameCacheCapacity = 8 };
-
-    struct FrameCacheSlot {
-        int64_t                     frame_idx = -1;
-        md_trajectory_frame_header_t header = {};
-        float*                      x = nullptr;
-        float*                      y = nullptr;
-        float*                      z = nullptr;
-    };
-
-    struct FrameCache {
-        md_trajectory_i* traj = nullptr;
-        md_allocator_i*  alloc = nullptr;
-        float*           coord_buffer = nullptr;
-        size_t           coord_stride = 0;
-        size_t           num_frames = 0;
-        uint64_t         lru = 0;
-        FrameCacheSlot   slots[FrameCacheCapacity] = {};
-    };
-
     md_trajectory_loader_i* loader_from_ext(str_t ext);
-
-    md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_system_t* mol, md_allocator_i* alloc, FrameCache* frame_cache = nullptr, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
+    md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_system_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
     bool close(md_trajectory_i* traj);
-
-	// Get the internal trajectory, this can be used to access custom loader functionality
-	// This is the internal trajectory without any form of caching or recentering applied
-	md_trajectory_i* get_raw_trajectory(md_trajectory_i* traj);
-
-    bool has_recenter_target(md_trajectory_i* traj);
-    bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask);
-
-    bool clear_cache(md_trajectory_i* traj);
-    size_t num_cache_frames(md_trajectory_i* traj);
 }
 
 }  // namespace load

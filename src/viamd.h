@@ -2,6 +2,7 @@
 
 #include <core/md_str.h>
 #include <core/md_os.h>
+#include <core/md_lru_cache.inl>
 #include <md_system.h>
 #include <md_trajectory.h>
 #include <md_script.h>
@@ -510,6 +511,187 @@ struct Representation {
     } prop;
 };
 
+struct FrameState {
+    uint64_t frame_idx = 0;
+    double   timestamp = 0;
+    float* x = nullptr;
+    float* y = nullptr;
+    float* z = nullptr;
+    md_unitcell_t unitcell = {};
+};
+
+struct FrameCache {
+    FrameState state[8] = {};
+    md_lru_cache8_t lru_matrix = 0;
+};
+
+struct SystemState {
+    md_atom_coordinate_data_t coord = {};
+    md_unitcell_t unitcell = {};
+};
+
+// Represents one molecular system
+struct Dataset {
+    char identifier[64] = "dataset";
+
+    md_allocator_i*     alloc = nullptr;
+    md_gl_mol_t         gl_mol = {}; // gl molecule handle
+#if EXPERIMENTAL_GFX_API
+    md_gfx_handle_t     gfx_structure = {};
+#endif
+
+    md_system_t sys = {};
+    md_trajectory_i* traj = nullptr;
+    FrameCache frame_cache = {};
+
+    str_t sys_path  = STR_LIT("");
+    str_t traj_path = STR_LIT("");
+
+    bool                dirty_system_state = false;
+    uint32_t            dirty_gpu_buffers = 0;
+
+    struct {
+        SelectionGranularity granularity = SelectionGranularity::Atom;
+
+        struct {
+            int32_t hovered = -1;
+            int32_t right_click = -1;
+        } atom_idx;
+
+        struct {
+            int32_t hovered = -1;
+            int32_t right_click = -1;
+        } bond_idx;
+
+        SingleSelectionSequence single_selection_sequence;
+        md_bitfield_t selection_mask = {};
+        md_bitfield_t highlight_mask = {};
+        Selection* stored_selections = NULL;
+    } selection;
+
+    struct {
+        Camera camera{};
+        ViewParam param{};
+        CameraMode mode = CameraMode::Perspective;
+
+        struct {
+            vec3_t target_position = {};
+            quat_t target_orientation = {};
+            float  target_distance = 0;
+        } animation;
+    } view;
+
+    struct {
+        double frame = 0.f;  // double precision for long trajectories
+        float    fps = 10.f;
+        float tension = 0.0f;
+        InterpolationMode interpolation = InterpolationMode::CubicSpline;
+        PlaybackMode mode = PlaybackMode::Stopped;
+    } animation;
+
+    struct {
+        bool enabled = false;
+        vec4_t color = {0, 0, 0, 0.5f};
+    } simulation_box;
+
+    // --- REPRESENTATIONS ---
+    struct {
+        RepresentationInfo info = {};
+        md_array(Representation) reps = 0;
+        md_bitfield_t visibility_mask = {0};
+        uint64_t visibility_mask_hash = 0;
+        bool atom_visibility_mask_dirty = false;
+        bool needs_update = false;
+    } representation;
+
+    struct {
+        bool apply_pbc = false;
+        bool unwrap_structures = false;
+        bool recalc_bonds = false;
+    } operations;
+
+    struct {
+        md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
+    } interpolated_properties;
+
+    struct { 
+        struct {
+            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
+            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
+            md_secondary_structure_t* data = nullptr;
+            uint64_t fingerprint = 0;
+        } secondary_structure;
+        struct {
+            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
+            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
+            md_backbone_angles_t* data = nullptr;
+            uint64_t fingerprint = 0;
+        } backbone_angles;
+    } trajectory_data;
+
+    // --- VISUALS ---
+    struct {
+        struct {
+            vec3_t color = {1, 1, 1};
+            float intensity = 24.0f;
+        } background;
+
+        struct { 
+            bool enabled = true;
+            float intensity = 6.0f;
+            float radius = 6.0f;
+            float bias = 0.1f;
+        } ssao;
+
+#if EXPERIMENTAL_CONE_TRACED_AO == 1
+        struct {
+            bool enabled = true;
+            float intensity = 1.0f;
+            float step_scale = 1.0f;
+        } cone_traced_ao;
+#endif
+
+        struct {
+            bool enabled = true;
+            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_ACES;
+            float exposure = 1.0f;
+            float gamma = 2.2f;
+        } tonemapping;
+
+        struct {
+            bool enabled = false;
+            float focus_depth = 10.0f;
+            float focus_scale = 10.0f;
+        } dof;
+
+        struct {
+            bool enabled = true;
+        } fxaa;
+
+        struct {
+            bool enabled = true;
+            bool jitter = true;
+            float feedback_min = 0.80f;
+            float feedback_max = 0.95f;
+
+            struct {
+                bool enabled = true;
+                float motion_scale = 1.0f;
+            } motion_blur;
+        } temporal_aa;
+
+        struct {
+            bool enabled = true;
+            float weight = 1.0f;
+        } sharpen;
+
+        struct {
+            bool draw_control_points = false;
+            bool draw_spline = false;
+        } spline;
+    } visuals;
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -521,15 +703,7 @@ struct ApplicationState {
 
     LoadDatasetWindowState load_dataset;
 
-    // --- FILES ---
-    // for keeping track of open files
-    struct {
-        char molecule[1024]   = {0};
-        char trajectory[1024] = {0};
-        char workspace[1024]  = {0};
-
-        bool coarse_grained = false;
-    } files;
+    str_t workspace_path = STR_LIT("");
 
     // The idea for the file load queue is to fill it with files that are dropped onto the application
     // Or passed via the commandline. The files need to be processed in a certain order (topology before trajectory)
@@ -564,25 +738,16 @@ struct ApplicationState {
         str_t path_to_file = {};
     } screenshot;
 
-    // --- MDLIB DATA ---
     struct {
-        md_allocator_i*     sys_alloc = nullptr;
-        md_gl_shaders_t     gl_shaders = {};
-        md_gl_shaders_t     gl_shaders_lean_and_mean = {};
-        md_gl_mol_t         gl_mol = {};
-#if EXPERIMENTAL_GFX_API
-        md_gfx_handle_t     gfx_structure = {};
-#endif
-        md_system_t         sys = {};
-        md_trajectory_i*    traj = nullptr;
-        load::traj::FrameCache frame_cache = {};
+        md_gl_shaders_t     shaders = {};
+        md_gl_shaders_t     shaders_lean_and_mean = {};
+    } gl;
 
-        vec3_t              sys_aabb_min = {};
-        vec3_t              sys_aabb_max = {};
-
-        bool                interpolate_system_state = false;
-        uint32_t            dirty_gpu_buffers = 0;
-    } mold;
+    struct {
+        int current_idx = 0;
+        int num_datasets = 0;
+        Dataset datasets[8] = {};
+    } dataset;
 
     DisplayProperty* display_properties = nullptr;
     str_t hovered_display_property_label = STR_LIT("");
@@ -598,24 +763,6 @@ struct ApplicationState {
 
     // --- ATOM SELECTION ---
     struct {
-        SelectionGranularity granularity = SelectionGranularity::Atom;
-
-        struct {
-            int32_t hovered = -1;
-            int32_t right_click = -1;
-        } atom_idx;
-
-        struct {
-            int32_t hovered = -1;
-            int32_t right_click = -1;
-        } bond_idx;
-
-        SingleSelectionSequence single_selection_sequence;
-
-        md_bitfield_t selection_mask{};
-        md_bitfield_t highlight_mask{};
-        Selection* stored_selections = NULL;
-
         struct {
             struct {
                 vec4_t visible = {0.0f, 0.0f, 1.0f,  0.3f};
@@ -650,19 +797,7 @@ struct ApplicationState {
 
     // --- FRAMEBUFFER ---
     GBuffer gbuffer {};
-
     PickingData picking {};
-
-    // --- ANIMATION ---
-    struct {
-        double frame = 0.f;  // double precision for long trajectories
-        float fps = 10.f;
-        float tension = 0.0f;
-        InterpolationMode interpolation = InterpolationMode::CubicSpline;
-        PlaybackMode mode = PlaybackMode::Stopped;
-
-        bool show_window = true;
-    } animation;
 
     // --- TIMELINE---
     struct {
@@ -773,114 +908,6 @@ struct ApplicationState {
         float  target_dist = 0;
     } density_volume;
 
-    // --- VISUALS ---
-    struct {
-        struct {
-            vec3_t color = {1, 1, 1};
-            float intensity = 24.0f;
-        } background;
-
-        struct { 
-            bool enabled = true;
-            float intensity = 6.0f;
-            float radius = 6.0f;
-            float bias = 0.1f;
-        } ssao;
-
-#if EXPERIMENTAL_CONE_TRACED_AO == 1
-        struct {
-            bool enabled = true;
-            float intensity = 1.0f;
-            float step_scale = 1.0f;
-        } cone_traced_ao;
-#endif
-
-        struct {
-            bool enabled = true;
-            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_ACES;
-            float exposure = 1.0f;
-            float gamma = 2.2f;
-        } tonemapping;
-
-        struct {
-            bool enabled = false;
-            float focus_depth = 10.0f;
-            float focus_scale = 10.0f;
-        } dof;
-
-        struct {
-            bool enabled = true;
-        } fxaa;
-
-        struct {
-            bool enabled = true;
-            bool jitter = true;
-            float feedback_min = 0.80f;
-            float feedback_max = 0.95f;
-
-            struct {
-                bool enabled = true;
-                float motion_scale = 1.0f;
-            } motion_blur;
-        } temporal_aa;
-
-        struct {
-            bool enabled = true;
-            float weight = 1.0f;
-        } sharpen;
-
-        struct {
-            bool draw_control_points = false;
-            bool draw_spline = false;
-        } spline;
-    } visuals;
-
-    struct {
-        bool enabled = false;
-        vec4_t color = {0, 0, 0, 0.5f};
-    } simulation_box;
-
-    // --- REPRESENTATIONS ---
-    struct {
-        RepresentationInfo info = {};
-        md_array(Representation) reps = 0;
-        md_bitfield_t visibility_mask = {0};
-        uint64_t visibility_mask_hash = 0;
-        bool atom_visibility_mask_dirty = false;
-        bool show_window = false;
-        bool needs_update = false;
-    } representation;
-
-    struct {
-        bool apply_pbc = false;
-        bool unwrap_structures = false;
-        bool recalc_bonds = false;
-    } operations;
-
-    struct {
-        bool keep_representations = false;
-        bool prefetch_frames = true;
-    } settings;
-
-    struct {
-        md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
-    } interpolated_properties;
-
-    struct { 
-        struct {
-            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
-            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_secondary_structure_t* data = nullptr;
-            uint64_t fingerprint = 0;
-        } secondary_structure;
-        struct {
-            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
-            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_backbone_angles_t* data = nullptr;
-            uint64_t fingerprint = 0;
-        } backbone_angles;
-    } trajectory_data;
-
     struct {
         vec4_t point_color      = {1,0,0,0.8f};
         vec4_t line_color       = {0,0,0,0.6f};
@@ -926,12 +953,18 @@ struct ApplicationState {
         } query;
     } structure_export;
 
+    bool show_animation_window = true;
+    bool show_representation_window = false;
     bool show_script_window = true;
     bool show_debug_window = false;
     bool show_property_export_window = false;
 
     TextEditor editor = {};
 };
+
+static inline Dataset& current_dataset(ApplicationState& state) {
+    return state.dataset.datasets[state.dataset.current_idx];
+}
 
 static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
