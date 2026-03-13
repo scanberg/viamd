@@ -377,7 +377,6 @@ static void update_display_properties(ApplicationState* state);
 static void update_density_volume(ApplicationState* state);
 
 static void update_view_param(ApplicationState* state);
-static void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera = false, bool smooth_transition = false);
 
 static void handle_camera_interaction(ApplicationState* state);
 
@@ -7258,8 +7257,8 @@ static void fill_gbuffer(ApplicationState* state) {
     // RENDER DEBUG INFORMATION (WITH DEPTH)
     PUSH_GPU_SECTION("Debug Draw") {
         glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-        immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
-        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
+        immediate::set_model_view_matrix(current_dataset(*data).view.param.matrix.curr.view);
+        immediate::set_proj_matrix(current_dataset(*data).view.param.matrix.curr.proj);
         immediate::flush();
     }
     POP_GPU_SECTION()
@@ -7269,8 +7268,8 @@ static void fill_gbuffer(ApplicationState* state) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(0);
 
-        // immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-        // immediate::set_proj_matrix(data->view.param.matrix.current.proj);
+        // immediate::set_model_view_matrix(current_dataset(*data).view.param.matrix.current.view);
+        // immediate::set_proj_matrix(current_dataset(*data).view.param.matrix.current.proj);
         // immediate::flush();
 
         glEnable(GL_DEPTH_TEST);
@@ -7590,7 +7589,7 @@ static void draw_representations_opaque(ApplicationState* state) {
             }
         }
 
-        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &data->view.param.matrix.curr.proj, &data->view.param.matrix.curr.view, &data->view.param.matrix.inv.proj, &data->view.param.matrix.inv.view);
+        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &current_dataset(*data).view.param.matrix.curr.proj, &current_dataset(*data).view.param.matrix.curr.view, &current_dataset(*data).view.param.matrix.inv.proj, &current_dataset(*data).view.param.matrix.inv.view);
     } else {
 #endif
         const size_t num_representations = md_array_size(current.representation.reps);

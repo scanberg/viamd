@@ -1183,4 +1183,4 @@ void recompute_atom_visibility_mask(ApplicationState* state);
 void interpolate_system_state(ApplicationState* state);
 
 // View
-void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera, bool smooth_transition);
+void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera = false, bool smooth_transition = false);

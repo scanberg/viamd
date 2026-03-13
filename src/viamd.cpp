@@ -29,6 +29,15 @@ const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
 
 static void init_all_representations(ApplicationState* state);
 
+// Helper: (re-)initialise the per-dataset bitfields that reside in dataset.alloc.
+// Must be called after the arena is created and after any arena reset so that these
+// fields are in a clean, usable state.
+static inline void init_dataset_bitfields(Dataset& dataset) {
+    md_bitfield_init(&dataset.selection.selection_mask, dataset.alloc);
+    md_bitfield_init(&dataset.selection.highlight_mask, dataset.alloc);
+    md_bitfield_init(&dataset.representation.visibility_mask, dataset.alloc);
+}
+
 Dataset* create_new_dataset(ApplicationState& state) {
     if (state.dataset.num_datasets >= ARRAY_SIZE(state.dataset.datasets)) {
         MD_LOG_ERROR("Maximum number of datasets reached");
@@ -40,12 +49,15 @@ Dataset* create_new_dataset(ApplicationState& state) {
     dataset.alloc  = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(1));
     dataset.representation.info.alloc = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(1));
 
-    md_bitfield_init(&current_dataset(state).selection.selection_mask, dataset.alloc);
-    md_bitfield_init(&current_dataset(state).selection.highlight_mask, dataset.alloc);
-    md_bitfield_init(&state.selection.query.mask, dataset.alloc);
-    md_bitfield_init(&state.selection.grow.mask, dataset.alloc);
+    init_dataset_bitfields(dataset);
 
-    md_bitfield_init(&current_dataset(state).representation.visibility_mask, dataset.alloc);
+    // Global selection query/grow masks use the persistent allocator and are initialised once
+    if (!state.selection.query.mask.alloc) {
+        md_bitfield_init(&state.selection.query.mask, state.allocator.persistent);
+    }
+    if (!state.selection.grow.mask.alloc) {
+        md_bitfield_init(&state.selection.grow.mask, state.allocator.persistent);
+    }
 
     return &dataset;
 }
@@ -478,16 +490,12 @@ void free_molecule_data(ApplicationState* data) {
     interrupt_async_tasks(data);
     Dataset& dataset = current_dataset(*data);
 
-    md_arena_allocator_reset(dataset.alloc);
-    MEMSET(&dataset.sys, 0, sizeof(dataset.sys));
-
     md_gl_mol_destroy(dataset.gl_mol);
+    dataset.gl_mol = {};
     dataset.sys_path = {};
 
     dataset.interpolated_properties.secondary_structure = nullptr;
 
-    md_bitfield_clear(&dataset.selection.selection_mask);
-    md_bitfield_clear(&dataset.selection.highlight_mask);
     if (data->script.ir) {
         md_script_ir_free(data->script.ir);
         data->script.ir = nullptr;
@@ -505,6 +513,13 @@ void free_molecule_data(ApplicationState* data) {
         data->script.filt_eval = nullptr;
     }
     clear_density_volume(data);
+
+    // Reset the per-dataset arena last - this invalidates any pointers into it.
+    // Re-init the dataset bitfields so they are in a clean, usable state afterwards.
+    md_arena_allocator_reset(dataset.alloc);
+    MEMSET(&dataset.sys, 0, sizeof(dataset.sys));
+
+    init_dataset_bitfields(dataset);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyFree, viamd::EventPayloadType_ApplicationState, data);
 }
@@ -584,53 +599,79 @@ void process_file_queue(ApplicationState* state) {
 
 bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
     ASSERT(data);
-    Dataset& dataset = current_dataset(*data);
 
     str_t path_to_file = md_path_make_canonical(param.file_path, data->allocator.frame);
-    if (path_to_file) {
-        if (param.sys_loader) {
+    if (!path_to_file) return false;
+
+    if (param.sys_loader) {
+        // A new topology is being loaded.
+        // If the current dataset already has molecular data, open it in a new dataset (tab).
+        // Otherwise reuse the current empty slot.
+        Dataset* dataset_ptr = nullptr;
+        if (current_dataset(*data).sys.atom.count > 0) {
+            // Create a new dataset for the new topology
+            dataset_ptr = create_new_dataset(*data);
+            if (!dataset_ptr) {
+                VIAMD_LOG_ERROR("Failed to create new dataset: maximum number of datasets reached");
+                return false;
+            }
+            // Switch the active dataset to the newly created one
+            data->dataset.current_idx = data->dataset.num_datasets - 1;
+        } else {
+            // Reuse the current (empty) dataset slot
             interrupt_async_tasks(data);
             free_trajectory_data(data);
             free_molecule_data(data);
-
-            if (!param.sys_loader->init_from_file(&dataset.sys, path_to_file, param.sys_loader_arg, dataset.alloc)) {
-                VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
-                return false;
-            }
-            VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
-
-            dataset.sys_path = str_copy(path_to_file, data->allocator.persistent);
-            // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
-            md_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
-            md_util_system_postprocess(&dataset.sys, dataset.alloc, flags);
-            init_molecule_data(data);
-
-            // @NOTE: Some files contain both atomic coordinates and trajectory
-            if (param.traj_loader) {
-                VIAMD_LOG_INFO("File may also contain trajectory, attempting to load trajectory");
-            } else {
-                return true;
-            }
+            dataset_ptr = &current_dataset(*data);
         }
 
-        if (param.traj_loader) {
-            if (!dataset.sys.atom.count) {
-                VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
-                return false;
-            }
-            interrupt_async_tasks(data);
+        Dataset& dataset = *dataset_ptr;
 
-            bool success = load_trajectory_data(data, path_to_file, param.traj_loader, param.traj_loader_flags);
-            if (success) {
-                VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
+        if (!param.sys_loader->init_from_file(&dataset.sys, path_to_file, param.sys_loader_arg, dataset.alloc)) {
+            VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
+            return false;
+        }
+        VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
+
+        // Update identifier to reflect loaded file
+        str_t name = {};
+        extract_file(&name, path_to_file);
+        if (!str_empty(name)) {
+            str_copy_to_char_buf(dataset.identifier, sizeof(dataset.identifier), name);
+        }
+
+        dataset.sys_path = str_copy(path_to_file, data->allocator.persistent);
+        // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
+        md_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
+        md_util_system_postprocess(&dataset.sys, dataset.alloc, flags);
+        init_molecule_data(data);
+
+        // @NOTE: Some files contain both atomic coordinates and trajectory
+        if (param.traj_loader) {
+            VIAMD_LOG_INFO("File may also contain trajectory, attempting to load trajectory");
+        } else {
+            return true;
+        }
+    }
+
+    if (param.traj_loader) {
+        Dataset& dataset = current_dataset(*data);
+        if (!dataset.sys.atom.count) {
+            VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
+            return false;
+        }
+        interrupt_async_tasks(data);
+
+        bool success = load_trajectory_data(data, path_to_file, param.traj_loader, param.traj_loader_flags);
+        if (success) {
+            VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
+            return true;
+        } else {
+            if (param.sys_loader && param.traj_loader) {
+                // Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
                 return true;
-            } else {
-                if (param.sys_loader && param.traj_loader) {
-                    // Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
-                    return true;
-                }
-                VIAMD_LOG_ERROR("Failed to opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
+            VIAMD_LOG_ERROR("Failed to open trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
         }
     }
 
@@ -711,46 +752,46 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
                 if (str_eq(ident, STR_LIT("Frame"))) {
                     viamd::extract_dbl(new_frame, arg);
                 } else if (str_eq(ident, STR_LIT("Fps"))) {
-                    viamd::extract_flt(current_dataset(*data).animation.fps, arg);
+                    viamd::extract_flt(current_dataset(*app_state).animation.fps, arg);
                 } else if (str_eq(ident, STR_LIT("Interpolation"))) {
                     int mode;
                     viamd::extract_int(mode, arg);
-                    current_dataset(*data).animation.interpolation = (InterpolationMode)mode;
+                    current_dataset(*app_state).animation.interpolation = (InterpolationMode)mode;
                 }
             }
         } else if (str_eq(section, STR_LIT("RenderSettings"))) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("SsaoEnabled"))) {
-                    viamd::extract_bool(current_dataset(*data).visuals.ssao.enabled, arg);
+                    viamd::extract_bool(current_dataset(*app_state).visuals.ssao.enabled, arg);
                 } else if (str_eq(ident, STR_LIT("SsaoIntensity"))) {
-                    viamd::extract_flt(current_dataset(*data).visuals.ssao.intensity, arg);
+                    viamd::extract_flt(current_dataset(*app_state).visuals.ssao.intensity, arg);
                 } else if (str_eq(ident, STR_LIT("SsaoRadius"))) {
-                    viamd::extract_flt(current_dataset(*data).visuals.ssao.radius, arg);
+                    viamd::extract_flt(current_dataset(*app_state).visuals.ssao.radius, arg);
                 } else if (str_eq(ident, STR_LIT("SsaoBias"))) {
-                    viamd::extract_flt(current_dataset(*data).visuals.ssao.bias, arg);
+                    viamd::extract_flt(current_dataset(*app_state).visuals.ssao.bias, arg);
                 } else if (str_eq(ident, STR_LIT("DofEnabled"))) {
-                    viamd::extract_bool(current_dataset(*data).visuals.dof.enabled, arg);
+                    viamd::extract_bool(current_dataset(*app_state).visuals.dof.enabled, arg);
                 } else if (str_eq(ident, STR_LIT("DofFocusScale"))) {
-                    viamd::extract_flt(current_dataset(*data).visuals.dof.focus_scale, arg);
+                    viamd::extract_flt(current_dataset(*app_state).visuals.dof.focus_scale, arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("Camera"))) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Position"))) {
-                    viamd::extract_vec3(data->view.camera.position, arg);
+                    viamd::extract_vec3(current_dataset(*app_state).view.camera.position, arg);
                 } else if (str_eq(ident, STR_LIT("Orientation"))) {
-                    viamd::extract_quat(data->view.camera.orientation, arg);
+                    viamd::extract_quat(current_dataset(*app_state).view.camera.orientation, arg);
                 } else if (str_eq(ident, STR_LIT("Distance"))) {
-                    viamd::extract_flt(data->view.camera.focus_distance, arg);
+                    viamd::extract_flt(current_dataset(*app_state).view.camera.focus_distance, arg);
                 } else if (str_eq(ident, STR_LIT("Rotation"))) {
                     // DEPRECATED
-                    viamd::extract_quat(data->view.camera.orientation, arg);
+                    viamd::extract_quat(current_dataset(*app_state).view.camera.orientation, arg);
                 }
             }
         } else if (str_eq(section, STR_LIT("Representation"))) {
-            Representation* rep = create_representation(data);
+            Representation* rep = create_representation(app_state);
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Name"))) {
@@ -825,7 +866,7 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
                 }
             }
             if (!str_empty(lbl) && elem) {
-                add_atom_elem_mapping(data, lbl, (md_element_t)elem);
+                add_atom_elem_mapping(app_state, lbl, (md_element_t)elem);
             }
         } */
         else if (str_eq(section, STR_LIT("Script"))) {
@@ -834,7 +875,7 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
                 if (str_eq(ident, STR_LIT("Text"))) {
                     str_t str;
                     viamd::extract_str(str, arg);
-                    data->editor.SetText(std::string(str.ptr, str.len));
+                    app_state->editor.SetText(std::string(str.ptr, str.len));
                 }
             }
         }
@@ -850,7 +891,7 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
                 }
             }
             if (!str_empty(label) && !str_empty(mask_base64)) {
-                Selection* sel = create_selection(data, label);
+                Selection* sel = create_selection(app_state, label);
                 md_bitfield_deserialize(&sel->atom_mask, mask_base64.ptr, mask_base64.len);
             }
         } else {
@@ -858,12 +899,12 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
         }
     }
 
-    data->view.animation.target_position    = data->view.camera.position;
-    data->view.animation.target_orientation = data->view.camera.orientation;
-    data->view.animation.target_distance    = data->view.camera.focus_distance;
+    current_dataset(*app_state).view.animation.target_position    = current_dataset(*app_state).view.camera.position;
+    current_dataset(*app_state).view.animation.target_orientation = current_dataset(*app_state).view.camera.orientation;
+    current_dataset(*app_state).view.animation.target_distance    = current_dataset(*app_state).view.camera.focus_distance;
     
-    str_free(data->workspace_path, data->allocator.persistent);
-    data->workspace_path = str_copy(filename, data->allocator.persistent);
+    str_free(app_state->workspace_path, app_state->allocator.persistent);
+    app_state->workspace_path = str_copy(filename, app_state->allocator.persistent);
 
     load::LoaderState loader_state = {};
     load::init_loader_state(&loader_state, new_molecule_file, temp_arena);
@@ -875,26 +916,26 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
     param.coarse_grained = new_coarse_grained;
     param.sys_loader_arg = loader_state.sys_loader_arg;
 
-    if (new_molecule_file && load_dataset_from_file(data, param)) {
-        current_dataset(*data).sys_path = str_copy(new_molecule_file, data->allocator.persistent);
+    if (new_molecule_file && load_dataset_from_file(app_state, param)) {
+        current_dataset(*app_state).sys_path = str_copy(new_molecule_file, app_state->allocator.persistent);
     } else {
-        current_dataset(*data).sys_path = {};
+        current_dataset(*app_state).sys_path = {};
     }
 
     if (new_trajectory_file) {
-        load::init_loader_state(&loader_state, new_trajectory_file, data->allocator.frame);
+        load::init_loader_state(&loader_state, new_trajectory_file, app_state->allocator.frame);
         param.sys_loader = 0;
         param.traj_loader = loader_state.traj_loader;
         param.file_path = new_trajectory_file;
-        if (load_dataset_from_file(data, param)) {
-            current_dataset(*data).traj_path = str_copy(new_trajectory_file, data->allocator.persistent);
+        if (load_dataset_from_file(app_state, param)) {
+            current_dataset(*app_state).traj_path = str_copy(new_trajectory_file, app_state->allocator.persistent);
         }
-        current_dataset(*data).animation.frame = new_frame;
+        current_dataset(*app_state).animation.frame = new_frame;
     } else {
-        current_dataset(*data).traj_path = {};
+        current_dataset(*app_state).traj_path = {};
     }
 
-    //apply_atom_elem_mappings(data);
+    //apply_atom_elem_mappings(app_state);
 }
 
 void save_workspace(ApplicationState* app_state, str_t filename) {
