@@ -49,6 +49,9 @@
 #define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
 #define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
 
+constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
+constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
+
 enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Component, Instance };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
@@ -424,7 +427,7 @@ struct LoadParam {
     str_t file_path = STR_LIT("");
     bool coarse_grained = false;
     const void* sys_loader_arg = NULL;
-    LoadTrajectoryFlags traj_loader_flags = 0;
+    md_trajectory_flags_t traj_loader_flags = MD_TRAJECTORY_FLAG_NONE;
 };
 
 // Event Payload when an electronic structure is to be evaluated
@@ -535,25 +538,28 @@ struct Dataset {
     char identifier[64] = "dataset";
 
     md_allocator_i*     alloc = nullptr;
-    md_allocator_i*     sys_alloc = nullptr;
     md_gl_mol_t         gl_mol = {}; // gl molecule handle
 #if EXPERIMENTAL_GFX_API
     md_gfx_handle_t     gfx_structure = {};
 #endif
 
     md_system_t sys = {};
+    md_trajectory_loader_i* traj_loader = nullptr;
     md_trajectory_i* traj = nullptr;
+
     FrameCache frame_cache = {};
+
+    md_bitfield_t recenter_target = {};
 
     str_t sys_path  = STR_LIT("");
     str_t traj_path = STR_LIT("");
-    bool coarse_grained = false;
 
-    vec3_t              sys_aabb_min = {};
-    vec3_t              sys_aabb_max = {};
-    bool                interpolate_system_state = false;
-    bool                dirty_system_state = false;
-    uint32_t            dirty_gpu_buffers = 0;
+    vec3_t aabb_min = {};
+    vec3_t aabb_max = {};
+
+    bool interpolate_system_state = false;
+    bool dirty_system_state = false;
+    uint32_t dirty_gpu_buffers = 0;
 
     struct {
         SelectionGranularity granularity = SelectionGranularity::Atom;
@@ -578,6 +584,7 @@ struct Dataset {
         Camera camera{};
         ViewParam param{};
         CameraMode mode = CameraMode::Perspective;
+        TrackballControllerParam trackball_param{};
 
         struct {
             vec3_t target_position = {};
@@ -715,24 +722,6 @@ struct ApplicationState {
     // It also provides a way to chain the file load dialogue.
     FileQueue file_queue = {};
 
-    // --- CAMERA ---
-    struct {
-        Camera camera{};
-        TrackballControllerParam trackball_param;
-        ViewParam param{};
-        CameraMode mode = CameraMode::Perspective;
-
-        struct {
-            vec2_t sequence[JITTER_SEQUENCE_SIZE] {};
-        } jitter;
-
-        struct {
-            vec3_t target_position = {};
-            quat_t target_orientation = {};
-            float  target_distance = 0;
-        } animation;
-    } view;
-
     struct {
         bool  hide_gui = true;
         ScreenshotResolution resolution = ScreenshotResolution::Window;
@@ -761,7 +750,6 @@ struct ApplicationState {
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID backbone_computations = task_system::INVALID_ID;
-        task_system::ID prefetch_frames = task_system::INVALID_ID;
         task_system::ID evaluate_full = task_system::INVALID_ID;
         task_system::ID evaluate_filt = task_system::INVALID_ID;
     } tasks;
@@ -967,6 +955,26 @@ struct ApplicationState {
     TextEditor editor = {};
 };
 
+Dataset* create_new_dataset(ApplicationState& state);
+
+static inline bool dataset_has_recenter_target(const Dataset& dataset) {
+    return md_bitfield_empty(&dataset.recenter_target) == false;
+}
+
+static inline void dataset_clear_recenter_target(Dataset& dataset) {
+    md_bitfield_clear(&dataset.recenter_target);
+}
+
+static inline void dataset_set_recenter_target(Dataset& dataset, const md_bitfield_t* target) {
+    md_bitfield_copy(&dataset.recenter_target, target);
+}
+
+static inline void dataset_clear_frame_cache(Dataset& dataset) {
+    for (size_t i = 0; i < ARRAY_SIZE(dataset.frame_cache.state); ++i) {
+        dataset.frame_cache.state[i].frame_idx = UINT64_MAX;
+    }
+}
+
 static inline Dataset& current_dataset(ApplicationState& state) {
     return state.dataset.datasets[state.dataset.current_idx];
 }
@@ -1105,7 +1113,31 @@ static inline size_t single_selection_sequence_count(const SingleSelectionSequen
     return i;
 }
 
-static inline uint64_t generate_fingerprint() {
+
+inline bool file_queue_empty(const FileQueue* queue) {
+    return queue->head == queue->tail;
+}
+
+inline bool file_queue_full(const FileQueue* queue) {
+    return (queue->head + 1) % ARRAY_SIZE(queue->arr) == queue->tail;
+}
+
+void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None);
+
+inline FileQueue::Entry file_queue_front(const FileQueue* queue) {
+    ASSERT(!file_queue_empty(queue));
+    return queue->arr[queue->tail];
+}
+
+inline FileQueue::Entry file_queue_pop(FileQueue* queue) {
+    ASSERT(queue);
+    ASSERT(!file_queue_empty(queue));
+    FileQueue::Entry front = file_queue_front(queue);
+    queue->tail = (queue->tail + 1) % ARRAY_SIZE(queue->arr);
+    return front;
+}
+
+inline uint64_t generate_fingerprint() {
     return (uint64_t)md_time_current();
 }
 
@@ -1118,6 +1150,7 @@ md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx);
 void interrupt_async_tasks(ApplicationState* state);
 
 // Dataset loading
+void process_file_queue(ApplicationState* state);
 bool load_dataset_from_file(ApplicationState* state, const LoadParam& param);
 void init_molecule_data(ApplicationState* state);
 void init_trajectory_data(ApplicationState* state);
@@ -1145,3 +1178,9 @@ void flag_all_representations_as_dirty(ApplicationState* state);
 void remove_all_representations(ApplicationState* state);
 void create_default_representations(ApplicationState* state);
 void recompute_atom_visibility_mask(ApplicationState* state);
+
+// System state
+void interpolate_system_state(ApplicationState* state);
+
+// View
+void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera, bool smooth_transition);

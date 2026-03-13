@@ -356,7 +356,7 @@ struct Shapespace : viamd::EventHandler {
                 joined_bitfield = {0};
                 md_bitfield_init(&joined_bitfield, arena);
 
-				md_trajectory_i* traj = load::traj::get_raw_trajectory(current_dataset(*app_state).traj);
+				md_trajectory_i* traj = current_dataset(*app_state).traj;
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));

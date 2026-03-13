@@ -18,13 +18,7 @@ enum LoaderStateFlag_ {
     LoaderStateFlag_RequiresDialogue = 1,
 };
 
-enum LoadTrajectoryFlag_ {
-    LoadTrajectoryFlag_None = 0,
-    LoadTrajectoryFlag_DisableCacheWrite = 1,
-};
-
 typedef uint32_t LoaderStateFlags;
-typedef uint32_t LoadTrajectoryFlags;
 
 namespace load {
     // This represents a loader state with arguments to load a molecule or trajectory from a file
@@ -51,16 +45,6 @@ namespace mol {
 
 namespace traj {
     md_trajectory_loader_i* loader_from_ext(str_t ext);
-    md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_system_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
-    bool close(md_trajectory_i* traj);
-
-    md_trajectory_i* get_raw_trajectory(md_trajectory_i* traj);
-
-    bool has_recenter_target(md_trajectory_i* traj);
-    bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask);
-
-    bool clear_cache(md_trajectory_i* traj);
-    size_t num_cache_frames(md_trajectory_i* traj);
 }
 
 }  // namespace load

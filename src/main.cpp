@@ -133,10 +133,7 @@ constexpr ImGuiKey KEY_SCRIPT_EVALUATE     = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD = ImGuiMod_Shift;
 constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT = ImGuiKey_F1;
 
-constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
-
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
-constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
 
 inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
 inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
@@ -160,69 +157,6 @@ enum MarkerType_{
     MarkerType_Warning,
     MarkerType_Visualization,
 };
-
-const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
-    for (size_t i = 0; i < len; ++i) {
-        if (str_eq(arr[i], str)) {
-            return &arr[i];
-        }
-    }
-    return NULL;
-}
-
-static inline bool file_queue_empty(const FileQueue* queue) {
-    return queue->head == queue->tail;
-}
-
-static inline bool file_queue_full(const FileQueue* queue) {
-    return (queue->head + 1) % ARRAY_SIZE(queue->arr) == queue->tail;
-}
-
-static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None) {
-    ASSERT(queue);
-    ASSERT(!file_queue_full(queue));
-    int prio = 0;
-
-    str_t ext;
-    if (extract_ext(&ext, path) && str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
-        prio = 1;
-    } else if (load::mol::loader_from_ext(ext)) {
-        prio = 2;
-    } else if (load::traj::loader_from_ext(ext)) {
-        prio = 3;
-    } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
-        prio = 4;
-    } else {
-        // Unknown extension
-        prio = 5;
-        flags |= FileFlags_ShowDialogue;
-    }
-
-    uint64_t i = queue->head;
-    queue->arr[queue->head] = {str_copy(path, queue->ring), flags, prio};
-    queue->head = (queue->head + 1) % ARRAY_SIZE(queue->arr);
-
-    // Sort queue based on prio
-     while (i != queue->tail && queue->arr[i].prio < queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)].prio) {
-        FileQueue::Entry tmp = queue->arr[i];
-        queue->arr[i] = queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)];
-        queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)] = tmp;
-        i = (i - 1) % ARRAY_SIZE(queue->arr);
-     }
-}
-
-static inline FileQueue::Entry file_queue_front(const FileQueue* queue) {
-    ASSERT(!file_queue_empty(queue));
-    return queue->arr[queue->tail];
-}
-
-static inline FileQueue::Entry file_queue_pop(FileQueue* queue) {
-    ASSERT(queue);
-    ASSERT(!file_queue_empty(queue));
-    FileQueue::Entry front = file_queue_front(queue);
-    queue->tail = (queue->tail + 1) % ARRAY_SIZE(queue->arr);
-    return front;
-}
 
 static void visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0) {
     md_script_vis_ctx_t ctx = {
@@ -475,7 +409,6 @@ static void draw_property_export_window(ApplicationState* state);
 static void draw_structure_export_window(ApplicationState* state);
 static void draw_notifications_window();
 
-static void interpolate_system_state(ApplicationState* state);
 static void update_md_buffers(ApplicationState* state);
 
 static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
@@ -558,21 +491,12 @@ int main(int argc, char** argv) {
 
     md_log_register(&notification_logger);
 
-    ApplicationState state;
+    ApplicationState state = {};
     state.allocator.persistent = persistent_alloc;
     state.allocator.frame = frame_alloc;
-    state.dataset.num_datasets = 1;
-    current_dataset(state).alloc = persistent_alloc;
-    current_dataset(state).representation.info.alloc = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
-    current_dataset(state).sys_alloc  = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
 
-    md_bitfield_init(&current_dataset(state).selection.selection_mask, persistent_alloc);
-    md_bitfield_init(&current_dataset(state).selection.highlight_mask, persistent_alloc);
-    md_bitfield_init(&state.selection.query.mask, persistent_alloc);
-    md_bitfield_init(&state.selection.grow.mask, persistent_alloc);
-
-    md_bitfield_init(&current_dataset(state).representation.visibility_mask, persistent_alloc);
+    create_new_dataset(state);
 
     // Init platform
     VIAMD_LOG_DEBUG("Initializing GL...");
@@ -595,11 +519,6 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Initializing framebuffer...");
     init_gbuffer(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
 
-    for (int i = 0; i < (int)ARRAY_SIZE(state.view.jitter.sequence); ++i) {
-        state.view.jitter.sequence[i].x = md_halton(i + 1, 2);
-        state.view.jitter.sequence[i].y = md_halton(i + 1, 3);
-    }
-
     // Init subsystems
     VIAMD_LOG_DEBUG("Initializing immediate draw...");
     immediate::initialize();
@@ -615,6 +534,7 @@ int main(int argc, char** argv) {
     state.gl.shaders                = md_gl_shaders_create(shader_output_snippet);
     state.gl.shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
 
+    // Broadcast initialization event so that plugins can initialize themselves
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &state);
 
 #if EXPERIMENTAL_GFX_API
@@ -628,12 +548,12 @@ int main(int argc, char** argv) {
 
     {
 #ifdef VIAMD_DATASET_DIR
-        char exe[1024];
-        size_t len = md_path_write_exe(exe, sizeof(exe));
+        char exe_path[1024];
+        size_t len = md_path_write_exe(exe_path, sizeof(exe_path));
         if (len) {
             md_strb_t sb = md_strb_create(frame_alloc);
-            str_t folder;
-            extract_folder_path(&folder, {exe, len});
+            str_t folder = {0};
+            extract_folder_path(&folder, {exe_path, len});
             sb += folder;
             sb += VIAMD_DATASET_DIR "/1ALA-500.pdb";
             str_t path = md_strb_to_str(sb);
@@ -658,13 +578,8 @@ int main(int argc, char** argv) {
         }
     }
 
-#if EXPERIMENTAL_SDF == 1
-    draw::scan::test_scan();
-#endif
     bool time_changed = true;
     bool time_stopped = true;
-
-    //bool demo_window = true;
 
     // Main loop
     while (!state.app.window.should_close) {
@@ -675,81 +590,13 @@ int main(int argc, char** argv) {
         ImGui::CreateDockspace();
 #endif
 
+        ImGui::ShowDemoWindow();
+
         const size_t num_frames  = md_trajectory_num_frames(current_dataset(state).traj);
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
         const double   max_frame = (double)last_frame;
-
-        if (!file_queue_empty(&state.file_queue) && !state.load_dataset.show_window) {
-            FileQueue::Entry e = file_queue_pop(&state.file_queue);
-
-            str_t ext;
-            extract_ext(&ext, e.path);
-            const str_t* res = 0;
-
-            if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
-                load_workspace(&state, e.path);
-                reset_view(&state, &current_dataset(state).representation.visibility_mask, false, true);
-            } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
-                char buf[1024];
-                str_t base_path = {};
-                if (!str_empty(state.workspace_path)) {
-                    base_path = state.workspace_path;
-                } else if (!str_empty(current_dataset(state).traj_path)) {
-                    base_path = current_dataset(state).traj_path;
-                } else if (!str_empty(current_dataset(state).sys_path)) {
-                    base_path = current_dataset(state).sys_path;
-                } else {
-                    md_path_write_cwd(buf, sizeof(buf));
-                    base_path = str_from_cstr(buf);
-                }
-
-                str_t rel_path = md_path_make_relative(base_path, e.path, frame_alloc);
-                MD_LOG_DEBUG("Attempting to make relative path from '" STR_FMT "' to '" STR_FMT "'", STR_ARG(base_path), STR_ARG(e.path));
-                MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
-                if (!str_empty(rel_path)) {
-                    snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_ARG(rel_path));
-                    TextEditor::Coordinates pos = state.editor.GetCursorPosition();
-                    pos.mLine += 1;
-                    state.editor.SetCursorPosition({0,0});
-                    state.editor.InsertText(buf);
-                    state.editor.SetCursorPosition(pos);
-                }
-            } else {
-                load::LoaderState loader = {};
-                bool success = load::init_loader_state(&loader, e.path, frame_alloc);
-
-                if (!success || (e.flags & FileFlags_ShowDialogue) || (loader.flags & LoaderStateFlag_RequiresDialogue)) {
-                    state.load_dataset = LoadDatasetWindowState();
-                    str_copy_to_char_buf(state.load_dataset.path_buf, sizeof(state.load_dataset.path_buf), e.path);
-                    state.load_dataset.path_changed = true;
-                    state.load_dataset.show_window = true;
-                    state.load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                } else if (success) {
-                    LoadParam param = {};
-                    param.sys_loader  = loader.sys_loader;
-                    param.traj_loader = loader.traj_loader;
-                    param.file_path      = e.path;
-                    param.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                    param.sys_loader_arg = loader.sys_loader_arg;
-                    param.traj_loader_flags = (e.flags & FileFlags_DisableCacheWrite) ? LoadTrajectoryFlag_DisableCacheWrite : 0;
-                    if (load_dataset_from_file(&state, param)) {
-                        current_dataset(state).animation = {};
-                        if (param.sys_loader) {
-                            md_bitfield_reset(&current_dataset(state).representation.visibility_mask);
-
-                            if (!state.settings.keep_representations) {
-                                remove_all_representations(&state);
-                                create_default_representations(&state);
-                            }
-                            recompute_atom_visibility_mask(&state);
-							current_dataset(state).interpolate_system_state = true;
-                            current_dataset(state).dirty_gpu_buffers |= MolBit_ClearVelocity;
-                            reset_view(&state, &current_dataset(state).representation.visibility_mask, true, false);
-                        }
-                    }
-                }
-            }
-        }
+        
+        process_file_queue(&state);
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -776,8 +623,8 @@ int main(int argc, char** argv) {
         //ImGui::ShowDemoWindow();
 
         handle_camera_interaction(&state);
-        camera_animate(&state.view.camera, state.view.animation.target_orientation, state.view.animation.target_position, state.view.animation.target_distance, state.app.timing.delta_s);
-        current_dataset(state).visuals.dof.focus_depth = state.view.camera.focus_distance;
+        camera_animate(&current_dataset(state).view.camera, current_dataset(state).view.animation.target_orientation, current_dataset(state).view.animation.target_position, current_dataset(state).view.animation.target_distance, state.app.timing.delta_s);
+        current_dataset(state).visuals.dof.focus_depth = current_dataset(state).view.camera.focus_distance;
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
@@ -843,39 +690,6 @@ int main(int argc, char** argv) {
             } else if (current_dataset(state).animation.frame <= 0) {
                 current_dataset(state).animation.mode = PlaybackMode::Stopped;
                 current_dataset(state).animation.frame = 0;
-            }
-
-            if (state.settings.prefetch_frames) {
-                if (!task_system::task_is_running(state.tasks.prefetch_frames)) {
-                    uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(current_dataset(state).traj);
-                    if (traj_frames > 0 && load::traj::num_cache_frames(current_dataset(state).traj) < traj_frames) {
-                        uint32_t frame_beg = 0;
-                        uint32_t frame_end = 0;
-                        // @NOTE: This is certainly something which can be improved upon.
-                        // It prefetches frames in the direction of the animation.
-                        // In a more optimal case, it should never yield until it catches up with the number of frames it expects to have as a buffer.
-
-                        int look_ahead = CLAMP((int)load::traj::num_cache_frames(current_dataset(state).traj) / 2, 1, 10);
-                    
-                        if (current_dataset(state).animation.fps > 0) {
-                            frame_beg = (uint32_t)CLAMP((int)current_dataset(state).animation.frame             , 0, (int)traj_frames);
-                            frame_end = (uint32_t)CLAMP((int)current_dataset(state).animation.frame + look_ahead, 0, (int)traj_frames);
-                        } else {
-                            frame_beg = (uint32_t)CLAMP((int)current_dataset(state).animation.frame - look_ahead, 0, (int)traj_frames);
-                            frame_end = (uint32_t)CLAMP((int)current_dataset(state).animation.frame             , 0, (int)traj_frames);
-                        }
-                        if (frame_beg != frame_end) {
-                            uint32_t frame_count = frame_end - frame_beg;
-                            state.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_count, [&state, frame_offset = frame_beg](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
-                                (void)thread_num;                                
-                                for (uint32_t i = frame_offset + frame_beg; i < frame_offset + frame_end; ++i) {
-                                    md_trajectory_load_frame(current_dataset(state).traj, i, 0, 0, 0, 0);
-                                }
-                            });
-                            task_system::enqueue_task(state.tasks.prefetch_frames);
-                        }
-                    }
-                }
             }
         }
 
@@ -1115,7 +929,7 @@ int main(int argc, char** argv) {
                         if (md_script_ir_property_count(state.script.eval_ir) > 0) {
                             state.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&state](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;
-								md_trajectory_i* traj = load::traj::get_raw_trajectory(current_dataset(state).traj);
+								md_trajectory_i* traj = current_dataset(state).traj;
                                 md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &current_dataset(state).sys, traj, frame_beg, frame_end);
                             });
                             
@@ -1151,7 +965,7 @@ int main(int argc, char** argv) {
                             if (beg_frame != end_frame) {
                                 state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                     (void)thread_num;
-                                    md_trajectory_i* traj = load::traj::get_raw_trajectory(current_dataset(state).traj);
+                                    md_trajectory_i* traj = current_dataset(state).traj;
                                     md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &current_dataset(state).sys, traj, offset + beg, offset + end);
                                 });
                                 task_system::enqueue_task(state.tasks.evaluate_filt);
@@ -1177,8 +991,10 @@ int main(int argc, char** argv) {
                 ImDrawList* dl = window->DrawList;
                 ASSERT(dl);
 
+                const Dataset& current = current_dataset(state);
+
                 const vec2_t res = { (float)state.app.window.width, (float)state.app.window.height };
-                const mat4_t mvp = state.view.param.matrix.curr.proj_no_jitter * state.view.param.matrix.curr.view;
+                const mat4_t mvp = current.view.param.matrix.curr.proj_no_jitter * current.view.param.matrix.curr.view;
 
                 // Script text
                 const ImU32 text_color = convert_color(state.script.text_color);
@@ -1338,7 +1154,7 @@ int main(int argc, char** argv) {
         md_script_vis_free(&state.script.vis);
 
         // Reset frame allocator
-        md_vm_arena_reset(frame_alloc);
+        md_vm_arena_reset(state.allocator.frame);
 
         // Swap buffers
         application::swap_buffers(&state.app);
@@ -1816,538 +1632,50 @@ static void update_density_volume(ApplicationState* data) {
     }
 }
 
-static void interpolate_system_state(ApplicationState* state) {
-    ASSERT(state);
-    auto& sys = current_dataset(*state).sys;
-    const auto& traj = current_dataset(*state).traj;
-
-    if (!sys.atom.count || !md_trajectory_num_frames(traj)) return;
-
-    const int64_t last_frame = MAX(0LL, (int64_t)md_trajectory_num_frames(traj) - 1);
-    // This is not actually time, but the fractional frame representation
-    const double time = CLAMP(current_dataset(*state).animation.frame, 0.0, double(last_frame));
-
-    // Scaling factor for cubic spline
-    const int64_t frame = (int64_t)time;
-    const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
-
-    static int64_t curr_nearest_frame = -1;
-    if (current_dataset(*state).animation.interpolation == InterpolationMode::Nearest) {
-        if (curr_nearest_frame == nearest_frame) {
-            return;
-        }
-        current_dataset(*state).dirty_gpu_buffers |= MolBit_ClearVelocity;
-    }
-    curr_nearest_frame = nearest_frame;
-
-    const int64_t frames[4] = {
-        MAX(0LL, frame - 1),
-        MAX(0LL, frame),
-        MIN(frame + 1, last_frame),
-        MIN(frame + 2, last_frame),
-    };
-
-    const size_t num_threads = task_system::pool_num_threads();
-
-    const size_t stride = ALIGN_TO(sys.atom.count, 16);    // The interploation uses SIMD vectorization without bounds, so we make sure there is no overlap between the data segments
-    const size_t bytes = stride * sizeof(float) * 3 * 4;
-    
-    // The number of atoms to be processed per thread when divided into chunks
-    const uint32_t grain_size = 1024;
-
-    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-    defer { md_vm_arena_temp_end(tmp); };
-
-    void* mem = md_vm_arena_push(frame_alloc, bytes);
-
-    struct Payload {
-        ApplicationState* state;
-        float s;
-        float t;
-        InterpolationMode mode;
-
-        int64_t nearest_frame;
-        int64_t frames[4];
-        md_trajectory_frame_header_t headers[4];
-        md_unitcell_t unitcell;
-
-        size_t count;
-
-        float* src_x[4];
-        float* src_y[4];
-        float* src_z[4];
-
-        float* dst_x;
-        float* dst_y;
-        float* dst_z;
-
-        vec3_t* aabb_min;
-        vec3_t* aabb_max;
-    };
-
-    const InterpolationMode mode = (frames[1] != frames[2]) ? current_dataset(*state).animation.interpolation : InterpolationMode::Nearest;
-
-    Payload payload = {
-        .state = state,
-        .s = 1.0f - CLAMP(current_dataset(*state).animation.tension, 0.0f, 1.0f),
-        .t = (float)fractf(time),
-        .mode = mode,
-        .nearest_frame = nearest_frame,
-        .frames = { frames[0], frames[1], frames[2], frames[3]},
-        .count = sys.atom.count,
-        .src_x = { (float*)mem + stride * 0, (float*)mem + stride * 1, (float*)mem + stride * 2,  (float*)mem + stride * 3 },
-        .src_y = { (float*)mem + stride * 4, (float*)mem + stride * 5, (float*)mem + stride * 6,  (float*)mem + stride * 7 },
-        .src_z = { (float*)mem + stride * 8, (float*)mem + stride * 9, (float*)mem + stride * 10, (float*)mem + stride * 11},
-        .dst_x = sys.atom.x,
-        .dst_y = sys.atom.y,
-        .dst_z = sys.atom.z,
-        .aabb_min = (vec3_t*)md_vm_arena_push(frame_alloc, num_threads * sizeof(vec3_t)),
-        .aabb_max = (vec3_t*)md_vm_arena_push(frame_alloc, num_threads * sizeof(vec3_t)),
-    };
-
-    // This holds the chain of tasks we are about to submit
-    task_system::ID tasks[16] = {0};
-    int num_tasks = 0;
-
-    switch (mode) {
-        case InterpolationMode::Nearest: {
-            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"),[data = &payload]() {
-                md_trajectory_frame_header_t header;
-                md_trajectory_load_frame(current_dataset(*data->state).traj, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
-                MEMCPY(&data->unitcell, &header.unitcell, sizeof(md_unitcell_t));
-            });
-
-            tasks[num_tasks++] = load_task;
-            break;
-        }
-        case InterpolationMode::Linear: {
-            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 2, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
-                for (uint32_t i = range_beg; i < range_end; ++i) {
-                    md_trajectory_load_frame(current_dataset(*data->state).traj, data->frames[i+1], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
-                }
-            });
-
-            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
-                if (data->headers[0].unitcell.flags) {
-                    double x  = lerp(data->headers[0].unitcell.x,  data->headers[1].unitcell.x,  data->t);
-                    double y  = lerp(data->headers[0].unitcell.y,  data->headers[1].unitcell.y,  data->t);
-                    double z  = lerp(data->headers[0].unitcell.z,  data->headers[1].unitcell.z,  data->t);
-                    double xy = lerp(data->headers[0].unitcell.xy, data->headers[1].unitcell.xy, data->t);
-                    double xz = lerp(data->headers[0].unitcell.xz, data->headers[1].unitcell.xz, data->t);
-                    double yz = lerp(data->headers[0].unitcell.yz, data->headers[1].unitcell.yz, data->t);
-                    data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-                }
-            });
-
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
-                size_t count = range_end - range_beg;
-                float* dst_x = data->dst_x + range_beg;
-                float* dst_y = data->dst_y + range_beg;
-                float* dst_z = data->dst_z + range_beg;
-                const float* src_x[2] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg};
-                const float* src_y[2] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg};
-                const float* src_z[2] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg};
-
-                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t);
-            }, grain_size);
-
-            tasks[num_tasks++] = load_task;
-            tasks[num_tasks++] = interp_unit_cell_task;
-            tasks[num_tasks++] = interp_coord_task;
-
-            break;
-        }
-        case InterpolationMode::CubicSpline: {
-            task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 4, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
-                for (uint32_t i = range_beg; i < range_end; ++i) {
-                    md_trajectory_load_frame(current_dataset(*data->state).traj, data->frames[i], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
-                }
-            });
-
-            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
-                if (data->headers[0].unitcell.flags) {
-                    double x  = cubic_spline(data->headers[0].unitcell.x,  data->headers[1].unitcell.x,  data->headers[2].unitcell.x,  data->headers[3].unitcell.x,  data->t, data->s);
-                    double y  = cubic_spline(data->headers[0].unitcell.y,  data->headers[1].unitcell.y,  data->headers[2].unitcell.y,  data->headers[3].unitcell.y,  data->t, data->s);
-                    double z  = cubic_spline(data->headers[0].unitcell.z,  data->headers[1].unitcell.z,  data->headers[2].unitcell.z,  data->headers[3].unitcell.z,  data->t, data->s);
-                    double xy = cubic_spline(data->headers[0].unitcell.xy, data->headers[1].unitcell.xy, data->headers[2].unitcell.xy, data->headers[3].unitcell.xy, data->t, data->s);
-                    double xz = cubic_spline(data->headers[0].unitcell.xz, data->headers[1].unitcell.xz, data->headers[2].unitcell.xz, data->headers[3].unitcell.xz, data->t, data->s);
-                    double yz = cubic_spline(data->headers[0].unitcell.yz, data->headers[1].unitcell.yz, data->headers[2].unitcell.yz, data->headers[3].unitcell.yz, data->t, data->s);
-                    
-                    data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-                }
-            });
-
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
-                size_t count = range_end - range_beg;
-                float* dst_x = data->dst_x + range_beg;
-                float* dst_y = data->dst_y + range_beg;
-                float* dst_z = data->dst_z + range_beg;
-                const float* src_x[4] = { data->src_x[0] + range_beg, data->src_x[1] + range_beg, data->src_x[2] + range_beg, data->src_x[3] + range_beg};
-                const float* src_y[4] = { data->src_y[0] + range_beg, data->src_y[1] + range_beg, data->src_y[2] + range_beg, data->src_y[3] + range_beg};
-                const float* src_z[4] = { data->src_z[0] + range_beg, data->src_z[1] + range_beg, data->src_z[2] + range_beg, data->src_z[3] + range_beg};
-
-                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t, data->s);
-            }, grain_size);
-
-            tasks[num_tasks++] = load_task;
-            tasks[num_tasks++] = interp_unit_cell_task;
-            tasks[num_tasks++] = interp_coord_task;
-            
-            break;
-        }
-        default:
-            ASSERT(false);
-            break;
-    }
-
-    if (current_dataset(*state).operations.recalc_bonds) {
-        if (!task_system::task_is_running(state->tasks.evaluate_full) && !task_system::task_is_running(state->tasks.evaluate_filt)) {
-            // We cannot recalculate bonds while the full or filtered evaluation is running
-            // because it would overwrite the bond data while we are reading it
-
-            static int64_t cur_nearest_frame = -1;
-            if (cur_nearest_frame != payload.nearest_frame) {
-                cur_nearest_frame = payload.nearest_frame;
-                task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
-                    const auto& sys = current_dataset(*data->state).sys;
-                    const float* x = sys.atom.x;
-                    const float* y = sys.atom.y;
-                    const float* z = sys.atom.z;
-                    const md_unitcell_t* cell = &sys.unitcell;
-                    int offset = data->t < 0.5 ? 0 : 1;
-
-                    switch (data->mode) {
-                    case InterpolationMode::Nearest: break;
-                    case InterpolationMode::Linear:
-                        x = data->src_x[0 + offset];
-                        y = data->src_y[0 + offset];
-                        z = data->src_z[0 + offset];
-                        cell = &data->headers[0 + offset].unitcell;
-                        break;
-                    case InterpolationMode::CubicSpline:
-                        x = data->src_x[1 + offset];
-                        y = data->src_y[1 + offset];
-                        z = data->src_z[1 + offset];
-                        cell = &data->headers[1 + offset].unitcell;
-                        break;
-                    default:
-                        break;
-                    };
-
-                    md_bond_data_t* bonds = &current_dataset(*data->state).sys.bond;
-                    md_bond_data_clear(bonds);
-
-                    md_util_infer_covalent_bonds(bonds, x, y, z, cell, &sys, current_dataset(*data->state).sys_alloc);
-                    current_dataset(*data->state).dirty_gpu_buffers |= MolBit_DirtyBonds;
-                });
-                tasks[num_tasks++] = recalc_bond_task;
-            }
-        }
-    }
-
-    if (current_dataset(*state).operations.apply_pbc) {
-        task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
-            size_t count = range_end - range_beg;
-            float* x = data->dst_x + range_beg;
-            float* y = data->dst_y + range_beg;
-            float* z = data->dst_z + range_beg;
-            md_util_pbc(x, y, z, NULL, count, &data->unitcell);
-        });
-        tasks[num_tasks++] = pbc_task;
-    } 
-    if (current_dataset(*state).operations.unwrap_structures) {
-        size_t num_structures = md_index_data_num_ranges(&sys.structure);
-        task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
-            for (uint32_t i = range_beg; i < range_end; ++i) {
-                int*     s_idx = md_index_range_ptr(&current_dataset(*data->state).sys.structure, i);
-                size_t   s_len = md_index_range_size(&current_dataset(*data->state).sys.structure, i);
-                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unitcell);
-            }
-        });
-        tasks[num_tasks++] = unwrap_task;
-    }
-
-    {
-        // Calculate a global AABB for the molecule
-        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            size_t range_len = range_end - range_beg;
-            const float* x = current_dataset(*data->state).sys.atom.x + range_beg;
-            const float* y = current_dataset(*data->state).sys.atom.y + range_beg;
-            const float* z = current_dataset(*data->state).sys.atom.z + range_beg;
-
-            size_t temp_pos = md_temp_get_pos();
-            defer { md_temp_set_pos_back(temp_pos); };
-            float* r = (float*)md_temp_push(sizeof(float) * range_len);
-            md_atom_extract_radii(r, range_beg, range_len, &current_dataset(*data->state).sys.atom);
-
-            vec3_t aabb_min = vec3_set1(FLT_MAX);
-            vec3_t aabb_max = vec3_set1(-FLT_MAX);
-            md_util_aabb_compute(aabb_min.elem, aabb_max.elem, x, y, z, r, 0, range_len);
-
-            data->aabb_min[thread_num] = aabb_min;
-            data->aabb_max[thread_num] = aabb_max;
-        });
-        tasks[num_tasks++] = aabb_task;
-    }
-
-    if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.angle) {
-        switch (mode) {
-            case InterpolationMode::Nearest: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [data = &payload]() {
-                    const md_backbone_angles_t* src_angles[2] = {
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[1],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[2],
-                    };
-                    const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
-                    MEMCPY(current_dataset(*data->state).sys.protein_backbone.segment.angle, src_angle, current_dataset(*data->state).sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
-                });
-
-                tasks[num_tasks++] = angle_task;
-                break;
-            }
-            case InterpolationMode::Linear: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
-                    const md_backbone_angles_t* src_angles[2] = {
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[1],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[2],
-                    };
-                    md_system_t& mol = current_dataset(*data->state).sys;
-                    for (size_t i = range_beg; i < range_end; ++i) {
-                        float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
-                        float psi[2] = {src_angles[0][i].psi, src_angles[1][i].psi};
-
-                        phi[1] = deperiodize_orthof(phi[1], phi[0], (float)TWO_PI);
-                        psi[1] = deperiodize_orthof(psi[1], psi[0], (float)TWO_PI);
-
-                        float final_phi = lerp(phi[0], phi[1], data->t);
-                        float final_psi = lerp(psi[0], psi[1], data->t);
-                        mol.protein_backbone.segment.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
-                    }
-                });
-
-                tasks[num_tasks++] = angle_task;
-                break;
-            }
-            case InterpolationMode::CubicSpline: {
-                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
-                    const md_backbone_angles_t* src_angles[4] = {
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[0],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[1],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[2],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[3],
-                    };
-                    md_system_t& sys = current_dataset(*data->state).sys;
-                    for (size_t i = range_beg; i < range_end; ++i) {
-                        float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
-                        float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
-
-                        phi[0] = deperiodize_orthof(phi[0], phi[1], (float)TWO_PI);
-                        phi[2] = deperiodize_orthof(phi[2], phi[1], (float)TWO_PI);
-                        phi[3] = deperiodize_orthof(phi[3], phi[2], (float)TWO_PI);
-
-                        psi[0] = deperiodize_orthof(psi[0], psi[1], (float)TWO_PI);
-                        psi[2] = deperiodize_orthof(psi[2], psi[1], (float)TWO_PI);
-                        psi[3] = deperiodize_orthof(psi[3], psi[2], (float)TWO_PI);
-
-                        float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], data->t, data->s);
-                        float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], data->t, data->s);
-                        sys.protein_backbone.segment.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
-                    }
-                });
-
-                tasks[num_tasks++] = angle_task;
-                break;
-            }
-            default:
-                ASSERT(false);
-                break;
-        }
-    }
-
-    if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.secondary_structure) {
-        if (md_array_size(current_dataset(*state).interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
-			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
-        }
-        size_t num_backbone_segments = sys.protein_backbone.segment.count;
-        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
-            const md_secondary_structure_t* src_ss[4] = {
-                (md_secondary_structure_t*)current_dataset(*data->state).trajectory_data.secondary_structure.data + current_dataset(*data->state).trajectory_data.secondary_structure.stride * data->frames[0],
-                (md_secondary_structure_t*)current_dataset(*data->state).trajectory_data.secondary_structure.data + current_dataset(*data->state).trajectory_data.secondary_structure.stride * data->frames[1],
-                (md_secondary_structure_t*)current_dataset(*data->state).trajectory_data.secondary_structure.data + current_dataset(*data->state).trajectory_data.secondary_structure.stride * data->frames[2],
-                (md_secondary_structure_t*)current_dataset(*data->state).trajectory_data.secondary_structure.data + current_dataset(*data->state).trajectory_data.secondary_structure.stride * data->frames[3],
-            };
-            const md_secondary_structure_t* src_ss_nearest = data->t < 0.5f ? src_ss[1] : src_ss[2];
-            switch (mode) {
-            default:
-                MD_LOG_DEBUG("Unsupported interpolation mode for secondary structure interpolation");
-                [[fallthrough]];
-            case InterpolationMode::Nearest: {
-                for (size_t i = range_beg; i < range_end; ++i) {
-                    md_secondary_structure_t ss = src_ss_nearest[i];
-                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    current_dataset(*data->state).sys.protein_backbone.segment.secondary_structure[i] = ss;
-                    current_dataset(*data->state).interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
-                }
-                break;
-            }
-            case InterpolationMode::Linear: {
-                for (size_t i = range_beg; i < range_end; ++i) {
-                    md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
-                    md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
-                    md_gl_secondary_structure_t ss_gl_i = {
-                        .helix = lerp(ss_gl[0].helix, ss_gl[1].helix, data->t),
-                        .sheet = lerp(ss_gl[0].sheet, ss_gl[1].sheet, data->t),
-                    };
-                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    current_dataset(*data->state).sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    current_dataset(*data->state).interpolated_properties.secondary_structure[i] = ss_gl_i;
-                }
-                break;
-            }
-            case InterpolationMode::CubicSpline: {
-                const md_gl_secondary_structure_t ss_coil = { 0,0 };
-                const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
-
-                for (size_t i = range_beg; i < range_end; ++i) {
-                    md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };
-
-                    md_gl_secondary_structure_t ss_gl[4] = {
-                        md_gl_secondary_structure_convert(ss[0]),
-                        md_gl_secondary_structure_convert(ss[1]),
-                        md_gl_secondary_structure_convert(ss[2]),
-                        md_gl_secondary_structure_convert(ss[3]),
-                    };
-
-                    auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
-                        return a.helix == b.helix && a.sheet == b.sheet;
-                    };
-
-                    // Cleanup isolated coils temporally to reduce noise during transitions.
-                    // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
-                    // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
-#if 0
-                    if (is_eq(ss_gl[1], ss_coil)) {
-                        if (is_eq(ss_gl[0], ss_gl[2]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[1], ss_gl[0])) {
-                            ss_gl[1] = ss_gl[0];
-                        }
-                    }
-                    if (is_eq(ss_gl[2], ss_coil)) {
-                        if (is_eq(ss_gl[0], ss_gl[1]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[0])) {
-                            ss_gl[2] = ss_gl[0];
-                        }
-                    }
-#endif
-
-                    md_gl_secondary_structure_t ss_gl_i = {
-                        .helix = cubic_spline(ss_gl[0].helix, ss_gl[1].helix, ss_gl[2].helix, ss_gl[3].helix, data->t, data->s),
-                        .sheet = cubic_spline(ss_gl[0].sheet, ss_gl[1].sheet, ss_gl[2].sheet, ss_gl[3].sheet, data->t, data->s),
-                    };
-                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    current_dataset(*data->state).sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    current_dataset(*data->state).interpolated_properties.secondary_structure[i] = ss_gl_i;
-                }
-                break;
-            }
-            }
-        });
-        tasks[num_tasks++] = ss_task;
-
-#if 1
-        // Task for cleaning up isolated coils to its neighbors (if the same), to reduce the noise in the secondary structure during transitions. This is a non temporal filtering step
-        task_system::ID ss_cleanup_task = task_system::create_pool_task(STR_LIT("## Cleanup Secondary Structures"), [data = &payload]() {
-            // Cleanup isolated coils to reduce noise during transitions
-            auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
-                return a.helix == b.helix && a.sheet == b.sheet;
-            };
-            const md_gl_secondary_structure_t ss_coil = { 0,0 };
-            const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
-
-            md_gl_secondary_structure_t* ss_gl = current_dataset(*data->state).interpolated_properties.secondary_structure;
-            for (size_t i = 0; i < current_dataset(*data->state).sys.protein_backbone.range.count; ++i) {
-                size_t range_beg = current_dataset(*data->state).sys.protein_backbone.range.offset[i];
-                size_t range_end = current_dataset(*data->state).sys.protein_backbone.range.offset[i + 1];
-                for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
-                    // Set isolated coils between sheets to sheet to reduce noise during transitions, as this is likely a result of flickering during secondary structure assignment
-                    if (is_eq(ss_gl[j - 1], ss_sheet) && is_eq(ss_gl[j + 1], ss_sheet) && is_eq(ss_gl[j], ss_coil)) {
-                        ss_gl[j] = ss_sheet;
-                    }
-                }
-            }
-        });
-        tasks[num_tasks++] = ss_cleanup_task;
-#endif
-
-        current_dataset(*state).dirty_gpu_buffers |= MolBit_DirtySecondaryStructure;
-    }
-
-    if (num_tasks > 0) {
-        for (int i = 1; i < num_tasks; ++i) {
-            task_system::set_task_dependency(tasks[i], tasks[i-1]);
-        }
-        task_system::enqueue_task(tasks[0]);
-        task_system::task_wait_for(tasks[num_tasks - 1]);
-    }
-
-    vec3_t aabb_min = payload.aabb_min[0];
-    vec3_t aabb_max = payload.aabb_max[0];
-    for (size_t i = 1; i < task_system::pool_num_threads(); ++i) {
-        aabb_min = vec3_min(aabb_min, payload.aabb_min[i]);
-        aabb_max = vec3_max(aabb_max, payload.aabb_max[i]);
-    }
-    current_dataset(*state).sys_aabb_min = aabb_min;
-    current_dataset(*state).sys_aabb_max = aabb_max;
-    sys.unitcell = payload.unitcell;
-
-#if 0
-    if (mol.unitcell.flags) {
-        vec3_t c = mol.unitcell.basis * vec3_set1(0.5f);
-        current_dataset(*state).model_mat = mat4_translate_vec3(-c);
-    }
-#endif
-
-    current_dataset(*state).dirty_gpu_buffers |= MolBit_DirtyPosition;
-}
-
 // #misc
-static void update_view_param(ApplicationState* data) {
-    ViewParam& param = data->view.param;
+static void update_view_param(ApplicationState* state) {
+    Dataset& current = current_dataset(*state);
+
+    ViewParam& param = current.view.param;
     param.matrix.prev = param.matrix.curr;
     param.jitter.prev = param.jitter.curr;
 
-    param.clip_planes.near = data->view.camera.near_plane;
-    param.clip_planes.far = data->view.camera.far_plane;
-    param.fov_y = data->view.camera.fov_y;
-    param.resolution = {(float)data->gbuffer.width, (float)data->gbuffer.height};
+    param.clip_planes.near = current.view.camera.near_plane;
+    param.clip_planes.far = current.view.camera.far_plane;
+    param.fov_y = current.view.camera.fov_y;
+    param.resolution = {(float)state->gbuffer.width, (float)state->gbuffer.height};
 
-    param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera);
-    param.matrix.inv.view  = camera_view_to_world_matrix(data->view.camera);
+    param.matrix.curr.view = camera_world_to_view_matrix(current.view.camera);
+    param.matrix.inv.view  = camera_view_to_world_matrix(current.view.camera);
 
-    const float n = data->view.camera.near_plane;
-    const float f = data->view.camera.far_plane;
-    const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
+    const float n = current.view.camera.near_plane;
+    const float f = current.view.camera.far_plane;
+    const float aspect_ratio = (float)state->gbuffer.width / (float)state->gbuffer.height;
 
-    if (current_dataset(*data).visuals.temporal_aa.enabled && current_dataset(*data).visuals.temporal_aa.jitter) {
+    if (current.visuals.temporal_aa.enabled && current.visuals.temporal_aa.jitter) {
+        static vec2_t jitter_sequence[16] = {};
+        static bool initialized = false;
         static uint32_t i = 0;
-        i = (i+1) % (uint32_t)ARRAY_SIZE(data->view.jitter.sequence);
-        param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
-        if (data->view.mode == CameraMode::Perspective) {
+
+        if (!initialized) {
+            for (int i = 0; i < (int)ARRAY_SIZE(jitter_sequence); ++i) {
+                jitter_sequence[i].x = md_halton(i + 1, 2);
+                jitter_sequence[i].y = md_halton(i + 1, 3);
+            }
+            initialized = true;
+        }
+
+        i = (i+1) % (uint32_t)ARRAY_SIZE(jitter_sequence);
+        param.jitter.curr = jitter_sequence[i] - 0.5f;
+        if (current.view.mode == CameraMode::Perspective) {
             const vec2_t j = param.jitter.curr;
-            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
-            param.matrix.inv.proj  = camera_inverse_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
-            param.matrix.curr.proj_no_jitter = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
+            param.matrix.curr.proj = camera_perspective_projection_matrix(current.view.camera, state->gbuffer.width, state->gbuffer.height, j.x, j.y);
+            param.matrix.inv.proj  = camera_inverse_perspective_projection_matrix(current.view.camera, state->gbuffer.width, state->gbuffer.height, j.x, j.y);
+            param.matrix.curr.proj_no_jitter = camera_perspective_projection_matrix(current.view.camera, aspect_ratio);
         } else {
-            const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
+            const float h = current.view.camera.focus_distance * tanf(current.view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
-            const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
+            const vec2_t scl = {w / state->gbuffer.width * 2.0f, h / state->gbuffer.height * 2.0f};
             const vec2_t j = param.jitter.curr * scl;
             param.matrix.curr.proj = camera_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
             param.matrix.inv.proj  = camera_inverse_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
@@ -2356,11 +1684,11 @@ static void update_view_param(ApplicationState* data) {
         }
     } else {
         param.jitter.curr = {0,0};
-        if (data->view.mode == CameraMode::Perspective) {
-            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
-            param.matrix.inv.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
+        if (current.view.mode == CameraMode::Perspective) {
+            param.matrix.curr.proj = camera_perspective_projection_matrix(current.view.camera, aspect_ratio);
+            param.matrix.inv.proj = camera_inverse_perspective_projection_matrix(current.view.camera, (float)state->gbuffer.width / (float)state->gbuffer.height);
         } else {
-            const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
+            const float h = current.view.camera.focus_distance * tanf(current.view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
             param.matrix.curr.proj = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
             param.matrix.inv.proj = camera_inverse_orthographic_projection_matrix(-w, w, -h, h, n, f);
@@ -2369,80 +1697,6 @@ static void update_view_param(ApplicationState* data) {
     }
 
     param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
-}
-
-static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera, bool smooth_transition) {
-    ASSERT(data);
-
-    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-    defer { md_vm_arena_temp_end(tmp); };
-
-    if (!current_dataset(*data).sys.atom.count) return;
-    const auto& mol = current_dataset(*data).sys;
-
-    size_t popcount = 0;
-    if (target) {
-        popcount = md_bitfield_popcount(target);
-    }
-
-    int32_t* indices = nullptr;
-    if (0 < popcount && popcount < mol.atom.count) {
-        indices = (int32_t*)md_vm_arena_push_array(frame_alloc, int32_t, popcount);
-        size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(target));
-        if (len > popcount || len > mol.atom.count) {
-            MD_LOG_DEBUG("Error: Invalid number of indices");
-            len = MIN(popcount, mol.atom.count);
-        }
-    }
-
-    size_t count = popcount ? popcount : mol.atom.count;
-    vec3_t com = md_util_com_compute(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, &mol.unitcell);
-    mat3_t C = mat3_covariance_matrix(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, com);
-    mat3_eigen_t eigen = mat3_eigen(C);
-    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-    mat4_t Ri  = mat4_from_mat3(PCA);
-
-    // Compute min and maximum extent along the PCA axes
-    vec3_t min_ext = vec3_set1( FLT_MAX);
-    vec3_t max_ext = vec3_set1(-FLT_MAX);
-    mat3_t basis = mat3_transpose(PCA);
-
-    const float radius = 1.0f;
-
-    // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
-    for (size_t i = 0; i < count; ++i) {
-        int32_t idx = indices ? indices[i] : (int32_t)i;
-        vec3_t xyz = { mol.atom.x[idx], mol.atom.y[idx], mol.atom.z[idx] };
-
-        vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
-        min_ext = vec3_min(min_ext, vec3_sub_f(p, radius));
-        max_ext = vec3_max(max_ext, vec3_add_f(p, radius));
-    }
-
-    vec3_t optimal_pos;
-    quat_t optimal_ori;
-    float  optimal_dist;
-    camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, basis, min_ext, max_ext);
-
-    if (move_camera) {
-        data->view.animation.target_position    = optimal_pos;
-        data->view.animation.target_orientation = optimal_ori;
-        data->view.animation.target_distance    = optimal_dist;
-
-        if (!smooth_transition) {
-            data->view.camera.position       = optimal_pos;
-            data->view.camera.orientation    = optimal_ori;
-            data->view.camera.focus_distance = optimal_dist;
-        }
-    }
-
-    const vec3_t cell_ext = mat3_mul_vec3(md_unitcell_basis_mat3(&mol.unitcell), vec3_set1(1.0f));
-    const float  max_cell_ext = vec3_reduce_max(cell_ext);
-    const float  max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
-
-    data->view.camera.near_plane = 1.0f;
-    data->view.camera.far_plane = 100000.0f;
-    data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 }
 
 // ### DRAW WINDOWS ###
@@ -2511,11 +1765,12 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::BeginGroup();
             ImGui::Text("Camera");
             {
-                ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
-                if (data->view.mode == CameraMode::Perspective) {
-                    float fov = RAD_TO_DEG(data->view.camera.fov_y);
+                Dataset& current = current_dataset(*data);
+                ImGui::Combo("Mode", (int*)(&current.view.mode), "Perspective\0Orthographic\0");
+                if (current.view.mode == CameraMode::Perspective) {
+                    float fov = RAD_TO_DEG(current.view.camera.fov_y);
                     if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {
-                        data->view.camera.fov_y = DEG_TO_RAD(fov);
+                        current.view.camera.fov_y = DEG_TO_RAD(fov);
                     }
                 }
             }
@@ -2773,10 +2028,10 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Operations")) {
-            if (load::traj::has_recenter_target(current_dataset(*data).traj)) {
+            if (dataset_has_recenter_target(current_dataset(*data))) {
                 if (ImGui::Button("Remove Recenter Target")) {
-                    load::traj::set_recenter_target(current_dataset(*data).traj, nullptr);
-                    load::traj::clear_cache(current_dataset(*data).traj);
+                    dataset_clear_recenter_target(current_dataset(*data));
+                    dataset_clear_frame_cache(current_dataset(*data));
                     current_dataset(*data).interpolate_system_state = true;
                     current_dataset(*data).dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
@@ -2874,11 +2129,6 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
-            ImGui::Checkbox("Prefetch Frames", &data->settings.prefetch_frames);
-            ImGui::SetItemTooltip("Prefetch frames during animation\n");
-            ImGui::Checkbox("Keep Representations", &data->settings.keep_representations);
-            ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
-
             // Font
             ImGuiStyle& style = ImGui::GetStyle();
             static const float font_sizes[] = { 10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f, 30.0f, 36.0f, 48.0f, 64.0f, 72.0f };
@@ -3137,7 +2387,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
 
             if (load_dataset_from_file(data, param)) {
-                if (sys_loader && !data->settings.keep_representations) {
+                if (sys_loader) {
                     remove_all_representations(data);
                     create_default_representations(data);
                 }
@@ -3551,7 +2801,7 @@ void draw_context_popup(ApplicationState* state) {
 
     if (!current_dataset(*state).sys.atom.count) return;
 
-    const size_t sss_count = single_selection_sequence_count(&state->selection.single_selection_sequence);
+    const size_t sss_count = single_selection_sequence_count(&current_dataset(*state).selection.single_selection_sequence);
     const size_t num_frames = md_trajectory_num_frames(current_dataset(*state).traj);
     const size_t num_atoms_selected = md_bitfield_popcount(&current_dataset(*state).selection.selection_mask);
 
@@ -3571,15 +2821,15 @@ void draw_context_popup(ApplicationState* state) {
         if (num_atoms_selected == 2) {
             // Suggest construction of covalent bond
             int idx[2];
-            MEMCPY(idx, state->selection.single_selection_sequence.idx, sizeof(idx));
+            MEMCPY(idx, current_dataset(*state).selection.single_selection_sequence.idx, sizeof(idx));
 
             md_bond_idx_t bond_idx = md_system_bond_find(&current_dataset(*state).sys, idx[0], idx[1]);
             if (bond_idx == -1) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                 if (ImGui::MenuItem(buf)) {
-                    md_system_bond_insert(&current_dataset(*state).sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED, current_dataset(*state).sys_alloc);
-                    md_system_bond_build_connectivity(&current_dataset(*state).sys, current_dataset(*state).sys_alloc);
+                    md_system_bond_insert(&current_dataset(*state).sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED, current_dataset(*state).alloc);
+                    md_system_bond_build_connectivity(&current_dataset(*state).sys, current_dataset(*state).alloc);
                     current_dataset(*state).dirty_gpu_buffers |= MolBit_DirtyBonds;
                     ImGui::CloseCurrentPopup();
                 }
@@ -3594,7 +2844,7 @@ void draw_context_popup(ApplicationState* state) {
                 snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", pair.idx[0] + 1, pair.idx[1] + 1);
                 if (ImGui::MenuItem(buf)) {
                     md_system_bond_remove(&current_dataset(*state).sys, bond_idx);
-					md_system_bond_build_connectivity(&current_dataset(*state).sys, current_dataset(*state).sys_alloc);
+					md_system_bond_build_connectivity(&current_dataset(*state).sys, current_dataset(*state).alloc);
                     current_dataset(*state).dirty_gpu_buffers |= MolBit_DirtyBonds;
                     ImGui::CloseCurrentPopup();
                 }
@@ -3604,7 +2854,7 @@ void draw_context_popup(ApplicationState* state) {
             bool any_suggestions = false;
             if (num_atoms_selected <= 4 && sss_count > 1) {
                 int idx[4];
-                MEMCPY(idx, state->selection.single_selection_sequence.idx, sizeof(idx));
+                MEMCPY(idx, current_dataset(*state).selection.single_selection_sequence.idx, sizeof(idx));
                 // Check if all selected atoms are within the same residue
                 md_component_idx_t res_idx = md_component_find_by_atom_idx(&current_dataset(*state).sys.component, idx[0]);
                 for (size_t i = 1; i < sss_count; ++i) {
@@ -3898,8 +3148,8 @@ void draw_context_popup(ApplicationState* state) {
                 if (!md_bitfield_empty(&mask)) {
                     md_bitfield_copy(&current_dataset(*state).selection.highlight_mask, &mask);
                     if (apply) {
-                        load::traj::set_recenter_target(current_dataset(*state).traj, &mask);
-                        load::traj::clear_cache(current_dataset(*state).traj);
+                        dataset_set_recenter_target(current_dataset(*state), &mask);
+                        dataset_clear_frame_cache(current_dataset(*state));
                         current_dataset(*state).interpolate_system_state = true;
                         current_dataset(*state).dirty_gpu_buffers |= MolBit_ClearVelocity;
                         ImGui::CloseCurrentPopup();
@@ -6628,6 +5878,7 @@ static void draw_debug_window(ApplicationState* data) {
 
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug", &data->show_debug_window)) {       
+        const Dataset& current = current_dataset(*data);
         task_system::ID tasks[256]; 
         size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
         if (num_tasks > 0) {
@@ -6643,10 +5894,10 @@ static void draw_debug_window(ApplicationState* data) {
         ImGui::Text("Active ID: %u, Hover ID: %u", active, hover);
 
         ImGui::Text("Mouse Pos: (%.3f, %.3f)", ImGui::GetMousePos().x, ImGui::GetMousePos().y);
-        ImGui::Text("Camera Position: (%g, %g, %g)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
-        ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
+        ImGui::Text("Camera Position: (%g, %g, %g)", current.view.camera.position.x, current.view.camera.position.y, current.view.camera.position.z);
+        ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", current.view.camera.orientation.x, current.view.camera.orientation.y, current.view.camera.orientation.z, current.view.camera.orientation.w);
 
-        mat4_t P = data->view.param.matrix.curr.proj;
+        mat4_t P = current.view.param.matrix.curr.proj;
         ImGui::Text("proj_matrix:");
         ImGui::Text("[%g %g %g %g]", P.col[0].x, P.col[0].y, P.col[0].z, P.col[0].w);
         ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
@@ -7591,7 +6842,7 @@ static void update_md_buffers(ApplicationState* data) {
         }
 #if EXPERIMENTAL_GFX_API
         md_gfx_structure_set_atom_position(current_dataset(*data).gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_aabb(current_dataset(*data).gfx_structure, &current_dataset(*data).sys_aabb_min, &current_dataset(*data).sys_aabb_max);
+        md_gfx_structure_set_aabb(current_dataset(*data).gfx_structure, &current_dataset(*data).aabb_min, &current_dataset(*data).aabb_max);
 #endif
         viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, data, 0);
     }
@@ -7659,27 +6910,6 @@ static void update_md_buffers(ApplicationState* data) {
     current_dataset(*data).dirty_gpu_buffers = 0;
 }
 
-static void launch_prefetch_job(ApplicationState* data) {
-    const uint32_t num_frames = MIN((uint32_t)md_trajectory_num_frames(current_dataset(*data).traj), (uint32_t)load::traj::num_cache_frames(current_dataset(*data).traj));
-    if (!num_frames) return;
-
-    task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("Prefetch Frames"), num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-        (void)thread_num;
-        for (uint32_t i = range_beg; i < range_end; ++i) {
-            md_trajectory_frame_header_t header;
-            md_trajectory_load_frame(current_dataset(*data).traj, i, &header, 0, 0, 0);
-        }
-    });
-
-    task_system::ID main_task = task_system::create_main_task(STR_LIT("Prefetch Complete"), [data]() {
-        current_dataset(*data).dirty_gpu_buffers |= MolBit_ClearVelocity;
-    });
-
-    task_system::set_task_dependency(main_task, data->tasks.prefetch_frames);
-    task_system::enqueue_task(data->tasks.prefetch_frames);
-}
-
 void create_screenshot(str_t path) {
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
     defer { md_vm_arena_temp_end(tmp); };
@@ -7739,8 +6969,10 @@ void create_screenshot(str_t path) {
 }
 
 // #camera-control
-static void handle_camera_interaction(ApplicationState* data) {
-    ASSERT(data);
+static void handle_camera_interaction(ApplicationState* state) {
+    ASSERT(state);
+
+    Dataset& current = current_dataset(*state);
 
     enum class RegionMode { Append, Remove };
 
@@ -7781,10 +7013,10 @@ static void handle_camera_interaction(ApplicationState* data) {
             CoordSystemWidgetParam param = {
                 .pos = ImGui::GetWindowContentRegionMin(),
                 .size = ImGui::GetContentRegionAvail(),
-                .view_matrix = data->view.param.matrix.curr.view,
-                .camera_ori = data->view.animation.target_orientation,
-                .camera_pos = data->view.animation.target_position,
-                .camera_dist = data->view.animation.target_distance,
+                .view_matrix = current.view.param.matrix.curr.view,
+                .camera_ori = current.view.animation.target_orientation,
+                .camera_pos = current.view.animation.target_position,
+                .camera_dist = current.view.animation.target_distance,
             };
 
             ImGui::DrawCoordinateSystemWidget(param);
@@ -7794,6 +7026,18 @@ static void handle_camera_interaction(ApplicationState* data) {
 #endif
 
     ImGui::BeginCanvas("Main interaction window", true);
+    ImGuiTabBarFlags tab_bar_flags = ImGuiTabBarFlags_None;
+    if (ImGui::BeginTabBar("DatasetTabs", tab_bar_flags)) {
+        for (int i = 0; i < state->dataset.num_datasets; ++i) {
+            bool active = (i == state->dataset.current_idx);
+            if (ImGui::BeginTabItem(state->dataset.datasets[i].identifier, &active)) {
+                state->dataset.current_idx = i;
+                ImGui::EndTabItem();
+            }
+        }
+        ImGui::EndTabBar();
+    }
+
     bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     bool open_atom_context = false;
 
@@ -7833,16 +7077,15 @@ static void handle_camera_interaction(ApplicationState* data) {
                 md_bitfield_init(&mask, frame_alloc);
 
                 if (min_p != max_p) {
-                    md_bitfield_clear(&current_dataset(*data).selection.highlight_mask);
+                    md_bitfield_clear(&current.selection.highlight_mask);
                     is_performing_region_selection = true;
 
-                    const vec2_t res = { (float)data->app.window.width, (float)data->app.window.height };
-                    const mat4_t mvp = data->view.param.matrix.curr.proj * data->view.param.matrix.curr.view;
-
-                    md_bitfield_iter_t it = md_bitfield_iter_create(&current_dataset(*data).representation.visibility_mask);
+                    const vec2_t res = { (float)state->app.window.width, (float)state->app.window.height };
+                    const mat4_t mvp = current.view.param.matrix.curr.proj * current.view.param.matrix.curr.view;
+                    md_bitfield_iter_t it = md_bitfield_iter_create(&current.representation.visibility_mask);
                     while (md_bitfield_iter_next(&it)) {
                         const uint64_t i = md_bitfield_iter_idx(&it);
-                        const vec4_t p = mat4_mul_vec4(mvp, vec4_set(current_dataset(*data).sys.atom.x[i], current_dataset(*data).sys.atom.y[i], current_dataset(*data).sys.atom.z[i], 1.0f));
+                        const vec4_t p = mat4_mul_vec4(mvp, vec4_set(current.sys.atom.x[i], current.sys.atom.y[i], current.sys.atom.z[i], 1.0f));
                         const vec2_t c = {
                             ( p.x / p.w * 0.5f + 0.5f) * res.x,
                             (-p.y / p.w * 0.5f + 0.5f) * res.y,
@@ -7852,67 +7095,67 @@ static void handle_camera_interaction(ApplicationState* data) {
                             md_bitfield_set_bit(&mask, i);
                         }
                     }
-                    grow_mask_by_selection_granularity(&mask, current_dataset(*data).selection.granularity, current_dataset(*data).sys);
+                    grow_mask_by_selection_granularity(&mask, current.selection.granularity, current.sys);
 
                     if (mode == RegionMode::Append) {
-                        md_bitfield_or(&current_dataset(*data).selection.highlight_mask, &current_dataset(*data).selection.selection_mask, &mask);
+                        md_bitfield_or(&current.selection.highlight_mask, &current.selection.selection_mask, &mask);
                     }
                     else if (mode == RegionMode::Remove) {
-                        md_bitfield_andnot(&current_dataset(*data).selection.highlight_mask, &current_dataset(*data).selection.selection_mask, &mask);
+                        md_bitfield_andnot(&current.selection.highlight_mask, &current.selection.selection_mask, &mask);
                     }
                     if (pressed || ImGui::IsMouseReleased(0)) {
-                        md_bitfield_copy(&current_dataset(*data).selection.selection_mask, &current_dataset(*data).selection.highlight_mask);
+                        md_bitfield_copy(&current.selection.selection_mask, &current.selection.highlight_mask);
                     }
                 }
                 else if (pressed) {
-                    if (current_dataset(*data).selection.atom_idx.hovered != -1 || current_dataset(*data).selection.bond_idx.hovered != -1) {
+                    if (current.selection.atom_idx.hovered != -1 || current.selection.bond_idx.hovered != -1) {
                         if (mode == RegionMode::Append) {
-                            if (current_dataset(*data).selection.atom_idx.hovered != -1) {
-                                single_selection_sequence_push_idx(&data->selection.single_selection_sequence, current_dataset(*data).selection.atom_idx.hovered);
-                                md_bitfield_set_bit(&mask, current_dataset(*data).selection.atom_idx.hovered);
+                            if (current.selection.atom_idx.hovered != -1) {
+                                single_selection_sequence_push_idx(&current.selection.single_selection_sequence, current.selection.atom_idx.hovered);
+                                md_bitfield_set_bit(&mask, current.selection.atom_idx.hovered);
                             } else {
-                                md_atom_pair_t pair = current_dataset(*data).sys.bond.pairs[current_dataset(*data).selection.bond_idx.hovered];
+                                md_atom_pair_t pair = current.sys.bond.pairs[current.selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
-                            grow_mask_by_selection_granularity(&mask, current_dataset(*data).selection.granularity, current_dataset(*data).sys);
-                            md_bitfield_or_inplace(&current_dataset(*data).selection.selection_mask, &mask);
+                            grow_mask_by_selection_granularity(&mask, current.selection.granularity, current.sys);
+                            md_bitfield_or_inplace(&current.selection.selection_mask, &mask);
                         }
                         else if (mode == RegionMode::Remove) {
-                            if (current_dataset(*data).selection.atom_idx.hovered != -1) {
-                                single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, current_dataset(*data).selection.atom_idx.hovered);
-                                md_bitfield_set_bit(&mask, current_dataset(*data).selection.atom_idx.hovered);
+                            if (current.selection.atom_idx.hovered != -1) {
+                                single_selection_sequence_pop_idx(&current.selection.single_selection_sequence, current.selection.atom_idx.hovered);
+                                md_bitfield_set_bit(&mask, current.selection.atom_idx.hovered);
                             } else {
-                                md_atom_pair_t pair = current_dataset(*data).sys.bond.pairs[current_dataset(*data).selection.bond_idx.hovered];
+                                md_atom_pair_t pair = current.sys.bond.pairs[current.selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
                             }
-                            grow_mask_by_selection_granularity(&mask, current_dataset(*data).selection.granularity, current_dataset(*data).sys);
-                            md_bitfield_andnot_inplace(&current_dataset(*data).selection.selection_mask, &mask);
+                            grow_mask_by_selection_granularity(&mask, current.selection.granularity, current.sys);
+                            md_bitfield_andnot_inplace(&current.selection.selection_mask, &mask);
                         }
                     }
                     else {
-                        single_selection_sequence_clear(&data->selection.single_selection_sequence);
-                        md_bitfield_clear(&current_dataset(*data).selection.selection_mask);
-                        md_bitfield_clear(&current_dataset(*data).selection.highlight_mask);
+                        single_selection_sequence_clear(&current.selection.single_selection_sequence);
+                        md_bitfield_clear(&current.selection.selection_mask);
+                        md_bitfield_clear(&current.selection.highlight_mask);
                     }
                 }
             }
         }
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
-            md_bitfield_clear(&current_dataset(*data).selection.highlight_mask);
-            if (data->picking.idx != INVALID_PICKING_IDX) {
-                if (current_dataset(*data).selection.atom_idx.hovered != -1 && current_dataset(*data).sys.atom.count) {
-                    md_bitfield_set_bit(&current_dataset(*data).selection.highlight_mask, data->picking.idx);
+            md_bitfield_clear(&current.selection.highlight_mask);
+            if (state->picking.idx != INVALID_PICKING_IDX) {
+                if (current.selection.atom_idx.hovered != -1 && current.sys.atom.count) {
+                    md_bitfield_set_bit(&current.selection.highlight_mask, state->picking.idx);
                 }
-                else if (current_dataset(*data).selection.bond_idx.hovered != -1 && current_dataset(*data).selection.bond_idx.hovered < (int32_t)current_dataset(*data).sys.bond.count) {
-                    md_atom_pair_t pair = current_dataset(*data).sys.bond.pairs[current_dataset(*data).selection.bond_idx.hovered];
-                    md_bitfield_set_bit(&current_dataset(*data).selection.highlight_mask, pair.idx[0]);
-                    md_bitfield_set_bit(&current_dataset(*data).selection.highlight_mask, pair.idx[1]);
+                else if (current.selection.bond_idx.hovered != -1 && current.selection.bond_idx.hovered < (int32_t)current.sys.bond.count) {
+                    md_atom_pair_t pair = current.sys.bond.pairs[current.selection.bond_idx.hovered];
+                    md_bitfield_set_bit(&current.selection.highlight_mask, pair.idx[0]);
+                    md_bitfield_set_bit(&current.selection.highlight_mask, pair.idx[1]);
                 }
-                grow_mask_by_selection_granularity(&current_dataset(*data).selection.highlight_mask, current_dataset(*data).selection.granularity, current_dataset(*data).sys);
+                grow_mask_by_selection_granularity(&current.selection.highlight_mask, current.selection.granularity, current.sys);
 
-                draw_info_window(*data, data->picking.idx);
+                draw_info_window(*state, state->picking.idx);
             }
         }
 
@@ -7930,13 +7173,13 @@ static void handle_camera_interaction(ApplicationState* data) {
                 input.dolly_button  = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
                 input.mouse_coord_curr = mouse_coord;
                 input.mouse_coord_prev = mouse_coord - mouse_delta;
-                input.screen_size = {(float)data->app.window.width, (float)data->app.window.height};
+                input.screen_size = {(float)state->app.window.width, (float)state->app.window.height};
                 input.dolly_delta = scroll_delta;
-                input.fov_y = data->view.camera.fov_y;
+                input.fov_y = current.view.camera.fov_y;
 
-                vec3_t pos = data->view.animation.target_position;
-                quat_t ori = data->view.animation.target_orientation;
-                float dist = data->view.animation.target_distance;
+                vec3_t pos = current.view.animation.target_position;
+                quat_t ori = current.view.animation.target_orientation;
+                float dist = current.view.animation.target_distance;
             
                 TrackballFlags flags = TrackballFlags_AnyInteractionReturnsTrue;
                 if (ImGui::IsItemActive()) {
@@ -7945,24 +7188,24 @@ static void handle_camera_interaction(ApplicationState* data) {
                     flags |= TrackballFlags_DollyEnabled;
                 }
 
-                if (camera_controller_trackball(&pos, &ori, &dist, input, data->view.trackball_param, flags)) {
+                if (camera_controller_trackball(&pos, &ori, &dist, input, current.view.trackball_param, flags)) {
                     // @NOTE(Robin): We could make the camera interaction more snappy, by directly modifying camera[pos, ori, dist] here
                     // But for now its decent. I like smooth transitions rather than discontinous jumps
                 }
-                data->view.animation.target_position = pos;
-                data->view.animation.target_orientation = ori;
-                data->view.animation.target_distance = dist;
+                current.view.animation.target_position = pos;
+                current.view.animation.target_orientation = ori;
+                current.view.animation.target_distance = dist;
 
                 if (ImGui::GetIO().MouseDoubleClicked[0]) {
-                    if (data->picking.depth < 1.0f) {
-                        const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
-                        data->view.animation.target_position = data->picking.world_coord + forward * dist;
+                    if (state->picking.depth < 1.0f) {
+                        const vec3_t forward = current.view.camera.orientation * vec3_t{0, 0, 1};
+                        current.view.animation.target_position = state->picking.world_coord + forward * dist;
                     } else {
-                        reset_view(data, &current_dataset(*data).representation.visibility_mask, true, true);
+                        reset_view(state, &current.representation.visibility_mask, true, true);
                     }
                 }
 
-                current_dataset(*data).visuals.dof.focus_depth = data->view.camera.focus_distance;
+                current.visuals.dof.focus_depth = current.view.camera.focus_distance;
             
                 if (ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0) &&
                     ImGui::IsMouseReleased(ImGuiMouseButton_Right))
@@ -7980,9 +7223,11 @@ static void handle_camera_interaction(ApplicationState* data) {
     }
 }
 
-static void fill_gbuffer(ApplicationState* data) {
+static void fill_gbuffer(ApplicationState* state) {
     const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
         GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+
+    const Dataset& current = current_dataset(*state);
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -7991,20 +7236,20 @@ static void fill_gbuffer(ApplicationState* data) {
     glDepthFunc(GL_LESS);
 
     // Enable all draw buffers
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
     glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
     // Immediate mode graphics
-    const mat4_t model_view_mat = data->view.param.matrix.curr.view;
+    const mat4_t model_view_mat = current.view.param.matrix.curr.view;
 
-    if (current_dataset(*data).simulation_box.enabled && current_dataset(*data).sys.unitcell.flags != 0) {
+    if (current.simulation_box.enabled && current.sys.unitcell.flags != 0) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-        const mat4_t basis_model_mat = md_unitcell_basis_mat4(&current_dataset(*data).sys.unitcell);
+        const mat4_t basis_model_mat = md_unitcell_basis_mat4(&current.sys.unitcell);
         immediate::set_model_view_matrix(model_view_mat);
-        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
-        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, basis_model_mat, convert_color(current_dataset(*data).simulation_box.color));
+        immediate::set_proj_matrix(current.view.param.matrix.curr.proj);
+        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, basis_model_mat, convert_color(current.simulation_box.color));
         immediate::render();
         POP_GPU_SECTION()
     }
@@ -8039,7 +7284,7 @@ static void fill_gbuffer(ApplicationState* data) {
         PUSH_GPU_SECTION("Blit Static Velocity")
         glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
         glDepthMask(0);
-        postprocessing::blit_static_velocity(data->gbuffer.tex.depth, data->view.param);
+        postprocessing::blit_static_velocity(state->gbuffer.tex.depth, current.view.param);
         glDepthMask(1);
         POP_GPU_SECTION()
     }
@@ -8049,16 +7294,16 @@ static void fill_gbuffer(ApplicationState* data) {
     // DRAW REPRESENTATIONS
     PUSH_GPU_SECTION("Draw Opaque")
     glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-    draw_representations_opaque(data);
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, data);
+    draw_representations_opaque(state);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, state);
     POP_GPU_SECTION()
 
     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
     if (!use_gfx) {
         PUSH_GPU_SECTION("Selection")
-        const bool atom_selection_empty = md_bitfield_popcount(&current_dataset(*data).selection.selection_mask) == 0;
-        const bool atom_highlight_empty = md_bitfield_popcount(&current_dataset(*data).selection.highlight_mask) == 0;
+        const bool atom_selection_empty = md_bitfield_popcount(&current.selection.selection_mask) == 0;
+        const bool atom_highlight_empty = md_bitfield_popcount(&current.selection.highlight_mask) == 0;
 
         glDepthMask(0);
 
@@ -8081,7 +7326,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
             glStencilFunc(GL_GREATER, 0x02, 0xFF);
             glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-            draw_representations_opaque_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
+            draw_representations_opaque_lean_and_mean(state, AtomBit_Selected | AtomBit_Visible);
 
             glDisable(GL_DEPTH_TEST);
 
@@ -8090,10 +7335,10 @@ static void fill_gbuffer(ApplicationState* data) {
             glColorMask(1, 1, 1, 1);
 
             glStencilFunc(GL_EQUAL, 2, 0xFF);
-            postprocessing::blit_color(data->selection.color.selection.visible);
+            postprocessing::blit_color(state->selection.color.selection.visible);
 
             glStencilFunc(GL_EQUAL, 0, 0xFF);
-            postprocessing::blit_color(data->selection.color.selection.hidden);
+            postprocessing::blit_color(state->selection.color.selection.hidden);
         }
 
         if (!atom_highlight_empty) {
@@ -8110,7 +7355,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
             glStencilFunc(GL_GREATER, 0x02, 0xFF);
             glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-            draw_representations_opaque_lean_and_mean(data, AtomBit_Highlighted | AtomBit_Visible);
+            draw_representations_opaque_lean_and_mean(state, AtomBit_Highlighted | AtomBit_Visible);
 
             glDisable(GL_DEPTH_TEST);
 
@@ -8119,22 +7364,22 @@ static void fill_gbuffer(ApplicationState* data) {
             glColorMask(1, 1, 1, 1);
 
             glStencilFunc(GL_EQUAL, 2, 0xFF);
-            vec4_t col_vis = data->selection.color.highlight.visible;
+            vec4_t col_vis = state->selection.color.highlight.visible;
             col_vis.w += sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE;
             //col_vis = hcla_to_rgba(col_vis);
             postprocessing::blit_color(col_vis);
 
             glStencilFunc(GL_EQUAL, 0, 0xFF);
-            postprocessing::blit_color(data->selection.color.highlight.hidden);
+            postprocessing::blit_color(state->selection.color.highlight.hidden);
         }
 
         glDisable(GL_STENCIL_TEST);
 
         if (!atom_selection_empty) {
             PUSH_GPU_SECTION("Desaturate") {
-                const float saturation = data->selection.color.saturation;
+                const float saturation = state->selection.color.saturation;
                 glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-                postprocessing::scale_hsv(data->gbuffer.tex.color, vec3_t{1, saturation, 1});
+                postprocessing::scale_hsv(state->gbuffer.tex.color, vec3_t{1, saturation, 1});
             } POP_GPU_SECTION()
         }
 
@@ -8151,8 +7396,8 @@ static void fill_gbuffer(ApplicationState* data) {
     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
     PUSH_GPU_SECTION("Draw Transparent")
-    draw_representations_transparent(data);
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, data);
+    draw_representations_transparent(state);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
     POP_GPU_SECTION()
 
     PUSH_GPU_SECTION("Draw Visualization Geometry")
@@ -8160,20 +7405,20 @@ static void fill_gbuffer(ApplicationState* data) {
     glDisable(GL_CULL_FACE);
 
     immediate::set_model_view_matrix(model_view_mat);
-    immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
+    immediate::set_proj_matrix(current.view.param.matrix.curr.proj);
 
-    const md_script_vis_t& vis = data->script.vis;
+    const md_script_vis_t& vis = state->script.vis;
 
     if (vis.points) {
-        immediate::draw_points_v((immediate::Vertex*)vis.points, md_array_size(vis.points), data->script.point_color);
+        immediate::draw_points_v((immediate::Vertex*)vis.points, md_array_size(vis.points), state->script.point_color);
     }
 
     if (vis.triangles) {
-        immediate::draw_triangles_v((immediate::Vertex*)vis.triangles, md_array_size(vis.triangles), data->script.triangle_color);
+        immediate::draw_triangles_v((immediate::Vertex*)vis.triangles, md_array_size(vis.triangles), state->script.triangle_color);
     }
 
     if (vis.lines) {
-        immediate::draw_lines_v((immediate::Vertex*)vis.lines, md_array_size(vis.lines), data->script.line_color);
+        immediate::draw_lines_v((immediate::Vertex*)vis.lines, md_array_size(vis.lines), state->script.line_color);
     }
     
     md_array(mat4_t) model_matrices = 0;
@@ -8201,13 +7446,13 @@ static void fill_gbuffer(ApplicationState* data) {
     // This operation is split in two as this portion requires DEPTH TEST
     if (model_matrices) {
         immediate::set_model_view_matrix(model_view_mat);
-        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
+        immediate::set_proj_matrix(current.view.param.matrix.curr.proj);
     
         glEnable(GL_DEPTH_TEST);
     
         const vec3_t box_ext = vec3_set1(vis.sdf.extent);
         for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
-            immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], data->density_volume.bounding_box_color);
+            immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], state->density_volume.bounding_box_color);
         }
 
         immediate::render();
@@ -8219,9 +7464,10 @@ static void fill_gbuffer(ApplicationState* data) {
     POP_GPU_SECTION()  // G-buffer
 }
 
-static void handle_picking(ApplicationState* data) {
+static void handle_picking(ApplicationState* state) {
     ImGuiContext* ctx = ImGui::GetCurrentContext();
     ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
+    Dataset& current = current_dataset(*state);
 
     if (ctx && window && ctx->HoveredWindow == window) {
         PUSH_CPU_SECTION("PICKING")
@@ -8230,21 +7476,21 @@ static void handle_picking(ApplicationState* data) {
 
 #if MD_PLATFORM_OSX
         // On macOS with retina displays, we need to scale the mouse coordinates
-        coord.x *= data->app.window.scale_factor;
-        coord.y *= data->app.window.scale_factor;
+        coord.x *= state->app.window.scale_factor;
+        coord.y *= state->app.window.scale_factor;
 #endif
 
-        const mat4_t inv_MVP = data->view.param.matrix.inv.view * data->view.param.matrix.inv.proj;
-        extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);
-        current_dataset(*data).selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
-        current_dataset(*data).selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
+        const mat4_t inv_MVP = current.view.param.matrix.inv.view * current.view.param.matrix.inv.proj;
+        extract_picking_data(state->picking, state->gbuffer, coord, inv_MVP);
+        current.selection.atom_idx.hovered = atom_idx_from_picking_idx(state->picking.idx);
+        current.selection.bond_idx.hovered = bond_idx_from_picking_idx(state->picking.idx);
 
-        if (current_dataset(*data).selection.atom_idx.hovered > current_dataset(*data).sys.atom.count) current_dataset(*data).selection.atom_idx.hovered = -1;
-        if (current_dataset(*data).selection.bond_idx.hovered > current_dataset(*data).sys.bond.count) current_dataset(*data).selection.bond_idx.hovered = -1;
+        if (current.selection.atom_idx.hovered > current.sys.atom.count) current.selection.atom_idx.hovered = -1;
+        if (current.selection.bond_idx.hovered > current.sys.bond.count) current.selection.bond_idx.hovered = -1;
         
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-            current_dataset(*data).selection.atom_idx.right_click = current_dataset(*data).selection.atom_idx.hovered;
-            current_dataset(*data).selection.bond_idx.right_click = current_dataset(*data).selection.bond_idx.hovered;
+            current.selection.atom_idx.right_click = current.selection.atom_idx.hovered;
+            current.selection.bond_idx.right_click = current.selection.bond_idx.hovered;
         }
         POP_CPU_SECTION()
     }
@@ -8291,14 +7537,16 @@ static void apply_postprocessing(const ApplicationState& data) {
     desc.input_textures.velocity = data.gbuffer.tex.velocity;
     desc.input_textures.transparency = data.gbuffer.tex.transparency;
 
-    postprocessing::shade_and_postprocess(desc, data.view.param);
+    postprocessing::shade_and_postprocess(desc, dataset.view.param);
     POP_GPU_SECTION()
 }
 
-static void draw_representations_opaque(ApplicationState* data) {
-    ASSERT(data);
+static void draw_representations_opaque(ApplicationState* state) {
+    ASSERT(state);
 
-    if (current_dataset(*data).sys.atom.count == 0) {
+    const Dataset& current = current_dataset(*state);
+
+    if (current.sys.atom.count == 0) {
         return;
     }
 
@@ -8345,13 +7593,12 @@ static void draw_representations_opaque(ApplicationState* data) {
         md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &data->view.param.matrix.curr.proj, &data->view.param.matrix.curr.view, &data->view.param.matrix.inv.proj, &data->view.param.matrix.inv.view);
     } else {
 #endif
-        const size_t num_representations = md_array_size(current_dataset(*data).representation.reps);
+        const size_t num_representations = md_array_size(current.representation.reps);
         if (num_representations == 0) return;
-
 
         md_array(md_gl_draw_op_t) draw_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {
-            const Representation& rep = current_dataset(*data).representation.reps[i];
+            const Representation& rep = current.representation.reps[i];
 
             if (rep.type > RepresentationType::Cartoon) continue;
 
@@ -8359,7 +7606,7 @@ static void draw_representations_opaque(ApplicationState* data) {
                 md_gl_draw_op_t op = {
                     .type = (md_gl_rep_type_t)rep.type,
                     .args = {},
-                    .rep = current_dataset(*data).representation.reps[i].md_rep,
+                    .rep = current.representation.reps[i].md_rep,
                     .model_matrix = NULL,
                 };
                 MEMCPY(&op.args, &rep.scale, sizeof(op.args));
@@ -8369,12 +7616,12 @@ static void draw_representations_opaque(ApplicationState* data) {
 
 		// MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
         float max_bond_length = 10.0f;
-        if (md_unitcell_flags(&current_dataset(*data).sys.unitcell) == 0) {
-            vec3_t aabb_ext = vec3_sub(current_dataset(*data).sys_aabb_max, current_dataset(*data).sys_aabb_min);
+        if (md_unitcell_flags(&current.sys.unitcell) == 0) {
+            vec3_t aabb_ext = vec3_sub(current.aabb_max, current.aabb_min);
             max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
         }
         else {
-	        mat3_t basis = md_unitcell_basis_mat3(&current_dataset(*data).sys.unitcell);
+	        mat3_t basis = md_unitcell_basis_mat3(&current.sys.unitcell);
             vec3_t half_extents = {
                 0.5f * vec3_length(basis.col[0]),
                 0.5f * vec3_length(basis.col[1]),
@@ -8385,17 +7632,17 @@ static void draw_representations_opaque(ApplicationState* data) {
         }
 
         md_gl_draw_args_t args = {
-            .shaders = data->gl.shaders,
+            .shaders = state->gl.shaders,
             .draw_operations = {
                 .count = (uint32_t)md_array_size(draw_ops),
                 .ops = draw_ops,
             },
             .view_transform = {
-                .view_matrix = &data->view.param.matrix.curr.view.elem[0][0],
-                .proj_matrix = &data->view.param.matrix.curr.proj.elem[0][0],
+                .view_matrix = &current.view.param.matrix.curr.view.elem[0][0],
+                .proj_matrix = &current.view.param.matrix.curr.proj.elem[0][0],
                 // These two are for temporal anti-aliasing reprojection (optional)
-                .prev_view_matrix = &data->view.param.matrix.prev.view.elem[0][0],
-                .prev_proj_matrix = &data->view.param.matrix.prev.proj.elem[0][0],
+                .prev_view_matrix = &current.view.param.matrix.prev.view.elem[0][0],
+                .prev_proj_matrix = &current.view.param.matrix.prev.proj.elem[0][0],
             },
             .max_bond_length = max_bond_length,
         };
@@ -8408,13 +7655,16 @@ static void draw_representations_opaque(ApplicationState* data) {
 
 static void draw_representations_transparent(ApplicationState* state) {
     ASSERT(state);
-    if (current_dataset(*state).sys.atom.count == 0) return;
 
-    const size_t num_representations = md_array_size(current_dataset(*state).representation.reps);
+    const Dataset& current = current_dataset(*state);
+
+    if (current.sys.atom.count == 0) return;
+
+    const size_t num_representations = md_array_size(current.representation.reps);
     if (num_representations == 0) return;
 
     for (size_t i = 0; i < num_representations; ++i) {
-        const Representation& rep = current_dataset(*state).representation.reps[i];
+        const Representation& rep = current.representation.reps[i];
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::ElectronicStructure) continue;
 
@@ -8468,9 +7718,9 @@ static void draw_representations_transparent(ApplicationState* state) {
             },
             .matrix = {
                 .model = rep.electronic_structure.vol.texture_to_world,
-                .view  = state->view.param.matrix.curr.view,
-                .proj  = state->view.param.matrix.curr.proj,
-                .inv_proj = state->view.param.matrix.inv.proj,
+                .view  = current.view.param.matrix.curr.view,
+                .proj  = current.view.param.matrix.curr.proj,
+                .inv_proj = current.view.param.matrix.inv.proj,
             },
             .clip_volume = {
                 .min = {0,0,0},
@@ -8503,18 +7753,19 @@ static void draw_representations_transparent(ApplicationState* state) {
         volume::render_volume(desc);
 
 #if DEBUG
-        immediate::set_model_view_matrix(state->view.param.matrix.curr.view);
-        immediate::set_proj_matrix(state->view.param.matrix.curr.proj);
+        immediate::set_model_view_matrix(current.view.param.matrix.curr.view);
+        immediate::set_proj_matrix(current.view.param.matrix.curr.proj);
         immediate::draw_box_wireframe({0,0,0}, {1,1,1}, rep.electronic_structure.vol.texture_to_world, immediate::COLOR_BLACK);
         immediate::render();
 #endif
     }
 }
 
-static void draw_representations_opaque_lean_and_mean(ApplicationState* data, uint32_t mask) {
+static void draw_representations_opaque_lean_and_mean(ApplicationState* state, uint32_t mask) {
     md_gl_draw_op_t* draw_ops = 0;
-    for (size_t i = 0; i < md_array_size(current_dataset(*data).representation.reps); ++i) {
-        const Representation& rep = current_dataset(*data).representation.reps[i];
+    const Dataset& current = current_dataset(*state);
+    for (size_t i = 0; i < md_array_size(current.representation.reps); ++i) {
+        const Representation& rep = current.representation.reps[i];
 
         if (rep.type > RepresentationType::Cartoon) continue;
 
@@ -8522,7 +7773,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
             md_gl_draw_op_t op = {
                 .type = (md_gl_rep_type_t)rep.type,
                 .args = {},
-                .rep = current_dataset(*data).representation.reps[i].md_rep,
+                .rep = current.representation.reps[i].md_rep,
                 .model_matrix = NULL,
             };
             MEMCPY(&op.args, &rep.scale, sizeof(op.args));
@@ -8532,12 +7783,12 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
 
     // MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
     float max_bond_length = 10.0f;
-    if (md_unitcell_flags(&current_dataset(*data).sys.unitcell) == 0) {
-        vec3_t aabb_ext = vec3_sub(current_dataset(*data).sys_aabb_max, current_dataset(*data).sys_aabb_min);
+    if (md_unitcell_flags(&current.sys.unitcell) == 0) {
+        vec3_t aabb_ext = vec3_sub(current.aabb_max, current.aabb_min);
         max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
     }
     else {
-	    mat3_t basis = md_unitcell_basis_mat3(&current_dataset(*data).sys.unitcell);
+	    mat3_t basis = md_unitcell_basis_mat3(&current.sys.unitcell);
         vec3_t half_extents = {
             0.5f * vec3_length(basis.col[0]),
             0.5f * vec3_length(basis.col[1]),
@@ -8548,14 +7799,14 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
     }
 
     md_gl_draw_args_t args = {
-        .shaders = data->gl.shaders_lean_and_mean,
+        .shaders = state->gl.shaders_lean_and_mean,
         .draw_operations = {
             .count = md_array_size(draw_ops),
             .ops = draw_ops,
         },
         .view_transform = {
-            .view_matrix = &data->view.param.matrix.curr.view.elem[0][0],
-            .proj_matrix = &data->view.param.matrix.curr.proj.elem[0][0],
+            .view_matrix = &current.view.param.matrix.curr.view.elem[0][0],
+            .proj_matrix = &current.view.param.matrix.curr.proj.elem[0][0],
             // These two are for temporal anti-aliasing reprojection
             //.prev_model_view_matrix = &data->view.param.matrix.previous.view[0][0],
             //.prev_projection_matrix = &data->view.param.matrix.previous.proj[0][0],
