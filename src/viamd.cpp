@@ -100,7 +100,7 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
 }
 
 void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
-    const auto& sys = current_dataset(state).sys;
+    const auto& sys = current_dataset(state).system.sys;
     if (picking_idx == INVALID_PICKING_IDX) return;
     
 	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
@@ -318,31 +318,31 @@ void free_trajectory_data(ApplicationState* state) {
     interrupt_async_tasks(state);
 
     Dataset& dataset = current_dataset(*state);
-    if (dataset.traj_loader) {
-        dataset.traj_loader->destroy(dataset.traj);
+    if (dataset.system.traj_loader) {
+        dataset.system.traj_loader->destroy(dataset.system.traj);
     }
-    dataset.traj = nullptr;
-    dataset.traj_loader = nullptr;
-    dataset.traj_path = {};
+    dataset.system.traj = nullptr;
+    dataset.system.traj_loader = nullptr;
+    dataset.system.traj_path = {};
     dataset_clear_recenter_target(dataset);
     dataset_clear_frame_cache(dataset);
 
-    dataset.sys.unitcell = {};
+    dataset.system.sys.unitcell = {};
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
     md_array_free(state->display_properties, state->allocator.persistent);
 
-    md_array_free(dataset.trajectory_data.backbone_angles.data,     state->allocator.persistent);
-    md_array_free(dataset.trajectory_data.secondary_structure.data, state->allocator.persistent);
+    md_array_free(dataset.system.trajectory_data.backbone_angles.data,     state->allocator.persistent);
+    md_array_free(dataset.system.trajectory_data.secondary_structure.data, state->allocator.persistent);
 }
 
 void init_trajectory_data(ApplicationState* data) {
     Dataset& ds = current_dataset(*data);
-    size_t num_frames = md_trajectory_num_frames(ds.traj);
+    size_t num_frames = md_trajectory_num_frames(ds.system.traj);
     if (num_frames > 0) {
         size_t min_frame = 0;
         size_t max_frame = num_frames - 1;
         md_trajectory_header_t header;
-        md_trajectory_get_header(ds.traj, &header);
+        md_trajectory_get_header(ds.system.traj, &header);
 
         double min_time = header.frame_times[0];
         double max_time = header.frame_times[num_frames - 1];
@@ -360,19 +360,19 @@ void init_trajectory_data(ApplicationState* data) {
         int64_t frame_idx = CLAMP((int64_t)(ds.animation.frame + 0.5), 0, (int64_t)max_frame);
 
         md_trajectory_frame_header_t frame_header;
-        md_trajectory_load_frame(ds.traj, frame_idx, &frame_header, ds.sys.atom.x, ds.sys.atom.y, ds.sys.atom.z);
-        ds.sys.unitcell = frame_header.unitcell;
+        md_trajectory_load_frame(ds.system.traj, frame_idx, &frame_header, ds.system.sys.atom.x, ds.system.sys.atom.y, ds.system.sys.atom.z);
+        ds.system.sys.unitcell = frame_header.unitcell;
 
-        if (ds.sys.protein_backbone.segment.count > 0) {
-            ds.trajectory_data.secondary_structure.stride = ds.sys.protein_backbone.segment.count;
-            ds.trajectory_data.secondary_structure.count = ds.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(ds.trajectory_data.secondary_structure.data, ds.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(ds.trajectory_data.secondary_structure.data, 0, md_array_bytes(ds.trajectory_data.secondary_structure.data));
+        if (ds.system.sys.protein_backbone.segment.count > 0) {
+            ds.system.trajectory_data.secondary_structure.stride = ds.system.sys.protein_backbone.segment.count;
+            ds.system.trajectory_data.secondary_structure.count = ds.system.sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(ds.system.trajectory_data.secondary_structure.data, ds.system.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(ds.system.trajectory_data.secondary_structure.data, 0, md_array_bytes(ds.system.trajectory_data.secondary_structure.data));
 
-            ds.trajectory_data.backbone_angles.stride = ds.sys.protein_backbone.segment.count;
-            ds.trajectory_data.backbone_angles.count = ds.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(ds.trajectory_data.backbone_angles.data, ds.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(ds.trajectory_data.backbone_angles.data, 0, md_array_bytes(ds.trajectory_data.backbone_angles.data));
+            ds.system.trajectory_data.backbone_angles.stride = ds.system.sys.protein_backbone.segment.count;
+            ds.system.trajectory_data.backbone_angles.count = ds.system.sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(ds.system.trajectory_data.backbone_angles.data, ds.system.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(ds.system.trajectory_data.backbone_angles.data, 0, md_array_bytes(ds.system.trajectory_data.backbone_angles.data));
 
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
@@ -380,8 +380,8 @@ void init_trajectory_data(ApplicationState* data) {
             data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 // Create copy here of molecule since we use the full structure as input
-                md_system_t sys = current_dataset(*data).sys;
-                md_trajectory_i* traj = current_dataset(*data).traj;
+                md_system_t sys = current_dataset(*data).system.sys;
+                md_trajectory_i* traj = current_dataset(*data).system.traj;
 
                 md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
                 defer { md_vm_arena_destroy(temp_arena); };
@@ -393,12 +393,12 @@ void init_trajectory_data(ApplicationState* data) {
 
                 for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
                     md_trajectory_frame_header_t frame_header;
-                    md_backbone_angles_t* bb_dst = current_dataset(*data).trajectory_data.backbone_angles.data + current_dataset(*data).trajectory_data.backbone_angles.stride * frame_idx;
-                    md_secondary_structure_t* ss_dst = current_dataset(*data).trajectory_data.secondary_structure.data + current_dataset(*data).trajectory_data.secondary_structure.stride * frame_idx;
+                    md_backbone_angles_t* bb_dst = current_dataset(*data).system.trajectory_data.backbone_angles.data + current_dataset(*data).system.trajectory_data.backbone_angles.stride * frame_idx;
+                    md_secondary_structure_t* ss_dst = current_dataset(*data).system.trajectory_data.secondary_structure.data + current_dataset(*data).system.trajectory_data.secondary_structure.stride * frame_idx;
 
                     md_trajectory_load_frame(traj, frame_idx, &frame_header, x, y, z);
-                    md_util_backbone_angles_compute(bb_dst, current_dataset(*data).trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
-                    md_util_backbone_secondary_structure_infer(ss_dst, current_dataset(*data).trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                    md_util_backbone_angles_compute(bb_dst, current_dataset(*data).system.trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                    md_util_backbone_secondary_structure_infer(ss_dst, current_dataset(*data).system.trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
                 }
                 });
 
@@ -407,8 +407,8 @@ void init_trajectory_data(ApplicationState* data) {
                 uint64_t t1 = (uint64_t)md_time_current();
                 double elapsed = md_time_as_seconds(t1 - t0);
                 MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
-                current_dataset(*data).trajectory_data.backbone_angles.fingerprint     = generate_fingerprint();
-                current_dataset(*data).trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
+                current_dataset(*data).system.trajectory_data.backbone_angles.fingerprint     = generate_fingerprint();
+                current_dataset(*data).system.trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
 
 				current_dataset(*data).interpolate_system_state = true;
                 current_dataset(*data).dirty_gpu_buffers |= MolBit_ClearVelocity;
@@ -432,8 +432,8 @@ bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_
     md_trajectory_i* traj = loader->create(filename, dataset.alloc, flags);
     if (traj) {
         free_trajectory_data(data);
-        dataset.traj = traj;
-        dataset.traj_path = str_copy(filename, data->allocator.persistent);
+        dataset.system.traj = traj;
+        dataset.system.traj_path = str_copy(filename, data->allocator.persistent);
         init_trajectory_data(data);
         dataset.animation.frame = 0;
         return true;
@@ -444,7 +444,7 @@ bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_
 
 void init_molecule_data(ApplicationState* data) {
     Dataset& dataset = current_dataset(*data);
-    if (dataset.sys.atom.count) {
+    if (dataset.system.sys.atom.count) {
 
         data->picking.idx = INVALID_PICKING_IDX;
         dataset.selection.atom_idx.hovered = -1;
@@ -452,24 +452,24 @@ void init_molecule_data(ApplicationState* data) {
         dataset.selection.bond_idx.hovered = -1;
         dataset.selection.bond_idx.right_click = -1;
 
-        dataset.gl_mol = md_gl_mol_create(&dataset.sys);
-        if (dataset.sys.protein_backbone.segment.count > 0) {
-            dataset.interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, dataset.sys.protein_backbone.segment.count, dataset.alloc);
+        dataset.system.gl_mol = md_gl_mol_create(&dataset.system.sys);
+        if (dataset.system.sys.protein_backbone.segment.count > 0) {
+            dataset.system.interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, dataset.system.sys.protein_backbone.segment.count, dataset.alloc);
         }
 
 #if EXPERIMENTAL_GFX_API
-        const md_system_t& mol = dataset.sys;
+        const md_system_t& mol = dataset.system.sys;
         vec3_t& aabb_min = dataset.sys_aabb_min;
         vec3_t& aabb_max = dataset.sys_aabb_max;
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
-        dataset.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
-        md_gfx_structure_set_atom_position(dataset.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_atom_radius(dataset.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(dataset.gfx_structure, &dataset.sys_aabb_min, &dataset.sys_aabb_max);
+        dataset.system.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
+        md_gfx_structure_set_atom_position(dataset.system.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_gfx_structure_set_atom_radius(dataset.system.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
+        md_gfx_structure_set_aabb(dataset.system.gfx_structure, &dataset.sys_aabb_min, &dataset.sys_aabb_max);
         if (mol.instance.count > 0) {
-            md_gfx_structure_set_instance_atom_ranges(dataset.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
-            md_gfx_structure_set_instance_transforms(dataset.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
+            md_gfx_structure_set_instance_atom_ranges(dataset.system.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
+            md_gfx_structure_set_instance_transforms(dataset.system.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
         }
 #endif
     }
@@ -492,11 +492,11 @@ void free_molecule_data(ApplicationState* data) {
     interrupt_async_tasks(data);
     Dataset& dataset = current_dataset(*data);
 
-    md_gl_mol_destroy(dataset.gl_mol);
-    dataset.gl_mol = {};
-    dataset.sys_path = {};
+    md_gl_mol_destroy(dataset.system.gl_mol);
+    dataset.system.gl_mol = {};
+    dataset.system.sys_path = {};
 
-    dataset.interpolated_properties.secondary_structure = nullptr;
+    dataset.system.interpolated_properties.secondary_structure = nullptr;
 
     if (data->script.ir) {
         md_script_ir_free(data->script.ir);
@@ -519,7 +519,7 @@ void free_molecule_data(ApplicationState* data) {
     // Reset the per-dataset arena last - this invalidates any pointers into it.
     // Re-init the dataset bitfields so they are in a clean, usable state afterwards.
     md_arena_allocator_reset(dataset.alloc);
-    MEMSET(&dataset.sys, 0, sizeof(dataset.sys));
+    MEMSET(&dataset.system.sys, 0, sizeof(dataset.system.sys));
 
     init_dataset_bitfields(dataset);
 
@@ -544,10 +544,10 @@ void process_file_queue(ApplicationState* state) {
             const Dataset& ds = current_dataset(*state);
             if (!str_empty(state->workspace_path)) {
                 base_path = state->workspace_path;
-            } else if (!str_empty(ds.traj_path)) {
-                base_path = ds.traj_path;
-            } else if (!str_empty(ds.sys_path)) {
-                base_path = ds.sys_path;
+            } else if (!str_empty(ds.system.traj_path)) {
+                base_path = ds.system.traj_path;
+            } else if (!str_empty(ds.system.sys_path)) {
+                base_path = ds.system.sys_path;
             } else {
                 md_path_write_cwd(buf, sizeof(buf));
                 base_path = str_from_cstr(buf);
@@ -613,7 +613,7 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
         // If the current dataset already has molecular data, open it in a new dataset (tab).
         // Otherwise reuse the current empty slot.
         Dataset* dataset_ptr = nullptr;
-        if (current_dataset(*data).sys.atom.count > 0) {
+        if (current_dataset(*data).system.sys.atom.count > 0) {
             // Create a new dataset for the new topology
             dataset_ptr = create_new_dataset(*data);
             if (!dataset_ptr) {
@@ -632,7 +632,7 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
 
         Dataset& dataset = *dataset_ptr;
 
-        if (!param.sys_loader->init_from_file(&dataset.sys, path_to_file, param.sys_loader_arg, dataset.alloc)) {
+        if (!param.sys_loader->init_from_file(&dataset.system.sys, path_to_file, param.sys_loader_arg, dataset.alloc)) {
             VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
             return false;
         }
@@ -645,10 +645,10 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
             str_copy_to_char_buf(dataset.identifier, sizeof(dataset.identifier), name);
         }
 
-        dataset.sys_path = str_copy(path_to_file, data->allocator.persistent);
+        dataset.system.sys_path = str_copy(path_to_file, data->allocator.persistent);
         // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
         md_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
-        md_util_system_postprocess(&dataset.sys, dataset.alloc, flags);
+        md_util_system_postprocess(&dataset.system.sys, dataset.alloc, flags);
         init_molecule_data(data);
 
         // @NOTE: Some files contain both atomic coordinates and trajectory
@@ -661,7 +661,7 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
 
     if (param.traj_loader) {
         Dataset& dataset = current_dataset(*data);
-        if (!dataset.sys.atom.count) {
+        if (!dataset.system.sys.atom.count) {
             VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
             return false;
         }
@@ -923,9 +923,9 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
     param.sys_loader_arg = loader_state.sys_loader_arg;
 
     if (new_molecule_file && load_dataset_from_file(app_state, param)) {
-        current_dataset(*app_state).sys_path = str_copy(new_molecule_file, app_state->allocator.persistent);
+        current_dataset(*app_state).system.sys_path = str_copy(new_molecule_file, app_state->allocator.persistent);
     } else {
-        current_dataset(*app_state).sys_path = {};
+        current_dataset(*app_state).system.sys_path = {};
     }
 
     if (new_trajectory_file) {
@@ -934,11 +934,11 @@ void load_workspace(ApplicationState* app_state, str_t filename) {
         param.traj_loader = loader_state.traj_loader;
         param.file_path = new_trajectory_file;
         if (load_dataset_from_file(app_state, param)) {
-            current_dataset(*app_state).traj_path = str_copy(new_trajectory_file, app_state->allocator.persistent);
+            current_dataset(*app_state).system.traj_path = str_copy(new_trajectory_file, app_state->allocator.persistent);
         }
         current_dataset(*app_state).animation.frame = new_frame;
     } else {
-        current_dataset(*app_state).traj_path = {};
+        current_dataset(*app_state).system.traj_path = {};
     }
 
     //apply_atom_elem_mappings(app_state);
@@ -984,8 +984,8 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     state.sb += '\n';
 
     const Dataset& current = current_dataset(*app_state);
-    str_t mol_file  = md_path_make_relative(filename, current.sys_path, temp_alloc);
-    str_t traj_file = md_path_make_relative(filename, current.traj_path, temp_alloc);
+    str_t mol_file  = md_path_make_relative(filename, current.system.sys_path, temp_alloc);
+    str_t traj_file = md_path_make_relative(filename, current.system.traj_path, temp_alloc);
 
     viamd::write_section_header(state, STR_LIT("Files"));
     viamd::write_str(state, STR_LIT("MoleculeFile"), mol_file);
@@ -1103,9 +1103,9 @@ void remove_selection(Dataset& dataset, int idx) {
 
 static void init_representation(ApplicationState* state, Dataset& dataset, Representation* rep) {
 #if EXPERIMENTAL_GFX_API
-    rep->gfx_rep = md_gfx_rep_create(dataset.sys.atom.count);
+    rep->gfx_rep = md_gfx_rep_create(dataset.system.sys.atom.count);
 #endif
-    rep->md_rep = md_gl_rep_create(dataset.gl_mol);
+    rep->md_rep = md_gl_rep_create(dataset.system.gl_mol);
     md_bitfield_init(&rep->atom_mask, state->allocator.persistent);
 
     size_t num_props = md_array_size(dataset.representation.info.atom_properties);
@@ -1182,7 +1182,7 @@ void update_representation(ApplicationState* state, Dataset& dataset, Representa
     if (!rep->enabled) return;
     if (!rep->needs_update) return;
 
-    const auto& sys = dataset.sys;
+    const auto& sys = dataset.system.sys;
     size_t num_atoms = md_system_atom_count(&sys);
 
     md_allocator_i* frame_alloc = state->allocator.frame;
@@ -1194,7 +1194,7 @@ void update_representation(ApplicationState* state, Dataset& dataset, Representa
 
     //md_script_property_t prop = {0};
     //if (rep->color_mapping == ColorMapping::Property) {
-    //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &current_dataset(*data).sys, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
+    //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &current_dataset(*data).system.sys, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
     //}
 
     uint32_t* colors = 0;
@@ -1275,8 +1275,8 @@ void update_representation(ApplicationState* state, Dataset& dataset, Representa
                         md_script_vis_init(&vis, frame_alloc);
                         md_script_vis_ctx_t ctx = {
                             .ir = state->script.eval_ir,
-                            .mol = &dataset.sys,
-                            .traj = dataset.traj,
+                            .mol = &dataset.system.sys,
+                            .traj = dataset.system.traj,
                         };
                         result = md_script_vis_eval_payload(&vis, rep->prop->vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS);
                     }
@@ -1369,7 +1369,7 @@ void update_representation(ApplicationState* state, Dataset& dataset, Representa
                     16.0f,
                 };
                 EvalElectronicStructure data = {
-                    .system = &dataset.sys,
+                    .system = &dataset.system.sys,
                     .type = rep->electronic_structure.type,
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
@@ -1401,7 +1401,7 @@ void update_representation(ApplicationState* state, Dataset& dataset, Representa
         }
 
         if (rep->filt_is_dirty) {
-			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &dataset.sys, dataset.sys.atom.x, dataset.sys.atom.y, dataset.sys.atom.z, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &dataset.system.sys, dataset.system.sys.atom.x, dataset.system.sys.atom.y, dataset.system.sys.atom.z, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
             rep->filt_is_dirty = false;
         }
 
@@ -1470,14 +1470,14 @@ void create_default_representations(ApplicationState* state, Dataset& dataset) {
     bool coarse_grained = false;
     bool orbitals_present = dataset.representation.info.alpha.num_orbitals > 0;
 
-    if (dataset.sys.atom.count > 3'000'000) {
+    if (dataset.system.sys.atom.count > 3'000'000) {
         VIAMD_LOG_INFO("Large system detected, creating default representation for all atoms");
         Representation* rep = create_representation(state, dataset, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
     }
 
-    if (dataset.sys.component.count == 0) {
+    if (dataset.system.sys.component.count == 0) {
         // No residues present
         Representation* rep = create_representation(state, dataset, RepresentationType::BallAndStick, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
@@ -1485,8 +1485,8 @@ void create_default_representations(ApplicationState* state, Dataset& dataset) {
     }
 
     // TODO: Redo this check with entities instead of atom flags
-    for (size_t i = 0; i < dataset.sys.atom.count; ++i) {
-        uint32_t flags = dataset.sys.atom.flags[i];
+    for (size_t i = 0; i < dataset.system.sys.atom.count; ++i) {
+        uint32_t flags = dataset.system.sys.atom.flags[i];
         if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
         if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
         if (flags & MD_FLAG_ION) ion_present = true;
@@ -1508,10 +1508,10 @@ void create_default_representations(ApplicationState* state, Dataset& dataset) {
         RepresentationType type = RepresentationType::Cartoon;
         ColorMapping color = ColorMapping::SecondaryStructure;
 
-        if (dataset.sys.instance.count > 1) {
+        if (dataset.system.sys.instance.count > 1) {
             color = ColorMapping::InstId;
         } else {
-            size_t res_count = md_instance_comp_count(&dataset.sys.instance, 0);
+            size_t res_count = md_instance_comp_count(&dataset.system.sys.instance, 0);
             if (res_count < 20) {
                 type = RepresentationType::BallAndStick;
                 color = ColorMapping::Type;
@@ -1555,8 +1555,8 @@ done:
 
 void interpolate_system_state(ApplicationState* state) {
     ASSERT(state);
-    auto& sys = current_dataset(*state).sys;
-    const auto& traj = current_dataset(*state).traj;
+    auto& sys = current_dataset(*state).system.sys;
+    const auto& traj = current_dataset(*state).system.traj;
 
     if (!sys.atom.count || !md_trajectory_num_frames(traj)) return;
 
@@ -1650,7 +1650,7 @@ void interpolate_system_state(ApplicationState* state) {
         case InterpolationMode::Nearest: {
             task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"),[data = &payload]() {
                 md_trajectory_frame_header_t header;
-                md_trajectory_load_frame(current_dataset(*data->state).traj, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
+                md_trajectory_load_frame(current_dataset(*data->state).system.traj, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
                 MEMCPY(&data->unitcell, &header.unitcell, sizeof(md_unitcell_t));
             });
 
@@ -1661,7 +1661,7 @@ void interpolate_system_state(ApplicationState* state) {
             task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 2, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 for (uint32_t i = range_beg; i < range_end; ++i) {
-                    md_trajectory_load_frame(current_dataset(*data->state).traj, data->frames[i+1], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
+                    md_trajectory_load_frame(current_dataset(*data->state).system.traj, data->frames[i+1], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
                 }
             });
 
@@ -1700,7 +1700,7 @@ void interpolate_system_state(ApplicationState* state) {
             task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 4, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 for (uint32_t i = range_beg; i < range_end; ++i) {
-                    md_trajectory_load_frame(current_dataset(*data->state).traj, data->frames[i], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
+                    md_trajectory_load_frame(current_dataset(*data->state).system.traj, data->frames[i], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
                 }
             });
 
@@ -1750,7 +1750,7 @@ void interpolate_system_state(ApplicationState* state) {
             if (cur_nearest_frame != payload.nearest_frame) {
                 cur_nearest_frame = payload.nearest_frame;
                 task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
-                    const auto& sys = current_dataset(*data->state).sys;
+                    const auto& sys = current_dataset(*data->state).system.sys;
                     const float* x = sys.atom.x;
                     const float* y = sys.atom.y;
                     const float* z = sys.atom.z;
@@ -1775,7 +1775,7 @@ void interpolate_system_state(ApplicationState* state) {
                         break;
                     };
 
-                    md_bond_data_t* bonds = &current_dataset(*data->state).sys.bond;
+                    md_bond_data_t* bonds = &current_dataset(*data->state).system.sys.bond;
                     md_bond_data_clear(bonds);
 
                     md_util_infer_covalent_bonds(bonds, x, y, z, cell, &sys, current_dataset(*data->state).alloc);
@@ -1802,8 +1802,8 @@ void interpolate_system_state(ApplicationState* state) {
         task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
             for (uint32_t i = range_beg; i < range_end; ++i) {
-                int*     s_idx = md_index_range_ptr(&current_dataset(*data->state).sys.structure, i);
-                size_t   s_len = md_index_range_size(&current_dataset(*data->state).sys.structure, i);
+                int*     s_idx = md_index_range_ptr(&current_dataset(*data->state).system.sys.structure, i);
+                size_t   s_len = md_index_range_size(&current_dataset(*data->state).system.sys.structure, i);
                 md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unitcell);
             }
         });
@@ -1814,14 +1814,14 @@ void interpolate_system_state(ApplicationState* state) {
         // Calculate a global AABB for the molecule
         task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             size_t range_len = range_end - range_beg;
-            const float* x = current_dataset(*data->state).sys.atom.x + range_beg;
-            const float* y = current_dataset(*data->state).sys.atom.y + range_beg;
-            const float* z = current_dataset(*data->state).sys.atom.z + range_beg;
+            const float* x = current_dataset(*data->state).system.sys.atom.x + range_beg;
+            const float* y = current_dataset(*data->state).system.sys.atom.y + range_beg;
+            const float* z = current_dataset(*data->state).system.sys.atom.z + range_beg;
 
             size_t temp_pos = md_temp_get_pos();
             defer { md_temp_set_pos_back(temp_pos); };
             float* r = (float*)md_temp_push(sizeof(float) * range_len);
-            md_atom_extract_radii(r, range_beg, range_len, &current_dataset(*data->state).sys.atom);
+            md_atom_extract_radii(r, range_beg, range_len, &current_dataset(*data->state).system.sys.atom);
 
             vec3_t aabb_min = vec3_set1(FLT_MAX);
             vec3_t aabb_max = vec3_set1(-FLT_MAX);
@@ -1838,11 +1838,11 @@ void interpolate_system_state(ApplicationState* state) {
             case InterpolationMode::Nearest: {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [data = &payload]() {
                     const md_backbone_angles_t* src_angles[2] = {
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[1],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[2],
+                        current_dataset(*data->state).system.trajectory_data.backbone_angles.data + current_dataset(*data->state).system.trajectory_data.backbone_angles.stride * data->frames[1],
+                        current_dataset(*data->state).system.trajectory_data.backbone_angles.data + current_dataset(*data->state).system.trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
-                    MEMCPY(current_dataset(*data->state).sys.protein_backbone.segment.angle, src_angle, current_dataset(*data->state).sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
+                    MEMCPY(current_dataset(*data->state).system.sys.protein_backbone.segment.angle, src_angle, current_dataset(*data->state).system.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
                 });
 
                 tasks[num_tasks++] = angle_task;
@@ -1852,10 +1852,10 @@ void interpolate_system_state(ApplicationState* state) {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     const md_backbone_angles_t* src_angles[2] = {
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[1],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[2],
+                        current_dataset(*data->state).system.trajectory_data.backbone_angles.data + current_dataset(*data->state).system.trajectory_data.backbone_angles.stride * data->frames[1],
+                        current_dataset(*data->state).system.trajectory_data.backbone_angles.data + current_dataset(*data->state).system.trajectory_data.backbone_angles.stride * data->frames[2],
                     };
-                    md_system_t& mol = current_dataset(*data->state).sys;
+                    md_system_t& mol = current_dataset(*data->state).system.sys;
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
                         float psi[2] = {src_angles[0][i].psi, src_angles[1][i].psi};
@@ -1876,12 +1876,12 @@ void interpolate_system_state(ApplicationState* state) {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     const md_backbone_angles_t* src_angles[4] = {
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[0],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[1],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[2],
-                        current_dataset(*data->state).trajectory_data.backbone_angles.data + current_dataset(*data->state).trajectory_data.backbone_angles.stride * data->frames[3],
+                        current_dataset(*data->state).system.trajectory_data.backbone_angles.data + current_dataset(*data->state).system.trajectory_data.backbone_angles.stride * data->frames[0],
+                        current_dataset(*data->state).system.trajectory_data.backbone_angles.data + current_dataset(*data->state).system.trajectory_data.backbone_angles.stride * data->frames[1],
+                        current_dataset(*data->state).system.trajectory_data.backbone_angles.data + current_dataset(*data->state).system.trajectory_data.backbone_angles.stride * data->frames[2],
+                        current_dataset(*data->state).system.trajectory_data.backbone_angles.data + current_dataset(*data->state).system.trajectory_data.backbone_angles.stride * data->frames[3],
                     };
-                    md_system_t& sys = current_dataset(*data->state).sys;
+                    md_system_t& sys = current_dataset(*data->state).system.sys;
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
                         float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
@@ -1910,17 +1910,17 @@ void interpolate_system_state(ApplicationState* state) {
     }
 
     if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.secondary_structure) {
-        if (md_array_size(current_dataset(*state).interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
+        if (md_array_size(current_dataset(*state).system.interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
 			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
         }
         size_t num_backbone_segments = sys.protein_backbone.segment.count;
         task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
             const md_secondary_structure_t* src_ss[4] = {
-                (md_secondary_structure_t*)current_dataset(*data->state).trajectory_data.secondary_structure.data + current_dataset(*data->state).trajectory_data.secondary_structure.stride * data->frames[0],
-                (md_secondary_structure_t*)current_dataset(*data->state).trajectory_data.secondary_structure.data + current_dataset(*data->state).trajectory_data.secondary_structure.stride * data->frames[1],
-                (md_secondary_structure_t*)current_dataset(*data->state).trajectory_data.secondary_structure.data + current_dataset(*data->state).trajectory_data.secondary_structure.stride * data->frames[2],
-                (md_secondary_structure_t*)current_dataset(*data->state).trajectory_data.secondary_structure.data + current_dataset(*data->state).trajectory_data.secondary_structure.stride * data->frames[3],
+                (md_secondary_structure_t*)current_dataset(*data->state).system.trajectory_data.secondary_structure.data + current_dataset(*data->state).system.trajectory_data.secondary_structure.stride * data->frames[0],
+                (md_secondary_structure_t*)current_dataset(*data->state).system.trajectory_data.secondary_structure.data + current_dataset(*data->state).system.trajectory_data.secondary_structure.stride * data->frames[1],
+                (md_secondary_structure_t*)current_dataset(*data->state).system.trajectory_data.secondary_structure.data + current_dataset(*data->state).system.trajectory_data.secondary_structure.stride * data->frames[2],
+                (md_secondary_structure_t*)current_dataset(*data->state).system.trajectory_data.secondary_structure.data + current_dataset(*data->state).system.trajectory_data.secondary_structure.stride * data->frames[3],
             };
             const md_secondary_structure_t* src_ss_nearest = data->t < 0.5f ? src_ss[1] : src_ss[2];
             switch (mode) {
@@ -1931,8 +1931,8 @@ void interpolate_system_state(ApplicationState* state) {
                 for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss = src_ss_nearest[i];
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    current_dataset(*data->state).sys.protein_backbone.segment.secondary_structure[i] = ss;
-                    current_dataset(*data->state).interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
+                    current_dataset(*data->state).system.sys.protein_backbone.segment.secondary_structure[i] = ss;
+                    current_dataset(*data->state).system.interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
                 }
                 break;
             }
@@ -1945,8 +1945,8 @@ void interpolate_system_state(ApplicationState* state) {
                         .sheet = lerp(ss_gl[0].sheet, ss_gl[1].sheet, data->t),
                     };
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    current_dataset(*data->state).sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    current_dataset(*data->state).interpolated_properties.secondary_structure[i] = ss_gl_i;
+                    current_dataset(*data->state).system.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
+                    current_dataset(*data->state).system.interpolated_properties.secondary_structure[i] = ss_gl_i;
                 }
                 break;
             }
@@ -1989,8 +1989,8 @@ void interpolate_system_state(ApplicationState* state) {
                         .sheet = cubic_spline(ss_gl[0].sheet, ss_gl[1].sheet, ss_gl[2].sheet, ss_gl[3].sheet, data->t, data->s),
                     };
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    current_dataset(*data->state).sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    current_dataset(*data->state).interpolated_properties.secondary_structure[i] = ss_gl_i;
+                    current_dataset(*data->state).system.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
+                    current_dataset(*data->state).system.interpolated_properties.secondary_structure[i] = ss_gl_i;
                 }
                 break;
             }
@@ -2008,10 +2008,10 @@ void interpolate_system_state(ApplicationState* state) {
             const md_gl_secondary_structure_t ss_coil = { 0,0 };
             const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
 
-            md_gl_secondary_structure_t* ss_gl = current_dataset(*data->state).interpolated_properties.secondary_structure;
-            for (size_t i = 0; i < current_dataset(*data->state).sys.protein_backbone.range.count; ++i) {
-                size_t range_beg = current_dataset(*data->state).sys.protein_backbone.range.offset[i];
-                size_t range_end = current_dataset(*data->state).sys.protein_backbone.range.offset[i + 1];
+            md_gl_secondary_structure_t* ss_gl = current_dataset(*data->state).system.interpolated_properties.secondary_structure;
+            for (size_t i = 0; i < current_dataset(*data->state).system.sys.protein_backbone.range.count; ++i) {
+                size_t range_beg = current_dataset(*data->state).system.sys.protein_backbone.range.offset[i];
+                size_t range_end = current_dataset(*data->state).system.sys.protein_backbone.range.offset[i + 1];
                 for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
                     // Set isolated coils between sheets to sheet to reduce noise during transitions, as this is likely a result of flickering during secondary structure assignment
                     if (is_eq(ss_gl[j - 1], ss_sheet) && is_eq(ss_gl[j + 1], ss_sheet) && is_eq(ss_gl[j], ss_coil)) {
@@ -2040,8 +2040,8 @@ void interpolate_system_state(ApplicationState* state) {
         aabb_min = vec3_min(aabb_min, payload.aabb_min[i]);
         aabb_max = vec3_max(aabb_max, payload.aabb_max[i]);
     }
-    current_dataset(*state).aabb_min = aabb_min;
-    current_dataset(*state).aabb_max = aabb_max;
+    current_dataset(*state).system.aabb_min = aabb_min;
+    current_dataset(*state).system.aabb_max = aabb_max;
     sys.unitcell = payload.unitcell;
 
 #if 0
@@ -2061,8 +2061,8 @@ void reset_view(ApplicationState* state, Dataset& dataset, const md_bitfield_t* 
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(temp_arena);
     defer { md_vm_arena_temp_end(tmp); };
 
-    if (!dataset.sys.atom.count) return;
-    const auto& sys = dataset.sys;
+    if (!dataset.system.sys.atom.count) return;
+    const auto& sys = dataset.system.sys;
     size_t popcount = 0;
     if (target) {
         popcount = md_bitfield_popcount(target);

@@ -533,32 +533,67 @@ struct SystemState {
     md_unitcell_t unitcell = {};
 };
 
-// Represents one molecular system
+// Pure data container for a single molecular system (topology + trajectory).
+// Systems must not store visualization state — that belongs in the view context (Dataset).
+struct System {
+    md_gl_mol_t         gl_mol = {};           // GPU representation of topology
+#if EXPERIMENTAL_GFX_API
+    md_gfx_handle_t     gfx_structure = {};    // Experimental GPU structure handle
+#endif
+
+    md_system_t         sys = {};              // Molecular topology (atoms, bonds, residues, …)
+    md_trajectory_loader_i* traj_loader = nullptr;
+    md_trajectory_i*    traj = nullptr;
+
+    FrameCache          frame_cache = {};
+    md_bitfield_t       recenter_target = {};
+
+    str_t               sys_path  = STR_LIT("");  // File path for the topology
+    str_t               traj_path = STR_LIT("");  // File path for the trajectory
+
+    vec3_t              aabb_min = {};
+    vec3_t              aabb_max = {};
+
+    // Per-frame precomputed trajectory data (secondary structure, backbone angles)
+    struct {
+        struct {
+            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
+            size_t count = 0;  // = mol.backbone.count * num_frames
+            md_secondary_structure_t* data = nullptr;
+            uint64_t fingerprint = 0;
+        } secondary_structure;
+        struct {
+            size_t stride = 0;
+            size_t count = 0;
+            md_backbone_angles_t* data = nullptr;
+            uint64_t fingerprint = 0;
+        } backbone_angles;
+    } trajectory_data;
+
+    // Interpolated per-atom properties for the currently displayed frame
+    struct {
+        md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
+    } interpolated_properties;
+};
+
+// Represents one dataset: a System (molecular data) combined with its associated visualization
+// context (view, camera, representations, selections, etc.). Currently each Dataset holds exactly
+// one System; the long-term goal is to separate these into independent System[] and View[] arrays
+// in ApplicationState (the Workspace), with Views referencing Systems by ID.
 struct Dataset {
     char identifier[64] = "dataset";
 
-    md_allocator_i*     alloc = nullptr;
-    md_gl_mol_t         gl_mol = {}; // gl molecule handle
-#if EXPERIMENTAL_GFX_API
-    md_gfx_handle_t     gfx_structure = {};
-#endif
+    // Per-dataset arena allocator. Used for both System data (molecule arrays, trajectory buffers)
+    // and View data (selection bitfields, visibility mask). Persists until the dataset is destroyed.
+    // Will be split into per-system and per-view allocators in a future refactor.
+    md_allocator_i* alloc = nullptr;
 
-    md_system_t sys = {};
-    md_trajectory_loader_i* traj_loader = nullptr;
-    md_trajectory_i* traj = nullptr;
+    // Pure molecular data (topology + trajectory). Must not hold visualization state.
+    System system = {};
 
-    FrameCache frame_cache = {};
-
-    md_bitfield_t recenter_target = {};
-
-    str_t sys_path  = STR_LIT("");
-    str_t traj_path = STR_LIT("");
-
-    vec3_t aabb_min = {};
-    vec3_t aabb_max = {};
-
+    // Flag set when the system state (atom positions, backbone) needs to be re-interpolated
     bool interpolate_system_state = false;
-    bool dirty_system_state = false;
+    // Bitmask of GPU buffer dirty flags (positions, bonds, secondary structure, …)
     uint32_t dirty_gpu_buffers = 0;
 
     struct {
@@ -621,25 +656,6 @@ struct Dataset {
         bool unwrap_structures = false;
         bool recalc_bonds = false;
     } operations;
-
-    struct {
-        md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
-    } interpolated_properties;
-
-    struct { 
-        struct {
-            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
-            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_secondary_structure_t* data = nullptr;
-            uint64_t fingerprint = 0;
-        } secondary_structure;
-        struct {
-            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
-            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_backbone_angles_t* data = nullptr;
-            uint64_t fingerprint = 0;
-        } backbone_angles;
-    } trajectory_data;
 
     // --- VISUALS ---
     struct {
@@ -958,20 +974,20 @@ struct ApplicationState {
 Dataset* create_new_dataset(ApplicationState& state);
 
 static inline bool dataset_has_recenter_target(const Dataset& dataset) {
-    return md_bitfield_empty(&dataset.recenter_target) == false;
+    return md_bitfield_empty(&dataset.system.recenter_target) == false;
 }
 
 static inline void dataset_clear_recenter_target(Dataset& dataset) {
-    md_bitfield_clear(&dataset.recenter_target);
+    md_bitfield_clear(&dataset.system.recenter_target);
 }
 
 static inline void dataset_set_recenter_target(Dataset& dataset, const md_bitfield_t* target) {
-    md_bitfield_copy(&dataset.recenter_target, target);
+    md_bitfield_copy(&dataset.system.recenter_target, target);
 }
 
 static inline void dataset_clear_frame_cache(Dataset& dataset) {
-    for (size_t i = 0; i < ARRAY_SIZE(dataset.frame_cache.state); ++i) {
-        dataset.frame_cache.state[i].frame_idx = UINT64_MAX;
+    for (size_t i = 0; i < ARRAY_SIZE(dataset.system.frame_cache.state); ++i) {
+        dataset.system.frame_cache.state[i].frame_idx = UINT64_MAX;
     }
 }
 
@@ -981,6 +997,14 @@ static inline Dataset& current_dataset(ApplicationState& state) {
 
 static inline const Dataset& current_dataset(const ApplicationState& state) {
     return state.dataset.datasets[state.dataset.current_idx];
+}
+
+static inline System& current_system(ApplicationState& state) {
+    return current_dataset(state).system;
+}
+
+static inline const System& current_system(const ApplicationState& state) {
+    return current_dataset(state).system;
 }
 
 static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
