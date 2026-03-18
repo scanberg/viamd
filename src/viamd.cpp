@@ -199,8 +199,10 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
 void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP) {
     out_picking = {};
 
+    vec2_t c = coord;
 #if MD_PLATFORM_OSX
-    coord = coord * vec_cast(ImGui::GetIO().DisplayFramebufferScale);
+    ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+    c = coord * vec2_set(scale.x, scale.y);
 #endif
     if (0.f < coord.x && coord.x < (float)gbuffer.width && 0.f < coord.y && coord.y < (float)gbuffer.height) {
         extract_gbuffer_picking_idx_and_depth(&out_picking.idx, &out_picking.depth, &gbuffer, (int)coord.x, (int)coord.y);
@@ -744,12 +746,12 @@ void load_workspace(ApplicationState* data, str_t filename) {
 }
 
 void save_workspace(ApplicationState* app_state, str_t filename) {
-    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
-    if (!file) {
+    md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+    if (!md_file_valid(file)) {
         VIAMD_LOG_ERROR("Could not open workspace file for writing: '%.*s", (int)filename.len, filename.ptr);
         return;
     }
-    defer { md_file_close(file); };
+    defer { md_file_close(&file); };
 
     md_allocator_i* temp_alloc = app_state->allocator.frame;
 

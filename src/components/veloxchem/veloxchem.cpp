@@ -2176,12 +2176,12 @@ struct VeloxChem : viamd::EventHandler {
     /*
     * We return to this at a later stage
     void save_absorption(str_t filename, md_array(double)* x_values, const char* x_lable, md_array(double)* y_values_osc, md_array(double)* y_values_cgs, int step) {
-        md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
-        if (!file) {
+        md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+        if (!md_file_valid(file)) {
             MD_LOG_ERROR("Could not open workspace file for writing: '%.*s", (int)filename.len, filename.ptr);
             return;
         }
-        defer{ md_file_close(file); };
+        defer{ md_file_close(&file); };
 
         // md_array(char*) rows = md_array_create(char*, md_array_size(*x_values), )
         //double* x_values = (double*)md_temp_push(sizeof(double) * num_samples);
@@ -3122,12 +3122,13 @@ struct VeloxChem : viamd::EventHandler {
                             //TODO: Implement md_xvg_write_to_file
                             str_t header = md_xvg_format_header(properties[property_idx].lable, str_from_cstr(x_unit), properties[property_idx].y_unit, 0, legends, arena);
                             str_t xvg = md_xvg_format(header, 2, 1024, column_data, arena);
-                            md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
-                            if (file) {
+                            md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+                            if (md_file_valid(file)) {
                                 const size_t written_bytes = md_file_write(file, xvg.ptr, xvg.len);
                                 if (written_bytes != xvg.len) {
                                     MD_LOG_ERROR("CSV: Unexpected error, some bytes were not written");
                                 }
+                                md_file_close(&file);
                             }
                             else {
                                 MD_LOG_ERROR("CSV: File could not be opened for writing: '%.*s'", (int)path.len, path.ptr);
@@ -4371,8 +4372,8 @@ struct VeloxChem : viamd::EventHandler {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
                     str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
 
-                    md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
-                    if (!file) {
+                    md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+                    if (!md_file_valid(file)) {
                         MD_LOG_ERROR("Failed to open file for writing: '" STR_FMT "'", STR_ARG(path));
                         return;
                     }
@@ -4385,7 +4386,7 @@ struct VeloxChem : viamd::EventHandler {
                         init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
                     }
 
-                    defer { md_file_close(file); };
+                    defer { md_file_close(&file); };
 
                     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
                     defer { md_vm_arena_destroy(temp_arena); };
@@ -4534,8 +4535,8 @@ struct VeloxChem : viamd::EventHandler {
                         str_t mhd_path = str_printf(temp_arena, STR_FMT ".mhd", STR_ARG(basepath));
                         str_t xyz_path = str_printf(temp_arena, STR_FMT ".xyz", STR_ARG(basepath));
 
-                        md_file_o* mhd_file = md_file_open(mhd_path, MD_FILE_WRITE | MD_FILE_BINARY);
-                        if (!mhd_file) {
+                        md_file_t mhd_file = md_file_open(mhd_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+                        if (!md_file_valid(mhd_file)) {
                             MD_LOG_ERROR("Failed to open .mhd file");
                             goto done;
                         }
@@ -4557,14 +4558,14 @@ struct VeloxChem : viamd::EventHandler {
                         md_file_printf(mhd_file, "%12.6f %12.6f %12.6f\n", grid.orientation[1].x, grid.orientation[1].y, grid.orientation[1].z);
                         md_file_printf(mhd_file, "%12.6f %12.6f %12.6f\n", grid.orientation[2].x, grid.orientation[2].y, grid.orientation[2].z);
 
-                        md_file_close(mhd_file);
+                        md_file_close(&mhd_file);
 
-                        md_file_o* xyz_file = md_file_open(xyz_path, MD_FILE_WRITE | MD_FILE_BINARY);
-                        if (!xyz_file) {
+                        md_file_t xyz_file = md_file_open(xyz_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+                        if (!md_file_valid(xyz_file)) {
                             MD_LOG_ERROR("Failed to open .xyz file");
                             goto done;
                         }
-                        defer { md_file_close(xyz_file); };
+                        defer { md_file_close(&xyz_file); };
                         
                         // XYZ
                         md_file_printf(xyz_file, "%i\n", natoms);

@@ -574,7 +574,7 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
         return NULL;
     }
 
-    md_trajectory_i* internal_traj = loader->create(filename, alloc, flags);
+    md_trajectory_i* internal_traj = loader->create(filename, alloc, (md_trajectory_flags_t)flags);
     if (!internal_traj) {
         return NULL;
     }

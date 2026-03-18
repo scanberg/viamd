@@ -6675,10 +6675,10 @@ static void draw_script_editor_window(ApplicationState* state) {
                     auto textToSave = state->editor.GetText();
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("txt"))) {
                         str_t path = str_t{path_buf, strnlen(path_buf, sizeof(path_buf))};
-                        md_file_o* file = md_file_open(path, MD_FILE_WRITE);
-                        if (file) {
+                        md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+                        if (md_file_valid(file)) {
                             md_file_write(file, textToSave.c_str(), textToSave.length());
-                            md_file_close(file);
+                            md_file_close(&file);
                         } else {
                             VIAMD_LOG_ERROR("Failed to open file '%s' for saving script", path_buf);
                         }
@@ -6830,8 +6830,8 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
     ASSERT(num_columns >= 0);
     ASSERT(num_rows >= 0);
 
-    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
-    if (!file) {
+    md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+    if (!md_file_valid(file)) {
         VIAMD_LOG_ERROR("Failed to open file '" STR_FMT "' to write data.", STR_ARG(filename));
         return false;
     }    
@@ -6868,7 +6868,7 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
         md_file_printf(file, "\n");
     }
 
-    md_file_close(file);
+    md_file_close(&file);
     VIAMD_LOG_SUCCESS("Successfully exported XVG file to '%.*s'", (int)filename.len, filename.ptr);
     return true;
 }
@@ -6879,8 +6879,8 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     ASSERT(num_columns >= 0);
     ASSERT(num_rows >= 0);
 
-    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
-    if (!file) {
+    md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+    if (!md_file_valid(file)) {
         VIAMD_LOG_ERROR("Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
         return false;
     }
@@ -6897,7 +6897,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
         md_file_printf(file, "\n");
     }
 
-    md_file_close(file);
+    md_file_close(&file);
     VIAMD_LOG_SUCCESS("Successfully exported CSV file to '%.*s'", (int)filename.len, filename.ptr);
     return true;
 }
@@ -6944,8 +6944,8 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
     }
 
     if (result == true) {
-        md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
-        if (!file) {
+        md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+        if (!md_file_valid(file)) {
             VIAMD_LOG_ERROR("Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
             return false;
         }
@@ -7007,7 +7007,7 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
             }
         }
 
-        md_file_close(file);
+        md_file_close(&file);
     } else {
         VIAMD_LOG_ERROR("Failed to visualize volume for export.");
         return false;
@@ -7149,8 +7149,8 @@ static void draw_property_export_window(ApplicationState* data) {
                         }
                     }
                 } else {
-                    md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
-                    if (file) {
+                    md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+                    if (md_file_valid(file)) {
                         str_t out_str = {};
                         if (dp.type == DisplayProperty::Type_Temporal) {
                             const double* traj_times = md_trajectory_frame_times(data->mold.traj);
@@ -7236,7 +7236,7 @@ static void draw_property_export_window(ApplicationState* data) {
                             md_file_write(file, out_str.ptr, out_str.len);
                             VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '%.*s'", dp.label, (int)path.len, path.ptr);
                         }
-                        md_file_close(file);
+                        md_file_close(&file);
                     }
                 }
             }
@@ -7253,7 +7253,7 @@ md_array(int) extract_bitfield_indices(const md_bitfield_t* bf, md_allocator_i* 
     return indices;
 }
 
-static void xyz_write_frame(md_file_o* file, const int* atomic_nr, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms) {
+static void xyz_write_frame(md_file_t file, const int* atomic_nr, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms) {
     md_file_printf(file, "%zu\n", num_atoms);
     md_file_printf(file, "XYZ format exported from VIAMD\n");
     for (size_t i = 0; i < num_atoms; ++i) {
@@ -7262,7 +7262,7 @@ static void xyz_write_frame(md_file_o* file, const int* atomic_nr, const float* 
     }
 }
 
-static void pdb_write_frame(md_file_o* file, const md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num) {
+static void pdb_write_frame(md_file_t file, const md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num) {
     if (model_num > 0) {
         md_file_printf(file, "MODEL     %4d\n", model_num);
     }
@@ -7485,8 +7485,8 @@ void draw_structure_export_window(ApplicationState* data) {
             str_t ext = str_from_cstr(file_formats[struct_exp.selected_file_format]);
             if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
                 str_t path = str_from_cstrn(path_buf, sizeof(path_buf));
-                md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
-                if (file) {
+                md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
+                if (md_file_valid(file)) {
                     // Write header for file format
                     switch (struct_exp.selected_file_format) {
                         case 0: { // XYZ
@@ -7565,7 +7565,7 @@ void draw_structure_export_window(ApplicationState* data) {
                     }
 
                     VIAMD_LOG_INFO("Successfully exported structure to: '" STR_FMT "'", STR_ARG(path));
-                    md_file_close(file);
+                    md_file_close(&file);
                 } else {
                     VIAMD_LOG_ERROR("Failed to open file '" STR_FMT "' for writing.", STR_ARG(path));
                 }
