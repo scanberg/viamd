@@ -1,13 +1,16 @@
 ﻿#pragma once
 
+#include <stdint.h>
+
 #include <core/md_str.h>
 
 struct md_allocator_i;
 struct md_system_t;
 struct md_system_loader_i;
 struct md_trajectory_i;
-struct md_trajectory_loader_i;
 struct md_bitfield_t;
+
+typedef struct md_trajectory_i* (*md_trajectory_creator_fn)(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
 
 // @NOTE(Robin): This API is currently a mess.
 
@@ -25,10 +28,10 @@ typedef uint32_t LoaderStateFlags;
 typedef uint32_t LoadTrajectoryFlags;
 
 namespace load {
-    // This represents a loader state with arguments to load a molecule or trajectory from a file
+        // This represents the create callbacks and arguments needed to load a molecule or trajectory from a file.
     struct LoaderState {		
 		md_system_loader_i*     sys_loader = 0;
-		md_trajectory_loader_i* traj_loader = 0;
+		md_trajectory_creator_fn traj_creator = 0;
         const void*             sys_loader_arg = 0;
         LoaderStateFlags 		flags = LoaderStateFlag_None;
 
@@ -48,20 +51,15 @@ namespace mol {
 }
 
 namespace traj {
-    md_trajectory_loader_i* loader_from_ext(str_t ext);
+    md_trajectory_creator_fn creator_from_ext(str_t ext);
 
-    md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const md_system_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
-    bool close(md_trajectory_i* traj);
+    md_trajectory_i* open_file(str_t filename, md_trajectory_creator_fn creator, const md_system_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
 
-	// Get the internal trajectory, this can be used to access custom loader functionality
-	// This is the internal trajectory without any form of caching or recentering applied
+	// Get the internal trajectory beneath any wrapper. If the trajectory is already raw, it is returned as-is.
 	md_trajectory_i* get_raw_trajectory(md_trajectory_i* traj);
 
     bool has_recenter_target(md_trajectory_i* traj);
     bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask);
-
-    bool clear_cache(md_trajectory_i* traj);
-    size_t num_cache_frames(md_trajectory_i* traj);
 }
 
 }  // namespace load

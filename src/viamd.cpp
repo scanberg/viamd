@@ -241,8 +241,7 @@ void free_trajectory_data(ApplicationState* state) {
     interrupt_async_tasks(state);
 
     if (state->mold.traj) {
-        load::traj::close(state->mold.traj);
-        state->mold.traj = nullptr;
+        md_trajectory_free(state->mold.traj);
     }
     state->files.trajectory[0] = '\0';
 
@@ -359,8 +358,8 @@ void init_trajectory_data(ApplicationState* data) {
     }
 }
 
-bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_loader_i* loader, LoadTrajectoryFlags flags) {
-    md_trajectory_i* traj = load::traj::open_file(filename, loader, &data->mold.sys, data->allocator.persistent, flags);
+bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_creator_fn creator, LoadTrajectoryFlags flags) {
+    md_trajectory_i* traj = load::traj::open_file(filename, creator, &data->mold.sys, data->allocator.persistent, flags);
     if (traj) {
         free_trajectory_data(data);
         data->mold.traj = traj;
@@ -477,26 +476,26 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
             init_molecule_data(data);
 
             // @NOTE: Some files contain both atomic coordinates and trajectory
-            if (param.traj_loader) {
+            if (param.traj_creator) {
                 VIAMD_LOG_INFO("File may also contain trajectory, attempting to load trajectory");
             } else {
                 return true;
             }
         }
 
-        if (param.traj_loader) {
+        if (param.traj_creator) {
             if (!data->mold.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
                 return false;
             }
             interrupt_async_tasks(data);
 
-            bool success = load_trajectory_data(data, path_to_file, param.traj_loader, param.traj_loader_flags);
+            bool success = load_trajectory_data(data, path_to_file, param.traj_creator, param.traj_loader_flags);
             if (success) {
                 VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return true;
             } else {
-                if (param.sys_loader && param.traj_loader) {
+                if (param.sys_loader && param.traj_creator) {
                     // Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
                     return true;
                 }
@@ -733,7 +732,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
     LoadParam param = {};
     param.file_path = new_molecule_file;
     param.sys_loader = loader_state.sys_loader;
-    param.traj_loader = loader_state.traj_loader;
+    param.traj_creator = loader_state.traj_creator;
     param.coarse_grained = new_coarse_grained;
     param.sys_loader_arg = loader_state.sys_loader_arg;
 
@@ -746,7 +745,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
     if (new_trajectory_file) {
         load::init_loader_state(&loader_state, new_trajectory_file, data->allocator.frame);
         param.sys_loader = 0;
-        param.traj_loader = loader_state.traj_loader;
+        param.traj_creator = loader_state.traj_creator;
         param.file_path = new_trajectory_file;
         if (load_dataset_from_file(data, param)) {
             str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), new_trajectory_file);

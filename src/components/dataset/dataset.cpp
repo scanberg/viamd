@@ -185,7 +185,7 @@ struct Dataset : viamd::EventHandler {
 
             md_array_shrink(sequence, 0);
             md_urange_t range = md_component_atom_range(&sys.component, i);
-            for (int j = range.beg; j < range.end; ++j) {
+            for (uint32_t j = range.beg; j < range.end; ++j) {
                 int ai = sys.atom.type_idx[j];
                 md_array_push(sequence, ai, temp_arena);
             }
@@ -221,8 +221,6 @@ struct Dataset : viamd::EventHandler {
         // Process chains - key = residue type sequence
         if (comp_count > 0 && inst_count > 0) {
             for (size_t i = 0; i < inst_count; ++i) {
-                str_t inst_id = md_instance_id(&sys.instance, i);
-
                 md_array_shrink(sequence, 0);
                 md_urange_t range = md_instance_component_range(&sys.instance, i);
                 for (int j = range.beg; j < range.end; ++j) {

@@ -322,8 +322,8 @@ struct FileQueue {
         int prio;
     };
     Entry arr[8] = {};
-    int head = 0;
-    int tail = 0;
+    uint32_t head = 0;
+    uint32_t tail = 0;
 
     // We use a ring alloc here to do a deep copy of the paths within the added entries
     // Because its a ring alloc, there is no need to free entries
@@ -419,7 +419,7 @@ struct EvalAtomProperty {
 // Loader parameters for loading a system or trajectory, which are passed via the file queue
 struct LoadParam {
     md_system_loader_i*     sys_loader  = NULL;
-    md_trajectory_loader_i* traj_loader = NULL;
+    md_trajectory_creator_fn traj_creator = NULL;
     str_t file_path = STR_LIT("");
     bool coarse_grained = false;
     const void* sys_loader_arg = NULL;
@@ -590,7 +590,6 @@ struct ApplicationState {
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID backbone_computations = task_system::INVALID_ID;
-        task_system::ID prefetch_frames = task_system::INVALID_ID;
         task_system::ID evaluate_full = task_system::INVALID_ID;
         task_system::ID evaluate_filt = task_system::INVALID_ID;
     } tasks;

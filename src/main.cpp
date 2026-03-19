@@ -188,7 +188,7 @@ static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags
         prio = 1;
     } else if (load::mol::loader_from_ext(ext)) {
         prio = 2;
-    } else if (load::traj::loader_from_ext(ext)) {
+    } else if (load::traj::creator_from_ext(ext)) {
         prio = 3;
     } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
         prio = 4;
@@ -198,7 +198,7 @@ static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags
         flags |= FileFlags_ShowDialogue;
     }
 
-    uint64_t i = queue->head;
+    uint32_t i = queue->head;
     queue->arr[queue->head] = {str_copy(path, queue->ring), flags, prio};
     queue->head = (queue->head + 1) % ARRAY_SIZE(queue->arr);
 
@@ -434,8 +434,6 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
     // Compose frame value (base + fraction)
     return (double)prev_frame_idx + t;
 }
-
-//static void launch_prefetch_job(ApplicationState* data);
 
 static void init_display_properties(ApplicationState* state);
 static void update_display_properties(ApplicationState* state);
@@ -725,7 +723,7 @@ int main(int argc, char** argv) {
                 } else if (success) {
                     LoadParam param = {};
                     param.sys_loader  = loader.sys_loader;
-                    param.traj_loader = loader.traj_loader;
+                    param.traj_creator = loader.traj_creator;
                     param.file_path      = e.path;
                     param.coarse_grained = e.flags & FileFlags_CoarseGrained;
                     param.sys_loader_arg = loader.sys_loader_arg;
@@ -841,39 +839,6 @@ int main(int argc, char** argv) {
             } else if (state.animation.frame <= 0) {
                 state.animation.mode = PlaybackMode::Stopped;
                 state.animation.frame = 0;
-            }
-
-            if (state.settings.prefetch_frames) {
-                if (!task_system::task_is_running(state.tasks.prefetch_frames)) {
-                    uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(state.mold.traj);
-                    if (traj_frames > 0 && load::traj::num_cache_frames(state.mold.traj) < traj_frames) {
-                        uint32_t frame_beg = 0;
-                        uint32_t frame_end = 0;
-                        // @NOTE: This is certainly something which can be improved upon.
-                        // It prefetches frames in the direction of the animation.
-                        // In a more optimal case, it should never yield until it catches up with the number of frames it expects to have as a buffer.
-
-                        int look_ahead = CLAMP((int)load::traj::num_cache_frames(state.mold.traj) / 2, 1, 10);
-                    
-                        if (state.animation.fps > 0) {
-                            frame_beg = (uint32_t)CLAMP((int)state.animation.frame             , 0, (int)traj_frames);
-                            frame_end = (uint32_t)CLAMP((int)state.animation.frame + look_ahead, 0, (int)traj_frames);
-                        } else {
-                            frame_beg = (uint32_t)CLAMP((int)state.animation.frame - look_ahead, 0, (int)traj_frames);
-                            frame_end = (uint32_t)CLAMP((int)state.animation.frame             , 0, (int)traj_frames);
-                        }
-                        if (frame_beg != frame_end) {
-                            uint32_t frame_count = frame_end - frame_beg;
-                            state.tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("##Prefetch Frames"), frame_count, [&state, frame_offset = frame_beg](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
-                                (void)thread_num;                                
-                                for (uint32_t i = frame_offset + frame_beg; i < frame_offset + frame_end; ++i) {
-                                    md_trajectory_load_frame(state.mold.traj, i, 0, 0, 0, 0);
-                                }
-                            });
-                            task_system::enqueue_task(state.tasks.prefetch_frames);
-                        }
-                    }
-                }
             }
         }
 
@@ -2776,7 +2741,6 @@ static void draw_main_menu(ApplicationState* data) {
             if (load::traj::has_recenter_target(data->mold.traj)) {
                 if (ImGui::Button("Remove Recenter Target")) {
                     load::traj::set_recenter_target(data->mold.traj, nullptr);
-                    load::traj::clear_cache(data->mold.traj);
                     data->mold.interpolate_system_state = true;
                     data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
@@ -3101,7 +3065,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
         }
 
-        md_trajectory_loader_i* traj_loader = load::traj::loader_from_ext(cur_ext);
+        md_trajectory_creator_fn traj_creator = load::traj::creator_from_ext(cur_ext);
 
         enum Action {
             Action_None,
@@ -3127,7 +3091,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             LoadParam param = {};
             param.file_path = path;
             param.sys_loader = sys_loader;
-            param.traj_loader = traj_loader;
+            param.traj_creator = traj_creator;
             param.coarse_grained = state.coarse_grained;
 
             md_lammps_molecule_loader_arg_t lammps_arg = {};
@@ -3899,7 +3863,6 @@ void draw_context_popup(ApplicationState* state) {
                     md_bitfield_copy(&state->selection.highlight_mask, &mask);
                     if (apply) {
                         load::traj::set_recenter_target(state->mold.traj, &mask);
-                        load::traj::clear_cache(state->mold.traj);
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                         ImGui::CloseCurrentPopup();
@@ -4052,10 +4015,7 @@ static void draw_animation_window(ApplicationState* data) {
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-
-
         ImGui::Text("Num Frames: %i", num_frames);
-
         md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
         double t   = frame_to_time(data->animation.frame, *data);
         double min = data->timeline.x_values[0];
@@ -7660,27 +7620,6 @@ static void update_md_buffers(ApplicationState* data) {
     data->mold.dirty_gpu_buffers = 0;
 }
 
-static void launch_prefetch_job(ApplicationState* data) {
-    const uint32_t num_frames = MIN((uint32_t)md_trajectory_num_frames(data->mold.traj), (uint32_t)load::traj::num_cache_frames(data->mold.traj));
-    if (!num_frames) return;
-
-    task_system::task_interrupt_and_wait_for(data->tasks.prefetch_frames);
-    data->tasks.prefetch_frames = task_system::create_pool_task(STR_LIT("Prefetch Frames"), num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-        (void)thread_num;
-        for (uint32_t i = range_beg; i < range_end; ++i) {
-            md_trajectory_frame_header_t header;
-            md_trajectory_load_frame(data->mold.traj, i, &header, 0, 0, 0);
-        }
-    });
-
-    task_system::ID main_task = task_system::create_main_task(STR_LIT("Prefetch Complete"), [data]() {
-        data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-    });
-
-    task_system::set_task_dependency(main_task, data->tasks.prefetch_frames);
-    task_system::enqueue_task(data->tasks.prefetch_frames);
-}
-
 void create_screenshot(str_t path) {
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
     defer { md_vm_arena_temp_end(tmp); };
@@ -8241,8 +8180,8 @@ static void handle_picking(ApplicationState* data) {
         data->selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
         data->selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
 
-        if (data->selection.atom_idx.hovered > data->mold.sys.atom.count) data->selection.atom_idx.hovered = -1;
-        if (data->selection.bond_idx.hovered > data->mold.sys.bond.count) data->selection.bond_idx.hovered = -1;
+        if (data->selection.atom_idx.hovered > (int)data->mold.sys.atom.count) data->selection.atom_idx.hovered = -1;
+        if (data->selection.bond_idx.hovered > (int)data->mold.sys.bond.count) data->selection.bond_idx.hovered = -1;
         
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;
