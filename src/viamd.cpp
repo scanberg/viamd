@@ -309,16 +309,30 @@ void init_trajectory_data(ApplicationState* data) {
                 float* y = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
                 float* z = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
 
-                for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                    md_trajectory_frame_header_t frame_header;
-                    md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
-                    md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
+                md_trajectory_reader_i reader;
+                if (md_trajectory_reader_init(&reader, traj)) {
+                    for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
+                        md_trajectory_frame_header_t frame_header;
+                        md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
+                        md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
 
-                    md_trajectory_load_frame(traj, frame_idx, &frame_header, x, y, z);
-                    md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
-                    md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                        md_trajectory_reader_load_frame(reader, frame_idx, &frame_header, x, y, z);
+                        md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                        md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                    }
+					md_trajectory_reader_free(&reader);
+                } else {
+                    for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
+                        md_trajectory_frame_header_t frame_header;
+                        md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
+                        md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
+
+                        md_trajectory_load_frame(traj, frame_idx, &frame_header, x, y, z);
+                        md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                        md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                    }
                 }
-                });
+            });
 
             uint64_t time = (uint64_t)md_time_current();
             task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time]() {
@@ -746,8 +760,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
 }
 
 void save_workspace(ApplicationState* app_state, str_t filename) {
-    md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         VIAMD_LOG_ERROR("Could not open workspace file for writing: '%.*s", (int)filename.len, filename.ptr);
         return;
     }

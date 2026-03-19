@@ -497,8 +497,8 @@ struct Shapespace : viamd::EventHandler {
                 str_t y_label = STR_LIT("Shape Weight Ratio");
                 str_t header = md_xvg_format_header(title, x_label, y_label, md_array_size(column_labels) - 1, column_labels + 1, temp_arena);
                 str_t xvg    = md_xvg_format(header, num_cols, num_rows, column_values, temp_arena);
-                md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-                if (md_file_valid(file)) {
+                md_file_t file = {0};
+                if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                     md_file_write(file, xvg.ptr, xvg.len);
                     md_file_close(&file);
                 }

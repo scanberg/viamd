@@ -6677,8 +6677,8 @@ static void draw_script_editor_window(ApplicationState* state) {
                     auto textToSave = state->editor.GetText();
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("txt"))) {
                         str_t path = str_t{path_buf, strnlen(path_buf, sizeof(path_buf))};
-                        md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-                        if (md_file_valid(file)) {
+                        md_file_t file = {0};
+                        if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                             md_file_write(file, textToSave.c_str(), textToSave.length());
                             md_file_close(&file);
                         } else {
@@ -6832,8 +6832,8 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
     ASSERT(num_columns >= 0);
     ASSERT(num_rows >= 0);
 
-    md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         VIAMD_LOG_ERROR("Failed to open file '" STR_FMT "' to write data.", STR_ARG(filename));
         return false;
     }    
@@ -6881,8 +6881,8 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     ASSERT(num_columns >= 0);
     ASSERT(num_rows >= 0);
 
-    md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         VIAMD_LOG_ERROR("Failed to open file '%.*s' to write data.", (int)filename.len, filename.ptr);
         return false;
     }
@@ -6946,8 +6946,8 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
     }
 
     if (result == true) {
-        md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-        if (!md_file_valid(file)) {
+        md_file_t file = {0};
+        if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
             VIAMD_LOG_ERROR("Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
             return false;
         }
@@ -7151,8 +7151,8 @@ static void draw_property_export_window(ApplicationState* data) {
                         }
                     }
                 } else {
-                    md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-                    if (md_file_valid(file)) {
+                    md_file_t file = {0};
+                    if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                         str_t out_str = {};
                         if (dp.type == DisplayProperty::Type_Temporal) {
                             const double* traj_times = md_trajectory_frame_times(data->mold.traj);
@@ -7487,8 +7487,8 @@ void draw_structure_export_window(ApplicationState* data) {
             str_t ext = str_from_cstr(file_formats[struct_exp.selected_file_format]);
             if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
                 str_t path = str_from_cstrn(path_buf, sizeof(path_buf));
-                md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-                if (md_file_valid(file)) {
+                md_file_t file = {0};
+                if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                     // Write header for file format
                     switch (struct_exp.selected_file_format) {
                         case 0: { // XYZ

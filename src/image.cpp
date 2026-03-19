@@ -13,8 +13,8 @@ static void write_func(void* context, void* data, int size) {
 }
 
 static inline md_file_t open_file(str_t filename) {
-    md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-    if (!md_file_valid(file)) {
+    md_file_t file = {0};
+    if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         MD_LOG_ERROR("Failed to open file");
     }
     return file;
