@@ -3,7 +3,6 @@
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_log.h>
-#include <core/md_simd.h>
 #include <core/md_bitfield.h>
 #include <core/md_os.h>
 #include <core/md_parse.h>
@@ -14,7 +13,7 @@
 #include <md_xyz.h>
 #include <md_mmcif.h>
 #include <md_lammps.h>
-//#include <md_dcd.h>
+#include <md_dcd.h>
 #include <md_trajectory.h>
 #include <md_frame_cache.h>
 #include <md_util.h>
@@ -82,6 +81,7 @@ enum traj_loader_t {
     TRAJ_LOADER_TRR,
     TRAJ_LOADER_XYZ,
     TRAJ_LOADER_LAMMPSTRJ,
+    TRAJ_LOADER_DCD,
     TRAJ_LOADER_COUNT,
 };
 
@@ -92,6 +92,7 @@ static str_t traj_loader_name[] {
 	STR_LIT("Gromacs Lossless Trajectory (trr)"),
 	STR_LIT("XYZ"),
     STR_LIT("Lammps Trajectory [ASCII] (lammpstrj)"),
+    STR_LIT("DCD Trajectory (dcd)")
 };
 
 static str_t traj_loader_ext[] {
@@ -101,6 +102,7 @@ static str_t traj_loader_ext[] {
 	STR_LIT("trr"),
 	STR_LIT("xyz;xmol;arc"),
 	STR_LIT("lammpstrj"),
+    STR_LIT("dcd")
 };
 
 static md_trajectory_loader_i* traj_loader[] = {
@@ -110,6 +112,7 @@ static md_trajectory_loader_i* traj_loader[] = {
 	md_trr_trajectory_loader(),
 	md_xyz_trajectory_loader(),
     md_lammps_trajectory_loader(),
+    md_dcd_trajectory_loader()
 };
 
 struct LoadedMolecule {
@@ -215,7 +218,7 @@ static void traj_loader_preload_check(load::LoaderState*, traj_loader_t, str_t, 
 
 namespace load {
 
-#define NUM_ENTRIES 12
+#define NUM_ENTRIES 13
 struct table_entry_t {
     str_t name[NUM_ENTRIES];
     str_t ext[NUM_ENTRIES];
@@ -241,7 +244,7 @@ static const table_entry_t table = {
         STR_LIT("PDBx/mmCIF (cif)"),
         STR_LIT("LAMMPS (data)"),
         STR_LIT("LAMMPS Trajectory (lammpstrj)"),
-        //STR_LIT("DCD Trajectory (dcd)"),
+        STR_LIT("DCD Trajectory (dcd)"),
 #if MD_VLX
         STR_LIT("VeloxChem (out)"),
         STR_LIT("VeloxChem (h5)")
@@ -258,7 +261,7 @@ static const table_entry_t table = {
         STR_LIT("cif"),
         STR_LIT("data"),
         STR_LIT("lammpstrj"),
-        //STR_LIT("dcd"),
+        STR_LIT("dcd"),
 #if MD_VLX
         STR_LIT("out"),
         STR_LIT("h5")
@@ -292,7 +295,7 @@ static const table_entry_t table = {
     	NULL,
         NULL,
         md_lammps_trajectory_loader(),
-        //md_dcd_trajectory_loader(),
+        md_dcd_trajectory_loader(),
 #if MD_VLX
         NULL,
 #endif
@@ -532,7 +535,8 @@ bool load_frame(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_h
                 }
 
                 // Translate all
-                const mat3_t basis = md_unitcell_basis_mat3(cell);
+                mat3_t basis = { 0 };
+                md_unitcell_A_extract_float(basis.elem, cell);
                 const vec3_t center = basis * vec3_set1(0.5f);
                 const vec3_t trans  = center - com;
                 vec3_batch_translate_inplace(x, y, z, num_atoms, trans);
@@ -574,7 +578,7 @@ md_trajectory_i* open_file(str_t filename, md_trajectory_loader_i* loader, const
         return NULL;
     }
 
-    md_trajectory_i* internal_traj = loader->create(filename, alloc, flags);
+    md_trajectory_i* internal_traj = loader->create(filename, alloc, (md_trajectory_flags_t)flags);
     if (!internal_traj) {
         return NULL;
     }

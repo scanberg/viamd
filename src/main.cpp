@@ -2434,7 +2434,9 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
         }
     }
 
-    const vec3_t cell_ext = mat3_mul_vec3(md_unitcell_basis_mat3(&mol.unitcell), vec3_set1(1.0f));
+    mat3_t A = { 0 };
+	md_unitcell_A_extract_float(A.elem, &mol.unitcell);
+    const vec3_t cell_ext = mat3_mul_vec3(A, vec3_set1(1.0f));
     const float  max_cell_ext = vec3_reduce_max(cell_ext);
     const float  max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
 
@@ -4059,7 +4061,7 @@ static void draw_animation_window(ApplicationState* data) {
         double min = data->timeline.x_values[0];
         double max = data->timeline.x_values[num_frames - 1];
         char time_label[64];
-        if (md_unit_empty(time_unit)) {
+        if (md_unit_empty(time_unit) || md_unit_unitless(time_unit)) {
             snprintf(time_label, sizeof(time_label), "Time");
         } else {
             char unit_buf[32];
@@ -7582,7 +7584,8 @@ static void update_md_buffers(ApplicationState* data) {
     if (mol.atom.count == 0) return;
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
-        const vec3_t pbc_ext = md_unitcell_diag_vec3(&data->mold.sys.unitcell);
+        vec3_t pbc_ext = { 0 };
+        md_unitcell_diag_extract_float(pbc_ext.elem, &data->mold.sys.unitcell);
         md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         if (!(data->mold.dirty_gpu_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
@@ -7999,10 +8002,11 @@ static void fill_gbuffer(ApplicationState* data) {
 
     if (data->simulation_box.enabled && data->mold.sys.unitcell.flags != 0) {
         PUSH_GPU_SECTION("Draw Simulation Box")
-        const mat4_t basis_model_mat = md_unitcell_basis_mat4(&data->mold.sys.unitcell);
+        mat3_t A = { 0 };
+		md_unitcell_A_extract_float(A.elem, &data->mold.sys.unitcell);
         immediate::set_model_view_matrix(model_view_mat);
         immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
-        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, basis_model_mat, convert_color(data->simulation_box.color));
+        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, mat4_from_mat3(A), convert_color(data->simulation_box.color));
         immediate::render();
         POP_GPU_SECTION()
     }
@@ -8371,14 +8375,10 @@ static void draw_representations_opaque(ApplicationState* data) {
             max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
         }
         else {
-	        mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
-            vec3_t half_extents = {
-                0.5f * vec3_length(basis.col[0]),
-                0.5f * vec3_length(basis.col[1]),
-                0.5f * vec3_length(basis.col[2])
-            };
-		    float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
-            max_bond_length = MAX(3.0, min_half_box_extent);
+            vec3_t ext = { 0 };
+            md_unitcell_diag_extract_float(ext.elem, &data->mold.sys.unitcell);
+            float min_half_box_ext = vec3_reduce_min(vec3_mul_f(ext, 0.5f));
+            max_bond_length = MAX(3.0, min_half_box_ext);
         }
 
         md_gl_draw_args_t args = {
@@ -8534,14 +8534,10 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
         max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
     }
     else {
-	    mat3_t basis = md_unitcell_basis_mat3(&data->mold.sys.unitcell);
-        vec3_t half_extents = {
-            0.5f * vec3_length(basis.col[0]),
-            0.5f * vec3_length(basis.col[1]),
-            0.5f * vec3_length(basis.col[2])
-        };
-		float min_half_box_extent = MIN(half_extents.x, MIN(half_extents.y, half_extents.z));
-        max_bond_length = MAX(3.0, min_half_box_extent);
+        vec3_t ext = { 0 };
+        md_unitcell_diag_extract_float(ext.elem, &data->mold.sys.unitcell);
+        float min_half_box_ext = vec3_reduce_min(vec3_mul_f(ext, 0.5f));
+        max_bond_length = MAX(3.0, min_half_box_ext);
     }
 
     md_gl_draw_args_t args = {

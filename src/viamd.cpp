@@ -484,7 +484,7 @@ bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
                     // Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
                     return true;
                 }
-                VIAMD_LOG_ERROR("Failed to opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
+                VIAMD_LOG_ERROR("Failed to open trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
         }
     }
