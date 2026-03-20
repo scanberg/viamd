@@ -6,6 +6,7 @@
 #include <core/md_bitfield.h>
 #include <core/md_os.h>
 #include <core/md_parse.h>
+
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_xtc.h>
@@ -15,15 +16,12 @@
 #include <md_lammps.h>
 #include <md_dcd.h>
 #include <md_trajectory.h>
-#include <md_frame_cache.h>
 #include <md_util.h>
 #if MD_VLX
 #include <md_vlx.h>
 #endif
 
-#include <string.h>
-
-#include "task_system.h"
+#include <task_system.h>
 
 enum sys_loader_t {
     SYS_LOADER_UNKNOWN,
@@ -85,16 +83,6 @@ enum traj_loader_t {
     TRAJ_LOADER_COUNT,
 };
 
-static str_t traj_loader_name[] {
-	STR_LIT("Unknown"),
-	STR_LIT("Standard Protein Data Bank (pdb)"),
-	STR_LIT("Gromacs Compressed Trajectory (xtc)"),
-	STR_LIT("Gromacs Lossless Trajectory (trr)"),
-	STR_LIT("XYZ"),
-    STR_LIT("Lammps Trajectory [ASCII] (lammpstrj)"),
-    STR_LIT("DCD Trajectory (dcd)")
-};
-
 static str_t traj_loader_ext[] {
 	{},
 	STR_LIT("pdb"),
@@ -105,7 +93,7 @@ static str_t traj_loader_ext[] {
     STR_LIT("dcd")
 };
 
-static md_trajectory_creator_fn traj_creator[] = {
+static md_traj_attach_fn traj_creator[] = {
 	NULL,
     md_pdb_trajectory_create,
     md_xtc_trajectory_create,
@@ -124,7 +112,6 @@ struct LoadedTrajectory {
     uint64_t key;
     const md_system_t* mol;
     md_trajectory_i* traj;
-    md_frame_cache_t cache;
     md_allocator_i*  alloc;
 
     md_array(int32_t) recenter_indices;
@@ -178,7 +165,6 @@ static inline LoadedTrajectory* alloc_loaded_trajectory(uint64_t key) {
 static inline void remove_loaded_trajectory(uint64_t key) {
     for (int64_t i = 0; i < num_loaded_trajectories; ++i) {
         if (loaded_trajectories[i].key == key) {
-            md_frame_cache_free(&loaded_trajectories[i].cache);
             if (loaded_trajectories[i].traj && loaded_trajectories[i].traj->free) {
                 loaded_trajectories[i].traj->free(loaded_trajectories[i].traj);
             }
@@ -198,7 +184,7 @@ static void mol_loader_preload_check(load::LoaderState* state, sys_loader_t load
         if (format != MD_LAMMPS_ATOM_FORMAT_UNKNOWN) {
             // Encode this into the argument
             const char* format_str = md_lammps_atom_format_strings()[format];
-            md_lammps_molecule_loader_arg_t arg = md_lammps_molecule_loader_arg(format_str);
+            md_lammps_system_loader_arg_t arg = md_lammps_system_loader_arg(format_str);
             state->data_size = sizeof(arg);
             state->data_ptr = md_alloc(alloc, sizeof(arg));
             MEMCPY(state->data_ptr, &arg, sizeof(arg));

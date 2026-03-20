@@ -1,7 +1,6 @@
 ﻿#pragma once
 
 #include <stdint.h>
-
 #include <core/md_str.h>
 
 struct md_allocator_i;
@@ -10,7 +9,7 @@ struct md_system_loader_i;
 struct md_trajectory_i;
 struct md_bitfield_t;
 
-typedef struct md_trajectory_i* (*md_trajectory_creator_fn)(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
+typedef bool (*md_traj_attach_fn)(md_system_t* sys, str_t filename, uint32_t flags);
 
 // @NOTE(Robin): This API is currently a mess.
 
@@ -31,7 +30,7 @@ namespace load {
         // This represents the create callbacks and arguments needed to load a molecule or trajectory from a file.
     struct LoaderState {		
 		md_system_loader_i*     sys_loader = 0;
-		md_trajectory_creator_fn traj_creator = 0;
+		md_traj_attach_fn       traj_attach = 0;
         const void*             sys_loader_arg = 0;
         LoaderStateFlags 		flags = LoaderStateFlag_None;
 
@@ -51,12 +50,9 @@ namespace mol {
 }
 
 namespace traj {
-    md_trajectory_creator_fn creator_from_ext(str_t ext);
+    md_traj_attach_fn attach_fn_from_ext(str_t ext);
 
-    md_trajectory_i* open_file(str_t filename, md_trajectory_creator_fn creator, const md_system_t* mol, md_allocator_i* alloc, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
-
-	// Get the internal trajectory beneath any wrapper. If the trajectory is already raw, it is returned as-is.
-	md_trajectory_i* get_raw_trajectory(md_trajectory_i* traj);
+    bool attach_file(md_system_t* sys, str_t filename, md_traj_attach_fn fn, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
 
     bool has_recenter_target(md_trajectory_i* traj);
     bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask);
