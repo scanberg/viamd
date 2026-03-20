@@ -238,14 +238,13 @@ void interrupt_async_tasks(ApplicationState* state) {
 // #trajectorydata
 void free_trajectory_data(ApplicationState* state) {
     ASSERT(state);
-    interrupt_async_tasks(state);
 
     if (state->mold.traj) {
         md_trajectory_free(state->mold.traj);
+        state->mold.traj = nullptr;
     }
     state->files.trajectory[0] = '\0';
 
-    state->mold.sys.unitcell = {};
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
     md_array_free(state->display_properties, state->allocator.persistent);
 
@@ -298,7 +297,7 @@ void init_trajectory_data(ApplicationState* data) {
                 (void)thread_num;
                 // Create copy here of molecule since we use the full structure as input
                 md_system_t sys = data->mold.sys;
-                md_trajectory_i* traj = load::traj::get_raw_trajectory(data->mold.traj);
+                md_trajectory_i* traj = data->mold.traj;
 
                 md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
                 defer { md_vm_arena_destroy(temp_arena); };
@@ -358,21 +357,7 @@ void init_trajectory_data(ApplicationState* data) {
     }
 }
 
-bool load_trajectory_data(ApplicationState* data, str_t filename, md_trajectory_creator_fn creator, LoadTrajectoryFlags flags) {
-    md_trajectory_i* traj = load::traj::open_file(filename, creator, &data->mold.sys, data->allocator.persistent, flags);
-    if (traj) {
-        free_trajectory_data(data);
-        data->mold.traj = traj;
-        str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), filename);
-        init_trajectory_data(data);
-        data->animation.frame = 0;
-        return true;
-    }
-
-    return false;
-}
-
-void init_molecule_data(ApplicationState* data) {
+void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
 
         data->picking.idx = INVALID_PICKING_IDX;
@@ -452,59 +437,56 @@ void free_molecule_data(ApplicationState* data) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
-bool load_dataset_from_file(ApplicationState* data, const LoadParam& param) {
-    ASSERT(data);
+bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
+    ASSERT(state);
 
-    str_t path_to_file = md_path_make_canonical(param.file_path, data->allocator.frame);
+    bool success = false;
+    str_t path_to_file = md_path_make_canonical(param.filepath, state->allocator.frame);
     if (path_to_file) {
-        if (param.sys_loader) {
-            interrupt_async_tasks(data);
-            free_trajectory_data(data);
-            free_molecule_data(data);
+        if (param.state.flags & LoaderFlag_System) {
+            interrupt_async_tasks(state);
+            free_trajectory_data(state);
+            free_molecule_data(state);
 
-            if (!param.sys_loader->init_from_file(&data->mold.sys, path_to_file, param.sys_loader_arg, data->mold.sys_alloc)) {
+            state->mold.sys.alloc = state->mold.sys_alloc;
+            if (!loader::load(&state->mold.sys, path_to_file, &param.state)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return false;
             }
+            success = true;
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
-            str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), path_to_file);
-            data->files.coarse_grained = param.coarse_grained;
+            str_copy_to_char_buf(state->files.molecule, sizeof(state->files.molecule), path_to_file);
+            state->files.coarse_grained = param.coarse_grained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
             md_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
-            md_util_system_postprocess(&data->mold.sys, data->mold.sys_alloc, flags);
-            init_molecule_data(data);
+            md_util_system_postprocess(&state->mold.sys, flags);
+            init_system_data(state);
 
-            // @NOTE: Some files contain both atomic coordinates and trajectory
-            if (param.traj_creator) {
-                VIAMD_LOG_INFO("File may also contain trajectory, attempting to load trajectory");
-            } else {
-                return true;
-            }
-        }
-
-        if (param.traj_creator) {
-            if (!data->mold.sys.atom.count) {
+            state->mold.traj = state->mold.sys.trajectory;
+            init_trajectory_data(state);
+        } else if (param.state.flags & LoaderFlag_Trajectory) {
+            if (!state->mold.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
                 return false;
             }
-            interrupt_async_tasks(data);
+            interrupt_async_tasks(state);
+            free_trajectory_data(state);
+            state->animation.frame = 0;
 
-            bool success = load_trajectory_data(data, path_to_file, param.traj_creator, param.traj_loader_flags);
+            success = loader::load(&state->mold.sys, path_to_file, &param.state);
             if (success) {
+                state->mold.traj = state->mold.sys.trajectory;
+                init_trajectory_data(state);
+                str_copy_to_char_buf(state->files.trajectory, sizeof(state->files.trajectory), path_to_file);
                 VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
-                return true;
             } else {
-                if (param.sys_loader && param.traj_creator) {
-                    // Don't record this as an error, as the trajectory may be optional (In case of PDB for example)
-                    return true;
-                }
                 VIAMD_LOG_ERROR("Failed to open trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
         }
     }
 
-    return false;
+    return success;
 }
 
 void load_workspace(ApplicationState* data, str_t filename) {
@@ -726,15 +708,13 @@ void load_workspace(ApplicationState* data, str_t filename) {
     
     data->files.coarse_grained  = new_coarse_grained;
 
-    load::LoaderState loader_state = {};
-    load::init_loader_state(&loader_state, new_molecule_file, data->allocator.frame);
+    loader::State loader_state = {};
+    loader::init(&loader_state, new_molecule_file);
 
     LoadParam param = {};
-    param.file_path = new_molecule_file;
-    param.sys_loader = loader_state.sys_loader;
-    param.traj_creator = loader_state.traj_creator;
+    param.state = loader_state;
+    param.filepath = new_molecule_file;
     param.coarse_grained = new_coarse_grained;
-    param.sys_loader_arg = loader_state.sys_loader_arg;
 
     if (new_molecule_file && load_dataset_from_file(data, param)) {
         str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), new_molecule_file);
@@ -743,10 +723,9 @@ void load_workspace(ApplicationState* data, str_t filename) {
     }
 
     if (new_trajectory_file) {
-        load::init_loader_state(&loader_state, new_trajectory_file, data->allocator.frame);
-        param.sys_loader = 0;
-        param.traj_creator = loader_state.traj_creator;
-        param.file_path = new_trajectory_file;
+        loader::init(&loader_state, new_trajectory_file);
+        param.state = loader_state;
+        param.filepath = new_trajectory_file;
         if (load_dataset_from_file(data, param)) {
             str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), new_trajectory_file);
         }

@@ -1,61 +1,63 @@
 ﻿#pragma once
 
-#include <stdint.h>
 #include <core/md_str.h>
+#include <stdint.h>
 
-struct md_allocator_i;
 struct md_system_t;
-struct md_system_loader_i;
-struct md_trajectory_i;
-struct md_bitfield_t;
 
-typedef bool (*md_traj_attach_fn)(md_system_t* sys, str_t filename, uint32_t flags);
+// This is a stupid dispatch wrapper to select the appropriate loaders for system and trajectories
 
-// @NOTE(Robin): This API is currently a mess.
-
-enum LoaderStateFlag_ {
-    LoaderStateFlag_None = 0,
-    LoaderStateFlag_RequiresDialogue = 1,
+enum LoaderFlag_ {
+    LoaderFlag_None = 0,
+    LoaderFlag_RequiresDialogue = 1,
+    LoaderFlag_System = 2,
+    LoaderFlag_Trajectory = 4,
+    LoaderFlag_DisableCacheWrite = 8,
 };
 
-enum LoadTrajectoryFlag_ {
-    LoadTrajectoryFlag_None = 0,
-    LoadTrajectoryFlag_DisableCacheWrite = 1,
+enum LoaderType_ {
+    LoaderType_None = 0,
+    LoaderType_PDB,
+    LoaderType_GRO,
+    LoaderType_XYZ,
+    LoaderType_XMOL,
+    LoaderType_ARC,
+    LoaderType_CIF,
+    LoaderType_LAMMPSDATA,
+    LoaderType_LAMMPSTRJ,
+    LoaderType_XTC,
+    LoaderType_TRR,
+    LoaderType_DCD,
+#if MD_VLX
+    LoaderType_VLX_OUT,
+    LoaderType_VLX_H5,
+#endif
+    LoaderType_COUNT
 };
 
-typedef uint32_t LoaderStateFlags;
-typedef uint32_t LoadTrajectoryFlags;
+typedef uint32_t LoaderFlags;
+typedef uint32_t LoaderType;
 
-namespace load {
-        // This represents the create callbacks and arguments needed to load a molecule or trajectory from a file.
-    struct LoaderState {		
-		md_system_loader_i*     sys_loader = 0;
-		md_traj_attach_fn       traj_attach = 0;
-        const void*             sys_loader_arg = 0;
-        LoaderStateFlags 		flags = LoaderStateFlag_None;
+namespace loader {
 
-        size_t data_size = 0;
-        void* data_ptr = 0;
+    struct State {		
+		LoaderType  type  = 0;
+        const void* arg   = 0;
+        LoaderFlags flags = LoaderFlag_None;
 	};
 
-    bool init_loader_state(LoaderState* state, str_t filepath, md_allocator_i* alloc);
-    void free_loader_state(LoaderState* state, md_allocator_i* alloc);
+    // The reason here why we don't directly provide prepackaged loaders based on extensions
+    // Is to get a chance to glance into the file and see if we recognize it first.
+    // And perhaps there is also some arguments or options that need to be supplied for the loader.
+    void init(State* state, str_t filepath);
 
-    size_t       loader_count();
-    const str_t* loader_names();
-    const str_t* loader_extensions();
+    bool load(md_system_t* sys, str_t filepath, const State* state);
 
-namespace mol {
-    md_system_loader_i* loader_from_ext(str_t ext);
-}
+    // To help enlist supported loader types
+    const str_t* loader_type_names();
+    const str_t* loader_type_extensions();
+    const LoaderFlags* loader_type_flags();
 
-namespace traj {
-    md_traj_attach_fn attach_fn_from_ext(str_t ext);
-
-    bool attach_file(md_system_t* sys, str_t filename, md_traj_attach_fn fn, LoadTrajectoryFlags flags = LoadTrajectoryFlag_None);
-
-    bool has_recenter_target(md_trajectory_i* traj);
-    bool set_recenter_target(md_trajectory_i* traj, const md_bitfield_t* atom_mask);
-}
+    LoaderType type_from_ext(str_t ext);
 
 }  // namespace load

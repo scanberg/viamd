@@ -418,12 +418,9 @@ struct EvalAtomProperty {
 
 // Loader parameters for loading a system or trajectory, which are passed via the file queue
 struct LoadParam {
-    md_system_loader_i*     sys_loader  = NULL;
-    md_trajectory_creator_fn traj_creator = NULL;
-    str_t file_path = STR_LIT("");
+    loader::State state;
+    str_t filepath = STR_LIT("");
     bool coarse_grained = false;
-    const void* sys_loader_arg = NULL;
-    LoadTrajectoryFlags traj_loader_flags = 0;
 };
 
 // Event Payload when an electronic structure is to be evaluated
@@ -1075,7 +1072,7 @@ void interrupt_async_tasks(ApplicationState* state);
 
 // Dataset loading
 bool load_dataset_from_file(ApplicationState* state, const LoadParam& param);
-void init_molecule_data(ApplicationState* state);
+void init_system_data(ApplicationState* state);
 void init_trajectory_data(ApplicationState* state);
 
 // Workspace

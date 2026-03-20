@@ -183,15 +183,19 @@ static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags
     ASSERT(!file_queue_full(queue));
     int prio = 0;
 
+
     str_t ext;
-    if (extract_ext(&ext, path) && str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
-        prio = 1;
-    } else if (load::mol::loader_from_ext(ext)) {
-        prio = 2;
-    } else if (load::traj::creator_from_ext(ext)) {
-        prio = 3;
-    } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
-        prio = 4;
+    if (extract_ext(&ext, path)) {
+        LoaderType type = loader::type_from_ext(ext);
+        if (str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
+            prio = 1;
+        } else if (type & LoaderFlag_System) {
+            prio = 2;
+        } else if (type & LoaderFlag_Trajectory) {
+            prio = 3;
+        } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
+            prio = 4;
+        }
     } else {
         // Unknown extension
         prio = 5;
@@ -711,26 +715,24 @@ int main(int argc, char** argv) {
                     state.editor.SetCursorPosition(pos);
                 }
             } else {
-                load::LoaderState loader = {};
-                bool success = load::init_loader_state(&loader, e.path, frame_alloc);
-
-                if (!success || (e.flags & FileFlags_ShowDialogue) || (loader.flags & LoaderStateFlag_RequiresDialogue)) {
+                loader::State loader_state = {};
+                loader::init(&loader_state, e.path);
+                    
+                if ((e.flags & FileFlags_ShowDialogue) || (loader_state.flags & LoaderFlag_RequiresDialogue)) {
                     state.load_dataset = LoadDatasetWindowState();
                     str_copy_to_char_buf(state.load_dataset.path_buf, sizeof(state.load_dataset.path_buf), e.path);
                     state.load_dataset.path_changed = true;
                     state.load_dataset.show_window = true;
                     state.load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                } else if (success) {
+                } else {
                     LoadParam param = {};
-                    param.sys_loader  = loader.sys_loader;
-                    param.traj_creator = loader.traj_creator;
-                    param.file_path      = e.path;
+                    param.state          = loader_state;
+                    param.filepath       = e.path;
                     param.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                    param.sys_loader_arg = loader.sys_loader_arg;
-                    param.traj_loader_flags = (e.flags & FileFlags_DisableCacheWrite) ? LoadTrajectoryFlag_DisableCacheWrite : 0;
+                    param.state.flags   |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
                     if (load_dataset_from_file(&state, param)) {
                         state.animation = {};
-                        if (param.sys_loader) {
+                        if (param.state.flags & LoaderFlag_System) {
                             md_bitfield_reset(&state.representation.visibility_mask);
 
                             if (!state.settings.keep_representations) {
@@ -1078,7 +1080,7 @@ int main(int argc, char** argv) {
                         if (md_script_ir_property_count(state.script.eval_ir) > 0) {
                             state.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&state](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;
-								md_trajectory_i* traj = load::traj::get_raw_trajectory(state.mold.traj);
+								md_trajectory_i* traj = state.mold.traj;
                                 md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, traj, frame_beg, frame_end);
                             });
                             
@@ -1114,7 +1116,7 @@ int main(int argc, char** argv) {
                             if (beg_frame != end_frame) {
                                 state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                     (void)thread_num;
-                                    md_trajectory_i* traj = load::traj::get_raw_trajectory(state.mold.traj);
+                                    md_trajectory_i* traj = state.mold.traj;
                                     md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, traj, offset + beg, offset + end);
                                 });
                                 task_system::enqueue_task(state.tasks.evaluate_filt);
@@ -2738,6 +2740,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Operations")) {
+            /*
+            @TODO (Robin): Reimplement this once the new 'cache' is in place
             if (load::traj::has_recenter_target(data->mold.traj)) {
                 if (ImGui::Button("Remove Recenter Target")) {
                     load::traj::set_recenter_target(data->mold.traj, nullptr);
@@ -2745,6 +2749,7 @@ static void draw_main_menu(ApplicationState* data) {
                     data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
             }
+            */
 
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
@@ -2945,9 +2950,10 @@ void draw_load_dataset_window(ApplicationState* data) {
 
     if (ImGui::BeginPopupModal("Load Dataset", &state.show_window)) {
         bool path_invalid = !state.path_is_valid && state.path_buf[0] != '\0';
-        const int    loader_count = (int)load::loader_count();
-        const str_t* loader_ext_str = load::loader_extensions();
-        const str_t* loader_name_str = load::loader_names();
+        const int    loader_count = LoaderType_COUNT;
+        const str_t* loader_ext_str = loader::loader_type_extensions();
+        const str_t* loader_name_str = loader::loader_type_names();
+        const LoaderFlags* loader_flags = loader::loader_type_flags();
 
         if (path_invalid) ImGui::PushInvalid();
         if (ImGui::InputText("##path", state.path_buf, sizeof(state.path_buf))) {
@@ -2989,9 +2995,8 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
         }
 
-
         if (ImGui::BeginCombo("Loader", state.loader_idx > -1 ? loader_name_str[state.loader_idx].ptr : "")) {
-            for (int i = 0; i < loader_count; ++i) {
+            for (int i = 1; i < loader_count; ++i) {
                 const char* str = loader_name_str[i].ptr;
                 if (!str) continue;
                 if (ImGui::Selectable(str, state.loader_idx == i)) {
@@ -3001,17 +3006,14 @@ void draw_load_dataset_window(ApplicationState* data) {
             ImGui::EndCombo();
         }
 
-        str_t cur_ext = {};
-        if (state.loader_idx > -1) {
-            cur_ext = loader_ext_str[state.loader_idx];
-        }
-
         // True if the button should be enabled
-        bool load_enabled = (state.path_is_valid && state.loader_idx > -1);
+        bool load_button_enabled = (state.path_is_valid && state.loader_idx > -1);
+
+        LoaderType   type = state.loader_idx > -1 ? (LoaderType)state.loader_idx : LoaderType_None;
+        LoaderFlags flags = loader_flags[type];
 
         // Draw Options
-        md_system_loader_i* sys_loader = load::mol::loader_from_ext(cur_ext);
-        bool show_cg = state.path_is_valid && sys_loader;
+        bool show_cg = state.path_is_valid && (flags & LoaderFlag_System);
         if (show_cg) {
             ImGui::Checkbox("Coarse Grained", &state.coarse_grained);
             if (ImGui::IsItemHovered()) {
@@ -3019,7 +3021,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
         }
 
-        bool show_lammps_atom_format = state.path_is_valid && sys_loader && (sys_loader == md_lammps_system_loader());
+        bool show_lammps_atom_format = state.path_is_valid && (type == LoaderType_LAMMPSDATA);
         if (show_lammps_atom_format) {
             const char** atom_format_names = md_lammps_atom_format_names();
             const char** atom_format_strings = md_lammps_atom_format_strings();
@@ -3030,7 +3032,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                 state.atom_format_idx = format;
                 strncpy(state.atom_format_buf, atom_format_strings[format], sizeof(state.atom_format_buf));
             }
-            ASSERT(state.atom_format_idx > -1);
+            state.atom_format_idx = CLAMP(state.atom_format_idx, 0, MD_LAMMPS_ATOM_FORMAT_COUNT - 1);
 
             if (ImGui::BeginCombo("Atom Format", state.atom_format_idx > 0 ? atom_format_names[state.atom_format_idx] : "user defined")) {
                 for (int i = 0; i < MD_LAMMPS_ATOM_FORMAT_COUNT; ++i) {
@@ -3047,7 +3049,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                 bool valid = state.atom_format_valid;
                 if (!valid) ImGui::PushInvalid();
                 if (ImGui::InputText("##atom_format", state.atom_format_buf, sizeof(state.atom_format_buf))) {
-                    state.atom_format_valid = md_lammps_validate_atom_format(state.atom_format_buf, state.err_buf, sizeof(state.err_buf));
+                    state.atom_format_valid = md_lammps_validate_atom_format(state.err_buf, sizeof(state.err_buf), state.atom_format_buf);
                 }
                 if (!valid) ImGui::PopInvalid();
                 if (ImGui::IsItemHovered() && !valid) {
@@ -3061,11 +3063,9 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
 
             if (state.atom_format_idx < 0 || (state.atom_format_idx == MD_LAMMPS_ATOM_FORMAT_UNKNOWN && !state.atom_format_valid)) {
-                load_enabled = false;
+                load_button_enabled = false;
             }
         }
-
-        md_trajectory_creator_fn traj_creator = load::traj::creator_from_ext(cur_ext);
 
         enum Action {
             Action_None,
@@ -3074,11 +3074,11 @@ void draw_load_dataset_window(ApplicationState* data) {
         };
         Action action = Action_None;
 
-        if (!load_enabled) ImGui::PushDisabled();
+        if (!load_button_enabled) ImGui::PushDisabled();
         if (ImGui::Button("Load")) {
             action = Action_Load;
         }
-        if (!load_enabled) ImGui::PopDisabled();
+        if (!load_button_enabled) ImGui::PopDisabled();
 
         ImGui::SameLine();
         if (ImGui::Button("Cancel")) {
@@ -3089,19 +3089,17 @@ void draw_load_dataset_window(ApplicationState* data) {
         case Action_Load:
         {
             LoadParam param = {};
-            param.file_path = path;
-            param.sys_loader = sys_loader;
-            param.traj_creator = traj_creator;
+            param.state.type = type;
+            param.state.flags = flags;
+            param.filepath = path;
             param.coarse_grained = state.coarse_grained;
 
-            md_lammps_molecule_loader_arg_t lammps_arg = {};
-            if (sys_loader == md_lammps_system_loader()) {
-                lammps_arg = md_lammps_molecule_loader_arg(state.atom_format_buf);
-                param.sys_loader_arg = &lammps_arg;
+            if (type == LoaderType_LAMMPSDATA) {
+                param.state.arg = state.atom_format_buf;
             }
 
             if (load_dataset_from_file(data, param)) {
-                if (sys_loader && !data->settings.keep_representations) {
+                if ((flags & LoaderFlag_System) && !data->settings.keep_representations) {
                     remove_all_representations(data);
                     create_default_representations(data);
                 }
@@ -3821,6 +3819,8 @@ void draw_context_popup(ApplicationState* state) {
         }
         */
 
+#if 0
+        // @TODO(Robin): Re-enable this once the new cache is in place for shown frames.
         if (state->selection.atom_idx.right_click != -1 && num_frames > 0) {
             if (ImGui::BeginMenu("Recenter Trajectory...")) {
                 const int idx = state->selection.atom_idx.right_click;
@@ -3871,6 +3871,7 @@ void draw_context_popup(ApplicationState* state) {
                 ImGui::EndMenu();
             }
         }
+#endif
         if (ImGui::BeginMenu("Selection")) {
             if (ImGui::MenuItem("Invert")) {
                 md_bitfield_not_inplace(&state->selection.selection_mask, 0, state->mold.sys.atom.count);
