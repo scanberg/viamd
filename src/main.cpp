@@ -181,24 +181,26 @@ static inline bool file_queue_full(const FileQueue* queue) {
 static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None) {
     ASSERT(queue);
     ASSERT(!file_queue_full(queue));
-    int prio = 0;
+    int prio = 5;
 
 
     str_t ext;
     if (extract_ext(&ext, path)) {
         LoaderType type = loader::type_from_ext(ext);
+        LoaderFlags loader_flags = loader::loader_type_flags()[type];
         if (str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
             prio = 1;
-        } else if (type & LoaderFlag_System) {
+        } else if (loader_flags & LoaderFlag_System) {
             prio = 2;
-        } else if (type & LoaderFlag_Trajectory) {
+        } else if (loader_flags & LoaderFlag_Trajectory) {
             prio = 3;
         } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
             prio = 4;
+        } else {
+            flags |= FileFlags_ShowDialogue;
         }
     } else {
         // Unknown extension
-        prio = 5;
         flags |= FileFlags_ShowDialogue;
     }
 
