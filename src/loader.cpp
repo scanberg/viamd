@@ -1,10 +1,6 @@
 ﻿#include "loader.h"
 
-#include <core/md_allocator.h>
-#include <core/md_array.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
-#include <core/md_parse.h>
 
 #include <md_pdb.h>
 #include <md_gro.h>
@@ -16,6 +12,7 @@
 #include <md_dcd.h>
 #include <md_trajectory.h>
 #include <md_util.h>
+
 #if MD_VLX
 #include <md_vlx.h>
 #endif
@@ -23,7 +20,7 @@
 namespace loader {
 
 static const str_t loader_name[LoaderType_COUNT] = {
-        STR_LIT("None"),
+        STR_LIT("Undefined"),
         STR_LIT("Standard Protein Data Bank (pdb)"),
         STR_LIT("Gromacs Structure (gro)"),
         STR_LIT("xyz (xyz)"),
@@ -86,7 +83,7 @@ void init(State* state, str_t filepath) {
     str_t ext = {0};
     if (extract_ext(&ext, filepath)) {
         state->type = type_from_ext(ext);
-        if (state->type != LoaderType_None) {
+        if (state->type != LoaderType_Undefined) {
             state->flags = loader_flags[state->type];
 
             // Perform special check if LAMMPS to see if we can identify the format
@@ -159,16 +156,25 @@ bool load(md_system_t* sys, str_t filepath, const State* state) {
     }
 }
 
-const str_t* loader_type_names() {
-    return loader_name;
+str_t type_name(LoaderType type) {
+	if (type < 0 || type >= LoaderType_COUNT) {
+		type = LoaderType_Undefined;
+    }
+    return loader_name[type];
 }
 
-const str_t* loader_type_extensions() {
-	return loader_ext;
+str_t type_ext(LoaderType type) {
+    if (type < 0 || type >= LoaderType_COUNT) {
+        type = LoaderType_Undefined;
+    }
+    return loader_ext[type];
 }
 
-const LoaderFlags* loader_type_flags() {
-    return loader_flags;
+LoaderFlags type_flags(LoaderType type) {
+    if (type < 0 || type >= LoaderType_COUNT) {
+        type = LoaderType_Undefined;
+    }
+    return loader_flags[type];
 }
 
 LoaderType type_from_ext(str_t ext) {
@@ -177,7 +183,7 @@ LoaderType type_from_ext(str_t ext) {
             return (LoaderType)i;
         }
     }
-    return LoaderType_None;
+    return LoaderType_Undefined;
 }
 
 }  // namespace load

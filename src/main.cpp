@@ -187,7 +187,7 @@ static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags
     str_t ext;
     if (extract_ext(&ext, path)) {
         LoaderType type = loader::type_from_ext(ext);
-        LoaderFlags loader_flags = loader::loader_type_flags()[type];
+        LoaderFlags loader_flags = loader::type_flags(type);
         if (str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
             prio = 1;
         } else if (loader_flags & LoaderFlag_System) {
@@ -614,8 +614,8 @@ int main(int argc, char** argv) {
     task_system::initialize(CLAMP(num_threads, 2, (uint32_t)md_os_num_processors()));
 
     md_gl_initialize();
-    state.mold.gl_shaders                = md_gl_shaders_create(shader_output_snippet);
-    state.mold.gl_shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
+    state.gl.shaders                = md_gl_shaders_create(shader_output_snippet);
+    state.gl.shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -803,8 +803,8 @@ int main(int argc, char** argv) {
                 VIAMD_LOG_INFO("Recompiling shaders and re-initializing volume");
                 postprocessing::initialize(state.gbuffer.width, state.gbuffer.height);
                 volume::initialize();
-                md_gl_shaders_destroy(state.mold.gl_shaders);
-                state.mold.gl_shaders = md_gl_shaders_create(shader_output_snippet);
+                md_gl_shaders_destroy(state.gl.shaders);
+                state.gl.shaders = md_gl_shaders_create(shader_output_snippet);
             }
 
             if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
@@ -2954,11 +2954,8 @@ void draw_load_dataset_window(ApplicationState* data) {
     }
 
     if (ImGui::BeginPopupModal("Load Dataset", &state.show_window)) {
-        bool path_invalid = !state.path_is_valid && state.path_buf[0] != '\0';
-        const int    loader_count = LoaderType_COUNT;
-        const str_t* loader_ext_str = loader::loader_type_extensions();
-        const str_t* loader_name_str = loader::loader_type_names();
-        const LoaderFlags* loader_flags = loader::loader_type_flags();
+        const bool path_invalid = !state.path_is_valid && state.path_buf[0] != '\0';
+        const int  loader_count = LoaderType_COUNT;
 
         if (path_invalid) ImGui::PushInvalid();
         if (ImGui::InputText("##path", state.path_buf, sizeof(state.path_buf))) {
@@ -2988,11 +2985,12 @@ void draw_load_dataset_window(ApplicationState* data) {
             state.path_is_valid = md_path_is_valid(path) && !md_path_is_directory(path);
 
             // Try to assign loader_idx from extension
-            state.loader_idx = -1;
+            state.loader_idx = 0;
             str_t ext;
             if (extract_ext(&ext, path)) {
                 for (int i = 0; i < loader_count; ++i) {
-                    if (str_eq_ignore_case(ext, loader_ext_str[i])) {
+					LoaderType type = (LoaderType)i;
+                    if (str_eq_ignore_case(ext, loader::type_ext(type))) {
                         state.loader_idx = i;
                         break;
                     }
@@ -3000,9 +2998,9 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
         }
 
-        if (ImGui::BeginCombo("Loader", state.loader_idx > -1 ? loader_name_str[state.loader_idx].ptr : "")) {
+        if (ImGui::BeginCombo("Loader", loader::type_name(state.loader_idx).ptr)) {
             for (int i = 1; i < loader_count; ++i) {
-                const char* str = loader_name_str[i].ptr;
+                const char* str = loader::type_name(i).ptr;
                 if (!str) continue;
                 if (ImGui::Selectable(str, state.loader_idx == i)) {
                     state.loader_idx = i;
@@ -3014,8 +3012,8 @@ void draw_load_dataset_window(ApplicationState* data) {
         // True if the button should be enabled
         bool load_button_enabled = (state.path_is_valid && state.loader_idx > -1);
 
-        LoaderType   type = state.loader_idx > -1 ? (LoaderType)(state.loader_idx) : LoaderType_None;
-        LoaderFlags flags = loader_flags[type];
+        LoaderType   type = (LoaderType)(state.loader_idx);
+        LoaderFlags flags = loader::type_flags(type);
 
         // Draw Options
         bool show_cg = state.path_is_valid && (flags & LoaderFlag_System);
@@ -6426,7 +6424,7 @@ static void draw_density_volume_window(ApplicationState* data) {
             }
 
             md_gl_draw_args_t draw_args = {
-                .shaders = data->mold.gl_shaders,
+                .shaders = data->gl.shaders,
                 .draw_operations = {
                     .count = md_array_size(draw_ops),
                     .ops = draw_ops
@@ -8329,7 +8327,7 @@ static void draw_representations_opaque(ApplicationState* data) {
         }
 
         md_gl_draw_args_t args = {
-            .shaders = data->mold.gl_shaders,
+            .shaders = data->gl.shaders,
             .draw_operations = {
                 .count = (uint32_t)md_array_size(draw_ops),
                 .ops = draw_ops,
@@ -8488,7 +8486,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
     }
 
     md_gl_draw_args_t args = {
-        .shaders = data->mold.gl_shaders_lean_and_mean,
+        .shaders = data->gl.shaders_lean_and_mean,
         .draw_operations = {
             .count = md_array_size(draw_ops),
             .ops = draw_ops,

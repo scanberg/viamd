@@ -16,7 +16,7 @@ enum LoaderFlag_ {
 };
 
 enum LoaderType_ {
-    LoaderType_None = 0,
+    LoaderType_Undefined = 0,
     LoaderType_PDB,
     LoaderType_GRO,
     LoaderType_XYZ,
@@ -41,7 +41,7 @@ typedef uint32_t LoaderType;
 namespace loader {
 
     struct State {		
-		LoaderType  type  = 0;
+		LoaderType  type  = LoaderType_Undefined;
         const void* arg   = 0;
         LoaderFlags flags = LoaderFlag_None;
 	};
@@ -53,10 +53,10 @@ namespace loader {
 
     bool load(md_system_t* sys, str_t filepath, const State* state);
 
-    // To help enlist supported loader types
-    const str_t* loader_type_names();
-    const str_t* loader_type_extensions();
-    const LoaderFlags* loader_type_flags();
+    // To help enlist supported loader type
+    str_t       type_name(LoaderType type);
+    str_t       type_ext(LoaderType type);
+    LoaderFlags type_flags(LoaderType type);
 
     LoaderType type_from_ext(str_t ext);
 

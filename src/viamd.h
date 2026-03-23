@@ -269,8 +269,8 @@ struct LoadDatasetWindowState {
     bool show_window = false;
     bool show_file_dialog = false;
     bool atom_format_valid = false;
-    int  loader_idx = -1;
-    int  atom_format_idx = -1;
+    int  loader_idx = 0;
+    int  atom_format_idx = 0;
 };
 
 // Hint flags for operations to be performed for the files
@@ -561,11 +561,15 @@ struct ApplicationState {
         str_t path_to_file = {};
     } screenshot;
 
+    struct {
+        md_gl_shaders_t shaders = {};
+        md_gl_shaders_t shaders_lean_and_mean = {};
+    } gl;
+
     // --- MDLIB DATA ---
     struct {
         md_allocator_i*     sys_alloc = nullptr;
-        md_gl_shaders_t     gl_shaders = {};
-        md_gl_shaders_t     gl_shaders_lean_and_mean = {};
+
         md_gl_mol_t         gl_mol = {};
 #if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};

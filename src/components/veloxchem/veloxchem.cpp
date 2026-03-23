@@ -4044,7 +4044,7 @@ struct VeloxChem : viamd::EventHandler {
                 draw_op.rep = gl_rep;
 
                 md_gl_draw_args_t draw_args = {
-                    .shaders = state.mold.gl_shaders,
+                    .shaders = state.gl.shaders,
                     .draw_operations = {
                         .count = 1,
                         .ops = &draw_op
@@ -5524,7 +5524,7 @@ struct VeloxChem : viamd::EventHandler {
                     md_gl_draw(&draw_args);
                 };
 
-                draw_rep(nto.gl_rep, state.mold.gl_shaders, view_mat, proj_mat);
+                draw_rep(nto.gl_rep, state.gl.shaders, view_mat, proj_mat);
 
                 glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
                 glClearColor(1, 1, 1, 0);
@@ -5556,7 +5556,7 @@ struct VeloxChem : viamd::EventHandler {
 
                         glStencilFunc(GL_GREATER, 0x02, 0xFF);
                         glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-                        draw_rep(nto.gl_rep, state.mold.gl_shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Selected);
+                        draw_rep(nto.gl_rep, state.gl.shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Selected);
 
                         glDisable(GL_DEPTH_TEST);
 
@@ -5585,7 +5585,7 @@ struct VeloxChem : viamd::EventHandler {
 
                         glStencilFunc(GL_GREATER, 0x02, 0xFF);
                         glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-                        draw_rep(nto.gl_rep, state.mold.gl_shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Highlighted);
+                        draw_rep(nto.gl_rep, state.gl.shaders_lean_and_mean, view_mat, proj_mat, AtomBit_Highlighted);
 
                         glDisable(GL_DEPTH_TEST);
 
