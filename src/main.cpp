@@ -589,7 +589,7 @@ int main(int argc, char** argv) {
         ApplicationState* state = (ApplicationState*)user_data;
         ASSERT(state);
 
-        for (int i = 0; i < num_files; ++i) {
+        for (size_t i = 0; i < num_files; ++i) {
             file_queue_push(&state->file_queue, file_paths[i], FileFlags_None);
         }
     };
@@ -2181,27 +2181,30 @@ static void interpolate_system_state(ApplicationState* state) {
                 break;
             }
             case InterpolationMode::CubicSpline: {
-                const md_gl_secondary_structure_t ss_coil = { 0,0 };
-                const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
-
+                
                 for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };
-
+                    
                     md_gl_secondary_structure_t ss_gl[4] = {
                         md_gl_secondary_structure_convert(ss[0]),
                         md_gl_secondary_structure_convert(ss[1]),
                         md_gl_secondary_structure_convert(ss[2]),
                         md_gl_secondary_structure_convert(ss[3]),
                     };
+                    
+                    
+                    // Cleanup isolated coils temporally to reduce noise during transitions.
+                    // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
+                    // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
+                    
+                    #if 0
+                    const md_gl_secondary_structure_t ss_coil = { 0,0 };
+                    const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
 
                     auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
                         return a.helix == b.helix && a.sheet == b.sheet;
                     };
 
-                    // Cleanup isolated coils temporally to reduce noise during transitions.
-                    // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
-                    // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
-#if 0
                     if (is_eq(ss_gl[1], ss_coil)) {
                         if (is_eq(ss_gl[0], ss_gl[2]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[1], ss_gl[0])) {
                             ss_gl[1] = ss_gl[0];
@@ -3515,8 +3518,8 @@ void draw_context_popup(ApplicationState* state) {
 
     if (!state->mold.sys.atom.count) return;
 
+    //const size_t num_frames = md_trajectory_num_frames(state->mold.traj);
     const size_t sss_count = single_selection_sequence_count(&state->selection.single_selection_sequence);
-    const size_t num_frames = md_trajectory_num_frames(state->mold.traj);
     const size_t num_atoms_selected = md_bitfield_popcount(&state->selection.selection_mask);
 
 #if 0
@@ -4868,7 +4871,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
         // Filter out temporal display properties
         int num_temp_props = 0;
-        for (int i = 0; i < md_array_size(data->display_properties); ++i) {
+        for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
             if (data->display_properties[i].type == DisplayProperty::Type_Temporal) {
                 num_temp_props += 1;
             }
@@ -6105,7 +6108,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                 ImGui::Checkbox("Iso Surfaces", &data->density_volume.iso.enabled);
                 if (data->density_volume.iso.enabled) {
                     ImGui::Indent();
-                    for (int i = 0; i < data->density_volume.iso.count; ++i) {
+                    for (int i = 0; i < (int)data->density_volume.iso.count; ++i) {
                         ImGui::PushID(i);
                         ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
                         if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -6115,7 +6118,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                         ImGui::ColorEdit4Minimal("##Color", data->density_volume.iso.colors[i].elem);
                         ImGui::SameLine();
                         if (ImGui::DeleteButton(ICON_FA_XMARK)) {
-                            for (int j = i; j < data->density_volume.iso.count - 1; ++j) {
+                            for (int j = i; j < (int)data->density_volume.iso.count - 1; ++j) {
                                 data->density_volume.iso.colors[j] = data->density_volume.iso.colors[j+1];
                                 data->density_volume.iso.values[j] = data->density_volume.iso.values[j+1];
                             }
@@ -6123,7 +6126,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                         }
                         ImGui::PopID();
                     }
-                    if ((data->density_volume.iso.count < (int)ARRAY_SIZE(data->density_volume.iso.values)) && ImGui::Button("Add", button_size)) {
+                    if ((data->density_volume.iso.count < ARRAY_SIZE(data->density_volume.iso.values)) && ImGui::Button("Add", button_size)) {
                         size_t idx = data->density_volume.iso.count++;
                         data->density_volume.iso.values[idx] = 0.1f;
                         data->density_volume.iso.colors[idx] = { 0.2f, 0.1f, 0.9f, 1.0f };
@@ -7320,7 +7323,7 @@ void draw_structure_export_window(ApplicationState* data) {
 
         //ImGui::PushItemWidth(200);
 
-        struct_exp.selected_atom_filter = CLAMP(struct_exp.selected_atom_filter, 0, ARRAY_SIZE(atom_mask_options) - 1);
+        struct_exp.selected_atom_filter = CLAMP(struct_exp.selected_atom_filter, 0, (int)ARRAY_SIZE(atom_mask_options) - 1);
         ImGui::Combo("Atoms to Export", &struct_exp.selected_atom_filter, atom_mask_options, (int)ARRAY_SIZE(atom_mask_options));
 
         if (struct_exp.selected_atom_filter == 2) { // Query
@@ -7370,8 +7373,8 @@ void draw_structure_export_window(ApplicationState* data) {
             ImGui::Combo("Frames to Export", &struct_exp.selected_traj_filter, frame_mask_options, (int)ARRAY_SIZE(frame_mask_options));
         }
 
-        struct_exp.selected_file_format = CLAMP(struct_exp.selected_file_format, 0, ARRAY_SIZE(file_formats) - 1);
-        ImGui::Combo("File Format", &struct_exp.selected_file_format, file_formats, ARRAY_SIZE(file_formats));
+        struct_exp.selected_file_format = CLAMP(struct_exp.selected_file_format, 0, (int)ARRAY_SIZE(file_formats) - 1);
+        ImGui::Combo("File Format", &struct_exp.selected_file_format, file_formats, (int)ARRAY_SIZE(file_formats));
 
         //ImGui::PopItemWidth();
 

@@ -35,10 +35,12 @@ enum ColorMode {
     ColorMode_Count,
 };
 
+/*
 static const char* colormode_lbl[] = {
     "Uniform",
     "Colormap",
 };
+*/
 
 struct Shapespace : viamd::EventHandler {
     char input[256] = "all";

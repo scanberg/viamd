@@ -41,58 +41,6 @@ void main() {
 }
 )");
 
-static constexpr str_t f_shader_src_median = STR_LIT(
-R"(
-#version 410 core
-
-uniform sampler2D T;
-
-out vec4 out_frag;
-
-// Change these 2 defines to change precision
-#define vec vec3
-
-#define s2(a, b)				temp = a; a = min(a, b); b = max(temp, b);
-#define mn3(a, b, c)			s2(a, b); s2(a, c);
-#define mx3(a, b, c)			s2(b, c); s2(a, c);
-
-#define mnmx3(a, b, c)			mx3(a, b, c); s2(a, b);                                   // 3 exchanges
-#define mnmx4(a, b, c, d)		s2(a, b); s2(c, d); s2(a, c); s2(b, d);                   // 4 exchanges
-#define mnmx5(a, b, c, d, e)	s2(a, b); s2(c, d); mn3(a, c, e); mx3(b, d, e);           // 6 exchanges
-#define mnmx6(a, b, c, d, e, f) s2(a, d); s2(b, e); s2(c, f); mn3(a, b, c); mx3(d, e, f); // 7 exchanges
-
-void main() {
-
-  vec4 col = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 0,  0), 0);
-
-  vec v[6];
-
-  v[0] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2(-1, -1), 0).rgb;
-  v[1] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 0, -1), 0).rgb;
-  v[2] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 1, -1), 0).rgb;
-  v[3] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2(-1,  0), 0).rgb;
-  v[4] = col.rgb;
-  v[5] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 1,  0), 0).rgb;
-
-  // Starting with a subset of size 6, remove the min and max each time
-  vec temp;
-  mnmx6(v[0], v[1], v[2], v[3], v[4], v[5]);
-
-  v[5] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2(-1,  1), 0).rgb;
-
-  mnmx5(v[1], v[2], v[3], v[4], v[5]);
-
-  v[5] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 0,  1), 0).rgb;
-
-  mnmx4(v[2], v[3], v[4], v[5]);
-
-  v[5] = texelFetch(T, ivec2(gl_FragCoord.xy) + ivec2( 1,  1), 0).rgb;
-
-  mnmx3(v[3], v[4], v[5]);
-  out_frag = vec4(v[4], col.a);
-}
-)");
-
 namespace volume {
 
 static struct {
@@ -114,7 +62,6 @@ static struct {
         GLuint dvr_only = 0;
         GLuint iso_only = 0;
         GLuint dvr_and_iso = 0;
-        GLuint median = 0;
     } program;
 } gl;
 

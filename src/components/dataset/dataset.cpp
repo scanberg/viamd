@@ -143,16 +143,15 @@ struct Dataset : viamd::EventHandler {
 
         const md_system_t& sys = data.mold.sys;
 
-        size_t atom_type_count  = md_system_atom_type_count(&sys);
-        size_t atom_count       = md_system_atom_count(&sys);
-        size_t comp_count       = md_system_component_count(&sys);
-        size_t inst_count       = md_system_instance_count(&sys);
-		size_t entity_count     = md_system_entity_count(&sys);
+        size_t type_count = md_system_atom_type_count(&sys);
+        size_t atom_count = md_system_atom_count(&sys);
+        size_t comp_count = md_system_component_count(&sys);
+        size_t inst_count = md_system_instance_count(&sys);
 
         if (atom_count == 0) return;
 
         // Map atom types into dataset items
-        for (size_t i = 0; i < atom_type_count; ++i) {
+        for (size_t i = 0; i < type_count; ++i) {
             str_t atom_type_name = md_atom_type_name(&sys.atom.type, i);
             DatasetItem item = { .key = i };
             snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(atom_type_name));
@@ -167,7 +166,7 @@ struct Dataset : viamd::EventHandler {
         }
         
         // Calculate fractions
-        for (size_t i = 0; i < atom_type_count; ++i) {
+        for (size_t i = 0; i < type_count; ++i) {
             atom_types[i].fraction = atom_types[i].count / (float)atom_count;
         }
 
@@ -223,8 +222,8 @@ struct Dataset : viamd::EventHandler {
             for (size_t i = 0; i < inst_count; ++i) {
                 md_array_shrink(sequence, 0);
                 md_urange_t range = md_instance_component_range(&sys.instance, i);
-                for (int j = range.beg; j < range.end; ++j) {
-                    int res_type_idx = comp_idx_type[j];
+                for (uint32_t j = range.beg; j < range.end; ++j) {
+                    int res_type_idx = (int)comp_idx_type[j];
                     md_array_push(sequence, res_type_idx, temp_arena);
                 }
 
@@ -471,18 +470,9 @@ struct Dataset : viamd::EventHandler {
 
             static bool use_short_labels = true;
 
-            bool has_nucleic_acids = false;
-            bool has_amino_acids = false;
-
             size_t num_entities   = md_system_entity_count(&data.mold.sys);
             size_t num_instances  = md_system_instance_count(&data.mold.sys);
 			size_t num_atom_types = md_system_atom_type_count(&data.mold.sys);
-
-            for (size_t i = 0; i < num_entities; ++i) {
-                md_flags_t entity_flags = md_entity_flags(&data.mold.sys.entity, i);
-                if (entity_flags & MD_FLAG_AMINO_ACID) has_amino_acids = true;
-                if (entity_flags & MD_FLAG_NUCLEOTIDE) has_nucleic_acids = true;
-            }
 
             ImGui::Checkbox("Use single letter codes for amino and nucleic acids", &use_short_labels);
 
@@ -781,6 +771,7 @@ struct Dataset : viamd::EventHandler {
                     // @NOTE: Only the color within representations needs to be updated, not the filter.
                     flag_all_representations_as_dirty(&data);
                 }
+                (void)mass_changed; // Currently mass is not used for rendering, but we track changes in case it's used for other purposes in the future
             }
 
 

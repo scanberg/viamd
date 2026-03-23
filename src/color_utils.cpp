@@ -104,9 +104,6 @@ void color_atoms_uniform(uint32_t* colors, size_t count, vec4_t color, const md_
     }
 }
 
-const float chroma = 0.9f;
-const float luminance = 1.0f;
-
 void color_atoms_cpk(uint32_t* colors, size_t count, const md_system_t& sys) {
     for (size_t i = 0; i < count; i++) {
         md_atomic_number_t z = md_atom_atomic_number(&sys.atom, i);
