@@ -234,7 +234,7 @@ static void visualize_payload(ApplicationState* state, const md_script_vis_paylo
     md_script_vis_ctx_t ctx = {
         .ir   = state->script.eval_ir,
         .mol  = &state->mold.sys,
-        .traj = state->mold.traj,
+        .traj = state->mold.sys.trajectory,
     };
     state->script.vis = {0};
     md_script_vis_init(&state->script.vis, frame_alloc);
@@ -250,7 +250,7 @@ static void visualize_str(ApplicationState* state, str_t str, md_script_vis_flag
     md_script_vis_ctx_t ctx = {
         .ir   = state->script.eval_ir,
         .mol  = &state->mold.sys,
-        .traj = state->mold.traj,
+        .traj = state->mold.sys.trajectory,
     };
     state->script.vis = {0};
     md_script_vis_init(&state->script.vis, frame_alloc);
@@ -677,7 +677,7 @@ int main(int argc, char** argv) {
         ImGui::CreateDockspace();
 #endif
 
-        const size_t num_frames  = md_trajectory_num_frames(state.mold.traj);
+        const size_t num_frames  = md_trajectory_num_frames(state.mold.sys.trajectory);
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
         const double   max_frame = (double)last_frame;
 
@@ -899,7 +899,7 @@ int main(int argc, char** argv) {
 
         if (state.mold.interpolate_system_state) {
 			state.mold.interpolate_system_state = false;
-            if (state.mold.traj) {
+            if (state.mold.sys.trajectory) {
                 PUSH_CPU_SECTION("Interpolate System State")
                 interpolate_system_state(&state);
                 POP_CPU_SECTION()
@@ -965,7 +965,7 @@ int main(int argc, char** argv) {
                     }
                     
                     if (src_str) {
-                        md_script_ir_compile_from_source(state.script.ir, src_str, &state.mold.sys, state.mold.traj, NULL);
+                        md_script_ir_compile_from_source(state.script.ir, src_str, &state.mold.sys, state.mold.sys.trajectory, NULL);
 
                         const size_t num_errors = md_script_ir_num_errors(state.script.ir);
                         const md_log_token_t* errors = md_script_ir_errors(state.script.ir);
@@ -1082,7 +1082,7 @@ int main(int argc, char** argv) {
                         if (md_script_ir_property_count(state.script.eval_ir) > 0) {
                             state.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&state](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;
-								md_trajectory_i* traj = state.mold.traj;
+								md_trajectory_i* traj = state.mold.sys.trajectory;
                                 md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, traj, frame_beg, frame_end);
                             });
                             
@@ -1112,13 +1112,13 @@ int main(int argc, char** argv) {
                         md_script_eval_clear_data(state.script.filt_eval);
 
                         if (md_script_ir_property_count(state.script.eval_ir) > 0) {
-                            const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(state.mold.traj);
+                            const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(state.mold.sys.trajectory);
                             const uint32_t beg_frame = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, traj_frames-1);
                             const uint32_t end_frame = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
                             if (beg_frame != end_frame) {
                                 state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                     (void)thread_num;
-                                    md_trajectory_i* traj = state.mold.traj;
+                                    md_trajectory_i* traj = state.mold.sys.trajectory;
                                     md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, traj, offset + beg, offset + end);
                                 });
                                 task_system::enqueue_task(state.tasks.evaluate_filt);
@@ -1690,7 +1690,7 @@ static void update_density_volume(ApplicationState* data) {
                 md_script_vis_ctx_t ctx = {
                     .ir = data->script.eval_ir,
                     .mol = &data->mold.sys,
-                    .traj = data->mold.traj,
+                    .traj = data->mold.sys.trajectory,
                 };
                 result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_SDF);
             }
@@ -1786,7 +1786,7 @@ static void update_density_volume(ApplicationState* data) {
 static void interpolate_system_state(ApplicationState* state) {
     ASSERT(state);
     auto& sys = state->mold.sys;
-    const auto& traj = state->mold.traj;
+    const auto& traj = state->mold.sys.trajectory;
 
     if (!sys.atom.count || !md_trajectory_num_frames(traj)) return;
 
@@ -1880,7 +1880,7 @@ static void interpolate_system_state(ApplicationState* state) {
         case InterpolationMode::Nearest: {
             task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"),[data = &payload]() {
                 md_trajectory_frame_header_t header;
-                md_trajectory_load_frame(data->state->mold.traj, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
+                md_trajectory_load_frame(data->state->mold.sys.trajectory, data->nearest_frame, &header, data->dst_x, data->dst_y, data->dst_z);
                 MEMCPY(&data->unitcell, &header.unitcell, sizeof(md_unitcell_t));
             });
 
@@ -1891,7 +1891,7 @@ static void interpolate_system_state(ApplicationState* state) {
             task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 2, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 for (uint32_t i = range_beg; i < range_end; ++i) {
-                    md_trajectory_load_frame(data->state->mold.traj, data->frames[i+1], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
+                    md_trajectory_load_frame(data->state->mold.sys.trajectory, data->frames[i+1], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
                 }
             });
 
@@ -1930,7 +1930,7 @@ static void interpolate_system_state(ApplicationState* state) {
             task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frame"), 4, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 for (uint32_t i = range_beg; i < range_end; ++i) {
-                    md_trajectory_load_frame(data->state->mold.traj, data->frames[i], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
+                    md_trajectory_load_frame(data->state->mold.sys.trajectory, data->frames[i], &data->headers[i], data->src_x[i], data->src_y[i], data->src_z[i]);
                 }
             });
 
@@ -2747,9 +2747,9 @@ static void draw_main_menu(ApplicationState* data) {
         if (ImGui::BeginMenu("Operations")) {
             /*
             @TODO (Robin): Reimplement this once the new 'cache' is in place
-            if (load::traj::has_recenter_target(data->mold.traj)) {
+            if (load::traj::has_recenter_target(data->mold.sys.trajectory)) {
                 if (ImGui::Button("Remove Recenter Target")) {
-                    load::traj::set_recenter_target(data->mold.traj, nullptr);
+                    load::traj::set_recenter_target(data->mold.sys.trajectory, nullptr);
                     data->mold.interpolate_system_state = true;
                     data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
@@ -2829,7 +2829,7 @@ static void draw_main_menu(ApplicationState* data) {
                         float* z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
                         md_trajectory_frame_header_t frame_header;
 
-                        if (!md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, x, y, z)) {
+                        if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
                             MD_LOG_DEBUG("Failed to extract frame data");
                         } else {
                             MD_LOG_DEBUG("RECALCULATING BONDS");
@@ -3520,7 +3520,7 @@ void draw_context_popup(ApplicationState* state) {
 
     if (!state->mold.sys.atom.count) return;
 
-    //const size_t num_frames = md_trajectory_num_frames(state->mold.traj);
+    //const size_t num_frames = md_trajectory_num_frames(state->mold.sys.trajectory);
     const size_t sss_count = single_selection_sequence_count(&state->selection.single_selection_sequence);
     const size_t num_atoms_selected = md_bitfield_popcount(&state->selection.selection_mask);
 
@@ -3869,7 +3869,7 @@ void draw_context_popup(ApplicationState* state) {
                 if (!md_bitfield_empty(&mask)) {
                     md_bitfield_copy(&state->selection.highlight_mask, &mask);
                     if (apply) {
-                        load::traj::set_recenter_target(state->mold.traj, &mask);
+                        load::traj::set_recenter_target(state->mold.sys.trajectory, &mask);
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                         ImGui::CloseCurrentPopup();
@@ -4015,7 +4015,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
 static void draw_animation_window(ApplicationState* data) {
     ASSERT(data);
-    int num_frames = (int)md_trajectory_num_frames(data->mold.traj);
+    int num_frames = (int)md_trajectory_num_frames(data->mold.sys.trajectory);
     if (num_frames == 0) return;
 
     ASSERT(data->timeline.x_values);
@@ -4024,7 +4024,7 @@ static void draw_animation_window(ApplicationState* data) {
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::Text("Num Frames: %i", num_frames);
-        md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
+        md_unit_t time_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
         double t   = frame_to_time(data->animation.frame, *data);
         double min = data->timeline.x_values[0];
         double max = data->timeline.x_values[num_frames - 1];
@@ -4759,7 +4759,7 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
             int frame_idx = CLAMP((int)(time_to_frame(time, data.timeline.x_values) + 0.5), 0, (int)md_array_size(data.timeline.x_values)-1);
             len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "time: %.2f", time);
 
-            md_unit_t time_unit = md_trajectory_time_unit(data.mold.traj);
+            md_unit_t time_unit = md_trajectory_time_unit(data.mold.sys.trajectory);
             if (!md_unit_empty(time_unit)) {
                 char unit_buf[32];
                 md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
@@ -4970,7 +4970,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
             char x_label[64] = "Frame";
             char x_unit_str[32] = "";
-            md_unit_t x_unit = md_trajectory_time_unit(data->mold.traj);
+            md_unit_t x_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
             if (!md_unit_empty(x_unit)) {
                 md_unit_print(x_unit_str, sizeof(x_unit_str), x_unit);
                 snprintf(x_label, sizeof(x_label), "Time (%s)", x_unit_str);
@@ -6728,7 +6728,7 @@ static void draw_script_editor_window(ApplicationState* state) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
-        const bool valid = md_script_ir_valid(state->script.ir) && md_trajectory_num_frames(state->mold.traj) > 0;  
+        const bool valid = md_script_ir_valid(state->script.ir) && md_trajectory_num_frames(state->mold.sys.trajectory) > 0;  
         if (!valid) ImGui::PushDisabled();
         if (ImGui::Button(btn_text, btn_size)) {
             eval = true;
@@ -6895,7 +6895,7 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
     mol.atom.y = coords + stride * 1;
     mol.atom.z = coords + stride * 2;
     
-    if (!md_trajectory_load_frame(data.mold.traj, 0, NULL, mol.atom.x, mol.atom.y, mol.atom.z)) {
+    if (!md_trajectory_load_frame(data.mold.sys.trajectory, 0, NULL, mol.atom.x, mol.atom.y, mol.atom.z)) {
         return false;
     }
 
@@ -6908,7 +6908,7 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
         md_script_vis_ctx_t ctx = {
             .ir = data.script.eval_ir,
             .mol = &data.mold.sys,
-            .traj = data.mold.traj,
+            .traj = data.mold.sys.trajectory,
         };
         result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF);
     }
@@ -7123,8 +7123,8 @@ static void draw_property_export_window(ApplicationState* data) {
                     if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                         str_t out_str = {};
                         if (dp.type == DisplayProperty::Type_Temporal) {
-                            const double* traj_times = md_trajectory_frame_times(data->mold.traj);
-                            const size_t  num_frames = md_trajectory_num_frames(data->mold.traj);
+                            const double* traj_times = md_trajectory_frame_times(data->mold.sys.trajectory);
+                            const size_t  num_frames = md_trajectory_num_frames(data->mold.sys.trajectory);
                             md_array(float) time = md_array_create(float, num_frames, alloc);
                             for (size_t i = 0; i < num_frames; ++i) {
                                 time[i] = (float)traj_times[i];
@@ -7137,7 +7137,7 @@ static void draw_property_export_window(ApplicationState* data) {
                                 y_label = str_printf(alloc, "%s (%s)", dp.label, dp.unit_str);
                             }
 
-                            md_unit_t time_unit = md_trajectory_time_unit(data->mold.traj);
+                            md_unit_t time_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
                             if (!md_unit_empty(time_unit)) {
                                 char time_buf[64];
                                 size_t len = md_unit_print(time_buf, sizeof(time_buf), time_unit);
@@ -7302,7 +7302,7 @@ void draw_structure_export_window(ApplicationState* data) {
         defer { md_vm_arena_temp_end(temp); };
 
         const md_system_t* sys = &data->mold.sys;
-        const md_trajectory_i* traj = data->mold.traj;
+        const md_trajectory_i* traj = data->mold.sys.trajectory;
         auto& struct_exp = data->structure_export;
 
         static const char* atom_mask_options[] = {

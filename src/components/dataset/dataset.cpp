@@ -459,8 +459,8 @@ struct Dataset : viamd::EventHandler {
 
             if (data.files.trajectory[0] != '\0') {
                 ImGui::Text("Trajectory data: %s", data.files.trajectory);
-                ImGui::Text("Num frames:    %9zu", md_trajectory_num_frames(data.mold.traj));
-                ImGui::Text("Num atoms:     %9zu", md_trajectory_num_atoms(data.mold.traj));
+                ImGui::Text("Num frames:    %9zu", md_trajectory_num_frames(data.mold.sys.trajectory));
+                ImGui::Text("Num atoms:     %9zu", md_trajectory_num_atoms(data.mold.sys.trajectory));
                 ImGui::Separator();
             }
 

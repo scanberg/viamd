@@ -651,7 +651,7 @@ struct Ramachandran : viamd::EventHandler {
 
     void update(ApplicationState& state) {
         if (show_window && state.mold.sys.protein_backbone.segment.count > 0) {
-            const size_t num_frames = md_trajectory_num_frames(state.mold.traj);
+            const size_t num_frames = md_trajectory_num_frames(state.mold.sys.trajectory);
             if (num_frames > 0) {
                 if (full_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
                     if (!task_system::task_is_running(compute_density_full)) {

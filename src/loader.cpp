@@ -73,6 +73,10 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
         LoaderFlag_Trajectory,                      // XTC
         LoaderFlag_Trajectory,                      // TRR
         LoaderFlag_Trajectory,                      // DCD
+#if MD_VLX
+        LoaderFlag_System,                          // Veloxchem (out)
+        LoaderFlag_System,                          // Veloxchem (h5)
+#endif
 };
 
 void init(State* state, str_t filepath) {

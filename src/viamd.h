@@ -571,7 +571,6 @@ struct ApplicationState {
         md_gfx_handle_t     gfx_structure = {};
 #endif
         md_system_t         sys = {};
-        md_trajectory_i*    traj = nullptr;
 
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};

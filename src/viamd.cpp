@@ -239,9 +239,9 @@ void interrupt_async_tasks(ApplicationState* state) {
 void free_trajectory_data(ApplicationState* state) {
     ASSERT(state);
 
-    if (state->mold.traj) {
-        md_trajectory_free(state->mold.traj);
-        state->mold.traj = nullptr;
+    if (state->mold.sys.trajectory) {
+        md_trajectory_free(state->mold.sys.trajectory);
+        state->mold.sys.trajectory = nullptr;
     }
     state->files.trajectory[0] = '\0';
 
@@ -253,12 +253,12 @@ void free_trajectory_data(ApplicationState* state) {
 }
 
 void init_trajectory_data(ApplicationState* data) {
-    size_t num_frames = md_trajectory_num_frames(data->mold.traj);
+    size_t num_frames = md_trajectory_num_frames(data->mold.sys.trajectory);
     if (num_frames > 0) {
         size_t min_frame = 0;
         size_t max_frame = num_frames - 1;
         md_trajectory_header_t header;
-        md_trajectory_get_header(data->mold.traj, &header);
+        md_trajectory_get_header(data->mold.sys.trajectory, &header);
 
         double min_time = header.frame_times[0];
         double max_time = header.frame_times[num_frames - 1];
@@ -269,14 +269,14 @@ void init_trajectory_data(ApplicationState* data) {
 
         md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
         for (size_t i = 0; i < num_frames; ++i) {
-            data->timeline.x_values[i] = header.frame_times[i];
+            data->timeline.x_values[i] = (float)header.frame_times[i];
         }
 
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
         md_trajectory_frame_header_t frame_header;
-        md_trajectory_load_frame(data->mold.traj, frame_idx, &frame_header, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z);
+        md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z);
         data->mold.sys.unitcell = frame_header.unitcell;
 
         if (data->mold.sys.protein_backbone.segment.count > 0) {
@@ -297,7 +297,7 @@ void init_trajectory_data(ApplicationState* data) {
                 (void)thread_num;
                 // Create copy here of molecule since we use the full structure as input
                 md_system_t sys = data->mold.sys;
-                md_trajectory_i* traj = data->mold.traj;
+                md_trajectory_i* traj = data->mold.sys.trajectory;
 
                 md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
                 defer { md_vm_arena_destroy(temp_arena); };
@@ -463,7 +463,7 @@ bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
             md_util_system_postprocess(&state->mold.sys, flags);
             init_system_data(state);
 
-            state->mold.traj = state->mold.sys.trajectory;
+            state->mold.sys.trajectory = state->mold.sys.trajectory;
             init_trajectory_data(state);
         } else if (param.state.flags & LoaderFlag_Trajectory) {
             if (!state->mold.sys.atom.count) {
@@ -476,7 +476,7 @@ bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
 
             success = loader::load(&state->mold.sys, path_to_file, &param.state);
             if (success) {
-                state->mold.traj = state->mold.sys.trajectory;
+                state->mold.sys.trajectory = state->mold.sys.trajectory;
                 init_trajectory_data(state);
                 str_copy_to_char_buf(state->files.trajectory, sizeof(state->files.trajectory), path_to_file);
                 VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
@@ -1072,7 +1072,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                         md_script_vis_ctx_t ctx = {
                             .ir = state->script.eval_ir,
                             .mol = &state->mold.sys,
-                            .traj = state->mold.traj,
+                            .traj = state->mold.sys.trajectory,
                         };
                         result = md_script_vis_eval_payload(&vis, rep->prop->vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS);
                     }

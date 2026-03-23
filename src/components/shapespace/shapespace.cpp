@@ -356,7 +356,7 @@ struct Shapespace : viamd::EventHandler {
                 joined_bitfield = {0};
                 md_bitfield_init(&joined_bitfield, arena);
 
-				md_trajectory_i* traj = app_state->mold.traj;
+				md_trajectory_i* traj = app_state->mold.sys.trajectory;
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
@@ -449,7 +449,7 @@ struct Shapespace : viamd::EventHandler {
             defer { md_arena_allocator_destroy(temp_arena); };
 
             // @TODO: add unit to time (if available)
-            md_unit_t time_unit = md_trajectory_time_unit(app_state->mold.traj);
+            md_unit_t time_unit = md_trajectory_time_unit(app_state->mold.sys.trajectory);
 
             str_t x_label = STR_LIT("Frame");
             if (!md_unit_empty(time_unit)) {
