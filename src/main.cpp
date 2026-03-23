@@ -3014,7 +3014,7 @@ void draw_load_dataset_window(ApplicationState* data) {
         // True if the button should be enabled
         bool load_button_enabled = (state.path_is_valid && state.loader_idx > -1);
 
-        LoaderType   type = state.loader_idx > -1 ? (LoaderType)state.loader_idx : LoaderType_None;
+        LoaderType   type = state.loader_idx > -1 ? (LoaderType)(state.loader_idx) : LoaderType_None;
         LoaderFlags flags = loader_flags[type];
 
         // Draw Options
@@ -3035,7 +3035,8 @@ void draw_load_dataset_window(ApplicationState* data) {
                 // Try to determine format from file
                 md_lammps_atom_format_t format = md_lammps_atom_format_from_file(path);
                 state.atom_format_idx = format;
-                strncpy(state.atom_format_buf, atom_format_strings[format], sizeof(state.atom_format_buf));
+				const char* format_str = atom_format_strings[format];
+                strncpy(state.atom_format_buf, format_str, sizeof(state.atom_format_buf));
             }
             state.atom_format_idx = CLAMP(state.atom_format_idx, 0, MD_LAMMPS_ATOM_FORMAT_COUNT - 1);
 
@@ -3044,7 +3045,8 @@ void draw_load_dataset_window(ApplicationState* data) {
                     if (ImGui::Selectable(i > 0 ? atom_format_names[i] : "user defined", state.atom_format_idx == i)) {
                         state.atom_format_idx = i;
                         int source_idx = i > 0 ? i : MD_LAMMPS_ATOM_FORMAT_FULL;
-                        strncpy(state.atom_format_buf, atom_format_strings[source_idx], sizeof(state.atom_format_buf));
+                        const char* format_str = atom_format_strings[source_idx];
+                        strncpy(state.atom_format_buf, format_str, sizeof(state.atom_format_buf));
                     }
                 }
                 ImGui::EndCombo();

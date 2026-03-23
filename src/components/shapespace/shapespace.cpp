@@ -18,9 +18,7 @@
 #include <viamd.h>
 #include <serialization_utils.h>
 #include <imgui_widgets.h>
-#include <implot_widgets.h>
 #include <implot_internal.h>
-#include <loader.h>
 
 /*
     @NOTE:

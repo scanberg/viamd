@@ -77,7 +77,7 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
 
 void init(State* state, str_t filepath) {
     ASSERT(state);
-    MEMSET(state, 0, sizeof(State));
+	*state = { 0 };
 
     str_t ext = {0};
     if (extract_ext(&ext, filepath)) {

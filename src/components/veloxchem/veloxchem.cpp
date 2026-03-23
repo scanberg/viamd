@@ -157,7 +157,7 @@ static inline mat4_t compute_index_to_world_mat(const mat3_t& orientation, const
 }
 
 // Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
-static inline void compute_dim(int out_dim[3], const vec3_t& in_ext, float samples_per_unit_length) {
+static inline void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_length) {
     out_dim[0] = CLAMP(ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
     out_dim[1] = CLAMP(ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
     out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
@@ -500,9 +500,9 @@ struct VeloxChem : viamd::EventHandler {
             int ao_idx   = gtos[i]._pad;
             int atom_idx = ao_to_atom_idx[ao_idx];
 
-            gtos[i].x = (float)x[atom_idx] * ANGSTROM_TO_BOHR;
-            gtos[i].y = (float)y[atom_idx] * ANGSTROM_TO_BOHR;
-            gtos[i].z = (float)z[atom_idx] * ANGSTROM_TO_BOHR;
+            gtos[i].x = (float)(x[atom_idx] * ANGSTROM_TO_BOHR);
+            gtos[i].y = (float)(y[atom_idx] * ANGSTROM_TO_BOHR);
+            gtos[i].z = (float)(z[atom_idx] * ANGSTROM_TO_BOHR);
         }
     }
 
@@ -568,7 +568,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     glDisable(GL_DEPTH_TEST);
 
-					uint32_t maxima_offset = md_topo_offset_maxima(&critical_points.simp_graph);
+					uint32_t maxima_offset = (uint32_t)md_topo_offset_maxima(&critical_points.simp_graph);
 					uint32_t maxima_count  = critical_points.simp_graph.num_maxima;
                     for (size_t i = maxima_offset; i < maxima_offset + maxima_count; ++i) {
                         vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
@@ -576,7 +576,7 @@ struct VeloxChem : viamd::EventHandler {
                         immediate::draw_point(pos, immediate::COLOR_RED);
                     }
 
-					uint32_t splits_offset = md_topo_offset_split_saddles(&critical_points.simp_graph);
+					uint32_t splits_offset = (uint32_t)md_topo_offset_split_saddles(&critical_points.simp_graph);
 					uint32_t splits_count = critical_points.simp_graph.num_split_saddles;
                     for (size_t i = splits_offset; i < splits_offset + splits_count; ++i) {
                         vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
@@ -584,7 +584,7 @@ struct VeloxChem : viamd::EventHandler {
                         immediate::draw_point(pos, immediate::COLOR_GREEN);
 					}
 
-					uint32_t minima_offset = md_topo_offset_minima(&critical_points.simp_graph);
+					uint32_t minima_offset = (uint32_t)md_topo_offset_minima(&critical_points.simp_graph);
 					uint32_t minima_count = critical_points.simp_graph.num_minima;
                     for (size_t i = minima_offset; i < minima_offset + minima_count; ++i) {
                         vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
@@ -592,7 +592,7 @@ struct VeloxChem : viamd::EventHandler {
 						immediate::draw_point(pos, immediate::COLOR_BLUE);
 					}
 
-					uint32_t join_saddles_offset = md_topo_offset_join_saddles(&critical_points.simp_graph);
+					uint32_t join_saddles_offset = (uint32_t)md_topo_offset_join_saddles(&critical_points.simp_graph);
 					uint32_t join_saddles_count = critical_points.simp_graph.num_join_saddles;
                     for (size_t i = join_saddles_offset; i < join_saddles_offset + join_saddles_count; ++i) {
                         vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
@@ -756,7 +756,7 @@ struct VeloxChem : viamd::EventHandler {
                 EvalElectronicStructure& data = *(EvalElectronicStructure*)e.payload;
 
                 if (!data.output_written) {
-                    const float samples_per_unit_length = data.samples_per_angstrom * BOHR_TO_ANGSTROM;
+                    const float samples_per_unit_length = (float)(data.samples_per_angstrom * BOHR_TO_ANGSTROM);
                     md_grid_t grid = {};
                     init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
                     init_volume(data.dst_volume, grid, GL_R32F);
@@ -930,16 +930,15 @@ struct VeloxChem : viamd::EventHandler {
                         xyzw[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, 1.0f);
                     }
 
-                    md_system_t mol = { 0 };
-                    md_vlx_system_init(&mol, vlx, state.allocator.frame);
-                    md_util_system_postprocess(&mol, state.allocator.frame, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
-                    //gl_mol = md_gl_mol_create(&mol);
+                    md_system_t sys = { .alloc = state.allocator.frame };
+                    md_vlx_system_init_from_data(&sys, vlx);
+                    md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
 
-                    uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, mol.atom.count * sizeof(uint32_t));
-                    color_atoms_type(colors, mol.atom.count, mol);
+                    uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, sys.atom.count * sizeof(uint32_t));
+                    color_atoms_type(colors, sys.atom.count, sys);
 
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
-                    md_gl_rep_set_color(gl_rep, 0, (uint32_t)mol.atom.count, colors, 0);
+                    md_gl_rep_set_color(gl_rep, 0, (uint32_t)sys.atom.count, colors, 0);
 
                     vec3_t com = md_util_com_compute_vec4(xyzw, 0, num_atoms, 0);
                     mat3_t cov = mat3_covariance_matrix_vec4(xyzw, 0, num_atoms, com);
@@ -977,8 +976,8 @@ struct VeloxChem : viamd::EventHandler {
                     if (num_excited_states > 0) {
                         //nto.show_window = true;
                         camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, obb.orientation, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
-                        nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * mol.atom.count);
-                        MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * mol.atom.count);
+                        nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * sys.atom.count);
+                        MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * sys.atom.count);
 
                         snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
                         nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
@@ -1005,8 +1004,8 @@ struct VeloxChem : viamd::EventHandler {
                             // @TODO: Remove once proper interface is there
                             nto.group.count = 3;
                             // Assign half of the atoms to group 1
-                            for (size_t i = 0; i < mol.atom.count; ++i) {
-                                nto.atom_group_idx[i] = i < mol.atom.count / 2 ? 1 : 2;
+                            for (size_t i = 0; i < sys.atom.count; ++i) {
+                                nto.atom_group_idx[i] = i < sys.atom.count / 2 ? 1 : 2;
                             }
                         }
                         nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
@@ -1072,7 +1071,7 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, float samples_per_unit_length) {
+    void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, double samples_per_unit_length) {
         vec3_t extent = max_ext - min_ext;
         compute_dim(grid->dim, extent, samples_per_unit_length);
         vec3_t voxel_size = vec3_div(extent, vec3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
@@ -1173,8 +1172,6 @@ struct VeloxChem : viamd::EventHandler {
         defer { md_temp_set_pos_back(temp_pos); };
 
         md_gto_t* temp_gtos = (md_gto_t*)md_temp_push(num_gtos_per_mo * sizeof(md_gto_t));
-        size_t num_temp_gtos = num_gtos_per_mo;
-
         md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
 
         if (scf_type == MD_VLX_SCF_TYPE_RESTRICTED || scf_type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
@@ -1405,6 +1402,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     task_system::ID compute_electron_density_async(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+        (void)mo_type;
         md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
         md_orbital_data_t orb_data = {0};
@@ -1933,6 +1931,7 @@ struct VeloxChem : viamd::EventHandler {
     }
     
     bool compute_transition_group_values_async(task_system::ID* out_eval_task, task_system::ID* out_segment_task, float* out_group_values, size_t num_groups, const md_grid_t& grid, const uint32_t* point_group_idx, const vec4_t* point_xyzr, size_t num_points, size_t nto_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, float samples_per_angstrom = DEFAULT_SAMPLES_PER_ANGSTROM) {       
+        (void)samples_per_angstrom;
         md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
         md_orbital_data_t orb_data = {0};
@@ -2256,8 +2255,6 @@ struct VeloxChem : viamd::EventHandler {
             y_out[si] = sum;
             integral += y_out[si] * dist;
         }
-
-        double i_sum = integral;
     }
 
     //Constructs plot limits from peaks
@@ -2960,7 +2957,7 @@ struct VeloxChem : viamd::EventHandler {
                                 }
                             }
 
-                            simp_graph.num_edges = num_edges;
+                            simp_graph.num_edges = (uint32_t)num_edges;
                             simp_graph.edges     = (md_topo_edge_t*)md_alloc(simp_graph.alloc, sizeof(md_topo_edge_t) * simp_graph.num_edges);
 
                             // Fill in edge data
@@ -2989,8 +2986,8 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::Text("\tNumber of Join Saddles:  %zu", graph.num_join_saddles);
 
                     if (ImGui::Button("Print Critical Points Info")) {
-                        size_t temp_pos = md_temp_get_pos();
-                        defer{ md_temp_set_pos_back(temp_pos); };
+                        size_t tpos = md_temp_get_pos();
+                        defer{ md_temp_set_pos_back(tpos); };
                         md_array(int) vertex_types = md_array_create(int, critical_points.simp_graph.num_vertices, md_get_temp_allocator());
                         md_topo_extract_vertex_types(vertex_types, md_array_size(vertex_types), &critical_points.simp_graph);
                         for (size_t i = 0; i < critical_points.simp_graph.num_vertices; ++i) {
@@ -3122,8 +3119,8 @@ struct VeloxChem : viamd::EventHandler {
                             //TODO: Implement md_xvg_write_to_file
                             str_t header = md_xvg_format_header(properties[property_idx].lable, str_from_cstr(x_unit), properties[property_idx].y_unit, 0, legends, arena);
                             str_t xvg = md_xvg_format(header, 2, 1024, column_data, arena);
-                            md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-                            if (md_file_valid(file)) {
+                            md_file_t file = { 0 };
+                            if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                                 const size_t written_bytes = md_file_write(file, xvg.ptr, xvg.len);
                                 if (written_bytes != xvg.len) {
                                     MD_LOG_ERROR("CSV: Unexpected error, some bytes were not written");
@@ -3198,11 +3195,6 @@ struct VeloxChem : viamd::EventHandler {
                 const double* y_cgs_peaks = md_vlx_rsp_rotatory_strengths(vlx);
                 const double* x_abs_ev = md_vlx_rsp_absorption_ev(vlx);
 
-                ImVec2* pixel_osc_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-                ImVec2* pixel_cgs_peaks  = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-                ImVec2* pixel_osc_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-                ImVec2* pixel_cgs_points = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_peaks);
-
                 double (*distr_func)(double x, double x_o, double gamma) = 0;
                 // @NOTE: Do broadening in eV
                 switch (rsp.broadening_mode) {
@@ -3259,11 +3251,11 @@ struct VeloxChem : viamd::EventHandler {
                         if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
                             double x_val = rsp.x_unit_peaks[rsp.hovered];
                             double y_val = y_osc_peaks[rsp.hovered];
-                            int state = rsp.hovered + 1;
+                            int state_idx = rsp.hovered + 1;
                             const char* x_label = x_unit_label_str[rsp.x_unit];
                             const char* x_unit = x_unit_short_str[rsp.x_unit];
                             if (ImGui::BeginTooltip()) {
-                                ImGui::Text("State %i: %s = %.2f (%s), f = %.3f", state, x_label, x_val, x_unit, y_val);
+                                ImGui::Text("State %i: %s = %.2f (%s), f = %.3f", state_idx, x_label, x_val, x_unit, y_val);
                                 ImGui::EndTooltip();
                             }
                         }
@@ -3298,11 +3290,11 @@ struct VeloxChem : viamd::EventHandler {
                         if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
                             double x_val = rsp.x_unit_peaks[rsp.hovered];
                             double y_val = y_cgs_peaks[rsp.hovered];
-                            int state = rsp.hovered + 1;
+                            int state_idx = rsp.hovered + 1;
                             const char* x_label = x_unit_label_str[rsp.x_unit];
                             const char* x_unit  = x_unit_short_str[rsp.x_unit];
                             if (ImGui::BeginTooltip()) {
-                                ImGui::Text((const char*)u8"State %i: %s = %.2f (%s), R = %.3f (10⁻⁴⁰ cgs)", state, x_label, x_val, x_unit, y_val);
+                                ImGui::Text((const char*)u8"State %i: %s = %.2f (%s), R = %.3f (10⁻⁴⁰ cgs)", state_idx, x_label, x_val, x_unit, y_val);
                                 ImGui::EndTooltip();
                             }
                         }
@@ -3339,13 +3331,12 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                     ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                    bool item_hovered = false;
-                    for (int row_n = 0; row_n < (int)num_excited_states; row_n++) {
 
+                    for (int row_n = 0; row_n < (int)num_excited_states; row_n++) {
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                         bool is_sel = row_n == rsp.selected;
                         bool is_hov = row_n == rsp.hovered;
-                        bool hov_col = false;
+
                         ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                         ImGui::TableNextColumn();
 
@@ -3412,8 +3403,6 @@ struct VeloxChem : viamd::EventHandler {
                     for (size_t i = 0; i < num_normal_modes; ++i) {
                         x_values[i] = x_values_raw[i] * vib.freq_scaling_factor;
                     }
-
-                    ImVec2* pixel_peaks = (ImVec2*)md_temp_push(sizeof(ImVec2) * num_normal_modes);
 
                     double (*distr_func)(double x, double x_o, double gamma, double intensity) = 0;
                     switch (vib.broadening_mode) {
@@ -3493,13 +3482,13 @@ struct VeloxChem : viamd::EventHandler {
 
                         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                         ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                        bool item_hovered = false;
+                        
                         for (int row_n = 0; row_n < (int)num_normal_modes; row_n++) {
 
                             ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                             bool is_sel = row_n == vib.selected;
                             bool is_hov = row_n == vib.hovered;
-                            bool hov_col = false;
+                            
                             ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                             ImGui::TableNextColumn();
 
@@ -4372,13 +4361,13 @@ struct VeloxChem : viamd::EventHandler {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
                     str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
 
-                    md_file_t file = md_file_open(path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-                    if (!md_file_valid(file)) {
+                    md_file_t file = { 0 };
+                    if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                         MD_LOG_ERROR("Failed to open file for writing: '" STR_FMT "'", STR_ARG(path));
                         return;
                     }
 
-                    const float samples_per_unit_length = volume_resolution_samples_per_angstrom[(int)export_state.resolution] * BOHR_TO_ANGSTROM;
+                    const double samples_per_unit_length = volume_resolution_samples_per_angstrom[(int)export_state.resolution] * BOHR_TO_ANGSTROM;
                     md_grid_t grid = {};
                     if (export_state.use_obb) {
                         init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
@@ -4535,8 +4524,8 @@ struct VeloxChem : viamd::EventHandler {
                         str_t mhd_path = str_printf(temp_arena, STR_FMT ".mhd", STR_ARG(basepath));
                         str_t xyz_path = str_printf(temp_arena, STR_FMT ".xyz", STR_ARG(basepath));
 
-                        md_file_t mhd_file = md_file_open(mhd_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-                        if (!md_file_valid(mhd_file)) {
+                        md_file_t mhd_file = { 0 };
+                        if (!md_file_open(&mhd_file, mhd_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                             MD_LOG_ERROR("Failed to open .mhd file");
                             goto done;
                         }
@@ -4560,8 +4549,8 @@ struct VeloxChem : viamd::EventHandler {
 
                         md_file_close(&mhd_file);
 
-                        md_file_t xyz_file = md_file_open(xyz_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-                        if (!md_file_valid(xyz_file)) {
+                        md_file_t xyz_file = { 0 };
+                        if (!md_file_open(&xyz_file, xyz_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                             MD_LOG_ERROR("Failed to open .xyz file");
                             goto done;
                         }
@@ -4676,13 +4665,9 @@ struct VeloxChem : viamd::EventHandler {
         ScopedTemp temp_reset;
         md_allocator_i* temp_alloc = md_get_temp_allocator();
 
-        bool open_context_menu = false;
-
         ImGuiWindow* window = ImGui::GetCurrentWindow();
         if (window) {
             bool pressed = ImGui::InvisibleButton("canvas", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
-            bool hovered = ImGui::IsItemHovered();
-            bool focused = ImGui::IsItemFocused();
 
             //ImVec2 coord = ImGui::GetMousePos() - ImGui::GetWindowPos();
 
@@ -4860,8 +4845,8 @@ struct VeloxChem : viamd::EventHandler {
         nto.group.color[to_idx] = nto.group.color[from_idx];
         MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
         for (size_t i = 0; i < nto.num_atoms; i++) {
-            if (nto.atom_group_idx[i] == to_idx) {
-                nto.atom_group_idx[i] = from_idx;
+            if ((int)nto.atom_group_idx[i] == to_idx) {
+                nto.atom_group_idx[i] = (uint32_t)from_idx;
             }
         }
     }
@@ -4878,11 +4863,11 @@ struct VeloxChem : viamd::EventHandler {
         MEMCPY(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
 
         for (size_t i = 0; i < nto.num_atoms; i++) {
-            if (nto.atom_group_idx[i] == a) {
-                nto.atom_group_idx[i] = b;
+            if ((int)nto.atom_group_idx[i] == a) {
+                nto.atom_group_idx[i] = (uint32_t)b;
             }
-            else if (nto.atom_group_idx[i] == b) {
-                nto.atom_group_idx[i] = a;
+            else if ((int)nto.atom_group_idx[i] == b) {
+                nto.atom_group_idx[i] = (uint32_t)a;
             }
         }
     }
@@ -4988,7 +4973,6 @@ struct VeloxChem : viamd::EventHandler {
             static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
             
             static bool hide_overlap_text = true;
-            bool refresh = false;
             ImVec2 button_size(ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.x, 0.f);
 
             ImGui::Checkbox("Edit mode", &edit_mode);
@@ -5019,7 +5003,6 @@ struct VeloxChem : viamd::EventHandler {
 
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                 ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                bool item_hovered = false;
                 bool show_unassigned = group_counts[0] > 0;
                 int row_n = show_unassigned ? 0 : 1;
                 for (; row_n < nto.group.count; row_n++) {
@@ -5142,8 +5125,8 @@ struct VeloxChem : viamd::EventHandler {
                             else {
                                 if (ImGui::Button(ICON_FA_TRASH_ARROW_UP, button_size)) {
                                     for (size_t i = 0; i < nto.num_atoms; i++) {
-                                        if (nto.atom_group_idx[i] == row_n) {
-                                            nto.atom_group_idx[i] = row_n - 1;
+                                        if ((int)nto.atom_group_idx[i] == row_n) {
+                                            nto.atom_group_idx[i] = (int)row_n - 1;
                                         }
                                     }
                                     delete_group(row_n);
@@ -5384,7 +5367,7 @@ struct VeloxChem : viamd::EventHandler {
                                 ImVec2 d = (end - beg) / len;
                                 ImVec2 o = {-d.y, d.x};
                                 float d_scl = ImMin(thickness * 3, len);
-                                float o_scl = 0.57735026918962576451 * d_scl;
+                                float o_scl = 0.57735026918962576451f * d_scl;
                                 draw_list->AddLine(beg, end - d * thickness, color, thickness);
                                 draw_list->AddTriangleFilled(end, end - d * d_scl + o * o_scl, end - d * d_scl - o * o_scl, color);
                             }
@@ -5457,14 +5440,11 @@ struct VeloxChem : viamd::EventHandler {
                 // Draw stuff
 
                 const bool is_hovered = ImGui::IsItemHovered();
-                const bool is_active  = ImGui::IsItemActive();
                 const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
                 const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
                 int width  = MAX(1, (int)win_sz.x);
                 int height = MAX(1, (int)win_sz.y);
-
-                const int num_win = 2;
 
                 auto& gbuf = nto.gbuf;
                 if ((int)gbuf.width != width || (int)gbuf.height != height) {
@@ -5714,12 +5694,12 @@ struct VeloxChem : viamd::EventHandler {
                                 colors[0] = nto.col_det;
                             }
                         }
-                        values[0] = nto.iso_val * nto.iso_val;
+                        values[0] = (float)(nto.iso_val * nto.iso_val);
                     } else {
                         colors[0] = nto.col_pos;
                         colors[1] = nto.col_neg;
-                        values[0] = nto.iso_val;
-                        values[1] = -nto.iso_val;
+                        values[0] =  (float)nto.iso_val;
+                        values[1] = -(float)nto.iso_val;
                     }
 
                     if (enabled) {

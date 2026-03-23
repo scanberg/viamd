@@ -204,11 +204,11 @@ void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2
     ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
     c = coord * vec2_set(scale.x, scale.y);
 #endif
-    if (0.f < coord.x && coord.x < (float)gbuffer.width && 0.f < coord.y && coord.y < (float)gbuffer.height) {
-        extract_gbuffer_picking_idx_and_depth(&out_picking.idx, &out_picking.depth, &gbuffer, (int)coord.x, (int)coord.y);
+    if (0.f < c.x && c.x < (float)gbuffer.width && 0.f < c.y && c.y < (float)gbuffer.height) {
+        extract_gbuffer_picking_idx_and_depth(&out_picking.idx, &out_picking.depth, &gbuffer, (int)c.x, (int)c.y);
         const vec4_t viewport = {0, 0, (float)gbuffer.width, (float)gbuffer.height};
-        out_picking.world_coord = mat4_unproject({coord.x, coord.y, out_picking.depth}, inv_MVP, viewport);
-        out_picking.screen_coord = {coord.x, coord.y};
+        out_picking.world_coord = mat4_unproject({c.x, c.y, out_picking.depth}, inv_MVP, viewport);
+        out_picking.screen_coord = {c.x, c.y};
     }
 }
 

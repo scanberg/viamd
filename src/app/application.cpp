@@ -319,7 +319,7 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
             }
         }
         
-        if (0 < len && len < str_cap) {
+        if (0 < len && len < (int)str_cap) {
             replace_char(str_buf, len, '\\', '/');
             return true;
         }
