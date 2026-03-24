@@ -235,6 +235,73 @@ void interrupt_async_tasks(ApplicationState* state) {
     task_system::pool_wait_for_completion();
 }
 
+static inline void clear_frame_cache(FrameCache* cache) {
+#if FRAME_CACHE_SIZE == 4
+    md_mm_storeu_epi32(cache->frame_idx, md_mm_set1_epi32(-1));
+    md_lru_cache4_init(&cache->lru);
+#elif FRAME_CACHE_SIZE == 8
+    md_mm256_storeu_epi32(cache->frame_idx, md_mm256_set1_epi32(-1));
+    md_lru_cache8_init(&cache->lru);
+#endif
+}
+
+static inline void init_frame_cache(FrameCache* cache, size_t num_atoms, md_allocator_i* alloc) {
+    clear_frame_cache(cache);
+    size_t capacity = ALIGN_TO(num_atoms, 16);
+    for (size_t i = 0; i < FRAME_CACHE_SIZE; ++i) {
+        md_array_resize(cache->states[i].atom_x, capacity, alloc);
+        md_array_resize(cache->states[i].atom_y, capacity, alloc);
+        md_array_resize(cache->states[i].atom_z, capacity, alloc);
+    }
+}
+
+static inline void free_frame_cache(FrameCache* cache, md_allocator_i* alloc) {
+    for (size_t i = 0; i < FRAME_CACHE_SIZE; ++i) {
+        md_array_free(cache->states[i].atom_x, alloc);
+        md_array_free(cache->states[i].atom_y, alloc);
+        md_array_free(cache->states[i].atom_z, alloc);
+    }
+    clear_frame_cache(cache);
+}
+
+static inline bool find_frame_in_cache(int* out_slot_idx, int64_t frame_idx, const FrameCache* cache) {
+    ASSERT(out_slot_idx);
+#if FRAME_CACHE_SIZE == 4
+    md_128i frame_indices = md_mm_loadu_epi32(cache->frame_idx);
+    md_128i cmp_mask = md_mm_cmpeq_epi32(frame_indices, md_mm_set1_epi32((int32_t)frame_idx));
+    int mask = md_mm_movemask_epi8(cmp_mask);
+    *out_slot_idx = ctz32(mask) >> 2; // Each int32 comparison results in 4 bytes in the mask
+    return mask != 0;
+#elif FRAME_CACHE_SIZE == 8
+    md_256i frame_indices = md_mm256_loadu_epi32(cache->frame_idx);
+    md_256i cmp_mask = md_mm256_cmpeq_epi32(frame_indices, md_mm256_set1_epi32((int32_t)frame_idx));
+    int mask = md_mm256_movemask_epi8(cmp_mask);
+    *out_slot_idx = ctz32(mask) >> 2; // Each int32 comparison results in 4 bytes in the mask
+    return mask != 0;
+#endif
+}
+
+static inline int find_lru_cache_slot(const FrameCache* cache) {
+#if FRAME_CACHE_SIZE == 4
+    return md_lru_cache4_get_lru(cache->lru);
+#elif FRAME_CACHE_SIZE == 8
+    return md_lru_cache8_get_lru(cache->lru);
+#endif
+}
+
+static inline void set_mru_cache_slot(FrameCache* cache, int slot_idx) {
+#if FRAME_CACHE_SIZE == 4
+    md_lru_cache4_set_mru(&cache->lru, slot_idx);
+#elif FRAME_CACHE_SIZE == 8
+    md_lru_cache8_set_mru(&cache->lru, slot_idx);
+#endif
+}
+
+void clear_system_frame_cache(ApplicationState* state) {
+    ASSERT(state);
+    clear_frame_cache(&state->mold.frame_cache);
+}
+
 // #trajectorydata
 void free_trajectory_data(ApplicationState* state) {
     ASSERT(state);
@@ -250,6 +317,8 @@ void free_trajectory_data(ApplicationState* state) {
 
     md_array_free(state->trajectory_data.backbone_angles.data,     state->allocator.persistent);
     md_array_free(state->trajectory_data.secondary_structure.data, state->allocator.persistent);
+
+    free_frame_cache(&state->mold.frame_cache, state->allocator.persistent);
 }
 
 void init_trajectory_data(ApplicationState* data) {
@@ -259,6 +328,8 @@ void init_trajectory_data(ApplicationState* data) {
         size_t max_frame = num_frames - 1;
         md_trajectory_header_t header = {};
         md_trajectory_get_header(data->mold.sys.trajectory, &header);
+
+        init_frame_cache(&data->mold.frame_cache, data->mold.sys.atom.count, data->allocator.persistent);
 
         double min_time = header.frame_times[0];
         double max_time = header.frame_times[num_frames - 1];
@@ -359,7 +430,6 @@ void init_trajectory_data(ApplicationState* data) {
 
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
-
         data->picking.idx = INVALID_PICKING_IDX;
         data->selection.atom_idx.hovered = -1;
         data->selection.atom_idx.right_click = -1;
@@ -395,14 +465,6 @@ void init_system_data(ApplicationState* data) {
 
 }
 
-void clear_frame_cache(ApplicationState* state) {
-    for (size_t i = 0; i < ARRAY_SIZE(state->mold.frame_cache.states); ++i) {
-        state->mold.frame_cache.frame_idx[i] = -1;
-        state->mold.frame_cache.states[i] = {};
-    }
-    md_lru_cache8_init(&state->mold.frame_cache.lru);
-}
-
 static inline void clear_density_volume(ApplicationState* state) {
     md_array_shrink(state->density_volume.gl_reps, 0);
     md_array_shrink(state->density_volume.rep_model_mats, 0);
@@ -421,6 +483,9 @@ void free_system_data(ApplicationState* data) {
     MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
     data->interpolated_properties.secondary_structure = nullptr;
+
+    MEMSET(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
+    clear_frame_cache(&data->mold.frame_cache);
 
     md_bitfield_clear(&data->selection.selection_mask);
     md_bitfield_clear(&data->selection.highlight_mask);
@@ -1354,4 +1419,525 @@ done:
     }
 
     recompute_atom_visibility_mask(state);
+}
+
+void interpolate_system_state(ApplicationState* state) {
+    ASSERT(state);
+    auto& sys = state->mold.sys;
+    const auto& traj = state->mold.sys.trajectory;
+
+    if (!sys.atom.count || !md_trajectory_num_frames(traj)) return;
+
+    const int64_t last_frame = MAX(0LL, (int64_t)md_trajectory_num_frames(traj) - 1);
+    // This is not actually time, but the fractional frame representation
+    const double time = CLAMP(state->animation.frame, 0.0, double(last_frame));
+
+    // Scaling factor for cubic spline
+    const int64_t frame = (int64_t)time;
+    const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
+
+    static int64_t curr_nearest_frame = -1;
+    if (state->animation.interpolation == InterpolationMode::Nearest) {
+        if (curr_nearest_frame == nearest_frame) {
+            return;
+        }
+        state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+    }
+    curr_nearest_frame = nearest_frame;
+
+    // This represents the frames that we would like to load into memory for interpolation (worst case).
+    const int64_t frames[4] = {
+        MAX(0LL, frame - 1),
+        MAX(0LL, frame),
+        MIN(frame + 1, last_frame),
+        MIN(frame + 2, last_frame),
+    };
+
+    const size_t num_threads = task_system::pool_num_threads();
+
+    // The number of atoms to be processed per thread when divided into chunks
+    const uint32_t grain_size = 1024;
+
+    md_allocator_i* temp_arena = state->allocator.frame;
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(temp_arena);
+    defer { md_vm_arena_temp_end(tmp); };
+
+    struct Payload {
+        ApplicationState* state;
+        float s;
+        float t;
+        InterpolationMode mode;
+
+        int64_t nearest_frame;
+        int64_t frames[4];
+        md_unitcell_t unitcell;
+
+        size_t count;
+
+        md_system_state_t* src_states[4];
+
+        float* dst_x;
+        float* dst_y;
+        float* dst_z;
+
+        vec3_t* aabb_min;
+        vec3_t* aabb_max;
+    };
+
+    const InterpolationMode mode = (frames[1] == frames[2]) ? InterpolationMode::Nearest : state->animation.interpolation;
+
+    Payload payload = {
+        .state = state,
+        .s = 1.0f - CLAMP(state->animation.tension, 0.0f, 1.0f),
+        .t = (float)fract(time),
+        .mode = mode,
+        .nearest_frame = nearest_frame,
+        .frames = { frames[0], frames[1], frames[2], frames[3]},
+        .count = sys.atom.count,
+        .dst_x = sys.atom.x,
+        .dst_y = sys.atom.y,
+        .dst_z = sys.atom.z,
+        .aabb_min = (vec3_t*)md_vm_arena_push(temp_arena, num_threads * sizeof(vec3_t)),
+        .aabb_max = (vec3_t*)md_vm_arena_push(temp_arena, num_threads * sizeof(vec3_t)),
+    };
+
+    int requested_frames[4] = { 0 };
+    int num_requested_frames = 0;
+
+    switch (mode) {
+        case InterpolationMode::Nearest:
+            requested_frames[num_requested_frames++] = (int)nearest_frame;
+            break;
+        case InterpolationMode::Linear:
+            requested_frames[num_requested_frames++] = (int)frames[1];
+            requested_frames[num_requested_frames++] = (int)frames[2];
+            break;
+        case InterpolationMode::CubicSpline:
+            requested_frames[num_requested_frames++] = (int)frames[0];
+            requested_frames[num_requested_frames++] = (int)frames[1];
+            requested_frames[num_requested_frames++] = (int)frames[2];
+            requested_frames[num_requested_frames++] = (int)frames[3];
+            break;
+        default:
+            ASSERT(false);
+            break;
+    }
+
+    // Represents the frame cache slot indices for the requested frames, -1 if not present in cache
+    int frame_cache_slot_idx[4] = { -1, -1, -1, -1 };
+
+    // Array of frame_cache slots which requires a load
+    int frame_cache_load_slot[4] = {0};
+    int num_frames_to_load = 0;
+
+    for (int i = 0; i < num_requested_frames; ++i) {
+        int slot_idx = -1;
+        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &state->mold.frame_cache)) {
+            slot_idx = find_lru_cache_slot(&state->mold.frame_cache);
+            frame_cache_load_slot[num_frames_to_load++] = slot_idx;
+        }
+        set_mru_cache_slot(&state->mold.frame_cache, slot_idx);
+        state->mold.frame_cache.frame_idx[slot_idx] = requested_frames[i];
+        frame_cache_slot_idx[i] = slot_idx;
+    }
+
+    for (int i = 0; i < num_requested_frames; ++i) {
+        int slot_idx = frame_cache_slot_idx[i];
+        payload.src_states[i] = &state->mold.frame_cache.states[slot_idx];
+    }
+
+    // This holds the chain of tasks we are about to submit
+    task_system::ID tasks[16] = {0};
+    int num_tasks = 0;
+
+    task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frames"), num_frames_to_load,
+        [data = &payload, frame_cache_load_slot](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            for (uint32_t i = range_beg; i < range_end; ++i) {
+                int slot_idx = frame_cache_load_slot[i];
+                int frame_idx = data->state->mold.frame_cache.frame_idx[slot_idx];
+                md_system_state_t* state = &data->state->mold.frame_cache.states[slot_idx];
+                md_trajectory_frame_header_t header = {0};
+                md_trajectory_load_frame(data->state->mold.sys.trajectory, frame_idx, &header, state->atom_x, state->atom_y, state->atom_z);
+                state->unitcell = header.unitcell;
+            }
+        }
+    );
+
+    tasks[num_tasks++] = load_task;
+
+    switch (mode) {
+        case InterpolationMode::Nearest: {
+            task_system::ID interp_task = task_system::create_pool_task(STR_LIT("## Interpolate"), [data = &payload]() {
+                data->unitcell = data->src_states[0]->unitcell;
+                MEMCPY(data->dst_x, data->src_states[0]->atom_x, sizeof(float) * data->count);
+                MEMCPY(data->dst_y, data->src_states[0]->atom_y, sizeof(float) * data->count);
+                MEMCPY(data->dst_z, data->src_states[0]->atom_z, sizeof(float) * data->count);
+            });
+            tasks[num_tasks++] = interp_task;
+            break;
+        }
+        case InterpolationMode::Linear: {
+            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
+                double x  = lerp(data->src_states[0]->unitcell.x,  data->src_states[1]->unitcell.x,  data->t);
+                double y  = lerp(data->src_states[0]->unitcell.y,  data->src_states[1]->unitcell.y,  data->t);
+                double z  = lerp(data->src_states[0]->unitcell.z,  data->src_states[1]->unitcell.z,  data->t);
+                double xy = lerp(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->t);
+                double xz = lerp(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->t);
+                double yz = lerp(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->t);
+                data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+            });
+
+            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                (void)thread_num;
+                size_t count = range_end - range_beg;
+                float* dst_x = data->dst_x + range_beg;
+                float* dst_y = data->dst_y + range_beg;
+                float* dst_z = data->dst_z + range_beg;
+                const float* src_x[2] = { data->src_states[0]->atom_x + range_beg, data->src_states[1]->atom_x + range_beg};
+                const float* src_y[2] = { data->src_states[0]->atom_y + range_beg, data->src_states[1]->atom_y + range_beg};
+                const float* src_z[2] = { data->src_states[0]->atom_z + range_beg, data->src_states[1]->atom_z + range_beg};
+
+                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t);
+            }, grain_size);
+
+            tasks[num_tasks++] = interp_unit_cell_task;
+            tasks[num_tasks++] = interp_coord_task;
+
+            break;
+        }
+        case InterpolationMode::CubicSpline: {
+            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
+                double x  = cubic_spline(data->src_states[0]->unitcell.x,  data->src_states[1]->unitcell.x,  data->src_states[2]->unitcell.x,  data->src_states[3]->unitcell.x,  data->t, data->s);
+                double y  = cubic_spline(data->src_states[0]->unitcell.y,  data->src_states[1]->unitcell.y,  data->src_states[2]->unitcell.y,  data->src_states[3]->unitcell.y,  data->t, data->s);
+                double z  = cubic_spline(data->src_states[0]->unitcell.z,  data->src_states[1]->unitcell.z,  data->src_states[2]->unitcell.z,  data->src_states[3]->unitcell.z,  data->t, data->s);
+                double xy = cubic_spline(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->src_states[2]->unitcell.xy, data->src_states[3]->unitcell.xy, data->t, data->s);
+                double xz = cubic_spline(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->src_states[2]->unitcell.xz, data->src_states[3]->unitcell.xz, data->t, data->s);
+                double yz = cubic_spline(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->src_states[2]->unitcell.yz, data->src_states[3]->unitcell.yz, data->t, data->s);
+                data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+            });
+
+            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                (void)thread_num;
+                size_t count = range_end - range_beg;
+                float* dst_x = data->dst_x + range_beg;
+                float* dst_y = data->dst_y + range_beg;
+                float* dst_z = data->dst_z + range_beg;
+                const float* src_x[4] = { data->src_states[0]->atom_x + range_beg, data->src_states[1]->atom_x + range_beg, data->src_states[2]->atom_x + range_beg, data->src_states[3]->atom_x + range_beg};
+                const float* src_y[4] = { data->src_states[0]->atom_y + range_beg, data->src_states[1]->atom_y + range_beg, data->src_states[2]->atom_y + range_beg, data->src_states[3]->atom_y + range_beg};
+                const float* src_z[4] = { data->src_states[0]->atom_z + range_beg, data->src_states[1]->atom_z + range_beg, data->src_states[2]->atom_z + range_beg, data->src_states[3]->atom_z + range_beg};
+
+                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t, data->s);
+            }, grain_size);
+
+            tasks[num_tasks++] = interp_unit_cell_task;
+            tasks[num_tasks++] = interp_coord_task;
+            
+            break;
+        }
+        default:
+            ASSERT(false);
+            break;
+    }
+
+    if (state->operations.recalc_bonds) {
+        // We cannot recalculate bonds while the full or filtered evaluation is running
+        // because it would overwrite the bond data while we are reading it
+        if (!task_system::task_is_running(state->tasks.evaluate_full) && !task_system::task_is_running(state->tasks.evaluate_filt)) {
+            static int64_t cur_nearest_frame = -1;
+            if (cur_nearest_frame != payload.nearest_frame) {
+                cur_nearest_frame = payload.nearest_frame;
+                task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
+                    const auto& sys = data->state->mold.sys;
+                    const md_system_state_t* src_state = data->src_states[0];
+                    int offset = data->t < 0.5 ? 0 : 1;
+
+                    switch (data->mode) {
+                    case InterpolationMode::Nearest: break;
+                    case InterpolationMode::Linear:
+                        src_state = data->src_states[0 + offset];
+                        break;
+                    case InterpolationMode::CubicSpline:
+                        src_state = data->src_states[1 + offset];
+                        break;
+                    default:
+                        break;
+                    };
+
+                    md_util_infer_covalent_bonds(&data->state->mold.sys.bond, src_state->atom_x, src_state->atom_y, src_state->atom_z, &src_state->unitcell, &sys, sys.alloc);
+                    data->state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                });
+                tasks[num_tasks++] = recalc_bond_task;
+            }
+        }
+    }
+
+    if (state->operations.apply_pbc) {
+        task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            (void)thread_num;
+            size_t count = range_end - range_beg;
+            float* x = data->dst_x + range_beg;
+            float* y = data->dst_y + range_beg;
+            float* z = data->dst_z + range_beg;
+            md_util_pbc(x, y, z, NULL, count, &data->unitcell);
+        });
+        tasks[num_tasks++] = pbc_task;
+    } 
+    if (state->operations.unwrap_structures) {
+        size_t num_structures = md_index_data_num_ranges(&sys.structure);
+        task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            (void)thread_num;
+            for (uint32_t i = range_beg; i < range_end; ++i) {
+                int*     s_idx = md_index_range_ptr(&data->state->mold.sys.structure, i);
+                size_t   s_len = md_index_range_size(&data->state->mold.sys.structure, i);
+                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unitcell);
+            }
+        });
+        tasks[num_tasks++] = unwrap_task;
+    }
+
+    {
+        // Calculate a global AABB for the molecule
+        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            size_t range_len = range_end - range_beg;
+            const float* x = data->state->mold.sys.atom.x + range_beg;
+            const float* y = data->state->mold.sys.atom.y + range_beg;
+            const float* z = data->state->mold.sys.atom.z + range_beg;
+
+            size_t temp_pos = md_temp_get_pos();
+            defer { md_temp_set_pos_back(temp_pos); };
+            float* r = (float*)md_temp_push(sizeof(float) * range_len);
+            md_atom_extract_radii(r, range_beg, range_len, &data->state->mold.sys.atom);
+
+            vec3_t aabb_min = vec3_set1(FLT_MAX);
+            vec3_t aabb_max = vec3_set1(-FLT_MAX);
+            md_util_aabb_compute(aabb_min.elem, aabb_max.elem, x, y, z, r, 0, range_len);
+
+            data->aabb_min[thread_num] = aabb_min;
+            data->aabb_max[thread_num] = aabb_max;
+        });
+        tasks[num_tasks++] = aabb_task;
+    }
+
+    if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.angle) {
+        switch (mode) {
+            case InterpolationMode::Nearest: {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [data = &payload]() {
+                    const md_backbone_angles_t* src_angles[2] = {
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
+                    };
+                    const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
+                    MEMCPY(data->state->mold.sys.protein_backbone.segment.angle, src_angle, data->state->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
+                });
+
+                tasks[num_tasks++] = angle_task;
+                break;
+            }
+            case InterpolationMode::Linear: {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    (void)thread_num;
+                    const md_backbone_angles_t* src_angles[2] = {
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
+                    };
+                    md_system_t& mol = data->state->mold.sys;
+                    for (size_t i = range_beg; i < range_end; ++i) {
+                        float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
+                        float psi[2] = {src_angles[0][i].psi, src_angles[1][i].psi};
+
+                        phi[1] = deperiodize_orthof(phi[1], phi[0], (float)TWO_PI);
+                        psi[1] = deperiodize_orthof(psi[1], psi[0], (float)TWO_PI);
+
+                        float final_phi = lerp(phi[0], phi[1], data->t);
+                        float final_psi = lerp(psi[0], psi[1], data->t);
+                        mol.protein_backbone.segment.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
+                    }
+                });
+
+                tasks[num_tasks++] = angle_task;
+                break;
+            }
+            case InterpolationMode::CubicSpline: {
+                task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    (void)thread_num;
+                    const md_backbone_angles_t* src_angles[4] = {
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[0],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[3],
+                    };
+                    md_system_t& sys = data->state->mold.sys;
+                    for (size_t i = range_beg; i < range_end; ++i) {
+                        float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
+                        float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
+
+                        phi[0] = deperiodize_orthof(phi[0], phi[1], (float)TWO_PI);
+                        phi[2] = deperiodize_orthof(phi[2], phi[1], (float)TWO_PI);
+                        phi[3] = deperiodize_orthof(phi[3], phi[2], (float)TWO_PI);
+
+                        psi[0] = deperiodize_orthof(psi[0], psi[1], (float)TWO_PI);
+                        psi[2] = deperiodize_orthof(psi[2], psi[1], (float)TWO_PI);
+                        psi[3] = deperiodize_orthof(psi[3], psi[2], (float)TWO_PI);
+
+                        float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], data->t, data->s);
+                        float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], data->t, data->s);
+                        sys.protein_backbone.segment.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
+                    }
+                });
+
+                tasks[num_tasks++] = angle_task;
+                break;
+            }
+            default:
+                ASSERT(false);
+                break;
+        }
+    }
+
+    if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.secondary_structure) {
+        if (md_array_size(state->interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
+			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
+        }
+        size_t num_backbone_segments = sys.protein_backbone.segment.count;
+        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            (void)thread_num;
+            const md_secondary_structure_t* src_ss[4] = {
+                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
+                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
+                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
+                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[3],
+            };
+            const md_secondary_structure_t* src_ss_nearest = data->t < 0.5f ? src_ss[1] : src_ss[2];
+            switch (mode) {
+            default:
+                MD_LOG_DEBUG("Unsupported interpolation mode for secondary structure interpolation");
+                [[fallthrough]];
+            case InterpolationMode::Nearest: {
+                for (size_t i = range_beg; i < range_end; ++i) {
+                    md_secondary_structure_t ss = src_ss_nearest[i];
+                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
+                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = ss;
+                    data->state->interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
+                }
+                break;
+            }
+            case InterpolationMode::Linear: {
+                for (size_t i = range_beg; i < range_end; ++i) {
+                    md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
+                    md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
+                    md_gl_secondary_structure_t ss_gl_i = {
+                        .helix = lerp(ss_gl[0].helix, ss_gl[1].helix, data->t),
+                        .sheet = lerp(ss_gl[0].sheet, ss_gl[1].sheet, data->t),
+                    };
+                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
+                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
+                    data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
+                }
+                break;
+            }
+            case InterpolationMode::CubicSpline: {
+                
+                for (size_t i = range_beg; i < range_end; ++i) {
+                    md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };
+                    
+                    md_gl_secondary_structure_t ss_gl[4] = {
+                        md_gl_secondary_structure_convert(ss[0]),
+                        md_gl_secondary_structure_convert(ss[1]),
+                        md_gl_secondary_structure_convert(ss[2]),
+                        md_gl_secondary_structure_convert(ss[3]),
+                    };
+                    
+                    
+                    // Cleanup isolated coils temporally to reduce noise during transitions.
+                    // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
+                    // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
+                    
+                    #if 0
+                    const md_gl_secondary_structure_t ss_coil = { 0,0 };
+                    const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
+
+                    auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                        return a.helix == b.helix && a.sheet == b.sheet;
+                    };
+
+                    if (is_eq(ss_gl[1], ss_coil)) {
+                        if (is_eq(ss_gl[0], ss_gl[2]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[1], ss_gl[0])) {
+                            ss_gl[1] = ss_gl[0];
+                        }
+                    }
+                    if (is_eq(ss_gl[2], ss_coil)) {
+                        if (is_eq(ss_gl[0], ss_gl[1]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[0])) {
+                            ss_gl[2] = ss_gl[0];
+                        }
+                    }
+#endif
+
+                    md_gl_secondary_structure_t ss_gl_i = {
+                        .helix = cubic_spline(ss_gl[0].helix, ss_gl[1].helix, ss_gl[2].helix, ss_gl[3].helix, data->t, data->s),
+                        .sheet = cubic_spline(ss_gl[0].sheet, ss_gl[1].sheet, ss_gl[2].sheet, ss_gl[3].sheet, data->t, data->s),
+                    };
+                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
+                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
+                    data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
+                }
+                break;
+            }
+            }
+        });
+        tasks[num_tasks++] = ss_task;
+
+#if 1
+        // Task for cleaning up isolated coils to its neighbors (if the same), to reduce the noise in the secondary structure during transitions. This is a non temporal filtering step
+        task_system::ID ss_cleanup_task = task_system::create_pool_task(STR_LIT("## Cleanup Secondary Structures"), [data = &payload]() {
+            // Cleanup isolated coils to reduce noise during transitions
+            auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                return a.helix == b.helix && a.sheet == b.sheet;
+            };
+            const md_gl_secondary_structure_t ss_coil = { 0,0 };
+            const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
+
+            md_gl_secondary_structure_t* ss_gl = data->state->interpolated_properties.secondary_structure;
+            for (size_t i = 0; i < data->state->mold.sys.protein_backbone.range.count; ++i) {
+                size_t range_beg = data->state->mold.sys.protein_backbone.range.offset[i];
+                size_t range_end = data->state->mold.sys.protein_backbone.range.offset[i + 1];
+                for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
+                    // Set isolated coils between sheets to sheet to reduce noise during transitions, as this is likely a result of flickering during secondary structure assignment
+                    if (is_eq(ss_gl[j - 1], ss_sheet) && is_eq(ss_gl[j + 1], ss_sheet) && is_eq(ss_gl[j], ss_coil)) {
+                        ss_gl[j] = ss_sheet;
+                    }
+                }
+            }
+        });
+        tasks[num_tasks++] = ss_cleanup_task;
+#endif
+
+        state->mold.dirty_gpu_buffers |= MolBit_DirtySecondaryStructure;
+    }
+
+    if (num_tasks > 0) {
+        for (int i = 1; i < num_tasks; ++i) {
+            task_system::set_task_dependency(tasks[i], tasks[i-1]);
+        }
+        task_system::enqueue_task(tasks[0]);
+        task_system::task_wait_for(tasks[num_tasks - 1]);
+    }
+
+    vec3_t aabb_min = payload.aabb_min[0];
+    vec3_t aabb_max = payload.aabb_max[0];
+    for (size_t i = 1; i < task_system::pool_num_threads(); ++i) {
+        aabb_min = vec3_min(aabb_min, payload.aabb_min[i]);
+        aabb_max = vec3_max(aabb_max, payload.aabb_max[i]);
+    }
+    state->mold.sys_aabb_min = aabb_min;
+    state->mold.sys_aabb_max = aabb_max;
+    sys.unitcell = payload.unitcell;
+
+#if 0
+    if (mol.unitcell.flags) {
+        vec3_t c = mol.unitcell.basis * vec3_set1(0.5f);
+        state->mold.model_mat = mat4_translate_vec3(-c);
+    }
+#endif
+
+    state->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
 }

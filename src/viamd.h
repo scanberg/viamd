@@ -30,6 +30,15 @@
 
 #define JITTER_SEQUENCE_SIZE 8  // Number of samples for temporal AA
 #define DEFAULT_COLORMAP 5      // This corresponds to plasma colormap (Do not want to include implot.h just for this)
+#define FRAME_CACHE_SIZE 4      // Number of frames used in the frame cache
+
+#if FRAME_CACHE_SIZE == 4
+#define FRAME_CACHE_LRU_TYPE md_lru_cache4_t
+#elif FRAME_CACHE_SIZE == 8
+#define FRAME_CACHE_LRU_TYPE md_lru_cache8_t
+#else
+#error "Unsupported frame cache size"
+#endif
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -508,6 +517,12 @@ struct Representation {
     } prop;
 };
 
+struct FrameCache {
+    FRAME_CACHE_LRU_TYPE lru = {};
+    md_system_state_t states[FRAME_CACHE_SIZE] = {};
+    int32_t frame_idx[FRAME_CACHE_SIZE] = {};
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -581,11 +596,7 @@ struct ApplicationState {
         // Is only used for rendering and visualization of properties.
         md_system_state_t   state = {};
 
-        struct {
-            md_lru_cache8_t   lru = {};
-            md_system_state_t states[8] = {};
-            int32_t           frame_idx[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
-        } frame_cache;
+        FrameCache          frame_cache;
 
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};
@@ -1090,7 +1101,10 @@ void init_system_data(ApplicationState* state);
 void init_trajectory_data(ApplicationState* state);
 
 // Frame cache operations
-void clear_frame_cache(ApplicationState* state);
+void clear_system_frame_cache(ApplicationState* state);
+
+// Interpolate state
+void interpolate_system_state(ApplicationState* state);
 
 // Workspace
 void load_workspace(ApplicationState* state, str_t file);
