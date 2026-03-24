@@ -257,7 +257,7 @@ void init_trajectory_data(ApplicationState* data) {
     if (num_frames > 0) {
         size_t min_frame = 0;
         size_t max_frame = num_frames - 1;
-        md_trajectory_header_t header;
+        md_trajectory_header_t header = {};
         md_trajectory_get_header(data->mold.sys.trajectory, &header);
 
         double min_time = header.frame_times[0];
@@ -275,7 +275,7 @@ void init_trajectory_data(ApplicationState* data) {
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
-        md_trajectory_frame_header_t frame_header;
+        md_trajectory_frame_header_t frame_header = {};
         md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z);
         data->mold.sys.unitcell = frame_header.unitcell;
 
@@ -310,10 +310,10 @@ void init_trajectory_data(ApplicationState* data) {
                 md_trajectory_reader_i reader;
                 if (md_trajectory_reader_init(&reader, traj)) {
                     for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                        md_trajectory_frame_header_t frame_header;
                         md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
                         md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
-
+                        
+                        md_trajectory_frame_header_t frame_header = {0};
                         md_trajectory_reader_load_frame(reader, frame_idx, &frame_header, x, y, z);
                         md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
                         md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
@@ -321,10 +321,10 @@ void init_trajectory_data(ApplicationState* data) {
 					md_trajectory_reader_free(&reader);
                 } else {
                     for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                        md_trajectory_frame_header_t frame_header;
                         md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
                         md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
-
+                        
+                        md_trajectory_frame_header_t frame_header = {0};
                         md_trajectory_load_frame(traj, frame_idx, &frame_header, x, y, z);
                         md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
                         md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
@@ -395,13 +395,21 @@ void init_system_data(ApplicationState* data) {
 
 }
 
+void clear_frame_cache(ApplicationState* state) {
+    for (size_t i = 0; i < ARRAY_SIZE(state->mold.frame_cache.states); ++i) {
+        state->mold.frame_cache.frame_idx[i] = -1;
+        state->mold.frame_cache.states[i] = {};
+    }
+    md_lru_cache8_init(&state->mold.frame_cache.lru);
+}
+
 static inline void clear_density_volume(ApplicationState* state) {
     md_array_shrink(state->density_volume.gl_reps, 0);
     md_array_shrink(state->density_volume.rep_model_mats, 0);
     state->density_volume.model_mat = {0};
 }
 
-void free_molecule_data(ApplicationState* data) {
+void free_system_data(ApplicationState* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
 
@@ -446,7 +454,7 @@ bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
         if (param.state.flags & LoaderFlag_System) {
             interrupt_async_tasks(state);
             free_trajectory_data(state);
-            free_molecule_data(state);
+            free_system_data(state);
 
             state->mold.sys.alloc = state->mold.sys_alloc;
             if (!loader::load(&state->mold.sys, path_to_file, &param.state)) {
@@ -463,7 +471,6 @@ bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
             md_util_system_postprocess(&state->mold.sys, flags);
             init_system_data(state);
 
-            state->mold.sys.trajectory = state->mold.sys.trajectory;
             init_trajectory_data(state);
         } else if (param.state.flags & LoaderFlag_Trajectory) {
             if (!state->mold.sys.atom.count) {
@@ -476,7 +483,6 @@ bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
 
             success = loader::load(&state->mold.sys, path_to_file, &param.state);
             if (success) {
-                state->mold.sys.trajectory = state->mold.sys.trajectory;
                 init_trajectory_data(state);
                 str_copy_to_char_buf(state->files.trajectory, sizeof(state->files.trajectory), path_to_file);
                 VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));

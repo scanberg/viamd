@@ -2005,10 +2005,7 @@ static void interpolate_system_state(ApplicationState* state) {
                         break;
                     };
 
-                    md_bond_data_t* bonds = &data->state->mold.sys.bond;
-                    md_bond_data_clear(bonds);
-
-                    md_util_infer_covalent_bonds(bonds, x, y, z, cell, &sys, data->state->mold.sys_alloc);
+                    md_util_infer_covalent_bonds(&data->state->mold.sys.bond, x, y, z, cell, &sys, sys.alloc);
                     data->state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 });
                 tasks[num_tasks++] = recalc_bond_task;
@@ -3545,8 +3542,8 @@ void draw_context_popup(ApplicationState* state) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                 if (ImGui::MenuItem(buf)) {
-                    md_system_bond_insert(&state->mold.sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED, state->mold.sys_alloc);
-                    md_system_bond_build_connectivity(&state->mold.sys, state->mold.sys_alloc);
+                    md_system_bond_insert(&state->mold.sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED);
+                    md_system_bond_build_connectivity(&state->mold.sys);
                     state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     ImGui::CloseCurrentPopup();
                 }
@@ -3561,7 +3558,7 @@ void draw_context_popup(ApplicationState* state) {
                 snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", pair.idx[0] + 1, pair.idx[1] + 1);
                 if (ImGui::MenuItem(buf)) {
                     md_system_bond_remove(&state->mold.sys, bond_idx);
-					md_system_bond_build_connectivity(&state->mold.sys, state->mold.sys_alloc);
+					md_system_bond_build_connectivity(&state->mold.sys);
                     state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     ImGui::CloseCurrentPopup();
                 }

@@ -2,6 +2,7 @@
 
 #include <core/md_str.h>
 #include <core/md_os.h>
+#include <core/md_lru_cache.inl>
 #include <md_system.h>
 #include <md_trajectory.h>
 #include <md_script.h>
@@ -576,6 +577,16 @@ struct ApplicationState {
 #endif
         md_system_t         sys = {};
 
+        // The actual interpolated state of the system.
+        // Is only used for rendering and visualization of properties.
+        md_system_state_t   state = {};
+
+        struct {
+            md_lru_cache8_t   lru = {};
+            md_system_state_t states[8] = {};
+            int32_t           frame_idx[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
+        } frame_cache;
+
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};
 
@@ -1077,6 +1088,9 @@ void interrupt_async_tasks(ApplicationState* state);
 bool load_dataset_from_file(ApplicationState* state, const LoadParam& param);
 void init_system_data(ApplicationState* state);
 void init_trajectory_data(ApplicationState* state);
+
+// Frame cache operations
+void clear_frame_cache(ApplicationState* state);
 
 // Workspace
 void load_workspace(ApplicationState* state, str_t file);
