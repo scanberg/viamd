@@ -125,6 +125,77 @@ enum broadening_mode_t {
 
 static const char* broadening_mode_str[] = { "Gaussian", "Lorentzian" };
 
+// Object aligned bounding box
+struct OBB {
+    mat3_t orientation = mat3_ident();
+    vec3_t min_ext = { 0 };
+    vec3_t max_ext = { 0 };
+};
+
+struct AABB {
+    vec3_t min_ext = { 0 };
+    vec3_t max_ext = { 0 };
+};
+
+static void calculate_obb(OBB* obb, const md_system_t* sys) {
+    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    defer{ md_arena_allocator_destroy(temp_arena); };
+
+    size_t num_atoms = sys->atom.count;
+
+    // Compute the PCA of the provided geometry
+    // This is used in determining a better fitting volume for the orbitals
+    vec4_t* xyzw = (vec4_t*)md_arena_allocator_push(temp_arena, sizeof(vec4_t) * num_atoms);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        vec3_t coord = md_atom_coord(&sys->atom, i);
+        xyzw[i] = vec4_set((float)coord.x, (float)coord.y, (float)coord.z, 1.0f);
+    }
+
+    vec3_t com = md_util_com_compute_vec4(xyzw, 0, num_atoms, 0);
+    mat3_t cov = mat3_covariance_matrix_vec4(xyzw, 0, num_atoms, com);
+    mat3_eigen_t eigen = mat3_eigen(cov);
+    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+
+    // Compute min and maximum extent along the PCA axes
+    obb->orientation = mat3_transpose(PCA);
+    obb->min_ext  = vec3_set1( FLT_MAX);
+    obb->max_ext  = vec3_set1(-FLT_MAX);
+
+
+    // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
+    for (size_t i = 0; i < num_atoms; ++i) {
+        vec3_t xyz = vec3_from_vec4(xyzw[i]) * ANGSTROM_TO_BOHR;
+
+        xyz = mat3_mul_vec3(PCA, xyz);
+
+        obb->min_ext = vec3_min(obb->min_ext, xyz);
+        obb->max_ext = vec3_max(obb->max_ext, xyz);
+    }
+
+    // Apply padding
+    const float pad = 6.0f;
+    obb->min_ext -= vec3_set1(pad);
+    obb->max_ext += vec3_set1(pad);
+}
+
+static void aabb_from_obb(AABB* aabb, const OBB& obb) {
+    // Transform the 8 corners and check min and max
+    aabb->min_ext = vec3_set1(FLT_MAX);
+    aabb->max_ext = vec3_set1(-FLT_MAX);
+
+    for (int i = 0; i < 8; ++i) {
+        vec3_t corner = vec3_set(
+            (i & 1) ? obb.max_ext.x : obb.min_ext.x,
+            (i & 2) ? obb.max_ext.y : obb.min_ext.y,
+            (i & 4) ? obb.max_ext.z : obb.min_ext.z
+        );
+        // Transform back to world space
+        corner = mat3_mul_vec3(obb.orientation, corner);
+        aabb->min_ext = vec3_min(aabb->min_ext, corner);
+        aabb->max_ext = vec3_max(aabb->max_ext, corner);
+    }
+}
+
 // Construct texture to world transformation matrix for Volume
 // extent is the extent of the volume (dim * voxel_size)
 static inline mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent) {
@@ -269,23 +340,13 @@ struct VeloxChem : viamd::EventHandler {
     bool use_gpu_path = false;
 
     // GL representations
-    //md_gl_mol_t gl_mol = {};
     md_gl_rep_t gl_rep = {};
 
     int homo_idx[2] = {};
     int lumo_idx[2] = {};
 
-    // Use same OBB to align all volumes
-    struct OBB {
-        mat3_t orientation = mat3_ident();
-        vec3_t min_ext = {0};
-        vec3_t max_ext = {0};
-    } obb;
-
-    struct AABB {
-        vec3_t min_ext = {0};
-        vec3_t max_ext = {0};
-    } aabb;
+    AABB aabb = {};
+    OBB  obb  = {};
 
     struct Summary {
         bool show_window = false;
@@ -627,10 +688,20 @@ struct VeloxChem : viamd::EventHandler {
                 init_from_file(str_from_cstr(state.files.molecule), state);
                 break;
             }
-            case viamd::EventType_ViamdTopologyFree:
+            case viamd::EventType_ViamdTopologyFree: {
                 reset_data();
                 break;
+            }
+            case viamd::EventType_ViamdSystemStateChanged: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+                ApplicationState& state = *(ApplicationState*)e.payload;
 
+                // Recalculate OBB and AABB
+                calculate_obb(&obb, &state.mold.sys);
+                aabb_from_obb(&aabb, obb);
+                
+                break;
+            }
             case viamd::EventType_ViamdRepresentationInfoFill: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
                 RepresentationInfo& info = *(RepresentationInfo*)e.payload;
@@ -922,12 +993,8 @@ struct VeloxChem : viamd::EventHandler {
                     nto.atom_xyzr = (vec4_t*)md_arena_allocator_push(arena, sizeof(vec4_t) * num_atoms);
                     nto.num_atoms = num_atoms;
 
-                    // Compute the PCA of the provided geometry
-                    // This is used in determining a better fitting volume for the orbitals
-                    vec4_t* xyzw = (vec4_t*)md_vm_arena_push(state.allocator.frame, sizeof(vec4_t) * num_atoms);
                     for (size_t i = 0; i < num_atoms; ++i) {
                         nto.atom_xyzr[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, md_util_element_vdw_radius(atomic_numbers[i])) * ANGSTROM_TO_BOHR;
-                        xyzw[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, 1.0f);
                     }
 
                     md_system_t sys = { .alloc = state.allocator.frame };
@@ -940,36 +1007,8 @@ struct VeloxChem : viamd::EventHandler {
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     md_gl_rep_set_color(gl_rep, 0, (uint32_t)sys.atom.count, colors, 0);
 
-                    vec3_t com = md_util_com_compute_vec4(xyzw, 0, num_atoms, 0);
-                    mat3_t cov = mat3_covariance_matrix_vec4(xyzw, 0, num_atoms, com);
-                    mat3_eigen_t eigen = mat3_eigen(cov);
-                    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-
-                    // Compute min and maximum extent along the PCA axes
-                    obb.orientation = mat3_transpose(PCA);
-                    obb.min_ext  = vec3_set1( FLT_MAX);
-                    obb.max_ext  = vec3_set1(-FLT_MAX);
-                    aabb.min_ext = vec3_set1( FLT_MAX);
-                    aabb.max_ext = vec3_set1(-FLT_MAX);
-
-                    // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
-                    for (size_t i = 0; i < num_atoms; ++i) {
-                        vec3_t xyz = vec3_from_vec4(xyzw[i]) * ANGSTROM_TO_BOHR;
-                        aabb.min_ext = vec3_min(aabb.min_ext, xyz);
-                        aabb.max_ext = vec3_max(aabb.max_ext, xyz);
-
-                        xyz = mat3_mul_vec3(PCA, xyz);
-                        obb.min_ext = vec3_min(obb.min_ext, xyz);
-                        obb.max_ext = vec3_max(obb.max_ext, xyz);
-                    }
-
-                    // This is the extra padding we apply to the 'bounding volumes'
-                    const float pad = 6.0f;
-                    aabb.min_ext -= pad;
-                    aabb.max_ext += pad;
-
-                    obb.min_ext -= pad;
-                    obb.max_ext += pad;
+                    calculate_obb(&obb, &sys);
+                    aabb_from_obb(&aabb, obb);
 
                     // NTO
                     size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
