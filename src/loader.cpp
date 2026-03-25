@@ -33,7 +33,6 @@ static const str_t loader_name[LoaderType_COUNT] = {
         STR_LIT("Gromacs Lossless Trajectory (trr)"),
         STR_LIT("DCD Trajectory (dcd)"),
 #if MD_VLX
-        STR_LIT("VeloxChem (out)"),
         STR_LIT("VeloxChem (h5)")
 #endif
 };
@@ -52,7 +51,6 @@ static const str_t loader_ext[LoaderType_COUNT] = {
         STR_LIT("trr"),
         STR_LIT("dcd"),
 #if MD_VLX
-        STR_LIT("out"),
         STR_LIT("h5")
 #endif
 };
@@ -71,8 +69,7 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
         LoaderFlag_Trajectory,                      // TRR
         LoaderFlag_Trajectory,                      // DCD
 #if MD_VLX
-        LoaderFlag_System,                          // Veloxchem (out)
-        LoaderFlag_System,                          // Veloxchem (h5)
+        LoaderFlag_System | LoaderFlag_Trajectory,  // Veloxchem (h5)
 #endif
 };
 
@@ -146,7 +143,6 @@ bool load(md_system_t* sys, str_t filepath, const State* state) {
         case LoaderType_DCD:
             return md_dcd_attach_from_file(sys, filepath, traj_flags);
 #if MD_VLX
-        case LoaderType_VLX_OUT:
         case LoaderType_VLX_H5:
             return md_vlx_system_init_from_file(sys, filepath);
 #endif
@@ -157,24 +153,24 @@ bool load(md_system_t* sys, str_t filepath, const State* state) {
 }
 
 str_t type_name(LoaderType type) {
-	if (type < 0 || type >= LoaderType_COUNT) {
-		type = LoaderType_Undefined;
+    if (type < LoaderType_COUNT) {
+        return loader_name[type];
     }
-    return loader_name[type];
+    return loader_name[LoaderType_Undefined];
 }
 
 str_t type_ext(LoaderType type) {
-    if (type < 0 || type >= LoaderType_COUNT) {
-        type = LoaderType_Undefined;
+    if (type < LoaderType_COUNT) {
+        return loader_ext[type];
     }
-    return loader_ext[type];
+    return loader_ext[LoaderType_Undefined];
 }
 
 LoaderFlags type_flags(LoaderType type) {
-    if (type < 0 || type >= LoaderType_COUNT) {
-        type = LoaderType_Undefined;
+    if (type < LoaderType_COUNT) {
+        return loader_flags[type];
     }
-    return loader_flags[type];
+    return loader_flags[LoaderType_Undefined];
 }
 
 LoaderType type_from_ext(str_t ext) {

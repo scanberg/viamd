@@ -29,7 +29,6 @@ enum LoaderType_ {
     LoaderType_TRR,
     LoaderType_DCD,
 #if MD_VLX
-    LoaderType_VLX_OUT,
     LoaderType_VLX_H5,
 #endif
     LoaderType_COUNT

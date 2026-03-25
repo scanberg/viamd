@@ -902,6 +902,7 @@ int main(int argc, char** argv) {
                 PUSH_CPU_SECTION("Interpolate System State")
                 interpolate_system_state(&state);
                 POP_CPU_SECTION()
+                viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state, 0);
             }
         }
 
@@ -7055,7 +7056,6 @@ static void update_md_buffers(ApplicationState* data) {
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
 #endif
-        viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, data, 0);
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_ClearVelocity) {

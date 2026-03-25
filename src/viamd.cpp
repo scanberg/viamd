@@ -1228,7 +1228,9 @@ void update_representation(ApplicationState* state, Representation* rep) {
             default:
                 break;
             }
+            uint64_t frame_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 11);
             uint64_t vol_hash = (uint64_t)rep->electronic_structure.type | ((uint64_t)rep->electronic_structure.resolution << 8) | (orb_idx << 24) | (sub_idx << 48);
+            vol_hash = md_hash64_combine(vol_hash, frame_hash);
             if (vol_hash != rep->electronic_structure.vol_hash) {
                 const float samples_per_angstrom[(int)VolumeResolution::Count] = {
                     4.0f,
@@ -1241,6 +1243,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
                     .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
+                    .frame_time = state->animation.frame,
                     .dst_volume = &rep->electronic_structure.vol,
                 };
                 viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
