@@ -158,12 +158,18 @@ static const char* electronic_structure_type_str[(int)ElectronicStructureType::C
 };
 
 enum MolBit_ {
-    MolBit_DirtyPosition            = 0x01,
-    MolBit_DirtyRadius              = 0x02,
-    MolBit_DirtySecondaryStructure  = 0x04,
-    MolBit_DirtyFlags               = 0x08,
-    MolBit_DirtyBonds               = 0x10,
-    MolBit_ClearVelocity            = 0x20,
+    MolBit_DirtyPosition            = 1u << 0,
+    MolBit_DirtyRadius              = 1u << 1,
+    MolBit_DirtySecondaryStructure  = 1u << 2,
+    MolBit_DirtyFlags               = 1u << 3,
+    MolBit_DirtyBonds               = 1u << 4,
+    MolBit_ClearVelocity            = 1u << 5,
+};
+
+enum RecenterTarget {
+    RecenterTarget_UnitcellCenter,
+    RecenterTarget_Origin,
+    RecenterTarget_COUNT,
 };
 
 // This is viamd's representation of a property
@@ -873,9 +879,15 @@ struct ApplicationState {
     } representation;
 
     struct {
+        bool recenter = false;
+        bool orient   = false;
+
         bool apply_pbc = false;
         bool unwrap_structures = false;
         bool recalc_bonds = false;
+
+        // For recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
+        md_bitfield_t target_mask = {0};
     } operations;
 
     struct {

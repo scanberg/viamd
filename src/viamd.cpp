@@ -1674,6 +1674,50 @@ void interpolate_system_state(ApplicationState* state) {
         }
     }
 
+    if (state->operations.recenter) {
+        if (md_unitcell_flags(&payload.unitcell) != 0) {
+            size_t num_idx = md_bitfield_popcount(&state->operations.target_mask);
+            if (num_idx > 0) {
+                float* mass = (float*)md_vm_arena_push(temp_arena, sizeof(float) * sys.atom.count);
+                md_atom_extract_masses(mass, 0, sys.atom.count, &sys.atom);
+                
+                int32_t* idx = (int32_t*)md_vm_arena_push(temp_arena, sizeof(int32_t) * num_idx);
+                md_bitfield_iter_extract_indices(idx, num_idx, md_bitfield_iter_create(&state->operations.target_mask));
+                
+                // Unwrap target structure
+                md_util_unwrap(payload.dst_x, payload.dst_y, payload.dst_z, idx, num_idx, &payload.unitcell);
+
+                // Calculate target
+                mat3_t A = {0};
+                md_unitcell_A_extract_float(A.elem, &payload.unitcell);
+                vec3_t target = mat3_mul_vec3(A, vec3_set1(0.5f));
+
+                // Calculate COM
+                vec3_t com = md_util_com_compute(payload.dst_x, payload.dst_y, payload.dst_z, mass, idx, num_idx, &payload.unitcell);
+
+                // Calculate Rotation
+                mat3_t R = mat3_ident();
+                if (state->operations.orient) {
+                    mat3_t C = mat3_covariance_matrix(payload.dst_x, payload.dst_y, payload.dst_z, mass, idx, num_idx, com);
+                    R = mat3_extract_rotation(C);
+                }
+                vec3_t delta = vec3_sub(target, com);
+                mat4_t T = mat4_from_mat3(R) * mat4_translate_vec3(delta);
+                
+                // Batch transform all atoms
+                task_system::ID recenter_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [T, data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    (void)thread_num;
+                    size_t count = range_end - range_beg;
+                    float* x = data->dst_x + range_beg;
+                    float* y = data->dst_y + range_beg;
+                    float* z = data->dst_z + range_beg;
+                    mat4_batch_transform_inplace(x, y, z, 1.0f, count, T);
+                });
+                tasks[num_tasks++] = recenter_task;
+            }
+        }
+    }
+
     if (state->operations.apply_pbc) {
         task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;

@@ -572,7 +572,7 @@ int main(int argc, char** argv) {
     md_bitfield_init(&state.selection.highlight_mask, persistent_alloc);
     md_bitfield_init(&state.selection.query.mask, persistent_alloc);
     md_bitfield_init(&state.selection.grow.mask, persistent_alloc);
-
+    md_bitfield_init(&state.operations.target_mask, persistent_alloc);
     md_bitfield_init(&state.representation.visibility_mask, persistent_alloc);
 
     // Init platform
@@ -2241,16 +2241,10 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Operations")) {
-            /*
-            @TODO (Robin): Reimplement this once the new 'cache' is in place
-            if (load::traj::has_recenter_target(data->mold.sys.trajectory)) {
-                if (ImGui::Button("Remove Recenter Target")) {
-                    load::traj::set_recenter_target(data->mold.sys.trajectory, nullptr);
-                    data->mold.interpolate_system_state = true;
-                    data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                }
-            }
-            */
+            bool do_recenter = false;
+            bool do_pbc = false;
+            bool do_unwrap = false;
+            bool do_bonds = false;
 
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
@@ -2260,10 +2254,38 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::TableHeadersRow();
                 */
                 const float button_width = (ImGui::GetFontSize() / 20.f) * 150.f;
+                const bool recenter_available = !md_bitfield_empty(&data->operations.target_mask);
 
-                bool do_pbc = false;
-                bool do_unwrap = false;
-                bool do_bonds = false;
+                ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                if (!recenter_available) {
+                    ImGui::PushDisabled();
+                }
+                if (ImGui::Button("Recenter", ImVec2(button_width,0))) {
+                    do_recenter = true;
+                }
+                if (ImGui::IsItemHovered() && recenter_available) {
+                    // Highlight the target atoms that the system will be recentered around
+                    md_bitfield_clear(&data->selection.highlight_mask);
+                    md_bitfield_copy (&data->selection.highlight_mask, &data->operations.target_mask);
+                }
+                ImGui::SetItemTooltip("Recenter the system (Once)");
+
+                ImGui::TableSetColumnIndex(1);
+                if (ImGui::Checkbox("##recenter", &data->operations.recenter) && data->operations.recenter) {
+                    do_recenter = true;
+                }
+                ImGui::SetItemTooltip("Recenter the system (Always)");
+
+                ImGui::TableSetColumnIndex(2);
+                if (ImGui::Button(ICON_FA_GEARS)) {
+                    ImGui::OpenPopup("##recenter_popup");
+                }
+
+                if (!recenter_available) {
+                    ImGui::PopDisabled();
+                }
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -2303,44 +2325,51 @@ static void draw_main_menu(ApplicationState* data) {
                     do_bonds = true;
                 }
                 ImGui::SetItemTooltip("Recalculate covalent bonds (Always)");
-
-                if (do_pbc) {
-					md_util_system_pbc(&data->mold.sys);
-                    data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
-                }
-
-                if (do_unwrap) {
-					md_util_system_unwrap(&data->mold.sys);
-                    data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
-                }
-
-                if (do_bonds) {
-                    if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
-                        const auto& mol = data->mold.sys;
-                        uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
-                        md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
-
-                        float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                        float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                        float* z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                        md_trajectory_frame_header_t frame_header;
-
-                        if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
-                            MD_LOG_DEBUG("Failed to extract frame data");
-                        } else {
-                            MD_LOG_DEBUG("RECALCULATING BONDS");
-                            md_bond_data_clear(&data->mold.sys.bond);
-                            md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, frame_alloc);
-                            data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                            md_vm_arena_temp_end(temp_pos);
-                        }
-                    } else {
-                        MD_LOG_INFO("Cannot recalculate bonds while evaluation is occuring.");
-                    }
-                }
-
                 ImGui::EndTable();
             }
+
+            if (ImGui::BeginPopup("##recenter_popup")) {
+                // Expose recentering options here.
+                ImGui::Checkbox("Orient", &data->operations.orient);
+                ImGui::SetItemTooltip("Orient the system according to the principal axes of inertia of the target");
+                ImGui::EndPopup();
+            }
+
+            if (do_pbc) {
+                md_util_system_pbc(&data->mold.sys);
+                data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+            }
+
+            if (do_unwrap) {
+                md_util_system_unwrap(&data->mold.sys);
+                data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+            }
+
+            if (do_bonds) {
+                if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
+                    const auto& mol = data->mold.sys;
+                    uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
+                    md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
+
+                    float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                    float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                    float* z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                    md_trajectory_frame_header_t frame_header;
+
+                    if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
+                        MD_LOG_DEBUG("Failed to extract frame data");
+                    } else {
+                        MD_LOG_DEBUG("RECALCULATING BONDS");
+                        md_bond_data_clear(&data->mold.sys.bond);
+                        md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, frame_alloc);
+                        data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                        md_vm_arena_temp_end(temp_pos);
+                    }
+                } else {
+                    MD_LOG_INFO("Cannot recalculate bonds while evaluation is occuring.");
+                }
+            }
+
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
@@ -3320,59 +3349,6 @@ void draw_context_popup(ApplicationState* state) {
         }
         */
 
-#if 0
-        // @TODO(Robin): Re-enable this once the new cache is in place for shown frames.
-        if (state->selection.atom_idx.right_click != -1 && num_frames > 0) {
-            if (ImGui::BeginMenu("Recenter Trajectory...")) {
-                const int idx = state->selection.atom_idx.right_click;
-
-                md_bitfield_t mask = {0};
-                md_bitfield_init(&mask, frame_alloc);
-                bool apply = false;
-
-                apply |= ImGui::MenuItem("on Atom");
-                if (ImGui::IsItemHovered()) {
-                    md_bitfield_set_bit(&mask, idx);
-                }
-
-                const md_component_idx_t comp_idx = md_component_find_by_atom_idx(&state->mold.sys.component, idx);
-                if (comp_idx != -1) {
-                    apply |= ImGui::MenuItem("on Residue");
-                    if (ImGui::IsItemHovered()) {
-                        const md_urange_t range = md_component_atom_range(&state->mold.sys.component, comp_idx);
-                        md_bitfield_set_range(&mask, range.beg, range.end);
-                    }
-                }
-
-                const md_instance_idx_t chain_idx = md_system_instance_find_by_atom_idx(&state->mold.sys, idx);
-                if (chain_idx != -1) {
-                    apply |= ImGui::MenuItem("on Chain");
-                    if (ImGui::IsItemHovered()) {
-                        const auto range = md_system_instance_atom_range(&state->mold.sys, chain_idx);
-                        md_bitfield_set_range(&mask, range.beg, range.end);
-                    }
-                }
-
-                if (num_atoms_selected > 0) {
-                    apply |= ImGui::MenuItem("on Selection");
-                    if (ImGui::IsItemHovered()) {
-                        md_bitfield_copy(&mask, &state->selection.selection_mask);
-                    }
-                }
-
-                if (!md_bitfield_empty(&mask)) {
-                    md_bitfield_copy(&state->selection.highlight_mask, &mask);
-                    if (apply) {
-                        load::traj::set_recenter_target(state->mold.sys.trajectory, &mask);
-                        state->mold.interpolate_system_state = true;
-                        state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        ImGui::CloseCurrentPopup();
-                    }
-                }
-                ImGui::EndMenu();
-            }
-        }
-#endif
         if (ImGui::BeginMenu("Selection")) {
             if (ImGui::MenuItem("Invert")) {
                 md_bitfield_not_inplace(&state->selection.selection_mask, 0, state->mold.sys.atom.count);
@@ -3396,6 +3372,19 @@ void draw_context_popup(ApplicationState* state) {
             }
             ImGui::EndMenu();
         }
+        
+        if (num_atoms_selected > 0) {
+            if (ImGui::MenuItem("Set as Recenter Target")) {
+                md_bitfield_clear(&state->operations.target_mask);
+                md_bitfield_copy(&state->operations.target_mask, &state->selection.selection_mask);
+                ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::IsItemHovered()) {
+                md_bitfield_clear(&state->selection.highlight_mask);
+                md_bitfield_copy(&state->selection.highlight_mask, &state->selection.selection_mask);
+            }
+        }
+
         ImGui::EndPopup();
     }
 }
