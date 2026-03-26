@@ -609,8 +609,12 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Initializing volume...");
     volume::initialize();
     VIAMD_LOG_DEBUG("Initializing task system...");
-    const size_t num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? md_os_num_processors() : VIAMD_NUM_WORKER_THREADS;
-    task_system::initialize(CLAMP(num_threads, 2, (uint32_t)md_os_num_processors()));
+    md_os_sys_info_t sys_info = {0};
+	md_os_sys_info_query(&sys_info);
+
+    size_t num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? sys_info.num_physical_cores : VIAMD_NUM_WORKER_THREADS;
+	num_threads = CLAMP(num_threads, 2, sys_info.num_physical_cores);
+    task_system::initialize(num_threads);
 
     md_gl_initialize();
     state.gl.shaders                = md_gl_shaders_create(shader_output_snippet);
@@ -2283,6 +2287,13 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::OpenPopup("##recenter_popup");
                 }
 
+                if (ImGui::BeginPopup("##recenter_popup")) {
+                    // Expose recentering options here.
+                    ImGui::Checkbox("Orient", &data->operations.orient);
+                    ImGui::SetItemTooltip("Orient the system according to the principal axes of inertia of the target");
+                    ImGui::EndPopup();
+                }
+
                 if (!recenter_available) {
                     ImGui::PopDisabled();
                 }
@@ -2326,13 +2337,6 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SetItemTooltip("Recalculate covalent bonds (Always)");
                 ImGui::EndTable();
-            }
-
-            if (ImGui::BeginPopup("##recenter_popup")) {
-                // Expose recentering options here.
-                ImGui::Checkbox("Orient", &data->operations.orient);
-                ImGui::SetItemTooltip("Orient the system according to the principal axes of inertia of the target");
-                ImGui::EndPopup();
             }
 
             if (do_pbc) {

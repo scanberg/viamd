@@ -1485,6 +1485,8 @@ void interpolate_system_state(ApplicationState* state) {
 
         vec3_t* aabb_min;
         vec3_t* aabb_max;
+
+        mat4_t transform;
     };
 
     const InterpolationMode mode = (frames[1] == frames[2]) ? InterpolationMode::Nearest : state->animation.interpolation;
@@ -1570,8 +1572,8 @@ void interpolate_system_state(ApplicationState* state) {
 
     switch (mode) {
         case InterpolationMode::Nearest: {
+            payload.unitcell = payload.src_states[0]->unitcell;
             task_system::ID interp_task = task_system::create_pool_task(STR_LIT("## Interpolate"), [data = &payload]() {
-                data->unitcell = data->src_states[0]->unitcell;
                 MEMCPY(data->dst_x, data->src_states[0]->atom_x, sizeof(float) * data->count);
                 MEMCPY(data->dst_y, data->src_states[0]->atom_y, sizeof(float) * data->count);
                 MEMCPY(data->dst_z, data->src_states[0]->atom_z, sizeof(float) * data->count);
@@ -1580,15 +1582,13 @@ void interpolate_system_state(ApplicationState* state) {
             break;
         }
         case InterpolationMode::Linear: {
-            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
-                double x  = lerp(data->src_states[0]->unitcell.x,  data->src_states[1]->unitcell.x,  data->t);
-                double y  = lerp(data->src_states[0]->unitcell.y,  data->src_states[1]->unitcell.y,  data->t);
-                double z  = lerp(data->src_states[0]->unitcell.z,  data->src_states[1]->unitcell.z,  data->t);
-                double xy = lerp(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->t);
-                double xz = lerp(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->t);
-                double yz = lerp(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->t);
-                data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-            });
+            double x  = lerp(payload.src_states[0]->unitcell.x,  payload.src_states[1]->unitcell.x,  payload.t);
+            double y  = lerp(payload.src_states[0]->unitcell.y,  payload.src_states[1]->unitcell.y,  payload.t);
+            double z  = lerp(payload.src_states[0]->unitcell.z,  payload.src_states[1]->unitcell.z,  payload.t);
+            double xy = lerp(payload.src_states[0]->unitcell.xy, payload.src_states[1]->unitcell.xy, payload.t);
+            double xz = lerp(payload.src_states[0]->unitcell.xz, payload.src_states[1]->unitcell.xz, payload.t);
+            double yz = lerp(payload.src_states[0]->unitcell.yz, payload.src_states[1]->unitcell.yz, payload.t);
+            payload.unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
 
             task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
@@ -1603,21 +1603,18 @@ void interpolate_system_state(ApplicationState* state) {
                 md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t);
             }, grain_size);
 
-            tasks[num_tasks++] = interp_unit_cell_task;
             tasks[num_tasks++] = interp_coord_task;
 
             break;
         }
         case InterpolationMode::CubicSpline: {
-            task_system::ID interp_unit_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unit Cell Data"), [data = &payload]() {
-                double x  = cubic_spline(data->src_states[0]->unitcell.x,  data->src_states[1]->unitcell.x,  data->src_states[2]->unitcell.x,  data->src_states[3]->unitcell.x,  data->t, data->s);
-                double y  = cubic_spline(data->src_states[0]->unitcell.y,  data->src_states[1]->unitcell.y,  data->src_states[2]->unitcell.y,  data->src_states[3]->unitcell.y,  data->t, data->s);
-                double z  = cubic_spline(data->src_states[0]->unitcell.z,  data->src_states[1]->unitcell.z,  data->src_states[2]->unitcell.z,  data->src_states[3]->unitcell.z,  data->t, data->s);
-                double xy = cubic_spline(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->src_states[2]->unitcell.xy, data->src_states[3]->unitcell.xy, data->t, data->s);
-                double xz = cubic_spline(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->src_states[2]->unitcell.xz, data->src_states[3]->unitcell.xz, data->t, data->s);
-                double yz = cubic_spline(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->src_states[2]->unitcell.yz, data->src_states[3]->unitcell.yz, data->t, data->s);
-                data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
-            });
+            double x  = cubic_spline(payload.src_states[0]->unitcell.x,  payload.src_states[1]->unitcell.x,  payload.src_states[2]->unitcell.x,  payload.src_states[3]->unitcell.x,  payload.t, payload.s);
+            double y  = cubic_spline(payload.src_states[0]->unitcell.y,  payload.src_states[1]->unitcell.y,  payload.src_states[2]->unitcell.y,  payload.src_states[3]->unitcell.y,  payload.t, payload.s);
+            double z  = cubic_spline(payload.src_states[0]->unitcell.z,  payload.src_states[1]->unitcell.z,  payload.src_states[2]->unitcell.z,  payload.src_states[3]->unitcell.z,  payload.t, payload.s);
+            double xy = cubic_spline(payload.src_states[0]->unitcell.xy, payload.src_states[1]->unitcell.xy, payload.src_states[2]->unitcell.xy, payload.src_states[3]->unitcell.xy, payload.t, payload.s);
+            double xz = cubic_spline(payload.src_states[0]->unitcell.xz, payload.src_states[1]->unitcell.xz, payload.src_states[2]->unitcell.xz, payload.src_states[3]->unitcell.xz, payload.t, payload.s);
+            double yz = cubic_spline(payload.src_states[0]->unitcell.yz, payload.src_states[1]->unitcell.yz, payload.src_states[2]->unitcell.yz, payload.src_states[3]->unitcell.yz, payload.t, payload.s);
+            payload.unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
 
             task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
@@ -1632,7 +1629,6 @@ void interpolate_system_state(ApplicationState* state) {
                 md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t, data->s);
             }, grain_size);
 
-            tasks[num_tasks++] = interp_unit_cell_task;
             tasks[num_tasks++] = interp_coord_task;
             
             break;
@@ -1684,36 +1680,42 @@ void interpolate_system_state(ApplicationState* state) {
                 int32_t* idx = (int32_t*)md_vm_arena_push(temp_arena, sizeof(int32_t) * num_idx);
                 md_bitfield_iter_extract_indices(idx, num_idx, md_bitfield_iter_create(&state->operations.target_mask));
                 
-                // Unwrap target structure
-                md_util_unwrap(payload.dst_x, payload.dst_y, payload.dst_z, idx, num_idx, &payload.unitcell);
+                // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
+                task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [idx, num_idx, mass, data = &payload]() {
+                    // Unwrap target structure
+                    md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, idx, num_idx, &data->unitcell);
 
-                // Calculate target
-                mat3_t A = {0};
-                md_unitcell_A_extract_float(A.elem, &payload.unitcell);
-                vec3_t target = mat3_mul_vec3(A, vec3_set1(0.5f));
+                    // Calculate target
+                    mat3_t A = {0};
+                    md_unitcell_A_extract_float(A.elem, &data->unitcell);
+                    vec3_t target = mat3_mul_vec3(A, vec3_set1(0.5f));
 
-                // Calculate COM
-                vec3_t com = md_util_com_compute(payload.dst_x, payload.dst_y, payload.dst_z, mass, idx, num_idx, &payload.unitcell);
+                    // Calculate COM
+                    vec3_t com = md_util_com_compute(data->dst_x, data->dst_y, data->dst_z, mass, idx, num_idx, &data->unitcell);
 
-                // Calculate Rotation
-                mat3_t R = mat3_ident();
-                if (state->operations.orient) {
-                    mat3_t C = mat3_covariance_matrix(payload.dst_x, payload.dst_y, payload.dst_z, mass, idx, num_idx, com);
-                    R = mat3_extract_rotation(C);
-                }
-                vec3_t delta = vec3_sub(target, com);
-                mat4_t T = mat4_from_mat3(R) * mat4_translate_vec3(delta);
+                    // Calculate Rotation
+                    mat3_t R = mat3_ident();
+                    if (data->state->operations.orient) {
+                        mat3_t C = mat3_covariance_matrix(data->dst_x, data->dst_y, data->dst_z, mass, idx, num_idx, com);
+                        mat3_eigen_t eigen = mat3_eigen(C);
+                        R = mat3_transpose(eigen.vectors);
+                    }
+                    mat4_t T = mat4_translate_vec3(target) * mat4_from_mat3(R) * mat4_translate_vec3(-com);
+					data->transform = T;
+				});
                 
                 // Batch transform all atoms
-                task_system::ID recenter_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [T, data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     size_t count = range_end - range_beg;
                     float* x = data->dst_x + range_beg;
                     float* y = data->dst_y + range_beg;
                     float* z = data->dst_z + range_beg;
-                    mat4_batch_transform_inplace(x, y, z, 1.0f, count, T);
-                });
-                tasks[num_tasks++] = recenter_task;
+                    mat4_batch_transform_inplace(x, y, z, 1.0f, count, data->transform);
+                }, grain_size);
+
+				tasks[num_tasks++] = calc_transform_task;
+                tasks[num_tasks++] = apply_transform_task;
             }
         }
     }
