@@ -18,6 +18,8 @@
 #include <implot.h>
 #include <implot_internal.h>
 
+#define USE_FRAMEBUFFER_SCALE 0
+
 static void init_all_representations(ApplicationState* state);
 
 void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
@@ -200,10 +202,11 @@ void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2
     out_picking = {};
 
     vec2_t c = coord;
-#if MD_PLATFORM_OSX
+#if USE_FRAMEBUFFER_SCALE
     ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
     c = coord * vec2_set(scale.x, scale.y);
 #endif
+
     if (0.f < c.x && c.x < (float)gbuffer.width && 0.f < c.y && c.y < (float)gbuffer.height) {
         extract_gbuffer_picking_idx_and_depth(&out_picking.idx, &out_picking.depth, &gbuffer, (int)c.x, (int)c.y);
         const vec4_t viewport = {0, 0, (float)gbuffer.width, (float)gbuffer.height};
