@@ -481,6 +481,9 @@ void free_system_data(ApplicationState* data) {
     md_arena_allocator_reset(data->mold.sys_alloc);
     MEMSET(&data->mold.sys, 0, sizeof(data->mold.sys));
 
+    md_array_free(data->operations.initial_frame.xyzw, data->allocator.persistent);
+    data->operations.initial_frame.xyzw = nullptr;
+
     md_gl_mol_destroy(data->mold.gl_mol);
     MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
@@ -1675,79 +1678,9 @@ void interpolate_system_state(ApplicationState* state) {
     if (state->operations.recenter) {
         size_t num_idx = md_bitfield_popcount(&state->operations.target_mask);
         if (num_idx > 0) {
-            float* mass = (float*)md_vm_arena_push(temp_arena, sizeof(float) * sys.atom.count);
-            md_atom_extract_masses(mass, 0, sys.atom.count, &sys.atom);
-            
-            int32_t* idx = (int32_t*)md_vm_arena_push(temp_arena, sizeof(int32_t) * num_idx);
-            md_bitfield_iter_extract_indices(idx, num_idx, md_bitfield_iter_create(&state->operations.target_mask));
-
-            uint64_t hash = md_hash64(idx, sizeof(int32_t) * num_idx, 0xDEADBEEF);
-            if (hash != state->operations.initial_frame.hash) {
-                // Need to recalculate the initial frame
-                state->operations.initial_frame.hash = hash;
-
-                md_array_resize(state->operations.initial_frame.xyzw, num_idx, state->allocator.persistent);
-
-                // Fetch initial frame data required for orienting the structure
-                task_system::ID initial_frame_task = task_system::create_pool_task(STR_LIT("## Fetch Initial Frame"), [data = &payload, idx, num_idx, mass]() {
-                    size_t num_atoms = data->state->mold.sys.atom.count;
-                    float* temp_x = (float*)md_vm_arena_push(data->state->allocator.frame, sizeof(float) * num_atoms);
-                    float* temp_y = (float*)md_vm_arena_push(data->state->allocator.frame, sizeof(float) * num_atoms);
-                    float* temp_z = (float*)md_vm_arena_push(data->state->allocator.frame, sizeof(float) * num_atoms);
-
-                    md_trajectory_load_frame(data->state->mold.sys.trajectory, 0, NULL, temp_x, temp_y, temp_z);
-
-                    for (size_t i = 0; i < num_idx; ++i) {
-                        int atom_idx = idx[i];
-                        data->state->operations.initial_frame.xyzw[i] = vec4_set(temp_x[atom_idx], temp_y[atom_idx], temp_z[atom_idx], mass[atom_idx]);
-                    }
-
-                    data->state->operations.initial_frame.com = md_util_com_compute_vec4(data->state->operations.initial_frame.xyzw, NULL, num_idx, &data->unitcell);
-                    data->state->operations.initial_frame.alignment_mat = mat4_ident();
-                });
-                tasks[num_tasks++] = initial_frame_task;
-            }
-            
             // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
-            task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [idx, num_idx, mass, data = &payload]() {
-                // Extract xyzw subset of target
-                vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(data->state->allocator.frame, sizeof(vec4_t) * num_idx);
-                for (size_t i = 0; i < num_idx; ++i) {
-                    int atom_idx = idx[i];
-                    target_xyzw[i] = vec4_set(data->dst_x[atom_idx], data->dst_y[atom_idx], data->dst_z[atom_idx], mass[atom_idx]);
-                }
-
-                // Unwrap target structure
-                md_util_unwrap_vec4(target_xyzw, num_idx, &data->unitcell);
-
-                // Calculate target
-                vec3_t target = {0};
-                if (md_unitcell_flags(&data->unitcell) != 0) {
-                    mat3_t A = {0};
-                    md_unitcell_A_extract_float(A.elem, &data->unitcell);
-                    target = mat3_mul_vec3(A, vec3_set1(0.5f));
-                } 
-
-                // Calculate COM
-                vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, num_idx, &data->unitcell);
-
-                // Calculate Rotation
-                mat3_t R = mat3_ident();
-                if (data->state->operations.orient) {
-                    const vec4_t* xyzw[2] = {
-                        data->state->operations.initial_frame.xyzw,
-                        target_xyzw,
-                    };
-                    const vec3_t com[2] = {
-                        data->state->operations.initial_frame.com,
-                        target_com,
-                    };
-                    R = mat3_optimal_rotation_vec4(xyzw, NULL, num_idx, com);
-                    R = mat3_orthonormalize(R);
-                }
-                const mat4_t A = data->state->operations.initial_frame.alignment_mat;
-                mat4_t T = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
-                data->transform = T;
+            task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [data = &payload]() {
+                recenter_calculate_transform(data->transform.elem, data->state);
             });
             
             // Batch transform all atoms
@@ -1784,7 +1717,7 @@ void interpolate_system_state(ApplicationState* state) {
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int*     s_idx = md_index_range_ptr(&data->state->mold.sys.structure, i);
                 size_t   s_len = md_index_range_size(&data->state->mold.sys.structure, i);
-                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->unitcell);
+                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->state->mold.sys.bond, &data->unitcell);
             }
         });
         tasks[num_tasks++] = unwrap_task;
@@ -2035,4 +1968,91 @@ void interpolate_system_state(ApplicationState* state) {
 #endif
 
     state->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+}
+
+void recenter_update_target_data(ApplicationState* state) {
+    if (!state->mold.sys.trajectory) return;
+
+    uint64_t hash = md_bitfield_hash64(&state->operations.target_mask, 0xDEADBEEF);
+    if (hash != state->operations.initial_frame.hash) {
+        // Need to recalculate the initial frame
+        state->operations.initial_frame.hash = hash;
+        size_t count = md_bitfield_popcount(&state->operations.target_mask);
+
+        md_array_resize(state->operations.initial_frame.xyzw, count, state->allocator.persistent);
+
+        state->operations.initial_frame.com = vec3_zero();
+        state->operations.initial_frame.alignment_mat = mat4_ident();
+
+        if (state->operations.initial_frame.xyzw && count > 0) {
+            // Fetch initial frame data required for orienting the structure
+            size_t num_atoms = state->mold.sys.atom.count;
+            float* temp_x = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
+            float* temp_y = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
+            float* temp_z = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
+
+            md_trajectory_load_frame(state->mold.sys.trajectory, 0, NULL, temp_x, temp_y, temp_z);
+
+            md_bitfield_iter_t it = md_bitfield_iter_create(&state->operations.target_mask);
+            int dst_idx = 0;
+            while (md_bitfield_iter_next(&it)) {
+                uint64_t src_idx = md_bitfield_iter_idx(&it);
+                float mass = md_atom_mass(&state->mold.sys.atom, src_idx);
+                state->operations.initial_frame.xyzw[dst_idx++] = vec4_set(temp_x[src_idx], temp_y[src_idx], temp_z[src_idx], mass);
+            }
+
+            state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.xyzw, NULL, count, &state->mold.sys.unitcell);
+        }
+    }
+}
+
+void recenter_calculate_transform(float M[4][4], const ApplicationState* state) {
+    ASSERT(M);
+    ASSERT(state);
+
+    size_t count = md_bitfield_popcount(&state->operations.target_mask);
+    mat4_t transform = mat4_ident();
+
+    if (count > 0) {
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state->allocator.frame);
+        defer { md_vm_arena_temp_end(temp); };
+
+        // Extract xyzw subset of target
+        vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec4_t) * count);
+        md_util_system_extract_xyzw_from_mask(target_xyzw, &state->operations.target_mask, &state->mold.sys);
+
+        // Unwrap target structure (required for rotation)
+        md_util_unwrap_vec4(target_xyzw, NULL, count, &state->mold.sys.bond, &state->mold.sys.unitcell);
+
+        // Calculate target
+        vec3_t target = {0};
+        if (md_unitcell_flags(&state->mold.sys.unitcell) != 0) {
+            mat3_t A = {0};
+            md_unitcell_A_extract_float(A.elem, &state->mold.sys.unitcell);
+            target = mat3_mul_vec3(A, vec3_set1(0.5f));
+        } 
+
+        // Calculate COM
+        vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, count, &state->mold.sys.unitcell);
+
+        // Calculate Rotation
+        mat3_t R = mat3_ident();
+        if (state->operations.rotate && state->operations.initial_frame.xyzw) {
+            ASSERT(md_array_size(state->operations.initial_frame.xyzw) == count);
+            const vec4_t* xyzw[2] = {
+                state->operations.initial_frame.xyzw,
+                target_xyzw,
+            };
+            const vec3_t com[2] = {
+                state->operations.initial_frame.com,
+                target_com,
+            };
+            R = mat3_optimal_rotation_vec4(xyzw, NULL, count, com);
+            R = mat3_orthonormalize(R);
+        }
+        const mat4_t A = state->operations.initial_frame.alignment_mat;
+        mat4_t T = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
+        transform = T;
+    }
+    mat4_store((float*)M, transform);
 }

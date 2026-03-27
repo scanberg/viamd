@@ -2296,8 +2296,8 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SetItemTooltip("Recenter the system (Always)");
 
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Checkbox(ICON_FA_ROTATE, &data->operations.orient);
-                ImGui::SetItemTooltip("Use rotation");
+                ImGui::Checkbox(ICON_FA_ROTATE, &data->operations.rotate);
+                ImGui::SetItemTooltip("Rotate");
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -2341,32 +2341,9 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             if (do_recenter) {
-                // Calculate transform
-                size_t target_count = md_bitfield_popcount(&data->operations.target_mask);
-  
-                // Extract xyzw subset of target
-                vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(data->allocator.frame, sizeof(vec4_t) * target_count);
-                md_util_system_extract_xyzw_from_mask(target_xyzw, &data->operations.target_mask, &data->mold.sys);
+                mat4_t T = mat4_ident();
+                recenter_calculate_transform(T.elem, data);
 
-                // Unwrap target structure
-                md_util_unwrap_vec4(target_xyzw, target_count, &data->mold.sys.unitcell);
-
-                // Calculate target
-                vec3_t target = {0};
-                if (md_unitcell_flags(&data->mold.sys.unitcell) != 0) {
-                    mat3_t A = {0};
-                    md_unitcell_A_extract_float(A.elem, &data->mold.sys.unitcell);
-                    target = mat3_mul_vec3(A, vec3_set1(0.5f));
-                } 
-
-                // Calculate COM
-                vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, target_count, &data->mold.sys.unitcell);
-
-                // Calculate Rotation
-                mat3_t R = mat3_ident();
-                // Skip rotation for now
-                mat4_t T = mat4_translate_vec3(target) * mat4_translate_vec3(-target_com);
-                
                 // Batch transform all atoms
                 const uint32_t grain_size = 1024;
                 task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)data->mold.sys.atom.count, [T, data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
@@ -3424,6 +3401,7 @@ void draw_context_popup(ApplicationState* state) {
             if (ImGui::MenuItem("Set as Recenter Target")) {
                 md_bitfield_clear(&state->operations.target_mask);
                 md_bitfield_copy(&state->operations.target_mask, &state->selection.selection_mask);
+                recenter_update_target_data(state);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {

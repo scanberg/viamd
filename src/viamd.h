@@ -880,7 +880,7 @@ struct ApplicationState {
 
     struct {
         bool recenter = false;
-        bool orient   = false;
+        bool rotate   = false;
 
         bool apply_pbc = false;
         bool unwrap_structures = false;
@@ -1154,3 +1154,9 @@ void flag_all_representations_as_dirty(ApplicationState* state);
 void remove_all_representations(ApplicationState* state);
 void create_default_representations(ApplicationState* state);
 void recompute_atom_visibility_mask(ApplicationState* state);
+
+// Recentering operations (low level)
+
+// Update the required initial frame data for the recentering target (if needed)
+void recenter_update_target_data(ApplicationState* state);
+void recenter_calculate_transform(float M[4][4], const ApplicationState* state);
