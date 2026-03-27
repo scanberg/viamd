@@ -2269,34 +2269,35 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Button("Recenter", ImVec2(button_width,0))) {
                     do_recenter = true;
                 }
-                if (ImGui::IsItemHovered() && recenter_available) {
-                    // Highlight the target atoms that the system will be recentered around
-                    md_bitfield_clear(&data->selection.highlight_mask);
-                    md_bitfield_copy (&data->selection.highlight_mask, &data->operations.target_mask);
+                if (!recenter_available) {
+                    ImGui::PopDisabled();
                 }
-                ImGui::SetItemTooltip("Recenter the system (Once)");
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    if (!recenter_available) {
+                        ImGui::SetTooltip("No target selected for recentering. Please select a target using the selection tools.");
+                    } else {
+                        ImGui::SetTooltip("Recenter the system (Once)");
+                        // Highlight the target atoms that the system will be recentered around
+                        md_bitfield_clear(&data->selection.highlight_mask);
+                        md_bitfield_copy (&data->selection.highlight_mask, &data->operations.target_mask);
+                    }
+                }
 
                 ImGui::TableSetColumnIndex(1);
+                if (!recenter_available) {
+                    ImGui::PushDisabled();
+                }
                 if (ImGui::Checkbox("##recenter", &data->operations.recenter) && data->operations.recenter) {
                     do_recenter = true;
+                }
+                if (!recenter_available) {
+                    ImGui::PopDisabled();
                 }
                 ImGui::SetItemTooltip("Recenter the system (Always)");
 
                 ImGui::TableSetColumnIndex(2);
-                if (ImGui::Button(ICON_FA_GEARS)) {
-                    ImGui::OpenPopup("##recenter_popup");
-                }
-
-                if (ImGui::BeginPopup("##recenter_popup")) {
-                    // Expose recentering options here.
-                    ImGui::Checkbox("Orient", &data->operations.orient);
-                    ImGui::SetItemTooltip("Orient the system according to the principal axes of inertia of the target");
-                    ImGui::EndPopup();
-                }
-
-                if (!recenter_available) {
-                    ImGui::PopDisabled();
-                }
+                ImGui::Checkbox(ICON_FA_ROTATE, &data->operations.orient);
+                ImGui::SetItemTooltip("Use rotation");
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -2337,6 +2338,48 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SetItemTooltip("Recalculate covalent bonds (Always)");
                 ImGui::EndTable();
+            }
+
+            if (do_recenter) {
+                // Calculate transform
+                size_t target_count = md_bitfield_popcount(&data->operations.target_mask);
+  
+                // Extract xyzw subset of target
+                vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(data->allocator.frame, sizeof(vec4_t) * target_count);
+                md_util_system_extract_xyzw_from_mask(target_xyzw, &data->operations.target_mask, &data->mold.sys);
+
+                // Unwrap target structure
+                md_util_unwrap_vec4(target_xyzw, target_count, &data->mold.sys.unitcell);
+
+                // Calculate target
+                vec3_t target = {0};
+                if (md_unitcell_flags(&data->mold.sys.unitcell) != 0) {
+                    mat3_t A = {0};
+                    md_unitcell_A_extract_float(A.elem, &data->mold.sys.unitcell);
+                    target = mat3_mul_vec3(A, vec3_set1(0.5f));
+                } 
+
+                // Calculate COM
+                vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, target_count, &data->mold.sys.unitcell);
+
+                // Calculate Rotation
+                mat3_t R = mat3_ident();
+                // Skip rotation for now
+                mat4_t T = mat4_translate_vec3(target) * mat4_translate_vec3(-target_com);
+                
+                // Batch transform all atoms
+                const uint32_t grain_size = 1024;
+                task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)data->mold.sys.atom.count, [T, data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    (void)thread_num;
+                    size_t count = range_end - range_beg;
+                    float* x = data->mold.sys.atom.x + range_beg;
+                    float* y = data->mold.sys.atom.y + range_beg;
+                    float* z = data->mold.sys.atom.z + range_beg;
+                    mat4_batch_transform_inplace(x, y, z, 1.0f, count, T);
+                }, grain_size);
+                task_system::enqueue_task(apply_transform_task);
+                task_system::task_wait_for(apply_transform_task);
+                data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
             }
 
             if (do_pbc) {

@@ -436,6 +436,8 @@ void init_system_data(ApplicationState* data) {
         data->selection.bond_idx.hovered = -1;
         data->selection.bond_idx.right_click = -1;
 
+        md_bitfield_clear(&data->operations.target_mask);
+
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
         if (data->mold.sys.protein_backbone.segment.count > 0) {
             data->interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, data->mold.sys.protein_backbone.segment.count, data->mold.sys_alloc);
@@ -1671,52 +1673,95 @@ void interpolate_system_state(ApplicationState* state) {
     }
 
     if (state->operations.recenter) {
-        if (md_unitcell_flags(&payload.unitcell) != 0) {
-            size_t num_idx = md_bitfield_popcount(&state->operations.target_mask);
-            if (num_idx > 0) {
-                float* mass = (float*)md_vm_arena_push(temp_arena, sizeof(float) * sys.atom.count);
-                md_atom_extract_masses(mass, 0, sys.atom.count, &sys.atom);
-                
-                int32_t* idx = (int32_t*)md_vm_arena_push(temp_arena, sizeof(int32_t) * num_idx);
-                md_bitfield_iter_extract_indices(idx, num_idx, md_bitfield_iter_create(&state->operations.target_mask));
-                
-                // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
-                task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [idx, num_idx, mass, data = &payload]() {
-                    // Unwrap target structure
-                    md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, idx, num_idx, &data->unitcell);
+        size_t num_idx = md_bitfield_popcount(&state->operations.target_mask);
+        if (num_idx > 0) {
+            float* mass = (float*)md_vm_arena_push(temp_arena, sizeof(float) * sys.atom.count);
+            md_atom_extract_masses(mass, 0, sys.atom.count, &sys.atom);
+            
+            int32_t* idx = (int32_t*)md_vm_arena_push(temp_arena, sizeof(int32_t) * num_idx);
+            md_bitfield_iter_extract_indices(idx, num_idx, md_bitfield_iter_create(&state->operations.target_mask));
 
-                    // Calculate target
+            uint64_t hash = md_hash64(idx, sizeof(int32_t) * num_idx, 0xDEADBEEF);
+            if (hash != state->operations.initial_frame.hash) {
+                // Need to recalculate the initial frame
+                state->operations.initial_frame.hash = hash;
+
+                md_array_resize(state->operations.initial_frame.xyzw, num_idx, state->allocator.persistent);
+
+                // Fetch initial frame data required for orienting the structure
+                task_system::ID initial_frame_task = task_system::create_pool_task(STR_LIT("## Fetch Initial Frame"), [data = &payload, idx, num_idx, mass]() {
+                    size_t num_atoms = data->state->mold.sys.atom.count;
+                    float* temp_x = (float*)md_vm_arena_push(data->state->allocator.frame, sizeof(float) * num_atoms);
+                    float* temp_y = (float*)md_vm_arena_push(data->state->allocator.frame, sizeof(float) * num_atoms);
+                    float* temp_z = (float*)md_vm_arena_push(data->state->allocator.frame, sizeof(float) * num_atoms);
+
+                    md_trajectory_load_frame(data->state->mold.sys.trajectory, 0, NULL, temp_x, temp_y, temp_z);
+
+                    for (size_t i = 0; i < num_idx; ++i) {
+                        int atom_idx = idx[i];
+                        data->state->operations.initial_frame.xyzw[i] = vec4_set(temp_x[atom_idx], temp_y[atom_idx], temp_z[atom_idx], mass[atom_idx]);
+                    }
+
+                    data->state->operations.initial_frame.com = md_util_com_compute_vec4(data->state->operations.initial_frame.xyzw, NULL, num_idx, &data->unitcell);
+                    data->state->operations.initial_frame.alignment_mat = mat4_ident();
+                });
+                tasks[num_tasks++] = initial_frame_task;
+            }
+            
+            // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
+            task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [idx, num_idx, mass, data = &payload]() {
+                // Extract xyzw subset of target
+                vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(data->state->allocator.frame, sizeof(vec4_t) * num_idx);
+                for (size_t i = 0; i < num_idx; ++i) {
+                    int atom_idx = idx[i];
+                    target_xyzw[i] = vec4_set(data->dst_x[atom_idx], data->dst_y[atom_idx], data->dst_z[atom_idx], mass[atom_idx]);
+                }
+
+                // Unwrap target structure
+                md_util_unwrap_vec4(target_xyzw, num_idx, &data->unitcell);
+
+                // Calculate target
+                vec3_t target = {0};
+                if (md_unitcell_flags(&data->unitcell) != 0) {
                     mat3_t A = {0};
                     md_unitcell_A_extract_float(A.elem, &data->unitcell);
-                    vec3_t target = mat3_mul_vec3(A, vec3_set1(0.5f));
+                    target = mat3_mul_vec3(A, vec3_set1(0.5f));
+                } 
 
-                    // Calculate COM
-                    vec3_t com = md_util_com_compute(data->dst_x, data->dst_y, data->dst_z, mass, idx, num_idx, &data->unitcell);
+                // Calculate COM
+                vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, num_idx, &data->unitcell);
 
-                    // Calculate Rotation
-                    mat3_t R = mat3_ident();
-                    if (data->state->operations.orient) {
-                        mat3_t C = mat3_covariance_matrix(data->dst_x, data->dst_y, data->dst_z, mass, idx, num_idx, com);
-                        mat3_eigen_t eigen = mat3_eigen(C);
-                        R = mat3_transpose(eigen.vectors);
-                    }
-                    mat4_t T = mat4_translate_vec3(target) * mat4_from_mat3(R) * mat4_translate_vec3(-com);
-					data->transform = T;
-				});
-                
-                // Batch transform all atoms
-                task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                    (void)thread_num;
-                    size_t count = range_end - range_beg;
-                    float* x = data->dst_x + range_beg;
-                    float* y = data->dst_y + range_beg;
-                    float* z = data->dst_z + range_beg;
-                    mat4_batch_transform_inplace(x, y, z, 1.0f, count, data->transform);
-                }, grain_size);
+                // Calculate Rotation
+                mat3_t R = mat3_ident();
+                if (data->state->operations.orient) {
+                    const vec4_t* xyzw[2] = {
+                        data->state->operations.initial_frame.xyzw,
+                        target_xyzw,
+                    };
+                    const vec3_t com[2] = {
+                        data->state->operations.initial_frame.com,
+                        target_com,
+                    };
+                    R = mat3_optimal_rotation_vec4(xyzw, NULL, num_idx, com);
+                    R = mat3_orthonormalize(R);
+                }
+                const mat4_t A = data->state->operations.initial_frame.alignment_mat;
+                mat4_t T = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
+                data->transform = T;
+            });
+            
+            // Batch transform all atoms
+            task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                (void)thread_num;
+                size_t count = range_end - range_beg;
+                float* x = data->dst_x + range_beg;
+                float* y = data->dst_y + range_beg;
+                float* z = data->dst_z + range_beg;
+                mat4_batch_transform_inplace(x, y, z, 1.0f, count, data->transform);
+            }, grain_size);
 
-				tasks[num_tasks++] = calc_transform_task;
-                tasks[num_tasks++] = apply_transform_task;
-            }
+            tasks[num_tasks++] = calc_transform_task;
+            tasks[num_tasks++] = apply_transform_task;
         }
     }
 
@@ -1731,6 +1776,7 @@ void interpolate_system_state(ApplicationState* state) {
         });
         tasks[num_tasks++] = pbc_task;
     } 
+
     if (state->operations.unwrap_structures) {
         size_t num_structures = md_index_data_num_ranges(&sys.structure);
         task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {

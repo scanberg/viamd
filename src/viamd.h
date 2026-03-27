@@ -888,6 +888,18 @@ struct ApplicationState {
 
         // For recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
         md_bitfield_t target_mask = {0};
+
+        struct {
+            uint64_t hash = 0;
+
+            // Need to store the initial frame position for recentering and orienting to work properly when applying on trajectories
+            vec4_t* xyzw = nullptr;
+            vec3_t  com = {};
+
+            // Alignment matrix for orienting the structure based on principal axes. This is calculated based on the initial frame and applied to all frames for consistent orientation.
+            mat4_t alignment_mat = mat4_ident();
+        } initial_frame;
+
     } operations;
 
     struct {
