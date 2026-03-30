@@ -65,8 +65,6 @@
 // Complement to veloxchem green (magentaish)
 #define F32_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
 
-static const uint64_t ATOM_PROPERTY_RESP_CHARGE = HASH_STR_LIT("ATOM PROPERTY RESP CHARGE");
-
 // Broadening min max values
 static const double gamma_min = 0.1;
 static const double gamma_max = 1.0;
@@ -797,21 +795,25 @@ struct VeloxChem : viamd::EventHandler {
                     info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::AttachmentDensity);
                     info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::DetachmentDensity);
                 }
+                
+				size_t num_atomic_properties = md_vlx_atomic_property_count(vlx);
+				for (size_t i = 0; i < num_atomic_properties; ++i) {
+					const md_vlx_atomic_property_t* vlx_prop = md_vlx_atomic_property_by_index(vlx, i);
+                    if (!vlx_prop) continue;
 
-                const double* resp_charges = md_vlx_scf_resp_charges(vlx);
-                if (resp_charges) {
                     double value_min =  DBL_MAX;
                     double value_max = -DBL_MAX;
 
-                    for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
-                        value_min = MIN(value_min, resp_charges[i]);
-                        value_max = MAX(value_max, resp_charges[i]);
+					size_t len = vlx_prop->dim[0] * vlx_prop->dim[1];
+                    for (size_t j = 0; j < len; ++j) {
+                        value_min = MIN(value_min, vlx_prop->data[j]);
+                        value_max = MAX(value_max, vlx_prop->data[j]);
                     }
 
                     AtomProperty prop = {
-                        .id = ATOM_PROPERTY_RESP_CHARGE,
-                        .label = STR_LIT("Resp Charge"),
-                        .num_idx = 0,
+                        .key = vlx_prop->key,
+                        .label = str_copy(vlx_prop->label, info.alloc),
+                        .num_idx = (int)vlx_prop->dim[1],
                         .value_min = (float)value_min,
                         .value_max = (float)value_max,
                     };
@@ -896,33 +898,14 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_EvalAtomProperty);
                 EvalAtomProperty& data = *(EvalAtomProperty*)e.payload;
 
-                switch (data.property_id) {
-                case ATOM_PROPERTY_RESP_CHARGE: {
-                    size_t num_atoms = md_vlx_number_of_atoms(vlx);
-                    if (data.num_values != num_atoms) {
-                        MD_LOG_ERROR("Invalid number of values, did not match number of atoms");
-                        break;
+				const md_vlx_atomic_property_t* prop = md_vlx_atomic_property_by_key(vlx, data.key);
+                if (prop && (data.idx == 0 || data.idx < prop->dim[1]) && data.num_values == prop->dim[0]) {
+					const double* src_values = prop->data + data.idx * prop->dim[0];
+                    for (size_t i = 0; i < data.num_values; ++i) {
+                        data.dst_values[i] = (float)src_values[i];
                     }
-
-                    if (data.dst_values == nullptr) {
-                        MD_LOG_ERROR("Dst values not supplied");
-                        break;
-                    }
-
-                    const double* resp_charges = md_vlx_scf_resp_charges(vlx);
-                    if (resp_charges) {
-                        for (size_t i = 0; i < num_atoms; ++i) {
-                            data.dst_values[i] = (float)resp_charges[i];
-                        }
-                        data.output_written = true;
-                    }
-                    break;
+                    data.output_written = true;
                 }
-                default:
-                    // Do not fail here, as conceptually there may be other components that can calculate this property
-                    break;
-                }
-
                 break;
             }
             default:

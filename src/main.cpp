@@ -3695,25 +3695,38 @@ static void draw_representations_window(ApplicationState* state) {
                         if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
                             for (int i = 0; i < num_props; ++i) {
                                 bool selected = rep.prop.idx == i;
-                                if (ImGui::Selectable(props[rep.prop.idx].label.ptr, selected)) {
+                                if (ImGui::Selectable(props[i].label.ptr, selected)) {
                                     rep.prop.idx = i;
-                                    rep.prop.range_beg = props[rep.prop.idx].value_min;
-                                    rep.prop.range_end = props[rep.prop.idx].value_max;
+                                    rep.prop.range_beg = props[i].value_min;
+                                    rep.prop.range_end = props[i].value_max;
                                     update_rep = true;
                                 }
                             }
                             ImGui::EndCombo();
+                        }
+
+                        if (props[rep.prop.idx].num_idx > 1) {
+                            int idx = rep.prop.sub_idx + 1;
+                            const int min = 1;
+                            const int max = props[rep.prop.idx].num_idx;
+                            if (ImGui::SliderInt("Index", &idx, min, max)) {
+                                update_rep = true;
+                            }
+                            rep.prop.sub_idx = CLAMP(idx - 1, 0, props[rep.prop.idx].num_idx - 1);
                         }
                         
                         if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.prop.colormap), ImVec2(inner_item_width,0), rep.prop.colormap)) {
                             ImGui::OpenPopup("Color Map Selector");
                         }
 
-                        // Scale a bit outside of the default range
-                        const float value_min = props[rep.prop.idx].value_min * 2.0f;
-                        const float value_max = props[rep.prop.idx].value_max * 2.0f;
+						const float pad = MAX(fabsf(props[rep.prop.idx].value_min), fabsf(props[rep.prop.idx].value_max));
+                        const float value_min = props[rep.prop.idx].value_min - pad;
+                        const float value_max = props[rep.prop.idx].value_max + pad;
 
+						// Otherwise, we allow independent scaling of the min and max values
+                        // Scale a bit outside of the default range
                         update_rep |= ImGui::RangeSliderFloat("Min / Max", &rep.prop.range_beg, &rep.prop.range_end, value_min, value_max);
+
                         if (ImGui::BeginPopup("Color Map Selector")) {
                             for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
                                 if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {

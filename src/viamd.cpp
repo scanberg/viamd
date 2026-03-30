@@ -1064,7 +1064,6 @@ void update_representation(ApplicationState* state, Representation* rep) {
     md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
     defer { md_vm_arena_temp_end(tmp); };
 
-
     const size_t bytes = num_atoms * sizeof(uint32_t);
 
     //md_script_property_t prop = {0};
@@ -1111,11 +1110,11 @@ void update_representation(ApplicationState* state, Representation* rep) {
             if (md_array_size(state->representation.info.atom_properties) > 0) {
                 float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
                 EvalAtomProperty eval = {
-                    .property_id = state->representation.info.atom_properties[rep->prop.idx].id,
-                    .idx = 0,
-                    .output_written = false,
+                    .key = state->representation.info.atom_properties[rep->prop.idx].key,
+                    .idx = rep->prop.sub_idx,
                     .num_values = num_atoms,
                     .dst_values = values,
+                    .output_written = false,
                 };
                 viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
 

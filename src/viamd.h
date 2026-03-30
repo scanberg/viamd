@@ -383,8 +383,8 @@ struct MolecularOrbital {
 };
 
 struct AtomProperty {
-    uint64_t id;
-    str_t label;
+    uint64_t key    = 0;
+    str_t label     = { 0 };
     int num_idx     = 0;
     float value_min = 0;
     float value_max = 0;
@@ -424,12 +424,11 @@ struct IsoDesc {
 };
 
 struct EvalAtomProperty {
-    uint64_t property_id = 0;
-    int idx = 0; // This is probably rarely applicable
-
-    bool output_written = false;
+    uint64_t key = 0;
+	int idx = 0;    // Represents the index if the property is multidimensional.
     size_t num_values = 0;
     float* dst_values = nullptr;
+    bool output_written = false;
 };
 
 // Loader parameters for loading a system or trajectory, which are passed via the file queue
@@ -518,9 +517,9 @@ struct Representation {
         int colormap = DEFAULT_COLORMAP;
         float range_beg = 0.0f;
         float range_end = 1.0f;
-        //float map_min = 0.0f;
-        //float map_max = 1.0f;
+        bool  range_symmetric_zero = true; // Use a symmetric min and max value around zero
         int idx = 0;
+		int sub_idx = 0;
     } prop;
 };
 
