@@ -243,3 +243,8 @@ void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mas
 void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale);
 void scale_saturation(uint32_t* colors, size_t count, float scale);
 
+static inline vec4_t scale_saturation(vec4_t color, float scale) {
+    vec3_t hsv = rgb_to_hsv(vec3_from_vec4(color));
+    hsv.y *= scale;
+    return vec4_from_vec3(hsv_to_rgb(hsv), color.w);
+}

@@ -3683,7 +3683,7 @@ static void draw_representations_window(ApplicationState* state) {
                     rep.filt_is_dirty = true;
                     update_rep = true;
                 }
-                if (ImGui::Combo("color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
+                if (ImGui::Combo("atom color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
                     update_rep = true;
                 }
 
@@ -3799,10 +3799,9 @@ static void draw_representations_window(ApplicationState* state) {
                 }
                 ImGui::PopItemWidth();
                 if (rep.color_mapping == ColorMapping::Uniform) {
-                    update_rep |= ImGui::ColorEdit4("color", (float*)&rep.uniform_color, ImGuiColorEditFlags_NoInputs);
+                    update_rep |= ImGui::ColorEdit3("##atom_uniform_color", rep.uniform_color.elem);
                 }
                 ImGui::PushItemWidth(inner_item_width);
-                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
                 switch (rep.type) {
                 case RepresentationType::SpaceFill:
                     update_rep |= ImGui::SliderFloat("scale", &rep.scale[0], 0.1f, 4.f);
@@ -3831,9 +3830,11 @@ static void draw_representations_window(ApplicationState* state) {
                     // Draw options for how bonds should be colored
 					update_rep |= ImGui::Combo("bond color", (int*)(&rep.licorice_mode), licorice_color_mode_str, IM_ARRAYSIZE(licorice_color_mode_str));
                     if (rep.licorice_mode == LicoriceColorMode::Uniform) {
-                        update_rep |= ImGui::ColorEdit4("##licorice_uniform_color", (float*)&rep.licorice_uniform_color, ImGuiColorEditFlags_NoInputs);
+                        update_rep |= ImGui::ColorEdit3("##licorice_uniform_color", rep.licorice_uniform_color.elem);
 					}
                 }
+
+                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
 
                 ImGui::PopItemWidth();
                 ImGui::Spacing();
@@ -7838,7 +7839,33 @@ static void draw_representations_opaque(ApplicationState* data) {
                     .rep = data->representation.reps[i].md_rep,
                     .model_matrix = NULL,
                 };
-                MEMCPY(&op.args, &rep.scale, sizeof(op.args));
+                switch (rep.type) {
+                case RepresentationType::SpaceFill:
+                    op.args.space_fill.radius_scale = rep.scale.x;
+                    break;
+                case RepresentationType::Licorice:
+                    op.args.licorice.radius = rep.scale.x;
+                    op.args.licorice.color_mode = (md_gl_licorice_mode_t)rep.licorice_mode;
+                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.licorice_uniform_color, rep.saturation));
+                    break;
+                case RepresentationType::BallAndStick:
+                    op.args.ball_and_stick.ball_scale = rep.scale.x;
+                    op.args.ball_and_stick.stick_radius = rep.scale.y;
+                    op.args.ball_and_stick.color_mode = (md_gl_licorice_mode_t)rep.licorice_mode;
+                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.licorice_uniform_color, rep.saturation));
+                    break;
+                case RepresentationType::Ribbons:
+                    op.args.ribbons.width_scale = rep.scale.x;
+                    op.args.ribbons.thickness_scale = rep.scale.y;
+                    break;
+                case RepresentationType::Cartoon:
+                    op.args.cartoon.coil_scale  = rep.scale.x;
+                    op.args.cartoon.sheet_scale = rep.scale.y;
+                    op.args.cartoon.helix_scale = rep.scale.z;
+                    break;
+                default:
+                    break;
+                }
                 md_array_push(draw_ops, op, frame_alloc);
             }
         }
