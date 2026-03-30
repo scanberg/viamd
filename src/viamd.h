@@ -333,7 +333,7 @@ static const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] =
 
 enum class LicoriceColorMode {
     Nearest,
-	Linear,
+	Smooth,
     Uniform,
     Count,
 };
@@ -341,7 +341,7 @@ enum class LicoriceColorMode {
 
 static const char* licorice_color_mode_str[(int)LicoriceColorMode::Count] = {
     "Nearest Atom",
-    "Linear Interpolation",
+    "Smooth Atom",
     "Uniform Color",
 };
 
@@ -497,6 +497,7 @@ struct Representation {
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
 	LicoriceColorMode licorice_mode = LicoriceColorMode::Nearest;
+    float  licorice_sharpness = 0.5f; // 0 = sharper, 1 = smoother
 	vec4_t licorice_uniform_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 
     struct {

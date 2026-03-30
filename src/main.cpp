@@ -3829,8 +3829,10 @@ static void draw_representations_window(ApplicationState* state) {
                 if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
                     // Draw options for how bonds should be colored
 					update_rep |= ImGui::Combo("bond color", (int*)(&rep.licorice_mode), licorice_color_mode_str, IM_ARRAYSIZE(licorice_color_mode_str));
-                    if (rep.licorice_mode == LicoriceColorMode::Uniform) {
-                        update_rep |= ImGui::ColorEdit3("##licorice_uniform_color", rep.licorice_uniform_color.elem);
+                    if (rep.licorice_mode == LicoriceColorMode::Smooth) {
+                        ImGui::SliderFloat("sharpness", &rep.licorice_sharpness, 0.0f, 1.0f);
+                    } else if (rep.licorice_mode == LicoriceColorMode::Uniform) {
+                        ImGui::ColorEdit3("##licorice_uniform_color", rep.licorice_uniform_color.elem);
 					}
                 }
 
@@ -7846,12 +7848,14 @@ static void draw_representations_opaque(ApplicationState* data) {
                 case RepresentationType::Licorice:
                     op.args.licorice.radius = rep.scale.x;
                     op.args.licorice.color_mode = (md_gl_licorice_mode_t)rep.licorice_mode;
+                    op.args.licorice.sharpness = rep.licorice_sharpness;
                     op.args.licorice.uniform_color = convert_color(scale_saturation(rep.licorice_uniform_color, rep.saturation));
                     break;
                 case RepresentationType::BallAndStick:
                     op.args.ball_and_stick.ball_scale = rep.scale.x;
                     op.args.ball_and_stick.stick_radius = rep.scale.y;
                     op.args.ball_and_stick.color_mode = (md_gl_licorice_mode_t)rep.licorice_mode;
+                    op.args.ball_and_stick.sharpness = rep.licorice_sharpness;
                     op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.licorice_uniform_color, rep.saturation));
                     break;
                 case RepresentationType::Ribbons:
