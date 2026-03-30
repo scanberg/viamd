@@ -331,6 +331,20 @@ static const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] =
     "Custom",
 };
 
+enum class LicoriceColorMode {
+    Nearest,
+	Linear,
+    Uniform,
+    Count,
+};
+
+
+static const char* licorice_color_mode_str[(int)LicoriceColorMode::Count] = {
+    "Nearest Atom",
+    "Linear Interpolation",
+    "Uniform Color",
+};
+
 struct FileQueue {
     struct Entry {
         str_t path;
@@ -481,6 +495,9 @@ struct Representation {
 
     // scaling parameter (radius, width, height, etc depending on type)
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
+
+	LicoriceColorMode licorice_mode = LicoriceColorMode::Nearest;
+	vec4_t licorice_uniform_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 
     struct {
         Volume vol = {};
