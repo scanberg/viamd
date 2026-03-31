@@ -460,7 +460,7 @@ struct EvalElectronicStructure {
     int major_idx = 0;
     int minor_idx = 0;
     float samples_per_angstrom = 4.0f;
-    double frame_time = 0.0;
+    double frame = 0.0;
 
     // Output information
     bool output_written = false;

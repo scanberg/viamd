@@ -1250,7 +1250,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     .major_idx = (int)orb_idx,
                     .minor_idx = (int)sub_idx,
                     .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
-                    .frame_time = state->animation.frame,
+                    .frame = state->animation.frame,
                     .dst_volume = &rep->electronic_structure.vol,
                 };
                 viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
