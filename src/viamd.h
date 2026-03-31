@@ -331,15 +331,15 @@ static const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] =
     "Custom",
 };
 
-enum class LicoriceColorMode {
-    Nearest,
-	Smooth,
+enum class BondColorMode {
+    NearestAtom,
+	SmoothAtom,
     Uniform,
     Count,
 };
 
 
-static const char* licorice_color_mode_str[(int)LicoriceColorMode::Count] = {
+static const char* bond_color_mode_str[(int)BondColorMode::Count] = {
     "Nearest Atom",
     "Smooth Atom",
     "Uniform Color",
@@ -496,9 +496,9 @@ struct Representation {
     // scaling parameter (radius, width, height, etc depending on type)
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
-	LicoriceColorMode licorice_mode = LicoriceColorMode::Nearest;
-    float  licorice_sharpness = 0.5f; // 0 = sharper, 1 = smoother
-	vec4_t licorice_uniform_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	BondColorMode bond_color = BondColorMode::NearestAtom;
+    float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
+	vec4_t bond_uniform_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 
     struct {
         Volume vol = {};

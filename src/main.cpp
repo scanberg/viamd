@@ -612,9 +612,9 @@ int main(int argc, char** argv) {
     md_os_sys_info_t sys_info = {0};
 	md_os_sys_info_query(&sys_info);
 
-    size_t num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? sys_info.num_physical_cores : VIAMD_NUM_WORKER_THREADS;
+    int num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? sys_info.num_physical_cores : VIAMD_NUM_WORKER_THREADS;
 	num_threads = CLAMP(num_threads, 2, sys_info.num_physical_cores);
-    task_system::initialize(num_threads);
+    task_system::initialize((size_t)num_threads);
 
     md_gl_initialize();
     state.gl.shaders                = md_gl_shaders_create(shader_output_snippet);
@@ -3828,11 +3828,11 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
                     // Draw options for how bonds should be colored
-					update_rep |= ImGui::Combo("bond color", (int*)(&rep.licorice_mode), licorice_color_mode_str, IM_ARRAYSIZE(licorice_color_mode_str));
-                    if (rep.licorice_mode == LicoriceColorMode::Smooth) {
-                        ImGui::SliderFloat("sharpness", &rep.licorice_sharpness, 0.0f, 1.0f);
-                    } else if (rep.licorice_mode == LicoriceColorMode::Uniform) {
-                        ImGui::ColorEdit3("##licorice_uniform_color", rep.licorice_uniform_color.elem);
+					update_rep |= ImGui::Combo("bond color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
+                    if (rep.bond_color == BondColorMode::SmoothAtom) {
+                        ImGui::SliderFloat("sharpness", &rep.bond_sharpness, 0.0f, 1.0f);
+                    } else if (rep.bond_color == BondColorMode::Uniform) {
+                        ImGui::ColorEdit3("##bond_uniform_color", rep.bond_uniform_color.elem);
 					}
                 }
 
@@ -7847,16 +7847,16 @@ static void draw_representations_opaque(ApplicationState* data) {
                     break;
                 case RepresentationType::Licorice:
                     op.args.licorice.radius = rep.scale.x;
-                    op.args.licorice.color_mode = (md_gl_licorice_mode_t)rep.licorice_mode;
-                    op.args.licorice.sharpness = rep.licorice_sharpness;
-                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.licorice_uniform_color, rep.saturation));
+                    op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+                    op.args.licorice.sharpness = rep.bond_sharpness;
+                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.bond_uniform_color, rep.saturation));
                     break;
                 case RepresentationType::BallAndStick:
                     op.args.ball_and_stick.ball_scale = rep.scale.x;
                     op.args.ball_and_stick.stick_radius = rep.scale.y;
-                    op.args.ball_and_stick.color_mode = (md_gl_licorice_mode_t)rep.licorice_mode;
-                    op.args.ball_and_stick.sharpness = rep.licorice_sharpness;
-                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.licorice_uniform_color, rep.saturation));
+                    op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+                    op.args.ball_and_stick.sharpness = rep.bond_sharpness;
+                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.bond_uniform_color, rep.saturation));
                     break;
                 case RepresentationType::Ribbons:
                     op.args.ribbons.width_scale = rep.scale.x;

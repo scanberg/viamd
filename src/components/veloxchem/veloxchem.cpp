@@ -242,7 +242,7 @@ static void attribute_charge(double out_charge[], const int* ao_to_idx, const do
     double *r = (double*)md_temp_push(num_ao * sizeof(double));
     ASSERT(r);
 
-    for (int k = 0; k < num_lambdas; ++k) {
+    for (size_t k = 0; k < num_lambdas; ++k) {
         double lam = lambdas[k];
 
         const double* ak = a[k];
@@ -251,14 +251,14 @@ static void attribute_charge(double out_charge[], const int* ao_to_idx, const do
 		MEMSET(r, 0, num_ao * sizeof(double));
 
         // r = S * ak  (row-major S)
-        for (int mu = 0; mu < num_ao; ++mu) {
+        for (size_t mu = 0; mu < num_ao; ++mu) {
             double a_mu = ak[mu];
             const double *S_row = &S[mu * num_ao];
             // Diagonal term
             r[mu] += S_row[mu] * a_mu;
 
             // Upper-triangular terms
-            for (int nu = mu + 1; nu < num_ao; ++nu) {
+            for (size_t nu = mu + 1; nu < num_ao; ++nu) {
                 double s = S_row[nu];
                 r[mu] += s * ak[nu];
                 r[nu] += s * a_mu;
@@ -266,7 +266,7 @@ static void attribute_charge(double out_charge[], const int* ao_to_idx, const do
         }
 
         // accumulate group contributions
-        for (int mu = 0; mu < num_ao; ++mu) {
+        for (size_t mu = 0; mu < num_ao; ++mu) {
             int idx = ao_to_idx[mu];
             out_charge[idx] += lam * ak[mu] * r[mu];
         }
@@ -277,24 +277,6 @@ static void attribute_charge(double out_charge[], const int* ao_to_idx, const do
 
 // Voronoi segmentation
 static void grid_segment_and_attribute_to_point(double out_point_value[], const vec4_t point_xyzr[], size_t num_points, const float* grid_values, const md_grid_t& grid) {
-    float step_x[3] = {
-        grid.orientation[0][0] * grid.spacing[0],
-        grid.orientation[0][1] * grid.spacing[0],
-        grid.orientation[0][2] * grid.spacing[0],
-    };
-
-    float step_y[3] = {
-        grid.orientation[1][0] * grid.spacing[1],
-        grid.orientation[1][1] * grid.spacing[1],
-        grid.orientation[1][2] * grid.spacing[1],
-    };
-
-    float step_z[3] = {
-        grid.orientation[2][0] * grid.spacing[2],
-        grid.orientation[2][1] * grid.spacing[2],
-        grid.orientation[2][2] * grid.spacing[2],
-    };
-
     mat4_t index_to_world = compute_index_to_world_mat(grid.orientation, grid.origin, grid.spacing);
 
     for (int iz = 0; iz < grid.dim[2]; ++iz) {
@@ -899,7 +881,7 @@ struct VeloxChem : viamd::EventHandler {
                 EvalAtomProperty& data = *(EvalAtomProperty*)e.payload;
 
 				const md_vlx_atomic_property_t* prop = md_vlx_atomic_property_by_key(vlx, data.key);
-                if (prop && (data.idx == 0 || data.idx < prop->dim[1]) && data.num_values == prop->dim[0]) {
+                if (prop && (data.idx == 0 || data.idx < (int)prop->dim[1]) && data.num_values == prop->dim[0]) {
 					const double* src_values = prop->data + data.idx * prop->dim[0];
                     for (size_t i = 0; i < data.num_values; ++i) {
                         data.dst_values[i] = (float)src_values[i];
@@ -1041,7 +1023,7 @@ struct VeloxChem : viamd::EventHandler {
                         const dvec3_t* magnetic_dp = md_vlx_rsp_magnetic_transition_dipole_moments(vlx);
                         ASSERT(electric_dp);
                         ASSERT(magnetic_dp);
-                        for (int i = 0; i < num_excited_states; ++i) {
+                        for (size_t i = 0; i < num_excited_states; ++i) {
                             max_len = MAX(max_len, (float)dvec3_length(electric_dp[i]));
                             max_len = MAX(max_len, (float)dvec3_length(magnetic_dp[i]));
                         }
@@ -1647,7 +1629,7 @@ struct VeloxChem : viamd::EventHandler {
         //Calculate start positions
         md_array(float) start_positions = md_array_create(float, nto->group.count, temp_alloc);
         float cur_bottom_pos = plot_area.Min.x;
-        for (int i = 0; i < nto->group.count; i++) {
+        for (size_t i = 0; i < nto->group.count; i++) {
             start_positions[i] = cur_bottom_pos;
             cur_bottom_pos += bars_avail_width * hole_percentages[i];
             if (hole_percentages[i] != 0.0) {
@@ -1659,7 +1641,7 @@ struct VeloxChem : viamd::EventHandler {
         md_array(float) end_positions = md_array_create(float, nto->group.count, temp_alloc);
         md_array(float) sub_end_positions = md_array_create(float, nto->group.count, temp_alloc);
         float cur_pos = plot_area.Min.x;
-        for (int end_i = 0; end_i < nto->group.count; end_i++) {
+        for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
             end_positions[end_i] = cur_pos;
             sub_end_positions[end_i] = cur_pos;
             cur_pos += bars_avail_width * part_percentages[end_i];
@@ -1696,14 +1678,14 @@ struct VeloxChem : viamd::EventHandler {
             }
         }*/
 
-        for (int start_i = 0; start_i < nto->group.count; start_i++) {
+        for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
             if (hole_percentages[start_i] != 0.0) {
 
                 ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
                 ImVec4 start_col = vec_cast(nto->group.color[start_i]);
 
                 start_col.w = 0.5;
-                for (int end_i = 0; end_i < nto->group.count; end_i++) {
+                for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
                     float percentage = nto->transition_matrix[end_i * nto->group.count + start_i];
                     ImVec4 end_col = vec_cast(nto->group.color[end_i]);
 
@@ -1802,7 +1784,6 @@ struct VeloxChem : viamd::EventHandler {
                 if (percentage > 0) {
                     char label[16];
                     snprintf(label, sizeof(label), "%3.2f%%", curve_percentages[start_i * nto->group.count + end_i] * 100);
-                    const ImVec2 label_size = ImGui::CalcTextSize(label);
                     draw_aligned_text(draw_list, label, midpoint, {0.5, 0.5});
                 }
             }
@@ -1841,7 +1822,7 @@ struct VeloxChem : viamd::EventHandler {
                 return values[a] > values[b];  // Sort in descending order
             });
 
-            for (int i = 1; i < nto->group.count; i++) { //First one is always drawn
+            for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0 ; j--) {//The bigger ones
                     if (hole_percentages[i] == 0.0) {
                         show_start_text[size_order[i]] = false;
@@ -1880,7 +1861,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         //Draw bars
-        for (int i = 0; i < nto->group.count; i++) {
+        for (size_t i = 0; i < nto->group.count; i++) {
             if (hole_percentages[i] != 0.0) {
                 ImVec4 bar_color = vec_cast(nto->group.color[i]);
 
@@ -2265,8 +2246,6 @@ struct VeloxChem : viamd::EventHandler {
     static inline void general_broadening(double* y_out, const double* x, size_t num_samples, const double* y_peaks, const double* x_peaks,
                                           size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma, double intensity),
                                           double gamma) {
-        double integral = 0;
-        double dist = x[1] - x[0];
         for (size_t si = 0; si < num_samples; si++) {
             double sum = 0;
             double b = 0;
@@ -2275,7 +2254,6 @@ struct VeloxChem : viamd::EventHandler {
                 sum += b;
             }
             y_out[si] = sum;
-            integral += y_out[si] * dist;
         }
     }
 
@@ -2363,7 +2341,7 @@ struct VeloxChem : viamd::EventHandler {
 
         //Keep in mind that pixel y is 0 at the top, so you flip the comparison compared to plot y. The code below still seems to work as intended though.
 
-        for (int i = 0; i < num_peaks; i++) {
+        for (size_t i = 0; i < num_peaks; i++) {
             y_max = MAX(pixel_peaks[i].y, pixel_y0);
             y_min = MIN(pixel_peaks[i].y, pixel_y0);
 
@@ -2489,8 +2467,8 @@ struct VeloxChem : viamd::EventHandler {
                 ImVec2 point_dx = mouse_pos - max_raw;
                 double point_d2 = point_dx.x * point_dx.x + point_dx.y * point_dx.y;
 
-                if (line_d2  < min_line_d2  && line_d2  < min_dist ||
-                    point_d2 < min_point_d2 && point_d2 < min_dist) {
+                if ((line_d2 < min_line_d2  && line_d2 < min_dist) ||
+                    (point_d2 < min_point_d2 && point_d2 < min_dist)) {
                     hovered = (int)i;
                     min_dist = MIN(line_d2, point_d2);
                 }
@@ -2678,7 +2656,7 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                     ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                     bool item_hovered = false;
-                    for (int row_n = 0; row_n < num_atoms; row_n++) {
+                    for (size_t row_n = 0; row_n < num_atoms; row_n++) {
 
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                         bool is_sel = md_bitfield_test_bit(&state.selection.selection_mask, row_n); //If atom is selected, mark it as such
@@ -2694,9 +2672,9 @@ struct VeloxChem : viamd::EventHandler {
                         }
 
                         char label[16];
-                        snprintf(label, sizeof(label), "%i", row_n + 1);
+                        snprintf(label, sizeof(label), "%zu", row_n + 1);
                         ImGui::Selectable(label, is_sel || is_hov, selectable_flags);
-                        if (ImGui::TableGetHoveredRow() == row_n + 1) {
+                        if (ImGui::TableGetHoveredRow() == (int)(row_n + 1)) {
                             if (state.mold.sys.atom.count > row_n) {
                                 md_bitfield_clear(&state.selection.highlight_mask);
                                 md_bitfield_set_bit(&state.selection.highlight_mask, row_n);
@@ -2817,7 +2795,7 @@ struct VeloxChem : viamd::EventHandler {
                             bool prune_duplicate_saddles  = true;
 
                             if (threshold_simplification) {
-                                for (int i = 0; i < md_array_size(vertex); ++i) {
+                                for (size_t i = 0; i < md_array_size(vertex); ++i) {
                                     if (vertex[i].value < simp_threshold) {
                                         vertex_type[i] = 0;  // Mark vertex as dead
                                     }
@@ -2831,7 +2809,7 @@ struct VeloxChem : viamd::EventHandler {
                                 // the 'maximum' saddle within the set
 
                                 // Divide multi connected saddles (3+ connections) into single connections
-                                for (int i = 0; i < md_array_size(vertex); ++i) {
+                                for (size_t i = 0; i < md_array_size(vertex); ++i) {
                                     if (vertex_type[i] != MD_TOPO_SPLIT_SADDLE) continue;
                                     size_t num_adj = md_array_size(vertex_adj[i]);
                                     if (num_adj <= 2) continue;  // Only interested in saddles with 3 or more connections
@@ -2881,8 +2859,8 @@ struct VeloxChem : viamd::EventHandler {
                                             bool connects_j = false;
                                             for (size_t m = 0; m < num_adj; ++m) {
                                                 int v = vertex_adj[k][m];
-                                                if (v == i) connects_i = true;
-                                                if (v == j) connects_j = true;
+                                                if (v == (int)i) connects_i = true;
+                                                if (v == (int)j) connects_j = true;
                                             }
                                             if (connects_i && connects_j) {
                                                 md_array_push(saddle_list, (int)k, temp_alloc);
@@ -2986,10 +2964,10 @@ struct VeloxChem : viamd::EventHandler {
                             size_t edge_counter = 0;
                             for (size_t i = 0; i < md_array_size(edge); ++i) {
                                 md_topo_edge_t old_edge = edge[i];
-                                md_topo_edge_t new_edge;
-                                new_edge.from = vertex_remap[old_edge.from];
-                                new_edge.to   = vertex_remap[old_edge.to];
-                                if (new_edge.from != -1 && new_edge.to != -1) {
+                                int from = vertex_remap[old_edge.from];
+                                int to   = vertex_remap[old_edge.to];
+                                if (from != -1 && to != -1) {
+                                    md_topo_edge_t new_edge = { (uint32_t)from, (uint32_t)to };
                                     simp_graph.edges[edge_counter++] = new_edge;
                                 }
                             }
@@ -3092,7 +3070,7 @@ struct VeloxChem : viamd::EventHandler {
             file_extension = table_formats[table_format].ext;
 
             if (ImGui::BeginCombo("Property", properties[property_idx].lable.ptr)) {
-                for (int i = 0; i < ARRAY_SIZE(properties); ++i) {
+                for (int i = 0; i < (int)ARRAY_SIZE(properties); ++i) {
                     if (ImGui::Selectable(properties[i].lable.ptr, property_idx == i)) {
                         property_idx = i;
                     }
@@ -3110,7 +3088,7 @@ struct VeloxChem : viamd::EventHandler {
             static bool export_valid = true;
             bool export_clicked = ImGui::Button("Export");
             if (export_clicked) {
-                export_valid = rsp.x_unit_samples && rsp.eps && rsp.ecd;
+                export_valid = true;
 
                 if (export_valid) {
                     char path_buf[1024];
@@ -3653,7 +3631,6 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::BeginChild("left pane", ImVec2(300, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
                 ImGui::SameLine();
 
-                const ImVec2 outer_size = {300.f, 0.f};
                 ImGui::PushItemWidth(-1);
                 ImGui::BeginGroup();
 
