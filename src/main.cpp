@@ -1241,9 +1241,9 @@ int main(int argc, char** argv) {
             viamd::event_system_enqueue_event(viamd::EventType_ViamdRepresentationChanged, viamd::EventPayloadType_ApplicationState, &state);
         }
 
-        update_md_buffers(&state);
-        update_display_properties(&state);
         handle_picking(&state);
+        update_display_properties(&state);
+        update_md_buffers(&state);
         clear_gbuffer(&state.gbuffer);
         fill_gbuffer(&state);
 
@@ -2370,22 +2370,22 @@ static void draw_main_menu(ApplicationState* data) {
 
             if (do_bonds) {
                 if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
-                    const auto& mol = data->mold.sys;
+                    auto& sys = data->mold.sys;
                     uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
                     md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
                     defer { md_vm_arena_temp_end(temp_pos); };
 
-                    float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                    float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                    float* z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                    float* x = (float*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(float));
+                    float* y = (float*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(float));
+                    float* z = (float*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(float));
                     md_trajectory_frame_header_t frame_header;
 
                     if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
                         MD_LOG_DEBUG("Failed to extract frame data");
                     } else {
-                        MD_LOG_DEBUG("RECALCULATING BONDS");
-                        md_bond_data_clear(&data->mold.sys.bond);
-                        md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, frame_alloc);
+                        MD_LOG_DEBUG("REC&sysLATING BONDS");
+                        md_bond_data_clear(&sys.bond);
+                        md_util_infer_covalent_bonds(&sys.bond, x, y, z, &frame_header.unitcell, &sys, frame_alloc);
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                         data->selection.bond_idx.hovered     = -1;
                         data->selection.bond_idx.right_click = -1;

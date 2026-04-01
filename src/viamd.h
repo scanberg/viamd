@@ -418,6 +418,7 @@ struct RepresentationInfo {
 
     md_array(AtomProperty) atom_properties = nullptr;
 
+    double frame = 0;
     md_allocator_i* alloc = nullptr;
 };
 
@@ -515,7 +516,7 @@ struct Representation {
         vec4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
 
         // Optical scaling factor which controls attenuation of light within iso surfaces.
-        double iso_optical_density_scale = 0.1;
+        double iso_optical_density_scale = 0.01;
 
         struct {
             bool enabled = false;

@@ -1669,6 +1669,7 @@ void interpolate_system_state(ApplicationState* state) {
                         break;
                     };
 
+                    md_bond_data_clear(&data->state->mold.sys.bond);
                     md_util_infer_covalent_bonds(&data->state->mold.sys.bond, src_state->atom_x, src_state->atom_y, src_state->atom_z, &src_state->unitcell, &sys, sys.alloc);
                     data->state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 });

@@ -332,9 +332,6 @@ struct VeloxChem : viamd::EventHandler {
     // GL representations
     md_gl_rep_t gl_rep = {};
 
-    int homo_idx[2] = {};
-    int lumo_idx[2] = {};
-
     AABB aabb = {};
     OBB  obb  = {};
 
@@ -363,14 +360,15 @@ struct VeloxChem : viamd::EventHandler {
     struct Orb {
         bool show_window = false;
         Volume   vol[16] = {};
-        int      vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
-        md_vlx_mo_type_t vol_mo_type[16] = {};
+        uint64_t vol_mo_key[16] = {0};
+
         uint32_t iso_tex[16] = {};
         task_system::ID vol_task[16] = {};
         int num_x  = 3;
         int num_y  = 3;
         int mo_idx = -1;
         int scroll_to_idx = -1;
+		int frame_idx = -1;
 
         IsoDesc iso = {
             .enabled = true,
@@ -405,8 +403,6 @@ struct VeloxChem : viamd::EventHandler {
 
         md_grid_t grid = {0};
 
-        size_t num_atoms = 0;
-        vec4_t*   atom_xyzr = nullptr;      // in Atomic Units (Bohr)
         uint32_t* atom_group_idx = nullptr;
 
         md_gl_rep_t gl_rep = {0};
@@ -706,17 +702,18 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdRepresentationInfoFill: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
                 RepresentationInfo& info = *(RepresentationInfo*)e.payload;
+                int frame_idx = (int)(info.frame + 0.5);
 
-                info.alpha.homo_idx = homo_idx[0];
-                info.alpha.lumo_idx = lumo_idx[0];
+                info.alpha.homo_idx = md_vlx_scf_homo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
+                info.alpha.lumo_idx = md_vlx_scf_lumo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
 
-                info.beta.homo_idx  = homo_idx[1];
-                info.beta.lumo_idx  = lumo_idx[1];
+                info.beta.homo_idx  = md_vlx_scf_homo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
+                info.beta.lumo_idx  = md_vlx_scf_lumo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
 
                 size_t num_mos = num_molecular_orbitals();
                 if (num_mos) {
-                    const double* occ = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
-                    const double* ene = md_vlx_scf_mo_energy   (vlx, MD_VLX_MO_TYPE_ALPHA);
+                    const double* occ = md_vlx_scf_mo_occupancy(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
+                    const double* ene = md_vlx_scf_mo_energy   (vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
 
                     if (occ && ene) {
                         info.alpha.num_orbitals = num_mos;
@@ -740,8 +737,8 @@ struct VeloxChem : viamd::EventHandler {
 
                 // @TODO: Check condition of wheter or not to include beta orbitals
                 if (false) {
-                    const double* occ = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
-                    const double* ene = md_vlx_scf_mo_energy   (vlx, MD_VLX_MO_TYPE_BETA);
+                    const double* occ = md_vlx_scf_mo_occupancy(vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
+                    const double* ene = md_vlx_scf_mo_energy   (vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
 
                     if (occ && ene) {
                         info.beta.num_orbitals = num_mos;
@@ -893,7 +890,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (use_gpu_path) {
                             data.output_written = compute_electron_density_GPU(data.dst_volume->tex_id, grid, sys_state, MD_VLX_MO_TYPE_ALPHA);
                         } else {
-                            data.output_written = (compute_electron_density_async(data.dst_volume->tex_id, grid, MD_VLX_MO_TYPE_ALPHA) != task_system::INVALID_ID);
+                            data.output_written = (compute_electron_density_async(data.dst_volume->tex_id, grid, sys_state, MD_VLX_MO_TYPE_ALPHA) != task_system::INVALID_ID);
                         }
                         break;
                     }
@@ -946,14 +943,15 @@ struct VeloxChem : viamd::EventHandler {
 
     void update_nto_group_colors() {
         ScopedTemp temp_reset;
-        uint32_t* colors = (uint32_t*)md_temp_push(sizeof(uint32_t) * nto.num_atoms);
-        for (size_t i = 0; i < nto.num_atoms; ++i) {
+        size_t num_atoms = md_vlx_number_of_atoms(vlx);
+        uint32_t* colors = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_atoms);
+        for (size_t i = 0; i < num_atoms; ++i) {
             const size_t group_idx = nto.atom_group_idx[i];
             const uint32_t color = group_idx < nto.group.count ? convert_color(nto.group.color[group_idx]) : U32_MAGENTA;
             colors[i] = color;
         }
 
-        md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)nto.num_atoms, colors, 0);
+        md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)num_atoms, colors, 0);
     }
 
     void init_from_file(str_t filename, ApplicationState& state) {
@@ -974,23 +972,6 @@ struct VeloxChem : viamd::EventHandler {
                     // Scf
                     //scf.show_window = true;
 
-                    homo_idx[0] = (int)md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
-                    homo_idx[1] = (int)md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_BETA);
-
-                    lumo_idx[0] = (int)md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
-                    lumo_idx[1] = (int)md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_BETA);
-
-                    size_t num_atoms = md_vlx_number_of_atoms(vlx);
-                    const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
-                    const uint8_t* atomic_numbers = md_vlx_atomic_numbers(vlx);
-
-                    nto.atom_xyzr = (vec4_t*)md_arena_allocator_push(arena, sizeof(vec4_t) * num_atoms);
-                    nto.num_atoms = num_atoms;
-
-                    for (size_t i = 0; i < num_atoms; ++i) {
-                        nto.atom_xyzr[i] = vec4_set((float)coords[i].x, (float)coords[i].y, (float)coords[i].z, md_util_element_vdw_radius(atomic_numbers[i])) * ANGSTROM_TO_BOHR;
-                    }
-
                     md_system_t sys = { .alloc = state.allocator.frame };
                     md_vlx_system_init_from_data(&sys, vlx);
                     md_util_system_postprocess(&sys, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
@@ -1009,7 +990,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (num_excited_states > 0) {
                         //nto.show_window = true;
                         camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, obb.orientation, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
-                        nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * sys.atom.count);
+						nto.atom_group_idx = md_array_create(uint32_t, sys.atom.count, arena);
                         MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * sys.atom.count);
 
                         snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
@@ -1090,11 +1071,13 @@ struct VeloxChem : viamd::EventHandler {
                     // ORB
                     //orb.show_window = true;
                     camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, obb.orientation, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
-                    orb.mo_idx = homo_idx[0];
-                    orb.scroll_to_idx = homo_idx[0];
+					int frame_idx = (int)(state.animation.frame + 0.5);
+                    int homo_idx = (int)md_vlx_scf_homo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
+                    orb.mo_idx = homo_idx;
+                    orb.scroll_to_idx = homo_idx;
 
                     // Export
-                    export_state.mo.idx = homo_idx[0];
+                    export_state.mo.idx = homo_idx;
                 }
                 else {
                     MD_LOG_INFO("Failed to load VeloxChem data");
@@ -1189,12 +1172,13 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    bool extract_electron_density_orb_data(md_orbital_data_t* orb_data, double cutoff, md_allocator_i* alloc) {
-        size_t num_mo = MAX(md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA), md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_BETA));
+    bool extract_electron_density_orb_data(md_orbital_data_t* orb_data, double frame, double cutoff, md_allocator_i* alloc) {
+		int frame_idx = (int)(frame + 0.5);
+        size_t num_mo = MAX(md_vlx_scf_lumo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA), md_vlx_scf_lumo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_BETA));
         size_t num_gtos_per_mo = md_vlx_mo_gto_count(vlx);
 
-        const double* occ_a = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
-        const double* occ_b = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
+        const double* occ_a = md_vlx_scf_mo_occupancy(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
+        const double* occ_b = md_vlx_scf_mo_occupancy(vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
         md_vlx_scf_type_t scf_type = md_vlx_scf_type(vlx);
 
         md_array_ensure(orb_data->gtos, num_gtos_per_mo * num_mo, alloc);
@@ -1429,12 +1413,12 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    task_system::ID compute_electron_density_async(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    task_system::ID compute_electron_density_async(uint32_t vol_tex, const md_grid_t& grid, const SystemState& state, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         (void)mo_type;
         md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
 
         md_orbital_data_t orb_data = {0};
-        if (!extract_electron_density_orb_data(&orb_data, cutoff_value, alloc)) {
+        if (!extract_electron_density_orb_data(&orb_data, state.frame, cutoff_value, alloc)) {
             md_vm_arena_destroy(alloc);
             return task_system::INVALID_ID;
         }
@@ -1884,6 +1868,8 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
+        const size_t num_atoms = md_array_size(nto->atom_group_idx);
+
         //Draw bars
         for (size_t i = 0; i < nto->group.count; i++) {
             if (hole_percentages[i] != 0.0) {
@@ -1925,7 +1911,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (index_hovered) {
                     nto->group.hovered_index = (int8_t)i;
                     bar_color = make_highlight_color(bar_color);
-                    for (size_t atom_i = 0; atom_i < nto->num_atoms; atom_i++) {
+                    for (size_t atom_i = 0; atom_i < num_atoms; atom_i++) {
                         if (nto->atom_group_idx[atom_i] == (uint32_t)i) {
                             md_bitfield_set_bit(&state->selection.highlight_mask, atom_i);
                         }
@@ -2522,7 +2508,8 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void set_atom_coordinates(ApplicationState& state, const dvec3_t* atom_coords, uint32_t flags = MolBit_DirtyPosition | MolBit_ClearVelocity) {
-        const dvec3_t* coords = atom_coords ? atom_coords : md_vlx_atom_coordinates(vlx);
+		size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+        const dvec3_t* coords = atom_coords ? atom_coords : md_vlx_atom_coordinates(vlx, frame_idx);
         size_t num_atoms = md_vlx_number_of_atoms(vlx);
         for (size_t i = 0; i < num_atoms; i++) {
             state.mold.sys.atom.x[i] = (float)coords[i].x;
@@ -2566,55 +2553,59 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (ImGui::TreeNode("SCF")) {
-                size_t num_iter = md_vlx_scf_history_size(vlx);
-                const double* grad_norm = md_vlx_scf_history_gradient_norm(vlx);
-                const double* energy = md_vlx_scf_history_energy(vlx);
-                double* energy_offsets = nullptr;
-                double ref_energy = 0.0;
-                double y1_to_y2_mult = 1.0;
+                size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+                md_vlx_scf_history_t hist = { 0 };
+                if (md_vlx_scf_history_extract(&hist, vlx, frame_idx)) {
 
-                // We set up iterations as doubles for easier use
-                if (num_iter > 0) {
-                    ASSERT(energy);
-                    ASSERT(grad_norm);
+					size_t num_iter = hist.number_of_iterations;
+					const double* energy = hist.energy;
+					const double* grad_norm = hist.gradient_norm;
 
-                    energy_offsets = (double*)md_temp_push(sizeof(double) * num_iter);
-                    ref_energy = energy[num_iter - 1];
-                    for (size_t i = 0; i < num_iter; i++) {
-                        energy_offsets[i] = fabs(energy[i] - ref_energy);
+                    double* energy_offsets = nullptr;
+                    double ref_energy = 0.0;
+                    double y1_to_y2_mult = 1.0;
+
+                    // We set up iterations as doubles for easier use
+                    if (hist.number_of_iterations > 0) {
+
+                        energy_offsets = (double*)md_temp_push(sizeof(double) * num_iter);
+                        ref_energy = energy[num_iter - 1];
+                        for (size_t i = 0; i < num_iter; i++) {
+                            energy_offsets[i] = fabs(energy[i] - ref_energy);
+                        }
+                        y1_to_y2_mult = axis_conversion_multiplier(grad_norm, energy_offsets, num_iter, num_iter);
                     }
-                    y1_to_y2_mult = axis_conversion_multiplier(grad_norm, energy_offsets, num_iter, num_iter);
-                }
 
-                if (num_iter > 1) {
-                    if (ImPlot::BeginPlot("SCF")) {
-                        ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)num_iter);
-                        ImPlot::SetupLegend(ImPlotLocation_NorthEast);
-                        ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
-                        // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
-                        ImPlot::SetupAxis(ImAxis_Y2, "Energy (au)", ImPlotAxisFlags_AuxDefault);
-                        ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+                    if (num_iter > 1) {
+                        if (ImPlot::BeginPlot("SCF")) {
+                            ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)num_iter);
+                            ImPlot::SetupLegend(ImPlotLocation_NorthEast);
+                            ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
+                            // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
+                            ImPlot::SetupAxis(ImAxis_Y2, "Energy (au)", ImPlotAxisFlags_AuxDefault);
+                            ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
 
-                        ImPlot::PlotLine("Gradient", grad_norm, (int)num_iter, 1.0, 1.0);
-                        ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                        ImPlot::PlotLine("Energy", energy_offsets, (int)num_iter, 1.0, 1.0);
-                        lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
-                        //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
-                        //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
-                        //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
-                        ImPlot::EndPlot();
+                            ImPlot::PlotLine("Gradient", grad_norm, (int)num_iter, 1.0, 1.0);
+                            ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+                            ImPlot::PlotLine("Energy", energy_offsets, (int)num_iter, 1.0, 1.0);
+                            lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
+                            //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
+                            //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
+                            //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
+                            ImPlot::EndPlot();
+                        }
+                    } else {
+                        ImGui::Text("There is no history in the supplied veloxchem data");
+                    }                
+                    ImGui::Spacing();
+                    if (num_iter > 0) {
+                        ImGui::Text("Total energy:              %16.10f (au)", energy[num_iter - 1]);
+                        ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
                     }
-                } else {
-                    ImGui::Text("There is no history in the supplied veloxchem data");
+                    ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", md_vlx_nuclear_repulsion_energy(vlx));
+                    ImGui::Spacing();
+                    ImGui::TreePop();
                 }
-                ImGui::Spacing();
-                if (num_iter > 0) {
-                    ImGui::Text("Total energy:              %16.10f (au)", energy[num_iter - 1]);
-                    ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
-                }
-                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", md_vlx_nuclear_repulsion_energy(vlx));
-                ImGui::Spacing();
-                ImGui::TreePop();
             }
 
             {
@@ -2666,7 +2657,8 @@ struct VeloxChem : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx);
+					size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx, frame_idx);
                     const uint8_t* atom_nr    = md_vlx_atomic_numbers(vlx);
 
                     ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
@@ -3552,7 +3544,8 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::EndTable();
                     }
 
-                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx);
+					size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx, frame_idx);
 
                     // Check selected state
                     if (vib.selected != -1) {
@@ -3632,11 +3625,21 @@ struct VeloxChem : viamd::EventHandler {
         if (num_molecular_orbitals() == 0) return;
         ImGui::SetNextWindowSize({600, 300}, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            int frame_idx = (int)(state.animation.frame + 0.5);
 
-            const double* occ_alpha = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
-            const double* occ_beta  = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
-            const double* ene_alpha = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_ALPHA);
-            const double* ene_beta  = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_BETA);
+            const double* occ_alpha = md_vlx_scf_mo_occupancy(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
+            const double* occ_beta  = md_vlx_scf_mo_occupancy(vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
+            const double* ene_alpha = md_vlx_scf_mo_energy(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
+            const double* ene_beta  = md_vlx_scf_mo_energy(vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
+
+			int homo_idx[2] = { 0 };
+            int lumo_idx[2] = { 0 };
+
+            homo_idx[0] = (int)md_vlx_scf_homo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
+            homo_idx[1] = (int)md_vlx_scf_homo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
+
+            lumo_idx[0] = (int)md_vlx_scf_lumo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_ALPHA);
+            lumo_idx[1] = (int)md_vlx_scf_lumo_idx(vlx, frame_idx, MD_VLX_MO_TYPE_BETA);
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
             md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
@@ -3819,36 +3822,39 @@ struct VeloxChem : viamd::EventHandler {
 
             ImGui::SameLine();
 
+            auto create_key = [](md_vlx_mo_type_t mo_type, int frame_idx, int mo_idx) -> uint64_t {
+                return ((uint64_t)frame_idx << 32) | ((uint64_t)mo_type << 24) | ((uint64_t)mo_idx & 0x00FFFFFF);
+		    };
+
             // These represent the new mo_idx we want to have in each slot
-            int vol_mo_idx[16]  = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
-            md_vlx_mo_type_t vol_mo_type[16] = {};
+            uint64_t vol_mo_key[16]  = {0};
             for (int i = 0; i < num_mos; ++i) {
+				md_vlx_mo_type_t mo_type = MD_VLX_MO_TYPE_ALPHA;
+				int mo_idx = beg_mo_idx + i;
                 if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-                    vol_mo_idx[i] = beg_mo_idx + i / 2;
-                    vol_mo_type[i] = (i & 1) ? MD_VLX_MO_TYPE_ALPHA : MD_VLX_MO_TYPE_BETA;
-                } else {
-                    vol_mo_idx[i] = beg_mo_idx + i;
-                    vol_mo_type[i] = MD_VLX_MO_TYPE_ALPHA;
+                    mo_type = (i & 1) ? MD_VLX_MO_TYPE_ALPHA : MD_VLX_MO_TYPE_BETA;
+                    mo_idx = beg_mo_idx + i / 2;
                 }
+				vol_mo_key[i] = create_key(mo_type, frame_idx, mo_idx);
             }
 
             int job_queue[16];
             int num_jobs = 0;
             // Find and reuse volume data from existing slots (if applicable)
             // If there is no existing volume, we queue up a new job
+
             for (int i = 0; i < num_mos; ++i) {
                 // Check if we already have that entry in the correct slot
-                if (orb.vol_mo_idx[i] == vol_mo_idx[i] && orb.vol_mo_type[i] == vol_mo_type[i]) continue;
+                if (vol_mo_key[i] == orb.vol_mo_key[i]) continue;
 
                 // Try to find the entry in the existing list
                 bool found = false;
                 for (int j = 0; j < num_mos; ++j) {
                     if (i == j) continue;
-                    if (vol_mo_idx[i] == orb.vol_mo_idx[j]) {
+                    if (vol_mo_key[i] == orb.vol_mo_key[j]) {
                         // Swap to correct location
                         ImSwap(orb.vol[i], orb.vol[j]);
-                        ImSwap(orb.vol_mo_idx[i],  orb.vol_mo_idx[j]);
-                        ImSwap(orb.vol_mo_type[i], orb.vol_mo_type[j]);
+						ImSwap(orb.vol_mo_key[i], orb.vol_mo_key[j]);
                         found = true;
                         break;
                     }
@@ -3876,10 +3882,9 @@ struct VeloxChem : viamd::EventHandler {
 
                 for (int i = 0; i < num_jobs; ++i) {
                     int slot_idx = job_queue[i];
-                    int mo_idx = vol_mo_idx[slot_idx];
-                    md_vlx_mo_type_t mo_type = vol_mo_type[slot_idx];
-                    orb.vol_mo_idx[slot_idx] = mo_idx;
-                    orb.vol_mo_type[slot_idx] = mo_type;
+					uint64_t key = vol_mo_key[slot_idx];
+                    int mo_idx = key & 0x00FFFFFF;
+                    md_vlx_mo_type_t mo_type = (md_vlx_mo_type_t)((key >> 24) & 0xFF);
 
                     if (-1 < mo_idx && mo_idx < num_mos) {
                         if (task_system::task_is_running(orb.vol_task[slot_idx])) {
@@ -4278,8 +4283,9 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-                int orb_homo_idx = homo_idx[export_state.mo.type];
-                int orb_lumo_idx = lumo_idx[export_state.mo.type];
+				int frame_idx = (int)(state.animation.frame + 0.5);
+                int orb_homo_idx = (int)md_vlx_scf_homo_idx(vlx, frame_idx, export_state.mo.type);
+                int orb_lumo_idx = (int)md_vlx_scf_lumo_idx(vlx, frame_idx, export_state.mo.type);
 
                 auto write_lbl = [orb_homo_idx, orb_lumo_idx](char* buf, size_t cap, int idx) {
                     const char* suffix = "";
@@ -4480,7 +4486,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (use_gpu_path) {
                             compute_electron_density_GPU(vol.tex_id, grid, sys_state, MD_VLX_MO_TYPE_ALPHA);
                         } else {
-                            task = compute_electron_density_async(vol.tex_id, grid, MD_VLX_MO_TYPE_ALPHA);
+                            task = compute_electron_density_async(vol.tex_id, grid, sys_state, MD_VLX_MO_TYPE_ALPHA);
                         }
                         break;
                     default:
@@ -4490,7 +4496,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     int num_samples = vol.dim[0] * vol.dim[1] * vol.dim[2];
                     size_t              natoms = md_vlx_number_of_atoms(vlx);
-                    const dvec3_t* vlx_coords  = md_vlx_atom_coordinates(vlx);
+                    const dvec3_t* vlx_coords  = md_vlx_atom_coordinates(vlx, 0);
                     const uint8_t* vlx_numbers = md_vlx_atomic_numbers(vlx);
                     float* data = (float*)md_vm_arena_push(temp_arena, num_samples * sizeof(float));
 
@@ -4869,8 +4875,9 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void delete_group(int index) {
+        size_t num_atoms = md_vlx_number_of_atoms(vlx);
         vec4_t deleted_color = nto.group.color[index];
-        for (size_t i = 0; i < nto.num_atoms; i++) {
+        for (size_t i = 0; i < num_atoms; i++) {
             if (nto.atom_group_idx[i] == (uint32_t)index) {
                 nto.atom_group_idx[i] = 0;
             }
@@ -4888,9 +4895,10 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void copy_group(int from_idx, int to_idx) {
+        size_t num_atoms = md_vlx_number_of_atoms(vlx);
         nto.group.color[to_idx] = nto.group.color[from_idx];
         MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
-        for (size_t i = 0; i < nto.num_atoms; i++) {
+        for (size_t i = 0; i < num_atoms; i++) {
             if ((int)nto.atom_group_idx[i] == to_idx) {
                 nto.atom_group_idx[i] = (uint32_t)from_idx;
             }
@@ -4898,6 +4906,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void swap_groups(int a, int b) {
+        size_t num_atoms = md_vlx_number_of_atoms(vlx);
         vec4_t color = nto.group.color[a];
         nto.group.color[a] = nto.group.color[b];
         nto.group.color[b] = color;
@@ -4908,7 +4917,7 @@ struct VeloxChem : viamd::EventHandler {
         MEMCPY(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
         MEMCPY(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
 
-        for (size_t i = 0; i < nto.num_atoms; i++) {
+        for (size_t i = 0; i < num_atoms; i++) {
             if ((int)nto.atom_group_idx[i] == a) {
                 nto.atom_group_idx[i] = (uint32_t)b;
             }
@@ -5022,8 +5031,10 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::SameLine();
             ImGui::Checkbox("Hide overlapping text", &hide_overlap_text);
 
+            const size_t num_atoms = md_vlx_number_of_atoms(vlx);
+
             int group_counts[MAX_NTO_GROUPS] = {0};
-            for (size_t i = 0; i < nto.num_atoms; ++i) {
+            for (size_t i = 0; i < num_atoms; ++i) {
                 int group_idx = nto.atom_group_idx[i] < nto.group.count ? nto.atom_group_idx[i] : 0;
                 group_counts[group_idx] += 1;
             }
@@ -5069,7 +5080,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + show_unassigned)) {
                             nto.group.hovered_index = (int8_t)row_n;
                             md_bitfield_clear(&state.selection.highlight_mask);
-                            for (size_t j = 0; j < nto.num_atoms; j++) {
+                            for (size_t j = 0; j < num_atoms; j++) {
                                 if (nto.atom_group_idx[j] == (uint32_t)row_n) {
                                     //Add j to highlight mask
                                     md_bitfield_set_bit(&state.selection.highlight_mask, j); //TODO: Hover only works if you hold leftMouseBtn
@@ -5167,7 +5178,7 @@ struct VeloxChem : viamd::EventHandler {
                             }
                             else {
                                 if (ImGui::Button(ICON_FA_TRASH_ARROW_UP, button_size)) {
-                                    for (size_t i = 0; i < nto.num_atoms; i++) {
+                                    for (size_t i = 0; i < num_atoms; i++) {
                                         if (nto.atom_group_idx[i] == row_n) {
                                             nto.atom_group_idx[i] = (uint32_t)(row_n - 1);
                                         }
@@ -5812,11 +5823,12 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::OpenPopup("Context Menu");
         }
 
+        const size_t num_atoms = md_vlx_number_of_atoms(vlx);
         if (ImGui::BeginPopup("Context Menu")) {
             if (ImGui::BeginMenu("Assign to group")) {
                 for (size_t i = 0; i < nto.group.count; i++) {
                     if (ImGui::MenuItem(nto.group.label[i])) {
-                        for (size_t j = 0; j < nto.num_atoms; j++) {
+                        for (size_t j = 0; j < num_atoms; j++) {
                             //Is the atom selected?
                             if (md_bitfield_test_bit(&state.selection.selection_mask, j)) {
                                 //If so, set its group to the selected group index
@@ -5831,7 +5843,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (ImGui::MenuItem("Assign to new group")) {
                     //Create a new group and add an item to it
                     uint32_t group_idx = (uint32_t)(nto.group.count++);
-                    for (size_t i = 0; i < nto.num_atoms; i++) {
+                    for (size_t i = 0; i < num_atoms; i++) {
                         if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
                             //If so, set its group to the selected group index
                             nto.atom_group_idx[i] = group_idx;
@@ -5843,7 +5855,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         // Create hash to check for changes to trigger update of colors in gl representation
-        uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, sizeof(uint32_t) * nto.num_atoms, 0);
+        uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, sizeof(uint32_t) * num_atoms, 0);
         uint64_t color_hash    = md_hash64(nto.group.color, sizeof(nto.group.color), atom_idx_hash);
 
         static uint64_t cur_color_hash = 0;
@@ -5910,7 +5922,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     for (size_t i = 0; i < num_aos; i++) {
                         int atom_idx = ao_to_atom[i];
-						ASSERT(0 <= atom_idx && (size_t)atom_idx < nto.num_atoms);
+						ASSERT(0 <= atom_idx && (size_t)atom_idx < num_atoms);
                         ao_to_group[i] = (int)nto.atom_group_idx[atom_idx];
                         if (ao_to_group[i] < 0 || ao_to_group[i] >= MAX_NTO_GROUPS) {
                             ao_to_group[i] = 0;
