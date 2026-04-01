@@ -7963,7 +7963,7 @@ static void draw_representations_transparent(ApplicationState* state) {
 
         volume::RenderDesc desc = {
             .render_target = {
-                .depth = state->gbuffer.tex.depth,
+                .depth  = state->gbuffer.tex.depth,
                 .color  = state->gbuffer.tex.transparency,
                 .width  = state->gbuffer.width,
                 .height = state->gbuffer.height,
