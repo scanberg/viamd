@@ -2310,7 +2310,7 @@ void destroy_gbuffer(GBuffer* gbuf) {
     if (gbuf->tex.normal) glDeleteTextures(1, &gbuf->tex.normal);
     if (gbuf->tex.transparency) glDeleteTextures(1, &gbuf->tex.transparency);
     if (gbuf->tex.picking) glDeleteTextures(1, &gbuf->tex.picking);
-    if (gbuf->tex.temporal_accumulation) glDeleteTextures((int)ARRAY_SIZE(gbuf->tex.temporal_accumulation), gbuf->tex.temporal_accumulation);
+    if (gbuf->tex.temporal_accumulation[0]) glDeleteTextures((int)ARRAY_SIZE(gbuf->tex.temporal_accumulation), gbuf->tex.temporal_accumulation);
 
     if (gbuf->pbo_picking.color[0]) glDeleteBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.color), gbuf->pbo_picking.color);
     if (gbuf->pbo_picking.depth[0]) glDeleteBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.depth), gbuf->pbo_picking.depth);

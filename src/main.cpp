@@ -612,9 +612,9 @@ int main(int argc, char** argv) {
     md_os_sys_info_t sys_info = {0};
 	md_os_sys_info_query(&sys_info);
 
-    size_t num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? sys_info.num_physical_cores : VIAMD_NUM_WORKER_THREADS;
+    int num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? sys_info.num_physical_cores : VIAMD_NUM_WORKER_THREADS;
 	num_threads = CLAMP(num_threads, 2, sys_info.num_physical_cores);
-    task_system::initialize(num_threads);
+    task_system::initialize((size_t)num_threads);
 
     md_gl_initialize();
     state.gl.shaders                = md_gl_shaders_create(shader_output_snippet);
@@ -763,7 +763,6 @@ int main(int argc, char** argv) {
         if (state.density_volume.show_window) draw_density_volume_window(&state);
         if (state.distributions.show_window) draw_distribution_window(&state);
         if (state.timeline.show_window) draw_timeline_window(&state);
-
         if (state.selection.query.show_window) draw_selection_query_window(&state);
         if (state.selection.grow.show_window) draw_selection_grow_window(&state);
         if (state.show_property_export_window) draw_property_export_window(&state);
@@ -2374,6 +2373,7 @@ static void draw_main_menu(ApplicationState* data) {
                     const auto& mol = data->mold.sys;
                     uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
                     md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
+                    defer { md_vm_arena_temp_end(temp_pos); };
 
                     float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
                     float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
@@ -2387,7 +2387,8 @@ static void draw_main_menu(ApplicationState* data) {
                         md_bond_data_clear(&data->mold.sys.bond);
                         md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, frame_alloc);
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                        md_vm_arena_temp_end(temp_pos);
+                        data->selection.bond_idx.hovered     = -1;
+                        data->selection.bond_idx.right_click = -1;
                     }
                 } else {
                     MD_LOG_INFO("Cannot recalculate bonds while evaluation is occuring.");
@@ -3828,11 +3829,11 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
                     // Draw options for how bonds should be colored
-					update_rep |= ImGui::Combo("bond color", (int*)(&rep.licorice_mode), licorice_color_mode_str, IM_ARRAYSIZE(licorice_color_mode_str));
-                    if (rep.licorice_mode == LicoriceColorMode::Smooth) {
-                        ImGui::SliderFloat("sharpness", &rep.licorice_sharpness, 0.0f, 1.0f);
-                    } else if (rep.licorice_mode == LicoriceColorMode::Uniform) {
-                        ImGui::ColorEdit3("##licorice_uniform_color", rep.licorice_uniform_color.elem);
+					update_rep |= ImGui::Combo("bond color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
+                    if (rep.bond_color == BondColorMode::SmoothAtom) {
+                        ImGui::SliderFloat("sharpness", &rep.bond_sharpness, 0.0f, 1.0f);
+                    } else if (rep.bond_color == BondColorMode::Uniform) {
+                        ImGui::ColorEdit3("##bond_uniform_color", rep.bond_uniform_color.elem);
 					}
                 }
 
@@ -7722,6 +7723,8 @@ static void handle_picking(ApplicationState* data) {
         if (data->selection.atom_idx.hovered > (int)data->mold.sys.atom.count) data->selection.atom_idx.hovered = -1;
         if (data->selection.bond_idx.hovered > (int)data->mold.sys.bond.count) data->selection.bond_idx.hovered = -1;
         
+        data->selection.atom_idx.right_click = -1;
+        data->selection.bond_idx.right_click = -1;
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;
             data->selection.bond_idx.right_click = data->selection.bond_idx.hovered;
@@ -7847,16 +7850,16 @@ static void draw_representations_opaque(ApplicationState* data) {
                     break;
                 case RepresentationType::Licorice:
                     op.args.licorice.radius = rep.scale.x;
-                    op.args.licorice.color_mode = (md_gl_licorice_mode_t)rep.licorice_mode;
-                    op.args.licorice.sharpness = rep.licorice_sharpness;
-                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.licorice_uniform_color, rep.saturation));
+                    op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+                    op.args.licorice.sharpness = rep.bond_sharpness;
+                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.bond_uniform_color, rep.saturation));
                     break;
                 case RepresentationType::BallAndStick:
                     op.args.ball_and_stick.ball_scale = rep.scale.x;
                     op.args.ball_and_stick.stick_radius = rep.scale.y;
-                    op.args.ball_and_stick.color_mode = (md_gl_licorice_mode_t)rep.licorice_mode;
-                    op.args.ball_and_stick.sharpness = rep.licorice_sharpness;
-                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.licorice_uniform_color, rep.saturation));
+                    op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+                    op.args.ball_and_stick.sharpness = rep.bond_sharpness;
+                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.bond_uniform_color, rep.saturation));
                     break;
                 case RepresentationType::Ribbons:
                     op.args.ribbons.width_scale = rep.scale.x;
