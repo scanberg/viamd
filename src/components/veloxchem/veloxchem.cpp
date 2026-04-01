@@ -3832,6 +3832,7 @@ struct VeloxChem : viamd::EventHandler {
                 const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
                 md_grid_t grid {0};
                 init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
+                const int num_mos = (int)num_molecular_orbitals();
 
                 for (int i = 0; i < num_jobs; ++i) {
                     int slot_idx = job_queue[i];
@@ -3840,7 +3841,7 @@ struct VeloxChem : viamd::EventHandler {
                     orb.vol_mo_idx[slot_idx] = mo_idx;
                     orb.vol_mo_type[slot_idx] = mo_type;
 
-                    if (-1 < mo_idx && mo_idx < num_molecular_orbitals()) {
+                    if (-1 < mo_idx && mo_idx < num_mos) {
                         if (task_system::task_is_running(orb.vol_task[slot_idx])) {
                             task_system::task_interrupt(orb.vol_task[slot_idx]);
                         }
@@ -4220,7 +4221,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
                     const char* options[2] = {"Alpha", "Beta"};
                     if (ImGui::BeginCombo("##MO_TYPE", options[export_state.mo.type])) {
-                        for (int i = 0; i < ARRAY_SIZE(options); ++i) {
+                        for (size_t i = 0; i < ARRAY_SIZE(options); ++i) {
                             if (ImGui::Selectable(options[i])) {
                                 export_state.mo.type = (md_vlx_mo_type_t)i;
                             }
@@ -4556,9 +4557,9 @@ struct VeloxChem : viamd::EventHandler {
                         defer { md_file_close(&xyz_file); };
                         
                         // XYZ
-                        md_file_printf(xyz_file, "%i\n", natoms);
+                        md_file_printf(xyz_file, "%zu\n", natoms);
                         md_file_printf(xyz_file, "Geometry extracted from VeloxChem dataset: '%s'\n", state.files.molecule);
-                        for (int i = 0; i < natoms; ++i) {
+                        for (size_t i = 0; i < natoms; ++i) {
                             str_t sym = md_util_element_symbol(vlx_numbers[i]);
                             md_file_printf(xyz_file, "%-2s %12.6f %12.6f %12.6f\n", sym.ptr, vlx_coords[i].x, vlx_coords[i].y, vlx_coords[i].z);
                         }
@@ -4676,8 +4677,6 @@ struct VeloxChem : viamd::EventHandler {
 
             ImDrawList* dl = window->DrawList;
             ASSERT(dl);
-
-            ImVec2 win_pos = ImGui::GetWindowPos();
 
             if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
                 if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
@@ -4873,10 +4872,7 @@ struct VeloxChem : viamd::EventHandler {
 
     static inline void imgui_delayed_hover_tooltip(const char* text) {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-            if (ImGui::BeginTooltip()) {
-                ImGui::Text(text);
-                ImGui::EndTooltip();
-            }
+            ImGui::SetTooltip(text);
         }
     }
 
@@ -5003,9 +4999,9 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                 ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                 bool show_unassigned = group_counts[0] > 0;
-                int row_n = show_unassigned ? 0 : 1;
+                size_t row_n = show_unassigned ? 0 : 1;
                 for (; row_n < nto.group.count; row_n++) {
-                    ImGui::PushID(row_n);
+                    ImGui::PushID((int)row_n);
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                     ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
 
@@ -5022,7 +5018,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     else {
                         ImGui::Selectable(nto.group.label[row_n], false, selectable_flags);
-                        if (ImGui::TableGetHoveredRow() == row_n + show_unassigned) {
+                        if (ImGui::TableGetHoveredRow() == (int)(row_n + show_unassigned)) {
                             nto.group.hovered_index = (int8_t)row_n;
                             md_bitfield_clear(&state.selection.highlight_mask);
                             for (size_t j = 0; j < nto.num_atoms; j++) {
@@ -5102,7 +5098,7 @@ struct VeloxChem : viamd::EventHandler {
                                 if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
                                     if (ImGui::Button(ICON_FA_ANGLES_UP, button_size)) {
                                         int last = (int)nto.group.count - 1;
-                                        for (int i = last; i >= row_n - 1; i--) {
+                                        for (int i = last; i >= (int)row_n - 1; i--) {
                                             swap_groups(i, i - 1);
                                         }
                                     }
@@ -5124,8 +5120,8 @@ struct VeloxChem : viamd::EventHandler {
                             else {
                                 if (ImGui::Button(ICON_FA_TRASH_ARROW_UP, button_size)) {
                                     for (size_t i = 0; i < nto.num_atoms; i++) {
-                                        if ((int)nto.atom_group_idx[i] == row_n) {
-                                            nto.atom_group_idx[i] = (int)row_n - 1;
+                                        if (nto.atom_group_idx[i] == row_n) {
+                                            nto.atom_group_idx[i] = (uint32_t)(row_n - 1);
                                         }
                                     }
                                     delete_group(row_n);
@@ -5159,8 +5155,6 @@ struct VeloxChem : viamd::EventHandler {
             canvas_sz.y = MAX(canvas_sz.y, 50.0f);
 
             ImGui::Dummy(canvas_sz);
-
-            ImVec2 cursor = ImGui::GetCursorPos();
 
             // Draw border and background color
             ImGuiIO& io = ImGui::GetIO();
@@ -5339,7 +5333,6 @@ struct VeloxChem : viamd::EventHandler {
 
                     if (nto.dipole.enabled) {
                         const vec3_t mid = vec3_lerp(aabb.min_ext, aabb.max_ext, 0.5f);
-                        const vec3_t ext = aabb.max_ext - aabb.min_ext;
 
                         const dvec3_t* magnetic_dp = md_vlx_rsp_magnetic_transition_dipole_moments(vlx);
                         const dvec3_t* electric_dp = md_vlx_rsp_electric_transition_dipole_moments(vlx);
