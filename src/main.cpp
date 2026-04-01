@@ -763,7 +763,6 @@ int main(int argc, char** argv) {
         if (state.density_volume.show_window) draw_density_volume_window(&state);
         if (state.distributions.show_window) draw_distribution_window(&state);
         if (state.timeline.show_window) draw_timeline_window(&state);
-
         if (state.selection.query.show_window) draw_selection_query_window(&state);
         if (state.selection.grow.show_window) draw_selection_grow_window(&state);
         if (state.show_property_export_window) draw_property_export_window(&state);
@@ -2374,6 +2373,7 @@ static void draw_main_menu(ApplicationState* data) {
                     const auto& mol = data->mold.sys;
                     uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
                     md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
+                    defer { md_vm_arena_temp_end(temp_pos); };
 
                     float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
                     float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
@@ -2387,7 +2387,8 @@ static void draw_main_menu(ApplicationState* data) {
                         md_bond_data_clear(&data->mold.sys.bond);
                         md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, frame_alloc);
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                        md_vm_arena_temp_end(temp_pos);
+                        data->selection.bond_idx.hovered     = -1;
+                        data->selection.bond_idx.right_click = -1;
                     }
                 } else {
                     MD_LOG_INFO("Cannot recalculate bonds while evaluation is occuring.");
@@ -7722,6 +7723,8 @@ static void handle_picking(ApplicationState* data) {
         if (data->selection.atom_idx.hovered > (int)data->mold.sys.atom.count) data->selection.atom_idx.hovered = -1;
         if (data->selection.bond_idx.hovered > (int)data->mold.sys.bond.count) data->selection.bond_idx.hovered = -1;
         
+        data->selection.atom_idx.right_click = -1;
+        data->selection.bond_idx.right_click = -1;
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;
             data->selection.bond_idx.right_click = data->selection.bond_idx.hovered;
