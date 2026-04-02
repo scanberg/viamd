@@ -2385,7 +2385,7 @@ static void draw_main_menu(ApplicationState* data) {
                     } else {
                         MD_LOG_DEBUG("RECALCULATING BONDS");
                         md_bond_data_clear(&data->mold.sys.bond);
-                        md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, data->mold.sys.alloc);
+                        md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &sys.unitcell, &sys, data->mold.sys.alloc);
                         
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                         data->selection.bond_idx.hovered     = -1;
