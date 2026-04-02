@@ -228,8 +228,7 @@ vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColo
     float s0 = prevSample - isovalue;
     float s1 = currentSample - isovalue;
     bool crossed = (s0 * s1 < 0.0);
-    bool nearHit = (abs(s0) <= 1e-5) || (abs(s1) <= 1e-5);
-    if (crossed || nearHit) {
+    if (crossed) {
 
         // apply linear interpolation between current and previous sample to obtain location of isosurface
         float a = (currentSample - isovalue) / sampleDelta;
@@ -384,10 +383,9 @@ void main() {
     float jitter = PDnrand(gl_FragCoord.xy + vec2(u_time, u_time));
 
     float tIncr = min(tEnd, tEnd / (samplingRate * length(dir * tEnd * textureSize(u_tex_volume, 0))));
-    float samples = max(1, ceil(tEnd / tIncr));
-    float baseIncr = max(tEnd / samples, 0.0001);
-
-	tIncr = baseIncr;
+    float nSamples = max(1.0, samplingRate * length(dir * tEnd * vec3(textureSize(u_tex_volume, 0))));
+    float baseIncr = max(tEnd / ceil(nSamples), 0.0001);
+    tIncr = baseIncr;
 
     float t = jitter * tIncr;
 
