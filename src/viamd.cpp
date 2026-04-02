@@ -1579,8 +1579,8 @@ void interpolate_system_state(ApplicationState* state) {
 
     switch (mode) {
         case InterpolationMode::Nearest: {
-            payload.unitcell = payload.src_states[0]->unitcell;
             task_system::ID interp_task = task_system::create_pool_task(STR_LIT("## Interpolate"), [data = &payload]() {
+                data->unitcell = data->src_states[0]->unitcell;
                 MEMCPY(data->dst_x, data->src_states[0]->atom_x, sizeof(float) * data->count);
                 MEMCPY(data->dst_y, data->src_states[0]->atom_y, sizeof(float) * data->count);
                 MEMCPY(data->dst_z, data->src_states[0]->atom_z, sizeof(float) * data->count);
@@ -1589,13 +1589,15 @@ void interpolate_system_state(ApplicationState* state) {
             break;
         }
         case InterpolationMode::Linear: {
-            double x  = lerp(payload.src_states[0]->unitcell.x,  payload.src_states[1]->unitcell.x,  payload.t);
-            double y  = lerp(payload.src_states[0]->unitcell.y,  payload.src_states[1]->unitcell.y,  payload.t);
-            double z  = lerp(payload.src_states[0]->unitcell.z,  payload.src_states[1]->unitcell.z,  payload.t);
-            double xy = lerp(payload.src_states[0]->unitcell.xy, payload.src_states[1]->unitcell.xy, payload.t);
-            double xz = lerp(payload.src_states[0]->unitcell.xz, payload.src_states[1]->unitcell.xz, payload.t);
-            double yz = lerp(payload.src_states[0]->unitcell.yz, payload.src_states[1]->unitcell.yz, payload.t);
-            payload.unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+            task_system::ID iterp_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unitcell"), [data = &payload]() {
+                double x  = lerp(data->src_states[0]->unitcell.x,  data->src_states[1]->unitcell.x,  data->t);
+                double y  = lerp(data->src_states[0]->unitcell.y,  data->src_states[1]->unitcell.y,  data->t);
+                double z  = lerp(data->src_states[0]->unitcell.z,  data->src_states[1]->unitcell.z,  data->t);
+                double xy = lerp(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->t);
+                double xz = lerp(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->t);
+                double yz = lerp(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->t);
+                data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+			});
 
             task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
@@ -1610,18 +1612,21 @@ void interpolate_system_state(ApplicationState* state) {
                 md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t);
             }, grain_size);
 
+			tasks[num_tasks++] = iterp_cell_task;
             tasks[num_tasks++] = interp_coord_task;
 
             break;
         }
         case InterpolationMode::CubicSpline: {
-            double x  = cubic_spline(payload.src_states[0]->unitcell.x,  payload.src_states[1]->unitcell.x,  payload.src_states[2]->unitcell.x,  payload.src_states[3]->unitcell.x,  payload.t, payload.s);
-            double y  = cubic_spline(payload.src_states[0]->unitcell.y,  payload.src_states[1]->unitcell.y,  payload.src_states[2]->unitcell.y,  payload.src_states[3]->unitcell.y,  payload.t, payload.s);
-            double z  = cubic_spline(payload.src_states[0]->unitcell.z,  payload.src_states[1]->unitcell.z,  payload.src_states[2]->unitcell.z,  payload.src_states[3]->unitcell.z,  payload.t, payload.s);
-            double xy = cubic_spline(payload.src_states[0]->unitcell.xy, payload.src_states[1]->unitcell.xy, payload.src_states[2]->unitcell.xy, payload.src_states[3]->unitcell.xy, payload.t, payload.s);
-            double xz = cubic_spline(payload.src_states[0]->unitcell.xz, payload.src_states[1]->unitcell.xz, payload.src_states[2]->unitcell.xz, payload.src_states[3]->unitcell.xz, payload.t, payload.s);
-            double yz = cubic_spline(payload.src_states[0]->unitcell.yz, payload.src_states[1]->unitcell.yz, payload.src_states[2]->unitcell.yz, payload.src_states[3]->unitcell.yz, payload.t, payload.s);
-            payload.unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+            task_system::ID iterp_cell_task = task_system::create_pool_task(STR_LIT("## Interp Unitcell"), [data = &payload]() {
+                double x  = cubic_spline(data->src_states[0]->unitcell.x,  data->src_states[1]->unitcell.x,  data->src_states[2]->unitcell.x,  data->src_states[3]->unitcell.x,  data->t, data->s);
+                double y  = cubic_spline(data->src_states[0]->unitcell.y,  data->src_states[1]->unitcell.y,  data->src_states[2]->unitcell.y,  data->src_states[3]->unitcell.y,  data->t, data->s);
+                double z  = cubic_spline(data->src_states[0]->unitcell.z,  data->src_states[1]->unitcell.z,  data->src_states[2]->unitcell.z,  data->src_states[3]->unitcell.z,  data->t, data->s);
+                double xy = cubic_spline(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->src_states[2]->unitcell.xy, data->src_states[3]->unitcell.xy, data->t, data->s);
+                double xz = cubic_spline(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->src_states[2]->unitcell.xz, data->src_states[3]->unitcell.xz, data->t, data->s);
+                double yz = cubic_spline(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->src_states[2]->unitcell.yz, data->src_states[3]->unitcell.yz, data->t, data->s);
+                data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+            });
 
             task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
@@ -1636,6 +1641,7 @@ void interpolate_system_state(ApplicationState* state) {
                 md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t, data->s);
             }, grain_size);
 
+            tasks[num_tasks++] = iterp_cell_task;
             tasks[num_tasks++] = interp_coord_task;
             
             break;

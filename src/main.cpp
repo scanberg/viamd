@@ -2383,9 +2383,10 @@ static void draw_main_menu(ApplicationState* data) {
                     if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
                         MD_LOG_DEBUG("Failed to extract frame data");
                     } else {
-                        MD_LOG_DEBUG("REC&sysLATING BONDS");
-                        md_bond_data_clear(&sys.bond);
-                        md_util_infer_covalent_bonds(&sys.bond, x, y, z, &frame_header.unitcell, &sys, frame_alloc);
+                        MD_LOG_DEBUG("RECALCULATING BONDS");
+                        md_bond_data_clear(&data->mold.sys.bond);
+                        md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, data->mold.sys.alloc);
+                        
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                         data->selection.bond_idx.hovered     = -1;
                         data->selection.bond_idx.right_click = -1;
@@ -7382,16 +7383,23 @@ static void handle_camera_interaction(ApplicationState* data) {
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
             md_bitfield_clear(&data->selection.highlight_mask);
             if (data->picking.idx != INVALID_PICKING_IDX) {
-                if (data->selection.atom_idx.hovered != -1 && data->mold.sys.atom.count) {
-                    md_bitfield_set_bit(&data->selection.highlight_mask, data->picking.idx);
+                if (data->selection.atom_idx.hovered != -1 && data->selection.atom_idx.hovered < data->mold.sys.atom.count) {
+                    md_bitfield_set_bit(&data->selection.highlight_mask, data->selection.atom_idx.hovered);
                 }
                 else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.sys.bond.count) {
                     md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
-                    md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
-                    md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
+                    if (0 <= pair.idx[0] && pair.idx[0] < data->mold.sys.atom.count) {
+                        md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
+                    } else {
+                        MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[0]);
+                    }
+                    if (0 <= pair.idx[1] && pair.idx[1] < data->mold.sys.atom.count) {
+                        md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
+                    } else {
+                        MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[1]);
+                    }
                 }
                 grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
-
                 draw_info_window(*data, data->picking.idx);
             }
         }
@@ -7963,7 +7971,7 @@ static void draw_representations_transparent(ApplicationState* state) {
 
         volume::RenderDesc desc = {
             .render_target = {
-                .depth = state->gbuffer.tex.depth,
+                .depth  = state->gbuffer.tex.depth,
                 .color  = state->gbuffer.tex.transparency,
                 .width  = state->gbuffer.width,
                 .height = state->gbuffer.height,
