@@ -7382,16 +7382,23 @@ static void handle_camera_interaction(ApplicationState* data) {
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
             md_bitfield_clear(&data->selection.highlight_mask);
             if (data->picking.idx != INVALID_PICKING_IDX) {
-                if (data->selection.atom_idx.hovered != -1 && data->mold.sys.atom.count) {
-                    md_bitfield_set_bit(&data->selection.highlight_mask, data->picking.idx);
+                if (data->selection.atom_idx.hovered != -1 && data->selection.atom_idx.hovered < data->mold.sys.atom.count) {
+                    md_bitfield_set_bit(&data->selection.highlight_mask, data->selection.atom_idx.hovered);
                 }
                 else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.sys.bond.count) {
                     md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
-                    md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
-                    md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
+                    if (0 <= pair.idx[0] && pair.idx[0] < data->mold.sys.atom.count) {
+                        md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
+                    } else {
+                        MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[0]);
+                    }
+                    if (0 <= pair.idx[1] && pair.idx[1] < data->mold.sys.atom.count) {
+                        md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
+                    } else {
+                        MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[1]);
+                    }
                 }
                 grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
-
                 draw_info_window(*data, data->picking.idx);
             }
         }
