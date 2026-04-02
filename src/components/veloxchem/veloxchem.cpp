@@ -2734,7 +2734,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::Checkbox("Enable Critical Points Analysis", &critical_points.enabled);
 
                 static VolumeResolution vol_res = VolumeResolution::Mid;
-                ImGui::Combo("Volume Resolution", (int*)&vol_res, "Low\0Mid\0High\0");
+                ImGui::Combo("Volume Resolution", (int*)&vol_res, volume_resolution_str, (int)VolumeResolution::Count);
 
                 if (critical_points.enabled) {
                     static bool  reevaluate_graph_per_frame = false;
@@ -2755,12 +2755,14 @@ struct VeloxChem : viamd::EventHandler {
                     };
 
                     // Compute a hash of the current state
-                    uint64_t vol_hash = md_hash64(&vol_res, sizeof(vol_res), 0);
+                    size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+                    uint64_t vol_hash = md_hash64(&vol_res, sizeof(vol_res), frame_idx);
 
                     // Update volume if required
                     if (critical_points.vol_hash != vol_hash || critical_points.density_vol.tex_id == 0) {
                         critical_points.vol_hash = vol_hash;
-                        init_grid(&critical_points.grid, obb.orientation, obb.min_ext, obb.max_ext, volume_resolution_samples_per_angstrom[(int)vol_res]);
+                        const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
+                        init_grid(&critical_points.grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
                         init_volume(&critical_points.density_vol, critical_points.grid, GL_R32F);
                         if (!compute_electron_density_GPU(critical_points.density_vol.tex_id, critical_points.grid, sys_state, MD_VLX_MO_TYPE_ALPHA)) {
                             MD_LOG_ERROR("Failed to compute electron density volume for critical points analysis");
