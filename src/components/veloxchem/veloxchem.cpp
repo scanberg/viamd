@@ -4135,7 +4135,7 @@ struct VeloxChem : viamd::EventHandler {
                                     .clear_color = true,
                                 },
                                 .texture = {
-                                    .volume = orb.vol[i].tex_id,
+                                    .density_volume = orb.vol[i].tex_id,
                                 },
                                 .matrix = {
                                     .model = orb.vol[i].texture_to_world,
@@ -5706,7 +5706,7 @@ struct VeloxChem : viamd::EventHandler {
                                 .clear_color = true,
                             },
                             .texture = {
-                                .volume = nto.vol[i].tex_id,
+                                .density_volume = nto.vol[i].tex_id,
                             },
                             .matrix = {
                                 .model = nto.vol[i].texture_to_world,
