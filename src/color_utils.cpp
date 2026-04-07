@@ -237,46 +237,53 @@ void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mas
     }
 }
 
+static inline uint32_t scale_saturation_u32(uint32_t rgba_u32, float scale) {
+    vec4_t rgba = convert_color(rgba_u32);
+    vec3_t lab = linear_srgb_to_oklab(vec3_from_vec4(rgba));
+    lab.y *= scale;
+    lab.z *= scale;
+    return convert_color(vec4_from_vec3(oklab_to_linear_srgb(lab), rgba.w));
+}
+
 void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale) {
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
         int64_t i = beg_bit - 1;
-        vec4_t rgba = convert_color(colors[i]);
-        vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
-        hsv.y *= scale;
-        rgba = vec4_from_vec3(hsv_to_rgb(hsv), rgba.w);
-        colors[i] = convert_color(rgba);
+        colors[i] = scale_saturation_u32(colors[i], scale);
     }
 }
 
 void scale_saturation(uint32_t* colors, size_t count, float scale) {
     for (size_t i = 0; i < count; ++i) {
-        vec4_t rgba = convert_color(colors[i]);
-        vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
-        hsv.y *= scale;
-        rgba = vec4_from_vec3(hsv_to_rgb(hsv), rgba.w);
-        colors[i] = convert_color(rgba);
+        colors[i] = scale_saturation_u32(colors[i], scale);
     }
 }
 
-void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength) {
+void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength, float saturation) {
+    const float t = CLAMP(tint_strength, 0.0f, 1.0f);
+    const float s = CLAMP(saturation, 0.0f, 1.0f);
+
     vec4_t tint_rgba = convert_color(tint_color);
-    const float L_coeff  = 0.1 * tint_strength;
-    const float ab_coeff = 0.9 * tint_strength;
-    
-    vec3_t tint_rgb = vec3_from_vec4(tint_rgba);
-    vec3_t tint_lab = linear_srgb_to_oklab(tint_rgb);
+    vec3_t tint_lab = linear_srgb_to_oklab(vec3_from_vec4(tint_rgba));
+
+    const float L_coeff  = 0.1f * t;
+    const float ab_coeff = 1.0f * t;
 
     for (size_t i = 0; i < count; ++i) {
         vec4_t rgba = convert_color(colors[i]);
-        vec3_t rgb = vec3_from_vec4(rgba);
-        vec3_t lab = linear_srgb_to_oklab(rgb);
-        lab.x = lab.x * (1.0f - L_coeff) + tint_lab.x * L_coeff;
+        vec3_t lab = linear_srgb_to_oklab(vec3_from_vec4(rgba));
+
+        // First apply tint.
+        lab.x = lab.x * (1.0f - L_coeff)  + tint_lab.x * L_coeff;
         lab.y = lab.y * (1.0f - ab_coeff) + tint_lab.y * ab_coeff;
         lab.z = lab.z * (1.0f - ab_coeff) + tint_lab.z * ab_coeff;
-        vec3_t tinted_rgb = oklab_to_linear_srgb(lab);
-        rgba = vec4_from_vec3(tinted_rgb, rgba.w);
-        colors[i] = convert_color(rgba);
+
+        // Then apply saturation independently by scaling chroma in OKLab.
+        lab.y *= s;
+        lab.z *= s;
+
+        vec3_t out_rgb = oklab_to_linear_srgb(lab);
+        colors[i] = convert_color(vec4_from_vec3(out_rgb, rgba.w));
     }
 }

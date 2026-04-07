@@ -892,6 +892,7 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_int(state,  STR_LIT("ColorMapping"), (int)rep.color_mapping);
         viamd::write_vec4(state, STR_LIT("BaseColor"), rep.base_color);
         viamd::write_flt(state,  STR_LIT("Saturation"), rep.saturation);
+
         viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
         viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
 
@@ -1198,13 +1199,9 @@ void update_representation(ApplicationState* state, Representation* rep) {
         }
     }
 
-    if (rep->tint.strength > 0.0f) {
-        uint32_t tint_color = convert_color(rep->tint.color);
-        tint_colors(colors, num_atoms, tint_color, rep->tint.strength);
-    }
-
-    if (rep->saturation != 1.0f) {
-        scale_saturation(colors, num_atoms, rep->saturation);
+    if (rep->tint_scale > 0.0f || rep->saturation < 1.0f) {
+        uint32_t tint_color = convert_color(rep->tint_color);
+        tint_colors(colors, num_atoms, tint_color, rep->tint_scale, rep->saturation);
     }
 
     switch (rep->type) {

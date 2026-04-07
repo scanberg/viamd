@@ -3945,11 +3945,9 @@ static void draw_representations_window(ApplicationState* state) {
                 } else {
                     rep.dynamic_evaluation = false;
                 }
-                ImGui::PopItemWidth();
                 if (rep.color_mapping == ColorMapping::Uniform) {
-                    update_rep |= ImGui::ColorEdit3("##atom_uniform_color", rep.uniform_color.elem);
+                    update_rep |= ImGui::ColorEdit3("##atom_base_color", rep.base_color.elem);
                 }
-                ImGui::PushItemWidth(inner_item_width);
                 switch (rep.type) {
                 case RepresentationType::SpaceFill:
                     update_rep |= ImGui::SliderFloat("scale", &rep.scale[0], 0.1f, 4.f);
@@ -3980,17 +3978,18 @@ static void draw_representations_window(ApplicationState* state) {
                     if (rep.bond_color == BondColorMode::SmoothAtom) {
                         ImGui::SliderFloat("sharpness", &rep.bond_sharpness, 0.0f, 1.0f);
                     } else if (rep.bond_color == BondColorMode::Uniform) {
-                        ImGui::ColorEdit3("##bond_uniform_color", rep.bond_uniform_color.elem);
+                        ImGui::ColorEdit3("##bond_base_color", rep.bond_base_color.elem);
 					}
                 }
 
-                update_rep |= ImGui::ColorEdit3("##tint_color", rep.tint.color.elem, ImGuiColorEditFlags_PickerHueBar);
-                update_rep |= ImGui::SliderFloat("tint strength", &rep.tint.strength, 0.0f, 1.0f);
-                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
+                ImGui::Separator();
+                ImGui::Text("Post-Processing");
+                update_rep |= ImGui::ColorEdit3("tint color", rep.tint_color.elem, ImGuiColorEditFlags_PickerHueWheel);
+                update_rep |= ImGui::SliderFloat("tint scale", &rep.tint_scale, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
                 ImGui::PopItemWidth();
                 ImGui::Spacing();
-                ImGui::Separator();
             }
             ImGui::TreePop();
         }
@@ -7841,14 +7840,20 @@ static void draw_representations_opaque(ApplicationState* data) {
                     op.args.licorice.radius = rep.scale.x;
                     op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                     op.args.licorice.sharpness = rep.bond_sharpness;
-                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.bond_base_color, rep.saturation));
+                    op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
+                    if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+                        tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+                    }
                     break;
                 case RepresentationType::BallAndStick:
                     op.args.ball_and_stick.ball_scale = rep.scale.x;
                     op.args.ball_and_stick.stick_radius = rep.scale.y;
                     op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                     op.args.ball_and_stick.sharpness = rep.bond_sharpness;
-                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.bond_base_color, rep.saturation));
+                    op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
+                    if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+                        tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+                    }
                     break;
                 case RepresentationType::Ribbons:
                     op.args.ribbons.width_scale = rep.scale.x;

@@ -498,10 +498,8 @@ struct Representation {
     } secondary_structure;
 
     // Global post processing parameters applied to the final colors.
-    struct {
-        vec4_t color = {1.0f, 1.0f, 1.0f, 1.0f};
-        float strength = 0.0f;
-    } tint;
+    vec4_t tint_color = {1.0f, 0.0f, 0.0f, 1.0f};
+    float tint_scale = 0.0f;
     float saturation = 1.0f;
 
     // scaling parameter (radius, width, height, etc depending on type)
