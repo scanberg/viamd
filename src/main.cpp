@@ -3608,6 +3608,19 @@ static void draw_representations_window(ApplicationState* state) {
     if (ImGui::DeleteButton("remove all")) {
         remove_all_representations(state);
     }
+    ImGui::SameLine();
+
+    const char* advanced_label = ICON_FA_SLIDERS;
+    const float checkbox_width =
+        ImGui::GetFrameHeight() +
+        ImGui::GetStyle().ItemInnerSpacing.x +
+        ImGui::CalcTextSize(advanced_label).x;
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - checkbox_width);
+    ImGui::Checkbox(advanced_label, &state->representation.advanced_mode);
+    ImGui::SetItemTooltip("Advanced mode (show all representation settings)");
+
+    bool advanced = state->representation.advanced_mode;
+
     ImGui::Spacing();
     ImGui::Separator();
     for (int rep_idx = 0; rep_idx < (int)md_array_size(state->representation.reps); rep_idx++) {
@@ -3659,12 +3672,15 @@ static void draw_representations_window(ApplicationState* state) {
         }
 
         if (draw_content) {
+            ImVec4 sub_group_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            sub_group_color.w = 0.5f;
+
             const float inner_item_width = MAX(ImGui::GetContentRegionAvail().x - ImGui::GetStyle().IndentSpacing - ImGui::CalcTextSize("helix scale").x, 100.f);
             ImGui::PushItemWidth(inner_item_width);
 
             // @TODO: Only display the representations which can be used for the current dataset
             if (!rep.type_is_valid) ImGui::PushInvalid();
-            if (ImGui::BeginCombo("Type", representation_type_str[(int)rep.type])) {
+            if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
                 for (int i = 0; i < (int)RepresentationType::Count; ++i) {
                     if (i == (int)RepresentationType::ElectronicStructure) {
                         // Do not enlist Electronic Structure if there are no orbitals available
@@ -3679,31 +3695,12 @@ static void draw_representations_window(ApplicationState* state) {
             }
             if (!rep.type_is_valid) ImGui::PopInvalid();
 
-            switch (rep.type) {
-            case RepresentationType::SpaceFill:
-                update_rep |= ImGui::SliderFloat("scale", &rep.scale[0], 0.1f, 4.f);
-                break;
-            case RepresentationType::Licorice:
-                update_rep |= ImGui::SliderFloat("radius", &rep.scale[0], 0.1f, 4.0f);
-                break;
-            case RepresentationType::BallAndStick:
-                update_rep |= ImGui::SliderFloat("ball scale", &rep.scale[0], 0.1f, 4.f);
-                update_rep |= ImGui::SliderFloat("bond scale", &rep.scale[1], 0.1f, 4.f);
-                break;
-            case RepresentationType::Ribbons:
-                update_rep |= ImGui::SliderFloat("width",       &rep.scale[0], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("thickness",   &rep.scale[1], 0.1f, 3.f);
-                break;
-            case RepresentationType::Cartoon:
-                update_rep |= ImGui::SliderFloat("coil scale",  &rep.scale[0], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("sheet scale", &rep.scale[1], 0.1f, 3.f);
-                update_rep |= ImGui::SliderFloat("helix scale", &rep.scale[2], 0.1f, 3.f);
-                break;
-            default:
-                break;
-            }
-
-            if (rep.type == RepresentationType::ElectronicStructure) {
+            if (rep.type != RepresentationType::ElectronicStructure) {
+                if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
+                    rep.filt_is_dirty = true;
+                    update_rep = true;
+                }
+            } else {
                 ImGuiComboFlags flags = 0;
                 if (ImGui::BeginCombo("volume src", electronic_structure_type_str[(int)rep.electronic_structure.type], flags)) {
                     for (int n = 0; n < (int)ElectronicStructureType::Count; n++) {
@@ -3723,8 +3720,10 @@ static void draw_representations_window(ApplicationState* state) {
                     }
                     ImGui::EndCombo();
                 }
-                if (ImGui::Combo("volume res", (int*)&rep.electronic_structure.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
-                    update_rep = true;
+                if (advanced) {
+                    if (ImGui::Combo("volume res", (int*)&rep.electronic_structure.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
+                        update_rep = true;
+                    }
                 }
 
                 const bool show_molecular_orbitals = (rep.electronic_structure.type == ElectronicStructureType::MolecularOrbital ||
@@ -3837,15 +3836,11 @@ static void draw_representations_window(ApplicationState* state) {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
                     ImGui::SliderScalar("iso value", ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-                    const double min_tau = 0.0;
-                    const double max_tau = 1.0;
-			        ImGui::SliderScalar((const char*)u8"τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::SetItemTooltip("Optical density of the isosurfaces");
-                    update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
-                    if (rep.electronic_structure.use_atom_colors) {
-                        const double min_power = 2.0;
-                        const double max_power = 20.0;
-                        update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
+                    if (advanced) {
+                        const double min_tau = 0.0;
+                        const double max_tau = 1.0;
+			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
+                        ImGui::SetItemTooltip("Optical density of the isosurfaces");
                     }
                     if (rep.electronic_structure.use_atom_colors) {
                         ImGui::ColorEdit4("tint positive", rep.electronic_structure.tint_psi_pos.elem);
@@ -3853,6 +3848,15 @@ static void draw_representations_window(ApplicationState* state) {
                     } else {
                         ImGui::ColorEdit4("color positive", rep.electronic_structure.col_psi_pos.elem);
                         ImGui::ColorEdit4("color negative", rep.electronic_structure.col_psi_neg.elem);
+                    }
+                    if (advanced || rep.electronic_structure.use_atom_colors) {
+                        update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
+                    }
+
+                    if (advanced && rep.electronic_structure.use_atom_colors) {
+                        const double min_power = 2.0;
+                        const double max_power = 20.0;
+                        update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
                     }
                     break;
                 }
@@ -3868,15 +3872,11 @@ static void draw_representations_window(ApplicationState* state) {
                     if (ImGui::SliderScalar("iso value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.7f", ImGuiSliderFlags_Logarithmic)) {
                         rep.electronic_structure.iso_value = sqrt(iso_val);
                     }
-                    const double min_tau = 0.0;
-                    const double max_tau = 1.0;
-			        ImGui::SliderScalar((const char*)u8"τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::SetItemTooltip("Optical density of the isosurfaces");
-                    update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
-                    if (rep.electronic_structure.use_atom_colors) {
-                        const double min_power = 2.0;
-                        const double max_power = 20.0;
-                        update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
+                    if (advanced) {
+                        const double min_tau = 0.0;
+                        const double max_tau = 1.0;
+			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
+                        ImGui::SetItemTooltip("Optical density of the isosurfaces");
                     }
                     if (rep.electronic_structure.use_atom_colors) {
                         if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
@@ -3897,77 +3897,82 @@ static void draw_representations_window(ApplicationState* state) {
                             ImGui::ColorEdit4("color density",  rep.electronic_structure.col_den.elem);
                         }
                     }
+                    if (advanced || rep.electronic_structure.use_atom_colors) {
+                        update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
+                    }
+                    if (advanced && rep.electronic_structure.use_atom_colors) {
+                        const double min_power = 2.0;
+                        const double max_power = 20.0;
+                        update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
+                    }
                     break;
                 }
                 default:
                     ASSERT(false);
                 }
             }
+
             if (representation_uses_atom_colors(rep)) {
-                if (ImGui::TreeNode("Coloring")) {
-                    if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
-                        rep.filt_is_dirty = true;
-                        update_rep = true;
-                    }
-                    if (ImGui::Combo("atom color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
-                        update_rep = true;
-                    }
+                if (ImGui::Combo("atom color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
+                    update_rep = true;
+                }
 
-                    if (rep.color_mapping == ColorMapping::Property) {
-                        AtomProperty* props = state->representation.info.atom_properties;
-                        int num_props = (int)md_array_size(state->representation.info.atom_properties);
-                        if (num_props > 0) {
-                            rep.prop.idx = CLAMP(rep.prop.idx, 0, num_props - 1);
-                            if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
-                                for (int i = 0; i < num_props; ++i) {
-                                    bool selected = rep.prop.idx == i;
-                                    if (ImGui::Selectable(props[i].label.ptr, selected)) {
-                                        rep.prop.idx = i;
-                                        rep.prop.range_beg = props[i].value_min;
-                                        rep.prop.range_end = props[i].value_max;
-                                        update_rep = true;
-                                    }
-                                }
-                                ImGui::EndCombo();
-                            }
-
-                            if (props[rep.prop.idx].num_idx > 1) {
-                                int idx = rep.prop.sub_idx + 1;
-                                const int min = 1;
-                                const int max = props[rep.prop.idx].num_idx;
-                                if (ImGui::SliderInt("index", &idx, min, max)) {
+                if (rep.color_mapping == ColorMapping::Property) {
+                    AtomProperty* props = state->representation.info.atom_properties;
+                    int num_props = (int)md_array_size(state->representation.info.atom_properties);
+                    if (num_props > 0) {
+                        rep.prop.idx = CLAMP(rep.prop.idx, 0, num_props - 1);
+                        if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
+                            for (int i = 0; i < num_props; ++i) {
+                                bool selected = rep.prop.idx == i;
+                                if (ImGui::Selectable(props[i].label.ptr, selected)) {
+                                    rep.prop.idx = i;
+                                    rep.prop.range_beg = props[i].value_min;
+                                    rep.prop.range_end = props[i].value_max;
                                     update_rep = true;
                                 }
-                                rep.prop.sub_idx = CLAMP(idx - 1, 0, props[rep.prop.idx].num_idx - 1);
                             }
-                        
-                            if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.prop.colormap), ImVec2(inner_item_width,0), rep.prop.colormap)) {
-                                ImGui::OpenPopup("Color Map Selector");
-                            }
-
-						    const float pad = MAX(fabsf(props[rep.prop.idx].value_min), fabsf(props[rep.prop.idx].value_max));
-                            const float value_min = props[rep.prop.idx].value_min - pad;
-                            const float value_max = props[rep.prop.idx].value_max + pad;
-
-						    // Otherwise, we allow independent scaling of the min and max values
-                            // Scale a bit outside of the default range
-                            update_rep |= ImGui::RangeSliderFloat("Min / Max", &rep.prop.range_beg, &rep.prop.range_end, value_min, value_max);
-
-                            if (ImGui::BeginPopup("Color Map Selector")) {
-                                for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
-                                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {
-                                        rep.prop.colormap = map;
-                                        update_rep = true;
-                                        ImGui::CloseCurrentPopup();
-                                    }
-                                }
-                                ImGui::EndPopup();
-                            }
-                        } else {
-                            ImGui::Text("No properties available");
+                            ImGui::EndCombo();
                         }
+
+                        if (props[rep.prop.idx].num_idx > 1) {
+                            int idx = rep.prop.sub_idx + 1;
+                            const int min = 1;
+                            const int max = props[rep.prop.idx].num_idx;
+                            if (ImGui::SliderInt("index", &idx, min, max)) {
+                                update_rep = true;
+                            }
+                            rep.prop.sub_idx = CLAMP(idx - 1, 0, props[rep.prop.idx].num_idx - 1);
+                        }
+                        
+                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.prop.colormap), ImVec2(inner_item_width,0), rep.prop.colormap)) {
+                            ImGui::OpenPopup("Color Map Selector");
+                        }
+
+						const float pad = MAX(fabsf(props[rep.prop.idx].value_min), fabsf(props[rep.prop.idx].value_max));
+                        const float value_min = props[rep.prop.idx].value_min - pad;
+                        const float value_max = props[rep.prop.idx].value_max + pad;
+
+						// Otherwise, we allow independent scaling of the min and max values
+                        // Scale a bit outside of the default range
+                        update_rep |= ImGui::RangeSliderFloat("min / max", &rep.prop.range_beg, &rep.prop.range_end, value_min, value_max);
+
+                        if (ImGui::BeginPopup("Color Map Selector")) {
+                            for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
+                                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {
+                                    rep.prop.colormap = map;
+                                    update_rep = true;
+                                    ImGui::CloseCurrentPopup();
+                                }
+                            }
+                            ImGui::EndPopup();
+                        }
+                    } else {
+                        ImGui::Text("no properties available");
                     }
-                    if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
+                }
+                if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
+                    if (advanced) {
                         update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
                         if (!rep.dynamic_evaluation) {
                             ImGui::SameLine();
@@ -3976,19 +3981,16 @@ static void draw_representations_window(ApplicationState* state) {
                                 update_rep = true;
                             }
                         }
-                    } else {
-                        rep.dynamic_evaluation = false;
                     }
+                } else {
+                    rep.dynamic_evaluation = false;
+                }
 
-                    if (rep.color_mapping == ColorMapping::Uniform) {
-                        update_rep |= ImGui::ColorEdit3("##atom_base_color", rep.base_color.elem);
-                    } else if (rep.color_mapping == ColorMapping::SecondaryStructure) {
-                        update_rep |= ImGui::ColorEdit3("unknown color", rep.secondary_structure.color_unknown.elem);
-                        update_rep |= ImGui::ColorEdit3("coil color",    rep.secondary_structure.color_coil.elem);
-                        update_rep |= ImGui::ColorEdit3("helix color",   rep.secondary_structure.color_helix.elem);
-                        update_rep |= ImGui::ColorEdit3("sheet color",   rep.secondary_structure.color_sheet.elem);
-                    }
+                if (rep.color_mapping == ColorMapping::Uniform) {
+                    update_rep |= ImGui::ColorEdit3("##atom_base_color", rep.base_color.elem);
+                }
 
+                if (advanced) {
                     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
                         // Draw options for how bonds should be colored
 					    update_rep |= ImGui::Combo("bond color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
@@ -3998,19 +4000,55 @@ static void draw_representations_window(ApplicationState* state) {
                             ImGui::ColorEdit3("##bond_base_color", rep.bond_base_color.elem);
 					    }
                     }
-                    ImGui::TreePop();
                 }
-
-                if (ImGui::TreeNode("Post-Processing")) {
-                    update_rep |= ImGui::ColorEdit3("tint color", rep.tint_color.elem, ImGuiColorEditFlags_PickerHueWheel);
-                    update_rep |= ImGui::SliderFloat("tint scale", &rep.tint_scale, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                    update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                    ImGui::TreePop();
-                }
-
-                ImGui::PopItemWidth();
-                ImGui::Spacing();
             }
+
+            if (advanced && representation_uses_atom_colors(rep)) {
+                if (rep.type != RepresentationType::ElectronicStructure) {
+                    ImGui::Spacing();
+                    ImGui::TextColored(sub_group_color, "Geometric Scaling");
+                    switch (rep.type) {
+                    case RepresentationType::SpaceFill:
+                        update_rep |= ImGui::SliderFloat("radius scale", &rep.scale[0], 0.1f, 4.f);
+                        break;
+                    case RepresentationType::Licorice:
+                        update_rep |= ImGui::SliderFloat("radius scale", &rep.scale[0], 0.1f, 4.0f);
+                        break;
+                    case RepresentationType::BallAndStick:
+                        update_rep |= ImGui::SliderFloat("ball scale",   &rep.scale[0], 0.1f, 4.f);
+                        update_rep |= ImGui::SliderFloat("bond scale",   &rep.scale[1], 0.1f, 4.f);
+                        break;
+                    case RepresentationType::Ribbons:
+                        update_rep |= ImGui::SliderFloat("width",        &rep.scale[0], 0.1f, 3.f);
+                        update_rep |= ImGui::SliderFloat("thickness",    &rep.scale[1], 0.1f, 3.f);
+                        break;
+                    case RepresentationType::Cartoon:
+                        update_rep |= ImGui::SliderFloat("coil",   &rep.scale[0], 0.1f, 3.f);
+                        update_rep |= ImGui::SliderFloat("sheet",  &rep.scale[1], 0.1f, 3.f);
+                        update_rep |= ImGui::SliderFloat("helix",  &rep.scale[2], 0.1f, 3.f);
+                        break;
+                    default:
+                        break;
+                    }
+                }
+                if (rep.color_mapping == ColorMapping::SecondaryStructure) {
+                    ImGui::Spacing();
+                    ImGui::TextColored(sub_group_color, "Secondary Structure Color");
+                    update_rep |= ImGui::ColorEdit3("unknown", rep.secondary_structure.color_unknown.elem);
+                    update_rep |= ImGui::ColorEdit3("coil",    rep.secondary_structure.color_coil.elem);
+                    update_rep |= ImGui::ColorEdit3("helix",   rep.secondary_structure.color_helix.elem);
+                    update_rep |= ImGui::ColorEdit3("sheet",   rep.secondary_structure.color_sheet.elem);
+                }
+                ImGui::Spacing();
+
+                ImGui::TextColored(sub_group_color, "Post-Processing");
+                update_rep |= ImGui::ColorEdit3("tint color", rep.tint_color.elem, ImGuiColorEditFlags_PickerHueWheel);
+                update_rep |= ImGui::SliderFloat("tint scale", &rep.tint_scale, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            }
+
+            ImGui::PopItemWidth();
+            ImGui::Spacing();
             ImGui::TreePop();
         }
 
@@ -5632,10 +5670,10 @@ static void draw_density_volume_window(ApplicationState* data) {
                     if (ImGui::SliderFloat("TF Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
                         data->density_volume.dvr.tf.dirty = true;
                     }
-                    ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::SameLine();
-                    ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    data->density_volume.dvr.tf.min_val = MIN(data->density_volume.dvr.tf.min_val, data->density_volume.dvr.tf.max_val);
+                    const float tf_min = 0.0f;
+                    const float tf_max = 1000.0f;
+                    ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, tf_min, data->density_volume.dvr.tf.max_val, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, data->density_volume.dvr.tf.min_val, tf_max, "%.3f", ImGuiSliderFlags_Logarithmic);
 
                     ImGui::Unindent();
                 }
@@ -5717,6 +5755,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                     if (rep.colormap == ColorMapping::Uniform) {
                         data->density_volume.dirty_rep |= ImGui::ColorEdit4("color", rep.color.elem, ImGuiColorEditFlags_NoInputs);
                     }
+
                     if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
                         data->density_volume.dirty_rep |= ImGui::SliderFloat("scale", &rep.param[0], 0.1f, 2.f);
                     }
@@ -5950,6 +5989,11 @@ static void draw_density_volume_window(ApplicationState* data) {
             md_gl_draw_op_t op = {};
             op.type = (md_gl_rep_type_t)data->density_volume.rep.type;
             MEMCPY(&op.args, data->density_volume.rep.param, sizeof(op.args));
+            if (op.type == MD_GL_REP_BALL_AND_STICK) {
+                op.args.ball_and_stick.color_mode = MD_GL_BOND_MODE_NEAREST;
+            } else if (op.type == MD_GL_REP_LICORICE) {
+                op.args.licorice.color_mode = MD_GL_BOND_MODE_NEAREST;
+            }
 
             for (size_t i = 0; i < num_reps; ++i) {
                 op.rep = data->density_volume.gl_reps[i];

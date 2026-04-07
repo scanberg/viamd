@@ -495,7 +495,7 @@ struct Representation {
         vec4_t color_unknown = {0.50f, 0.50f, 0.50f, 1.0f};
         vec4_t color_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
         vec4_t color_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
-        vec4_t color_sheet   = {0.86f, 0.12f, 0.12f, 1.0f};
+        vec4_t color_sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
     } secondary_structure;
 
     // Global post processing parameters applied to the final colors.
@@ -916,6 +916,7 @@ struct ApplicationState {
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
         bool needs_update = false;
+        bool advanced_mode = false;
     } representation;
 
     struct {

@@ -453,7 +453,7 @@ void render_volume(const RenderDesc& desc) {
 
     MEMCPY(iso_values, desc.iso.values, iso_count * sizeof(float));
     MEMCPY(iso_colors, desc.iso.colors, iso_count * sizeof(vec4_t));
-    if (iso_optical_densities) {
+    if (desc.iso.optical_densities) {
         MEMCPY(iso_optical_densities, desc.iso.optical_densities, iso_count * sizeof(float));
     }
 
