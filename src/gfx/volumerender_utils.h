@@ -81,8 +81,8 @@ struct RenderDesc {
         size_t count = 0;
         const float* values = NULL;
         const vec4_t* colors = NULL;
-        float optical_density_scale = 0.0f;
-        bool use_color_volume = false;
+        const float* optical_densities = NULL; // Optional per-iso surface optical density (τ) to modulate the absorption when inside the surface (if not provided, a value of 0 is used per iso surface)
+        bool use_color_volume = false;  // If true, the color of the iso surfaces will determined by the color volume instead of the provided iso.colors
     } iso;
 
     struct {

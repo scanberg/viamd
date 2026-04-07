@@ -7,6 +7,7 @@
 struct IsovalueParameters {
     float values[MAX_ISOVALUE_COUNT];
     vec4  colors[MAX_ISOVALUE_COUNT];
+    float optical_densities[MAX_ISOVALUE_COUNT];
     int   count;
 };
 
@@ -18,7 +19,7 @@ layout(std140) uniform UniformData {
 
     vec2  u_inv_res;
     float u_time;
-    float u_iso_optical_density_scale;
+    float u_gamma;
 
     vec3  u_clip_plane_min;
     float u_tf_min;
@@ -34,8 +35,6 @@ layout(std140) uniform UniformData {
     float u_roughness;
     vec3  u_dir_radiance;
     float u_F0;
-
-    float u_gamma;
 };
 
 uniform IsovalueParameters u_iso;
@@ -61,6 +60,7 @@ struct RayState {
     vec3 radiance;   // premultiplied accumulated radiance in output space
     float opacity;   // accumulated opacity = 1 - transmittance
     uint insideMask; // which isosurfaces currently enclose the ray
+    float insideOpticalDensity;
 };
 
 // -----------------------------------------------------------------------------
@@ -185,12 +185,7 @@ void accumulateDvrSegment(inout RayState state, vec3 p0Tex, vec3 p1Tex) {
 
 void accumulateIsoInteriorAbsorption(inout RayState state, vec3 p0Tex, vec3 p1Tex) {
 #if defined(INCLUDE_ISO)
-    if (u_iso_optical_density_scale <= 0.0) {
-        return;
-    }
-
-    int insideCount = bitCount(state.insideMask);
-    if (insideCount <= 0) {
+    if (state.insideOpticalDensity <= 0.0) {
         return;
     }
 
@@ -199,7 +194,7 @@ void accumulateIsoInteriorAbsorption(inout RayState state, vec3 p0Tex, vec3 p1Te
         return;
     }
 
-    float tau = u_iso_optical_density_scale * float(insideCount) * lenWorld * REF_SAMPLING_RATE;
+    float tau = state.insideOpticalDensity * lenWorld * REF_SAMPLING_RATE;
     float a = 1.0 - exp(-max(tau, 0.0));
 
     accumulateEvent(state, vec3(0.0), a);
@@ -295,26 +290,37 @@ void accumulateSurfaceHit(inout RayState state, vec3 isoPosTex, vec4 baseColor) 
 // Isosurface crossings
 // -----------------------------------------------------------------------------
 
-uint initialInsideMask(float density) {
-#if !defined(INCLUDE_ISO)
-    return 0u;
-#else
-    uint mask = 0u;
+void initializeIsoState(inout RayState state, float density) {
+#if defined(INCLUDE_ISO)
+    state.insideMask = 0u;
+    state.insideOpticalDensity = 0.0;
+
     float d = abs(density);
 
-#if MAX_ISOVALUE_COUNT == 1
-    if (d >= abs(u_iso.values[0])) {
-        mask |= 1u;
-    }
-#else
     for (int i = 0; i < u_iso.count; ++i) {
         if (d >= abs(u_iso.values[i])) {
-            mask |= (1u << uint(i));
+            state.insideMask |= (1u << uint(i));
+            state.insideOpticalDensity += max(u_iso.optical_densities[i], 0.0);
         }
     }
+#else
+    state.insideMask = 0u;
+    state.insideOpticalDensity = 0.0;
 #endif
+}
 
-    return mask;
+void toggleIsoMembership(inout RayState state, int isoIdx) {
+#if defined(INCLUDE_ISO)
+    uint bit = (1u << uint(isoIdx));
+    float opticalDensity = max(u_iso.optical_densities[isoIdx], 0.0);
+
+    if ((state.insideMask & bit) != 0u) {
+        state.insideMask &= ~bit;
+        state.insideOpticalDensity = max(0.0, state.insideOpticalDensity - opticalDensity);
+    } else {
+        state.insideMask |= bit;
+        state.insideOpticalDensity += opticalDensity;
+    }
 #endif
 }
 
@@ -395,7 +401,7 @@ void processSegment(
         vec4 isoColor = sampleIsoColor(isoPos, u_iso.colors[isoIdx]);
         accumulateSurfaceHit(state, isoPos, isoColor);
 
-        state.insideMask ^= (1u << uint(isoIdx));
+        toggleIsoMembership(state, isoIdx);
         lastFrac = frac;
     }
 
@@ -441,10 +447,11 @@ void main() {
     state.radiance = vec3(0.0);
     state.opacity = 0.0;
     state.insideMask = 0u;
+    state.insideOpticalDensity = 0.0;
 
     vec3 prevPos = entryPos;
     float prevDensity = sampleDensity(prevPos);
-    state.insideMask = initialInsideMask(prevDensity);
+    initializeIsoState(state, prevDensity);
 
     while (t < rayLength && state.opacity < ERT_THRESHOLD) {
         float currT = min(t, rayLength);

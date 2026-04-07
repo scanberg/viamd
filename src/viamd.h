@@ -434,6 +434,7 @@ struct IsoDesc {
     size_t count;
     float values[8];
     vec4_t colors[8];
+    float optical_densities[8];
 };
 
 struct EvalAtomProperty {
@@ -524,17 +525,17 @@ struct Representation {
         vec4_t col_att     = {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f};
         vec4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
 
-        vec4_t tint_psi_pos = { 1.0f, 1.0f, 1.0f, 1.0f };
-        vec4_t tint_psi_neg = { 1.0f, 1.0f, 1.0f, 1.0f };
-        vec4_t tint_den     = { 1.0f, 1.0f, 1.0f, 1.0f };
-        vec4_t tint_att     = { 1.0f, 1.0f, 1.0f, 1.0f };
-        vec4_t tint_det     = { 1.0f, 1.0f, 1.0f, 1.0f };
+        vec4_t tint_psi_pos = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t tint_psi_neg = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t tint_den     = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
 
         // Scaling factor of *power* in the gaussians to splat the color volume (when using atom colors for volumes)
-        double gaussian_splatting_power = 4.0;
+        double gaussian_splatting_power = 10.0;
 
         // Optical scaling factor which controls attenuation of light within iso surfaces.
-        double iso_optical_density_scale = 0.001;
+        double iso_optical_density = 0.005;
 
         bool use_atom_colors = false;
 		uint64_t col_hash = 0;

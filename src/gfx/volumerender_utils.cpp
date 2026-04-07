@@ -76,13 +76,13 @@ struct UniformData {
     mat4_t model_view_proj_mat;
 
     vec2_t inv_res;
-    float time;
-    float optical_density_scale;
+    float  time;
+    float  gamma;
 
     vec3_t clip_volume_min;
-    float tf_min;
+    float  tf_min;
     vec3_t clip_volume_max;
-    float tf_inv_ext;
+    float  tf_inv_ext;
 
     vec3_t gradient_spacing_world_space;
     float  exposure;
@@ -92,9 +92,6 @@ struct UniformData {
     float  roughness;
     vec3_t dir_radiance;
     float  F0;
-
-    float gamma;
-    float _pad[3];
 };
 
 void initialize() {
@@ -452,9 +449,13 @@ void render_volume(const RenderDesc& desc) {
     int    iso_count = CLAMP((int)desc.iso.count, 0, 8);
     float  iso_values[8];
     vec4_t iso_colors[8];
+    float  iso_optical_densities[8] = { 0 };
 
     MEMCPY(iso_values, desc.iso.values, iso_count * sizeof(float));
     MEMCPY(iso_colors, desc.iso.colors, iso_count * sizeof(vec4_t));
+    if (iso_optical_densities) {
+        MEMCPY(iso_optical_densities, desc.iso.optical_densities, iso_count * sizeof(float));
+    }
 
     // Sort on iso value
     for (int i = 0; i < iso_count - 1; ++i) {
@@ -462,10 +463,13 @@ void render_volume(const RenderDesc& desc) {
             if (iso_values[j] < iso_values[i]) {
                 float  val_tmp = iso_values[i];
                 vec4_t col_tmp = iso_colors[i];
+                float  od_tmp = iso_optical_densities[i];
                 iso_values[i] = iso_values[j];
                 iso_colors[i] = iso_colors[j];
+                iso_optical_densities[i] = iso_optical_densities[j];
                 iso_values[j] = val_tmp;
                 iso_colors[j] = col_tmp;
+                iso_optical_densities[j] = od_tmp;
             }
         }
     }
@@ -520,7 +524,7 @@ void render_volume(const RenderDesc& desc) {
     data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
     data.inv_res = {1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height)};
     data.time = time;
-    data.optical_density_scale = MAX(desc.iso.optical_density_scale, 0.0f);
+    data.gamma = desc.shading.gamma;
     data.clip_volume_min = desc.clip_volume.min;
     data.tf_min = tf_min;
     data.clip_volume_max = desc.clip_volume.max;
@@ -532,7 +536,6 @@ void render_volume(const RenderDesc& desc) {
     data.roughness = desc.shading.roughness;
     data.dir_radiance = desc.shading.dir_radiance;
     data.F0 = F0;
-    data.gamma = desc.shading.gamma;
 
     glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);
@@ -649,6 +652,7 @@ void render_volume(const RenderDesc& desc) {
         const GLint uniform_loc_tex_color_volume    = glGetUniformLocation(vol_prog, "u_tex_color_volume");
         const GLint uniform_loc_iso_values          = glGetUniformLocation(vol_prog, "u_iso.values");
         const GLint uniform_loc_iso_colors          = glGetUniformLocation(vol_prog, "u_iso.colors");
+        const GLint uniform_loc_iso_optical_densities = glGetUniformLocation(vol_prog, "u_iso.optical_densities");
         const GLint uniform_loc_iso_count           = glGetUniformLocation(vol_prog, "u_iso.count");
 
         glUseProgram(vol_prog);
@@ -660,6 +664,7 @@ void render_volume(const RenderDesc& desc) {
         glUniform1i(uniform_loc_tex_color_volume, 4);
         glUniform1fv(uniform_loc_iso_values, (GLsizei)iso_count, (const float*)iso_values);
         glUniform4fv(uniform_loc_iso_colors, (GLsizei)iso_count, (const float*)iso_colors);
+        glUniform1fv(uniform_loc_iso_optical_densities, (GLsizei)iso_count, (const float*)iso_optical_densities);
         glUniform1i(uniform_loc_iso_count, (int)iso_count);
         glUniformBlockBinding(vol_prog, uniform_block_index, 0);
 
