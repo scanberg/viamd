@@ -1736,7 +1736,7 @@ static void update_density_volume(ApplicationState* data) {
 
             switch (rep.colormap) {
             case ColorMapping::Uniform:
-                color_atoms_uniform(colors, num_atoms, rep.color);
+                color_atoms_uniform(colors, num_atoms, convert_color(rep.color));
                 break;
             case ColorMapping::Type:
                 color_atoms_type(colors, num_atoms, sys);
@@ -1757,7 +1757,7 @@ static void update_density_volume(ApplicationState* data) {
                 color_atoms_inst_idx(colors, num_atoms, sys);
                 break;
             case ColorMapping::SecondaryStructure:
-                color_atoms_sec_str(colors, num_atoms, sys);
+                color_atoms_secondary_structure(colors, num_atoms, sys);
                 break;
             default:
                 ASSERT(false);
@@ -3613,7 +3613,7 @@ static void draw_representations_window(ApplicationState* state) {
     for (int rep_idx = 0; rep_idx < (int)md_array_size(state->representation.reps); rep_idx++) {
         bool update_rep = false;
         Representation& rep = state->representation.reps[rep_idx];
-        //const float item_width = MAX(ImGui::GetContentRegionAvail().x - 125.f, 100.f);
+
         char label[128];
         snprintf(label, sizeof(label), "%s###ID", rep.name);
 
@@ -3688,7 +3688,12 @@ static void draw_representations_window(ApplicationState* state) {
                     update_rep = true;
                 }
 
-                if (rep.color_mapping == ColorMapping::Property) {
+                if (rep.color_mapping == ColorMapping::SecondaryStructure) {
+                    update_rep |= ImGui::ColorEdit4("coil color",  rep.secondary_structure.color_coil.elem);
+                    update_rep |= ImGui::ColorEdit4("helix color", rep.secondary_structure.color_helix.elem);
+                    update_rep |= ImGui::ColorEdit4("sheet color", rep.secondary_structure.color_sheet.elem);
+                }
+                else if (rep.color_mapping == ColorMapping::Property) {
                     AtomProperty* props = state->representation.info.atom_properties;
                     int num_props = (int)md_array_size(state->representation.info.atom_properties);
                     if (num_props > 0) {
@@ -3800,7 +3805,7 @@ static void draw_representations_window(ApplicationState* state) {
                 }
                 ImGui::PopItemWidth();
                 if (rep.color_mapping == ColorMapping::Uniform) {
-                    update_rep |= ImGui::ColorEdit3("##atom_uniform_color", rep.uniform_color.elem);
+                    update_rep |= ImGui::ColorEdit3("##atom_base_color", rep.base_color.elem);
                 }
                 ImGui::PushItemWidth(inner_item_width);
                 switch (rep.type) {
@@ -3833,10 +3838,12 @@ static void draw_representations_window(ApplicationState* state) {
                     if (rep.bond_color == BondColorMode::SmoothAtom) {
                         ImGui::SliderFloat("sharpness", &rep.bond_sharpness, 0.0f, 1.0f);
                     } else if (rep.bond_color == BondColorMode::Uniform) {
-                        ImGui::ColorEdit3("##bond_uniform_color", rep.bond_uniform_color.elem);
+                        ImGui::ColorEdit3("##bond_base_color", rep.bond_base_color.elem);
 					}
                 }
 
+                update_rep |= ImGui::ColorEdit3("##tint_color", rep.tint.color.elem, ImGuiColorEditFlags_PickerHueBar);
+                update_rep |= ImGui::SliderFloat("tint strength", &rep.tint.strength, 0.0f, 1.0f);
                 update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
 
                 ImGui::PopItemWidth();
@@ -7859,14 +7866,14 @@ static void draw_representations_opaque(ApplicationState* data) {
                     op.args.licorice.radius = rep.scale.x;
                     op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                     op.args.licorice.sharpness = rep.bond_sharpness;
-                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.bond_uniform_color, rep.saturation));
+                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.bond_base_color, rep.saturation));
                     break;
                 case RepresentationType::BallAndStick:
                     op.args.ball_and_stick.ball_scale = rep.scale.x;
                     op.args.ball_and_stick.stick_radius = rep.scale.y;
                     op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                     op.args.ball_and_stick.sharpness = rep.bond_sharpness;
-                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.bond_uniform_color, rep.saturation));
+                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.bond_base_color, rep.saturation));
                     break;
                 case RepresentationType::Ribbons:
                     op.args.ribbons.width_scale = rep.scale.x;

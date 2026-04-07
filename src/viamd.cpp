@@ -690,8 +690,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_int(mapping, arg);
                     mapping = CLAMP(mapping, 0, (int)ColorMapping::Count);
                     rep->color_mapping = (ColorMapping)mapping;
-                } else if (str_eq(ident, STR_LIT("StaticColor"))) {
-                    viamd::extract_flt_vec(rep->uniform_color.elem, 4, arg);
+                } else if (str_eq(ident, STR_LIT("StaticColor")) || str_eq(ident, STR_LIT("BaseColor"))) {
+                    viamd::extract_flt_vec(rep->base_color.elem, 4, arg);
                 } else if (str_eq(ident, STR_LIT("Saturation"))) {
                     viamd::extract_flt(rep->saturation, arg);
                 } else if (str_eq(ident, STR_LIT("Radius"))) {
@@ -890,7 +890,7 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
         viamd::write_int(state,  STR_LIT("Type"), (int)rep.type);
         viamd::write_int(state,  STR_LIT("ColorMapping"), (int)rep.color_mapping);
-        viamd::write_vec4(state, STR_LIT("StaticColor"), rep.uniform_color);
+        viamd::write_vec4(state, STR_LIT("BaseColor"), rep.base_color);
         viamd::write_flt(state,  STR_LIT("Saturation"), rep.saturation);
         viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
         viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
@@ -1077,7 +1077,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
 
         switch (rep->color_mapping) {
         case ColorMapping::Uniform:
-            color_atoms_uniform(colors, num_atoms, rep->uniform_color);
+            color_atoms_uniform(colors, num_atoms, convert_color(rep->base_color));
             break;
         case ColorMapping::Type:
             color_atoms_type(colors, num_atoms, sys);
@@ -1100,9 +1100,15 @@ void update_representation(ApplicationState* state, Representation* rep) {
         case ColorMapping::InstIndex:
             color_atoms_inst_idx(colors, num_atoms, sys);
             break;
-        case ColorMapping::SecondaryStructure:
-            color_atoms_sec_str(colors, num_atoms, sys);
+        case ColorMapping::SecondaryStructure: {
+            SecondaryStructurePalette palette = {
+                .coil  = convert_color(rep->secondary_structure.color_coil),
+                .helix = convert_color(rep->secondary_structure.color_helix),
+                .sheet = convert_color(rep->secondary_structure.color_sheet),
+            };
+            color_atoms_secondary_structure(colors, num_atoms, sys, palette);
             break;
+        }
         case ColorMapping::Property:
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
@@ -1189,6 +1195,11 @@ void update_representation(ApplicationState* state, Representation* rep) {
             ASSERT(false);
             break;
         }
+    }
+
+    if (rep->tint.strength > 0.0f) {
+        uint32_t tint_color = convert_color(rep->tint.color);
+        tint_colors(colors, num_atoms, tint_color, rep->tint.strength);
     }
 
     if (rep->saturation != 1.0f) {

@@ -488,9 +488,21 @@ struct Representation {
     bool filt_is_dynamic = false;
     bool dynamic_evaluation = true;
 
-    // User defined color used in uniform mode
-    vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};
+    // User defined base color used in uniform mode
+    vec4_t base_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
+    struct {
+        vec4_t color_unknown = {0.50f, 0.50f, 0.50f, 1.0f};
+        vec4_t color_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
+        vec4_t color_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
+        vec4_t color_sheet   = {0.86f, 0.12f, 0.12f, 1.0f};
+    } secondary_structure;
+
+    // Global post processing parameters applied to the final colors.
+    struct {
+        vec4_t color = {1.0f, 1.0f, 1.0f, 1.0f};
+        float strength = 0.0f;
+    } tint;
     float saturation = 1.0f;
 
     // scaling parameter (radius, width, height, etc depending on type)
@@ -498,7 +510,7 @@ struct Representation {
 
 	BondColorMode bond_color = BondColorMode::NearestAtom;
     float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
-	vec4_t bond_uniform_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 
     struct {
         Volume vol = {};

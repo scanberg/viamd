@@ -92,16 +92,8 @@ static inline uint32_t u32_to_color(uint32_t u32) {
 	return u32_to_color_qualitative(u32);
 }
 
-void color_atoms_uniform(uint32_t* colors, size_t count, vec4_t color, const md_bitfield_t* mask) {
-    if (mask) {
-        const uint32_t u32_color = convert_color(color);
-        md_bitfield_iter_t it = md_bitfield_iter_create(mask);
-        while (md_bitfield_iter_next(&it)) {
-            colors[md_bitfield_iter_idx(&it)] = u32_color;
-        }
-    } else {
-        set_colors(colors, count, convert_color(color));
-    }
+void color_atoms_uniform(uint32_t* colors, size_t count, uint32_t color) {
+    set_colors(colors, count, color);
 }
 
 void color_atoms_cpk(uint32_t* colors, size_t count, const md_system_t& sys) {
@@ -174,11 +166,11 @@ void color_atoms_inst_idx(uint32_t* colors, size_t count, const md_system_t& sys
     }
 }
 
-void color_atoms_sec_str(uint32_t* colors, size_t count, const md_system_t& sys) {
-    const uint32_t color_unknown = 0xFF555555;
-    const uint32_t color_coil    = 0xFFDDDDDD;
-    const uint32_t color_helix   = 0xFF22DD22;
-    const uint32_t color_sheet   = 0xFFDD2222;
+void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const SecondaryStructurePalette& palette) {
+    const uint32_t color_unknown = palette.unknown;
+    const uint32_t color_coil    = palette.coil;
+    const uint32_t color_helix   = palette.helix;
+    const uint32_t color_sheet   = palette.sheet;
 
     if (sys.protein_backbone.segment.secondary_structure) {
         for (size_t i = 0; i < sys.protein_backbone.range.count; ++i) {
@@ -264,6 +256,27 @@ void scale_saturation(uint32_t* colors, size_t count, float scale) {
         vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
         hsv.y *= scale;
         rgba = vec4_from_vec3(hsv_to_rgb(hsv), rgba.w);
+        colors[i] = convert_color(rgba);
+    }
+}
+
+void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength) {
+    vec4_t tint_rgba = convert_color(tint_color);
+    const float L_coeff  = 0.1 * tint_strength;
+    const float ab_coeff = 0.9 * tint_strength;
+    
+    vec3_t tint_rgb = vec3_from_vec4(tint_rgba);
+    vec3_t tint_lab = linear_srgb_to_oklab(tint_rgb);
+
+    for (size_t i = 0; i < count; ++i) {
+        vec4_t rgba = convert_color(colors[i]);
+        vec3_t rgb = vec3_from_vec4(rgba);
+        vec3_t lab = linear_srgb_to_oklab(rgb);
+        lab.x = lab.x * (1.0f - L_coeff) + tint_lab.x * L_coeff;
+        lab.y = lab.y * (1.0f - ab_coeff) + tint_lab.y * ab_coeff;
+        lab.z = lab.z * (1.0f - ab_coeff) + tint_lab.z * ab_coeff;
+        vec3_t tinted_rgb = oklab_to_linear_srgb(lab);
+        rgba = vec4_from_vec3(tinted_rgb, rgba.w);
         colors[i] = convert_color(rgba);
     }
 }
