@@ -690,8 +690,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_int(mapping, arg);
                     mapping = CLAMP(mapping, 0, (int)ColorMapping::Count);
                     rep->color_mapping = (ColorMapping)mapping;
-                } else if (str_eq(ident, STR_LIT("StaticColor"))) {
-                    viamd::extract_flt_vec(rep->uniform_color.elem, 4, arg);
+                } else if (str_eq(ident, STR_LIT("StaticColor")) || str_eq(ident, STR_LIT("BaseColor"))) {
+                    viamd::extract_flt_vec(rep->base_color.elem, 4, arg);
                 } else if (str_eq(ident, STR_LIT("Saturation"))) {
                     viamd::extract_flt(rep->saturation, arg);
                 } else if (str_eq(ident, STR_LIT("Radius"))) {
@@ -890,8 +890,9 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bool(state, STR_LIT("Enabled"), rep.enabled);
         viamd::write_int(state,  STR_LIT("Type"), (int)rep.type);
         viamd::write_int(state,  STR_LIT("ColorMapping"), (int)rep.color_mapping);
-        viamd::write_vec4(state, STR_LIT("StaticColor"), rep.uniform_color);
+        viamd::write_vec4(state, STR_LIT("BaseColor"), rep.base_color);
         viamd::write_flt(state,  STR_LIT("Saturation"), rep.saturation);
+
         viamd::write_vec4(state, STR_LIT("Param"), rep.scale);
         viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
 
@@ -1021,8 +1022,9 @@ void remove_representation(ApplicationState* state, int idx) {
     auto& rep = state->representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_rep_destroy(rep.md_rep);
-    if (rep.electronic_structure.vol.tex_id != 0) gl::free_texture(&rep.electronic_structure.vol.tex_id);
-    if (rep.electronic_structure.dvr.tf_tex != 0) gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
+    if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
+    if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
+    if (rep.electronic_structure.dvr.tf_tex)         gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
     md_array_swap_back_and_pop(state->representation.reps, idx);
     recompute_atom_visibility_mask(state);
 }
@@ -1046,8 +1048,8 @@ void update_all_representations(ApplicationState* state) {
     }
 }
 
-static inline bool rep_type_uses_atomic_colors(RepresentationType type) {
-    return type != RepresentationType::ElectronicStructure;
+bool representation_uses_atom_colors(const Representation& rep) {
+    return rep.type != RepresentationType::ElectronicStructure || rep.electronic_structure.use_atom_colors;
 }
 
 void update_representation(ApplicationState* state, Representation* rep) {
@@ -1072,12 +1074,12 @@ void update_representation(ApplicationState* state, Representation* rep) {
     //}
 
     uint32_t* colors = 0;
-    if (rep_type_uses_atomic_colors(rep->type)) {
+    if (representation_uses_atom_colors(*rep)) {
         colors = (uint32_t*)md_vm_arena_push(frame_alloc, sizeof(uint32_t) * num_atoms);
 
         switch (rep->color_mapping) {
         case ColorMapping::Uniform:
-            color_atoms_uniform(colors, num_atoms, rep->uniform_color);
+            color_atoms_uniform(colors, num_atoms, convert_color(rep->base_color));
             break;
         case ColorMapping::Type:
             color_atoms_type(colors, num_atoms, sys);
@@ -1100,9 +1102,15 @@ void update_representation(ApplicationState* state, Representation* rep) {
         case ColorMapping::InstIndex:
             color_atoms_inst_idx(colors, num_atoms, sys);
             break;
-        case ColorMapping::SecondaryStructure:
-            color_atoms_sec_str(colors, num_atoms, sys);
+        case ColorMapping::SecondaryStructure: {
+            SecondaryStructurePalette palette = {
+                .coil  = convert_color(rep->secondary_structure.color_coil),
+                .helix = convert_color(rep->secondary_structure.color_helix),
+                .sheet = convert_color(rep->secondary_structure.color_sheet),
+            };
+            color_atoms_secondary_structure(colors, num_atoms, sys, palette);
             break;
+        }
         case ColorMapping::Property:
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
@@ -1191,8 +1199,9 @@ void update_representation(ApplicationState* state, Representation* rep) {
         }
     }
 
-    if (rep->saturation != 1.0f) {
-        scale_saturation(colors, num_atoms, rep->saturation);
+    if (rep->tint_scale > 0.0f || rep->saturation < 1.0f) {
+        uint32_t tint_color = convert_color(rep->tint_color);
+        tint_colors(colors, num_atoms, tint_color, rep->tint_scale, rep->saturation);
     }
 
     switch (rep->type) {
@@ -1212,7 +1221,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
     case RepresentationType::ElectronicStructure: {
         size_t num_mos = state->representation.info.alpha.num_orbitals;
         rep->type_is_valid = num_mos > 0;
-        if (num_mos > 0) {
+        if (rep->type_is_valid) {
             uint64_t orb_idx = 0;
             uint64_t sub_idx = 0;
 
@@ -1251,7 +1260,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     .minor_idx = (int)sub_idx,
                     .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
                     .frame = state->animation.frame,
-                    .dst_volume = &rep->electronic_structure.vol,
+                    .dst_volume = &rep->electronic_structure.density_vol,
                 };
                 viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
 
@@ -1259,11 +1268,43 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     rep->electronic_structure.vol_hash = vol_hash;
                 }
             }
-        }
-        uint64_t tf_hash = md_hash64(&rep->electronic_structure.dvr.colormap, sizeof(rep->electronic_structure.dvr.colormap), 0);
-        if (tf_hash != rep->electronic_structure.tf_hash) {
-            rep->electronic_structure.tf_hash = tf_hash;
-            volume::compute_transfer_function_texture_simple(&rep->electronic_structure.dvr.tf_tex, rep->electronic_structure.dvr.colormap);
+
+            uint64_t tf_hash = md_hash64(&rep->electronic_structure.dvr.colormap, sizeof(rep->electronic_structure.dvr.colormap), 0);
+            if (tf_hash != rep->electronic_structure.tf_hash) {
+                rep->electronic_structure.tf_hash = tf_hash;
+                volume::compute_transfer_function_texture_simple(&rep->electronic_structure.dvr.tf_tex, rep->electronic_structure.dvr.colormap);
+            }
+
+            if (rep->electronic_structure.use_atom_colors) {
+                uint64_t col_hash = md_hash64(&rep->electronic_structure.gaussian_splatting_power, sizeof(rep->electronic_structure.gaussian_splatting_power), (int)rep->color_mapping);
+                col_hash = md_hash64_combine(col_hash, rep->electronic_structure.vol_hash);
+                if (col_hash != rep->electronic_structure.col_hash) {
+                    rep->electronic_structure.col_hash = col_hash;
+                    if (colors) {
+                        // Assume that the colors have been written here and with the same mapping as for the atoms
+                        // Initialize volume if not already done to correct dimensions (use a 2x downsampled version for color volume)
+                        int dim[3] = {
+                            (int)(rep->electronic_structure.density_vol.dim[0] / 2),
+                            (int)(rep->electronic_structure.density_vol.dim[1] / 2),
+                            (int)(rep->electronic_structure.density_vol.dim[2] / 2),
+                        };
+                        MEMCPY(rep->electronic_structure.color_vol.dim, dim, sizeof(dim));
+                        rep->electronic_structure.color_vol.texture_to_world = rep->electronic_structure.density_vol.texture_to_world;
+                        rep->electronic_structure.color_vol.voxel_size = rep->electronic_structure.density_vol.voxel_size * 2.0f;
+                        gl::init_texture_3D(&rep->electronic_structure.color_vol.tex_id, dim[0], dim[1], dim[2], GL_RGBA8);
+
+                        
+                        const mat4_t& index_to_world = rep->electronic_structure.color_vol.texture_to_world
+                            * mat4_scale(1.0f / dim[0], 1.0f / dim[1], 1.0f / dim[2])
+                            * mat4_translate(0.5f, 0.5f, 0.5f); // Center of the corner voxel should be at the origin
+
+                        float* atom_sigma = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
+                        md_atom_extract_radii(atom_sigma, 0, num_atoms, &state->mold.sys.atom);
+
+                        volume::compute_point_color_volume(rep->electronic_structure.color_vol.tex_id, dim, index_to_world.elem, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, atom_sigma, colors, num_atoms, rep->electronic_structure.gaussian_splatting_power);
+                    }
+                }
+            }
         }
         break;
     }
@@ -1337,7 +1378,6 @@ void remove_all_representations(ApplicationState* state) {
         remove_representation(state, (int32_t)md_array_size(state->representation.reps) - 1);
     }
 }
-
 
 void create_default_representations(ApplicationState* state) {
     bool amino_acid_present = false;

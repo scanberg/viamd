@@ -423,8 +423,7 @@ struct RepresentationInfo {
 };
 
 struct Volume {
-    //mat4_t index_to_world   = {};
-    mat4_t texture_to_world = {};
+    mat4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
     vec3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
     uint32_t tex_id = 0;
@@ -436,6 +435,7 @@ struct IsoDesc {
     size_t count;
     float values[8];
     vec4_t colors[8];
+    float optical_densities[8];
 };
 
 struct EvalAtomProperty {
@@ -489,9 +489,19 @@ struct Representation {
     bool filt_is_dynamic = false;
     bool dynamic_evaluation = true;
 
-    // User defined color used in uniform mode
-    vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};
+    // User defined base color used in uniform mode
+    vec4_t base_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
+    struct {
+        vec4_t color_unknown = {0.50f, 0.50f, 0.50f, 1.0f};
+        vec4_t color_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
+        vec4_t color_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
+        vec4_t color_sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
+    } secondary_structure;
+
+    // Global post processing parameters applied to the final colors.
+    vec4_t tint_color = {1.0f, 0.0f, 0.0f, 1.0f};
+    float tint_scale = 0.0f;
     float saturation = 1.0f;
 
     // scaling parameter (radius, width, height, etc depending on type)
@@ -499,10 +509,11 @@ struct Representation {
 
 	BondColorMode bond_color = BondColorMode::NearestAtom;
     float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
-	vec4_t bond_uniform_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 
     struct {
-        Volume vol = {};
+        Volume density_vol = {};
+        Volume color_vol   = {};
         VolumeResolution resolution = VolumeResolution::Mid;
 
         // Shared for all electronic structure representations
@@ -515,8 +526,20 @@ struct Representation {
         vec4_t col_att     = {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f};
         vec4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
 
+        vec4_t tint_psi_pos = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t tint_psi_neg = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t tint_den     = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
+
+        // Scaling factor of *power* in the gaussians to splat the color volume (when using atom colors for volumes)
+        double gaussian_splatting_power = 10.0;
+
         // Optical scaling factor which controls attenuation of light within iso surfaces.
-        double iso_optical_density_scale = 0.01;
+        double iso_optical_density = 0.005;
+
+        bool use_atom_colors = false;
+		uint64_t col_hash = 0;
 
         struct {
             bool enabled = false;
@@ -894,6 +917,7 @@ struct ApplicationState {
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
         bool needs_update = false;
+        bool advanced_mode = false;
     } representation;
 
     struct {
@@ -1165,6 +1189,7 @@ void remove_representation(ApplicationState* state, int idx);
 void update_representation(ApplicationState* state, Representation* rep);
 void update_representation_info(ApplicationState* state);
 void update_all_representations(ApplicationState* state);
+bool representation_uses_atom_colors(const Representation& rep);
 
 void flag_representation_as_dirty(Representation* rep);
 void flag_all_representations_as_dirty(ApplicationState* state);

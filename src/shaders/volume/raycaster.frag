@@ -1,18 +1,17 @@
 #version 410 core
 
-#define SHADING_ENABLED
-
-#if !defined MAX_ISOVALUE_COUNT
-#  define MAX_ISOVALUE_COUNT 8
-#endif // MAX_ISOVALUE_COUNT
+#ifndef MAX_ISOVALUE_COUNT
+#define MAX_ISOVALUE_COUNT 8
+#endif
 
 struct IsovalueParameters {
     float values[MAX_ISOVALUE_COUNT];
     vec4  colors[MAX_ISOVALUE_COUNT];
-    int count;
+    float optical_densities[MAX_ISOVALUE_COUNT];
+    int   count;
 };
 
-layout (std140) uniform UniformData {
+layout(std140) uniform UniformData {
     mat4 u_view_to_model_mat;
     mat4 u_model_to_view_mat;
     mat4 u_inv_proj_mat;
@@ -20,15 +19,17 @@ layout (std140) uniform UniformData {
 
     vec2  u_inv_res;
     float u_time;
-    float u_iso_optical_density_scale;
+    float u_gamma;
 
     vec3  u_clip_plane_min;
     float u_tf_min;
     vec3  u_clip_plane_max;
     float u_tf_inv_ext;
 
-    vec3 u_gradient_spacing_world_space;
-    mat4 u_gradient_spacing_tex_space;
+    vec3  u_gradient_spacing_world_space;
+    float u_exposure;
+
+    mat4  u_gradient_spacing_tex_space;
 
     vec3  u_env_radiance;
     float u_roughness;
@@ -40,442 +41,434 @@ uniform IsovalueParameters u_iso;
 
 uniform sampler2D u_tex_entry;
 uniform sampler2D u_tex_exit;
-
-uniform sampler3D u_tex_volume;
+uniform sampler3D u_tex_density_volume;
+uniform sampler3D u_tex_color_volume;
 uniform sampler2D u_tex_tf;
 
-layout(location = 0) out vec4  out_color;
-//layout(location = 1) out vec2  out_view_normal;
-//out float gl_FragDepth;
+layout(location = 0) out vec4 out_color;
 
 const float REF_SAMPLING_RATE = 150.0;
-const float ERT_THRESHOLD = 0.995;
-const float samplingRate = 2.0;
+const float ERT_THRESHOLD     = 0.995;
+const float SAMPLING_RATE     = 2.0;
+const float PI                = 3.1415926535;
+const float INV_PI            = 1.0 / PI;
+const float EPSILON           = 1e-6;
 
-// Tonemapping operations (in case one writes to post tonemap)
-float max3(float x, float y, float z) { return max(x, max(y, z)); }
-float rcp(float x) { return 1.0 / x; }
+const vec3 LIGHT_DIR = normalize(vec3(1.0, 1.0, 1.0));
 
-const float exposure_bias = 0.5;
-const float gamma = 2.2;
+struct RayState {
+    vec3 radiance;   // premultiplied accumulated radiance in output space
+    float opacity;   // accumulated opacity = 1 - transmittance
+    uint insideMask; // which isosurfaces currently enclose the ray
+    float insideOpticalDensity;
+};
 
-vec3 Tonemap(vec3 c) {
-    c = c * exposure_bias;
-    c = c * rcp(max3(c.r, c.g, c.b) + 1.0);
-    c = pow(c, vec3(1.0 / gamma));
-    return c;
+// -----------------------------------------------------------------------------
+// Tone mapping
+// -----------------------------------------------------------------------------
+
+const mat3 ACES_INPUT_MAT = mat3(
+    vec3(0.59719, 0.35458, 0.04823),
+    vec3(0.07600, 0.90834, 0.01566),
+    vec3(0.02840, 0.13383, 0.83777)
+);
+
+const mat3 ACES_OUTPUT_MAT = mat3(
+    vec3( 1.60475, -0.53108, -0.07367),
+    vec3(-0.10208,  1.10813, -0.00605),
+    vec3(-0.00327, -0.07276,  1.07602)
+);
+
+vec3 RRTAndODTFit(vec3 v) {
+    vec3 a = v * (v + 0.0245786) - 0.000090537;
+    vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+    return a / b;
 }
 
-vec3 TonemapInvert(vec3 c) {
-    c = pow(c, vec3(gamma));
-    c = c * rcp(1.0 - min(max3(c.r, c.g, c.b), 0.9999));
-    c = c / exposure_bias;
-    return c;
+vec3 ACESFitted(vec3 color) {
+    color = color * ACES_INPUT_MAT;
+    color = RRTAndODTFit(color);
+    color = color * ACES_OUTPUT_MAT;
+    return clamp(color, 0.0, 1.0);
 }
 
-float getVoxel(in vec3 samplePos) {
-    return texture(u_tex_volume, samplePos).r;
+vec3 tonemap(vec3 hdr) {
+    const float exposure_bias = 0.25;
+    const float white_point   = 24.0;
+
+    vec3 exposed = hdr * (exposure_bias * u_exposure);
+    vec3 white_scale = ACESFitted(vec3(white_point * exposure_bias * u_exposure));
+
+    vec3 color = ACESFitted(exposed) / white_scale;
+    color = clamp(color, 0.0, 1.0);
+
+    color = pow(color, vec3(1.0 / u_gamma)); // gamma correction
+    return color;
 }
 
-vec4 classify(in float density) {
-    float t  = clamp((density - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
-    vec4 col = texture(u_tex_tf, vec2(t, 0.5));
-    return col;
+// -----------------------------------------------------------------------------
+// Sampling
+// -----------------------------------------------------------------------------
+
+float sampleDensity(vec3 texPos) {
+    return texture(u_tex_density_volume, texPos).r;
 }
 
-vec4 compositing(in vec4 dstColor, in vec4 srcColor, in float tIncr) {
-    float w = max(tIncr, 0.0) * REF_SAMPLING_RATE;
-    float a = clamp(srcColor.a, 0.0, 1.0);
-    srcColor.a = 1.0 - pow(max(1.0 - a, 1e-6), w);
-    // pre-multiplied alpha
-    srcColor.rgb *= srcColor.a;
-    return dstColor + (1.0 - dstColor.a) * srcColor;
+vec4 sampleTransfer(float density) {
+    float t = clamp((density - u_tf_min) * u_tf_inv_ext, 0.0, 1.0);
+    return texture(u_tex_tf, vec2(t, 0.5));
 }
 
-vec3 getGradient(in vec3 samplePos) {
-    vec3 g = vec3(getVoxel(samplePos + u_gradient_spacing_tex_space[0].xyz), 
-                  getVoxel(samplePos + u_gradient_spacing_tex_space[1].xyz),
-                  getVoxel(samplePos + u_gradient_spacing_tex_space[2].xyz));
-    g -= vec3(getVoxel(samplePos - u_gradient_spacing_tex_space[0].xyz), 
-              getVoxel(samplePos - u_gradient_spacing_tex_space[1].xyz),
-              getVoxel(samplePos - u_gradient_spacing_tex_space[2].xyz));
+vec4 sampleIsoColor(vec3 texPos, vec4 baseColor) {
+#if defined(USE_COLOR_VOLUME)
+    return baseColor * texture(u_tex_color_volume, texPos);
+#else
+    return baseColor;
+#endif
+}
+
+vec3 sampleGradient(vec3 texPos) {
+    vec3 dx = u_gradient_spacing_tex_space[0].xyz;
+    vec3 dy = u_gradient_spacing_tex_space[1].xyz;
+    vec3 dz = u_gradient_spacing_tex_space[2].xyz;
+
+    vec3 g = vec3(
+        sampleDensity(texPos + dx) - sampleDensity(texPos - dx),
+        sampleDensity(texPos + dy) - sampleDensity(texPos - dy),
+        sampleDensity(texPos + dz) - sampleDensity(texPos - dz)
+    );
+
     return g / (2.0 * u_gradient_spacing_world_space);
 }
 
-const vec3 L = normalize(vec3(1,1,1));
-const float spec_exp = 100.0;
-const float PI = 3.1415926535;
-const float ONE_OVER_PI = 1.0 / 3.1415926535;
+float segmentLengthWorld(vec3 p0Tex, vec3 p1Tex) {
+    vec3 deltaView = (u_model_to_view_mat * vec4(p1Tex - p0Tex, 0.0)).xyz;
+    return length(deltaView);
+}
 
-// Cook-Torrance model From here:
-// https://learnopengl.com/PBR/Theory
+// -----------------------------------------------------------------------------
+// Ray accumulation
+// -----------------------------------------------------------------------------
+
+float remainingTransmittance(RayState state) {
+    return 1.0 - state.opacity;
+}
+
+void accumulateEvent(inout RayState state, vec3 radiance, float opacity) {
+    float T = remainingTransmittance(state);
+    float a = clamp(opacity, 0.0, 1.0);
+
+    state.radiance += T * radiance;
+    state.opacity  += T * a;
+}
+
+float correctedOpacity(float alpha, float segmentLengthTex) {
+    float a = clamp(alpha, 0.0, 1.0);
+    float w = max(segmentLengthTex, 0.0) * REF_SAMPLING_RATE;
+    return 1.0 - pow(max(1.0 - a, 1e-6), w);
+}
+
+void accumulateDvrSegment(inout RayState state, vec3 p0Tex, vec3 p1Tex) {
+#if defined(INCLUDE_DVR)
+    float lenTex = distance(p0Tex, p1Tex);
+    if (lenTex <= EPSILON) {
+        return;
+    }
+
+    vec3 midPos = 0.5 * (p0Tex + p1Tex);
+    vec4 tf = sampleTransfer(sampleDensity(midPos));
+    float a = correctedOpacity(tf.a, lenTex);
+
+    accumulateEvent(state, tf.rgb * a, a);
+#endif
+}
+
+void accumulateIsoInteriorAbsorption(inout RayState state, vec3 p0Tex, vec3 p1Tex) {
+#if defined(INCLUDE_ISO)
+    if (state.insideOpticalDensity <= 0.0) {
+        return;
+    }
+
+    float lenWorld = segmentLengthWorld(p0Tex, p1Tex);
+    if (lenWorld <= EPSILON) {
+        return;
+    }
+
+    float tau = state.insideOpticalDensity * lenWorld * REF_SAMPLING_RATE;
+    float a = 1.0 - exp(-max(tau, 0.0));
+
+    accumulateEvent(state, vec3(0.0), a);
+#endif
+}
+
+void accumulateMediumSegment(inout RayState state, vec3 p0Tex, vec3 p1Tex) {
+    accumulateDvrSegment(state, p0Tex, p1Tex);
+    accumulateIsoInteriorAbsorption(state, p0Tex, p1Tex);
+}
+
+// -----------------------------------------------------------------------------
+// Surface shading
+// -----------------------------------------------------------------------------
 
 float FresnelSchlick(float cosTheta, float F0) {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 float FresnelSchlickRoughness(float cosTheta, float F0, float roughness) {
     return F0 + (max(1.0 - roughness, F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}   
+}
 
 float DistributionGGX(float NdotH, float roughness) {
-    float a      = roughness*roughness;
-    float a2     = a*a;
-    float NdotH2 = NdotH*NdotH;
-    float num   = a2;
-    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = PI * denom * denom;
-    return num / denom;
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH2 = NdotH * NdotH;
+
+    float denom = NdotH2 * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * denom * denom, 1e-6);
 }
 
 float GeometrySchlickGGX(float NdotV, float roughness) {
-    float r = (roughness + 1.0);
-    float k = (r*r) / 8.0;
-    float num   = NdotV;
-    float denom = NdotV * (1.0 - k) + k;
-    return num / denom;
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return NdotV / max(NdotV * (1.0 - k) + k, 1e-6);
 }
 
 float GeometrySmith(float NdotV, float NdotL, float roughness) {
-    float ggx2  = GeometrySchlickGGX(NdotV, roughness);
-    float ggx1  = GeometrySchlickGGX(NdotL, roughness);
-    return ggx1 * ggx2;
+    return GeometrySchlickGGX(NdotV, roughness) * GeometrySchlickGGX(NdotL, roughness);
 }
 
-vec4 shade(vec4 color, vec3 V, vec3 N) {
-    V = normalize(V);
-    N = normalize(N);
-    vec3  H = normalize(L + V);
-    float H_dot_V = max(0.0, dot(H, V));
-    float N_dot_H = max(0.0, dot(N, H));
-    float N_dot_L = max(0.0, dot(N, L));
-    float N_dot_V = max(0.0, dot(N, V));
+void accumulateSurfaceHit(inout RayState state, vec3 isoPosTex, vec4 baseColor) {
+    vec3 V = -normalize((u_model_to_view_mat * vec4(isoPosTex, 1.0)).xyz);
 
-    float F0 = clamp(u_F0, 0.0, 0.999);
+    vec3 N = sampleGradient(isoPosTex);
+    float nLen = length(N);
+    N = (nLen > EPSILON) ? (N / nLen) : V;
+
+    if (dot(N, V) < 0.0) {
+        N = -N;
+    }
+
+    float F0 = clamp(u_F0, 0.0, 1.0);
     float roughness = clamp(u_roughness, 0.04, 1.0);
-    vec3  dir_radiance = u_dir_radiance;
-    vec3  env_radiance = u_env_radiance;
+    vec3 albedo = baseColor.rgb;
+    float baseAlpha = clamp(baseColor.a, 0.0, 1.0);
 
-    vec3  albedo = color.rgb;
-    float alpha = clamp(color.a, 0.0, 1.0);
+    float NdotL = clamp(dot(N, LIGHT_DIR), 0.0, 1.0);
+    float NdotV = clamp(dot(N, V), 0.0, 1.0);
 
-    vec3 Lo = vec3(0);
+    vec3 hdr = vec3(0.0);
 
-    {
-        // Add contribution from directional light
-        float NDF = DistributionGGX(N_dot_H, roughness);
-        float G   = GeometrySmith(N_dot_V, N_dot_L, roughness);
-        float F   = FresnelSchlick(H_dot_V, F0);
-        float kS = F;
-        float kD = 1.0 - kS;
-        float numerator   = NDF * G * F;
-        float denominator = 4.0 * N_dot_V * N_dot_L + 0.0001;
-        float specular    = numerator / denominator;
-        Lo += (kD * albedo * ONE_OVER_PI + vec3(specular)) * dir_radiance * N_dot_L;
+    if (NdotL > 0.0) {
+        vec3 H = normalize(LIGHT_DIR + V);
+        float NdotH = clamp(dot(N, H), 0.0, 1.0);
+        float HdotV = clamp(dot(H, V), 0.0, 1.0);
+
+        float F = FresnelSchlick(HdotV, F0);
+        float D = DistributionGGX(NdotH, roughness);
+        float G = GeometrySmith(NdotV, NdotL, roughness);
+
+        float specular = (D * G * F) / max(4.0 * NdotV * NdotL, 1e-4);
+        float kD = 1.0 - F;
+
+        hdr += (kD * albedo * INV_PI + vec3(specular)) * u_dir_radiance * NdotL;
     }
 
     {
-        // Add contribution from environment
-        float F = FresnelSchlickRoughness(N_dot_V, F0, roughness);
-        float kS = F;
-        float kD = 1.0 - kS;
-        Lo += (kD * albedo * ONE_OVER_PI + vec3(kS)) * env_radiance; // Multiply with ao here
-
-        // Modify the alpha term to 'approximate' the transmissive component in the reflection occuring at the surface
-        // Only some portion of the energy enters the surface, the other portion reflects off.
-        // We model this by an increase in opacity, which means the consequent contributions will be less
-        alpha += kS;
+        float Fenv = FresnelSchlickRoughness(NdotV, F0, roughness);
+        float kD = 1.0 - Fenv;
+        hdr += (kD * albedo * INV_PI + vec3(Fenv)) * u_env_radiance;
     }
 
-    return vec4(Lo, alpha);
+    float Fview = FresnelSchlick(NdotV, F0);
+    float transmission = clamp((1.0 - baseAlpha) * (1.0 - Fview), 0.0, 1.0);
+    float opacity = 1.0 - transmission;
+
+    accumulateEvent(state, tonemap(hdr), opacity);
 }
 
-vec4 depth_to_view_coord(vec2 tc, float depth) {
-    vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
-    vec4 view_coord = u_inv_proj_mat * clip_coord;
-    return view_coord / view_coord.w;
-}
+// -----------------------------------------------------------------------------
+// Isosurface crossings
+// -----------------------------------------------------------------------------
 
-/**
- * Draws an isosurface if the given isovalue is found along the ray in between the 
- * current and the previous volume sample. On return, tIncr refers to the distance
- * between the last valid isosurface and the current sampling position. That is
- * if no isosurface was found, tIncr is not modified.
- *
- * @param curResult        color accumulated so far during raycasting
- * @param isovalue         isovalue of isosurface to be drawn
- * @param isosurfaceColor  color of the isosurface used for blending
- * @param currentSample    scalar values of current sampling position
- * @param prevSample       scalar values of previous sample
- * @return in case of an isosurface, curResult is blended with the color of the isosurface. 
- *       Otherwise curResult is returned
- */
-vec4 drawIsosurface(in vec4 curResult, in float isovalue, in vec4 isosurfaceColor, 
-                    in float currentSample, in float prevSample,
-                    in vec3 rayPosition, in vec3 rayDirection, 
-                    in float t, in float raySegmentLen, inout float tIncr,
-                    in uint isoIdx, inout uint insideMask, out bool hit) {
-    vec4 result = curResult;
-    float sampleDelta = (currentSample - prevSample);
-    hit = false;
+void initializeIsoState(inout RayState state, float density) {
+#if defined(INCLUDE_ISO)
+    state.insideMask = 0u;
+    state.insideOpticalDensity = 0.0;
 
-    // Avoid unstable interpolation / sign tests when the field is (almost) constant across the segment.
-    if (abs(sampleDelta) < 1e-6) {
-        return result;
-    }
-
-    // Stabilized crossing test with tolerance to reduce grazing/tangent popping.
-    float s0 = prevSample - isovalue;
-    float s1 = currentSample - isovalue;
-    bool crossed = (s0 * s1 < 0.0);
-    bool nearHit = (abs(s0) <= 1e-5) || (abs(s1) <= 1e-5);
-    if (crossed || nearHit) {
-
-        // apply linear interpolation between current and previous sample to obtain location of isosurface
-        float a = (currentSample - isovalue) / sampleDelta;
-        a = clamp(a, 0.0, 1.0);
-        // if a == 1, isosurface was already computed for previous sampling position
-        if (a >= 1.0) {
-            hit = true;
-            return result;
-        }
-        
-        // adjust length of remaining ray segment
-        tIncr = a * raySegmentLen;
-
-        vec3 isopos = rayPosition - raySegmentLen * a * rayDirection;
-
-        vec4 isocolor = isosurfaceColor;
-#if defined(SHADING_ENABLED)
-        vec3 normal = getGradient(isopos);
-        normal = normalize(normal);
-
-        vec3 isoposView = -normalize((u_model_to_view_mat * vec4(isopos, 1.0)).xyz);
-
-        // two-sided lighting
-        if (dot(normal, isoposView) < 0.0) {
-            normal = -normal;
-        }
-
-#endif // SHADING_ENABLED
-
-#if defined(INCLUDE_DVR)
-        // apply compositing of volumetric media from last sampling position up till isosurface
-        vec4 voxelColor = classify(isovalue);
-        if (voxelColor.a > 0) {
-            result = compositing(result, voxelColor, raySegmentLen - tIncr);
-        }
-#endif // INCLUDE_DVR
-
-        isocolor = shade(isocolor, isoposView, normal);
-        isocolor.rgb = Tonemap(isocolor.rgb);
-
-        // Premultiply for consistent "over" compositing with DVR.
-        vec4 surf = isocolor;
-        surf.a = clamp(surf.a, 0.0, 1.0);
-        surf.rgb *= surf.a;
-        result = result + (1.0 - result.a) * surf;
-
-        // Crossing flips whether the current ray segment is inside this isosurface.
-        insideMask ^= (1u << isoIdx);
-        hit = true;
-    }
-
-    return result;
-}
-
-vec4 drawIsosurfaces(in vec4 curResult,
-                     in float voxel, in float previousVoxel,
-                     in vec3 rayPosition, in vec3 rayDirection,
-                     inout float t, inout float tIncr,
-                     inout uint insideMask) {
-    // in case of zero isovalues return current color
-    vec4 result = curResult;
-    float raySegmentLen = tIncr;
-    bool hit;
-
-#if MAX_ISOVALUE_COUNT == 1
-    result = drawIsosurface(result, u_iso.values[0], u_iso.colors[0],
-                            voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr,
-                            0u, insideMask, hit);
-#else // MAX_ISOVALUE_COUNT
-    // multiple isosurfaces, need to determine order of traversal
-    if (voxel - previousVoxel > 0) {
-        for (int i = 0; i < u_iso.count; ++i) {
-            vec4 res = drawIsosurface(result, u_iso.values[i], u_iso.colors[i],
-                                      voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr,
-                                      uint(i), insideMask, hit);
-            result = res;
-        }
-    } else {
-        for (int i = u_iso.count; i > 0; --i) {
-            vec4 res = drawIsosurface(result, u_iso.values[i - 1], u_iso.colors[i - 1],
-                                  voxel, previousVoxel, rayPosition, rayDirection, t, raySegmentLen, tIncr,
-                                  uint(i - 1), insideMask, hit);
-            result = res;
-        }
-    }
-#endif // MAX_ISOVALUE_COUNT
-    return result;
-}
-
-float PDnrand( vec2 n ) {
-    return fract( sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453 );
-}
-
-vec2 PDnrand2( vec2 n ) {
-    return fract( sin(dot(n.xy, vec2(12.9898, 78.233)))* vec2(43758.5453, 28001.8384) );
-}
-
-vec2 encode_normal (vec3 n) {
-   float p = sqrt(n.z * 8 + 8);
-   return n.xy / p + 0.5;
-}
-
-uint getInsideIsosurfaceMask(in float density) {
-    uint mask = 0u;
     float d = abs(density);
-#if MAX_ISOVALUE_COUNT == 1
-    if (d >= abs(u_iso.values[0])) {
-        mask |= (1u << 0u);
-    }
-#else
+
     for (int i = 0; i < u_iso.count; ++i) {
         if (d >= abs(u_iso.values[i])) {
-            mask |= (1u << uint(i));
+            state.insideMask |= (1u << uint(i));
+            state.insideOpticalDensity += max(u_iso.optical_densities[i], 0.0);
         }
     }
-#endif // MAX_ISOVALUE_COUNT
-    return mask;
+#else
+    state.insideMask = 0u;
+    state.insideOpticalDensity = 0.0;
+#endif
 }
 
-vec4 applyIsoInteriorAttenuation(in vec4 curResult, in float opticalDepth) {
-    vec4 result = curResult;
-    float tau = max(opticalDepth, 0.0);
-    if (tau <= 0.0) {
-        return result;
+void toggleIsoMembership(inout RayState state, int isoIdx) {
+#if defined(INCLUDE_ISO)
+    uint bit = (1u << uint(isoIdx));
+    float opticalDensity = max(u_iso.optical_densities[isoIdx], 0.0);
+
+    if ((state.insideMask & bit) != 0u) {
+        state.insideMask &= ~bit;
+        state.insideOpticalDensity = max(0.0, state.insideOpticalDensity - opticalDensity);
+    } else {
+        state.insideMask |= bit;
+        state.insideOpticalDensity += opticalDensity;
+    }
+#endif
+}
+
+int findIsoHits(
+    float d0,
+    float d1,
+    out float hitFractions[MAX_ISOVALUE_COUNT],
+    out int hitIndices[MAX_ISOVALUE_COUNT]
+) {
+#if !defined(INCLUDE_ISO)
+    return 0;
+#else
+    float delta = d1 - d0;
+    if (abs(delta) < EPSILON) {
+        return 0;
     }
 
-    float transmittance = exp(-tau);
-    vec4 absorptionOnly = vec4(0.0, 0.0, 0.0, 1.0 - clamp(transmittance, 0.0, 1.0));
-    result = result + (1.0 - result.a) * absorptionOnly;
-    return result;
+    int hitCount = 0;
+
+    for (int i = 0; i < u_iso.count; ++i) {
+        float frac = (u_iso.values[i] - d0) / delta;
+        if (frac <= 0.0 || frac >= 1.0) {
+            continue;
+        }
+
+        hitFractions[hitCount] = frac;
+        hitIndices[hitCount] = i;
+        ++hitCount;
+    }
+
+    for (int i = 1; i < hitCount; ++i) {
+        float frac = hitFractions[i];
+        int index = hitIndices[i];
+        int j = i - 1;
+
+        while (j >= 0 && hitFractions[j] > frac) {
+            hitFractions[j + 1] = hitFractions[j];
+            hitIndices[j + 1] = hitIndices[j];
+            --j;
+        }
+
+        hitFractions[j + 1] = frac;
+        hitIndices[j + 1] = index;
+    }
+
+    return hitCount;
+#endif
 }
 
-float segmentLengthWorld(in vec3 rayDirectionTex, in float segmentLengthTex) {
-    vec3 deltaTex = rayDirectionTex * max(segmentLengthTex, 0.0);
-    vec3 deltaView = (u_model_to_view_mat * vec4(deltaTex, 0.0)).xyz;
-    return length(deltaView);
+void processSegment(
+    inout RayState state,
+    vec3 p0Tex,
+    vec3 p1Tex,
+    float d0,
+    float d1
+) {
+    if (distance(p0Tex, p1Tex) <= EPSILON) {
+        return;
+    }
+
+#if defined(INCLUDE_ISO)
+    float hitFractions[MAX_ISOVALUE_COUNT];
+    int hitIndices[MAX_ISOVALUE_COUNT];
+    int hitCount = findIsoHits(d0, d1, hitFractions, hitIndices);
+
+    float lastFrac = 0.0;
+
+    for (int h = 0; h < hitCount; ++h) {
+        float frac = hitFractions[h];
+        int isoIdx = hitIndices[h];
+
+        vec3 segStart = mix(p0Tex, p1Tex, lastFrac);
+        vec3 segEnd   = mix(p0Tex, p1Tex, frac);
+
+        accumulateMediumSegment(state, segStart, segEnd);
+
+        vec3 isoPos = segEnd;
+        vec4 isoColor = sampleIsoColor(isoPos, u_iso.colors[isoIdx]);
+        accumulateSurfaceHit(state, isoPos, isoColor);
+
+        toggleIsoMembership(state, isoIdx);
+        lastFrac = frac;
+    }
+
+    accumulateMediumSegment(state, mix(p0Tex, p1Tex, lastFrac), p1Tex);
+#else
+    accumulateMediumSegment(state, p0Tex, p1Tex);
+#endif
 }
+
+// -----------------------------------------------------------------------------
+// Noise
+// -----------------------------------------------------------------------------
+
+float PDnrand(vec2 n) {
+    return fract(sin(dot(n, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+// -----------------------------------------------------------------------------
+// Main
+// -----------------------------------------------------------------------------
 
 void main() {
-    // Entry and exit positions are given in the volumes texture space
     vec3 entryPos = texelFetch(u_tex_entry, ivec2(gl_FragCoord.xy), 0).xyz;
     vec3 exitPos  = texelFetch(u_tex_exit,  ivec2(gl_FragCoord.xy), 0).xyz;
 
-    float dist = distance(entryPos, exitPos);
-    if (dist < 0.00001) discard;
-
-    vec3 ori = entryPos;
-    vec3 dir = (exitPos - entryPos) / dist;
-
-    float tEnd = dist;
-
-    float jitter = PDnrand(gl_FragCoord.xy + vec2(u_time, u_time));
-
-    float tIncr = min(tEnd, tEnd / (samplingRate * length(dir * tEnd * textureSize(u_tex_volume, 0))));
-    float samples = max(1, ceil(tEnd / tIncr));
-    float baseIncr = max(tEnd / samples, 0.0001);
-
-	tIncr = baseIncr;
-
-    float t = jitter * tIncr;
-
-    vec4 result = vec4(0);
-    float density = 0.0;
-    vec3 samplePos = entryPos;
-
-    float lastDensity = getVoxel(entryPos);
-    density = lastDensity;
-    float lastT = 0.0;
-
-    // Per-ray state of which isosurfaces are currently enclosing the sample point.
-    uint insideMask = getInsideIsosurfaceMask(density);
-
-    while (t < tEnd) {
-        t = min(t, tEnd);
-        samplePos = entryPos + t * dir;
-        float prevDensity = density;
-        density = getVoxel(samplePos);
-        lastDensity = prevDensity;
-        lastT = t;
-
-#if defined(INCLUDE_ISO)
-    result = drawIsosurfaces(result, density, prevDensity, samplePos, dir, t, tIncr, insideMask);
-#endif 
-
-#if defined(INCLUDE_DVR)
-        vec4 srcColor = classify(density);
-        if (srcColor.a > 0.0) {
-            result = compositing(result, srcColor, tIncr);
-        }
-#endif
-
-#if defined(INCLUDE_ISO)
-        // Apply Beer-Lambert attenuation while traversing interior of isosurfaces.
-        if (u_iso_optical_density_scale > 0.0) {
-            int insideCount = bitCount(insideMask);
-            if (insideCount > 0) {
-                float worldLen = segmentLengthWorld(dir, tIncr);
-                float opticalDepth = u_iso_optical_density_scale * float(insideCount) * worldLen * REF_SAMPLING_RATE;
-                result = applyIsoInteriorAttenuation(result, opticalDepth);
-            }
-        }
-#endif
-
-        if (result.a > ERT_THRESHOLD) {
-            break;
-        }
-
-        // make sure that tIncr has the correct length since drawIsoSurface will modify it
-        tIncr = baseIncr;
-        t += tIncr;
+    float rayLength = distance(entryPos, exitPos);
+    if (rayLength < 1e-5) {
+        discard;
     }
 
-    // Always take a final sample exactly at the exit to stabilize boundary behavior.
-    // This is deterministic w.r.t. jitter and helps avoid missing an isosurface right at tEnd.
-    {
-        vec3 exitSamplePos = exitPos;
-        float exitDensity = getVoxel(exitSamplePos);
+    vec3 dir = (exitPos - entryPos) / rayLength;
 
-#if defined(INCLUDE_ISO)
-        // Bracket the last segment [lastT, tEnd].
-        float isoT = tEnd;
-        float isoTIncr = max(tEnd - lastT, 0.0);
-        if (isoTIncr > 0.0) {
-            result = drawIsosurfaces(result, exitDensity, density, exitSamplePos, dir, isoT, isoTIncr, insideMask);
-        }
-#endif
+    float voxelSamples = max(
+        1.0,
+        SAMPLING_RATE * length(dir * rayLength * vec3(textureSize(u_tex_density_volume, 0)))
+    );
+    float baseStep = max(rayLength / ceil(voxelSamples), 1e-4);
 
-#if defined(INCLUDE_DVR)
-        // Do not add additional emission/absorption at the boundary; "cap" sample has zero weight.
-        vec4 exitColor = classify(exitDensity);
-        if (exitColor.a > 0.0) {
-            result = compositing(result, exitColor, 0.0);
-        }
-#endif
+    float jitter = PDnrand(gl_FragCoord.xy + vec2(u_time));
+    float t = jitter * baseStep;
 
-#if defined(INCLUDE_ISO)
-        if (u_iso_optical_density_scale > 0.0) {
-            int insideCount = bitCount(insideMask);
-            if (insideCount > 0) {
-                float worldLen = segmentLengthWorld(dir, max(tEnd - lastT, 0.0));
-                float opticalDepth = u_iso_optical_density_scale * float(insideCount) * worldLen * REF_SAMPLING_RATE;
-                result = applyIsoInteriorAttenuation(result, opticalDepth);
-            }
-        }
-#endif
+    RayState state;
+    state.radiance = vec3(0.0);
+    state.opacity = 0.0;
+    state.insideMask = 0u;
+    state.insideOpticalDensity = 0.0;
+
+    vec3 prevPos = entryPos;
+    float prevDensity = sampleDensity(prevPos);
+    initializeIsoState(state, prevDensity);
+
+    while (t < rayLength && state.opacity < ERT_THRESHOLD) {
+        float currT = min(t, rayLength);
+        vec3 currPos = entryPos + currT * dir;
+        float currDensity = sampleDensity(currPos);
+
+        processSegment(state, prevPos, currPos, prevDensity, currDensity);
+
+        prevPos = currPos;
+        prevDensity = currDensity;
+        t = currT + baseStep;
     }
 
-    out_color = result;
+    if (state.opacity < ERT_THRESHOLD) {
+        float exitDensity = sampleDensity(exitPos);
+        processSegment(state, prevPos, exitPos, prevDensity, exitDensity);
+    }
+
+    out_color = vec4(state.radiance, state.opacity);
 }

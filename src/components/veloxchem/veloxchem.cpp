@@ -696,6 +696,12 @@ struct VeloxChem : viamd::EventHandler {
                 // Recalculate OBB and AABB
                 calculate_obb(&obb, &state.mold.sys);
                 aabb_from_obb(&aabb, obb);
+
+                for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+                    if (state.representation.reps[i].type == RepresentationType::ElectronicStructure) {
+                        flag_representation_as_dirty(&state.representation.reps[i]);
+                    }
+                }
                 
                 break;
             }
@@ -4180,7 +4186,7 @@ struct VeloxChem : viamd::EventHandler {
                                     .clear_color = true,
                                 },
                                 .texture = {
-                                    .volume = orb.vol[i].tex_id,
+                                    .density_volume = orb.vol[i].tex_id,
                                 },
                                 .matrix = {
                                     .model = orb.vol[i].texture_to_world,
@@ -5765,7 +5771,7 @@ struct VeloxChem : viamd::EventHandler {
                                 .clear_color = true,
                             },
                             .texture = {
-                                .volume = nto.vol[i].tex_id,
+                                .density_volume = nto.vol[i].tex_id,
                             },
                             .matrix = {
                                 .model = nto.vol[i].texture_to_world,

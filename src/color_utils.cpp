@@ -92,16 +92,8 @@ static inline uint32_t u32_to_color(uint32_t u32) {
 	return u32_to_color_qualitative(u32);
 }
 
-void color_atoms_uniform(uint32_t* colors, size_t count, vec4_t color, const md_bitfield_t* mask) {
-    if (mask) {
-        const uint32_t u32_color = convert_color(color);
-        md_bitfield_iter_t it = md_bitfield_iter_create(mask);
-        while (md_bitfield_iter_next(&it)) {
-            colors[md_bitfield_iter_idx(&it)] = u32_color;
-        }
-    } else {
-        set_colors(colors, count, convert_color(color));
-    }
+void color_atoms_uniform(uint32_t* colors, size_t count, uint32_t color) {
+    set_colors(colors, count, color);
 }
 
 void color_atoms_cpk(uint32_t* colors, size_t count, const md_system_t& sys) {
@@ -174,11 +166,11 @@ void color_atoms_inst_idx(uint32_t* colors, size_t count, const md_system_t& sys
     }
 }
 
-void color_atoms_sec_str(uint32_t* colors, size_t count, const md_system_t& sys) {
-    const uint32_t color_unknown = 0xFF555555;
-    const uint32_t color_coil    = 0xFFDDDDDD;
-    const uint32_t color_helix   = 0xFF22DD22;
-    const uint32_t color_sheet   = 0xFFDD2222;
+void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const SecondaryStructurePalette& palette) {
+    const uint32_t color_unknown = palette.unknown;
+    const uint32_t color_coil    = palette.coil;
+    const uint32_t color_helix   = palette.helix;
+    const uint32_t color_sheet   = palette.sheet;
 
     if (sys.protein_backbone.segment.secondary_structure) {
         for (size_t i = 0; i < sys.protein_backbone.range.count; ++i) {
@@ -245,25 +237,53 @@ void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mas
     }
 }
 
+static inline uint32_t scale_saturation_u32(uint32_t rgba_u32, float scale) {
+    vec4_t rgba = convert_color(rgba_u32);
+    vec3_t lab = linear_srgb_to_oklab(vec3_from_vec4(rgba));
+    lab.y *= scale;
+    lab.z *= scale;
+    return convert_color(vec4_from_vec3(oklab_to_linear_srgb(lab), rgba.w));
+}
+
 void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale) {
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
         int64_t i = beg_bit - 1;
-        vec4_t rgba = convert_color(colors[i]);
-        vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
-        hsv.y *= scale;
-        rgba = vec4_from_vec3(hsv_to_rgb(hsv), rgba.w);
-        colors[i] = convert_color(rgba);
+        colors[i] = scale_saturation_u32(colors[i], scale);
     }
 }
 
 void scale_saturation(uint32_t* colors, size_t count, float scale) {
     for (size_t i = 0; i < count; ++i) {
+        colors[i] = scale_saturation_u32(colors[i], scale);
+    }
+}
+
+void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength, float saturation) {
+    const float t = CLAMP(tint_strength, 0.0f, 1.0f);
+    const float s = CLAMP(saturation, 0.0f, 1.0f);
+
+    vec4_t tint_rgba = convert_color(tint_color);
+    vec3_t tint_lab = linear_srgb_to_oklab(vec3_from_vec4(tint_rgba));
+
+    const float L_coeff  = 0.1f * t;
+    const float ab_coeff = 1.0f * t;
+
+    for (size_t i = 0; i < count; ++i) {
         vec4_t rgba = convert_color(colors[i]);
-        vec3_t hsv = rgb_to_hsv(vec3_from_vec4(rgba));
-        hsv.y *= scale;
-        rgba = vec4_from_vec3(hsv_to_rgb(hsv), rgba.w);
-        colors[i] = convert_color(rgba);
+        vec3_t lab = linear_srgb_to_oklab(vec3_from_vec4(rgba));
+
+        // First apply tint.
+        lab.x = lab.x * (1.0f - L_coeff)  + tint_lab.x * L_coeff;
+        lab.y = lab.y * (1.0f - ab_coeff) + tint_lab.y * ab_coeff;
+        lab.z = lab.z * (1.0f - ab_coeff) + tint_lab.z * ab_coeff;
+
+        // Then apply saturation independently by scaling chroma in OKLab.
+        lab.y *= s;
+        lab.z *= s;
+
+        vec3_t out_rgb = oklab_to_linear_srgb(lab);
+        colors[i] = convert_color(vec4_from_vec3(out_rgb, rgba.w));
     }
 }

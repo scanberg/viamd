@@ -144,6 +144,15 @@ inline vec3_t linear_srgb_to_srgb(vec3_t rgb) {
     return {encode(rgb.x), encode(rgb.y), encode(rgb.z)};
 }
 
+inline vec3_t srgb_to_linear_srgb(vec3_t rgb) {
+    const auto decode = [](float x) {
+        x = CLAMP(x, 0.0f, 1.0f);
+        return (x <= 0.04045f) ? (x / 12.92f)
+                               : powf((x + 0.055f) / 1.055f, 2.4f);
+    };
+    return {decode(rgb.x), decode(rgb.y), decode(rgb.z)};
+}
+
 inline vec3_t oklab_to_linear_srgb(vec3_t lab) {
     // OKLab to LMS cube
     // Reference: Björn Ottosson (OKLab)
@@ -165,6 +174,35 @@ inline vec3_t oklab_to_linear_srgb(vec3_t lab) {
     const float bb = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
 
     return {r, g, bb};
+}
+
+inline vec3_t linear_srgb_to_oklab(vec3_t rgb) {
+    // linear sRGB to LMS
+    const float l = 0.4122214708f * rgb.x + 0.5363325363f * rgb.y + 0.0514459929f * rgb.z;
+    const float m = 0.2119034982f * rgb.x + 0.6806995451f * rgb.y + 0.1073969566f * rgb.z;
+    const float s = 0.0883024619f * rgb.x + 0.2817188376f * rgb.y + 0.6299787005f * rgb.z;
+
+    // cube root
+    const float l_ = cbrtf(l);
+    const float m_ = cbrtf(m);
+    const float s_ = cbrtf(s);
+
+    // LMS to OKLab
+    const float L = 0.2104542553f * l_ + 0.7936177850f * m_ - 0.0040720468f * s_;
+    const float a = 1.9779984951f * l_ - 2.4285922050f * m_ + 0.4505937099f * s_;
+    const float b = 0.0259040371f * l_ + 0.7827717662f * m_ - 0.8086757660f * s_;
+
+    return {L, a, b};
+}
+
+inline vec3_t oklab_to_srgb(vec3_t lab) {
+    // Convert to linear sRGB then apply transfer function
+    vec3_t rgb = oklab_to_linear_srgb(lab);
+    return linear_srgb_to_srgb(rgb);
+}
+
+inline vec3_t srgb_to_oklab(vec3_t rgb) {
+    return linear_srgb_to_oklab(srgb_to_linear_srgb(rgb));
 }
 
 // oklch = {h, c, l} with h in [0,1), l in [0,1]
@@ -228,23 +266,26 @@ constexpr inline uint32_t convert_color(vec4_t in) {
     return out;
 }
 
-void color_atoms_uniform        (uint32_t* colors, size_t count, vec4_t uniform_color, const md_bitfield_t* mask = NULL);
-void color_atoms_cpk            (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_type           (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_idx            (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_name      (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_seq_id    (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_idx       (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_inst_id        (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_inst_idx       (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_sec_str        (uint32_t* colors, size_t count, const md_system_t& sys);
+struct SecondaryStructurePalette {
+    uint32_t unknown = 0xFF555555;
+    uint32_t coil    = 0xFFDDDDDD;
+    uint32_t helix   = 0xFF22DD22;
+    uint32_t sheet   = 0xFF2222DD;
+};
+
+void color_atoms_uniform            (uint32_t* colors, size_t count, uint32_t color);
+void color_atoms_cpk                (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_type               (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_idx                (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_name          (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_seq_id        (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_inst_id            (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_inst_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const SecondaryStructurePalette& palette = SecondaryStructurePalette());
 
 void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask);
 void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale);
 void scale_saturation(uint32_t* colors, size_t count, float scale);
 
-static inline vec4_t scale_saturation(vec4_t color, float scale) {
-    vec3_t hsv = rgb_to_hsv(vec3_from_vec4(color));
-    hsv.y *= scale;
-    return vec4_from_vec3(hsv_to_rgb(hsv), color.w);
-}
+void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength, float saturation = 1.0f);

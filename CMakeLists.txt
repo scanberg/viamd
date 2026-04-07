@@ -136,6 +136,7 @@ set(SHADER_FILES
     src/shaders/volume/entryexit.vert
     src/shaders/volume/entryexit.frag
     src/shaders/volume/raycaster.frag
+    src/shaders/volume/splat_color.comp
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/blur.frag
 )

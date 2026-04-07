@@ -1736,7 +1736,7 @@ static void update_density_volume(ApplicationState* data) {
 
             switch (rep.colormap) {
             case ColorMapping::Uniform:
-                color_atoms_uniform(colors, num_atoms, rep.color);
+                color_atoms_uniform(colors, num_atoms, convert_color(rep.color));
                 break;
             case ColorMapping::Type:
                 color_atoms_type(colors, num_atoms, sys);
@@ -1757,7 +1757,7 @@ static void update_density_volume(ApplicationState* data) {
                 color_atoms_inst_idx(colors, num_atoms, sys);
                 break;
             case ColorMapping::SecondaryStructure:
-                color_atoms_sec_str(colors, num_atoms, sys);
+                color_atoms_secondary_structure(colors, num_atoms, sys);
                 break;
             default:
                 ASSERT(false);
@@ -3609,12 +3609,25 @@ static void draw_representations_window(ApplicationState* state) {
     if (ImGui::DeleteButton("remove all")) {
         remove_all_representations(state);
     }
+    ImGui::SameLine();
+
+    const char* advanced_label = ICON_FA_SLIDERS;
+    const float checkbox_width =
+        ImGui::GetFrameHeight() +
+        ImGui::GetStyle().ItemInnerSpacing.x +
+        ImGui::CalcTextSize(advanced_label).x;
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - checkbox_width);
+    ImGui::Checkbox(advanced_label, &state->representation.advanced_mode);
+    ImGui::SetItemTooltip("Advanced mode (show all representation settings)");
+
+    bool advanced = state->representation.advanced_mode;
+
     ImGui::Spacing();
     ImGui::Separator();
     for (int rep_idx = 0; rep_idx < (int)md_array_size(state->representation.reps); rep_idx++) {
         bool update_rep = false;
         Representation& rep = state->representation.reps[rep_idx];
-        //const float item_width = MAX(ImGui::GetContentRegionAvail().x - 125.f, 100.f);
+
         char label[128];
         snprintf(label, sizeof(label), "%s###ID", rep.name);
 
@@ -3660,12 +3673,15 @@ static void draw_representations_window(ApplicationState* state) {
         }
 
         if (draw_content) {
+            ImVec4 sub_group_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            sub_group_color.w = 0.5f;
+
             const float inner_item_width = MAX(ImGui::GetContentRegionAvail().x - ImGui::GetStyle().IndentSpacing - ImGui::CalcTextSize("helix scale").x, 100.f);
             ImGui::PushItemWidth(inner_item_width);
 
             // @TODO: Only display the representations which can be used for the current dataset
             if (!rep.type_is_valid) ImGui::PushInvalid();
-            if (ImGui::BeginCombo("Type", representation_type_str[(int)rep.type])) {
+            if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
                 for (int i = 0; i < (int)RepresentationType::Count; ++i) {
                     if (i == (int)RepresentationType::ElectronicStructure) {
                         // Do not enlist Electronic Structure if there are no orbitals available
@@ -3680,174 +3696,14 @@ static void draw_representations_window(ApplicationState* state) {
             }
             if (!rep.type_is_valid) ImGui::PopInvalid();
 
-            if (rep.type <= RepresentationType::Cartoon) {
+            if (rep.type != RepresentationType::ElectronicStructure) {
                 if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
                     rep.filt_is_dirty = true;
                     update_rep = true;
                 }
-                if (ImGui::Combo("atom color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
-                    update_rep = true;
-                }
-
-                if (rep.color_mapping == ColorMapping::Property) {
-                    AtomProperty* props = state->representation.info.atom_properties;
-                    int num_props = (int)md_array_size(state->representation.info.atom_properties);
-                    if (num_props > 0) {
-                        rep.prop.idx = CLAMP(rep.prop.idx, 0, num_props - 1);
-                        if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
-                            for (int i = 0; i < num_props; ++i) {
-                                bool selected = rep.prop.idx == i;
-                                if (ImGui::Selectable(props[i].label.ptr, selected)) {
-                                    rep.prop.idx = i;
-                                    rep.prop.range_beg = props[i].value_min;
-                                    rep.prop.range_end = props[i].value_max;
-                                    update_rep = true;
-                                }
-                            }
-                            ImGui::EndCombo();
-                        }
-
-                        if (props[rep.prop.idx].num_idx > 1) {
-                            int idx = rep.prop.sub_idx + 1;
-                            const int min = 1;
-                            const int max = props[rep.prop.idx].num_idx;
-                            if (ImGui::SliderInt("Index", &idx, min, max)) {
-                                update_rep = true;
-                            }
-                            rep.prop.sub_idx = CLAMP(idx - 1, 0, props[rep.prop.idx].num_idx - 1);
-                        }
-                        
-                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.prop.colormap), ImVec2(inner_item_width,0), rep.prop.colormap)) {
-                            ImGui::OpenPopup("Color Map Selector");
-                        }
-
-						const float pad = MAX(fabsf(props[rep.prop.idx].value_min), fabsf(props[rep.prop.idx].value_max));
-                        const float value_min = props[rep.prop.idx].value_min - pad;
-                        const float value_max = props[rep.prop.idx].value_max + pad;
-
-						// Otherwise, we allow independent scaling of the min and max values
-                        // Scale a bit outside of the default range
-                        update_rep |= ImGui::RangeSliderFloat("Min / Max", &rep.prop.range_beg, &rep.prop.range_end, value_min, value_max);
-
-                        if (ImGui::BeginPopup("Color Map Selector")) {
-                            for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
-                                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {
-                                    rep.prop.colormap = map;
-                                    update_rep = true;
-                                    ImGui::CloseCurrentPopup();
-                                }
-                            }
-                            ImGui::EndPopup();
-                        }
-                    } else {
-                        ImGui::Text("No properties available");
-                    }
-
-
-#if 0
-                    static int prop_idx = 0;
-                    const md_script_property_t* props[32] = {0};
-                    size_t num_props = 0;
-                    for (size_t j = 0; j < md_array_size(data->display_properties); ++j) {
-                        if (data->display_properties[j].type == DisplayProperty::Type_Temporal) {
-                            props[num_props++] = data->display_properties[j].prop;
-                        }
-                        if (num_props == ARRAY_SIZE(props)) break;
-                    }
-
-                    rep.prop = NULL;
-                    if (num_props > 0) {
-                        prop_idx = CLAMP(prop_idx, 0, (int)num_props-1);
-                        if (ImGui::BeginCombo("Prop", props[prop_idx]->ident.ptr)) {
-                            for (size_t j = 0; j < num_props; ++j) {
-                                if (ImGui::Selectable(props[j]->ident.ptr, prop_idx == i)) {
-                                    prop_idx = (int)j;
-                                    rep.map_beg = props[j]->data.min_value;
-                                    rep.map_end = props[j]->data.max_value;
-                                    update_rep = true;
-                                }
-                            }
-                            ImGui::EndCombo();
-                        }
-                        rep.prop = props[prop_idx];
-
-                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.color_map), ImVec2(item_width,0), rep.color_map)) {
-                            ImGui::OpenPopup("Color Map Selector");
-                        }
-                        ImGui::DragFloatRange2("Min / Max",&rep.map_beg, &rep.map_end, 0.01f, rep.prop->data.min_value, rep.prop->data.max_value);
-                        if (ImGui::BeginPopup("Color Map Selector")) {
-                            for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
-                                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(item_width,0), map)) {
-                                    rep.color_map = map;
-                                    ImGui::CloseCurrentPopup();
-                                }
-                            }
-                            ImGui::EndPopup();
-                        }
-                    }
-#endif
-                }
-                if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
-                    update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
-                    if (!rep.dynamic_evaluation) {
-                        ImGui::SameLine();
-                        if (ImGui::Button("update")) {
-                            rep.filt_is_dirty = true;
-                            update_rep = true;
-                        }
-                    }
-                } else {
-                    rep.dynamic_evaluation = false;
-                }
-                ImGui::PopItemWidth();
-                if (rep.color_mapping == ColorMapping::Uniform) {
-                    update_rep |= ImGui::ColorEdit3("##atom_uniform_color", rep.uniform_color.elem);
-                }
-                ImGui::PushItemWidth(inner_item_width);
-                switch (rep.type) {
-                case RepresentationType::SpaceFill:
-                    update_rep |= ImGui::SliderFloat("scale", &rep.scale[0], 0.1f, 4.f);
-                    break;
-                case RepresentationType::Licorice:
-                    update_rep |= ImGui::SliderFloat("radius", &rep.scale[0], 0.1f, 4.0f);
-                    break;
-                case RepresentationType::BallAndStick:
-                    update_rep |= ImGui::SliderFloat("ball scale", &rep.scale[0], 0.1f, 4.f);
-                    update_rep |= ImGui::SliderFloat("bond scale", &rep.scale[1], 0.1f, 4.f);
-                    break;
-                case RepresentationType::Ribbons:
-                    update_rep |= ImGui::SliderFloat("width",       &rep.scale[0], 0.1f, 3.f);
-                    update_rep |= ImGui::SliderFloat("thickness",   &rep.scale[1], 0.1f, 3.f);
-                    break;
-                case RepresentationType::Cartoon:
-                    update_rep |= ImGui::SliderFloat("coil scale",  &rep.scale[0], 0.1f, 3.f);
-                    update_rep |= ImGui::SliderFloat("sheet scale", &rep.scale[1], 0.1f, 3.f);
-                    update_rep |= ImGui::SliderFloat("helix scale", &rep.scale[2], 0.1f, 3.f);
-                    break;
-                default:
-                    ASSERT(false);
-                }
-
-                if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
-                    // Draw options for how bonds should be colored
-					update_rep |= ImGui::Combo("bond color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
-                    if (rep.bond_color == BondColorMode::SmoothAtom) {
-                        ImGui::SliderFloat("sharpness", &rep.bond_sharpness, 0.0f, 1.0f);
-                    } else if (rep.bond_color == BondColorMode::Uniform) {
-                        ImGui::ColorEdit3("##bond_uniform_color", rep.bond_uniform_color.elem);
-					}
-                }
-
-                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f);
-
-                ImGui::PopItemWidth();
-                ImGui::Spacing();
-                ImGui::Separator();
-            }
-
-            if (rep.type == RepresentationType::ElectronicStructure) {
+            } else {
                 ImGuiComboFlags flags = 0;
-                if (ImGui::BeginCombo("Electronic Structure Type", electronic_structure_type_str[(int)rep.electronic_structure.type], flags)) {
+                if (ImGui::BeginCombo("volume src", electronic_structure_type_str[(int)rep.electronic_structure.type], flags)) {
                     for (int n = 0; n < (int)ElectronicStructureType::Count; n++) {
                         bool is_selected = ((int)rep.electronic_structure.type == n);
                         bool disabled = !((1 << n) & state->representation.info.electronic_structure_type_mask);
@@ -3864,6 +3720,11 @@ static void draw_representations_window(ApplicationState* state) {
                         }
                     }
                     ImGui::EndCombo();
+                }
+                if (advanced) {
+                    if (ImGui::Combo("volume res", (int*)&rep.electronic_structure.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
+                        update_rep = true;
+                    }
                 }
 
                 const bool show_molecular_orbitals = (rep.electronic_structure.type == ElectronicStructureType::MolecularOrbital ||
@@ -3883,7 +3744,7 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (show_molecular_orbitals) {
                     if (state->representation.info.alpha.label) {
-                        if (ImGui::BeginCombo("Molecular Orbital Idx", state->representation.info.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
+                        if (ImGui::BeginCombo("orbital idx", state->representation.info.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
                             for (int n = 0; n < (int)state->representation.info.alpha.num_orbitals; n++) {
                                 bool is_selected = (rep.electronic_structure.mo_idx == n);
                                 if (ImGui::Selectable(state->representation.info.alpha.label[n].ptr, is_selected)) {
@@ -3904,7 +3765,7 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (show_exited_states) {
                     if (state->representation.info.nto.label) {
-                        if (ImGui::BeginCombo("Excited State Idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
+                        if (ImGui::BeginCombo("state idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
                             for (int n = 0; n < (int)state->representation.info.nto.num_orbitals; n++) {
                                 const bool is_selected = (rep.electronic_structure.nto_idx == n);
                                 if (ImGui::Selectable(state->representation.info.nto.label[n].ptr, is_selected)) {
@@ -3927,7 +3788,7 @@ static void draw_representations_window(ApplicationState* state) {
                                 if (num_lambdas > 0) {
                                     rep.electronic_structure.nto_lambda_idx = CLAMP(rep.electronic_structure.nto_lambda_idx, 0, num_lambdas - 1);
                                     if (lambda.label) {
-                                        if (ImGui::BeginCombo("Lambda Idx", lambda.label[rep.electronic_structure.nto_lambda_idx].ptr)) {
+                                        if (ImGui::BeginCombo("lambda idx", lambda.label[rep.electronic_structure.nto_lambda_idx].ptr)) {
                                             for (int n = 0; n < (int)num_lambdas; n++) {
                                                 const bool is_selected = (rep.electronic_structure.nto_lambda_idx == n);
                                                 if (ImGui::Selectable(lambda.label[n].ptr, is_selected)) {
@@ -3948,10 +3809,6 @@ static void draw_representations_window(ApplicationState* state) {
                             }
                         }
                     }
-                }
-
-                if (ImGui::Combo("Volume Resolution", (int*)&rep.electronic_structure.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
-                    update_rep = true;
                 }
 #if 0
                 // Currently we do not expose DVR, since we do not have a good way of exposing the alpha ramp for the transfer function...
@@ -3979,9 +3836,29 @@ static void draw_representations_window(ApplicationState* state) {
                 case ElectronicStructureType::NaturalTransitionOrbitalHole: {
                     const double iso_min = 1.0e-4;
                     const double iso_max = 5.0;
-                    ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::ColorEdit4("Color Positive", rep.electronic_structure.col_psi_pos.elem);
-                    ImGui::ColorEdit4("Color Negative", rep.electronic_structure.col_psi_neg.elem);
+                    ImGui::SliderScalar("iso value", ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+                    if (advanced) {
+                        const double min_tau = 0.0;
+                        const double max_tau = 1.0;
+			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
+                        ImGui::SetItemTooltip("Optical density of the isosurfaces");
+                    }
+                    if (rep.electronic_structure.use_atom_colors) {
+                        ImGui::ColorEdit4("tint positive", rep.electronic_structure.tint_psi_pos.elem);
+                        ImGui::ColorEdit4("tint negative", rep.electronic_structure.tint_psi_neg.elem);
+                    } else {
+                        ImGui::ColorEdit4("color positive", rep.electronic_structure.col_psi_pos.elem);
+                        ImGui::ColorEdit4("color negative", rep.electronic_structure.col_psi_neg.elem);
+                    }
+                    if (advanced || rep.electronic_structure.use_atom_colors) {
+                        update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
+                    }
+
+                    if (advanced && rep.electronic_structure.use_atom_colors) {
+                        const double min_power = 2.0;
+                        const double max_power = 20.0;
+                        update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
+                    }
                     break;
                 }
                 case ElectronicStructureType::MolecularOrbitalDensity:
@@ -3993,26 +3870,186 @@ static void draw_representations_window(ApplicationState* state) {
                     const double iso_min = 1.0e-8;
                     const double iso_max = 5.0;
                     double iso_val = rep.electronic_structure.iso_value * rep.electronic_structure.iso_value;
-                    if (ImGui::SliderScalar("Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic)) {
+                    if (ImGui::SliderScalar("iso value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.7f", ImGuiSliderFlags_Logarithmic)) {
                         rep.electronic_structure.iso_value = sqrt(iso_val);
                     }
-                    if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
-                        ImGui::ColorEdit4("Color Attachment", rep.electronic_structure.col_att.elem);
+                    if (advanced) {
+                        const double min_tau = 0.0;
+                        const double max_tau = 1.0;
+			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
+                        ImGui::SetItemTooltip("Optical density of the isosurfaces");
                     }
-                    else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
-                        ImGui::ColorEdit4("Color Detachment", rep.electronic_structure.col_det.elem);
+                    if (rep.electronic_structure.use_atom_colors) {
+                        if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                            ImGui::ColorEdit4("tint attachment", rep.electronic_structure.tint_att.elem);
+                        }
+                        else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                            ImGui::ColorEdit4("tint detachment", rep.electronic_structure.tint_det.elem);
+                        } else {
+                            ImGui::ColorEdit4("tint density", rep.electronic_structure.tint_den.elem);
+                        }
                     } else {
-                        ImGui::ColorEdit4("Color Density",  rep.electronic_structure.col_den.elem);
+                        if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                            ImGui::ColorEdit4("color attachment", rep.electronic_structure.col_att.elem);
+                        }
+                        else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                            ImGui::ColorEdit4("color detachment", rep.electronic_structure.col_det.elem);
+                        } else {
+                            ImGui::ColorEdit4("color density",  rep.electronic_structure.col_den.elem);
+                        }
+                    }
+                    if (advanced || rep.electronic_structure.use_atom_colors) {
+                        update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
+                    }
+                    if (advanced && rep.electronic_structure.use_atom_colors) {
+                        const double min_power = 2.0;
+                        const double max_power = 20.0;
+                        update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
                     }
                     break;
                 }
                 default:
                     ASSERT(false);
                 }
-				const double min_scale =  0.0;
-                const double max_scale = 10.0;
-				ImGui::SliderScalar("Optical Density Scale", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density_scale, &min_scale, &max_scale, "%.3f", ImGuiSliderFlags_Logarithmic);
             }
+
+            if (representation_uses_atom_colors(rep)) {
+                if (ImGui::Combo("atom color", (int*)(&rep.color_mapping), color_mapping_str, IM_ARRAYSIZE(color_mapping_str))) {
+                    update_rep = true;
+                }
+
+                if (rep.color_mapping == ColorMapping::Property) {
+                    AtomProperty* props = state->representation.info.atom_properties;
+                    int num_props = (int)md_array_size(state->representation.info.atom_properties);
+                    if (num_props > 0) {
+                        rep.prop.idx = CLAMP(rep.prop.idx, 0, num_props - 1);
+                        if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
+                            for (int i = 0; i < num_props; ++i) {
+                                bool selected = rep.prop.idx == i;
+                                if (ImGui::Selectable(props[i].label.ptr, selected)) {
+                                    rep.prop.idx = i;
+                                    rep.prop.range_beg = props[i].value_min;
+                                    rep.prop.range_end = props[i].value_max;
+                                    update_rep = true;
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        if (props[rep.prop.idx].num_idx > 1) {
+                            int idx = rep.prop.sub_idx + 1;
+                            const int min = 1;
+                            const int max = props[rep.prop.idx].num_idx;
+                            if (ImGui::SliderInt("index", &idx, min, max)) {
+                                update_rep = true;
+                            }
+                            rep.prop.sub_idx = CLAMP(idx - 1, 0, props[rep.prop.idx].num_idx - 1);
+                        }
+                        
+                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.prop.colormap), ImVec2(inner_item_width,0), rep.prop.colormap)) {
+                            ImGui::OpenPopup("Color Map Selector");
+                        }
+
+						const float pad = MAX(fabsf(props[rep.prop.idx].value_min), fabsf(props[rep.prop.idx].value_max));
+                        const float value_min = props[rep.prop.idx].value_min - pad;
+                        const float value_max = props[rep.prop.idx].value_max + pad;
+
+						// Otherwise, we allow independent scaling of the min and max values
+                        // Scale a bit outside of the default range
+                        update_rep |= ImGui::RangeSliderFloat("min / max", &rep.prop.range_beg, &rep.prop.range_end, value_min, value_max);
+
+                        if (ImGui::BeginPopup("Color Map Selector")) {
+                            for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
+                                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {
+                                    rep.prop.colormap = map;
+                                    update_rep = true;
+                                    ImGui::CloseCurrentPopup();
+                                }
+                            }
+                            ImGui::EndPopup();
+                        }
+                    } else {
+                        ImGui::Text("no properties available");
+                    }
+                }
+                if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
+                    if (advanced) {
+                        update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
+                        if (!rep.dynamic_evaluation) {
+                            ImGui::SameLine();
+                            if (ImGui::Button("update")) {
+                                rep.filt_is_dirty = true;
+                                update_rep = true;
+                            }
+                        }
+                    }
+                } else {
+                    rep.dynamic_evaluation = false;
+                }
+
+                if (rep.color_mapping == ColorMapping::Uniform) {
+                    update_rep |= ImGui::ColorEdit3("##atom_base_color", rep.base_color.elem);
+                }
+
+                if (advanced) {
+                    if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
+                        // Draw options for how bonds should be colored
+					    update_rep |= ImGui::Combo("bond color", (int*)(&rep.bond_color), bond_color_mode_str, IM_ARRAYSIZE(bond_color_mode_str));
+                        if (rep.bond_color == BondColorMode::SmoothAtom) {
+                            ImGui::SliderFloat("sharpness", &rep.bond_sharpness, 0.0f, 1.0f);
+                        } else if (rep.bond_color == BondColorMode::Uniform) {
+                            ImGui::ColorEdit3("##bond_base_color", rep.bond_base_color.elem);
+					    }
+                    }
+                }
+            }
+
+            if (advanced && representation_uses_atom_colors(rep)) {
+                if (rep.type != RepresentationType::ElectronicStructure) {
+                    ImGui::Spacing();
+                    ImGui::TextColored(sub_group_color, "Geometric Scaling");
+                    switch (rep.type) {
+                    case RepresentationType::SpaceFill:
+                        update_rep |= ImGui::SliderFloat("radius scale", &rep.scale[0], 0.1f, 4.f);
+                        break;
+                    case RepresentationType::Licorice:
+                        update_rep |= ImGui::SliderFloat("radius scale", &rep.scale[0], 0.1f, 4.0f);
+                        break;
+                    case RepresentationType::BallAndStick:
+                        update_rep |= ImGui::SliderFloat("ball scale",   &rep.scale[0], 0.1f, 4.f);
+                        update_rep |= ImGui::SliderFloat("bond scale",   &rep.scale[1], 0.1f, 4.f);
+                        break;
+                    case RepresentationType::Ribbons:
+                        update_rep |= ImGui::SliderFloat("width",        &rep.scale[0], 0.1f, 3.f);
+                        update_rep |= ImGui::SliderFloat("thickness",    &rep.scale[1], 0.1f, 3.f);
+                        break;
+                    case RepresentationType::Cartoon:
+                        update_rep |= ImGui::SliderFloat("coil",   &rep.scale[0], 0.1f, 3.f);
+                        update_rep |= ImGui::SliderFloat("sheet",  &rep.scale[1], 0.1f, 3.f);
+                        update_rep |= ImGui::SliderFloat("helix",  &rep.scale[2], 0.1f, 3.f);
+                        break;
+                    default:
+                        break;
+                    }
+                }
+                if (rep.color_mapping == ColorMapping::SecondaryStructure) {
+                    ImGui::Spacing();
+                    ImGui::TextColored(sub_group_color, "Secondary Structure Color");
+                    update_rep |= ImGui::ColorEdit3("unknown", rep.secondary_structure.color_unknown.elem);
+                    update_rep |= ImGui::ColorEdit3("coil",    rep.secondary_structure.color_coil.elem);
+                    update_rep |= ImGui::ColorEdit3("helix",   rep.secondary_structure.color_helix.elem);
+                    update_rep |= ImGui::ColorEdit3("sheet",   rep.secondary_structure.color_sheet.elem);
+                }
+                ImGui::Spacing();
+
+                ImGui::TextColored(sub_group_color, "Post-Processing");
+                update_rep |= ImGui::ColorEdit3("tint color", rep.tint_color.elem, ImGuiColorEditFlags_PickerHueWheel);
+                update_rep |= ImGui::SliderFloat("tint scale", &rep.tint_scale, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                update_rep |= ImGui::SliderFloat("saturation", &rep.saturation, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            }
+
+            ImGui::PopItemWidth();
+            ImGui::Spacing();
             ImGui::TreePop();
         }
 
@@ -5634,10 +5671,10 @@ static void draw_density_volume_window(ApplicationState* data) {
                     if (ImGui::SliderFloat("TF Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
                         data->density_volume.dvr.tf.dirty = true;
                     }
-                    ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::SameLine();
-                    ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, 0.0f, 1000.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    data->density_volume.dvr.tf.min_val = MIN(data->density_volume.dvr.tf.min_val, data->density_volume.dvr.tf.max_val);
+                    const float tf_min = 0.0f;
+                    const float tf_max = 1000.0f;
+                    ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, tf_min, data->density_volume.dvr.tf.max_val, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, data->density_volume.dvr.tf.min_val, tf_max, "%.3f", ImGuiSliderFlags_Logarithmic);
 
                     ImGui::Unindent();
                 }
@@ -5719,6 +5756,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                     if (rep.colormap == ColorMapping::Uniform) {
                         data->density_volume.dirty_rep |= ImGui::ColorEdit4("color", rep.color.elem, ImGuiColorEditFlags_NoInputs);
                     }
+
                     if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
                         data->density_volume.dirty_rep |= ImGui::SliderFloat("scale", &rep.param[0], 0.1f, 2.f);
                     }
@@ -5952,6 +5990,11 @@ static void draw_density_volume_window(ApplicationState* data) {
             md_gl_draw_op_t op = {};
             op.type = (md_gl_rep_type_t)data->density_volume.rep.type;
             MEMCPY(&op.args, data->density_volume.rep.param, sizeof(op.args));
+            if (op.type == MD_GL_REP_BALL_AND_STICK) {
+                op.args.ball_and_stick.color_mode = MD_GL_BOND_MODE_NEAREST;
+            } else if (op.type == MD_GL_REP_LICORICE) {
+                op.args.licorice.color_mode = MD_GL_BOND_MODE_NEAREST;
+            }
 
             for (size_t i = 0; i < num_reps; ++i) {
                 op.rep = data->density_volume.gl_reps[i];
@@ -5995,7 +6038,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                         .height = gbuf.height,
                     },
                     .texture = {
-                        .volume = data->density_volume.volume_texture.id,
+                        .density_volume = data->density_volume.volume_texture.id,
                         .transfer_function = data->density_volume.dvr.tf.id,
                     },
                     .matrix = {
@@ -6020,10 +6063,12 @@ static void draw_density_volume_window(ApplicationState* data) {
                         .max_tf_value = data->density_volume.dvr.tf.max_val,
                     },
                     .shading = {
-                        .env_radiance = data->visuals.background.color * data->visuals.background.intensity * 0.25f,
+                        .env_radiance = data->visuals.background.color * data->visuals.background.intensity,
                         .roughness = 0.3f,
                         .dir_radiance = {10,10,10},
                         .ior = 1.5f,
+                        .exposure = data->visuals.tonemapping.exposure,
+                        .gamma = data->visuals.tonemapping.gamma,
                     },
                     .voxel_spacing = data->density_volume.voxel_spacing
                     
@@ -7860,14 +7905,20 @@ static void draw_representations_opaque(ApplicationState* data) {
                     op.args.licorice.radius = rep.scale.x;
                     op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                     op.args.licorice.sharpness = rep.bond_sharpness;
-                    op.args.licorice.uniform_color = convert_color(scale_saturation(rep.bond_uniform_color, rep.saturation));
+                    op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
+                    if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+                        tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+                    }
                     break;
                 case RepresentationType::BallAndStick:
                     op.args.ball_and_stick.ball_scale = rep.scale.x;
                     op.args.ball_and_stick.stick_radius = rep.scale.y;
                     op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
                     op.args.ball_and_stick.sharpness = rep.bond_sharpness;
-                    op.args.ball_and_stick.uniform_color = convert_color(scale_saturation(rep.bond_uniform_color, rep.saturation));
+                    op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
+                    if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+                        tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+                    }
                     break;
                 case RepresentationType::Ribbons:
                     op.args.ribbons.width_scale = rep.scale.x;
@@ -7942,8 +7993,15 @@ static void draw_representations_transparent(ApplicationState* state) {
             iso.count = 2;
             iso.values[0] =  rep.electronic_structure.iso_value;
             iso.values[1] = -rep.electronic_structure.iso_value;
-            iso.colors[0] =  rep.electronic_structure.col_psi_pos;
-            iso.colors[1] =  rep.electronic_structure.col_psi_neg;
+            if (rep.electronic_structure.use_atom_colors) {
+                iso.colors[0] = rep.electronic_structure.tint_psi_pos;
+                iso.colors[1] = rep.electronic_structure.tint_psi_neg;
+            } else {
+                iso.colors[0] =  rep.electronic_structure.col_psi_pos;
+                iso.colors[1] =  rep.electronic_structure.col_psi_neg;
+            }
+            iso.optical_densities[0] = rep.electronic_structure.iso_optical_density;
+            iso.optical_densities[1] = rep.electronic_structure.iso_optical_density;
             break;
         case ElectronicStructureType::MolecularOrbitalDensity:
         case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
@@ -7953,13 +8011,24 @@ static void draw_representations_transparent(ApplicationState* state) {
         case ElectronicStructureType::ElectronDensity:
             iso.count = 1;
             iso.values[0] = rep.electronic_structure.iso_value * rep.electronic_structure.iso_value;
-            if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
-                iso.colors[0] = rep.electronic_structure.col_att;
-            } else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
-                iso.colors[0] = rep.electronic_structure.col_det;
+            if (rep.electronic_structure.use_atom_colors) {
+                if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                    iso.colors[0] = rep.electronic_structure.tint_att;
+                } else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                    iso.colors[0] = rep.electronic_structure.tint_det;
+                } else {
+                    iso.colors[0] = rep.electronic_structure.tint_den;
+                }
             } else {
-                iso.colors[0] = rep.electronic_structure.col_den;
+                if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                    iso.colors[0] = rep.electronic_structure.col_att;
+                } else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                    iso.colors[0] = rep.electronic_structure.col_det;
+                } else {
+                    iso.colors[0] = rep.electronic_structure.col_den;
+                }
             }
+            iso.optical_densities[0] = rep.electronic_structure.iso_optical_density;
             break;
         default:
             ASSERT(false);
@@ -7977,11 +8046,12 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .height = state->gbuffer.height,
             },
             .texture = {
-                .volume = rep.electronic_structure.vol.tex_id,
+                .density_volume    = rep.electronic_structure.density_vol.tex_id,
+                .color_volume      = rep.electronic_structure.color_vol.tex_id,
                 .transfer_function = rep.electronic_structure.dvr.tf_tex,
             },
             .matrix = {
-                .model = rep.electronic_structure.vol.texture_to_world,
+                .model = rep.electronic_structure.density_vol.texture_to_world,
                 .view  = state->view.param.matrix.curr.view,
                 .proj  = state->view.param.matrix.curr.proj,
                 .inv_proj = state->view.param.matrix.inv.proj,
@@ -7998,7 +8068,8 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .count   = iso.count,
                 .values  = iso.values,
                 .colors  = iso.colors,
-                .optical_density_scale = (float)rep.electronic_structure.iso_optical_density_scale,
+                .optical_densities = iso.optical_densities,
+                .use_color_volume = rep.electronic_structure.use_atom_colors,
             },
             .dvr = {
                 .enabled = rep.electronic_structure.dvr.enabled,
@@ -8006,12 +8077,14 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .max_tf_value =  1.0f,
             },
             .shading = {
-                .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25f,
+                .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25,
                 .roughness = 0.3f,
                 .dir_radiance = {10,10,10},
                 .ior = 1.5f,
+                .exposure = state->visuals.tonemapping.exposure,
+                .gamma = state->visuals.tonemapping.gamma,
         },
-            .voxel_spacing = rep.electronic_structure.vol.voxel_size,
+            .voxel_spacing = rep.electronic_structure.density_vol.voxel_size,
         };
 
         volume::render_volume(desc);
@@ -8019,7 +8092,7 @@ static void draw_representations_transparent(ApplicationState* state) {
 #if DEBUG
         immediate::set_model_view_matrix(state->view.param.matrix.curr.view);
         immediate::set_proj_matrix(state->view.param.matrix.curr.proj);
-        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, rep.electronic_structure.vol.texture_to_world, immediate::COLOR_BLACK);
+        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
         immediate::render();
 #endif
     }

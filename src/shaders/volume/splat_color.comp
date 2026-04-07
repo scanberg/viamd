@@ -1,0 +1,64 @@
+#version 430 core
+
+// --------------------------------------------------------
+//  Gaussian RDF color volume precompute
+//
+//  One workgroup per voxel slab (z-layer).
+//  Dispatch: (vol_size.x / 8, vol_size.y / 8, vol_size.z)
+// --------------------------------------------------------
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+// Output — RGBA8 image3D
+layout(binding = 0, rgba8) writeonly uniform image3D u_color_volume;
+
+// Voxel grid → world space transform
+// Maps integer voxel coords to world-space positions (Å or Bohr)
+// Typically: world = u_origin + ivec3(coord) * u_voxelSize
+uniform mat4  u_voxel_to_world; // 4x4 transform matrix
+uniform ivec3 u_volume_dim;     // voxel dimensions (x, y, z)
+uniform int   u_num_points;
+uniform float u_power;
+
+layout(std430, binding = 0) readonly buffer PointXYZW {
+    vec4 points_xyzw[];  // xyz = position, w = sigma
+};
+
+layout(std430, binding = 1) readonly buffer PointRGBA {
+    vec4 points_rgba[];
+};
+
+// --------------------------------------------------------
+void main() {
+    ivec3 voxel_idx = ivec3(gl_GlobalInvocationID);
+
+    if (any(greaterThanEqual(voxel_idx, u_volume_dim)))
+        return;
+
+    // Map voxel centre to world space
+    vec3 voxel_xyz = vec3(u_voxel_to_world * vec4(voxel_idx, 1.0));
+
+    vec4  acc = vec4(0.0);
+    float sum = 0.0;
+
+    for (int i = 0; i < u_num_points; ++i) {
+
+        vec3  point_xyz  = points_xyzw[i].xyz;
+        float sigma      = points_xyzw[i].w;
+        vec4  point_rgba = points_rgba[i];
+
+        vec3  delta     = voxel_xyz - point_xyz;
+        float dist2     = dot(delta, delta);
+        float inv2sig2  = 1.0 / (2.0 * sigma * sigma);
+
+        float w = exp(-dist2 * inv2sig2 * u_power);
+
+        acc += w * point_rgba;
+        sum += w;
+    }
+
+    vec4 color = (sum > 0.0) ? acc / sum : vec4(1.0, 1.0, 1.0, 0.0);
+    color = clamp(color, 0.0, 1.0);
+
+    imageStore(u_color_volume, voxel_idx, color);
+}

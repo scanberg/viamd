@@ -25,6 +25,10 @@ enum ramp_type_t {
 // If you want a monotonic ramp (standard), you can for example use SAWTOOTH with a period of 1
 void compute_transfer_function_texture(uint32_t* texture, int implot_colormap, ramp_type_t ramp_type = RAMP_TYPE_SAWTOOTH, float ramp_scale = 1.0f, float ramp_period = 1.0001f, int resolution = 128);
 
+// Precomputes a 3D texture of interpolated point colors from a list of colored points (e.g. for splatting or point-based rendering)
+// It uses Shepard interpolation combined with RDFs encoded as gaussians to interpolate the colors of the points onto a regular grid.
+void compute_point_color_volume(uint32_t vol_texture, const int dim[3], const float index_to_world[4][4], const float* point_x, const float* point_y, const float* point_z, const float* point_sigma, const uint32_t* point_color, size_t point_count, double power = 4.0f);
+
 /*
     Renders a volumetric texture using OpenGL.
     - volume_texture: An OpenGL 3D texture containing the data
@@ -50,7 +54,8 @@ struct RenderDesc {
     } render_target;
 
     struct {
-        uint32_t volume = 0;
+        uint32_t density_volume = 0;
+        uint32_t color_volume   = 0;
         uint32_t transfer_function = 0;
     } texture;
 
@@ -76,7 +81,8 @@ struct RenderDesc {
         size_t count = 0;
         const float* values = NULL;
         const vec4_t* colors = NULL;
-        float optical_density_scale = 0.0f;
+        const float* optical_densities = NULL; // Optional per-iso surface optical density (τ) to modulate the absorption when inside the surface (if not provided, a value of 0 is used per iso surface)
+        bool use_color_volume = false;  // If true, the color of the iso surfaces will determined by the color volume instead of the provided iso.colors
     } iso;
 
     struct {
@@ -103,6 +109,8 @@ struct RenderDesc {
         float roughness = 0.4f;
         vec3_t dir_radiance = {1,1,1};
         float ior = 1.5f;
+        float exposure = 1.0f;
+        float gamma = 2.2f;
     } shading;
 
     vec3_t voxel_spacing = {};
