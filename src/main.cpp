@@ -9,8 +9,6 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-#include <cmath>
-#include <string>
 
 #include <md_util.h>
 #include <md_gl.h>
@@ -60,8 +58,11 @@
 #include <implot_internal.h>
 
 #include <stdio.h>
+#include <cmath>
+#include <string>
 
 #include <viamd.h>
+#include <viamd_event.h>
 #include <event.h>
 
 #define EXPERIMENTAL_GFX_API 0
@@ -3423,7 +3424,7 @@ static void draw_selection_grow_window(ApplicationState* data) {
         static uint64_t sel_popcount = 0;
         const uint64_t popcount = md_bitfield_popcount(&data->selection.selection_mask);
         const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
-        const char* fmt = (data->selection.grow.mode == SelectionGrowth::CovalentBond) ? "%.0f" : "%.2f";
+        const char* fmt = (data->selection.grow.mode == SelectionGrowthMode::CovalentBond) ? "%.0f" : "%.2f";
         const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f, fmt);
         const bool appearing = ImGui::IsWindowAppearing();
         const bool sel_changed = popcount != sel_popcount;
@@ -3440,10 +3441,10 @@ static void draw_selection_grow_window(ApplicationState* data) {
             md_bitfield_copy(&data->selection.grow.mask, &data->selection.selection_mask);
 
             switch (data->selection.grow.mode) {
-            case SelectionGrowth::CovalentBond:
+            case SelectionGrowthMode::CovalentBond:
                 md_util_mask_grow_by_bonds(&data->selection.grow.mask, &data->mold.sys, (int)data->selection.grow.extent, &data->representation.visibility_mask);
                 break;
-            case SelectionGrowth::Radial: {
+            case SelectionGrowthMode::Radial: {
                 md_util_mask_grow_by_radius(&data->selection.grow.mask, &data->mold.sys, data->selection.grow.extent, &data->representation.visibility_mask);
                 break;
             }

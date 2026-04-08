@@ -1,15 +1,18 @@
-﻿#include <viamd.h>
+﻿
+#include <md_util.h>
+#include <md_filter.h>
 
 #include <core/md_log.h>
 #include <core/md_str_builder.h>
 #include <core/md_arena_allocator.h>
-#include <md_util.h>
-#include <md_filter.h>
 
+#include <viamd.h>
+#include <viamd_event.h>
 #include <event.h>
 #include <loader.h>
 #include <color_utils.h>
 #include <serialization_utils.h>
+
 #include <gfx/gl_utils.h>
 #include <gfx/volumerender_utils.h>
 
@@ -2104,4 +2107,26 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
         transform = T;
     }
     mat4_store((float*)M, transform);
+}
+
+bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count) {
+    ASSERT(out_range);
+    ASSERT(space);
+
+    if (count > 0 && space->num_ranges < ARRAY_SIZE(space->ranges)) {
+        PickingRange* curr_range = &space->ranges[space->num_ranges++];
+        PickingRange* prev_range = space->num_ranges > 1 ? &space->ranges[space->num_ranges - 2] : NULL;
+        curr_range->domain = domain;
+        curr_range->beg = prev_range ? prev_range->end : 0;
+        curr_range->end = curr_range->beg + (uint32_t)count;
+        MEMCPY(out_range, curr_range, sizeof(PickingRange));
+        return true;
+    }
+
+    return false;
+}
+
+void picking_clear_space(PickingSpace* space) {
+    ASSERT(space);
+    MEMSET(space, 0, sizeof(PickingSpace));
 }

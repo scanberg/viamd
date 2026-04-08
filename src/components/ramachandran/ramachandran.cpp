@@ -1,6 +1,4 @@
-﻿#include <event.h>
-
-#include "density_gen.inl"
+﻿#include "density_gen.inl"
 #include "density_gly.inl"
 #include "density_pro.inl"
 #include "density_pre.inl"
@@ -12,8 +10,6 @@
 #include "angles_pre.inl"
 #endif
 
-#include <viamd.h>
-
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -23,10 +19,13 @@
 #include <core/md_bitfield.h>
 #include <md_system.h>
 
-#include "gfx/gl.h"
-#include "gfx/gl_utils.h"
-#include "image.h"
-#include "task_system.h"
+#include <viamd_event.h>
+#include <viamd.h>
+#include <event.h>
+#include <gfx/gl.h>
+#include <gfx/gl_utils.h>
+#include <image.h>
+#include <task_system.h>
 
 #include <imgui_widgets.h>
 #include <implot_widgets.h>

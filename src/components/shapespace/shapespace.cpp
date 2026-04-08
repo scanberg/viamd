@@ -1,7 +1,5 @@
 ﻿#define IMGUI_DEFINE_MATH_OPERATORS
 
-#include <event.h>
-
 #include <core/md_log.h>
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
@@ -15,7 +13,10 @@
 #include <md_script.h>
 #include <md_filter.h>
 
+#include <viamd_event.h>
 #include <viamd.h>
+#include <event.h>
+
 #include <serialization_utils.h>
 #include <imgui_widgets.h>
 #include <implot_internal.h>
