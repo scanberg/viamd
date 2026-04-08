@@ -100,19 +100,18 @@ void init(State* state, str_t filepath) {
     state->flags |= LoaderFlag_RequiresDialogue;
 }
 
-bool load(md_system_t* sys, str_t filepath, const State* state) {
-    ASSERT(sys);
-    ASSERT(state);
+bool load(md_system_t* sys, str_t filepath, const State& state) {
+    ASSERT(sys);    
 
     md_trajectory_flags_t traj_flags = MD_TRAJECTORY_FLAG_NONE;
-    if (state->flags & LoaderFlag_DisableCacheWrite) {
+    if (state.flags & LoaderFlag_DisableCacheWrite) {
         traj_flags |= MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE;
     }
 
-    switch (state->type) {
+    switch (state.type) {
         case LoaderType_PDB: {
             md_pdb_options_t options = MD_PDB_OPTION_NONE;
-            if (state->flags & LoaderFlag_DisableCacheWrite) {
+            if (state.flags & LoaderFlag_DisableCacheWrite) {
                 options |= MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE;
             }
             return md_pdb_system_init_from_file(sys, filepath, options);
@@ -123,7 +122,7 @@ bool load(md_system_t* sys, str_t filepath, const State* state) {
         case LoaderType_XMOL:
         case LoaderType_ARC: {
             md_xyz_options_t options = MD_XYZ_OPTION_NONE;
-            if (state->flags & LoaderFlag_DisableCacheWrite) {
+            if (state.flags & LoaderFlag_DisableCacheWrite) {
                 options |= MD_XYZ_OPTION_DISABLE_CACHE_WRITE;
             }
             return md_xyz_system_init_from_file(sys, filepath, options);
@@ -131,7 +130,7 @@ bool load(md_system_t* sys, str_t filepath, const State* state) {
         case LoaderType_CIF:
             return md_mmcif_system_init_from_file(sys, filepath);
         case LoaderType_LAMMPSDATA: {
-            const char* format = (const char*)state->arg;
+            const char* format = (const char*)state.arg;
             return md_lammps_system_init_from_file(sys, filepath, format);
         }
         case LoaderType_LAMMPSTRJ:
