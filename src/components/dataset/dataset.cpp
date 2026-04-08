@@ -1,5 +1,6 @@
-﻿#include <event.h>
+﻿#include <viamd_event.h>
 #include <viamd.h>
+#include <event.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>

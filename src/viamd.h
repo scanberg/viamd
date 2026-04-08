@@ -61,7 +61,7 @@
 enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Component, Instance };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear };
-enum class SelectionGrowth { CovalentBond, Radial };
+enum class SelectionGrowthMode { CovalentBond, Radial };
 enum class CameraMode { Perspective, Orthographic };
 
 enum class InterpolationMode {
@@ -570,6 +570,24 @@ struct FrameCache {
     int32_t frame_idx[FRAME_CACHE_SIZE] = {};
 };
 
+typedef uint64_t PickingDomainID;
+
+struct PickingRange {
+    PickingDomainID domain = 0;
+    uint32_t beg = 0;
+    uint32_t end = 0;
+};
+
+struct PickingSpace {
+    size_t num_ranges = 0;
+    PickingRange ranges[8] = {};
+};
+
+struct PickingHandler {
+    PickingSpace space[2] = {};
+    uint32_t frame_idx[2] = {};
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -608,8 +626,8 @@ struct ApplicationState {
         } jitter;
 
         struct {
-            vec3_t target_position = {};
             quat_t target_orientation = {};
+            vec3_t target_position = {};
             float  target_distance = 0;
         } animation;
     } view;
@@ -708,7 +726,7 @@ struct ApplicationState {
 
         struct {
             md_bitfield_t mask = {0};
-            SelectionGrowth mode = SelectionGrowth::CovalentBond;
+            SelectionGrowthMode mode = SelectionGrowthMode::CovalentBond;
             float extent = 1;
             bool mask_invalid = true;
             bool show_window = false;
@@ -1202,3 +1220,7 @@ void recompute_atom_visibility_mask(ApplicationState* state);
 // Update the required initial frame data for the recentering target (if needed)
 void recenter_update_target_data(ApplicationState* state);
 void recenter_calculate_transform(float M[4][4], const ApplicationState* state);
+
+// Picking
+bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count);
+void picking_clear_space(PickingSpace* space);
