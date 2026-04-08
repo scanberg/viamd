@@ -56,24 +56,24 @@ static const str_t loader_ext[LoaderType_COUNT] = {
 };
 
 static const LoaderFlags loader_flags[LoaderType_COUNT] = {
-        LoaderFlag_None,                            // Unknown    
-        LoaderFlag_System | LoaderFlag_Trajectory,  // PDB
-        LoaderFlag_System,                          // GRO
-        LoaderFlag_System | LoaderFlag_Trajectory,  // XYZ
-        LoaderFlag_System | LoaderFlag_Trajectory,  // XMOL
-        LoaderFlag_System | LoaderFlag_Trajectory,  // ARC
-        LoaderFlag_System,                          // CIF
-        LoaderFlag_System,                          // LAMMPS DATA
-        LoaderFlag_Trajectory,                      // LAMMPS Trajectory
-        LoaderFlag_Trajectory,                      // XTC
-        LoaderFlag_Trajectory,                      // TRR
-        LoaderFlag_Trajectory,                      // DCD
+        LoaderFlag_None,                                            // Unknown    
+        LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM,  // PDB
+        LoaderFlag_System | LoaderFlag_MM,                          // GRO
+        LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM,  // XYZ
+        LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM,  // XMOL
+        LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM,  // ARC
+        LoaderFlag_System | LoaderFlag_MM,                          // CIF
+        LoaderFlag_System | LoaderFlag_MM,                          // LAMMPS DATA
+        LoaderFlag_Trajectory | LoaderFlag_MM,                      // LAMMPS Trajectory
+        LoaderFlag_Trajectory | LoaderFlag_MM,                      // XTC
+        LoaderFlag_Trajectory | LoaderFlag_MM,                      // TRR
+        LoaderFlag_Trajectory | LoaderFlag_MM,                      // DCD
 #if MD_VLX
-        LoaderFlag_System | LoaderFlag_Trajectory,  // Veloxchem (h5)
+        LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM | LoaderFlag_QM,  // Veloxchem (h5)
 #endif
 };
 
-void init(State* state, str_t filepath) {
+void init(State* state, str_t filepath, const md_system_t* sys) {
     ASSERT(state);
 	*state = { 0 };
 
@@ -93,6 +93,14 @@ void init(State* state, str_t filepath) {
                     state->flags |= LoaderFlag_RequiresDialogue;
                 }
             }
+#if MD_VLX
+            if (state->type == LoaderType_VLX_H5 && sys) {
+                // Send check to vlx to see if we can supplement the existing system with qm data
+                if (md_vlx_system_is_file_supplemental(sys, filepath)) {
+                    state->flags |= LoaderFlag_Supplemental;
+                }
+            }
+#endif
             return;
         }
     }
@@ -146,7 +154,6 @@ bool load(md_system_t* sys, str_t filepath, const State& state) {
             return md_vlx_system_init_from_file(sys, filepath);
 #endif
         default:
-            MD_LOG_ERROR("Undefined loader type in loader state");
             return false;
     }
 }

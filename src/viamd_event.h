@@ -21,8 +21,10 @@ enum : EventType {
 	EventType_ViamdSerialize				= HASH_STR_LIT("VIAMD Serialize Workspace"),
 	EventType_ViamdDeserialize				= HASH_STR_LIT("VIAMD Deserialize Workspace"),
 
-	EventType_ViamdTopologyInit				= HASH_STR_LIT("VIAMD Topology Initialize"),	// Called when topology is initialized
-	EventType_ViamdTopologyFree				= HASH_STR_LIT("VIAMD Topology Free"),			// Called when topology is freed
+	EventType_ViamdSystemInit				= HASH_STR_LIT("VIAMD System Initialize"),		// Called when a system is initialized
+	EventType_ViamdSystemFree				= HASH_STR_LIT("VIAMD System Free"),			// Called when a system is freed
+	
+    EventType_ViamdLoadData					= HASH_STR_LIT("VIAMD Load Data"),				// Called when a data is loaded
 
 	EventType_ViamdTrajectoryInit			= HASH_STR_LIT("VIAMD Trajectory Initialize"),	// Called when a trajectory is initialized
 	EventType_ViamdTrajectoryFree			= HASH_STR_LIT("VIAMD Trajectory Free"),		// Called when a trajectory is freed
@@ -48,6 +50,7 @@ enum : EventPayloadType {
 	EventPayloadType_DeserializationState		= HASH_STR_LIT("Payload Deserialization State"),
 	EventPayloadType_EvalElectronicStructure	= HASH_STR_LIT("Payload Eval ElectronicStructure"),
 	EventPayloadType_EvalAtomProperty			= HASH_STR_LIT("Payload Eval AtomProperty"),
+    EventPayloadType_LoadData					= HASH_STR_LIT("Payload Load Data"),
 };
 
 }

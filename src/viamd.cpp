@@ -466,12 +466,11 @@ void init_system_data(ApplicationState* data) {
         }
 #endif
     }
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyInit, viamd::EventPayloadType_ApplicationState, data);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemInit, viamd::EventPayloadType_ApplicationState, data);
 
     update_representation_info(data);
     init_all_representations(data);
     data->script.compile_ir = true;
-
 }
 
 static inline void clear_density_volume(ApplicationState* state) {
@@ -519,7 +518,7 @@ void free_system_data(ApplicationState* data) {
     }
     clear_density_volume(data);
 
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyFree, viamd::EventPayloadType_ApplicationState, data);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
 bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::State& load_state) {
@@ -528,7 +527,9 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
     bool success = false;
     str_t path_to_file = md_path_make_canonical(filepath, state->allocator.frame);
     if (path_to_file) {
-        if (load_state.flags & LoaderFlag_System) {
+        if (load_state.flags & LoaderFlag_Supplemental) {
+            // Do nothing here to hinder system or trajectory paths
+        } else if (load_state.flags & LoaderFlag_System) {
             interrupt_async_tasks(state);
             free_trajectory_data(state);
             free_system_data(state);
@@ -567,6 +568,13 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
                 VIAMD_LOG_ERROR("Failed to open trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
         }
+        LoadDataPayload data = {
+            .app_state = state,
+            .loader_state = load_state,
+            .path_to_file = path_to_file,
+        };
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdLoadData, viamd::EventPayloadType_LoadData, &data);
+        update_representation_info(state);
     }
 
     return success;
@@ -985,9 +993,9 @@ static void init_representation(ApplicationState* state, Representation* rep) {
 
     size_t num_props = md_array_size(state->representation.info.atom_properties);
     if (num_props > 0) {
-        rep->prop.idx = 0;
-        rep->prop.range_beg = state->representation.info.atom_properties[0].value_min;
-        rep->prop.range_end = state->representation.info.atom_properties[0].value_max;
+        rep->atomic_property.idx = 0;
+        rep->atomic_property.range_beg = state->representation.info.atom_properties[0].value_min;
+        rep->atomic_property.range_end = state->representation.info.atom_properties[0].value_max;
     }
 
     flag_representation_as_dirty(rep);
@@ -1119,8 +1127,8 @@ void update_representation(ApplicationState* state, Representation* rep) {
             if (md_array_size(state->representation.info.atom_properties) > 0) {
                 float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
                 EvalAtomProperty eval = {
-                    .key = state->representation.info.atom_properties[rep->prop.idx].key,
-                    .idx = rep->prop.sub_idx,
+                    .key = state->representation.info.atom_properties[rep->atomic_property.idx].key,
+                    .idx = rep->atomic_property.sub_idx,
                     .num_values = num_atoms,
                     .dst_values = values,
                     .output_written = false,
@@ -1128,11 +1136,11 @@ void update_representation(ApplicationState* state, Representation* rep) {
                 viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
 
                 if (eval.output_written) {
-                    float range_ext = (rep->prop.range_end - rep->prop.range_beg);
+                    float range_ext = (rep->atomic_property.range_end - rep->atomic_property.range_beg);
                     range_ext = MAX(range_ext, 0.001f);
                     for (size_t i = 0; i < num_atoms; ++i) {
-                        float t = (values[i] - rep->prop.range_beg) / range_ext;
-                        colors[i] = ImPlot::SampleColormapU32(ImClamp(t, 0.0f, 1.0f), rep->prop.colormap);
+                        float t = (values[i] - rep->atomic_property.range_beg) / range_ext;
+                        colors[i] = ImPlot::SampleColormapU32(ImClamp(t, 0.0f, 1.0f), rep->atomic_property.colormap);
                     }
                 } else {
                     MD_LOG_DEBUG("No output written for EvalAtomProperty event");
@@ -1222,90 +1230,14 @@ void update_representation(ApplicationState* state, Representation* rep) {
     case RepresentationType::ElectronicStructure: {
         size_t num_mos = state->representation.info.alpha.num_orbitals;
         rep->type_is_valid = num_mos > 0;
-        if (rep->type_is_valid) {
-            uint64_t orb_idx = 0;
-            uint64_t sub_idx = 0;
-
-            switch(rep->electronic_structure.type) {
-            case ElectronicStructureType::MolecularOrbital:
-            case ElectronicStructureType::MolecularOrbitalDensity:
-                orb_idx = rep->electronic_structure.mo_idx;
-                break;
-            case ElectronicStructureType::NaturalTransitionOrbitalParticle:
-            case ElectronicStructureType::NaturalTransitionOrbitalHole:
-            case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
-            case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
-                orb_idx = rep->electronic_structure.nto_idx;
-                sub_idx = rep->electronic_structure.nto_lambda_idx;
-                break;
-            case ElectronicStructureType::AttachmentDensity:
-            case ElectronicStructureType::DetachmentDensity:
-                orb_idx = rep->electronic_structure.nto_idx;
-                break;
-            default:
-                break;
-            }
-            uint64_t frame_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 11);
-            uint64_t vol_hash = (uint64_t)rep->electronic_structure.type | ((uint64_t)rep->electronic_structure.resolution << 8) | (orb_idx << 24) | (sub_idx << 48);
-            vol_hash = md_hash64_combine(vol_hash, frame_hash);
-            if (vol_hash != rep->electronic_structure.vol_hash) {
-                const float samples_per_angstrom[(int)VolumeResolution::Count] = {
-                    4.0f,
-                    8.0f,
-                    16.0f,
-                };
-                EvalElectronicStructure data = {
-                    .system = &state->mold.sys,
-                    .type = rep->electronic_structure.type,
-                    .major_idx = (int)orb_idx,
-                    .minor_idx = (int)sub_idx,
-                    .samples_per_angstrom = samples_per_angstrom[(int)rep->electronic_structure.resolution],
-                    .frame = state->animation.frame,
-                    .dst_volume = &rep->electronic_structure.density_vol,
-                };
-                viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
-
-                if (data.output_written) {
-                    rep->electronic_structure.vol_hash = vol_hash;
-                }
-            }
-
-            uint64_t tf_hash = md_hash64(&rep->electronic_structure.dvr.colormap, sizeof(rep->electronic_structure.dvr.colormap), 0);
-            if (tf_hash != rep->electronic_structure.tf_hash) {
-                rep->electronic_structure.tf_hash = tf_hash;
-                volume::compute_transfer_function_texture_simple(&rep->electronic_structure.dvr.tf_tex, rep->electronic_structure.dvr.colormap);
-            }
-
-            if (rep->electronic_structure.use_atom_colors) {
-                uint64_t col_hash = md_hash64(&rep->electronic_structure.gaussian_splatting_power, sizeof(rep->electronic_structure.gaussian_splatting_power), (int)rep->color_mapping);
-                col_hash = md_hash64_combine(col_hash, rep->electronic_structure.vol_hash);
-                if (col_hash != rep->electronic_structure.col_hash) {
-                    rep->electronic_structure.col_hash = col_hash;
-                    if (colors) {
-                        // Assume that the colors have been written here and with the same mapping as for the atoms
-                        // Initialize volume if not already done to correct dimensions (use a 2x downsampled version for color volume)
-                        int dim[3] = {
-                            (int)(rep->electronic_structure.density_vol.dim[0] / 2),
-                            (int)(rep->electronic_structure.density_vol.dim[1] / 2),
-                            (int)(rep->electronic_structure.density_vol.dim[2] / 2),
-                        };
-                        MEMCPY(rep->electronic_structure.color_vol.dim, dim, sizeof(dim));
-                        rep->electronic_structure.color_vol.texture_to_world = rep->electronic_structure.density_vol.texture_to_world;
-                        rep->electronic_structure.color_vol.voxel_size = rep->electronic_structure.density_vol.voxel_size * 2.0f;
-                        gl::init_texture_3D(&rep->electronic_structure.color_vol.tex_id, dim[0], dim[1], dim[2], GL_RGBA8);
-
-                        
-                        const mat4_t& index_to_world = rep->electronic_structure.color_vol.texture_to_world
-                            * mat4_scale(1.0f / dim[0], 1.0f / dim[1], 1.0f / dim[2])
-                            * mat4_translate(0.5f, 0.5f, 0.5f); // Center of the corner voxel should be at the origin
-
-                        float* atom_sigma = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
-                        md_atom_extract_radii(atom_sigma, 0, num_atoms, &state->mold.sys.atom);
-
-                        volume::compute_point_color_volume(rep->electronic_structure.color_vol.tex_id, dim, index_to_world.elem, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, atom_sigma, colors, num_atoms, rep->electronic_structure.gaussian_splatting_power);
-                    }
-                }
-            }
+        if (rep->type_is_valid && rep->enabled) {
+            EvalElectronicStructure data = {
+                .sys = &state->mold.sys,
+                .frame = state->animation.frame,
+                .rep = rep,
+                .atom_colors = colors,
+            };
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
         }
         break;
     }

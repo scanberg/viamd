@@ -13,7 +13,10 @@ enum LoaderFlag_ {
     LoaderFlag_System = 2,
     LoaderFlag_Trajectory = 4,
     LoaderFlag_DisableCacheWrite = 8,
-    LoaderFlag_CoarseGrained = 16
+    LoaderFlag_CoarseGrained = 16,
+    LoaderFlag_MM = 32, // Molecular Mechanics data
+    LoaderFlag_QM = 64, // Quantum Mechanics data
+    LoaderFlag_Supplemental = 128, // May contain supplemental data to existing system
 };
 
 enum LoaderType_ {
@@ -49,7 +52,7 @@ namespace loader {
     // The reason here why we don't directly provide prepackaged loaders based on extensions
     // Is to get a chance to glance into the file and see if we recognize it first.
     // And perhaps there is also some arguments or options that need to be supplied for the loader.
-    void init(State* state, str_t filepath);
+    void init(State* state, str_t filepath, const md_system_t* sys = nullptr);
 
     bool load(md_system_t* sys, str_t filepath, const State& state);
 

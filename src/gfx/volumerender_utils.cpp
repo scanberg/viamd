@@ -326,12 +326,14 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
     md_temp_set_pos_back(temp_pos);
 }
 
-static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const vec4_t* point_xyzw, const vec4_t* point_rgba, size_t point_count, float power) {
+static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
     PUSH_GPU_SECTION("SPLAT COLOR VOLUME")
     glUseProgram(gl.program.splat_color);
 
+    glUniformMatrix4fv(glGetUniformLocation(gl.program.splat_color, "u_world_to_model"), 1, GL_FALSE, (const float*)world_to_model);
     glUniformMatrix4fv(glGetUniformLocation(gl.program.splat_color, "u_voxel_to_world"), 1, GL_FALSE, (const float*)index_to_world);
     glUniform3iv(glGetUniformLocation(gl.program.splat_color, "u_volume_dim"),    1, volume_dim);
+    glUniform3fv(glGetUniformLocation(gl.program.splat_color, "u_voxel_spacing"), 1, voxel_spacing);
     glUniform1i (glGetUniformLocation(gl.program.splat_color, "u_num_points"), (int)point_count);
     glUniform1f(glGetUniformLocation(gl.program.splat_color, "u_power"), power);
 
@@ -339,15 +341,14 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
     size_t point_rgba_offset = sizeof(vec4_t) * point_count;
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl.ssbo);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(vec4_t) * point_count * 2, NULL, GL_DYNAMIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, (sizeof(vec4_t) + sizeof(uint32_t)) * point_count, NULL, GL_DYNAMIC_DRAW);
 
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_xyzw_offset, sizeof(vec4_t) * point_count, point_xyzw);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_rgba_offset, sizeof(vec4_t) * point_count, point_rgba);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_xyzw_offset, sizeof(vec4_t)   * point_count, point_xyzw);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_rgba_offset, sizeof(uint32_t) * point_count, point_color);
 
     // Bind two contiguous vec4 arrays as separate shader storage buffer bindings for position/radius and color
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, gl.ssbo, point_xyzw_offset, sizeof(vec4_t) * point_count); // point_xyzw
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, gl.ssbo, point_rgba_offset, sizeof(vec4_t) * point_count); // point_rgba
-
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, gl.ssbo, point_xyzw_offset, sizeof(vec4_t)   * point_count); // point_xyzw
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, gl.ssbo, point_rgba_offset, sizeof(uint32_t) * point_count); // point_rgba
     glBindImageTexture(0, vol_texture, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
     int num_wg[3] = {
         DIV_UP((int)volume_dim[0], 8),
@@ -361,10 +362,13 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
     POP_GPU_SECTION()
 }
 
-static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const vec4_t* point_xyzw, const vec4_t* point_rgba, size_t point_count, float power) {
+static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
     ASSERT(volume_dim[0] % 4 == 0);
     ASSERT(volume_dim[1] % 4 == 0);
     ASSERT(volume_dim[2] % 4 == 0);
+
+    (void)voxel_spacing;
+    (void)world_to_model;
 
     md_allocator_i* temp_alloc = md_get_heap_allocator();
 
@@ -390,7 +394,7 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
 
                     float inv2sig2  = 1.0 / (2.0 * sigma * sigma);
                     float w = exp(-dist2 * inv2sig2 * power);
-                    acc += w * point_rgba[i];
+                    acc += w * convert_color(point_color[i]);
                     sum += w;
                 }
 
@@ -412,7 +416,7 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
 
 // vol_origin is the origin of the volume in world space
 // voxel_spacing is the spacing of voxels in world space
-void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const float* point_x, const float* point_y, const float* point_z, const float* point_sigma, const uint32_t* point_color, size_t point_count, double power) {
+void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power) {
     if (!glIsTexture(vol_texture)) {
         MD_LOG_ERROR("Invalid volume texture");
         return;
@@ -422,25 +426,11 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
     glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
     glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
 
-    md_allocator_i* temp_alloc = md_get_heap_allocator();
-
-    vec4_t* point_data = (vec4_t*)md_alloc(temp_alloc, sizeof(vec4_t) * point_count * 2);
-    vec4_t* point_xyzw = point_data;
-    vec4_t* point_rgba = point_data + point_count;
-
-    for (size_t i = 0; i < point_count; ++i) {
-        point_xyzw[i] = {point_x[i], point_y[i], point_z[i], point_sigma[i]};
-        point_rgba[i] = vec4_from_u32(point_color[i]);
-    }
-
     if (gl_major > 4 || (gl_major == 4 && gl_minor >= 3)) {
-        splat_point_color_volume_GPU(vol_texture, volume_dim, index_to_world, point_xyzw, point_rgba, point_count, (float)power);
+        splat_point_color_volume_GPU(vol_texture, volume_dim, voxel_spacing, world_to_model, index_to_world, point_xyzw, point_color, point_count, (float)power);
+    } else {
+        splat_point_color_volume_CPU(vol_texture, volume_dim, voxel_spacing, world_to_model, index_to_world, point_xyzw, point_color, point_count, (float)power);
     }
-    else {
-        splat_point_color_volume_CPU(vol_texture, volume_dim, index_to_world, point_xyzw, point_rgba, point_count, (float)power);
-    }
-
-    md_free(temp_alloc, point_data, sizeof(vec4_t) * point_count * 2);
 }
 
 void render_volume(const RenderDesc& desc) {

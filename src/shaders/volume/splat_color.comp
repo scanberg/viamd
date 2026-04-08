@@ -7,7 +7,6 @@
 //  Dispatch: (vol_size.x / 8, vol_size.y / 8, vol_size.z)
 // --------------------------------------------------------
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 
 // Output — RGBA8 image3D
 layout(binding = 0, rgba8) writeonly uniform image3D u_color_volume;
@@ -16,21 +15,63 @@ layout(binding = 0, rgba8) writeonly uniform image3D u_color_volume;
 // Maps integer voxel coords to world-space positions (Å or Bohr)
 // Typically: world = u_origin + ivec3(coord) * u_voxelSize
 uniform mat4  u_voxel_to_world; // 4x4 transform matrix
+uniform mat4  u_world_to_model; // world space → model space transform, translate and rotate to volume. But no scaling. Want to preserve distance measurements
+uniform vec3  u_voxel_spacing;  // voxel spacing in world space (Å or Bohr)
 uniform ivec3 u_volume_dim;     // voxel dimensions (x, y, z)
 uniform int   u_num_points;
 uniform float u_power;
 
 layout(std430, binding = 0) readonly buffer PointXYZW {
-    vec4 points_xyzw[];  // xyz = position, w = sigma
+    vec4 in_points_xyzw[];  // xyz = position, w = sigma
 };
 
-layout(std430, binding = 1) readonly buffer PointRGBA {
-    vec4 points_rgba[];
+layout(std430, binding = 1) readonly buffer PointColor {
+    uint in_points_color[];
 };
+
+#define MAX_POINTS 1024
+shared int s_num_points;
+shared vec4 s_points_xyzw[MAX_POINTS];
+shared uint s_points_color[MAX_POINTS];
 
 // --------------------------------------------------------
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 void main() {
+    const int wg_size = int(gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z);
     ivec3 voxel_idx = ivec3(gl_GlobalInvocationID);
+
+    if (gl_LocalInvocationIndex == 0) {
+        s_num_points = 0;
+    }
+
+    // Calculate aabb min + max of workgroup
+    vec3 aabb_min = vec3( gl_WorkGroupID.xyz                 * gl_WorkGroupSize.xyz) * u_voxel_spacing;
+    vec3 aabb_max = vec3((gl_WorkGroupID.xyz + uvec3(1,1,1)) * gl_WorkGroupSize.xyz) * u_voxel_spacing;
+
+    barrier();
+
+    const float radius_factor = 3.03485 / sqrt(u_power); // 99% of Gaussian mass is within 3.03485 sigma
+
+    for (int i = int(gl_LocalInvocationIndex); i < u_num_points; i += wg_size) {
+        vec4 point = in_points_xyzw[i];
+        float radius = point.w * radius_factor;
+
+        vec3 coord = vec3(u_world_to_model * vec4(point.xyz, 1.0));
+        vec3 delta = coord - clamp(coord, aabb_min, aabb_max);
+        float d2 = dot(delta, delta);
+
+        if (d2 < radius * radius) {
+            int idx = atomicAdd(s_num_points, 1);
+            if (idx < MAX_POINTS) {
+                s_points_xyzw[idx]  = in_points_xyzw[i];
+                s_points_color[idx] = in_points_color[i];
+            } else {
+                break;
+            }
+        }
+    }
+    
+    barrier();
 
     if (any(greaterThanEqual(voxel_idx, u_volume_dim)))
         return;
@@ -41,15 +82,14 @@ void main() {
     vec4  acc = vec4(0.0);
     float sum = 0.0;
 
-    for (int i = 0; i < u_num_points; ++i) {
+    for (int i = 0; i < s_num_points; ++i) {
 
-        vec3  point_xyz  = points_xyzw[i].xyz;
-        float sigma      = points_xyzw[i].w;
-        vec4  point_rgba = points_rgba[i];
-
-        vec3  delta     = voxel_xyz - point_xyz;
-        float dist2     = dot(delta, delta);
-        float inv2sig2  = 1.0 / (2.0 * sigma * sigma);
+        vec3  point_xyz  = s_points_xyzw[i].xyz;
+        float sigma      = s_points_xyzw[i].w;
+        vec4  point_rgba = unpackUnorm4x8(s_points_color[i]);
+        vec3  delta      = voxel_xyz - point_xyz;
+        float dist2      = dot(delta, delta);
+        float inv2sig2   = 1.0 / (2.0 * sigma * sigma);
 
         float w = exp(-dist2 * inv2sig2 * u_power);
 
