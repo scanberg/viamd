@@ -124,7 +124,7 @@ enum broadening_mode_t {
 static const char* broadening_mode_str[] = { "Gaussian", "Lorentzian" };
 
 // Object aligned bounding box
-struct OBB {
+struct OABB {
     mat3_t orientation = mat3_ident();
     vec3_t min_ext = { 0 };
     vec3_t max_ext = { 0 };
@@ -135,7 +135,7 @@ struct AABB {
     vec3_t max_ext = { 0 };
 };
 
-static void calculate_obb(OBB* obb, const md_system_t* sys) {
+static void calculate_bounding_volumes(OABB* oabb, AABB* aabb, const md_system_t* sys) {
     md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     defer{ md_arena_allocator_destroy(temp_arena); };
 
@@ -155,43 +155,32 @@ static void calculate_obb(OBB* obb, const md_system_t* sys) {
     mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
 
     // Compute min and maximum extent along the PCA axes
-    obb->orientation = mat3_transpose(PCA);
-    obb->min_ext  = vec3_set1( FLT_MAX);
-    obb->max_ext  = vec3_set1(-FLT_MAX);
+    oabb->orientation = mat3_transpose(PCA);
+    oabb->min_ext = vec3_set1( FLT_MAX);
+    oabb->max_ext = vec3_set1(-FLT_MAX);
 
+    aabb->min_ext = vec3_set1(FLT_MAX);
+    aabb->max_ext = vec3_set1(-FLT_MAX);
 
     // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < num_atoms; ++i) {
         vec3_t xyz = vec3_from_vec4(xyzw[i]) * ANGSTROM_TO_BOHR;
+        aabb->min_ext = vec3_min(aabb->min_ext, xyz);
+        aabb->max_ext = vec3_max(aabb->max_ext, xyz);
 
         xyz = mat3_mul_vec3(PCA, xyz);
-
-        obb->min_ext = vec3_min(obb->min_ext, xyz);
-        obb->max_ext = vec3_max(obb->max_ext, xyz);
+        oabb->min_ext = vec3_min(oabb->min_ext, xyz);
+        oabb->max_ext = vec3_max(oabb->max_ext, xyz);
     }
 
     // Apply padding
     const float pad = 6.0f;
-    obb->min_ext -= vec3_set1(pad);
-    obb->max_ext += vec3_set1(pad);
-}
 
-static void aabb_from_obb(AABB* aabb, const OBB& obb) {
-    // Transform the 8 corners and check min and max
-    aabb->min_ext = vec3_set1(FLT_MAX);
-    aabb->max_ext = vec3_set1(-FLT_MAX);
+    aabb->min_ext -= vec3_set1(pad);
+    aabb->max_ext += vec3_set1(pad);
 
-    for (int i = 0; i < 8; ++i) {
-        vec3_t corner = vec3_set(
-            (i & 1) ? obb.max_ext.x : obb.min_ext.x,
-            (i & 2) ? obb.max_ext.y : obb.min_ext.y,
-            (i & 4) ? obb.max_ext.z : obb.min_ext.z
-        );
-        // Transform back to world space
-        corner = mat3_mul_vec3(obb.orientation, corner);
-        aabb->min_ext = vec3_min(aabb->min_ext, corner);
-        aabb->max_ext = vec3_max(aabb->max_ext, corner);
-    }
+    oabb->min_ext -= vec3_set1(pad);
+    oabb->max_ext += vec3_set1(pad);
 }
 
 // Construct texture to world transformation matrix for Volume
@@ -326,7 +315,7 @@ struct VeloxChem : viamd::EventHandler {
     int lumo_idx[2] = {};
 
     AABB aabb = {};
-    OBB  obb  = {};
+    OABB oabb  = {};
 
     struct Summary {
         bool show_window = false;
@@ -677,9 +666,7 @@ struct VeloxChem : viamd::EventHandler {
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
                 // Recalculate OBB and AABB
-                calculate_obb(&obb, &state.mold.sys);
-                aabb_from_obb(&aabb, obb);
-                
+                calculate_bounding_volumes(&oabb, &aabb, &state.mold.sys);
                 break;
             }
             case viamd::EventType_ViamdRepresentationInfoFill: {
@@ -813,7 +800,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (!data.output_written) {
                     const float samples_per_unit_length = (float)(data.samples_per_angstrom * BOHR_TO_ANGSTROM);
                     md_grid_t grid = {};
-                    init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
+                    init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
                     init_volume(data.dst_volume, grid, GL_R32F);
 
                     switch (data.type) {
@@ -972,15 +959,15 @@ struct VeloxChem : viamd::EventHandler {
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     md_gl_rep_set_color(gl_rep, 0, (uint32_t)sys.atom.count, colors, 0);
 
-                    calculate_obb(&obb, &sys);
-                    aabb_from_obb(&aabb, obb);
+                    calculate_bounding_volumes(&oabb, &aabb, &sys);
 
                     // NTO
                     size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
                     if (num_excited_states > 0) {
                         //nto.show_window = true;
-                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, obb.orientation, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
+                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
                         nto.atom_group_idx = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * sys.atom.count);
+
                         MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * sys.atom.count);
 
                         snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
@@ -1029,7 +1016,7 @@ struct VeloxChem : viamd::EventHandler {
                         }
                         nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
 
-                        init_grid(&nto.grid, obb.orientation, obb.min_ext, obb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
+                        init_grid(&nto.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
                     }
 
                     // RSP
@@ -1060,7 +1047,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     // ORB
                     //orb.show_window = true;
-                    camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, obb.orientation, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
+                    camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
                     orb.mo_idx = homo_idx[0];
                     orb.scroll_to_idx = homo_idx[0];
 
@@ -2376,11 +2363,11 @@ struct VeloxChem : viamd::EventHandler {
             }
             else if (distance_y == 0 && distance_x < closest_distance) {
                 closest_distance = fabs(pixel_peaks[i].x - x);
-                closest_idx = i;
+                closest_idx = (int)i;
             }
             else if (sqrt(pow(distance_x, 2) + pow(distance_y, 2)) < closest_distance) {
                 closest_distance = sqrt(pow(distance_x, 2) + pow(distance_y, 2));
-                closest_idx = i;
+                closest_idx = (int)i;
                 //ImPlot::Annotation()
             }
             else if (distance_x > closest_distance){
@@ -2738,7 +2725,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (critical_points.vol_hash != vol_hash || critical_points.density_vol.tex_id == 0) {
                         critical_points.vol_hash = vol_hash;
                         const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
-                        init_grid(&critical_points.grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
+                        init_grid(&critical_points.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
                         init_volume(&critical_points.density_vol, critical_points.grid, GL_R32F);
                         if (!compute_electron_density_GPU(critical_points.density_vol.tex_id, critical_points.grid, MD_VLX_MO_TYPE_ALPHA)) {
                             MD_LOG_ERROR("Failed to compute electron density volume for critical points analysis");
@@ -3833,8 +3820,8 @@ struct VeloxChem : viamd::EventHandler {
             if (num_jobs > 0) {
                 const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
                 md_grid_t grid {0};
-                init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
-                const int num_mos = (int)num_molecular_orbitals();
+                init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
+                const int num_tot_mos = (int)num_molecular_orbitals();
 
                 for (int i = 0; i < num_jobs; ++i) {
                     int slot_idx = job_queue[i];
@@ -3843,7 +3830,7 @@ struct VeloxChem : viamd::EventHandler {
                     orb.vol_mo_idx[slot_idx] = mo_idx;
                     orb.vol_mo_type[slot_idx] = mo_type;
 
-                    if (-1 < mo_idx && mo_idx < num_mos) {
+                    if (-1 < mo_idx && mo_idx < num_tot_mos) {
                         if (task_system::task_is_running(orb.vol_task[slot_idx])) {
                             task_system::task_interrupt(orb.vol_task[slot_idx]);
                         }
@@ -3969,7 +3956,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (reset_view) {
-                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, obb.orientation, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
+                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
 
                 if (reset_hard) {
                     orb.camera.position         = orb.target.pos;
@@ -4313,7 +4300,7 @@ struct VeloxChem : viamd::EventHandler {
 
             vec3_t extent;
             if (export_state.use_obb) {
-                extent = obb.max_ext - obb.min_ext;
+                extent = oabb.max_ext - oabb.min_ext;
             } else {
                 extent = aabb.max_ext - aabb.min_ext;
             }
@@ -4372,7 +4359,7 @@ struct VeloxChem : viamd::EventHandler {
                     const double samples_per_unit_length = volume_resolution_samples_per_angstrom[(int)export_state.resolution] * BOHR_TO_ANGSTROM;
                     md_grid_t grid = {};
                     if (export_state.use_obb) {
-                        init_grid(&grid, obb.orientation, obb.min_ext, obb.max_ext, samples_per_unit_length);
+                        init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
                     } else {
                         init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
                     }
@@ -5001,8 +4988,8 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                 ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                 bool show_unassigned = group_counts[0] > 0;
-                size_t row_n = show_unassigned ? 0 : 1;
-                for (; row_n < nto.group.count; row_n++) {
+                int row_n = show_unassigned ? 0 : 1;
+                for (; row_n < (int)nto.group.count; row_n++) {
                     ImGui::PushID((int)row_n);
                     ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                     ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
@@ -5122,7 +5109,7 @@ struct VeloxChem : viamd::EventHandler {
                             else {
                                 if (ImGui::Button(ICON_FA_TRASH_ARROW_UP, button_size)) {
                                     for (size_t i = 0; i < nto.num_atoms; i++) {
-                                        if (nto.atom_group_idx[i] == row_n) {
+                                        if (nto.atom_group_idx[i] == (uint32_t)row_n) {
                                             nto.atom_group_idx[i] = (uint32_t)(row_n - 1);
                                         }
                                     }
@@ -5455,7 +5442,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (reset_view) {
-                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, obb.orientation, obb.min_ext * BOHR_TO_ANGSTROM, obb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
+                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
                 }
 
                 if (nto.show_coordinate_system_widget) {
