@@ -731,14 +731,13 @@ int main(int argc, char** argv) {
                     state.load_dataset.show_window = true;
                     state.load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
                 } else {
-                    LoadParam param = {};
-                    param.state          = loader_state;
-                    param.filepath       = e.path;
-                    param.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                    param.state.flags   |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
-                    if (load_dataset_from_file(&state, param)) {
+                    loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
+                    loader_state.flags |= (e.flags & FileFlags_CoarseGrained) ? LoaderFlag_CoarseGrained : 0;
+                    if (load_data_from_file(&state, e.path, loader_state)) {
                         state.animation = {};
-                        if (param.state.flags & LoaderFlag_System) {
+                        // @TODO @FIX: This is hacky, just because the loader CAN set system state does not mean it always will.
+                        // This should be instead captured and performed by the Event that signals when a new system is loaded.
+                        if (loader_state.flags & LoaderFlag_System) {
                             md_bitfield_reset(&state.representation.visibility_mask);
 
                             if (!state.settings.keep_representations) {
@@ -2644,17 +2643,15 @@ void draw_load_dataset_window(ApplicationState* data) {
         switch (action) {
         case Action_Load:
         {
-            LoadParam param = {};
-            param.state.type = type;
-            param.state.flags = flags;
-            param.filepath = path;
-            param.coarse_grained = state.coarse_grained;
-
+            loader::State load_state = {};
+            load_state.type = type;
+            load_state.flags = flags;
+            load_state.flags |= state.coarse_grained ? LoaderFlag_CoarseGrained : 0;
             if (type == LoaderType_LAMMPSDATA) {
-                param.state.arg = state.atom_format_buf;
+                load_state.arg = state.atom_format_buf;
             }
 
-            if (load_dataset_from_file(data, param)) {
+            if (load_data_from_file(data, path, load_state)) {
                 if ((flags & LoaderFlag_System) && !data->settings.keep_representations) {
                     remove_all_representations(data);
                     create_default_representations(data);

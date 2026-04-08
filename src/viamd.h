@@ -445,13 +445,6 @@ struct EvalAtomProperty {
     bool output_written = false;
 };
 
-// Loader parameters for loading a system or trajectory, which are passed via the file queue
-struct LoadParam {
-    loader::State state;
-    str_t filepath = STR_LIT("");
-    bool coarse_grained = false;
-};
-
 // Event Payload when an electronic structure is to be evaluated
 struct EvalElectronicStructure {
     // Input information
@@ -1180,7 +1173,7 @@ md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx);
 void interrupt_async_tasks(ApplicationState* state);
 
 // Dataset loading
-bool load_dataset_from_file(ApplicationState* state, const LoadParam& param);
+bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::State& load_state);
 void init_system_data(ApplicationState* state);
 void init_trajectory_data(ApplicationState* state);
 

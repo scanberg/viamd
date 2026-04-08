@@ -337,6 +337,7 @@ void init_trajectory_data(ApplicationState* data) {
 
         init_frame_cache(&data->mold.frame_cache, data->mold.sys.atom.count, data->allocator.persistent);
 
+        ASSERT(header.frame_times);
         double min_time = header.frame_times[0];
         double max_time = header.frame_times[num_frames - 1];
 
@@ -521,19 +522,19 @@ void free_system_data(ApplicationState* data) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdTopologyFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
-bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
+bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::State& load_state) {
     ASSERT(state);
 
     bool success = false;
-    str_t path_to_file = md_path_make_canonical(param.filepath, state->allocator.frame);
+    str_t path_to_file = md_path_make_canonical(filepath, state->allocator.frame);
     if (path_to_file) {
-        if (param.state.flags & LoaderFlag_System) {
+        if (load_state.flags & LoaderFlag_System) {
             interrupt_async_tasks(state);
             free_trajectory_data(state);
             free_system_data(state);
 
             state->mold.sys.alloc = state->mold.sys_alloc;
-            if (!loader::load(&state->mold.sys, path_to_file, &param.state)) {
+            if (!loader::load(&state->mold.sys, path_to_file, load_state)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return false;
             }
@@ -541,14 +542,14 @@ bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
             VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
 
             str_copy_to_char_buf(state->files.molecule, sizeof(state->files.molecule), path_to_file);
-            state->files.coarse_grained = param.coarse_grained;
+            state->files.coarse_grained = load_state.flags & LoaderFlag_CoarseGrained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
-            md_postprocess_flags_t flags = param.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
+            md_postprocess_flags_t flags = state->files.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
             md_util_system_postprocess(&state->mold.sys, flags);
             init_system_data(state);
 
             init_trajectory_data(state);
-        } else if (param.state.flags & LoaderFlag_Trajectory) {
+        } else if (load_state.flags & LoaderFlag_Trajectory) {
             if (!state->mold.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
                 return false;
@@ -557,7 +558,7 @@ bool load_dataset_from_file(ApplicationState* state, const LoadParam& param) {
             free_trajectory_data(state);
             state->animation.frame = 0;
 
-            success = loader::load(&state->mold.sys, path_to_file, &param.state);
+            success = loader::load(&state->mold.sys, path_to_file, load_state);
             if (success) {
                 init_trajectory_data(state);
                 str_copy_to_char_buf(state->files.trajectory, sizeof(state->files.trajectory), path_to_file);
@@ -793,12 +794,11 @@ void load_workspace(ApplicationState* data, str_t filename) {
     loader::State loader_state = {};
     loader::init(&loader_state, new_molecule_file);
 
-    LoadParam param = {};
-    param.state = loader_state;
-    param.filepath = new_molecule_file;
-    param.coarse_grained = new_coarse_grained;
+    if (new_coarse_grained) {
+        loader_state.flags |= LoaderFlag_CoarseGrained;
+    }
 
-    if (new_molecule_file && load_dataset_from_file(data, param)) {
+    if (new_molecule_file && load_data_from_file(data, new_molecule_file, loader_state)) {
         str_copy_to_char_buf(data->files.molecule, sizeof(data->files.molecule), new_molecule_file);
     } else {
         data->files.molecule[0]   = '\0';
@@ -806,9 +806,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     if (new_trajectory_file) {
         loader::init(&loader_state, new_trajectory_file);
-        param.state = loader_state;
-        param.filepath = new_trajectory_file;
-        if (load_dataset_from_file(data, param)) {
+        if (load_data_from_file(data, new_trajectory_file, loader_state)) {
             str_copy_to_char_buf(data->files.trajectory, sizeof(data->files.trajectory), new_trajectory_file);
         }
         data->animation.frame = new_frame;
