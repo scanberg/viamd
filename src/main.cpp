@@ -1797,8 +1797,8 @@ static void update_view_param(ApplicationState* data) {
     param.fov_y = data->view.camera.fov_y;
     param.resolution = {(float)data->gbuffer.width, (float)data->gbuffer.height};
 
-    param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera);
-    param.matrix.inv.view  = camera_view_to_world_matrix(data->view.camera);
+    param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera) * data->mold.unitcell_transform;
+    param.matrix.inv.view  = mat4_inverse(data->mold.unitcell_transform) * camera_view_to_world_matrix(data->view.camera);
 
     const float n = data->view.camera.near_plane;
     const float f = data->view.camera.far_plane;
@@ -1878,7 +1878,7 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
 
     const float radius = 1.0f;
 
-    // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
+    // Transform the atom (x,y,z,radius) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < count; ++i) {
         int32_t idx = indices ? indices[i] : (int32_t)i;
         vec3_t xyz = { mol.atom.x[idx], mol.atom.y[idx], mol.atom.z[idx] };
@@ -1891,7 +1891,9 @@ static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool
     vec3_t optimal_pos;
     quat_t optimal_ori;
     float  optimal_dist;
+
     camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, basis, min_ext, max_ext);
+	optimal_pos = mat4_mul_vec3(data->mold.unitcell_transform, optimal_pos, 1.0f);
 
     if (move_camera) {
         data->view.animation.target_position    = optimal_pos;
@@ -7880,7 +7882,6 @@ static void draw_representations_opaque(ApplicationState* data) {
 #endif
         const size_t num_representations = md_array_size(data->representation.reps);
         if (num_representations == 0) return;
-
 
         md_array(md_gl_draw_op_t) draw_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {

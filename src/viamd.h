@@ -654,6 +654,8 @@ struct ApplicationState {
         // Is only used for rendering and visualization of properties.
         md_system_state_t   state = {};
 
+		mat4_t 			    unitcell_transform = mat4_ident();
+
         FrameCache          frame_cache;
 
         vec3_t              sys_aabb_min = {};
@@ -733,7 +735,7 @@ struct ApplicationState {
 
     // --- ANIMATION ---
     struct {
-        double frame = 0.f;  // double precision for long trajectories
+        double frame = 0.0;  // double precision for long trajectories
         float fps = 10.f;
         float tension = 0.0f;
         InterpolationMode interpolation = InterpolationMode::CubicSpline;
