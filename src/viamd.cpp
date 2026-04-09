@@ -450,6 +450,11 @@ void init_system_data(ApplicationState* data) {
             data->interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, data->mold.sys.protein_backbone.segment.count, data->mold.sys_alloc);
         }
 
+        mat3_t A;
+		md_unitcell_A_extract_float(A.elem, &data->mold.sys.unitcell);
+		vec3_t c = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
+        data->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
+
 #if EXPERIMENTAL_GFX_API
         const md_system_t& mol = data->mold.sys;
         vec3_t& aabb_min = data->mold.sys_aabb_min;
@@ -1943,10 +1948,10 @@ void interpolate_system_state(ApplicationState* state) {
     sys.unitcell = payload.unitcell;
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
-    double A[3][3];
-    md_unitcell_A_extract_double(A, &sys.unitcell);
-    double c[3] = { A[0][0] * 0.5, A[1][1] * 0.5, A[2][2] * 0.5 };
-    state->mold.unitcell_transform = mat4_translate(-c[0], -c[1], -c[2]);
+    mat3_t A;
+    md_unitcell_A_extract_float(A.elem, &state->mold.sys.unitcell);
+    vec3_t c = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
+    state->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
 
 #if 0
     if (mol.unitcell.flags) {

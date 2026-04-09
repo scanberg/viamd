@@ -7768,7 +7768,9 @@ static void handle_picking(ApplicationState* data) {
         coord.y *= data->app.window.scale_factor;
 #endif
 
-        const mat4_t inv_MVP = data->view.param.matrix.inv.view * data->view.param.matrix.inv.proj;
+        // Ignore precomputed view_to_world transform here to avoid incluiding the unitcell transform
+		mat4_t inv_view = camera_view_to_world_matrix(data->view.camera);
+        const mat4_t inv_MVP = inv_view * data->view.param.matrix.inv.proj;
         extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);
         data->selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
         data->selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
