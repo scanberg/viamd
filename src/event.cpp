@@ -19,7 +19,7 @@ void event_system_register_handler(EventHandler& handler) {
 }
 
 void event_system_enqueue_event(EventType type, EventPayloadType payload_type, const void* payload, uint64_t delay_in_ms) {
-	md_timestamp_t time_now = md_time_current();
+	md_timestamp_t time_now = md_time_now();
 	Event e = {
 		.type = type,
 		.payload_type = payload_type,
@@ -33,7 +33,7 @@ void event_system_broadcast_event(EventType type, EventPayloadType payload_type,
 	Event e = {
 		.type = type,
 		.payload_type = payload_type,
-		.timestamp = (uint64_t)md_time_current(),
+		.timestamp = (uint64_t)md_time_now(),
 		.payload = payload
 	};
 
@@ -53,7 +53,7 @@ void event_system_process_event_queue() {
 		return a.timestamp > b.timestamp;
 	});
 	
-	uint64_t time_now = md_time_current();
+	uint64_t time_now = md_time_now();
 	size_t num_events_to_process = num_events;
 	for (size_t i = 0; i < num_events; ++i) {
 		if (event_system.event_queue[i].timestamp > time_now) {

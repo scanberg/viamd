@@ -530,7 +530,7 @@ int main(int argc, char** argv) {
             NotificationState& state = *(NotificationState*)inst;            
 
             // Prevent spamming the logger with the same message by comparing its hash
-            const md_timestamp_t time = md_time_current();
+            const md_timestamp_t time = md_time_now();
             const uint64_t hash = md_hash64(msg, strlen(msg), 0);
 
             if (md_time_as_seconds(time - state.time) < 1.0 && hash == state.hash) {
@@ -1090,9 +1090,9 @@ int main(int argc, char** argv) {
                             });
                             
 #if MEASURE_EVALUATION_TIME
-                            uint64_t time = (uint64_t)md_time_current();
+                            uint64_t time = (uint64_t)md_time_now();
                             task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [t0 = time]() {
-                                uint64_t t1 = md_time_current();
+                                uint64_t t1 = md_time_now();
                                 double s = md_time_as_seconds(t1 - t0);
                                 VIAMD_LOG_INFO("Evaluation completed in: %.3fs", s);
                             });

@@ -21,10 +21,11 @@ struct EventHandler {
     virtual void process_events(const Event* events, size_t num_events) = 0;
 };
 
+// Register an event handler to receive events submitted to the system
 void event_system_register_handler(EventHandler& event_handler);
 
 // Queues up an event to be processed (Prefer this, unless the event has to be processed now)
-// Events are processed in batches by each registered event
+// Events are processed in batches by each registered event handler
 void event_system_enqueue_event(EventType type, EventPayloadType payload_type = 0, const void* payload = 0, uint64_t delay_in_ms = 0);
 
 // This immediately broadcasts an event in the system
