@@ -272,7 +272,7 @@ struct Dataset : viamd::EventHandler {
                 // Cleanup
                 clear_dataset_items();
                 break;
-            case viamd::EventType_ViamdTopologyInit: {
+            case viamd::EventType_ViamdSystemInit: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 init_dataset_items(state);
                 break;

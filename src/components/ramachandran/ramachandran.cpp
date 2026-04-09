@@ -532,7 +532,7 @@ struct Ramachandran : viamd::EventHandler {
                 draw(state);
                 break;
             }
-            case viamd::EventType_ViamdTopologyInit: {
+            case viamd::EventType_ViamdSystemInit: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 on_topology_init(state);
                 break;

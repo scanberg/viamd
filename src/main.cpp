@@ -722,7 +722,7 @@ int main(int argc, char** argv) {
                 }
             } else {
                 loader::State loader_state = {};
-                loader::init(&loader_state, e.path);
+                loader::init(&loader_state, e.path, &state.mold.sys);
                     
                 if ((e.flags & FileFlags_ShowDialogue) || (loader_state.flags & LoaderFlag_RequiresDialogue)) {
                     state.load_dataset = LoadDatasetWindowState();
@@ -3919,46 +3919,46 @@ static void draw_representations_window(ApplicationState* state) {
                     AtomProperty* props = state->representation.info.atom_properties;
                     int num_props = (int)md_array_size(state->representation.info.atom_properties);
                     if (num_props > 0) {
-                        rep.prop.idx = CLAMP(rep.prop.idx, 0, num_props - 1);
-                        if (ImGui::BeginCombo("property", props[rep.prop.idx].label.ptr)) {
+                        rep.atomic_property.idx = CLAMP(rep.atomic_property.idx, 0, num_props - 1);
+                        if (ImGui::BeginCombo("property", props[rep.atomic_property.idx].label.ptr)) {
                             for (int i = 0; i < num_props; ++i) {
-                                bool selected = rep.prop.idx == i;
+                                bool selected = rep.atomic_property.idx == i;
                                 if (ImGui::Selectable(props[i].label.ptr, selected)) {
-                                    rep.prop.idx = i;
-                                    rep.prop.range_beg = props[i].value_min;
-                                    rep.prop.range_end = props[i].value_max;
+                                    rep.atomic_property.idx = i;
+                                    rep.atomic_property.range_beg = props[i].value_min;
+                                    rep.atomic_property.range_end = props[i].value_max;
                                     update_rep = true;
                                 }
                             }
                             ImGui::EndCombo();
                         }
 
-                        if (props[rep.prop.idx].num_idx > 1) {
-                            int idx = rep.prop.sub_idx + 1;
+                        if (props[rep.atomic_property.idx].num_idx > 1) {
+                            int idx = rep.atomic_property.sub_idx + 1;
                             const int min = 1;
-                            const int max = props[rep.prop.idx].num_idx;
+                            const int max = props[rep.atomic_property.idx].num_idx;
                             if (ImGui::SliderInt("index", &idx, min, max)) {
                                 update_rep = true;
                             }
-                            rep.prop.sub_idx = CLAMP(idx - 1, 0, props[rep.prop.idx].num_idx - 1);
+                            rep.atomic_property.sub_idx = CLAMP(idx - 1, 0, props[rep.atomic_property.idx].num_idx - 1);
                         }
                         
-                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.prop.colormap), ImVec2(inner_item_width,0), rep.prop.colormap)) {
+                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.atomic_property.colormap), ImVec2(inner_item_width,0), rep.atomic_property.colormap)) {
                             ImGui::OpenPopup("Color Map Selector");
                         }
 
-						const float pad = MAX(fabsf(props[rep.prop.idx].value_min), fabsf(props[rep.prop.idx].value_max));
-                        const float value_min = props[rep.prop.idx].value_min - pad;
-                        const float value_max = props[rep.prop.idx].value_max + pad;
+						const float pad = MAX(fabsf(props[rep.atomic_property.idx].value_min), fabsf(props[rep.atomic_property.idx].value_max));
+                        const float value_min = props[rep.atomic_property.idx].value_min - pad;
+                        const float value_max = props[rep.atomic_property.idx].value_max + pad;
 
 						// Otherwise, we allow independent scaling of the min and max values
                         // Scale a bit outside of the default range
-                        update_rep |= ImGui::RangeSliderFloat("min / max", &rep.prop.range_beg, &rep.prop.range_end, value_min, value_max);
+                        update_rep |= ImGui::RangeSliderFloat("min / max", &rep.atomic_property.range_beg, &rep.atomic_property.range_end, value_min, value_max);
 
                         if (ImGui::BeginPopup("Color Map Selector")) {
                             for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
                                 if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {
-                                    rep.prop.colormap = map;
+                                    rep.atomic_property.colormap = map;
                                     update_rep = true;
                                     ImGui::CloseCurrentPopup();
                                 }

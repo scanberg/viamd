@@ -421,6 +421,7 @@ struct RepresentationInfo {
 };
 
 struct Volume {
+    mat4_t world_to_model   = {};   // Roto-translation into volume local axes, no scaling applied (preserves world length units)
     mat4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
     vec3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
@@ -444,19 +445,58 @@ struct EvalAtomProperty {
     bool output_written = false;
 };
 
-// Event Payload when an electronic structure is to be evaluated
-struct EvalElectronicStructure {
-    // Input information
-    const md_system_t* system = 0;
-    ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
-    int major_idx = 0;
-    int minor_idx = 0;
-    float samples_per_angstrom = 4.0f;
-    double frame_time = 0.0;
+struct ElectronicStructureRepresentation {
+    Volume density_vol = {};
+    Volume color_vol   = {};
+    VolumeResolution resolution = VolumeResolution::Mid;
 
-    // Output information
-    bool output_written = false;
-    Volume* dst_volume = nullptr;
+    // Shared for all electronic structure representations
+    double iso_value = 0.05;
+
+    // These are default values for different volume types.
+    vec4_t col_psi_pos = {0.f/255.f,75.f/255.f,135.f/255.f,0.75f};
+    vec4_t col_psi_neg = {255.f/255.f,205.f/255.f,0.f/255.f,0.75f};
+    vec4_t col_den     = {255.f/255.f,255.f/255.f,255.f/255.f,0.75f};
+    vec4_t col_att     = {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f};
+    vec4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
+
+    vec4_t tint_psi_pos = { 1.0f, 1.0f, 1.0f, 0.75f };
+    vec4_t tint_psi_neg = { 1.0f, 1.0f, 1.0f, 0.75f };
+    vec4_t tint_den     = { 1.0f, 1.0f, 1.0f, 0.75f };
+    vec4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
+    vec4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
+
+    // Scaling factor of *power* in the gaussians to splat the color volume (when using atom colors for volumes)
+    double gaussian_splatting_power = 10.0;
+
+    // Optical scaling factor which controls attenuation of light within iso surfaces.
+    double iso_optical_density = 0.005;
+
+    bool use_atom_colors = false;
+
+    struct {
+        bool enabled = false;
+        uint32_t tf_tex = 0;
+        int colormap = DEFAULT_COLORMAP;
+    } dvr;
+
+    ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
+    int mo_idx = 0;
+    int nto_idx = 0;
+    int nto_lambda_idx = 0;
+
+	uint64_t col_hash = 0;
+	uint64_t vol_hash = 0;
+    uint64_t tf_hash = 0;
+};
+
+struct AtomicPropertyRepresentation {
+    int colormap = DEFAULT_COLORMAP;
+    float range_beg = 0.0f;
+    float range_end = 1.0f;
+    bool  range_symmetric_zero = true; // Use a symmetric min and max value around zero
+    int idx = 0;
+	int sub_idx = 0;
 };
 
 struct Representation {
@@ -502,58 +542,16 @@ struct Representation {
     float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 
-    struct {
-        Volume density_vol = {};
-        Volume color_vol   = {};
-        VolumeResolution resolution = VolumeResolution::Mid;
+    ElectronicStructureRepresentation electronic_structure = {};
+    AtomicPropertyRepresentation atomic_property = {};
+};
 
-        // Shared for all electronic structure representations
-        double iso_value = 0.05;
-
-        // These are default values for different volume types.
-        vec4_t col_psi_pos = {0.f/255.f,75.f/255.f,135.f/255.f,0.75f};
-        vec4_t col_psi_neg = {255.f/255.f,205.f/255.f,0.f/255.f,0.75f};
-        vec4_t col_den     = {255.f/255.f,255.f/255.f,255.f/255.f,0.75f};
-        vec4_t col_att     = {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f};
-        vec4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
-
-        vec4_t tint_psi_pos = { 1.0f, 1.0f, 1.0f, 0.75f };
-        vec4_t tint_psi_neg = { 1.0f, 1.0f, 1.0f, 0.75f };
-        vec4_t tint_den     = { 1.0f, 1.0f, 1.0f, 0.75f };
-        vec4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
-        vec4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
-
-        // Scaling factor of *power* in the gaussians to splat the color volume (when using atom colors for volumes)
-        double gaussian_splatting_power = 10.0;
-
-        // Optical scaling factor which controls attenuation of light within iso surfaces.
-        double iso_optical_density = 0.005;
-
-        bool use_atom_colors = false;
-		uint64_t col_hash = 0;
-
-        struct {
-            bool enabled = false;
-            uint32_t tf_tex = 0;
-            int colormap = DEFAULT_COLORMAP;
-        } dvr;
-
-        ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
-        int mo_idx = 0;
-        int nto_idx = 0;
-        int nto_lambda_idx = 0;
-		uint64_t vol_hash = 0;
-        uint64_t tf_hash = 0;
-    } electronic_structure;
-
-    struct {
-        int colormap = DEFAULT_COLORMAP;
-        float range_beg = 0.0f;
-        float range_end = 1.0f;
-        bool  range_symmetric_zero = true; // Use a symmetric min and max value around zero
-        int idx = 0;
-		int sub_idx = 0;
-    } prop;
+// Event Payload when an electronic structure is to be evaluated
+struct EvalElectronicStructure {
+    const md_system_t* sys = 0;
+    double frame = 0.0;
+    Representation* rep = 0;
+    uint32_t* atom_colors = 0;
 };
 
 struct FrameCache {
@@ -1027,6 +1025,12 @@ struct ApplicationState {
     bool show_property_export_window = false;
 
     TextEditor editor = {};
+};
+
+struct LoadDataPayload {
+    ApplicationState* app_state;
+    loader::State loader_state;
+    str_t path_to_file;
 };
 
 static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {

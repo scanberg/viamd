@@ -27,7 +27,7 @@ void compute_transfer_function_texture(uint32_t* texture, int implot_colormap, r
 
 // Precomputes a 3D texture of interpolated point colors from a list of colored points (e.g. for splatting or point-based rendering)
 // It uses Shepard interpolation combined with RDFs encoded as gaussians to interpolate the colors of the points onto a regular grid.
-void compute_point_color_volume(uint32_t vol_texture, const int dim[3], const float index_to_world[4][4], const float* point_x, const float* point_y, const float* point_z, const float* point_sigma, const uint32_t* point_color, size_t point_count, double power = 4.0f);
+void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power = 4.0f);
 
 /*
     Renders a volumetric texture using OpenGL.
