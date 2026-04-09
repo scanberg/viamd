@@ -338,7 +338,6 @@ enum class BondColorMode {
     Count,
 };
 
-
 static const char* bond_color_mode_str[(int)BondColorMode::Count] = {
     "Nearest Atom",
     "Smooth Atom",

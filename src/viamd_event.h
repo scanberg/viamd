@@ -37,6 +37,12 @@ enum : EventType {
 	EventType_ViamdRepresentationInfoFill					= HASH_STR_LIT("VIAMD Representation Info Fill"),
 	EventType_ViamdRepresentationEvalElectronicStructure	= HASH_STR_LIT("VIAMD Representation Eval ElectronicStructure"),
 	EventType_ViamdRepresentationEvalAtomProperty			= HASH_STR_LIT("VIAMD Representation Eval AtomProperty"),
+
+	// Picking events
+	// This reserve range is to give each event handler a chance to reserve a picking range before a frame is rendered.
+	EventType_ViamdPickingRangeReserve		= HASH_STR_LIT("VIAMD Picking Range Reserve"),
+	// This is the actual event sent to the event handlers once something is picked.
+	EventType_ViamdPickingHit				= HASH_STR_LIT("VIAMD Picking Hit"),					// This is sent when a picking hit occurs, and contains the decoded picking data (e.g. what atom was picked)
 };
 
 enum : EventPayloadType {
@@ -48,6 +54,8 @@ enum : EventPayloadType {
 	EventPayloadType_DeserializationState		= HASH_STR_LIT("Payload Deserialization State"),
 	EventPayloadType_EvalElectronicStructure	= HASH_STR_LIT("Payload Eval ElectronicStructure"),
 	EventPayloadType_EvalAtomProperty			= HASH_STR_LIT("Payload Eval AtomProperty"),
+	EventPayloadType_PickingRangeReserve		= HASH_STR_LIT("Payload Picking Range Reserve"),
+	EventPayloadType_PickingHit					= HASH_STR_LIT("Payload Picking Hit"),
 };
 
 }
