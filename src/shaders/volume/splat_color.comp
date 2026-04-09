@@ -4,7 +4,7 @@
 //  Gaussian RDF color volume precompute
 //
 //  One workgroup per voxel slab (z-layer).
-//  Dispatch: (vol_size.x / 8, vol_size.y / 8, vol_size.z)
+//  Dispatch: (vol_size.x / 8, vol_size.y / 8, vol_size.z / 8)
 // --------------------------------------------------------
 
 
@@ -50,7 +50,8 @@ void main() {
 
     barrier();
 
-    const float radius_factor = 3.03485 / sqrt(u_power); // 99% of Gaussian mass is within 3.03485 sigma
+    // Radius where Gaussian weight falls to 0.1% of peak value
+    const float radius_factor = (3.7169 / sqrt(u_power));
 
     for (int i = int(gl_LocalInvocationIndex); i < u_num_points; i += wg_size) {
         vec4 point = in_points_xyzw[i];
@@ -82,8 +83,9 @@ void main() {
     vec4  acc = vec4(0.0);
     float sum = 0.0;
 
-    for (int i = 0; i < s_num_points; ++i) {
+    int num_points = min(s_num_points, MAX_POINTS);
 
+    for (int i = 0; i < num_points; ++i) {
         vec3  point_xyz  = s_points_xyzw[i].xyz;
         float sigma      = s_points_xyzw[i].w;
         vec4  point_rgba = unpackUnorm4x8(s_points_color[i]);

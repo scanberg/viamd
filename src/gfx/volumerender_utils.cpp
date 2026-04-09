@@ -346,23 +346,27 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
     glUniform1i (glGetUniformLocation(gl.program.splat_color, "u_num_points"), (int)point_count);
     glUniform1f(glGetUniformLocation(gl.program.splat_color, "u_power"), power);
 
-    size_t point_xyzw_offset = 0;
-    size_t point_rgba_offset = sizeof(vec4_t) * point_count;
+    size_t point_xyzw_offset    = 0;
+	size_t point_xyzw_size      = ALIGN_TO(sizeof(vec4_t) * point_count, 256);
+	size_t point_color_offset   = point_xyzw_offset + point_xyzw_size;
+    size_t point_color_size     = ALIGN_TO(sizeof(uint32_t) * point_count, 256);
+	size_t total_buffer_size    = ALIGN_TO(point_xyzw_size + point_color_size, 256);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl.ssbo);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, (sizeof(vec4_t) + sizeof(uint32_t)) * point_count, NULL, GL_DYNAMIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, total_buffer_size , NULL, GL_DYNAMIC_DRAW);
 
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_xyzw_offset, sizeof(vec4_t)   * point_count, point_xyzw);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_rgba_offset, sizeof(uint32_t) * point_count, point_color);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_xyzw_offset,  sizeof(vec4_t)   * point_count, point_xyzw);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_color_offset, sizeof(uint32_t) * point_count, point_color);
 
     // Bind two contiguous vec4 arrays as separate shader storage buffer bindings for position/radius and color
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, gl.ssbo, point_xyzw_offset, sizeof(vec4_t)   * point_count); // point_xyzw
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, gl.ssbo, point_rgba_offset, sizeof(uint32_t) * point_count); // point_rgba
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, gl.ssbo, point_xyzw_offset,  point_xyzw_size);  // point_xyzw
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, gl.ssbo, point_color_offset, point_color_size); // point_color
     glBindImageTexture(0, vol_texture, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    int num_wg[3] = {
+
+    const int num_wg[3] = {
         DIV_UP((int)volume_dim[0], 8),
         DIV_UP((int)volume_dim[1], 8),
-        DIV_UP((int)volume_dim[2], 8)
+        DIV_UP((int)volume_dim[2], 8),
     };
 
     glDispatchCompute(num_wg[0], num_wg[1], num_wg[2]);

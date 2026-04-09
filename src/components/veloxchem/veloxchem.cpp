@@ -930,21 +930,23 @@ struct VeloxChem : viamd::EventHandler {
                                 md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
                                 defer{ md_arena_allocator_destroy(temp_arena); };
 
+								const int downsample_factor = 1;
+
                                 // Assume that the colors have been written here and with the same mapping as for the atoms
                                 // Initialize volume if not already done to correct dimensions (use a 2x downsampled version for color volume)
                                 int dim[3] = {
-                                    (int)(rep->electronic_structure.density_vol.dim[0] / 2),
-                                    (int)(rep->electronic_structure.density_vol.dim[1] / 2),
-                                    (int)(rep->electronic_structure.density_vol.dim[2] / 2),
+                                    (int)(rep->electronic_structure.density_vol.dim[0] / downsample_factor),
+                                    (int)(rep->electronic_structure.density_vol.dim[1] / downsample_factor),
+                                    (int)(rep->electronic_structure.density_vol.dim[2] / downsample_factor),
                                 };
                                 MEMCPY(rep->electronic_structure.color_vol.dim, dim, sizeof(dim));
                                 rep->electronic_structure.color_vol.world_to_model   = rep->electronic_structure.density_vol.world_to_model;
                                 rep->electronic_structure.color_vol.texture_to_world = rep->electronic_structure.density_vol.texture_to_world;
-                                rep->electronic_structure.color_vol.voxel_size       = rep->electronic_structure.density_vol.voxel_size * 2.0f;
+                                rep->electronic_structure.color_vol.voxel_size       = rep->electronic_structure.density_vol.voxel_size * downsample_factor;
                                 gl::init_texture_3D(&rep->electronic_structure.color_vol.tex_id, dim[0], dim[1], dim[2], GL_RGBA8);
                         
-                                const vec3_t& voxel_size = rep->electronic_structure.density_vol.voxel_size;
-                                const mat4_t& world_to_model = rep->electronic_structure.density_vol.world_to_model;
+                                const vec3_t& voxel_size     = rep->electronic_structure.color_vol.voxel_size;
+                                const mat4_t& world_to_model = rep->electronic_structure.color_vol.world_to_model;
                                 mat4_t index_to_world = rep->electronic_structure.color_vol.texture_to_world
                                     * mat4_scale(1.0f / dim[0], 1.0f / dim[1], 1.0f / dim[2])
                                     * mat4_translate(0.5f, 0.5f, 0.5f); // Center of the corner voxel should be at the origin
@@ -1205,7 +1207,7 @@ struct VeloxChem : viamd::EventHandler {
         vec3_t extent = md_grid_extent(&grid);
         vol->world_to_model = compute_world_to_model_mat(grid.orientation, grid.origin * scl);
         vol->texture_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, extent * scl);
-        vol->voxel_size = grid.spacing;
+        vol->voxel_size = grid.spacing * scl;
         gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
     }
 

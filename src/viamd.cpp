@@ -1467,7 +1467,7 @@ void interpolate_system_state(ApplicationState* state) {
         vec3_t* aabb_min;
         vec3_t* aabb_max;
 
-        mat4_t transform;
+        mat4_t recenter_transform;
     };
 
     const InterpolationMode mode = (frames[1] == frames[2]) ? InterpolationMode::Nearest : state->animation.interpolation;
@@ -1662,7 +1662,7 @@ void interpolate_system_state(ApplicationState* state) {
         if (num_idx > 0) {
             // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
             task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [data = &payload]() {
-                recenter_calculate_transform(data->transform.elem, data->state);
+                recenter_calculate_transform(data->recenter_transform.elem, data->state);
             });
             
             // Batch transform all atoms
@@ -1672,7 +1672,7 @@ void interpolate_system_state(ApplicationState* state) {
                 float* x = data->dst_x + range_beg;
                 float* y = data->dst_y + range_beg;
                 float* z = data->dst_z + range_beg;
-                mat4_batch_transform_inplace(x, y, z, 1.0f, count, data->transform);
+                mat4_batch_transform_inplace(x, y, z, 1.0f, count, data->recenter_transform);
             }, grain_size);
 
             tasks[num_tasks++] = calc_transform_task;
@@ -1941,6 +1941,12 @@ void interpolate_system_state(ApplicationState* state) {
     state->mold.sys_aabb_min = aabb_min;
     state->mold.sys_aabb_max = aabb_max;
     sys.unitcell = payload.unitcell;
+
+    // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
+    double A[3][3];
+    md_unitcell_A_extract_double(A, &sys.unitcell);
+    double c[3] = { A[0][0] * 0.5, A[1][1] * 0.5, A[2][2] * 0.5 };
+    state->mold.unitcell_transform = mat4_translate(-c[0], -c[1], -c[2]);
 
 #if 0
     if (mol.unitcell.flags) {
