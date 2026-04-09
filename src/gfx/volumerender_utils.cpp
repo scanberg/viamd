@@ -67,6 +67,11 @@ static struct {
         GLuint dvr_and_iso_col_vol = 0;
         GLuint splat_color = 0;
     } program;
+
+    struct {
+        int major = 0;
+        int minor = 0;
+    } version;
 } gl;
 
 struct UniformData {
@@ -95,6 +100,9 @@ struct UniformData {
 };
 
 void initialize() {
+    glGetIntegerv(GL_MAJOR_VERSION, (GLint*)&gl.version.major);
+    glGetIntegerv(GL_MINOR_VERSION, (GLint*)&gl.version.minor);
+
     GLuint v_shader_entry_exit          = gl::compile_shader_from_source({(const char*)entryexit_vert, entryexit_vert_size}, GL_VERTEX_SHADER);
     GLuint f_shader_entry_exit          = gl::compile_shader_from_source({(const char*)entryexit_frag, entryexit_frag_size}, GL_FRAGMENT_SHADER);
     GLuint f_shader_entry_exit_depth    = gl::compile_shader_from_source({(const char*)entryexit_frag, entryexit_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define SAMPLE_DEPTH"));
@@ -105,8 +113,7 @@ void initialize() {
     GLuint f_shader_iso_only_col_vol    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
     GLuint f_shader_dvr_and_iso         = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
     GLuint f_shader_dvr_and_iso_col_vol = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
-    GLuint c_shader_splat_color         = gl::compile_shader_from_source({ (const char*)splat_color_comp, splat_color_comp_size }, GL_COMPUTE_SHADER);
-
+    
     defer {
         glDeleteShader(v_shader_vol);
         glDeleteShader(f_shader_entry_exit);
@@ -115,17 +122,22 @@ void initialize() {
         glDeleteShader(f_shader_iso_only_col_vol);
         glDeleteShader(f_shader_dvr_and_iso);
         glDeleteShader(f_shader_dvr_and_iso_col_vol);
-        glDeleteShader(c_shader_splat_color);
     };
-
+    
     if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_iso_only_col_vol == 0 || f_shader_dvr_and_iso == 0 || f_shader_dvr_and_iso_col_vol == 0) {
         MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
-
-    if (c_shader_splat_color == 0) {
-        MD_LOG_ERROR("shader compilation failed, shader program for splat color computation will not be updated");
-        return;
+    
+    if (gl.version.major >= 4 && gl.version.minor >= 3) {
+        GLuint c_shader_splat_color = gl::compile_shader_from_source({ (const char*)splat_color_comp, splat_color_comp_size }, GL_COMPUTE_SHADER);
+        if (c_shader_splat_color == 0) {
+            MD_LOG_ERROR("shader compilation failed, shader program for splat color computation will not be updated");
+            return;
+        }
+        if (!gl.program.splat_color) gl.program.splat_color = glCreateProgram();
+        gl::attach_link_detach(gl.program.splat_color, &c_shader_splat_color, 1);
+        glDeleteShader(c_shader_splat_color);
     }
 
     if (!gl.program.entry_exit) gl.program.entry_exit = glCreateProgram();
@@ -135,8 +147,6 @@ void initialize() {
     if (!gl.program.iso_col_vol) gl.program.iso_col_vol = glCreateProgram();
     if (!gl.program.dvr_and_iso) gl.program.dvr_and_iso = glCreateProgram();
     if (!gl.program.dvr_and_iso_col_vol) gl.program.dvr_and_iso_col_vol = glCreateProgram();
-
-    if (!gl.program.splat_color) gl.program.splat_color = glCreateProgram();
 
     {
         const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit};
@@ -167,7 +177,6 @@ void initialize() {
         gl::attach_link_detach(gl.program.dvr_and_iso_col_vol, shaders, (int)ARRAY_SIZE(shaders));
     }
 
-    gl::attach_link_detach(gl.program.splat_color, &c_shader_splat_color, 1);
 
     if (!gl.vbo) {
         // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
@@ -418,10 +427,6 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
         return;
     }
 
-    int gl_major, gl_minor;
-    glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
-    glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
-
     md_allocator_i* temp_alloc = md_get_heap_allocator();
 
     vec4_t* point_data = (vec4_t*)md_alloc(temp_alloc, sizeof(vec4_t) * point_count * 2);
@@ -433,10 +438,9 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
         point_rgba[i] = vec4_from_u32(point_color[i]);
     }
 
-    if (gl_major > 4 || (gl_major == 4 && gl_minor >= 3)) {
+    if (gl.version.major >= 4 && gl.version.minor >= 3) {
         splat_point_color_volume_GPU(vol_texture, volume_dim, index_to_world, point_xyzw, point_rgba, point_count, (float)power);
-    }
-    else {
+    } else {
         splat_point_color_volume_CPU(vol_texture, volume_dim, index_to_world, point_xyzw, point_rgba, point_count, (float)power);
     }
 
