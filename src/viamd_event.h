@@ -56,7 +56,7 @@ enum : EventPayloadType {
 	EventPayloadType_DeserializationState		= HASH_STR_LIT("Payload Deserialization State"),
 	EventPayloadType_EvalElectronicStructure	= HASH_STR_LIT("Payload Eval ElectronicStructure"),
 	EventPayloadType_EvalAtomProperty			= HASH_STR_LIT("Payload Eval AtomProperty"),
-	EventPayloadType_PickingRangeReserve		= HASH_STR_LIT("Payload Picking Range Reserve"),
+	EventPayloadType_PickingSpace				= HASH_STR_LIT("Payload Picking Space"),
 	EventPayloadType_PickingHit					= HASH_STR_LIT("Payload Picking Hit"),
     EventPayloadType_LoadData					= HASH_STR_LIT("Payload Load Data"),
 };

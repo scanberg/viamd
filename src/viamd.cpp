@@ -23,6 +23,15 @@
 
 #define USE_FRAMEBUFFER_SCALE 0
 
+static const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        if (str_eq(arr[i], str)) {
+            return &arr[i];
+        }
+    }
+    return NULL;
+}
+
 static void init_all_representations(ApplicationState* state);
 
 void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
@@ -205,12 +214,8 @@ void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2
     out_picking = {};
 
     vec2_t c = coord;
-#if USE_FRAMEBUFFER_SCALE
-    ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
-    c = coord * vec2_set(scale.x, scale.y);
-#endif
 
-    if (0.f < c.x && c.x < (float)gbuffer.width && 0.f < c.y && c.y < (float)gbuffer.height) {
+    if (0.f <= coord.x && coord.x < (float)gbuffer.width && 0.f <= coord.y && coord.y < (float)gbuffer.height) {
         extract_gbuffer_picking_idx_and_depth(&out_picking.idx, &out_picking.depth, &gbuffer, (int)c.x, (int)c.y);
         const vec4_t viewport = {0, 0, (float)gbuffer.width, (float)gbuffer.height};
         out_picking.world_coord = mat4_unproject({c.x, c.y, out_picking.depth}, inv_MVP, viewport);
@@ -2051,7 +2056,6 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
 }
 
 bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count) {
-    ASSERT(out_range);
     ASSERT(space);
 
     if (count > 0 && space->num_ranges < ARRAY_SIZE(space->ranges)) {
@@ -2060,14 +2064,410 @@ bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, Picking
         curr_range->domain = domain;
         curr_range->beg = prev_range ? prev_range->end : 0;
         curr_range->end = curr_range->beg + (uint32_t)count;
-        MEMCPY(out_range, curr_range, sizeof(PickingRange));
+        if (out_range) {
+            MEMCPY(out_range, curr_range, sizeof(PickingRange));
+        }
         return true;
     }
 
     return false;
 }
 
-void picking_clear_space(PickingSpace* space) {
+void picking_handler_new_frame(PickingHandler* handler) {
+    ASSERT(handler);
+    handler->frame_idx += 1;
+
+    const uint32_t slot_idx = handler->frame_idx % ARRAY_SIZE(handler->history);
+    handler->history[slot_idx].submitted_frame_idx = handler->frame_idx;
+    MEMSET(&handler->history[slot_idx].space, 0, sizeof(PickingSpace));
+}
+
+PickingSpace* picking_handler_current_space(PickingHandler* handler) {
+    ASSERT(handler);
+    return &handler->history[handler->frame_idx % ARRAY_SIZE(handler->history)].space;
+}
+
+const PickingSpace* picking_handler_find_space(const PickingHandler* handler, uint32_t submitted_frame_idx) {
+    ASSERT(handler);
+
+    for (size_t i = 0; i < ARRAY_SIZE(handler->history); ++i) {
+        const auto& hist = handler->history[i];
+        if (hist.submitted_frame_idx == submitted_frame_idx) {
+            return &hist.space;
+        }
+    }
+
+    return nullptr;
+}
+
+void picking_surface_init(PickingSurface* surface, PickingSourceID source) {
+    ASSERT(surface);
+
+    MEMSET(surface, 0, sizeof(PickingSurface));
+    surface->source = source;
+
+    for (size_t i = 0; i < ARRAY_SIZE(surface->slots); ++i) {
+        auto& slot = surface->slots[i];
+        glGenBuffers(1, &slot.color_pbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.color_pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4, nullptr, GL_DYNAMIC_READ);
+
+        glGenBuffers(1, &slot.depth_pbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.depth_pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4, nullptr, GL_DYNAMIC_READ);
+    }
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+}
+
+void picking_surface_free(PickingSurface* surface) {
+    ASSERT(surface);
+
+    for (size_t i = 0; i < ARRAY_SIZE(surface->slots); ++i) {
+        auto& slot = surface->slots[i];
+        if (slot.color_pbo) glDeleteBuffers(1, &slot.color_pbo);
+        if (slot.depth_pbo) glDeleteBuffers(1, &slot.depth_pbo);
+    }
+
+    MEMSET(surface, 0, sizeof(PickingSurface));
+}
+
+bool picking_surface_submit_readback(
+    PickingSurface* surface,
+    uint32_t fbo,
+    uint32_t width,
+    uint32_t height,
+    uint32_t submitted_frame_idx,
+    vec2_t surface_coord,
+    vec2_t screen_coord,
+    const mat4_t& inv_mvp
+) {
+    ASSERT(surface);
+
+    if (!fbo || width == 0 || height == 0) {
+        return false;
+    }
+
+    const int x = (int)surface_coord.x;
+    const int y = (int)surface_coord.y;
+    if (x < 0 || y < 0 || x >= (int)width || y >= (int)height) {
+        return false;
+    }
+
+    const uint32_t queue_idx = surface->slot_cursor % ARRAY_SIZE(surface->slots);
+    surface->slot_cursor += 1;
+
+    auto& slot = surface->slots[queue_idx];
+    slot.submitted_frame_idx = submitted_frame_idx;
+    slot.pending = true;
+    slot.viewport_width = width;
+    slot.viewport_height = height;
+    slot.surface_coord = surface_coord;
+    slot.screen_coord = screen_coord;
+    slot.inv_mvp = inv_mvp;
+
+    PUSH_GPU_SECTION("QUEUE PICKING READBACK")
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT_PICKING);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.color_pbo);
+    glReadPixels(x, y, 1, 1, GL_BGRA, GL_UNSIGNED_BYTE, 0);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.depth_pbo);
+    glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    POP_GPU_SECTION()
+
+    return true;
+}
+
+static const PickingRange* find_picking_range(const PickingSpace* space, uint32_t raw_idx) {
     ASSERT(space);
-    MEMSET(space, 0, sizeof(PickingSpace));
+
+    for (size_t i = 0; i < space->num_ranges; ++i) {
+        const PickingRange* range = &space->ranges[i];
+        if (range->beg <= raw_idx && raw_idx < range->end) {
+            return range;
+        }
+    }
+
+    return nullptr;
+}
+
+bool picking_surface_poll_hit(
+    PickingHit* out_hit,
+    PickingSurface* surface,
+    const PickingHandler* handler
+) {
+    ASSERT(out_hit);
+    ASSERT(surface);
+    ASSERT(handler);
+
+    *out_hit = {};
+
+    if (surface->slot_cursor < ARRAY_SIZE(surface->slots)) {
+        return false;
+    }
+
+    const uint32_t read_idx = surface->slot_cursor % ARRAY_SIZE(surface->slots);
+    auto& slot = surface->slots[read_idx];
+    if (!slot.pending) {
+        return false;
+    }
+
+    uint8_t color[4] = {};
+    float depth = 1.0f;
+
+    PUSH_GPU_SECTION("POLL PICKING READBACK")
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.color_pbo);
+    glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(color), color);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.depth_pbo);
+    glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(depth), &depth);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    POP_GPU_SECTION()
+
+    slot.pending = false;
+
+    const uint32_t raw_idx = (color[0] << 16) | (color[1] << 8) | (color[2] << 0) | (color[3] << 24);
+    if (raw_idx == INVALID_PICKING_IDX) {
+        return false;
+    }
+
+    const PickingSpace* space = picking_handler_find_space(handler, slot.submitted_frame_idx);
+    if (!space) {
+        return false;
+    }
+
+    const PickingRange* range = find_picking_range(space, raw_idx);
+    if (!range) {
+        return false;
+    }
+
+    out_hit->source = surface->source;
+    out_hit->domain = range->domain;
+    out_hit->frame_idx = slot.submitted_frame_idx;
+    out_hit->raw_idx = raw_idx;
+    out_hit->local_idx = raw_idx - range->beg;
+    out_hit->surface_coord = slot.surface_coord;
+    out_hit->screen_coord = slot.screen_coord;
+    out_hit->depth = depth;
+
+    const vec4_t viewport = {0, 0, (float)slot.viewport_width, (float)slot.viewport_height};
+    out_hit->world_pos = mat4_unproject({slot.surface_coord.x, slot.surface_coord.y, depth}, slot.inv_mvp, viewport);
+
+    return true;
+}
+
+bool file_queue_empty(const FileQueue* queue) {
+    return queue->head == queue->tail;
+}
+
+bool file_queue_full(const FileQueue* queue) {
+    return (queue->head + 1) % ARRAY_SIZE(queue->arr) == queue->tail;
+}
+
+void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
+    ASSERT(queue);
+    ASSERT(!file_queue_full(queue));
+    int prio = 5;
+
+
+    str_t ext;
+    if (extract_ext(&ext, path)) {
+        LoaderType type = loader::type_from_ext(ext);
+        LoaderFlags loader_flags = loader::type_flags(type);
+        if (str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
+            prio = 1;
+        } else if (loader_flags & LoaderFlag_System) {
+            prio = 2;
+        } else if (loader_flags & LoaderFlag_Trajectory) {
+            prio = 3;
+        } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
+            prio = 4;
+        } else {
+            flags |= FileFlags_ShowDialogue;
+        }
+    } else {
+        // Unknown extension
+        flags |= FileFlags_ShowDialogue;
+    }
+
+    uint32_t i = queue->head;
+    queue->arr[queue->head] = {str_copy(path, queue->ring), flags, prio};
+    queue->head = (queue->head + 1) % ARRAY_SIZE(queue->arr);
+
+    // Sort queue based on prio
+     while (i != queue->tail && queue->arr[i].prio < queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)].prio) {
+        FileQueue::Entry tmp = queue->arr[i];
+        queue->arr[i] = queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)];
+        queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)] = tmp;
+        i = (i - 1) % ARRAY_SIZE(queue->arr);
+     }
+}
+
+FileQueue::Entry file_queue_front(const FileQueue* queue) {
+    ASSERT(!file_queue_empty(queue));
+    return queue->arr[queue->tail];
+}
+
+FileQueue::Entry file_queue_pop(FileQueue* queue) {
+    ASSERT(queue);
+    ASSERT(!file_queue_empty(queue));
+    FileQueue::Entry front = file_queue_front(queue);
+    queue->tail = (queue->tail + 1) % ARRAY_SIZE(queue->arr);
+    return front;
+}
+
+void file_queue_process(ApplicationState* state) {
+    ASSERT(state);
+    if (!file_queue_empty(&state->file_queue) && !state->load_dataset.show_window) {
+        FileQueue::Entry e = file_queue_pop(&state->file_queue);
+
+        str_t ext;
+        extract_ext(&ext, e.path);
+        const str_t* res = 0;
+
+        if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
+            load_workspace(state, e.path);
+            reset_view(state, &state->representation.visibility_mask, false, true);
+        } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
+            char buf[1024];
+            str_t base_path = {};
+            if (state->files.workspace[0] != '\0') {
+                base_path = str_from_cstr(state->files.workspace);
+            } else if (state->files.trajectory[0] != '\0') {
+                base_path = str_from_cstr(state->files.trajectory);
+            } else if (state->files.molecule[0] != '\0') {
+                base_path = str_from_cstr(state->files.molecule);
+            } else {
+                md_path_write_cwd(buf, sizeof(buf));
+                base_path = str_from_cstr(buf);
+            }
+
+            str_t rel_path = md_path_make_relative(base_path, e.path, state->allocator.frame);
+            MD_LOG_DEBUG("Attempting to make relative path from '" STR_FMT "' to '" STR_FMT "'", STR_ARG(base_path), STR_ARG(e.path));
+            MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
+            if (!str_empty(rel_path)) {
+                snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_ARG(rel_path));
+                TextEditor::Coordinates pos = state->editor.GetCursorPosition();
+                pos.mLine += 1;
+                state->editor.SetCursorPosition({0,0});
+                state->editor.InsertText(buf);
+                state->editor.SetCursorPosition(pos);
+            }
+        } else {
+            loader::State loader_state = {};
+            loader::init(&loader_state, e.path, &state->mold.sys);
+                
+            if ((e.flags & FileFlags_ShowDialogue) || (loader_state.flags & LoaderFlag_RequiresDialogue)) {
+                state->load_dataset = LoadDatasetWindowState();
+                str_copy_to_char_buf(state->load_dataset.path_buf, sizeof(state->load_dataset.path_buf), e.path);
+                state->load_dataset.path_changed = true;
+                state->load_dataset.show_window = true;
+                state->load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
+            } else {
+                loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
+                loader_state.flags |= (e.flags & FileFlags_CoarseGrained) ? LoaderFlag_CoarseGrained : 0;
+                if (load_data_from_file(state, e.path, loader_state)) {
+                    state->animation = {};
+                    // @TODO @FIX: This is hacky, just because the loader CAN set system state does not mean it always will.
+                    // This should be instead captured and performed by the Event that signals when a new system is loaded.
+                    if (loader_state.flags & LoaderFlag_System) {
+                        md_bitfield_reset(&state->representation.visibility_mask);
+
+                        if (!state->settings.keep_representations) {
+                            remove_all_representations(state);
+                            create_default_representations(state);
+                        }
+                        recompute_atom_visibility_mask(state);
+                        state->mold.interpolate_system_state = true;
+                        state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+                        reset_view(state, &state->representation.visibility_mask, true, false);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera, bool smooth_transition) {
+    ASSERT(state);
+
+    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(state->allocator.frame);
+    defer { md_vm_arena_temp_end(tmp); };
+
+    if (!state->mold.sys.atom.count) return;
+    const auto& mol = state->mold.sys;
+
+    size_t popcount = 0;
+    if (target) {
+        popcount = md_bitfield_popcount(target);
+    }
+
+    int32_t* indices = nullptr;
+    if (0 < popcount && popcount < mol.atom.count) {
+        indices = (int32_t*)md_vm_arena_push_array(state->allocator.frame, int32_t, popcount);
+        size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(target));
+        if (len > popcount || len > mol.atom.count) {
+            MD_LOG_DEBUG("Error: Invalid number of indices");
+            len = MIN(popcount, mol.atom.count);
+        }
+    }
+
+    size_t count = popcount ? popcount : mol.atom.count;
+    vec3_t com = md_util_com_compute(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, &mol.unitcell);
+    mat3_t C = mat3_covariance_matrix(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, com);
+    mat3_eigen_t eigen = mat3_eigen(C);
+    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+    mat4_t Ri  = mat4_from_mat3(PCA);
+
+    // Compute min and maximum extent along the PCA axes
+    vec3_t min_ext = vec3_set1( FLT_MAX);
+    vec3_t max_ext = vec3_set1(-FLT_MAX);
+    mat3_t basis = mat3_transpose(PCA);
+
+    const float radius = 1.0f;
+
+    // Transform the atom (x,y,z,radius) into the PCA frame to find the min and max extend within it
+    for (size_t i = 0; i < count; ++i) {
+        int32_t idx = indices ? indices[i] : (int32_t)i;
+        vec3_t xyz = { mol.atom.x[idx], mol.atom.y[idx], mol.atom.z[idx] };
+
+        vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
+        min_ext = vec3_min(min_ext, vec3_sub_f(p, radius));
+        max_ext = vec3_max(max_ext, vec3_add_f(p, radius));
+    }
+
+    vec3_t optimal_pos;
+    quat_t optimal_ori;
+    float  optimal_dist;
+
+    camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, basis, min_ext, max_ext);
+	optimal_pos = mat4_mul_vec3(state->mold.unitcell_transform, optimal_pos, 1.0f);
+
+    if (move_camera) {
+        state->view.animation.target_position    = optimal_pos;
+        state->view.animation.target_orientation = optimal_ori;
+        state->view.animation.target_distance    = optimal_dist;
+
+        if (!smooth_transition) {
+            state->view.camera.position       = optimal_pos;
+            state->view.camera.orientation    = optimal_ori;
+            state->view.camera.focus_distance = optimal_dist;
+        }
+    }
+
+    mat3_t A = { 0 };
+	md_unitcell_A_extract_float(A.elem, &mol.unitcell);
+    const vec3_t cell_ext = mat3_mul_vec3(A, vec3_set1(1.0f));
+    const float  max_cell_ext = vec3_reduce_max(cell_ext);
+    const float  max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
+
+    state->view.camera.near_plane = 1.0f;
+    state->view.camera.far_plane = 100000.0f;
+    state->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 }

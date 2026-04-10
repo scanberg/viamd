@@ -361,6 +361,7 @@ struct VeloxChem : viamd::EventHandler {
         };
 
         GBuffer gbuf = {};
+        PickingSurface picking_surface = {};
         Camera camera = {};
 
         struct {
@@ -426,8 +427,9 @@ struct VeloxChem : viamd::EventHandler {
         } dipole;
 
         GBuffer gbuf = {};
-        Camera camera = {};
+        PickingSurface picking_surface = {};
         PickingData picking = {};
+        Camera camera = {};
 
         struct {
             quat_t ori = {};
@@ -5576,8 +5578,8 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (nto.show_coordinate_system_widget) {
-                    float  ext = MIN(win_sz.x, win_sz.y) * 0.4f;
-                    float  pad = 20.0f;
+                    float ext = MIN(win_sz.x, win_sz.y) * 0.4f;
+                    float pad = 20.0f;
 
                     ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
                     ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();

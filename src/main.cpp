@@ -134,10 +134,7 @@ constexpr ImGuiKey KEY_SCRIPT_EVALUATE     = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD = ImGuiMod_Shift;
 constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT = ImGuiKey_F1;
 
-constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
-
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
-constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
 
 inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
 inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
@@ -161,75 +158,6 @@ enum MarkerType_{
     MarkerType_Warning,
     MarkerType_Visualization,
 };
-
-const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
-    for (size_t i = 0; i < len; ++i) {
-        if (str_eq(arr[i], str)) {
-            return &arr[i];
-        }
-    }
-    return NULL;
-}
-
-static inline bool file_queue_empty(const FileQueue* queue) {
-    return queue->head == queue->tail;
-}
-
-static inline bool file_queue_full(const FileQueue* queue) {
-    return (queue->head + 1) % ARRAY_SIZE(queue->arr) == queue->tail;
-}
-
-static inline void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None) {
-    ASSERT(queue);
-    ASSERT(!file_queue_full(queue));
-    int prio = 5;
-
-
-    str_t ext;
-    if (extract_ext(&ext, path)) {
-        LoaderType type = loader::type_from_ext(ext);
-        LoaderFlags loader_flags = loader::type_flags(type);
-        if (str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
-            prio = 1;
-        } else if (loader_flags & LoaderFlag_System) {
-            prio = 2;
-        } else if (loader_flags & LoaderFlag_Trajectory) {
-            prio = 3;
-        } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
-            prio = 4;
-        } else {
-            flags |= FileFlags_ShowDialogue;
-        }
-    } else {
-        // Unknown extension
-        flags |= FileFlags_ShowDialogue;
-    }
-
-    uint32_t i = queue->head;
-    queue->arr[queue->head] = {str_copy(path, queue->ring), flags, prio};
-    queue->head = (queue->head + 1) % ARRAY_SIZE(queue->arr);
-
-    // Sort queue based on prio
-     while (i != queue->tail && queue->arr[i].prio < queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)].prio) {
-        FileQueue::Entry tmp = queue->arr[i];
-        queue->arr[i] = queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)];
-        queue->arr[(i - 1) % ARRAY_SIZE(queue->arr)] = tmp;
-        i = (i - 1) % ARRAY_SIZE(queue->arr);
-     }
-}
-
-static inline FileQueue::Entry file_queue_front(const FileQueue* queue) {
-    ASSERT(!file_queue_empty(queue));
-    return queue->arr[queue->tail];
-}
-
-static inline FileQueue::Entry file_queue_pop(FileQueue* queue) {
-    ASSERT(queue);
-    ASSERT(!file_queue_empty(queue));
-    FileQueue::Entry front = file_queue_front(queue);
-    queue->tail = (queue->tail + 1) % ARRAY_SIZE(queue->arr);
-    return front;
-}
 
 static void visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0) {
     md_script_vis_ctx_t ctx = {
@@ -448,7 +376,6 @@ static void update_display_properties(ApplicationState* state);
 static void update_density_volume(ApplicationState* state);
 
 static void update_view_param(ApplicationState* state);
-static void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_camera = false, bool smooth_transition = false);
 
 static void handle_camera_interaction(ApplicationState* state);
 
@@ -685,73 +612,19 @@ int main(int argc, char** argv) {
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
         const double   max_frame = (double)last_frame;
 
-        if (!file_queue_empty(&state.file_queue) && !state.load_dataset.show_window) {
-            FileQueue::Entry e = file_queue_pop(&state.file_queue);
+        file_queue_process(&state);
 
-            str_t ext;
-            extract_ext(&ext, e.path);
-            const str_t* res = 0;
+        {
+            picking_handler_new_frame(&state.picking_handler);
 
-            if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
-                load_workspace(&state, e.path);
-                reset_view(&state, &state.representation.visibility_mask, false, true);
-            } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
-                char buf[1024];
-                str_t base_path = {};
-                if (state.files.workspace[0] != '\0') {
-                    base_path = str_from_cstr(state.files.workspace);
-                } else if (state.files.trajectory[0] != '\0') {
-                    base_path = str_from_cstr(state.files.trajectory);
-                } else if (state.files.molecule[0] != '\0') {
-                    base_path = str_from_cstr(state.files.molecule);
-                } else {
-                    md_path_write_cwd(buf, sizeof(buf));
-                    base_path = str_from_cstr(buf);
-                }
+            size_t num_atoms = state.mold.sys.atom.count;
+            size_t num_bonds = state.mold.sys.bond.count;
 
-                str_t rel_path = md_path_make_relative(base_path, e.path, frame_alloc);
-                MD_LOG_DEBUG("Attempting to make relative path from '" STR_FMT "' to '" STR_FMT "'", STR_ARG(base_path), STR_ARG(e.path));
-                MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
-                if (!str_empty(rel_path)) {
-                    snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_ARG(rel_path));
-                    TextEditor::Coordinates pos = state.editor.GetCursorPosition();
-                    pos.mLine += 1;
-                    state.editor.SetCursorPosition({0,0});
-                    state.editor.InsertText(buf);
-                    state.editor.SetCursorPosition(pos);
-                }
-            } else {
-                loader::State loader_state = {};
-                loader::init(&loader_state, e.path, &state.mold.sys);
-                    
-                if ((e.flags & FileFlags_ShowDialogue) || (loader_state.flags & LoaderFlag_RequiresDialogue)) {
-                    state.load_dataset = LoadDatasetWindowState();
-                    str_copy_to_char_buf(state.load_dataset.path_buf, sizeof(state.load_dataset.path_buf), e.path);
-                    state.load_dataset.path_changed = true;
-                    state.load_dataset.show_window = true;
-                    state.load_dataset.coarse_grained = e.flags & FileFlags_CoarseGrained;
-                } else {
-                    loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
-                    loader_state.flags |= (e.flags & FileFlags_CoarseGrained) ? LoaderFlag_CoarseGrained : 0;
-                    if (load_data_from_file(&state, e.path, loader_state)) {
-                        state.animation = {};
-                        // @TODO @FIX: This is hacky, just because the loader CAN set system state does not mean it always will.
-                        // This should be instead captured and performed by the Event that signals when a new system is loaded.
-                        if (loader_state.flags & LoaderFlag_System) {
-                            md_bitfield_reset(&state.representation.visibility_mask);
+            PickingSpace* curr_space = picking_handler_current_space(&state.picking_handler);
+            picking_reserve_range(nullptr, curr_space, PickingDomain_Atom, num_atoms);
+            picking_reserve_range(nullptr, curr_space, PickingDomain_Bond, num_bonds);
 
-                            if (!state.settings.keep_representations) {
-                                remove_all_representations(&state);
-                                create_default_representations(&state);
-                            }
-                            recompute_atom_visibility_mask(&state);
-							state.mold.interpolate_system_state = true;
-                            state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                            reset_view(&state, &state.representation.visibility_mask, true, false);
-                        }
-                    }
-                }
-            }
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, curr_space);            
         }
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
@@ -1838,84 +1711,6 @@ static void update_view_param(ApplicationState* data) {
     }
 
     param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
-}
-
-static void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera, bool smooth_transition) {
-    ASSERT(data);
-
-    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-    defer { md_vm_arena_temp_end(tmp); };
-
-    if (!data->mold.sys.atom.count) return;
-    const auto& mol = data->mold.sys;
-
-    size_t popcount = 0;
-    if (target) {
-        popcount = md_bitfield_popcount(target);
-    }
-
-    int32_t* indices = nullptr;
-    if (0 < popcount && popcount < mol.atom.count) {
-        indices = (int32_t*)md_vm_arena_push_array(frame_alloc, int32_t, popcount);
-        size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(target));
-        if (len > popcount || len > mol.atom.count) {
-            MD_LOG_DEBUG("Error: Invalid number of indices");
-            len = MIN(popcount, mol.atom.count);
-        }
-    }
-
-    size_t count = popcount ? popcount : mol.atom.count;
-    vec3_t com = md_util_com_compute(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, &mol.unitcell);
-    mat3_t C = mat3_covariance_matrix(mol.atom.x, mol.atom.y, mol.atom.z, nullptr, indices, count, com);
-    mat3_eigen_t eigen = mat3_eigen(C);
-    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-    mat4_t Ri  = mat4_from_mat3(PCA);
-
-    // Compute min and maximum extent along the PCA axes
-    vec3_t min_ext = vec3_set1( FLT_MAX);
-    vec3_t max_ext = vec3_set1(-FLT_MAX);
-    mat3_t basis = mat3_transpose(PCA);
-
-    const float radius = 1.0f;
-
-    // Transform the atom (x,y,z,radius) into the PCA frame to find the min and max extend within it
-    for (size_t i = 0; i < count; ++i) {
-        int32_t idx = indices ? indices[i] : (int32_t)i;
-        vec3_t xyz = { mol.atom.x[idx], mol.atom.y[idx], mol.atom.z[idx] };
-
-        vec3_t p = mat4_mul_vec3(Ri, xyz, 1.0f);
-        min_ext = vec3_min(min_ext, vec3_sub_f(p, radius));
-        max_ext = vec3_max(max_ext, vec3_add_f(p, radius));
-    }
-
-    vec3_t optimal_pos;
-    quat_t optimal_ori;
-    float  optimal_dist;
-
-    camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, basis, min_ext, max_ext);
-	optimal_pos = mat4_mul_vec3(data->mold.unitcell_transform, optimal_pos, 1.0f);
-
-    if (move_camera) {
-        data->view.animation.target_position    = optimal_pos;
-        data->view.animation.target_orientation = optimal_ori;
-        data->view.animation.target_distance    = optimal_dist;
-
-        if (!smooth_transition) {
-            data->view.camera.position       = optimal_pos;
-            data->view.camera.orientation    = optimal_ori;
-            data->view.camera.focus_distance = optimal_dist;
-        }
-    }
-
-    mat3_t A = { 0 };
-	md_unitcell_A_extract_float(A.elem, &mol.unitcell);
-    const vec3_t cell_ext = mat3_mul_vec3(A, vec3_set1(1.0f));
-    const float  max_cell_ext = vec3_reduce_max(cell_ext);
-    const float  max_aabb_ext = vec3_reduce_max(vec3_sub(max_ext, min_ext));
-
-    data->view.camera.near_plane = 1.0f;
-    data->view.camera.far_plane = 100000.0f;
-    data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 }
 
 // ### DRAW WINDOWS ###
@@ -7427,17 +7222,17 @@ static void handle_camera_interaction(ApplicationState* data) {
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
             md_bitfield_clear(&data->selection.highlight_mask);
             if (data->picking.idx != INVALID_PICKING_IDX) {
-                if (data->selection.atom_idx.hovered != -1 && data->selection.atom_idx.hovered < data->mold.sys.atom.count) {
+                if (data->selection.atom_idx.hovered != -1 && data->selection.atom_idx.hovered < (int32_t)data->mold.sys.atom.count) {
                     md_bitfield_set_bit(&data->selection.highlight_mask, data->selection.atom_idx.hovered);
                 }
                 else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.sys.bond.count) {
                     md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
-                    if (0 <= pair.idx[0] && pair.idx[0] < data->mold.sys.atom.count) {
+                    if (0 <= pair.idx[0] && pair.idx[0] < (int32_t)data->mold.sys.atom.count) {
                         md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
                     } else {
                         MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[0]);
                     }
-                    if (0 <= pair.idx[1] && pair.idx[1] < data->mold.sys.atom.count) {
+                    if (0 <= pair.idx[1] && pair.idx[1] < (int32_t)data->mold.sys.atom.count) {
                         md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
                     } else {
                         MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[1]);
@@ -7767,7 +7562,7 @@ static void handle_picking(ApplicationState* data) {
         coord.y *= data->app.window.scale_factor;
 #endif
 
-        // Ignore precomputed view_to_world transform here to avoid incluiding the unitcell transform
+        // Ignore precomputed view_to_world transform here to avoid including the unitcell transform
 		mat4_t inv_view = camera_view_to_world_matrix(data->view.camera);
         const mat4_t inv_MVP = inv_view * data->view.param.matrix.inv.proj;
         extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);

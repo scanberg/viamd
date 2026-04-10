@@ -3,6 +3,8 @@
 #include <core/md_str.h>
 #include <core/md_os.h>
 #include <core/md_lru_cache.inl>
+#include <core/md_hash.h>
+
 #include <md_system.h>
 #include <md_trajectory.h>
 #include <md_script.h>
@@ -57,6 +59,14 @@
 #define DISPLAY_PROPERTY_MAX_POPULATION_SIZE 256
 #define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
 #define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
+
+constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
+constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
+
+enum {
+    PickingDomain_Atom = HASH_STR_LIT("picking domain atom"),
+    PickingDomain_Bond = HASH_STR_LIT("picking domain bond"),
+};
 
 enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Component, Instance };
@@ -561,6 +571,7 @@ struct FrameCache {
 };
 
 typedef uint64_t PickingDomainID;
+typedef uint64_t PickingSourceID;
 
 struct PickingRange {
     PickingDomainID domain = 0;
@@ -573,9 +584,48 @@ struct PickingSpace {
     PickingRange ranges[8] = {};
 };
 
+struct PickingReadbackSlot {
+    uint32_t color_pbo = 0;
+    uint32_t depth_pbo = 0;
+    
+    uint32_t submitted_frame_idx = 0;
+    bool pending = false;
+    
+    uint32_t viewport_width = 0;
+    uint32_t viewport_height = 0;
+    
+    vec2_t surface_coord = {0};
+    vec2_t screen_coord = {0};
+    mat4_t inv_mvp = mat4_ident();
+};
+
+struct PickingSurface {
+    PickingSourceID source = 0;
+    uint32_t slot_cursor = 0;
+    PickingReadbackSlot slots[2] = {};
+};
+
 struct PickingHandler {
-    PickingSpace space[2] = {};
-    uint32_t frame_idx[2] = {};
+    uint32_t frame_idx = 0;
+
+    struct {
+        PickingSpace space = {};
+        uint32_t submitted_frame_idx = 0;
+    } history[2];
+};
+
+struct PickingHit {
+    PickingSourceID source = 0;
+    PickingDomainID domain = 0;
+
+    uint32_t frame_idx = 0;
+    uint32_t raw_idx = INVALID_PICKING_IDX;
+    uint32_t local_idx = 0;
+
+    vec2_t surface_coord = {0};
+    vec2_t screen_coord = {0};
+    vec3_t world_pos = {0};
+    float depth = 1.0f;
 };
 
 struct ApplicationState {
@@ -583,8 +633,8 @@ struct ApplicationState {
     application::Context app {};
 
     struct {
-        md_allocator_i* frame = 0;
-        md_allocator_i* persistent = 0;
+        md_allocator_i* frame = nullptr;
+        md_allocator_i* persistent = nullptr;
     } allocator;
 
     LoadDatasetWindowState load_dataset;
@@ -729,6 +779,7 @@ struct ApplicationState {
     GBuffer gbuffer {};
 
     PickingData picking {};
+    PickingHandler picking_handler {};
 
     // --- ANIMATION ---
     struct {
@@ -1220,5 +1271,42 @@ void recenter_update_target_data(ApplicationState* state);
 void recenter_calculate_transform(float M[4][4], const ApplicationState* state);
 
 // Picking
+
+void picking_handler_new_frame(PickingHandler* handler);
+PickingSpace* picking_handler_current_space(PickingHandler* handler);
+const PickingSpace* picking_handler_find_space(const PickingHandler* handler, uint32_t submitted_frame_idx);
+
 bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count);
-void picking_clear_space(PickingSpace* space);
+
+void picking_surface_init(PickingSurface* surface, PickingSourceID source);
+void picking_surface_free(PickingSurface* surface);
+
+bool picking_surface_submit_readback(
+    PickingSurface* surface,
+    uint32_t fbo,
+    uint32_t width,
+    uint32_t height,
+    uint32_t submitted_frame_idx,
+    vec2_t surface_coord,
+    vec2_t screen_coord,
+    const mat4_t& inv_mvp
+);
+
+bool picking_surface_poll_hit(
+    PickingHit* out_hit,
+    PickingSurface* surface,
+    const PickingHandler* handler
+);
+
+// File Queue
+bool file_queue_empty(const FileQueue* queue);
+bool file_queue_full(const FileQueue* queue);
+void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None);
+
+FileQueue::Entry file_queue_front(const FileQueue* queue);
+FileQueue::Entry file_queue_pop(FileQueue* queue);
+
+void file_queue_process(ApplicationState* state);
+
+// view
+void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera, bool smooth_transition);
