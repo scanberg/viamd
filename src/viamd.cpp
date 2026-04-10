@@ -2158,6 +2158,11 @@ bool picking_surface_submit_readback(
     surface->slot_cursor += 1;
 
     auto& slot = surface->slots[queue_idx];
+    if (slot.color_pbo == 0 || slot.depth_pbo == 0) {
+        MD_LOG_ERROR("Invalid PBOs in picking surface slot");
+        return false;
+    }
+
     slot.submitted_frame_idx = submitted_frame_idx;
     slot.pending = true;
     slot.viewport_width = width;
@@ -2470,4 +2475,23 @@ void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_
     state->view.camera.near_plane = 1.0f;
     state->view.camera.far_plane = 100000.0f;
     state->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
+}
+
+void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_events) {
+    for (size_t i = 0; i < num_events; ++i) {
+        const viamd::Event& event = events[i];
+        switch (event.type) {
+        case viamd::EventType_ViamdPickingRangeReserve:
+            MD_LOG_DEBUG("RESERVE RANGE EVENT");
+            break;
+        case viamd::EventType_ViamdPickingHit: {
+            ASSERT(event.payload_type == viamd::EventPayloadType_PickingHit);
+            PickingHit* hit = (PickingHit*)event.payload;
+            while(0) {};
+            break;
+        }
+        default:
+            break;
+        }
+    }
 }

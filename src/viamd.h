@@ -19,6 +19,7 @@
 
 #include <task_system.h>
 #include <loader.h>
+#include <event.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -777,9 +778,11 @@ struct ApplicationState {
 
     // --- FRAMEBUFFER ---
     GBuffer gbuffer {};
-
-    PickingData picking {};
+    PickingSurface picking_surface {};
     PickingHandler picking_handler {};
+
+    // Old
+    PickingData picking {};
 
     // --- ANIMATION ---
     struct {
@@ -1078,6 +1081,17 @@ struct ApplicationState {
     bool show_property_export_window = false;
 
     TextEditor editor = {};
+};
+
+struct ViamdEventHandler : viamd::EventHandler {
+    ApplicationState* state = nullptr;
+
+    explicit ViamdEventHandler(ApplicationState* s) : state(s) {
+        ASSERT(state);
+        viamd::event_system_register_handler(*this);
+    }
+
+    void process_events(const viamd::Event* events, size_t num_events) final;
 };
 
 struct LoadDataPayload {

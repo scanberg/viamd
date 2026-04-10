@@ -490,6 +490,8 @@ int main(int argc, char** argv) {
     md_log_register(&notification_logger);
 
     ApplicationState state;
+    ViamdEventHandler event_handler(&state);
+
     state.allocator.persistent = persistent_alloc;
     state.allocator.frame = frame_alloc;
     state.representation.info.alloc = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
@@ -523,6 +525,9 @@ int main(int argc, char** argv) {
 
     VIAMD_LOG_DEBUG("Initializing framebuffer...");
     init_gbuffer(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
+
+    const uint64_t main_picking_surface = 0x213123878722d2e;
+    picking_surface_init(&state.picking_surface, main_picking_surface);
 
     for (int i = 0; i < (int)ARRAY_SIZE(state.view.jitter.sequence); ++i) {
         state.view.jitter.sequence[i].x = md_halton(i + 1, 2);
@@ -620,11 +625,11 @@ int main(int argc, char** argv) {
             size_t num_atoms = state.mold.sys.atom.count;
             size_t num_bonds = state.mold.sys.bond.count;
 
-            PickingSpace* curr_space = picking_handler_current_space(&state.picking_handler);
-            picking_reserve_range(nullptr, curr_space, PickingDomain_Atom, num_atoms);
-            picking_reserve_range(nullptr, curr_space, PickingDomain_Bond, num_bonds);
+            PickingSpace* space = picking_handler_current_space(&state.picking_handler);
+            picking_reserve_range(nullptr, space, PickingDomain_Atom, num_atoms);
+            picking_reserve_range(nullptr, space, PickingDomain_Bond, num_bonds);
 
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, curr_space);            
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, space);            
         }
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
@@ -7565,6 +7570,18 @@ static void handle_picking(ApplicationState* data) {
         // Ignore precomputed view_to_world transform here to avoid including the unitcell transform
 		mat4_t inv_view = camera_view_to_world_matrix(data->view.camera);
         const mat4_t inv_MVP = inv_view * data->view.param.matrix.inv.proj;
+
+        // New
+        uint32_t frame_idx = data->picking_handler.frame_idx;
+        picking_surface_submit_readback(&data->picking_surface, data->gbuffer.fbo, data->gbuffer.width, data->gbuffer.height, frame_idx, coord, mouse_pos, inv_MVP);
+
+        PickingHit hit = {};
+        if (picking_surface_poll_hit(&hit, &data->picking_surface, &data->picking_handler)) {
+            // Broadcast event!
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
+        }
+
+        // Old
         extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);
         data->selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
         data->selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
