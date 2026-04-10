@@ -50,7 +50,7 @@ void event_system_process_event_queue() {
 
 	Event* beg = event_system.event_queue;
 	std::sort(beg, beg + num_events, [](const Event& a, const Event& b) {
-		return a.timestamp > b.timestamp;
+		return a.timestamp < b.timestamp;
 	});
 	
 	uint64_t time_now = md_time_now();
