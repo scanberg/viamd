@@ -626,8 +626,8 @@ int main(int argc, char** argv) {
             size_t num_bonds = state.mold.sys.bond.count;
 
             PickingSpace* space = picking_handler_current_space(&state.picking_handler);
-            picking_reserve_range(nullptr, space, PickingDomain_Atom, num_atoms);
-            picking_reserve_range(nullptr, space, PickingDomain_Bond, num_bonds);
+            picking_reserve_range(&state.picking_range_atom, space, PickingDomain_Atom, num_atoms);
+            picking_reserve_range(&state.picking_range_bond, space, PickingDomain_Bond, num_bonds);
 
             viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, space);            
         }
@@ -651,7 +651,10 @@ int main(int argc, char** argv) {
         draw_context_popup(&state);
         draw_async_task_window(&state);
         draw_main_menu(&state);
+        draw_picking_tooltip_window(state);
         draw_notifications_window();
+
+        state.picking_hit = {}; // Reset hit before we handle picking, so that if the user clicks on empty space, the previously hovered item won't remain highlighted
 
         //ImGui::ShowDemoWindow();
 
@@ -5818,11 +5821,11 @@ static void draw_density_volume_window(ApplicationState* data) {
             if (is_hovered) {
                 mat4_t inv_MVP = mat4_mul(inv_proj_mat, mat4_transpose(view_mat));
                 const vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
-                extract_picking_data(data->picking, gbuf, coord, inv_MVP);
-
-                if (data->picking.idx != INVALID_PICKING_IDX) {
-                    draw_info_window(*data, data->picking.idx);
-                }
+                // @TODO: Reimplement picking here using the new picking api 
+                //extract_picking_data(data->picking, gbuf, coord, inv_MVP);
+                //if (data->picking.idx != INVALID_PICKING_IDX) {
+                //    draw_info_window(*data, data->picking.idx);
+                //}
             }
             glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
         }
@@ -7226,9 +7229,9 @@ static void handle_camera_interaction(ApplicationState* data) {
         }
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
             md_bitfield_clear(&data->selection.highlight_mask);
-            if (data->picking.idx != INVALID_PICKING_IDX) {
                 if (data->selection.atom_idx.hovered != -1 && data->selection.atom_idx.hovered < (int32_t)data->mold.sys.atom.count) {
                     md_bitfield_set_bit(&data->selection.highlight_mask, data->selection.atom_idx.hovered);
+                    grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
                 }
                 else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.sys.bond.count) {
                     md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
@@ -7242,10 +7245,8 @@ static void handle_camera_interaction(ApplicationState* data) {
                     } else {
                         MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[1]);
                     }
+                    grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
                 }
-                grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
-                draw_info_window(*data, data->picking.idx);
-            }
         }
 
         if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
@@ -7582,6 +7583,7 @@ static void handle_picking(ApplicationState* data) {
         }
 
         // Old
+        /*
         extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);
         data->selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
         data->selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
@@ -7595,6 +7597,7 @@ static void handle_picking(ApplicationState* data) {
             data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;
             data->selection.bond_idx.right_click = data->selection.bond_idx.hovered;
         }
+            */
         POP_CPU_SECTION()
     }
 }
@@ -7631,7 +7634,7 @@ static void apply_postprocessing(const ApplicationState& data) {
     desc.temporal_aa.motion_blur.motion_scale = motion_scale;
 
     desc.sharpen.enabled = data.visuals.temporal_aa.enabled && data.visuals.sharpen.enabled;
-    desc.sharpen.weight  = data.visuals.sharpen.weight;
+    desc.sharpen.weight = data.visuals.sharpen.weight;
 
     desc.input_textures.depth = data.gbuffer.tex.depth;
     desc.input_textures.color = data.gbuffer.tex.color;
@@ -7773,6 +7776,10 @@ static void draw_representations_opaque(ApplicationState* data) {
                 // These two are for temporal anti-aliasing reprojection (optional)
                 .prev_view_matrix = &data->view.param.matrix.prev.view.elem[0][0],
                 .prev_proj_matrix = &data->view.param.matrix.prev.proj.elem[0][0],
+            },
+            .picking_offset = {
+                .atom_base = data->picking_range_atom.beg,
+                .bond_base = data->picking_range_bond.beg,
             },
             .max_bond_length = max_bond_length,
         };

@@ -4,6 +4,7 @@
 #include <core/md_os.h>
 #include <core/md_lru_cache.inl>
 #include <core/md_hash.h>
+#include <core/md_str_builder.h>
 
 #include <md_system.h>
 #include <md_trajectory.h>
@@ -778,11 +779,17 @@ struct ApplicationState {
 
     // --- FRAMEBUFFER ---
     GBuffer gbuffer {};
-    PickingSurface picking_surface {};
-    PickingHandler picking_handler {};
+
+    // --- PICKING ---
+    PickingSurface picking_surface {}; // Surface for main viewport picking
+    PickingRange   picking_range_atom {};
+    PickingRange   picking_range_bond {};
+
+    PickingHandler picking_handler {}; // Handler for managing picking interactions
+    PickingHit     picking_hit {};     // Stores the picking hit result that used for filling in the tooltip and other interactions
 
     // Old
-    PickingData picking {};
+    //PickingData picking {};
 
     // --- ANIMATION ---
     struct {
@@ -1100,6 +1107,12 @@ struct LoadDataPayload {
     str_t path_to_file;
 };
 
+struct PickingTooltipTextRequest {
+    const ApplicationState& app;
+    const PickingHit& hit;
+    md_strb_t sb = {};
+};
+
 static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
     case SelectionOperator::Or:
@@ -1234,7 +1247,7 @@ static inline uint64_t generate_fingerprint() {
     return (uint64_t)md_time_now();
 }
 
-void draw_info_window(const ApplicationState& state, uint32_t picking_idx);
+void draw_picking_tooltip_window(const ApplicationState& state);
 void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
 
 md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx);
@@ -1290,11 +1303,15 @@ void picking_handler_new_frame(PickingHandler* handler);
 PickingSpace* picking_handler_current_space(PickingHandler* handler);
 const PickingSpace* picking_handler_find_space(const PickingHandler* handler, uint32_t submitted_frame_idx);
 
+// Reserves a range within the picking space for a specific domain (atoms, bonds, etc).
+// Returns true if the range was successfully reserved, false if there was not enough space. If successful, out_range will be filled with the reserved range.
+// out_range is optional and can be null if the caller does not need the details of the reserved range (e.g. just needs to know if the reservation was successful or not).
 bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count);
 
 void picking_surface_init(PickingSurface* surface, PickingSourceID source);
 void picking_surface_free(PickingSurface* surface);
 
+// Submits a picking readback request for the given surface. The readback will be performed asynchronously, and the result can be polled using picking_surface_poll_hit.
 bool picking_surface_submit_readback(
     PickingSurface* surface,
     uint32_t fbo,
@@ -1306,6 +1323,8 @@ bool picking_surface_submit_readback(
     const mat4_t& inv_mvp
 );
 
+// Polls for the result of a picking readback request. If a hit is detected, out_hit will be filled with the details of the hit and the function will return true.
+// If no hit is detected the function will return false.
 bool picking_surface_poll_hit(
     PickingHit* out_hit,
     PickingSurface* surface,

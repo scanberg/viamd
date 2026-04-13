@@ -34,17 +34,12 @@ static const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
 
 static void init_all_representations(ApplicationState* state);
 
-void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
-    const auto& sys = state.mold.sys;
-    if (picking_idx == INVALID_PICKING_IDX) return;
-    
-	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
-    defer { md_vm_arena_temp_end(temp); };
+static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& state, const PickingHit& hit) {
+    ASSERT(sb);
+    const md_system_t& sys = state.mold.sys;
 
-    md_strb_t sb = md_strb_create(state.allocator.frame);
-
-    if (picking_idx < sys.atom.count) {
-        int atom_idx = picking_idx;
+    if (hit.domain == PickingDomain_Atom && hit.local_idx < sys.atom.count) {
+        int atom_idx = hit.local_idx;
         int local_idx = atom_idx;
         const vec3_t pos = md_atom_coord(&sys.atom, atom_idx);
         str_t type = md_atom_name(&sys.atom, atom_idx);
@@ -72,36 +67,36 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
 
         // @NOTE(Robin): External indices begin with 1 not 0
 		if (state.selection.granularity == SelectionGranularity::Atom) {
-            md_strb_fmt(&sb, "atom[%i]", atom_idx + 1);
+            md_strb_fmt(sb, "atom[%i]", atom_idx + 1);
             if (comp_idx != -1) {
-                md_strb_fmt(&sb, "[%i]: ", local_idx + 1);
+                md_strb_fmt(sb, "[%i]: ", local_idx + 1);
             } else {
-				md_strb_push_cstr(&sb, ": ");
+				md_strb_push_cstr(sb, ": ");
             }
-            md_strb_push_str(&sb, type);
-			md_strb_push_char(&sb, ' ');
+            md_strb_push_str(sb, type);
+			md_strb_push_char(sb, ' ');
             if (z) {
-                md_strb_fmt(&sb, "%.*s %.*s ", STR_ARG(elem), STR_ARG(symb));
+                md_strb_fmt(sb, "%.*s %.*s ", STR_ARG(elem), STR_ARG(symb));
             }
-            md_strb_fmt(&sb, "(%.3f, %.3f, %.3f)\n", pos.x, pos.y, pos.z);    
+            md_strb_fmt(sb, "(%.3f, %.3f, %.3f)\n", pos.x, pos.y, pos.z);    
         }
         
         if (comp_idx != -1 && (state.selection.granularity == SelectionGranularity::Atom || state.selection.granularity == SelectionGranularity::Component)) {
-            md_strb_fmt(&sb, "comp[%i]", comp_idx + 1);
+            md_strb_fmt(sb, "comp[%i]", comp_idx + 1);
             if (comp_name) {
-                md_strb_fmt(&sb, ": " STR_FMT, STR_ARG(comp_name));
+                md_strb_fmt(sb, ": " STR_FMT, STR_ARG(comp_name));
             }
-			md_strb_fmt(&sb, " (seq_id: %i)\n", comp_seq_id);
+			md_strb_fmt(sb, " (seq_id: %i)\n", comp_seq_id);
         }
         if (inst_idx != -1) {
-            md_strb_fmt(&sb, "inst[%i]", inst_idx + 1);
+            md_strb_fmt(sb, "inst[%i]", inst_idx + 1);
             if (inst_id) {
-                md_strb_fmt(&sb, ": " STR_FMT, STR_ARG(inst_id));
+                md_strb_fmt(sb, ": " STR_FMT, STR_ARG(inst_id));
             }
 			if (auth_id) {
-                md_strb_fmt(&sb, " (" STR_FMT ")", STR_ARG(auth_id));
+                md_strb_fmt(sb, " (" STR_FMT ")", STR_ARG(auth_id));
             }
-            md_strb_push_char(&sb, '\n');
+            md_strb_push_char(sb, '\n');
         }
 
         uint32_t flags = 0;
@@ -120,27 +115,27 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
 		const uint32_t TERM_3 = MD_FLAG_NUCLEIC_ACID | MD_FLAG_TERMINAL_END;
 
         if (flags) {
-            sb += "flags: ";
-            if (flags & MD_FLAG_HETERO)         { sb += "HETERO "; }
-			if (flags & MD_FLAG_POLYPEPTIDE)    { sb += "POLYPEPTIDE "; }
-            if (flags & MD_FLAG_AMINO_ACID)     { sb += "AMINO-ACID "; }
-            if (flags & MD_FLAG_SIDE_CHAIN)     { sb += "SIDE-CHAIN "; }
-			if (flags & MD_FLAG_NUCLEIC_ACID)   { sb += "NUCLEIC-ACID "; }
-            if (flags & MD_FLAG_NUCLEOTIDE)     { sb += "NUCLEOTIDE "; }
-            if (flags & MD_FLAG_NUCLEOSIDE)     { sb += "NUCLEOSIDE "; }
-            if (flags & MD_FLAG_NUCLEOBASE)     { sb += "NUCLEOBASE "; }
-            if (flags & MD_FLAG_WATER)          { sb += "WATER "; }
-            if (flags & MD_FLAG_ION)            { sb += "ION "; }
-            if (flags & MD_FLAG_BACKBONE)       { sb += "BACKBONE "; }
-            if ((flags & TERM_N) == TERM_N)     { sb += "N-TERMINUS "; }
-            if ((flags & TERM_C) == TERM_C)     { sb += "C-TERMINUS "; }
-			if ((flags & TERM_5) == TERM_5)     { sb += "5'-TERMINUS "; }
-			if ((flags & TERM_3) == TERM_3)     { sb += "3'-TERMINUS "; }
-            if (flags & MD_FLAG_SP)             { sb += "SP "; }
-            if (flags & MD_FLAG_SP2)            { sb += "SP2 "; }
-            if (flags & MD_FLAG_SP3)            { sb += "SP3 "; }
-            if (flags & MD_FLAG_AROMATIC)       { sb += "AROMATIC "; }
-            sb += "\n";
+            *sb += "flags: ";
+            if (flags & MD_FLAG_HETERO)         { *sb += "HETERO "; }
+			if (flags & MD_FLAG_POLYPEPTIDE)    { *sb += "POLYPEPTIDE "; }
+            if (flags & MD_FLAG_AMINO_ACID)     { *sb += "AMINO-ACID "; }
+            if (flags & MD_FLAG_SIDE_CHAIN)     { *sb += "SIDE-CHAIN "; }
+			if (flags & MD_FLAG_NUCLEIC_ACID)   { *sb += "NUCLEIC-ACID "; }
+            if (flags & MD_FLAG_NUCLEOTIDE)     { *sb += "NUCLEOTIDE "; }
+            if (flags & MD_FLAG_NUCLEOSIDE)     { *sb += "NUCLEOSIDE "; }
+            if (flags & MD_FLAG_NUCLEOBASE)     { *sb += "NUCLEOBASE "; }
+            if (flags & MD_FLAG_WATER)          { *sb += "WATER "; }
+            if (flags & MD_FLAG_ION)            { *sb += "ION "; }
+            if (flags & MD_FLAG_BACKBONE)       { *sb += "BACKBONE "; }
+            if ((flags & TERM_N) == TERM_N)     { *sb += "N-TERMINUS "; }
+            if ((flags & TERM_C) == TERM_C)     { *sb += "C-TERMINUS "; }
+			if ((flags & TERM_5) == TERM_5)     { *sb += "5'-TERMINUS "; }
+			if ((flags & TERM_3) == TERM_3)     { *sb += "3'-TERMINUS "; }
+            if (flags & MD_FLAG_SP)             { *sb += "SP "; }
+            if (flags & MD_FLAG_SP2)            { *sb += "SP2 "; }
+            if (flags & MD_FLAG_SP3)            { *sb += "SP3 "; }
+            if (flags & MD_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
+            *sb += "\n";
         }
         /*
         // @TODO: REIMPLEMENT THIS
@@ -150,8 +145,8 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         }
         */
     }
-    else if (picking_idx >= 0x80000000) {
-        int bond_idx = picking_idx & 0x7FFFFFFF;
+    else if (hit.domain == PickingDomain_Bond) {
+        int bond_idx = hit.local_idx;
         if (0 <= bond_idx && bond_idx < (int)sys.bond.count) {
             md_atom_pair_t   pair = sys.bond.pairs[bond_idx];
             md_bond_flags_t flags = sys.bond.flags[bond_idx];
@@ -193,21 +188,40 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
             str_t type0 = md_atom_name(&sys.atom, pair.idx[0]);
             str_t type1 = md_atom_name(&sys.atom, pair.idx[1]);
 
-            md_strb_fmt(&sb, "bond: " STR_FMT "%c" STR_FMT "\n", STR_ARG(type0), bond_type, STR_ARG(type1));
-            md_strb_fmt(&sb, "flags: %.*s\n", len, bond_flags_buf);
-            md_strb_fmt(&sb, "length: %.3f\n", d);
+            md_strb_fmt(sb, "bond: " STR_FMT "%c" STR_FMT "\n", STR_ARG(type0), bond_type, STR_ARG(type1));
+            md_strb_fmt(sb, "flags: %.*s\n", len, bond_flags_buf);
+            md_strb_fmt(sb, "length: %.3f\n", d);
         }
     }
+}
 
-    const ImVec2 offset = { 10.f, 18.f };
-    const ImVec2 new_pos = {ImGui::GetMousePos().x + offset.x, ImGui::GetMousePos().y + offset.y};
-    ImGui::SetNextWindowPos(new_pos);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-    ImGui::Begin("##Atom Info", 0,
-        ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
-    ImGui::Text("%s", md_strb_to_cstr(sb));
-    ImGui::End();
-    ImGui::PopStyleColor();
+void draw_picking_tooltip_window(const ApplicationState& state) {
+    if (state.picking_hit.source == 0) return;
+    if (state.picking_hit.domain == 0) return;
+    if (state.picking_hit.raw_idx == INVALID_PICKING_IDX) return;
+    
+	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
+    defer { md_vm_arena_temp_end(temp); };
+
+    PickingTooltipTextRequest tooltip_request = {
+        .app = state,
+        .hit = state.picking_hit,
+        .sb = md_strb_create(state.allocator.frame),
+    };
+
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingTooltipTextRequest, viamd::EventPayloadType_PickingTooltipTextRequest, &tooltip_request);
+
+    if (!md_strb_empty(tooltip_request.sb)) {
+        const ImVec2 offset = { 10.f, 18.f };
+        const ImVec2 new_pos = {ImGui::GetMousePos().x + offset.x, ImGui::GetMousePos().y + offset.y};
+        ImGui::SetNextWindowPos(new_pos);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
+        ImGui::Begin("##Atom Info", 0,
+            ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
+        ImGui::Text("%s", md_strb_to_cstr(tooltip_request.sb));
+        ImGui::End();
+        ImGui::PopStyleColor();
+    }
 }
 
 void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP) {
@@ -442,7 +456,6 @@ void init_trajectory_data(ApplicationState* data) {
 
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
-        data->picking.idx = INVALID_PICKING_IDX;
         data->selection.atom_idx.hovered = -1;
         data->selection.atom_idx.right_click = -1;
         data->selection.bond_idx.hovered = -1;
@@ -961,7 +974,6 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     str_t text = md_strb_to_str(state.sb);
     md_file_write(file, str_ptr(text), str_len(text));
 }
-
 
 // --- SELECTION ---
 Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* atom_mask) {
@@ -2481,14 +2493,31 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
     for (size_t i = 0; i < num_events; ++i) {
         const viamd::Event& event = events[i];
         switch (event.type) {
+        case viamd::EventType_ViamdFrameTick:
+            break;
         case viamd::EventType_ViamdPickingRangeReserve:
-            MD_LOG_DEBUG("RESERVE RANGE EVENT");
             break;
         case viamd::EventType_ViamdPickingHit: {
             ASSERT(event.payload_type == viamd::EventPayloadType_PickingHit);
             PickingHit* hit = (PickingHit*)event.payload;
-            while(0) {};
+            state->picking_hit = *hit;  // Store hit for defered processing
+            if (hit->domain == PickingDomain_Atom) {
+                md_bitfield_clear(&state->selection.highlight_mask);
+                md_bitfield_set_bit(&state->selection.highlight_mask, hit->local_idx);
+            } else if (hit->domain == PickingDomain_Bond) {
+                md_bitfield_clear(&state->selection.highlight_mask);
+                const md_atom_pair_t* pair = &state->mold.sys.bond.pairs[hit->local_idx];
+                md_bitfield_set_bit(&state->selection.highlight_mask, pair->idx[0]);
+                md_bitfield_set_bit(&state->selection.highlight_mask, pair->idx[1]);
+            }
             break;
+        }
+        case viamd::EventType_ViamdPickingTooltipTextRequest: {
+            ASSERT(event.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
+            PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)event.payload;
+            if (req->hit.domain == PickingDomain_Atom || req->hit.domain == PickingDomain_Bond) {
+                fill_picking_tooltip_text(&req->sb, *state, req->hit);
+            }
         }
         default:
             break;
