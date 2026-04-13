@@ -4,6 +4,7 @@
 #include <core/md_os.h>
 #include <core/md_lru_cache.inl>
 #include <core/md_hash.h>
+#include <core/md_str_builder.h>
 
 #include <md_system.h>
 #include <md_trajectory.h>
@@ -61,13 +62,16 @@
 #define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
 #define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
 
+#define INVALID_PICKING_IDX (~0U)
+
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
 constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
 
-enum {
-    PickingDomain_Atom = HASH_STR_LIT("picking domain atom"),
-    PickingDomain_Bond = HASH_STR_LIT("picking domain bond"),
-};
+typedef uint64_t PickingDomainID;
+typedef uint64_t PickingSourceID;
+
+constexpr PickingDomainID PickingDomain_Atom = HASH_STR_LIT64("picking domain atom");
+constexpr PickingDomainID PickingDomain_Bond = HASH_STR_LIT64("picking domain bond");
 
 enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Component, Instance };
@@ -175,12 +179,6 @@ enum MolBit_ {
     MolBit_DirtyFlags               = 1u << 3,
     MolBit_DirtyBonds               = 1u << 4,
     MolBit_ClearVelocity            = 1u << 5,
-};
-
-enum RecenterTarget {
-    RecenterTarget_UnitcellCenter,
-    RecenterTarget_Origin,
-    RecenterTarget_COUNT,
 };
 
 // This is viamd's representation of a property
@@ -571,9 +569,6 @@ struct FrameCache {
     int32_t frame_idx[FRAME_CACHE_SIZE] = {};
 };
 
-typedef uint64_t PickingDomainID;
-typedef uint64_t PickingSourceID;
-
 struct PickingRange {
     PickingDomainID domain = 0;
     uint32_t beg = 0;
@@ -629,6 +624,41 @@ struct PickingHit {
     float depth = 1.0f;
 };
 
+struct PickingReadbackRequest {
+    uint32_t fbo = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    vec2_t surface_coord = {0};
+    vec2_t screen_coord = {0};
+    mat4_t inv_mvp = mat4_ident();
+};
+
+struct InteractionSurfaceArgs {
+    vec2_t size = {0, 0};
+
+    const md_system_t* sys = nullptr;
+    const md_bitfield_t* candidate_mask = nullptr;
+
+    md_bitfield_t* highlight_mask = nullptr;
+    md_bitfield_t* selection_mask = nullptr;
+    SingleSelectionSequence* single_selection_sequence = nullptr;
+    SelectionGranularity selection_granularity = SelectionGranularity::Atom;
+
+    const Camera* camera = nullptr;
+    const mat4_t* mvp = nullptr;
+    const mat4_t* inv_mvp = nullptr;
+    ViewTransform* view_target = nullptr;
+    const TrackballControllerParam* trackball_param = nullptr;
+
+    PickingSurface* picking_surface = nullptr;
+    const PickingHandler* picking_handler = nullptr;
+    PickingSourceID expected_source = 0;
+
+    uint32_t fbo = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -666,11 +696,7 @@ struct ApplicationState {
             vec2_t sequence[JITTER_SEQUENCE_SIZE] {};
         } jitter;
 
-        struct {
-            quat_t target_orientation = {};
-            vec3_t target_position = {};
-            float  target_distance = 0;
-        } animation;
+		ViewTransform target = {};
     } view;
 
     struct {
@@ -727,21 +753,10 @@ struct ApplicationState {
     // --- ATOM SELECTION ---
     struct {
         SelectionGranularity granularity = SelectionGranularity::Atom;
-
-        struct {
-            int32_t hovered = -1;
-            int32_t right_click = -1;
-        } atom_idx;
-
-        struct {
-            int32_t hovered = -1;
-            int32_t right_click = -1;
-        } bond_idx;
-
         SingleSelectionSequence single_selection_sequence;
 
-        md_bitfield_t selection_mask{};
-        md_bitfield_t highlight_mask{};
+        md_bitfield_t selection_mask {};
+        md_bitfield_t highlight_mask {};
         Selection* stored_selections = NULL;
 
         struct {
@@ -778,11 +793,14 @@ struct ApplicationState {
 
     // --- FRAMEBUFFER ---
     GBuffer gbuffer {};
-    PickingSurface picking_surface {};
-    PickingHandler picking_handler {};
 
-    // Old
-    PickingData picking {};
+    // --- PICKING ---
+    PickingSurface picking_surface {};      // Surface for main viewport picking
+
+    PickingRange   picking_range_atom {};   // Reserved picking range for atoms
+    PickingRange   picking_range_bond {};   // Reserved picking range for bonds
+
+    PickingHandler picking_handler {};      // Handler for managing picking interactions
 
     // --- ANIMATION ---
     struct {
@@ -899,9 +917,7 @@ struct ApplicationState {
         mat4_t model_mat = {0};
 
         Camera camera = {};
-        quat_t target_ori = {};
-        vec3_t target_pos = {};
-        float  target_dist = 0;
+		ViewTransform target = {};
     } density_volume;
 
     // --- VISUALS ---
@@ -1100,6 +1116,12 @@ struct LoadDataPayload {
     str_t path_to_file;
 };
 
+struct PickingTooltipTextRequest {
+    const ApplicationState& app;
+    const PickingHit& hit;
+    md_strb_t sb = {};
+};
+
 static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
     case SelectionOperator::Or:
@@ -1234,11 +1256,9 @@ static inline uint64_t generate_fingerprint() {
     return (uint64_t)md_time_now();
 }
 
-void draw_info_window(const ApplicationState& state, uint32_t picking_idx);
-void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
+void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state);
 
-md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx);
-md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx);
+//void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
 
 void interrupt_async_tasks(ApplicationState* state);
 
@@ -1288,13 +1308,17 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state);
 
 void picking_handler_new_frame(PickingHandler* handler);
 PickingSpace* picking_handler_current_space(PickingHandler* handler);
-const PickingSpace* picking_handler_find_space(const PickingHandler* handler, uint32_t submitted_frame_idx);
+const PickingSpace* picking_handler_find_space(const PickingHandler& handler, uint32_t submitted_frame_idx);
 
+// Reserves a range within the picking space for a specific domain (atoms, bonds, etc).
+// Returns true if the range was successfully reserved, false if there was not enough space. If successful, out_range will be filled with the reserved range.
+// out_range is optional and can be null if the caller does not need the details of the reserved range (e.g. just needs to know if the reservation was successful or not).
 bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count);
 
 void picking_surface_init(PickingSurface* surface, PickingSourceID source);
 void picking_surface_free(PickingSurface* surface);
 
+// Submits a picking readback request for the given surface. The readback will be performed asynchronously, and the result can be polled using picking_surface_poll_hit.
 bool picking_surface_submit_readback(
     PickingSurface* surface,
     uint32_t fbo,
@@ -1306,10 +1330,29 @@ bool picking_surface_submit_readback(
     const mat4_t& inv_mvp
 );
 
+// Polls for the result of a picking readback request. If a hit is detected, out_hit will be filled with the details of the hit and the function will return true.
+// If no hit is detected the function will return false.
 bool picking_surface_poll_hit(
     PickingHit* out_hit,
     PickingSurface* surface,
     const PickingHandler* handler
+);
+
+// Convenience wrapper for the common frame loop path.
+// Preserves the existing pipeline ordering by submitting the current frame readback and then polling the previous completed one.
+bool picking_surface_submit_readback_and_poll_hit(
+    PickingHit* out_hit,
+    PickingSurface* surface,
+    const PickingHandler& handler,
+    const PickingReadbackRequest& request
+);
+
+// Creates an invisible interactive surface, performs picking and applies the common
+// selection / highlight / camera interaction behavior for pickable canvases.
+// Returns the pressed state from the underlying InvisibleButton.
+bool interaction_surface(
+    PickingHit* out_hit,
+    const InteractionSurfaceArgs& args
 );
 
 // File Queue

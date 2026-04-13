@@ -21,8 +21,6 @@
 #include <implot.h>
 #include <implot_internal.h>
 
-#define USE_FRAMEBUFFER_SCALE 0
-
 static const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
     for (size_t i = 0; i < len; ++i) {
         if (str_eq(arr[i], str)) {
@@ -34,17 +32,12 @@ static const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
 
 static void init_all_representations(ApplicationState* state);
 
-void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
-    const auto& sys = state.mold.sys;
-    if (picking_idx == INVALID_PICKING_IDX) return;
-    
-	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
-    defer { md_vm_arena_temp_end(temp); };
+static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& state, const PickingHit& hit) {
+    ASSERT(sb);
+    const md_system_t& sys = state.mold.sys;
 
-    md_strb_t sb = md_strb_create(state.allocator.frame);
-
-    if (picking_idx < sys.atom.count) {
-        int atom_idx = picking_idx;
+    if (hit.domain == PickingDomain_Atom && hit.local_idx < sys.atom.count) {
+        int atom_idx = hit.local_idx;
         int local_idx = atom_idx;
         const vec3_t pos = md_atom_coord(&sys.atom, atom_idx);
         str_t type = md_atom_name(&sys.atom, atom_idx);
@@ -72,36 +65,36 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
 
         // @NOTE(Robin): External indices begin with 1 not 0
 		if (state.selection.granularity == SelectionGranularity::Atom) {
-            md_strb_fmt(&sb, "atom[%i]", atom_idx + 1);
+            md_strb_fmt(sb, "atom[%i]", atom_idx + 1);
             if (comp_idx != -1) {
-                md_strb_fmt(&sb, "[%i]: ", local_idx + 1);
+                md_strb_fmt(sb, "[%i]: ", local_idx + 1);
             } else {
-				md_strb_push_cstr(&sb, ": ");
+				md_strb_push_cstr(sb, ": ");
             }
-            md_strb_push_str(&sb, type);
-			md_strb_push_char(&sb, ' ');
+            md_strb_push_str(sb, type);
+			md_strb_push_char(sb, ' ');
             if (z) {
-                md_strb_fmt(&sb, "%.*s %.*s ", STR_ARG(elem), STR_ARG(symb));
+                md_strb_fmt(sb, "%.*s %.*s ", STR_ARG(elem), STR_ARG(symb));
             }
-            md_strb_fmt(&sb, "(%.3f, %.3f, %.3f)\n", pos.x, pos.y, pos.z);    
+            md_strb_fmt(sb, "(%.3f, %.3f, %.3f)\n", pos.x, pos.y, pos.z);    
         }
         
         if (comp_idx != -1 && (state.selection.granularity == SelectionGranularity::Atom || state.selection.granularity == SelectionGranularity::Component)) {
-            md_strb_fmt(&sb, "comp[%i]", comp_idx + 1);
+            md_strb_fmt(sb, "comp[%i]", comp_idx + 1);
             if (comp_name) {
-                md_strb_fmt(&sb, ": " STR_FMT, STR_ARG(comp_name));
+                md_strb_fmt(sb, ": " STR_FMT, STR_ARG(comp_name));
             }
-			md_strb_fmt(&sb, " (seq_id: %i)\n", comp_seq_id);
+			md_strb_fmt(sb, " (seq_id: %i)\n", comp_seq_id);
         }
         if (inst_idx != -1) {
-            md_strb_fmt(&sb, "inst[%i]", inst_idx + 1);
+            md_strb_fmt(sb, "inst[%i]", inst_idx + 1);
             if (inst_id) {
-                md_strb_fmt(&sb, ": " STR_FMT, STR_ARG(inst_id));
+                md_strb_fmt(sb, ": " STR_FMT, STR_ARG(inst_id));
             }
 			if (auth_id) {
-                md_strb_fmt(&sb, " (" STR_FMT ")", STR_ARG(auth_id));
+                md_strb_fmt(sb, " (" STR_FMT ")", STR_ARG(auth_id));
             }
-            md_strb_push_char(&sb, '\n');
+            md_strb_push_char(sb, '\n');
         }
 
         uint32_t flags = 0;
@@ -120,27 +113,27 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
 		const uint32_t TERM_3 = MD_FLAG_NUCLEIC_ACID | MD_FLAG_TERMINAL_END;
 
         if (flags) {
-            sb += "flags: ";
-            if (flags & MD_FLAG_HETERO)         { sb += "HETERO "; }
-			if (flags & MD_FLAG_POLYPEPTIDE)    { sb += "POLYPEPTIDE "; }
-            if (flags & MD_FLAG_AMINO_ACID)     { sb += "AMINO-ACID "; }
-            if (flags & MD_FLAG_SIDE_CHAIN)     { sb += "SIDE-CHAIN "; }
-			if (flags & MD_FLAG_NUCLEIC_ACID)   { sb += "NUCLEIC-ACID "; }
-            if (flags & MD_FLAG_NUCLEOTIDE)     { sb += "NUCLEOTIDE "; }
-            if (flags & MD_FLAG_NUCLEOSIDE)     { sb += "NUCLEOSIDE "; }
-            if (flags & MD_FLAG_NUCLEOBASE)     { sb += "NUCLEOBASE "; }
-            if (flags & MD_FLAG_WATER)          { sb += "WATER "; }
-            if (flags & MD_FLAG_ION)            { sb += "ION "; }
-            if (flags & MD_FLAG_BACKBONE)       { sb += "BACKBONE "; }
-            if ((flags & TERM_N) == TERM_N)     { sb += "N-TERMINUS "; }
-            if ((flags & TERM_C) == TERM_C)     { sb += "C-TERMINUS "; }
-			if ((flags & TERM_5) == TERM_5)     { sb += "5'-TERMINUS "; }
-			if ((flags & TERM_3) == TERM_3)     { sb += "3'-TERMINUS "; }
-            if (flags & MD_FLAG_SP)             { sb += "SP "; }
-            if (flags & MD_FLAG_SP2)            { sb += "SP2 "; }
-            if (flags & MD_FLAG_SP3)            { sb += "SP3 "; }
-            if (flags & MD_FLAG_AROMATIC)       { sb += "AROMATIC "; }
-            sb += "\n";
+            *sb += "flags: ";
+            if (flags & MD_FLAG_HETERO)         { *sb += "HETERO "; }
+			if (flags & MD_FLAG_POLYPEPTIDE)    { *sb += "POLYPEPTIDE "; }
+            if (flags & MD_FLAG_AMINO_ACID)     { *sb += "AMINO-ACID "; }
+            if (flags & MD_FLAG_SIDE_CHAIN)     { *sb += "SIDE-CHAIN "; }
+			if (flags & MD_FLAG_NUCLEIC_ACID)   { *sb += "NUCLEIC-ACID "; }
+            if (flags & MD_FLAG_NUCLEOTIDE)     { *sb += "NUCLEOTIDE "; }
+            if (flags & MD_FLAG_NUCLEOSIDE)     { *sb += "NUCLEOSIDE "; }
+            if (flags & MD_FLAG_NUCLEOBASE)     { *sb += "NUCLEOBASE "; }
+            if (flags & MD_FLAG_WATER)          { *sb += "WATER "; }
+            if (flags & MD_FLAG_ION)            { *sb += "ION "; }
+            if (flags & MD_FLAG_BACKBONE)       { *sb += "BACKBONE "; }
+            if ((flags & TERM_N) == TERM_N)     { *sb += "N-TERMINUS "; }
+            if ((flags & TERM_C) == TERM_C)     { *sb += "C-TERMINUS "; }
+			if ((flags & TERM_5) == TERM_5)     { *sb += "5'-TERMINUS "; }
+			if ((flags & TERM_3) == TERM_3)     { *sb += "3'-TERMINUS "; }
+            if (flags & MD_FLAG_SP)             { *sb += "SP "; }
+            if (flags & MD_FLAG_SP2)            { *sb += "SP2 "; }
+            if (flags & MD_FLAG_SP3)            { *sb += "SP3 "; }
+            if (flags & MD_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
+            *sb += "\n";
         }
         /*
         // @TODO: REIMPLEMENT THIS
@@ -150,8 +143,8 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
         }
         */
     }
-    else if (picking_idx >= 0x80000000) {
-        int bond_idx = picking_idx & 0x7FFFFFFF;
+    else if (hit.domain == PickingDomain_Bond) {
+        int bond_idx = hit.local_idx;
         if (0 <= bond_idx && bond_idx < (int)sys.bond.count) {
             md_atom_pair_t   pair = sys.bond.pairs[bond_idx];
             md_bond_flags_t flags = sys.bond.flags[bond_idx];
@@ -193,48 +186,38 @@ void draw_info_window(const ApplicationState& state, uint32_t picking_idx) {
             str_t type0 = md_atom_name(&sys.atom, pair.idx[0]);
             str_t type1 = md_atom_name(&sys.atom, pair.idx[1]);
 
-            md_strb_fmt(&sb, "bond: " STR_FMT "%c" STR_FMT "\n", STR_ARG(type0), bond_type, STR_ARG(type1));
-            md_strb_fmt(&sb, "flags: %.*s\n", len, bond_flags_buf);
-            md_strb_fmt(&sb, "length: %.3f\n", d);
+            md_strb_fmt(sb, "bond: " STR_FMT "%c" STR_FMT "\n", STR_ARG(type0), bond_type, STR_ARG(type1));
+            md_strb_fmt(sb, "flags: %.*s\n", len, bond_flags_buf);
+            md_strb_fmt(sb, "length: %.3f\n", d);
         }
     }
-
-    const ImVec2 offset = { 10.f, 18.f };
-    const ImVec2 new_pos = {ImGui::GetMousePos().x + offset.x, ImGui::GetMousePos().y + offset.y};
-    ImGui::SetNextWindowPos(new_pos);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-    ImGui::Begin("##Atom Info", 0,
-        ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
-    ImGui::Text("%s", md_strb_to_cstr(sb));
-    ImGui::End();
-    ImGui::PopStyleColor();
 }
 
-void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP) {
-    out_picking = {};
+void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state) {
+    if (hit.raw_idx == INVALID_PICKING_IDX) return;
+    
+	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
+    defer { md_vm_arena_temp_end(temp); };
 
-    vec2_t c = coord;
+    PickingTooltipTextRequest tooltip_request = {
+        .app = state,
+        .hit = hit,
+        .sb = md_strb_create(state.allocator.frame),
+    };
 
-    if (0.f <= coord.x && coord.x < (float)gbuffer.width && 0.f <= coord.y && coord.y < (float)gbuffer.height) {
-        extract_gbuffer_picking_idx_and_depth(&out_picking.idx, &out_picking.depth, &gbuffer, (int)c.x, (int)c.y);
-        const vec4_t viewport = {0, 0, (float)gbuffer.width, (float)gbuffer.height};
-        out_picking.world_coord = mat4_unproject({c.x, c.y, out_picking.depth}, inv_MVP, viewport);
-        out_picking.screen_coord = {c.x, c.y};
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingTooltipTextRequest, viamd::EventPayloadType_PickingTooltipTextRequest, &tooltip_request);
+
+    if (!md_strb_empty(tooltip_request.sb)) {
+        const ImVec2 offset = { 10.f, 18.f };
+        const ImVec2 new_pos = {ImGui::GetMousePos().x + offset.x, ImGui::GetMousePos().y + offset.y};
+        ImGui::SetNextWindowPos(new_pos);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
+        ImGui::Begin("##Picking Tooltip Window", 0,
+            ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
+        ImGui::Text("%s", md_strb_to_cstr(tooltip_request.sb));
+        ImGui::End();
+        ImGui::PopStyleColor();
     }
-}
-
-md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx) {
-    if (picking_idx < 0x80000000) {
-        return (md_atom_idx_t)picking_idx;
-    }
-    return -1;
-}
-
-md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx) {
-    if (picking_idx >= 0x80000000) {
-        return (md_bond_idx_t)(picking_idx & 0x7FFFFFFF);
-    }
-    return -1;
 }
 
 void interrupt_async_tasks(ApplicationState* state) {
@@ -442,12 +425,6 @@ void init_trajectory_data(ApplicationState* data) {
 
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
-        data->picking.idx = INVALID_PICKING_IDX;
-        data->selection.atom_idx.hovered = -1;
-        data->selection.atom_idx.right_click = -1;
-        data->selection.bond_idx.hovered = -1;
-        data->selection.bond_idx.right_click = -1;
-
         md_bitfield_clear(&data->operations.target_mask);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
@@ -686,7 +663,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 } else if (str_eq(ident, STR_LIT("Orientation"))) {
                     viamd::extract_quat(data->view.camera.orientation, arg);
                 } else if (str_eq(ident, STR_LIT("Distance"))) {
-                    viamd::extract_flt(data->view.camera.focus_distance, arg);
+                    viamd::extract_flt(data->view.camera.distance, arg);
                 } else if (str_eq(ident, STR_LIT("Rotation"))) {
                     // DEPRECATED
                     viamd::extract_quat(data->view.camera.orientation, arg);
@@ -801,9 +778,9 @@ void load_workspace(ApplicationState* data, str_t filename) {
         }
     }
 
-    data->view.animation.target_position    = data->view.camera.position;
-    data->view.animation.target_orientation = data->view.camera.orientation;
-    data->view.animation.target_distance    = data->view.camera.focus_distance;
+    data->view.target.position    = data->view.camera.position;
+    data->view.target.orientation = data->view.camera.orientation;
+    data->view.target.distance    = data->view.camera.distance;
     
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
     
@@ -897,7 +874,7 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_section_header(state, STR_LIT("Camera"));
     viamd::write_vec3(state, STR_LIT("Position"), app_state->view.camera.position);
     viamd::write_quat(state, STR_LIT("Orientation"), app_state->view.camera.orientation);
-    viamd::write_flt(state,  STR_LIT("Distance"), app_state->view.camera.focus_distance);
+    viamd::write_flt(state,  STR_LIT("Distance"), app_state->view.camera.distance);
     viamd::write_int(state,  STR_LIT("Mode"), (int)app_state->view.mode);
 
 
@@ -961,7 +938,6 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     str_t text = md_strb_to_str(state.sb);
     md_file_write(file, str_ptr(text), str_len(text));
 }
-
 
 // --- SELECTION ---
 Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* atom_mask) {
@@ -2087,11 +2063,9 @@ PickingSpace* picking_handler_current_space(PickingHandler* handler) {
     return &handler->history[handler->frame_idx % ARRAY_SIZE(handler->history)].space;
 }
 
-const PickingSpace* picking_handler_find_space(const PickingHandler* handler, uint32_t submitted_frame_idx) {
-    ASSERT(handler);
-
-    for (size_t i = 0; i < ARRAY_SIZE(handler->history); ++i) {
-        const auto& hist = handler->history[i];
+const PickingSpace* picking_handler_find_space(const PickingHandler& handler, uint32_t submitted_frame_idx) {
+    for (size_t i = 0; i < ARRAY_SIZE(handler.history); ++i) {
+        const auto& hist = handler.history[i];
         if (hist.submitted_frame_idx == submitted_frame_idx) {
             return &hist.space;
         }
@@ -2204,11 +2178,10 @@ static const PickingRange* find_picking_range(const PickingSpace* space, uint32_
 bool picking_surface_poll_hit(
     PickingHit* out_hit,
     PickingSurface* surface,
-    const PickingHandler* handler
+    const PickingHandler& handler
 ) {
     ASSERT(out_hit);
     ASSERT(surface);
-    ASSERT(handler);
 
     *out_hit = {};
 
@@ -2265,6 +2238,253 @@ bool picking_surface_poll_hit(
     out_hit->world_pos = mat4_unproject({slot.surface_coord.x, slot.surface_coord.y, depth}, slot.inv_mvp, viewport);
 
     return true;
+}
+
+bool picking_surface_submit_readback_and_poll_hit(
+    PickingHit* out_hit,
+    PickingSurface* surface,
+    const PickingHandler& handler,
+    const PickingReadbackRequest& request
+) {
+    ASSERT(out_hit);
+    ASSERT(surface);
+
+    picking_surface_submit_readback(
+        surface,
+        request.fbo,
+        request.width,
+        request.height,
+        handler.frame_idx,
+        request.surface_coord,
+        request.screen_coord,
+        request.inv_mvp
+    );
+
+    return picking_surface_poll_hit(out_hit, surface, handler);
+}
+
+bool interaction_surface(
+    PickingHit* out_hit,
+    const InteractionSurfaceArgs& args
+) {
+    ASSERT(out_hit);
+    ASSERT(args.sys);
+    ASSERT(args.highlight_mask);
+    ASSERT(args.selection_mask);
+    ASSERT(args.single_selection_sequence);
+    ASSERT(args.camera);
+    ASSERT(args.mvp);
+    ASSERT(args.inv_mvp);
+    ASSERT(args.view_target);
+    ASSERT(args.trackball_param);
+    ASSERT(args.picking_surface);
+    ASSERT(args.picking_handler);
+
+    *out_hit = {};
+
+    enum class RegionMode { Append, Remove };
+
+    const bool pressed = ImGui::InvisibleButton(
+        "canvas",
+        {args.size.x, args.size.y},
+        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap
+    );
+
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (!window) {
+        return pressed;
+    }
+
+    bool is_performing_region_selection = false;
+    ImDrawList* draw_list = window->DrawList;
+    ASSERT(draw_list);
+
+    const ImVec2 canvas_min = ImGui::GetItemRectMin();
+    const ImVec2 canvas_max = ImGui::GetItemRectMax();
+    const ImVec2 canvas_size = ImGui::GetItemRectSize();
+
+    if (ImGui::IsItemHovered() && args.fbo && args.width && args.height) {
+        const ImVec2 mouse_pos = ImGui::GetMousePos();
+        const ImVec2 local_mouse = mouse_pos - canvas_min;
+
+        PickingReadbackRequest request = {
+            .fbo = args.fbo,
+            .width = args.width,
+            .height = args.height,
+            .surface_coord = {
+                local_mouse.x,
+                canvas_size.y - local_mouse.y,
+            },
+            .screen_coord = {local_mouse.x, local_mouse.y},
+            .inv_mvp = *args.inv_mvp,
+        };
+
+        picking_surface_submit_readback_and_poll_hit(out_hit, args.picking_surface, *args.picking_handler, request);
+    }
+
+    const bool valid_hit = out_hit->raw_idx != INVALID_PICKING_IDX &&
+        (args.expected_source == 0 || out_hit->source == args.expected_source);
+
+    if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
+        if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
+            ImGui::ResetMouseDragDelta();
+        }
+
+        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+            RegionMode mode = RegionMode::Append;
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                mode = RegionMode::Append;
+            } else if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                mode = RegionMode::Remove;
+            }
+
+            const ImVec2 ext = ImGui::GetMouseDragDelta(mode == RegionMode::Append ? ImGuiMouseButton_Left : ImGuiMouseButton_Right);
+            const ImVec2 pos = ImGui::GetMousePos() - ext;
+            const ImU32 fill_col = 0x22222222;
+            const ImU32 line_col = 0x88888888;
+
+            ImVec2 sel_min = ImClamp(ImMin(pos, pos + ext), canvas_min, canvas_max);
+            ImVec2 sel_max = ImClamp(ImMax(pos, pos + ext), canvas_min, canvas_max);
+
+            draw_list->AddRectFilled(sel_min, sel_max, fill_col);
+            draw_list->AddRect(sel_min, sel_max, line_col);
+
+            sel_min -= canvas_min;
+            sel_max -= canvas_min;
+
+            md_allocator_i* temp_alloc = md_get_temp_allocator();
+            md_bitfield_t mask = md_bitfield_create(temp_alloc);
+
+            if (sel_min != sel_max) {
+                md_bitfield_clear(args.highlight_mask);
+                is_performing_region_selection = true;
+
+                if (args.candidate_mask) {
+                    md_bitfield_iter_t it = md_bitfield_iter_create(args.candidate_mask);
+                    while (md_bitfield_iter_next(&it)) {
+                        const uint64_t idx = md_bitfield_iter_idx(&it);
+                        const vec4_t p = mat4_mul_vec4(*args.mvp, vec4_set(args.sys->atom.x[idx], args.sys->atom.y[idx], args.sys->atom.z[idx], 1.0f));
+                        const vec2_t c = {
+                            ( p.x / p.w * 0.5f + 0.5f) * canvas_size.x,
+                            (-p.y / p.w * 0.5f + 0.5f) * canvas_size.y,
+                        };
+
+                        if (sel_min.x <= c.x && c.x <= sel_max.x && sel_min.y <= c.y && c.y <= sel_max.y) {
+                            md_bitfield_set_bit(&mask, idx);
+                        }
+                    }
+                } else {
+                    for (size_t idx = 0; idx < args.sys->atom.count; ++idx) {
+                        const vec4_t p = mat4_mul_vec4(*args.mvp, vec4_set(args.sys->atom.x[idx], args.sys->atom.y[idx], args.sys->atom.z[idx], 1.0f));
+                        const vec2_t c = {
+                            ( p.x / p.w * 0.5f + 0.5f) * canvas_size.x,
+                            (-p.y / p.w * 0.5f + 0.5f) * canvas_size.y,
+                        };
+
+                        if (sel_min.x <= c.x && c.x <= sel_max.x && sel_min.y <= c.y && c.y <= sel_max.y) {
+                            md_bitfield_set_bit(&mask, idx);
+                        }
+                    }
+                }
+
+                grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.sys);
+
+                if (mode == RegionMode::Append) {
+                    md_bitfield_or(args.highlight_mask, args.selection_mask, &mask);
+                } else {
+                    md_bitfield_andnot(args.highlight_mask, args.selection_mask, &mask);
+                }
+
+                if (pressed || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                    md_bitfield_copy(args.selection_mask, args.highlight_mask);
+                }
+            } else if (pressed) {
+                if (valid_hit) {
+                    if (mode == RegionMode::Append) {
+                        if (out_hit->domain == PickingDomain_Atom) {
+                            const int atom_idx = (int)out_hit->local_idx;
+                            single_selection_sequence_push_idx(args.single_selection_sequence, atom_idx);
+                            md_bitfield_set_bit(&mask, atom_idx);
+                        } else if (out_hit->domain == PickingDomain_Bond && args.sys->bond.pairs) {
+                            const md_atom_pair_t pair = args.sys->bond.pairs[out_hit->local_idx];
+                            md_bitfield_set_bit(&mask, pair.idx[0]);
+                            md_bitfield_set_bit(&mask, pair.idx[1]);
+                        }
+                        grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.sys);
+                        md_bitfield_or_inplace(args.selection_mask, &mask);
+                    } else {
+                        if (out_hit->domain == PickingDomain_Atom) {
+                            const int atom_idx = (int)out_hit->local_idx;
+                            single_selection_sequence_pop_idx(args.single_selection_sequence, atom_idx);
+                            md_bitfield_set_bit(&mask, atom_idx);
+                        } else if (out_hit->domain == PickingDomain_Bond && args.sys->bond.pairs) {
+                            const md_atom_pair_t pair = args.sys->bond.pairs[out_hit->local_idx];
+                            md_bitfield_set_bit(&mask, pair.idx[0]);
+                            md_bitfield_set_bit(&mask, pair.idx[1]);
+                        }
+                        grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.sys);
+                        md_bitfield_andnot_inplace(args.selection_mask, &mask);
+                    }
+                } else {
+                    single_selection_sequence_clear(args.single_selection_sequence);
+                    md_bitfield_clear(args.selection_mask);
+                    md_bitfield_clear(args.highlight_mask);
+                }
+            }
+        }
+    } else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
+        md_bitfield_clear(args.highlight_mask);
+        if (valid_hit) {
+            if (out_hit->domain == PickingDomain_Atom) {
+                const int atom_idx = (int)out_hit->local_idx;
+                if (0 <= atom_idx && atom_idx < (int)args.sys->atom.count) {
+                    md_bitfield_set_bit(args.highlight_mask, atom_idx);
+                    grow_mask_by_selection_granularity(args.highlight_mask, args.selection_granularity, *args.sys);
+                }
+            } else if (out_hit->domain == PickingDomain_Bond && args.sys->bond.pairs) {
+                const int bond_idx = (int)out_hit->local_idx;
+                if (0 <= bond_idx && bond_idx < (int)args.sys->bond.count) {
+                    const md_atom_pair_t pair = args.sys->bond.pairs[bond_idx];
+                    if (0 <= pair.idx[0] && pair.idx[0] < (int)args.sys->atom.count) {
+                        md_bitfield_set_bit(args.highlight_mask, pair.idx[0]);
+                    }
+                    if (0 <= pair.idx[1] && pair.idx[1] < (int)args.sys->atom.count) {
+                        md_bitfield_set_bit(args.highlight_mask, pair.idx[1]);
+                    }
+                    grow_mask_by_selection_granularity(args.highlight_mask, args.selection_granularity, *args.sys);
+                }
+            }
+        }
+    }
+
+    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+        if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !is_performing_region_selection) {
+            const ImVec2 delta = ImGui::GetIO().MouseDelta;
+            const ImVec2 coord = ImGui::GetMousePos() - canvas_min;
+            const float scroll_delta = ImGui::GetIO().MouseWheel;
+
+            TrackballControllerInput input = {};
+            input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+            input.pan_button = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+            input.dolly_button = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+            input.mouse_coord_curr = {coord.x, coord.y};
+            input.mouse_coord_prev = {coord.x - delta.x, coord.y - delta.y};
+            input.screen_size = {canvas_size.x, canvas_size.y};
+            input.dolly_delta = scroll_delta;
+            input.fov_y = args.camera->fov_y;
+
+            TrackballFlags flags = TrackballFlags_None;
+            if (ImGui::IsItemActive()) {
+                flags |= TrackballFlags_EnableAllInteractions;
+            } else {
+                flags |= TrackballFlags_DollyEnabled;
+            }
+
+            camera_controller_trackball(args.view_target, input, *args.trackball_param, flags);
+        }
+    }
+
+    return pressed;
 }
 
 bool file_queue_empty(const FileQueue* queue) {
@@ -2447,22 +2667,13 @@ void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_
         max_ext = vec3_max(max_ext, vec3_add_f(p, radius));
     }
 
-    vec3_t optimal_pos;
-    quat_t optimal_ori;
-    float  optimal_dist;
-
-    camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, basis, min_ext, max_ext);
-	optimal_pos = mat4_mul_vec3(state->mold.unitcell_transform, optimal_pos, 1.0f);
+    ViewTransform opt_view = compute_optimal_view(min_ext, max_ext, basis);
+	opt_view.position = mat4_mul_vec3(state->mold.unitcell_transform, opt_view.position, 1.0f);
 
     if (move_camera) {
-        state->view.animation.target_position    = optimal_pos;
-        state->view.animation.target_orientation = optimal_ori;
-        state->view.animation.target_distance    = optimal_dist;
-
+		state->view.target = opt_view;
         if (!smooth_transition) {
-            state->view.camera.position       = optimal_pos;
-            state->view.camera.orientation    = optimal_ori;
-            state->view.camera.focus_distance = optimal_dist;
+			state->view.camera = opt_view;
         }
     }
 
@@ -2481,13 +2692,26 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
     for (size_t i = 0; i < num_events; ++i) {
         const viamd::Event& event = events[i];
         switch (event.type) {
-        case viamd::EventType_ViamdPickingRangeReserve:
-            MD_LOG_DEBUG("RESERVE RANGE EVENT");
+        case viamd::EventType_ViamdFrameTick:
             break;
+        case viamd::EventType_ViamdPickingRangeReserve: {
+			ASSERT(event.payload_type == viamd::EventPayloadType_PickingSpace);
+			PickingSpace* space = (PickingSpace*)event.payload;
+            size_t num_atoms = state->mold.sys.atom.count;
+            size_t num_bonds = state->mold.sys.bond.count;
+            picking_reserve_range(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
+            picking_reserve_range(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
+            break;
+        }
         case viamd::EventType_ViamdPickingHit: {
-            ASSERT(event.payload_type == viamd::EventPayloadType_PickingHit);
-            PickingHit* hit = (PickingHit*)event.payload;
-            while(0) {};
+            break;
+        }
+        case viamd::EventType_ViamdPickingTooltipTextRequest: {
+            ASSERT(event.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
+            PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)event.payload;
+            if (req->hit.domain == PickingDomain_Atom || req->hit.domain == PickingDomain_Bond) {
+                fill_picking_tooltip_text(&req->sb, *state, req->hit);
+            }
             break;
         }
         default:
