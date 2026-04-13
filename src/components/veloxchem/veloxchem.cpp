@@ -423,7 +423,7 @@ struct VeloxChem : viamd::EventHandler {
 
         GBuffer gbuf = {};
         PickingSurface picking_surface = {};
-        PickingData picking = {};
+        //PickingData picking = {};
         Camera camera = {};
 		ViewTransform target = {};
 
@@ -5395,10 +5395,12 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::SetCursorScreenPos(p0);
 
                     draw_list->PushClipRect(p0, p1);
-                    defer{ draw_list->PopClipRect(); };
-
                     draw_list->ChannelsSetCurrent(1);
                     ImGui::PushID(i);
+                    defer {
+                        draw_list->PopClipRect();
+                        ImGui::PopID();
+                    };
                     interaction_canvas(p1-p0, selection, view, state.mold.sys);
 
                     if (ImGui::IsItemHovered()) {
@@ -5417,8 +5419,6 @@ struct VeloxChem : viamd::EventHandler {
                         }
                         hovered_canvas_rect = rect;
                     }
-
-                    ImGui::PopID();
 
                     draw_list->ChannelsSetCurrent(0);
 
@@ -5844,20 +5844,23 @@ struct VeloxChem : viamd::EventHandler {
                 glDisable(GL_SCISSOR_TEST);
 
                 if (hovered_canvas_rect.GetArea() > 0) {
-                    ImVec2 coord = ImGui::GetMousePos() - hovered_canvas_rect.Min;
-                    coord.y = hovered_canvas_rect.GetSize().y - coord.y;
-                    extract_picking_data(nto.picking, nto.gbuf, {coord.x, coord.y}, inv_MVP);
+                    ImVec2 screen_coord  = ImGui::GetMousePos();
+                    ImVec2 surface_coord = ImGui::GetMousePos() - hovered_canvas_rect.Min;
+                    screen_coord.y = hovered_canvas_rect.GetSize().y - screen_coord.y;
+                    extract_picking_data(nto.picking, nto.gbuf, {screen_coord.x, screen_coord.y}, inv_MVP);
 
-                    state.selection.atom_idx.hovered = INVALID_PICKING_IDX;
-                    state.selection.bond_idx.hovered = INVALID_PICKING_IDX;
+                    PickingReadbackRequest request = {
+                        .fbo = nto.gbuf.fbo,
+                        .width = nto.gbuf.width,
+                        .height = nto.gbuf.height,
+                        .surface_coord = {surface_coord.x, surface_coord.y},
+                        .screen_coord = {screen_coord.x, screen_coord.y},
+                        .inv_mvp = inv_MVP,
+                    };
 
-                    if (nto.picking.idx != INVALID_PICKING_IDX) {
-                        // The index space is segmented into two parts, the first half is for atoms and the second half is for bonds
-                        if (nto.picking.idx < 0x80000000) {
-                            state.selection.atom_idx.hovered = nto.picking.idx;
-                        } else {
-                            state.selection.bond_idx.hovered = nto.picking.idx & 0x7FFFFFFF;
-                        }
+                    PickingHit hit = {};
+                    if (picking_surface_submit_readback_and_poll_hit(&hit, &nto.picking_surface, state.picking_handler, request)) {
+                        viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
                     }
                 }
             }

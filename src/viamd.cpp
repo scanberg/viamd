@@ -456,11 +456,6 @@ void init_trajectory_data(ApplicationState* data) {
 
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
-        data->selection.atom_idx.hovered = -1;
-        data->selection.atom_idx.right_click = -1;
-        data->selection.bond_idx.hovered = -1;
-        data->selection.bond_idx.right_click = -1;
-
         md_bitfield_clear(&data->operations.target_mask);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);

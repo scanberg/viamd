@@ -727,21 +727,10 @@ struct ApplicationState {
     // --- ATOM SELECTION ---
     struct {
         SelectionGranularity granularity = SelectionGranularity::Atom;
-
-        struct {
-            int32_t hovered = -1;
-            int32_t right_click = -1;
-        } atom_idx;
-
-        struct {
-            int32_t hovered = -1;
-            int32_t right_click = -1;
-        } bond_idx;
-
         SingleSelectionSequence single_selection_sequence;
 
-        md_bitfield_t selection_mask{};
-        md_bitfield_t highlight_mask{};
+        md_bitfield_t selection_mask {};
+        md_bitfield_t highlight_mask {};
         Selection* stored_selections = NULL;
 
         struct {
@@ -780,15 +769,13 @@ struct ApplicationState {
     GBuffer gbuffer {};
 
     // --- PICKING ---
-    PickingSurface picking_surface {}; // Surface for main viewport picking
-    PickingRange   picking_range_atom {};
-    PickingRange   picking_range_bond {};
+    PickingSurface picking_surface {};      // Surface for main viewport picking
 
-    PickingHandler picking_handler {}; // Handler for managing picking interactions
-    PickingHit     picking_hit {};     // Stores the picking hit result that used for filling in the tooltip and other interactions
+    PickingRange   picking_range_atom {};   // Reserved picking range for atoms
+    PickingRange   picking_range_bond {};   // Reserved picking range for bonds
 
-    // Old
-    //PickingData picking {};
+    PickingHandler picking_handler {};      // Handler for managing picking interactions
+    PickingHit     picking_hit {};          // Stores the picking hit result that used for filling in the tooltip and other interactions
 
     // --- ANIMATION ---
     struct {
@@ -1245,10 +1232,8 @@ static inline uint64_t generate_fingerprint() {
 }
 
 void draw_picking_tooltip_window(const ApplicationState& state);
-void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
 
-md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx);
-md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx);
+void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
 
 void interrupt_async_tasks(ApplicationState* state);
 
