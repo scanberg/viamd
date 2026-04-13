@@ -18,15 +18,15 @@ static vec4_t projection_extents(float fov_y, int width, int height, float texel
     return {half_w, half_h, jitter_x, jitter_y};
 }
 
-mat4_t camera_view_to_world_matrix(const Camera& camera) {
-    mat4_t M = mat4_from_quat(camera.orientation);
-    M.col[3] = vec4_from_vec3(camera.position, 1);
+mat4_t camera_view_to_world_matrix(const ViewTransform& transform) {
+    mat4_t M = mat4_from_quat(transform.orientation);
+    M.col[3] = vec4_from_vec3(transform.position, 1);
     return M;
 }
 
-mat4_t camera_world_to_view_matrix(const Camera& camera) {
-    const mat4_t R = mat4_from_quat(quat_conj(camera.orientation));
-    const mat4_t T = mat4_translate(-camera.position.x, -camera.position.y, -camera.position.z);
+mat4_t camera_world_to_view_matrix(const ViewTransform& transform) {
+    const mat4_t R = mat4_from_quat(quat_conj(transform.orientation));
+    const mat4_t T = mat4_translate(-transform.position.x, -transform.position.y, -transform.position.z);
     return R * T;
 }
 
@@ -199,10 +199,8 @@ void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dis
     *out_dist = dist;
 }
 
-bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, const TrackballControllerInput& input, const TrackballControllerParam& param, TrackballFlags flags) {
-    ASSERT(position);
-    ASSERT(orientation);
-    ASSERT(distance);
+bool camera_controller_trackball(ViewTransform* transform, const TrackballControllerInput& input, const TrackballControllerParam& param, TrackballFlags flags) {
+    ASSERT(transform);
 
     const vec2_t half_res = input.screen_size * 0.5f;
     const vec2_t ndc_prev = (vec2_t{input.mouse_coord_prev.x, input.screen_size.y - input.mouse_coord_prev.y} - half_res) / half_res;
@@ -212,29 +210,29 @@ bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* d
 
     if ((flags & TrackballFlags_RotateEnabled) && input.rotate_button && mouse_move) {
         const quat_t q = trackball(ndc_prev, ndc_curr);
-        const vec3_t look_at = *position - *orientation * vec3_t{0, 0, *distance};
-        *orientation = quat_normalize(*orientation * q);
-        *position = look_at + *orientation * vec3_t{0, 0, *distance};
+        const vec3_t look_at = transform->position - transform->orientation * vec3_t{0, 0, transform->distance};
+        transform->orientation = quat_normalize(transform->orientation * q);
+        transform->position = look_at + transform->orientation * vec3_t{0, 0, transform->distance};
         if (flags & TrackballFlags_RotateReturnsTrue) return true;
     } else if ((flags & TrackballFlags_PanEnabled) && input.pan_button && mouse_move) {
         const float aspect_ratio = input.screen_size.x / input.screen_size.y;
         const float scl = tanf(input.fov_y * 0.5f);
         const vec2_t delta = (ndc_curr - ndc_prev) * vec2_t{1, -1} * vec2_t{aspect_ratio * scl, scl};
-        const vec3_t move = *orientation * vec3_t{-delta.x, delta.y, 0} * powf(*distance * param.pan_scale, param.pan_exponent);
-        *position = *position + move;
+        const vec3_t move = transform->orientation * vec3_t{-delta.x, delta.y, 0} * powf(transform->distance * param.pan_scale, param.pan_exponent);
+        transform->position = transform->position + move;
         if (flags & TrackballFlags_PanReturnsTrue) return true;
     } else if ((flags & TrackballFlags_DollyEnabled) && ((input.dolly_button && mouse_move) || input.dolly_delta != 0.f)) {
-        float delta = -(input.mouse_coord_curr.y - input.mouse_coord_prev.y) * powf(*distance * param.dolly_drag_scale, param.dolly_drag_exponent);
-        delta -= input.dolly_delta * powf(*distance * param.dolly_delta_scale, param.dolly_delta_exponent);
-        const vec3_t look_at = *position - *orientation * vec3_t{0, 0, *distance};
-        *distance = CLAMP(*distance + delta, param.min_distance, param.max_distance);
-        *position = look_at + *orientation * vec3_t{0, 0, *distance};
+        float delta = -(input.mouse_coord_curr.y - input.mouse_coord_prev.y) * powf(transform->distance * param.dolly_drag_scale, param.dolly_drag_exponent);
+        delta -= input.dolly_delta * powf(transform->distance * param.dolly_delta_scale, param.dolly_delta_exponent);
+        const vec3_t look_at = transform->position - transform->orientation * vec3_t{0, 0, transform->distance};
+        transform->distance = CLAMP(transform->distance + delta, param.min_distance, param.max_distance);
+        transform->position = look_at + transform->orientation * vec3_t{0, 0, transform->distance};
         if (flags & TrackballFlags_DollyReturnsTrue) return true;
     }
     return false;
 }
 
-void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_dist, const mat3_t& in_basis, const vec3_t& in_min_ext, const vec3_t& in_max_ext, float distance_scale) {
+ViewTransform compute_optimal_view(const vec3_t& in_min_ext, const vec3_t& in_max_ext, const mat3_t& in_basis, float distance_scale) {
     const vec3_t ext = in_max_ext - in_min_ext;
     const float len = MAX(vec3_length(ext * 0.5f), 5.0f);
 
@@ -265,13 +263,17 @@ void camera_compute_optimal_view(vec3_t* out_pos, quat_t* out_ori, float* out_di
     const vec3_t cen = in_basis * ((in_min_ext + in_max_ext) * 0.5f);
     const vec3_t pos = cen + dir * len * distance_scale;
 
-    *out_ori = quat_from_mat4(mat4_look_at(pos, cen, up));
-    *out_pos = pos;
-    *out_dist = vec3_length(pos - cen);
+    ViewTransform result = {
+        .orientation = quat_from_mat4(mat4_look_at(pos, cen, up)),
+        .position = pos,
+        .distance = vec3_length(pos - cen),
+	};
+    
+    return result;
 }
 
-void camera_animate(Camera* camera, const quat_t& target_ori, const vec3_t& target_pos, float target_dist, double dt, double target_factor) {
-    ASSERT(camera);
+void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor) {
+    ASSERT(current);
 
     dt = CLAMP(dt, 1.0 / 1000.0, 1.0 / 20.0);
 
@@ -279,8 +281,8 @@ void camera_animate(Camera* camera, const quat_t& target_ori, const vec3_t& targ
     const double INV_TARGET_DT = 100.0;
     double interpolation_factor = target_factor * dt * INV_TARGET_DT;
 
-    vec3_t pos[2] = {camera->position, target_pos};
-    quat_t ori[2] = {camera->orientation, target_ori};
-    float dist[2] = {camera->distance, target_dist};
-    camera_interpolate_look_at(&camera->position, &camera->orientation, &camera->distance, pos, ori, dist, interpolation_factor);
+    vec3_t pos[2] = {current->position, target.position};
+    quat_t ori[2] = {current->orientation, target.orientation};
+    float dist[2] = {current->distance, target.distance};
+    camera_interpolate_look_at(&current->position, &current->orientation, &current->distance, pos, ori, dist, interpolation_factor);
 }

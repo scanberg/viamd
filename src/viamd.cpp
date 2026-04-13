@@ -814,9 +814,9 @@ void load_workspace(ApplicationState* data, str_t filename) {
         }
     }
 
-    data->view.animation.target_position    = data->view.camera.position;
-    data->view.animation.target_orientation = data->view.camera.orientation;
-    data->view.animation.target_distance    = data->view.camera.distance;
+    data->view.target.position    = data->view.camera.position;
+    data->view.target.orientation = data->view.camera.orientation;
+    data->view.target.distance    = data->view.camera.distance;
     
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
     
@@ -2099,11 +2099,9 @@ PickingSpace* picking_handler_current_space(PickingHandler* handler) {
     return &handler->history[handler->frame_idx % ARRAY_SIZE(handler->history)].space;
 }
 
-const PickingSpace* picking_handler_find_space(const PickingHandler* handler, uint32_t submitted_frame_idx) {
-    ASSERT(handler);
-
-    for (size_t i = 0; i < ARRAY_SIZE(handler->history); ++i) {
-        const auto& hist = handler->history[i];
+const PickingSpace* picking_handler_find_space(const PickingHandler& handler, uint32_t submitted_frame_idx) {
+    for (size_t i = 0; i < ARRAY_SIZE(handler.history); ++i) {
+        const auto& hist = handler.history[i];
         if (hist.submitted_frame_idx == submitted_frame_idx) {
             return &hist.space;
         }
@@ -2216,11 +2214,10 @@ static const PickingRange* find_picking_range(const PickingSpace* space, uint32_
 bool picking_surface_poll_hit(
     PickingHit* out_hit,
     PickingSurface* surface,
-    const PickingHandler* handler
+    const PickingHandler& handler
 ) {
     ASSERT(out_hit);
     ASSERT(surface);
-    ASSERT(handler);
 
     *out_hit = {};
 
@@ -2277,6 +2274,29 @@ bool picking_surface_poll_hit(
     out_hit->world_pos = mat4_unproject({slot.surface_coord.x, slot.surface_coord.y, depth}, slot.inv_mvp, viewport);
 
     return true;
+}
+
+bool picking_surface_submit_readback_and_poll_hit(
+    PickingHit* out_hit,
+    PickingSurface* surface,
+    const PickingHandler& handler,
+    const PickingReadbackRequest& request
+) {
+    ASSERT(out_hit);
+    ASSERT(surface);
+
+    picking_surface_submit_readback(
+        surface,
+        request.fbo,
+        request.width,
+        request.height,
+        handler.frame_idx,
+        request.surface_coord,
+        request.screen_coord,
+        request.inv_mvp
+    );
+
+    return picking_surface_poll_hit(out_hit, surface, handler);
 }
 
 bool file_queue_empty(const FileQueue* queue) {
@@ -2459,22 +2479,13 @@ void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_
         max_ext = vec3_max(max_ext, vec3_add_f(p, radius));
     }
 
-    vec3_t optimal_pos;
-    quat_t optimal_ori;
-    float  optimal_dist;
-
-    camera_compute_optimal_view(&optimal_pos, &optimal_ori, &optimal_dist, basis, min_ext, max_ext);
-	optimal_pos = mat4_mul_vec3(state->mold.unitcell_transform, optimal_pos, 1.0f);
+    ViewTransform opt_view = compute_optimal_view(min_ext, max_ext, basis);
+	opt_view.position = mat4_mul_vec3(state->mold.unitcell_transform, opt_view.position, 1.0f);
 
     if (move_camera) {
-        state->view.animation.target_position    = optimal_pos;
-        state->view.animation.target_orientation = optimal_ori;
-        state->view.animation.target_distance    = optimal_dist;
-
+		state->view.target = opt_view;
         if (!smooth_transition) {
-            state->view.camera.position     = optimal_pos;
-            state->view.camera.orientation  = optimal_ori;
-            state->view.camera.distance     = optimal_dist;
+			state->view.camera = opt_view;
         }
     }
 

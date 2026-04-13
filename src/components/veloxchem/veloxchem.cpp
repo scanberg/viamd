@@ -363,12 +363,7 @@ struct VeloxChem : viamd::EventHandler {
         GBuffer gbuf = {};
         PickingSurface picking_surface = {};
         Camera camera = {};
-
-        struct {
-            quat_t ori = {};
-            vec3_t pos = {};
-            float dist = {};
-        } target;
+        ViewTransform target;
 
         float distance_scale = 2.0f;
 
@@ -430,12 +425,7 @@ struct VeloxChem : viamd::EventHandler {
         PickingSurface picking_surface = {};
         PickingData picking = {};
         Camera camera = {};
-
-        struct {
-            quat_t ori = {};
-            vec3_t pos = {};
-            float dist = {};
-        } target;
+		ViewTransform target = {};
 
         float distance_scale = 2.0f;
 
@@ -1094,7 +1084,7 @@ struct VeloxChem : viamd::EventHandler {
                     size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
                     if (num_excited_states > 0) {
                         //nto.show_window = true;
-                        camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
+                        nto.camera = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, nto.distance_scale);
 
 						size_t num_vlx_atoms = md_vlx_number_of_atoms(vlx);
 						nto.atom_group_idx = md_array_create(uint32_t, num_vlx_atoms, arena);
@@ -1177,7 +1167,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     // ORB
                     //orb.show_window = true;
-                    camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
+                    orb.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, orb.distance_scale);
                     orb.mo_idx = homo_idx[0];
                     orb.scroll_to_idx = homo_idx[0];
 
@@ -3980,7 +3970,7 @@ struct VeloxChem : viamd::EventHandler {
 
             // Animate camera towards targets
             const double dt = state.app.timing.delta_s;
-            camera_animate(&orb.camera, orb.target.ori, orb.target.pos, orb.target.dist, dt);
+            camera_animate(&orb.camera, orb.target, dt);
 
             ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
             canvas_sz.x = MAX(canvas_sz.x, 50.0f);
@@ -4088,12 +4078,12 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (reset_view) {
-                camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
+                orb.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, orb.distance_scale);
 
                 if (reset_hard) {
-                    orb.camera.position    = orb.target.pos;
-                    orb.camera.orientation = orb.target.ori;
-                    orb.camera.distance    = orb.target.dist;
+                    orb.camera.position    = orb.target.position;
+                    orb.camera.orientation = orb.target.orientation;
+                    orb.camera.distance    = orb.target.distance;
                 }
             }
 
@@ -4112,7 +4102,7 @@ struct VeloxChem : viamd::EventHandler {
                     .screen_size = {canvas_sz.x, canvas_sz.y},
                     .fov_y = orb.camera.fov_y,
                 };
-                camera_controller_trackball(&orb.target.pos, &orb.target.ori, &orb.target.dist, input);
+                camera_controller_trackball(&orb.target, input);
             }
 
             if (orb.show_coordinate_system_widget) {
@@ -4126,9 +4116,9 @@ struct VeloxChem : viamd::EventHandler {
                     .pos = ImVec2(min.x + pad, max.y - ext - pad),
                     .size = {ext, ext},
                     .view_matrix = camera_world_to_view_matrix(orb.camera),
-                    .camera_ori  = orb.target.ori,
-                    .camera_pos  = orb.target.pos,
-                    .camera_dist = orb.target.dist,
+                    .camera_ori  = orb.target.orientation,
+                    .camera_pos  = orb.target.position,
+                    .camera_dist = orb.target.distance,
                 };
 
                 ImGui::DrawCoordinateSystemWidget(param);
@@ -4773,9 +4763,7 @@ struct VeloxChem : viamd::EventHandler {
         const TrackballControllerParam& trackball_param;
         const vec3_t& picking_world_coord;
         float picking_depth;
-        quat_t* target_ori;
-        vec3_t* target_pos;
-        float*  target_dist;
+        ViewTransform* target;
     };
 
     static void interaction_canvas(ImVec2 size, SelectionState& select, ViewState& view, const md_system_t& mol) {
@@ -4935,7 +4923,7 @@ struct VeloxChem : viamd::EventHandler {
                         flags |= TrackballFlags_DollyEnabled;
                     }
 
-                    camera_controller_trackball(view.target_pos, view.target_ori, view.target_dist, input, view.trackball_param, flags);
+                    camera_controller_trackball(view.target, input, view.trackball_param, flags);
                 }
             }
         }
@@ -5269,7 +5257,7 @@ struct VeloxChem : viamd::EventHandler {
 
             // Animate camera towards targets
             const double dt = state.app.timing.delta_s;
-            camera_animate(&nto.camera, nto.target.ori, nto.target.pos, nto.target.dist, dt);
+            camera_animate(&nto.camera, nto.target, dt);
 
             ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
             canvas_sz.x = MAX(canvas_sz.x, 50.0f);
@@ -5387,9 +5375,7 @@ struct VeloxChem : viamd::EventHandler {
                     .trackball_param = state.view.trackball_param,
                     .picking_world_coord = nto.picking.world_coord,
                     .picking_depth = nto.picking.depth,
-                    .target_ori = &nto.target.ori,
-                    .target_pos = &nto.target.pos,
-                    .target_dist = &nto.target.dist,
+					.target = &nto.target,
                 };
 
                 ImRect hovered_canvas_rect = {};
@@ -5420,7 +5406,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (ImGui::GetIO().MouseDoubleClicked[0]) {
                             if (view.picking_depth < 1.0f) {
                                 const vec3_t forward = view.camera.orientation * vec3_t{0, 0, 1};
-                                nto.target.pos = view.picking_world_coord + forward * *view.target_dist;
+                                nto.target.position = view.picking_world_coord + forward * view.target->distance;
                             } else {
                                 reset_view = true;
                             }
@@ -5574,7 +5560,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (reset_view) {
-                    camera_compute_optimal_view(&nto.target.pos, &nto.target.ori, &nto.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, nto.distance_scale);
+                    nto.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, nto.distance_scale);
                 }
 
                 if (nto.show_coordinate_system_widget) {
@@ -5588,9 +5574,9 @@ struct VeloxChem : viamd::EventHandler {
                         .pos = ImVec2(min.x + pad, max.y - ext - pad),
                         .size = {ext, ext},
                         .view_matrix = camera_world_to_view_matrix(nto.camera),
-                        .camera_ori  = nto.target.ori,
-                        .camera_pos  = nto.target.pos,
-                        .camera_dist = nto.target.dist,
+                        .camera_ori  = nto.target.orientation,
+                        .camera_pos  = nto.target.position,
+                        .camera_dist = nto.target.distance,
                     };
 
                     ImGui::DrawCoordinateSystemWidget(param);

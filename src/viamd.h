@@ -624,6 +624,15 @@ struct PickingHit {
     float depth = 1.0f;
 };
 
+struct PickingReadbackRequest {
+    uint32_t fbo = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    vec2_t surface_coord = {0};
+    vec2_t screen_coord = {0};
+    mat4_t inv_mvp = mat4_ident();
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -661,11 +670,7 @@ struct ApplicationState {
             vec2_t sequence[JITTER_SEQUENCE_SIZE] {};
         } jitter;
 
-        struct {
-            quat_t target_orientation = {};
-            vec3_t target_position = {};
-            float  target_distance = 0;
-        } animation;
+		ViewTransform target = {};
     } view;
 
     struct {
@@ -900,9 +905,7 @@ struct ApplicationState {
         mat4_t model_mat = {0};
 
         Camera camera = {};
-        quat_t target_ori = {};
-        vec3_t target_pos = {};
-        float  target_dist = 0;
+		ViewTransform target = {};
     } density_volume;
 
     // --- VISUALS ---
@@ -1295,7 +1298,7 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state);
 
 void picking_handler_new_frame(PickingHandler* handler);
 PickingSpace* picking_handler_current_space(PickingHandler* handler);
-const PickingSpace* picking_handler_find_space(const PickingHandler* handler, uint32_t submitted_frame_idx);
+const PickingSpace* picking_handler_find_space(const PickingHandler& handler, uint32_t submitted_frame_idx);
 
 // Reserves a range within the picking space for a specific domain (atoms, bonds, etc).
 // Returns true if the range was successfully reserved, false if there was not enough space. If successful, out_range will be filled with the reserved range.
@@ -1323,6 +1326,15 @@ bool picking_surface_poll_hit(
     PickingHit* out_hit,
     PickingSurface* surface,
     const PickingHandler* handler
+);
+
+// Convenience wrapper for the common frame loop path.
+// Preserves the existing pipeline ordering by submitting the current frame readback and then polling the previous completed one.
+bool picking_surface_submit_readback_and_poll_hit(
+    PickingHit* out_hit,
+    PickingSurface* surface,
+    const PickingHandler& handler,
+    const PickingReadbackRequest& request
 );
 
 // File Queue

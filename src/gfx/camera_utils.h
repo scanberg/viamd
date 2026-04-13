@@ -72,6 +72,7 @@ struct TrackballControllerState {
 */
 
 enum TrackballFlags_ {
+	TrackballFlags_None                 = 0x0,
     TrackballFlags_PanEnabled           = 0x1,
     TrackballFlags_RotateEnabled        = 0x2,
     TrackballFlags_DollyEnabled         = 0x4,
@@ -80,7 +81,7 @@ enum TrackballFlags_ {
     TrackballFlags_DollyReturnsTrue     = 0x40,
     
     TrackballFlags_EnableAllInteractions     = TrackballFlags_PanEnabled | TrackballFlags_RotateEnabled | TrackballFlags_DollyEnabled,
-    TrackballFlags_AnyInteractionReturnsTrue = TrackballFlags_PanReturnsTrue | TrackballFlags_RotateReturnsTrue | TrackballFlags_DollyReturnsTrue
+    TrackballFlags_AnyInteractionReturnsTrue = TrackballFlags_PanReturnsTrue | TrackballFlags_RotateReturnsTrue | TrackballFlags_DollyReturnsTrue,
 };
 
 typedef uint32_t TrackballFlags;
@@ -90,8 +91,8 @@ void camera_move(Camera* camera, vec3_t vec);
 
 void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dist, vec3_t in_pos[2], quat_t in_ori[2], float in_dist[2], double t);
 
-mat4_t camera_world_to_view_matrix(const Camera& camera);
-mat4_t camera_view_to_world_matrix(const Camera& camera);
+mat4_t camera_world_to_view_matrix(const ViewTransform& transform);
+mat4_t camera_view_to_world_matrix(const ViewTransform& transform);
 
 mat4_t camera_perspective_projection_matrix(const Camera& camera, float aspect_ratio);
 mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, float aspect_ratio);
@@ -106,11 +107,11 @@ mat4_t camera_orthographic_projection_matrix(float left, float right, float bott
 mat4_t camera_inverse_orthographic_projection_matrix(float left, float right, float bottom, float top, float near, float far);
 
 // @TODO: Fix the name to something more descriptive. This modifies the position, orientation and distance using a trackball modality
-bool camera_controller_trackball(vec3_t* position, quat_t* orientation, float* distance, const TrackballControllerInput& input, const TrackballControllerParam& param = {}, TrackballFlags flags = -1);
+bool camera_controller_trackball(ViewTransform* transform, const TrackballControllerInput& input, const TrackballControllerParam& param = {}, TrackballFlags flags = -1);
 
 //void camera_controller_fps(Camera* camera, const FpsControllerState& state);
 
-void camera_compute_optimal_view(vec3_t* out_position, quat_t* out_orientation, float* out_distance, const mat3_t& in_basis, const vec3_t& in_min_ext, const vec3_t& in_max_ext, float in_distance_scale = 3.0f);
+ViewTransform compute_optimal_view(const vec3_t& min_ext, const vec3_t& max_ext, const mat3_t& basis = mat3_ident(), float distance_scale = 3.0f);
 
 // Lazy stupid procedure on top of interpolate_look_at
-void camera_animate(Camera* camera, const quat_t& target_ori, const vec3_t& target_pos, float target_dist, double dt, double target_factor = 0.12f);
+void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor = 0.12f);

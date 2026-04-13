@@ -383,7 +383,6 @@ static void handle_camera_interaction(ApplicationState* state);
 
 //static void init_display_properties(ApplicationState* state);
 //static void update_density_volume_texture(ApplicationState* state);
-static void handle_picking(ApplicationState* state);
 
 static void fill_gbuffer(ApplicationState* state);
 static void apply_postprocessing(const ApplicationState& state);
@@ -659,9 +658,8 @@ int main(int argc, char** argv) {
 
         //ImGui::ShowDemoWindow();
 
-        handle_picking(&state);
         handle_camera_interaction(&state);
-        camera_animate(&state.view.camera, state.view.animation.target_orientation, state.view.animation.target_position, state.view.animation.target_distance, state.app.timing.delta_s);
+        camera_animate(&state.view.camera, state.view.target, state.app.timing.delta_s);
         state.visuals.dof.focus_depth = state.view.camera.distance;
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
@@ -5602,7 +5600,7 @@ static void draw_density_volume_window(ApplicationState* data) {
         update_density_volume(data);
 
         // Animate camera towards targets
-        camera_animate(&data->density_volume.camera, data->density_volume.target_ori, data->density_volume.target_pos, data->density_volume.target_dist, data->app.timing.delta_s);
+        camera_animate(&data->density_volume.camera, data->density_volume.target, data->app.timing.delta_s);
 
         /*
         // Canvas
@@ -5700,13 +5698,10 @@ static void draw_density_volume_window(ApplicationState* data) {
         if (reset_view) {
             vec3_t min_ext = vec3_from_vec4(data->density_volume.model_mat * vec4_set(0,0,0,1));
             vec3_t max_ext = vec3_from_vec4(data->density_volume.model_mat * vec4_set(1,1,1,1));
-            mat3_t basis = mat3_ident();
-            camera_compute_optimal_view(&data->density_volume.target_pos, &data->density_volume.target_ori, &data->density_volume.target_dist, basis, min_ext, max_ext);
+            data->density_volume.target = compute_optimal_view(min_ext, max_ext);
 
             if (reset_hard) {
-                data->density_volume.camera.position = data->density_volume.target_pos;
-                data->density_volume.camera.orientation = data->density_volume.target_ori;
-                data->density_volume.camera.distance = data->density_volume.target_dist;
+				data->density_volume.camera = data->density_volume.target;
             }
         }
 
@@ -5731,7 +5726,7 @@ static void draw_density_volume_window(ApplicationState* data) {
                 .screen_size = {canvas_sz.x, canvas_sz.y},
                 .fov_y = data->density_volume.camera.fov_y,
             };
-            camera_controller_trackball(&data->density_volume.target_pos, &data->density_volume.target_ori, &data->density_volume.target_dist, input, param);
+            camera_controller_trackball(&data->density_volume.target, input, param);
         }
 
         if (data->density_volume.show_coordinate_system_widget) {
@@ -5743,9 +5738,9 @@ static void draw_density_volume_window(ApplicationState* data) {
                 .pos = ImVec2(pad, win_size.y - ext - pad),
                 .size = {ext, ext},
                 .view_matrix = camera_world_to_view_matrix(data->density_volume.camera),
-                .camera_ori  = data->density_volume.target_ori,
-                .camera_pos  = data->density_volume.target_pos,
-                .camera_dist = data->density_volume.target_dist,
+                .camera_ori  = data->density_volume.target.orientation,
+                .camera_pos  = data->density_volume.target.position,
+                .camera_dist = data->density_volume.target.distance,
             };
 
             ImGui::DrawCoordinateSystemWidget(params);
@@ -7067,55 +7062,47 @@ void create_screenshot(str_t path) {
     VIAMD_LOG_SUCCESS("Screenshot saved to: '" STR_FMT "'", STR_ARG(path));
 }
 
-static void draw_coordinate_system_widget_window(ApplicationState* state) {
-#if 1
-    // Coordinate system widget
+static void draw_coordinate_system_widget_window(ViewTransform* out_target, const ViewTransform& current) {
+    const int def_size = 150;
+    const int min_size = 100;
+    const int max_size = 500;
 
-    {
-        static bool locked = true;
-        const int def_size = 150;
-        const int min_size = 100;
-        const int max_size = 500;
+    ImGui::SetNextWindowSize(ImVec2(def_size, def_size), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(min_size, min_size), ImVec2(max_size, max_size), [](ImGuiSizeCallbackData* data) {
+        // Enforce a square aspect ratio
+        data->DesiredSize = ImVec2(ImMax(data->DesiredSize.x, data->DesiredSize.y), ImMax(data->DesiredSize.x, data->DesiredSize.y));
+    });
 
-        ImGui::SetNextWindowSize(ImVec2(def_size, def_size), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSizeConstraints(ImVec2(min_size, min_size), ImVec2(max_size, max_size), [](ImGuiSizeCallbackData* data) {
-            // Enforce a square aspect ratio
-            data->DesiredSize = ImVec2(ImMax(data->DesiredSize.x, data->DesiredSize.y), ImMax(data->DesiredSize.x, data->DesiredSize.y));
-        });
+    // Scale down backround color to only show a faint outline
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) * ImVec4(1,1,1,0.1f));
+    defer { ImGui::PopStyleColor(); };
 
-        // Scale down backround color to only show a faint outline
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) * ImVec4(1,1,1,0.1f));
-        defer { ImGui::PopStyleColor(); };
+    const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
 
-        int flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking;
-        if (locked) {
-            flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
-        }
-
-        if (ImGui::Begin("Coordinate Widget", NULL, flags)) {
-            if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                ImGui::OpenPopup("Coordinate Widget Context");
-            }
-
-            if (ImGui::BeginPopup("Coordinate Widget Context")) {
-                ImGui::Checkbox("Locked", &locked);
-                ImGui::EndPopup();
-            }
-
-            CoordSystemWidgetParam param = {
-                .pos = ImGui::GetWindowContentRegionMin(),
-                .size = ImGui::GetContentRegionAvail(),
-                .view_matrix = state->view.param.matrix.curr.view,
-                .camera_ori  = state->view.animation.target_orientation,
-                .camera_pos  = state->view.animation.target_position,
-                .camera_dist = state->view.animation.target_distance,
-            };
-
-            ImGui::DrawCoordinateSystemWidget(param);
-        }
-        ImGui::End();
+    int window_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking;
+    if (!editable) {
+        window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
     }
-#endif
+
+    ImGuiID id = ImGui::GetID("CoordinateSystemWidget");
+	ImGui::PushID(id);
+
+    if (ImGui::Begin("Coordinate Widget", nullptr, window_flags)) {
+		mat4_t view_matrix = camera_world_to_view_matrix(current);
+        CoordSystemWidgetParam param = {
+            .pos = ImGui::GetWindowContentRegionMin(),
+            .size = ImGui::GetContentRegionAvail(),
+            .view_matrix = view_matrix,
+            .camera_ori  = out_target->orientation,
+            .camera_pos  = out_target->position,
+            .camera_dist = out_target->distance,
+        };
+
+        ImGui::DrawCoordinateSystemWidget(param);
+    }
+    ImGui::End();
+
+    ImGui::PopID();
 }
 
 // #camera-control
@@ -7124,15 +7111,46 @@ static void handle_camera_interaction(ApplicationState* data) {
 
     enum class RegionMode { Append, Remove };
 
+    bool open_atom_context = false;
     ImGui::BeginCanvas("Main interaction window", true);
     bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-    bool open_atom_context = false;
+
+    draw_coordinate_system_widget_window(&data->view.target, data->view.camera);
 
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window) {
         bool is_performing_region_selection = false;
         ImDrawList* dl = window->DrawList;
         ASSERT(dl);
+
+        PickingHit hit = {};
+        if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
+            vec2_t mouse_pos = vec_cast(ImGui::GetMousePos() - ImGui::GetMainViewport()->Pos);
+            vec2_t coord = {mouse_pos.x, ImGui::GetMainViewport()->Size.y - mouse_pos.y};
+
+#if MD_PLATFORM_OSX
+            // On macOS with retina displays, we need to scale the mouse coordinates
+            coord.x *= data->app.window.scale_factor;
+            coord.y *= data->app.window.scale_factor;
+#endif
+
+            // Ignore precomputed view_to_world transform here to avoid including the unitcell transform
+            mat4_t inv_view = camera_view_to_world_matrix(data->view.camera);
+            const mat4_t inv_MVP = inv_view * data->view.param.matrix.inv.proj;
+
+            PickingReadbackRequest request = {
+                .fbo = data->gbuffer.fbo,
+                .width = data->gbuffer.width,
+                .height = data->gbuffer.height,
+                .surface_coord = coord,
+                .screen_coord = mouse_pos,
+                .inv_mvp = inv_MVP,
+            };
+
+            if (picking_surface_submit_readback_and_poll_hit(&hit, &data->picking_surface, data->picking_handler, request)) {
+                viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
+            }
+        }
 
         if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
             if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
@@ -7196,7 +7214,7 @@ static void handle_camera_interaction(ApplicationState* data) {
                     }
                 }
                 else if (pressed && data->picking_hit.source == picking_source_main) {
-                    if (data->selection.atom_idx.hovered != -1 || data->selection.bond_idx.hovered != -1) {
+                    if (hit.source == picking_source_main) {
                         if (mode == RegionMode::Append) {
                             if (data->selection.atom_idx.hovered != -1) {
                                 single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
@@ -7233,69 +7251,65 @@ static void handle_camera_interaction(ApplicationState* data) {
             }
         }
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
-                if (data->selection.atom_idx.hovered != -1 && data->selection.atom_idx.hovered < (int32_t)data->mold.sys.atom.count) {
-                    md_bitfield_clear(&data->selection.highlight_mask);
-                    md_bitfield_set_bit(&data->selection.highlight_mask, data->selection.atom_idx.hovered);
-                    grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
-                }
-                else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.sys.bond.count) {
-                    md_bitfield_clear(&data->selection.highlight_mask);
-                    md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
-                    if (0 <= pair.idx[0] && pair.idx[0] < (int32_t)data->mold.sys.atom.count) {
-                        md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
-                    } else {
-                        MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[0]);
+            md_bitfield_clear(&data->selection.highlight_mask);
+
+			if (hit.source == picking_source_main) {
+                if (hit.domain == PickingDomain_Atom) {
+                    int atom_idx = hit.local_idx;
+                    if (atom_idx != -1 && atom_idx < (int32_t)data->mold.sys.atom.count) {
+                        md_bitfield_set_bit(&data->selection.highlight_mask, atom_idx);
+                        grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
                     }
-                    if (0 <= pair.idx[1] && pair.idx[1] < (int32_t)data->mold.sys.atom.count) {
-                        md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
-                    } else {
-                        MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[1]);
+				}
+                else if (hit.domain == PickingDomain_Bond) {
+					int bond_idx = hit.local_idx;
+					if (bond_idx != -1 && bond_idx < (int32_t)data->mold.sys.bond.count) {
+                        md_atom_pair_t pair = data->mold.sys.bond.pairs[bond_idx];
+                        if (0 <= pair.idx[0] && pair.idx[0] < (int32_t)data->mold.sys.atom.count) {
+                            md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
+                        } else {
+                            MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[0]);
+                        }
+                        if (0 <= pair.idx[1] && pair.idx[1] < (int32_t)data->mold.sys.atom.count) {
+                            md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[1]);
+                        } else {
+                            MD_LOG_DEBUG("Invalid atom index in bond pair: %d", pair.idx[1]);
+                        }
+                        grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
                     }
-                    grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
                 }
+            }
         }
 
         if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
             if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !is_performing_region_selection) {
                 const ImVec2 delta = ImGui::GetIO().MouseDelta;
                 const ImVec2 coord = ImGui::GetMousePos() - ImGui::GetCurrentWindow()->Pos;
-                const vec2_t mouse_delta = {delta.x, delta.y};
-                const vec2_t mouse_coord = {coord.x, coord.y};
                 const float  scroll_delta = ImGui::GetIO().MouseWheel;
 
                 TrackballControllerInput input;
                 input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
                 input.pan_button    = ImGui::IsMouseDown(ImGuiMouseButton_Right);
                 input.dolly_button  = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
-                input.mouse_coord_curr = mouse_coord;
-                input.mouse_coord_prev = mouse_coord - mouse_delta;
+                input.mouse_coord_curr = {coord.x, coord.y};
+                input.mouse_coord_prev = {coord.x - delta.x, coord.y - delta.y};
                 input.screen_size = {(float)data->app.window.width, (float)data->app.window.height};
                 input.dolly_delta = scroll_delta;
                 input.fov_y = data->view.camera.fov_y;
-
-                vec3_t pos = data->view.animation.target_position;
-                quat_t ori = data->view.animation.target_orientation;
-                float dist = data->view.animation.target_distance;
             
-                TrackballFlags flags = TrackballFlags_AnyInteractionReturnsTrue;
+                TrackballFlags flags = TrackballFlags_None;
                 if (ImGui::IsItemActive()) {
                     flags |= TrackballFlags_EnableAllInteractions;
                 } else {
                     flags |= TrackballFlags_DollyEnabled;
                 }
 
-                if (camera_controller_trackball(&pos, &ori, &dist, input, data->view.trackball_param, flags)) {
-                    // @NOTE(Robin): We could make the camera interaction more snappy, by directly modifying camera[pos, ori, dist] here
-                    // But for now its decent. I like smooth transitions rather than discontinous jumps
-                }
-                data->view.animation.target_position = pos;
-                data->view.animation.target_orientation = ori;
-                data->view.animation.target_distance = dist;
+                camera_controller_trackball(&data->view.target, input, data->view.trackball_param, flags);
 
                 if (ImGui::GetMouseClickedCount(ImGuiMouseButton_Left) == 2) {
                     if (data->picking_hit.depth < 1.0f) {
                         const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
-                        data->view.animation.target_position = data->picking_hit.world_pos + forward * dist;
+                        data->view.target.position = data->picking_hit.world_pos + forward * data->view.camera.distance;
                     } else {
                         reset_view(data, &data->representation.visibility_mask, true, true);
                     }
@@ -7557,55 +7571,6 @@ static void fill_gbuffer(ApplicationState* data) {
     POP_GPU_SECTION()
 
     POP_GPU_SECTION()  // G-buffer
-}
-
-static void handle_picking(ApplicationState* data) {
-    ImGuiContext* ctx = ImGui::GetCurrentContext();
-    ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
-
-    if (ctx && window && ctx->HoveredWindow == window) {
-        PUSH_CPU_SECTION("PICKING")
-        vec2_t mouse_pos = vec_cast(ImGui::GetMousePos() - ImGui::GetMainViewport()->Pos);
-        vec2_t coord = {mouse_pos.x, ImGui::GetMainViewport()->Size.y - mouse_pos.y};
-
-#if MD_PLATFORM_OSX
-        // On macOS with retina displays, we need to scale the mouse coordinates
-        coord.x *= data->app.window.scale_factor;
-        coord.y *= data->app.window.scale_factor;
-#endif
-
-        // Ignore precomputed view_to_world transform here to avoid including the unitcell transform
-		mat4_t inv_view = camera_view_to_world_matrix(data->view.camera);
-        const mat4_t inv_MVP = inv_view * data->view.param.matrix.inv.proj;
-
-        // New
-        uint32_t frame_idx = data->picking_handler.frame_idx;
-        picking_surface_submit_readback(&data->picking_surface, data->gbuffer.fbo, data->gbuffer.width, data->gbuffer.height, frame_idx, coord, mouse_pos, inv_MVP);
-
-        PickingHit hit = {};
-        if (picking_surface_poll_hit(&hit, &data->picking_surface, &data->picking_handler)) {
-            // Broadcast event!
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
-        }
-
-        // Old
-        /*
-        extract_picking_data(data->picking, data->gbuffer, coord, inv_MVP);
-        data->selection.atom_idx.hovered = atom_idx_from_picking_idx(data->picking.idx);
-        data->selection.bond_idx.hovered = bond_idx_from_picking_idx(data->picking.idx);
-
-        if (data->selection.atom_idx.hovered > (int)data->mold.sys.atom.count) data->selection.atom_idx.hovered = -1;
-        if (data->selection.bond_idx.hovered > (int)data->mold.sys.bond.count) data->selection.bond_idx.hovered = -1;
-        
-        data->selection.atom_idx.right_click = -1;
-        data->selection.bond_idx.right_click = -1;
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-            data->selection.atom_idx.right_click = data->selection.atom_idx.hovered;
-            data->selection.bond_idx.right_click = data->selection.bond_idx.hovered;
-        }
-            */
-        POP_CPU_SECTION()
-    }
 }
 
 static void apply_postprocessing(const ApplicationState& data) {
