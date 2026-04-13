@@ -94,17 +94,17 @@ void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dis
 mat4_t camera_world_to_view_matrix(const ViewTransform& transform);
 mat4_t camera_view_to_world_matrix(const ViewTransform& transform);
 
-mat4_t camera_perspective_projection_matrix(const Camera& camera, float aspect_ratio);
-mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, float aspect_ratio);
+mat4_t camera_view_to_clip_matrix_persp(const Camera& camera, float aspect_ratio);
+mat4_t camera_clip_to_view_matrix_persp(const Camera& camera, float aspect_ratio);
 
-mat4_t camera_perspective_projection_matrix(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y);
-mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y);
+mat4_t camera_view_to_clip_matrix_persp(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y);
+mat4_t camera_clip_to_view_matrix_persp(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y);
 
-mat4_t camera_orthographic_projection_matrix(float left, float right, float bottom, float top);
-mat4_t camera_inverse_orthographic_projection_matrix(float left, float right, float bottom, float top);
+mat4_t camera_view_to_clip_matrix_ortho(float left, float right, float bottom, float top);
+mat4_t camera_clip_to_view_matrix_ortho(float left, float right, float bottom, float top);
 
-mat4_t camera_orthographic_projection_matrix(float left, float right, float bottom, float top, float near, float far);
-mat4_t camera_inverse_orthographic_projection_matrix(float left, float right, float bottom, float top, float near, float far);
+mat4_t camera_view_to_clip_matrix_ortho(float left, float right, float bottom, float top, float near, float far);
+mat4_t camera_clip_to_view_matrix_ortho(float left, float right, float bottom, float top, float near, float far);
 
 // @TODO: Fix the name to something more descriptive. This modifies the position, orientation and distance using a trackball modality
 bool camera_controller_trackball(ViewTransform* transform, const TrackballControllerInput& input, const TrackballControllerParam& param = {}, TrackballFlags flags = -1);

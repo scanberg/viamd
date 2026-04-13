@@ -4127,8 +4127,8 @@ struct VeloxChem : viamd::EventHandler {
             if (gl_rep.id) {
                 const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
                 mat4_t view_mat = camera_world_to_view_matrix(orb.camera);
-                mat4_t proj_mat = camera_perspective_projection_matrix(orb.camera, aspect_ratio);
-                mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(orb.camera, aspect_ratio);
+                mat4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
+                mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
 
                 clear_gbuffer(&gbuf);
 
@@ -5352,9 +5352,9 @@ struct VeloxChem : viamd::EventHandler {
             const float aspect_ratio = win_sz.x / win_sz.y;
 
             mat4_t view_mat     = camera_world_to_view_matrix(nto.camera);
-            mat4_t proj_mat     = camera_perspective_projection_matrix(nto.camera, aspect_ratio);
+            mat4_t proj_mat     = camera_view_to_clip_matrix_persp(nto.camera, aspect_ratio);
             mat4_t inv_view_mat = camera_view_to_world_matrix(nto.camera);
-            mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(nto.camera, aspect_ratio);
+            mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(nto.camera, aspect_ratio);
 
             mat4_t MVP      = proj_mat * view_mat;
             mat4_t inv_MVP  = inv_view_mat * inv_proj_mat;

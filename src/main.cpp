@@ -402,6 +402,7 @@ static void draw_distribution_window(ApplicationState* state);
 static void draw_async_task_window(ApplicationState* state);
 static void draw_density_volume_window(ApplicationState* state);
 static void draw_script_editor_window(ApplicationState* state);
+static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
 
 static void draw_debug_window(ApplicationState* state);
 static void draw_property_export_window(ApplicationState* state);
@@ -1690,29 +1691,29 @@ static void update_view_param(ApplicationState* data) {
         param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
             const vec2_t j = param.jitter.curr;
-            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
-            param.matrix.inv.proj  = camera_inverse_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
-            param.matrix.curr.proj_no_jitter = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
+            param.matrix.curr.proj = camera_view_to_clip_matrix_persp(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
+            param.matrix.inv.proj  = camera_clip_to_view_matrix_persp(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
+            param.matrix.curr.proj_no_jitter = camera_view_to_clip_matrix_persp(data->view.camera, aspect_ratio);
         } else {
             const float h = data->view.camera.distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
             const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
             const vec2_t j = param.jitter.curr * scl;
-            param.matrix.curr.proj = camera_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
-            param.matrix.inv.proj  = camera_inverse_orthographic_projection_matrix(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
-            param.matrix.curr.proj_no_jitter = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
+            param.matrix.curr.proj = camera_view_to_clip_matrix_ortho(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
+            param.matrix.inv.proj  = camera_clip_to_view_matrix_ortho(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
+            param.matrix.curr.proj_no_jitter = camera_view_to_clip_matrix_ortho(-w, w, -h, h, n, f);
 
         }
     } else {
         param.jitter.curr = {0,0};
         if (data->view.mode == CameraMode::Perspective) {
-            param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
-            param.matrix.inv.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
+            param.matrix.curr.proj = camera_view_to_clip_matrix_persp(data->view.camera, aspect_ratio);
+            param.matrix.inv.proj = camera_clip_to_view_matrix_persp(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
         } else {
             const float h = data->view.camera.distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
-            param.matrix.curr.proj = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
-            param.matrix.inv.proj = camera_inverse_orthographic_projection_matrix(-w, w, -h, h, n, f);
+            param.matrix.curr.proj = camera_view_to_clip_matrix_ortho(-w, w, -h, h, n, f);
+            param.matrix.inv.proj = camera_clip_to_view_matrix_ortho(-w, w, -h, h, n, f);
         }
         param.matrix.curr.proj_no_jitter = param.matrix.curr.proj;
     }
@@ -5732,8 +5733,8 @@ static void draw_density_volume_window(ApplicationState* data) {
         }
 
         mat4_t view_mat = camera_world_to_view_matrix(data->density_volume.camera);
-        mat4_t proj_mat = camera_perspective_projection_matrix(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
-        mat4_t inv_proj_mat = camera_inverse_perspective_projection_matrix(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
+        mat4_t proj_mat = camera_view_to_clip_matrix_persp(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
+        mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
 
         PUSH_GPU_SECTION("RENDER DENSITY VOLUME");
         clear_gbuffer(&gbuf);

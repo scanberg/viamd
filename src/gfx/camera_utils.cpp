@@ -30,15 +30,15 @@ mat4_t camera_world_to_view_matrix(const ViewTransform& transform) {
     return R * T;
 }
 
-mat4_t camera_perspective_projection_matrix(const Camera& camera, float aspect_ratio) {
+mat4_t camera_view_to_clip_matrix_persp(const Camera& camera, float aspect_ratio) {
     return mat4_persp(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane);
 }
 
-mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, float aspect_ratio) {
+mat4_t camera_clip_to_view_matrix_persp(const Camera& camera, float aspect_ratio) {
     return mat4_persp_inv(camera.fov_y, aspect_ratio, camera.near_plane, camera.far_plane);
 }
 
-mat4_t camera_perspective_projection_matrix(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
+mat4_t camera_view_to_clip_matrix_persp(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
     const vec4_t ext = projection_extents(camera.fov_y, width, height, texel_offset_x, texel_offset_y);
 
     const float cn = camera.near_plane;
@@ -51,7 +51,7 @@ mat4_t camera_perspective_projection_matrix(const Camera& camera, int width, int
     return mat4_frustum(xm * cn, xp * cn, ym * cn, yp * cn, cn, cf);
 }
 
-mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
+mat4_t camera_clip_to_view_matrix_persp(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y) {
     const vec4_t ext = projection_extents(camera.fov_y, width, height, texel_offset_x, texel_offset_y);
 
     const float cn = camera.near_plane;
@@ -64,19 +64,19 @@ mat4_t camera_inverse_perspective_projection_matrix(const Camera& camera, int wi
     return mat4_frustum_inv(xm * cn, xp * cn, ym * cn, yp * cn, cn, cf);
 }
 
-mat4_t camera_orthographic_projection_matrix(float l, float r, float b, float t) {
+mat4_t camera_view_to_clip_matrix_ortho(float l, float r, float b, float t) {
     return mat4_ortho_2d(l, r, b, t);
 }
 
-mat4_t camera_inverse_orthographic_projection_matrix(float l, float r, float b, float t) {
+mat4_t camera_clip_to_view_matrix_ortho(float l, float r, float b, float t) {
     return mat4_ortho_2d_inv(l, r, b, t);
 }
 
-mat4_t camera_orthographic_projection_matrix(float l, float r, float b, float t, float n, float f) {
+mat4_t camera_view_to_clip_matrix_ortho(float l, float r, float b, float t, float n, float f) {
     return mat4_ortho(l, r, b, t, n, f);
 }
 
-mat4_t camera_inverse_orthographic_projection_matrix(float l, float r, float b, float t, float n, float f) {
+mat4_t camera_clip_to_view_matrix_ortho(float l, float r, float b, float t, float n, float f) {
     return mat4_ortho_inv(l, r, b, t, n, f);
 }
 
