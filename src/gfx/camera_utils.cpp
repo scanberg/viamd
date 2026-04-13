@@ -281,6 +281,6 @@ void camera_animate(Camera* camera, const quat_t& target_ori, const vec3_t& targ
 
     vec3_t pos[2] = {camera->position, target_pos};
     quat_t ori[2] = {camera->orientation, target_ori};
-    float dist[2] = {camera->focus_distance, target_dist};
-    camera_interpolate_look_at(&camera->position, &camera->orientation, &camera->focus_distance, pos, ori, dist, interpolation_factor);
+    float dist[2] = {camera->distance, target_dist};
+    camera_interpolate_look_at(&camera->position, &camera->orientation, &camera->distance, pos, ori, dist, interpolation_factor);
 }

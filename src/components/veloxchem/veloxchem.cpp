@@ -4091,9 +4091,9 @@ struct VeloxChem : viamd::EventHandler {
                 camera_compute_optimal_view(&orb.target.pos, &orb.target.ori, &orb.target.dist, oabb.orientation, oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, orb.distance_scale);
 
                 if (reset_hard) {
-                    orb.camera.position         = orb.target.pos;
-                    orb.camera.orientation      = orb.target.ori;
-                    orb.camera.focus_distance   = orb.target.dist;
+                    orb.camera.position    = orb.target.pos;
+                    orb.camera.orientation = orb.target.ori;
+                    orb.camera.distance    = orb.target.dist;
                 }
             }
 

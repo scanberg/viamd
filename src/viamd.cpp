@@ -699,7 +699,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 } else if (str_eq(ident, STR_LIT("Orientation"))) {
                     viamd::extract_quat(data->view.camera.orientation, arg);
                 } else if (str_eq(ident, STR_LIT("Distance"))) {
-                    viamd::extract_flt(data->view.camera.focus_distance, arg);
+                    viamd::extract_flt(data->view.camera.distance, arg);
                 } else if (str_eq(ident, STR_LIT("Rotation"))) {
                     // DEPRECATED
                     viamd::extract_quat(data->view.camera.orientation, arg);
@@ -816,7 +816,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     data->view.animation.target_position    = data->view.camera.position;
     data->view.animation.target_orientation = data->view.camera.orientation;
-    data->view.animation.target_distance    = data->view.camera.focus_distance;
+    data->view.animation.target_distance    = data->view.camera.distance;
     
     str_copy_to_char_buf(data->files.workspace, sizeof(data->files.workspace), filename);
     
@@ -910,7 +910,7 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_section_header(state, STR_LIT("Camera"));
     viamd::write_vec3(state, STR_LIT("Position"), app_state->view.camera.position);
     viamd::write_quat(state, STR_LIT("Orientation"), app_state->view.camera.orientation);
-    viamd::write_flt(state,  STR_LIT("Distance"), app_state->view.camera.focus_distance);
+    viamd::write_flt(state,  STR_LIT("Distance"), app_state->view.camera.distance);
     viamd::write_int(state,  STR_LIT("Mode"), (int)app_state->view.mode);
 
 
@@ -2472,9 +2472,9 @@ void reset_view(ApplicationState* state, const md_bitfield_t* target, bool move_
         state->view.animation.target_distance    = optimal_dist;
 
         if (!smooth_transition) {
-            state->view.camera.position       = optimal_pos;
-            state->view.camera.orientation    = optimal_ori;
-            state->view.camera.focus_distance = optimal_dist;
+            state->view.camera.position     = optimal_pos;
+            state->view.camera.orientation  = optimal_ori;
+            state->view.camera.distance     = optimal_dist;
         }
     }
 

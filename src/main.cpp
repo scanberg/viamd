@@ -75,6 +75,8 @@
 #define HIGHLIGHT_PULSE_TIME_SCALE  5.0
 #define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
 
+constexpr PickingSourceID picking_source_main = HASH_STR_LIT("main picking surface");
+
 // Global data for application
 static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
 static md_allocator_i* persistent_alloc = 0;
@@ -526,8 +528,7 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Initializing framebuffer...");
     init_gbuffer(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
 
-    const uint64_t main_picking_surface = 0x213123878722d2e;
-    picking_surface_init(&state.picking_surface, main_picking_surface);
+    picking_surface_init(&state.picking_surface, picking_source_main);
 
     for (int i = 0; i < (int)ARRAY_SIZE(state.view.jitter.sequence); ++i) {
         state.view.jitter.sequence[i].x = md_halton(i + 1, 2);
@@ -658,9 +659,10 @@ int main(int argc, char** argv) {
 
         //ImGui::ShowDemoWindow();
 
+        handle_picking(&state);
         handle_camera_interaction(&state);
         camera_animate(&state.view.camera, state.view.animation.target_orientation, state.view.animation.target_position, state.view.animation.target_distance, state.app.timing.delta_s);
-        state.visuals.dof.focus_depth = state.view.camera.focus_distance;
+        state.visuals.dof.focus_depth = state.view.camera.distance;
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
@@ -1124,7 +1126,6 @@ int main(int argc, char** argv) {
 
         update_md_buffers(&state);
         update_display_properties(&state);
-        handle_picking(&state);
         clear_gbuffer(&state.gbuffer);
         fill_gbuffer(&state);
 
@@ -1695,7 +1696,7 @@ static void update_view_param(ApplicationState* data) {
             param.matrix.inv.proj  = camera_inverse_perspective_projection_matrix(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
             param.matrix.curr.proj_no_jitter = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
         } else {
-            const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
+            const float h = data->view.camera.distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
             const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
             const vec2_t j = param.jitter.curr * scl;
@@ -1710,7 +1711,7 @@ static void update_view_param(ApplicationState* data) {
             param.matrix.curr.proj = camera_perspective_projection_matrix(data->view.camera, aspect_ratio);
             param.matrix.inv.proj = camera_inverse_perspective_projection_matrix(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
         } else {
-            const float h = data->view.camera.focus_distance * tanf(data->view.camera.fov_y * 0.5f);
+            const float h = data->view.camera.distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
             param.matrix.curr.proj = camera_orthographic_projection_matrix(-w, w, -h, h, n, f);
             param.matrix.inv.proj = camera_inverse_orthographic_projection_matrix(-w, w, -h, h, n, f);
@@ -5705,7 +5706,7 @@ static void draw_density_volume_window(ApplicationState* data) {
             if (reset_hard) {
                 data->density_volume.camera.position = data->density_volume.target_pos;
                 data->density_volume.camera.orientation = data->density_volume.target_ori;
-                data->density_volume.camera.focus_distance = data->density_volume.target_dist;
+                data->density_volume.camera.distance = data->density_volume.target_dist;
             }
         }
 
@@ -7066,19 +7067,14 @@ void create_screenshot(str_t path) {
     VIAMD_LOG_SUCCESS("Screenshot saved to: '" STR_FMT "'", STR_ARG(path));
 }
 
-// #camera-control
-static void handle_camera_interaction(ApplicationState* data) {
-    ASSERT(data);
-
-    enum class RegionMode { Append, Remove };
-
+static void draw_coordinate_system_widget_window(ApplicationState* state) {
 #if 1
     // Coordinate system widget
 
     {
         static bool locked = true;
         const int def_size = 150;
-        const int min_size = 20;
+        const int min_size = 100;
         const int max_size = 500;
 
         ImGui::SetNextWindowSize(ImVec2(def_size, def_size), ImGuiCond_FirstUseEver);
@@ -7109,10 +7105,10 @@ static void handle_camera_interaction(ApplicationState* data) {
             CoordSystemWidgetParam param = {
                 .pos = ImGui::GetWindowContentRegionMin(),
                 .size = ImGui::GetContentRegionAvail(),
-                .view_matrix = data->view.param.matrix.curr.view,
-                .camera_ori = data->view.animation.target_orientation,
-                .camera_pos = data->view.animation.target_position,
-                .camera_dist = data->view.animation.target_distance,
+                .view_matrix = state->view.param.matrix.curr.view,
+                .camera_ori  = state->view.animation.target_orientation,
+                .camera_pos  = state->view.animation.target_position,
+                .camera_dist = state->view.animation.target_distance,
             };
 
             ImGui::DrawCoordinateSystemWidget(param);
@@ -7120,6 +7116,13 @@ static void handle_camera_interaction(ApplicationState* data) {
         ImGui::End();
     }
 #endif
+}
+
+// #camera-control
+static void handle_camera_interaction(ApplicationState* data) {
+    ASSERT(data);
+
+    enum class RegionMode { Append, Remove };
 
     ImGui::BeginCanvas("Main interaction window", true);
     bool pressed = ImGui::InvisibleButton("canvas", ImGui::GetContentRegionAvail(), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
@@ -7192,13 +7195,14 @@ static void handle_camera_interaction(ApplicationState* data) {
                         md_bitfield_copy(&data->selection.selection_mask, &data->selection.highlight_mask);
                     }
                 }
-                else if (pressed) {
+                else if (pressed && data->picking_hit.source == picking_source_main) {
                     if (data->selection.atom_idx.hovered != -1 || data->selection.bond_idx.hovered != -1) {
                         if (mode == RegionMode::Append) {
                             if (data->selection.atom_idx.hovered != -1) {
                                 single_selection_sequence_push_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
                                 md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
-                            } else {
+                            }
+                            else {
                                 md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
@@ -7210,7 +7214,8 @@ static void handle_camera_interaction(ApplicationState* data) {
                             if (data->selection.atom_idx.hovered != -1) {
                                 single_selection_sequence_pop_idx(&data->selection.single_selection_sequence, data->selection.atom_idx.hovered);
                                 md_bitfield_set_bit(&mask, data->selection.atom_idx.hovered);
-                            } else {
+                            }
+                            else {
                                 md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
                                 md_bitfield_set_bit(&mask, pair.idx[0]);
                                 md_bitfield_set_bit(&mask, pair.idx[1]);
@@ -7228,12 +7233,13 @@ static void handle_camera_interaction(ApplicationState* data) {
             }
         }
         else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
-            md_bitfield_clear(&data->selection.highlight_mask);
                 if (data->selection.atom_idx.hovered != -1 && data->selection.atom_idx.hovered < (int32_t)data->mold.sys.atom.count) {
+                    md_bitfield_clear(&data->selection.highlight_mask);
                     md_bitfield_set_bit(&data->selection.highlight_mask, data->selection.atom_idx.hovered);
                     grow_mask_by_selection_granularity(&data->selection.highlight_mask, data->selection.granularity, data->mold.sys);
                 }
                 else if (data->selection.bond_idx.hovered != -1 && data->selection.bond_idx.hovered < (int32_t)data->mold.sys.bond.count) {
+                    md_bitfield_clear(&data->selection.highlight_mask);
                     md_atom_pair_t pair = data->mold.sys.bond.pairs[data->selection.bond_idx.hovered];
                     if (0 <= pair.idx[0] && pair.idx[0] < (int32_t)data->mold.sys.atom.count) {
                         md_bitfield_set_bit(&data->selection.highlight_mask, pair.idx[0]);
@@ -7286,16 +7292,16 @@ static void handle_camera_interaction(ApplicationState* data) {
                 data->view.animation.target_orientation = ori;
                 data->view.animation.target_distance = dist;
 
-                if (ImGui::GetIO().MouseDoubleClicked[0]) {
-                    if (data->picking.depth < 1.0f) {
+                if (ImGui::GetMouseClickedCount(ImGuiMouseButton_Left) == 2) {
+                    if (data->picking_hit.depth < 1.0f) {
                         const vec3_t forward = data->view.camera.orientation * vec3_t{0, 0, 1};
-                        data->view.animation.target_position = data->picking.world_coord + forward * dist;
+                        data->view.animation.target_position = data->picking_hit.world_pos + forward * dist;
                     } else {
                         reset_view(data, &data->representation.visibility_mask, true, true);
                     }
                 }
 
-                data->visuals.dof.focus_depth = data->view.camera.focus_distance;
+                data->visuals.dof.focus_depth = data->view.camera.distance;
             
                 if (ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0) &&
                     ImGui::IsMouseReleased(ImGuiMouseButton_Right))

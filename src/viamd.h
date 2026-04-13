@@ -178,12 +178,6 @@ enum MolBit_ {
     MolBit_ClearVelocity            = 1u << 5,
 };
 
-enum RecenterTarget {
-    RecenterTarget_UnitcellCenter,
-    RecenterTarget_Origin,
-    RecenterTarget_COUNT,
-};
-
 // This is viamd's representation of a property
 struct DisplayProperty {
     enum Type {
