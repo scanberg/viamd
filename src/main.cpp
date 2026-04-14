@@ -682,7 +682,7 @@ int main(int argc, char** argv) {
                 draw_picking_tooltip_window(hit, state);
             }
 
-            if (ImGui::GetIO().MouseDoubleClicked[0]) {
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 if (hit.depth < 1.0f) {
                     const vec3_t forward = state.view.camera.orientation * vec3_t{0, 0, 1};
                     state.view.target.position = hit.world_pos + forward * state.view.target.distance;
