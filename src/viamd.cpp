@@ -2263,10 +2263,7 @@ bool picking_surface_submit_readback_and_poll_hit(
     return picking_surface_poll_hit(out_hit, surface, handler);
 }
 
-bool interaction_surface(
-    PickingHit* out_hit,
-    const InteractionSurfaceArgs& args
-) {
+bool interaction_surface(PickingHit* out_hit, const InteractionSurfaceArgs& args) {
     ASSERT(out_hit);
     ASSERT(args.sys);
     ASSERT(args.highlight_mask);
@@ -2306,16 +2303,14 @@ bool interaction_surface(
     if (ImGui::IsItemHovered() && args.fbo && args.width && args.height) {
         const ImVec2 mouse_pos = ImGui::GetMousePos();
         const ImVec2 local_mouse = mouse_pos - canvas_min;
+        const ImVec2 local_coord = ImVec2(local_mouse.x, canvas_size.y - local_mouse.y) * ImGui::GetIO().DisplayFramebufferScale;
 
         PickingReadbackRequest request = {
             .fbo = args.fbo,
             .width = args.width,
             .height = args.height,
-            .surface_coord = {
-                local_mouse.x,
-                canvas_size.y - local_mouse.y,
-            },
-            .screen_coord = {local_mouse.x, local_mouse.y},
+            .surface_coord = { local_coord.x, local_coord.y },
+            .screen_coord = { local_mouse.x, local_mouse.y },
             .inv_mvp = *args.inv_mvp,
         };
 
