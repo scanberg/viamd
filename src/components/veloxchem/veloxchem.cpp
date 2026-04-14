@@ -5242,7 +5242,8 @@ struct VeloxChem : viamd::EventHandler {
 						viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
                         draw_picking_tooltip_window(hit, state);
                     }
-                    if (ImGui::GetIO().MouseDoubleClicked[0]) {
+                    
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         if (hit.depth < 1.0f) {
                             const vec3_t forward = nto.camera.orientation * vec3_t{0, 0, 1};
                             nto.target.position = hit.world_pos + forward * nto.target.distance;
