@@ -369,7 +369,6 @@ struct VeloxChem : viamd::EventHandler {
         ViewTransform target;
 
         float distance_scale = 2.0f;
-
         bool show_coordinate_system_widget = true;
     } orb;
 
@@ -1174,7 +1173,9 @@ struct VeloxChem : viamd::EventHandler {
 
                     // ORB
                     //orb.show_window = true;
+                    picking_surface_init(&orb.picking_surface, PickingSource_Orb);
                     orb.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, orb.distance_scale);
+                    orb.camera = orb.target;
                     orb.mo_idx = homo_idx[0];
                     orb.scroll_to_idx = homo_idx[0];
 
@@ -3990,9 +3991,7 @@ struct VeloxChem : viamd::EventHandler {
             const double dt = state.app.timing.delta_s;
             camera_animate(&orb.camera, orb.target, dt);
 
-            ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
-            canvas_sz.x = MAX(canvas_sz.x, 50.0f);
-            canvas_sz.y = MAX(canvas_sz.y, 50.0f);
+            ImVec2 canvas_sz = ImMax(ImVec2(50.0f, 50.0f), ImGui::GetContentRegionAvail());   // Resize canvas to what's available
 
             // This will catch our interactions
             ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
@@ -4000,17 +3999,12 @@ struct VeloxChem : viamd::EventHandler {
             // Draw border and background color
             ImGuiIO& io = ImGui::GetIO();
 
-            ImVec2 canvas_p0 = ImGui::GetItemRectMin();
-            ImVec2 canvas_p1 = ImGui::GetItemRectMax();
-
-            ImVec2 orb_win_sz = (canvas_p1 - canvas_p0) / ImVec2((float)num_x, (float)num_y);
-            orb_win_sz.x = floorf(orb_win_sz.x);
-            orb_win_sz.y = floorf(orb_win_sz.y);
-            canvas_p1.x = canvas_p0.x + num_x * orb_win_sz.x;
-            canvas_p1.y = canvas_p0.y + num_y * orb_win_sz.y;
+            ImVec2 canvas_min = ImGui::GetItemRectMin();
+            ImVec2 orb_win_sz = ImFloor(canvas_sz / ImVec2((float)num_x, (float)num_y));
+            ImVec2 canvas_max = canvas_min + orb_win_sz * ImVec2((float)num_x, (float)num_y);
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
+            draw_list->AddRectFilled(canvas_min, canvas_max, IM_COL32(255, 255, 255, 255));
 
             const int num_orbs = (int)num_molecular_orbitals();
 
@@ -4021,8 +4015,8 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 int x = num_x - i % num_x - 1;
                 int y = num_y - i / num_x - 1;
-                ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x + 0), (float)(y + 0));
-                ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x + 1), (float)(y + 1));
+                ImVec2 p0 = canvas_min + orb_win_sz * ImVec2((float)(x + 0), (float)(y + 0));
+                ImVec2 p1 = canvas_min + orb_win_sz * ImVec2((float)(x + 1), (float)(y + 1));
                 if (-1 < mo_idx && mo_idx < num_orbs) {
                     const ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     const ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.25f);
@@ -4064,23 +4058,25 @@ struct VeloxChem : viamd::EventHandler {
                     draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0, 0, 0), buf);
                 }
             }
+
             for (int x = 1; x < orb.num_x; ++x) {
-                ImVec2 p0 = { canvas_p0.x + orb_win_sz.x * x, canvas_p0.y };
-                ImVec2 p1 = { canvas_p0.x + orb_win_sz.x * x, canvas_p1.y };
+                ImVec2 p0 = { canvas_min.x + orb_win_sz.x * x, canvas_min.y };
+                ImVec2 p1 = { canvas_min.x + orb_win_sz.x * x, canvas_max.y };
                 draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
             }
+
             for (int y = 1; y < orb.num_y; ++y) {
-                ImVec2 p0 = { canvas_p0.x, canvas_p0.y + orb_win_sz.y * y };
-                ImVec2 p1 = { canvas_p1.x, canvas_p0.y + orb_win_sz.y * y };
+                ImVec2 p0 = { canvas_min.x, canvas_min.y + orb_win_sz.y * y };
+                ImVec2 p1 = { canvas_max.x, canvas_min.y + orb_win_sz.y * y };
                 draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
             }
 
             const bool is_hovered = ImGui::IsItemHovered();
             const bool is_active = ImGui::IsItemActive();
-            const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
+            const ImVec2 origin(canvas_min.x, canvas_min.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-            int width = MAX(1, (int)orb_win_sz.x);
+            int width  = MAX(1, (int)orb_win_sz.x);
             int height = MAX(1, (int)orb_win_sz.y);
 
             auto& gbuf = orb.gbuf;
@@ -5008,7 +5004,7 @@ struct VeloxChem : viamd::EventHandler {
 
                             //Down Arrow
                             ImGui::TableNextColumn();
-                            if (row_n == nto.group.count - 1) {
+                            if (row_n == (int)nto.group.count - 1) {
                                 ImGui::Dummy(button_size);
                             }
                             else {
@@ -5789,10 +5785,9 @@ struct VeloxChem : viamd::EventHandler {
 
 					int* ao_to_group = (int*)md_temp_push(sizeof(int) * num_aos);
 
-					size_t num_atoms = md_vlx_number_of_atoms(vlx);
                     for (size_t i = 0; i < num_aos; i++) {
                         int atom_idx = ao_to_atom[i];
-						ASSERT(0 <= atom_idx && (size_t)atom_idx < num_atoms);
+						ASSERT(0 <= atom_idx && (size_t)atom_idx < md_vlx_number_of_atoms(vlx));
                         ao_to_group[i] = (int)nto.atom_group_idx[atom_idx];
                         if (ao_to_group[i] < 0 || ao_to_group[i] >= MAX_NTO_GROUPS) {
                             ao_to_group[i] = 0;
