@@ -2294,6 +2294,232 @@ bool picking_surface_submit_readback_and_poll_hit(
     return picking_surface_poll_hit(out_hit, surface, handler);
 }
 
+bool interaction_surface(
+    PickingHit* out_hit,
+    const InteractionSurfaceArgs& args
+) {
+    ASSERT(out_hit);
+    ASSERT(args.mol);
+    ASSERT(args.highlight_mask);
+    ASSERT(args.selection_mask);
+    ASSERT(args.single_selection_sequence);
+    ASSERT(args.camera);
+    ASSERT(args.mvp);
+    ASSERT(args.inv_mvp);
+    ASSERT(args.view_target);
+    ASSERT(args.trackball_param);
+    ASSERT(args.picking_surface);
+    ASSERT(args.picking_handler);
+
+    *out_hit = {};
+
+    enum class RegionMode { Append, Remove };
+
+    const bool pressed = ImGui::InvisibleButton(
+        "canvas",
+        {args.size.x, args.size.y},
+        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap
+    );
+
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (!window) {
+        return pressed;
+    }
+
+    bool is_performing_region_selection = false;
+    ImDrawList* draw_list = window->DrawList;
+    ASSERT(draw_list);
+
+    const ImVec2 canvas_min = ImGui::GetItemRectMin();
+    const ImVec2 canvas_max = ImGui::GetItemRectMax();
+    const ImVec2 canvas_size = ImGui::GetItemRectSize();
+
+    if (ImGui::IsItemHovered() && args.fbo && args.width && args.height) {
+        const ImVec2 mouse_pos = ImGui::GetMousePos();
+        const ImVec2 local_mouse = mouse_pos - canvas_min;
+        const float scale_x = canvas_size.x > 0.0f ? (float)args.width  / canvas_size.x : 0.0f;
+        const float scale_y = canvas_size.y > 0.0f ? (float)args.height / canvas_size.y : 0.0f;
+
+        PickingReadbackRequest request = {
+            .fbo = args.fbo,
+            .width = args.width,
+            .height = args.height,
+            .surface_coord = {
+                local_mouse.x * scale_x,
+                ((canvas_size.y - local_mouse.y) * scale_y),
+            },
+            .screen_coord = {local_mouse.x, local_mouse.y},
+            .inv_mvp = *args.inv_mvp,
+        };
+
+        picking_surface_submit_readback_and_poll_hit(out_hit, args.picking_surface, *args.picking_handler, request);
+    }
+
+    const bool valid_hit = out_hit->raw_idx != INVALID_PICKING_IDX &&
+        (args.expected_source == 0 || out_hit->source == args.expected_source);
+
+    if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
+        if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
+            ImGui::ResetMouseDragDelta();
+        }
+
+        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+            RegionMode mode = RegionMode::Append;
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                mode = RegionMode::Append;
+            } else if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                mode = RegionMode::Remove;
+            }
+
+            const ImVec2 ext = ImGui::GetMouseDragDelta(mode == RegionMode::Append ? ImGuiMouseButton_Left : ImGuiMouseButton_Right);
+            const ImVec2 pos = ImGui::GetMousePos() - ext;
+            const ImU32 fill_col = 0x22222222;
+            const ImU32 line_col = 0x88888888;
+
+            ImVec2 sel_min = ImClamp(ImMin(pos, pos + ext), canvas_min, canvas_max);
+            ImVec2 sel_max = ImClamp(ImMax(pos, pos + ext), canvas_min, canvas_max);
+
+            draw_list->AddRectFilled(sel_min, sel_max, fill_col);
+            draw_list->AddRect(sel_min, sel_max, line_col);
+
+            sel_min -= canvas_min;
+            sel_max -= canvas_min;
+
+            md_allocator_i* temp_alloc = md_get_temp_allocator();
+            md_bitfield_t mask = md_bitfield_create(temp_alloc);
+
+            if (sel_min != sel_max) {
+                md_bitfield_clear(args.highlight_mask);
+                is_performing_region_selection = true;
+
+                if (args.candidate_mask) {
+                    md_bitfield_iter_t it = md_bitfield_iter_create(args.candidate_mask);
+                    while (md_bitfield_iter_next(&it)) {
+                        const uint64_t idx = md_bitfield_iter_idx(&it);
+                        const vec4_t p = mat4_mul_vec4(*args.mvp, vec4_set(args.mol->atom.x[idx], args.mol->atom.y[idx], args.mol->atom.z[idx], 1.0f));
+                        const vec2_t c = {
+                            ( p.x / p.w * 0.5f + 0.5f) * canvas_size.x,
+                            (-p.y / p.w * 0.5f + 0.5f) * canvas_size.y,
+                        };
+
+                        if (sel_min.x <= c.x && c.x <= sel_max.x && sel_min.y <= c.y && c.y <= sel_max.y) {
+                            md_bitfield_set_bit(&mask, idx);
+                        }
+                    }
+                } else {
+                    for (size_t idx = 0; idx < args.mol->atom.count; ++idx) {
+                        const vec4_t p = mat4_mul_vec4(*args.mvp, vec4_set(args.mol->atom.x[idx], args.mol->atom.y[idx], args.mol->atom.z[idx], 1.0f));
+                        const vec2_t c = {
+                            ( p.x / p.w * 0.5f + 0.5f) * canvas_size.x,
+                            (-p.y / p.w * 0.5f + 0.5f) * canvas_size.y,
+                        };
+
+                        if (sel_min.x <= c.x && c.x <= sel_max.x && sel_min.y <= c.y && c.y <= sel_max.y) {
+                            md_bitfield_set_bit(&mask, idx);
+                        }
+                    }
+                }
+
+                grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.mol);
+
+                if (mode == RegionMode::Append) {
+                    md_bitfield_or(args.highlight_mask, args.selection_mask, &mask);
+                } else {
+                    md_bitfield_andnot(args.highlight_mask, args.selection_mask, &mask);
+                }
+
+                if (pressed || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                    md_bitfield_copy(args.selection_mask, args.highlight_mask);
+                }
+            } else if (pressed) {
+                if (valid_hit) {
+                    if (mode == RegionMode::Append) {
+                        if (out_hit->domain == PickingDomain_Atom) {
+                            const int atom_idx = (int)out_hit->local_idx;
+                            single_selection_sequence_push_idx(args.single_selection_sequence, atom_idx);
+                            md_bitfield_set_bit(&mask, atom_idx);
+                        } else if (out_hit->domain == PickingDomain_Bond && args.mol->bond.pairs) {
+                            const md_atom_pair_t pair = args.mol->bond.pairs[out_hit->local_idx];
+                            md_bitfield_set_bit(&mask, pair.idx[0]);
+                            md_bitfield_set_bit(&mask, pair.idx[1]);
+                        }
+                        grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.mol);
+                        md_bitfield_or_inplace(args.selection_mask, &mask);
+                    } else {
+                        if (out_hit->domain == PickingDomain_Atom) {
+                            const int atom_idx = (int)out_hit->local_idx;
+                            single_selection_sequence_pop_idx(args.single_selection_sequence, atom_idx);
+                            md_bitfield_set_bit(&mask, atom_idx);
+                        } else if (out_hit->domain == PickingDomain_Bond && args.mol->bond.pairs) {
+                            const md_atom_pair_t pair = args.mol->bond.pairs[out_hit->local_idx];
+                            md_bitfield_set_bit(&mask, pair.idx[0]);
+                            md_bitfield_set_bit(&mask, pair.idx[1]);
+                        }
+                        grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.mol);
+                        md_bitfield_andnot_inplace(args.selection_mask, &mask);
+                    }
+                } else {
+                    single_selection_sequence_clear(args.single_selection_sequence);
+                    md_bitfield_clear(args.selection_mask);
+                    md_bitfield_clear(args.highlight_mask);
+                }
+            }
+        }
+    } else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
+        md_bitfield_clear(args.highlight_mask);
+        if (valid_hit) {
+            if (out_hit->domain == PickingDomain_Atom) {
+                const int atom_idx = (int)out_hit->local_idx;
+                if (0 <= atom_idx && atom_idx < (int)args.mol->atom.count) {
+                    md_bitfield_set_bit(args.highlight_mask, atom_idx);
+                    grow_mask_by_selection_granularity(args.highlight_mask, args.selection_granularity, *args.mol);
+                }
+            } else if (out_hit->domain == PickingDomain_Bond && args.mol->bond.pairs) {
+                const int bond_idx = (int)out_hit->local_idx;
+                if (0 <= bond_idx && bond_idx < (int)args.mol->bond.count) {
+                    const md_atom_pair_t pair = args.mol->bond.pairs[bond_idx];
+                    if (0 <= pair.idx[0] && pair.idx[0] < (int)args.mol->atom.count) {
+                        md_bitfield_set_bit(args.highlight_mask, pair.idx[0]);
+                    }
+                    if (0 <= pair.idx[1] && pair.idx[1] < (int)args.mol->atom.count) {
+                        md_bitfield_set_bit(args.highlight_mask, pair.idx[1]);
+                    }
+                    grow_mask_by_selection_granularity(args.highlight_mask, args.selection_granularity, *args.mol);
+                }
+            }
+        }
+    }
+
+    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+        if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !is_performing_region_selection) {
+            const ImVec2 delta = ImGui::GetIO().MouseDelta;
+            const ImVec2 coord = ImGui::GetMousePos() - canvas_min;
+            const float scroll_delta = ImGui::GetIO().MouseWheel;
+
+            TrackballControllerInput input = {};
+            input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+            input.pan_button = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+            input.dolly_button = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+            input.mouse_coord_curr = {coord.x, coord.y};
+            input.mouse_coord_prev = {coord.x - delta.x, coord.y - delta.y};
+            input.screen_size = {canvas_size.x, canvas_size.y};
+            input.dolly_delta = scroll_delta;
+            input.fov_y = args.camera->fov_y;
+
+            TrackballFlags flags = TrackballFlags_None;
+            if (ImGui::IsItemActive()) {
+                flags |= TrackballFlags_EnableAllInteractions;
+            } else {
+                flags |= TrackballFlags_DollyEnabled;
+            }
+
+            camera_controller_trackball(args.view_target, input, *args.trackball_param, flags);
+        }
+    }
+
+    return pressed;
+}
+
 bool file_queue_empty(const FileQueue* queue) {
     return queue->head == queue->tail;
 }

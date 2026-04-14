@@ -4749,8 +4749,7 @@ struct VeloxChem : viamd::EventHandler {
     };
 
     struct SelectionState {
-        int hovered_atom_idx;
-        int hovered_bond_idx;
+        PickingHit hit;
         md_bitfield_t* highlight_mask;
         md_bitfield_t* selection_mask;
         SingleSelectionSequence* single_selection_sequence;
@@ -4761,8 +4760,6 @@ struct VeloxChem : viamd::EventHandler {
         const Camera& camera;
         const mat4_t& MVP;
         const TrackballControllerParam& trackball_param;
-        const vec3_t& picking_world_coord;
-        float picking_depth;
         ViewTransform* target;
     };
 
@@ -4894,7 +4891,6 @@ struct VeloxChem : viamd::EventHandler {
                         md_bitfield_set_bit(select.highlight_mask, pair.idx[1]);
                     }
                     grow_mask_by_selection_granularity(select.highlight_mask, select.granularity, mol);
-                    //draw_info_window(state, select.hovered_atom_idx);
                 }
             }
 
@@ -5384,6 +5380,29 @@ struct VeloxChem : viamd::EventHandler {
                     NTO_Attachment,
                     NTO_Detachment,
                 };
+
+                PickingHit hit = {};
+                const ImVec2 mouse_pos = ImGui::GetMousePos();
+                for (int i = 0; i < 2; ++i) {
+                    ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
+                    ImVec2 p1 = grid_p0 + win_sz * ImVec2(1.0f, (float)(i+1));
+                    ImRect rect = {p0, p1};
+                    // Check if mouse is within viewrect and if so poll hit event
+                    if (rect.Contains(mouse_pos)) {
+                        ImVec2 surface_coord = mouse_pos - p0;
+                        surface_coord.y = win_sz.y - surface_coord.y; //Flip Y because surface coord is bottom-left origin
+                        PickingReadbackRequest request = {
+                            .fbo = nto.gbuf.fbo,
+                            .width = nto.gbuf.width,
+                            .height = nto.gbuf.height,
+                            .screen_coord = vec_cast(mouse_pos),
+                            .surface_coord = vec_cast(surface_coord),
+                            .inv_mvp = inv_MVP,
+                        };
+                        picking_surface_submit_readback_and_poll_hit(&hit, &nto.picking_surface, state.picking_handler, request);
+                        break;
+                    }
+                }
 
                 // Draw Attachment / Detachment
                 for (int i = 0; i < 2; ++i) {

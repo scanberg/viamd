@@ -7048,7 +7048,7 @@ void create_screenshot(str_t path) {
     VIAMD_LOG_SUCCESS("Screenshot saved to: '" STR_FMT "'", STR_ARG(path));
 }
 
-static void draw_coordinate_system_widget_window(ViewTransform* out_target, const ViewTransform& current) {
+static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current) {
     const int def_size = 150;
     const int min_size = 100;
     const int max_size = 500;
@@ -7079,9 +7079,9 @@ static void draw_coordinate_system_widget_window(ViewTransform* out_target, cons
             .pos = ImGui::GetWindowContentRegionMin(),
             .size = ImGui::GetContentRegionAvail(),
             .view_matrix = view_matrix,
-            .camera_ori  = out_target->orientation,
-            .camera_pos  = out_target->position,
-            .camera_dist = out_target->distance,
+            .camera_ori  = target->orientation,
+            .camera_pos  = target->position,
+            .camera_dist = target->distance,
         };
 
         ImGui::DrawCoordinateSystemWidget(param);

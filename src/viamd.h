@@ -633,6 +633,32 @@ struct PickingReadbackRequest {
     mat4_t inv_mvp = mat4_ident();
 };
 
+struct InteractionSurfaceArgs {
+    vec2_t size = {0, 0};
+
+    const md_system_t* mol = nullptr;
+    const md_bitfield_t* candidate_mask = nullptr;
+
+    md_bitfield_t* highlight_mask = nullptr;
+    md_bitfield_t* selection_mask = nullptr;
+    SingleSelectionSequence* single_selection_sequence = nullptr;
+    SelectionGranularity selection_granularity = SelectionGranularity::Atom;
+
+    const Camera* camera = nullptr;
+    const mat4_t* mvp = nullptr;
+    const mat4_t* inv_mvp = nullptr;
+    ViewTransform* view_target = nullptr;
+    const TrackballControllerParam* trackball_param = nullptr;
+
+    PickingSurface* picking_surface = nullptr;
+    const PickingHandler* picking_handler = nullptr;
+    PickingSourceID expected_source = 0;
+
+    uint32_t fbo = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -1320,6 +1346,14 @@ bool picking_surface_submit_readback_and_poll_hit(
     PickingSurface* surface,
     const PickingHandler& handler,
     const PickingReadbackRequest& request
+);
+
+// Creates an invisible interactive surface, performs picking and applies the common
+// selection / highlight / camera interaction behavior for pickable canvases.
+// Returns the pressed state from the underlying InvisibleButton.
+bool interaction_surface(
+    PickingHit* out_hit,
+    const InteractionSurfaceArgs& args
 );
 
 // File Queue
