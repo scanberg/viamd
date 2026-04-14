@@ -62,13 +62,16 @@
 #define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
 #define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
 
+#define INVALID_PICKING_IDX (~0U)
+
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
 constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
 
-enum {
-    PickingDomain_Atom = HASH_STR_LIT("picking domain atom"),
-    PickingDomain_Bond = HASH_STR_LIT("picking domain bond"),
-};
+typedef uint64_t PickingDomainID;
+typedef uint64_t PickingSourceID;
+
+constexpr PickingDomainID PickingDomain_Atom = HASH_STR_LIT64("picking domain atom");
+constexpr PickingDomainID PickingDomain_Bond = HASH_STR_LIT64("picking domain bond");
 
 enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Component, Instance };
@@ -566,9 +569,6 @@ struct FrameCache {
     int32_t frame_idx[FRAME_CACHE_SIZE] = {};
 };
 
-typedef uint64_t PickingDomainID;
-typedef uint64_t PickingSourceID;
-
 struct PickingRange {
     PickingDomainID domain = 0;
     uint32_t beg = 0;
@@ -636,7 +636,7 @@ struct PickingReadbackRequest {
 struct InteractionSurfaceArgs {
     vec2_t size = {0, 0};
 
-    const md_system_t* mol = nullptr;
+    const md_system_t* sys = nullptr;
     const md_bitfield_t* candidate_mask = nullptr;
 
     md_bitfield_t* highlight_mask = nullptr;
@@ -801,7 +801,6 @@ struct ApplicationState {
     PickingRange   picking_range_bond {};   // Reserved picking range for bonds
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
-    PickingHit     picking_hit {};          // Stores the picking hit result that used for filling in the tooltip and other interactions
 
     // --- ANIMATION ---
     struct {
@@ -1257,9 +1256,9 @@ static inline uint64_t generate_fingerprint() {
     return (uint64_t)md_time_now();
 }
 
-void draw_picking_tooltip_window(const ApplicationState& state);
+void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state);
 
-void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
+//void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
 
 void interrupt_async_tasks(ApplicationState* state);
 

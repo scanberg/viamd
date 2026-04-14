@@ -2177,8 +2177,6 @@ void init_gbuffer(GBuffer* gbuf, int width, int height) {
     if (!gbuf->tex.velocity) glGenTextures(1, &gbuf->tex.velocity);
     if (!gbuf->tex.transparency) glGenTextures(1, &gbuf->tex.transparency);
     if (!gbuf->tex.picking) glGenTextures(1, &gbuf->tex.picking);
-    if (!gbuf->pbo_picking.color[0]) glGenBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.color), gbuf->pbo_picking.color);
-    if (!gbuf->pbo_picking.depth[0]) glGenBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.depth), gbuf->pbo_picking.depth);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
@@ -2237,18 +2235,6 @@ void init_gbuffer(GBuffer* gbuf, int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     */
-
-    for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.color); ++i) {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[i]);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    }
-
-    for (uint32_t i = 0; i < ARRAY_SIZE(gbuf->pbo_picking.depth); ++i) {
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[i]);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4, NULL, GL_DYNAMIC_READ);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    }
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -2311,65 +2297,4 @@ void destroy_gbuffer(GBuffer* gbuf) {
     if (gbuf->tex.transparency) glDeleteTextures(1, &gbuf->tex.transparency);
     if (gbuf->tex.picking) glDeleteTextures(1, &gbuf->tex.picking);
     if (gbuf->tex.temporal_accumulation[0]) glDeleteTextures((int)ARRAY_SIZE(gbuf->tex.temporal_accumulation), gbuf->tex.temporal_accumulation);
-
-    if (gbuf->pbo_picking.color[0]) glDeleteBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.color), gbuf->pbo_picking.color);
-    if (gbuf->pbo_picking.depth[0]) glDeleteBuffers((int)ARRAY_SIZE(gbuf->pbo_picking.depth), gbuf->pbo_picking.depth);
-}
-
-// #picking
-void extract_gbuffer_picking_idx_and_depth(uint32_t* out_idx, float* out_depth, GBuffer* gbuf, int x, int y) {
-    uint32_t idx = 0;
-    float depth = 0;
-
-#if EXPERIMENTAL_GFX_API
-    if (use_gfx) {
-        idx = md_gfx_get_picking_idx();
-        depth = md_gfx_get_picking_depth();
-        md_gfx_query_picking((uint32_t)x, (uint32_t)y);
-    }
-    else {
-#endif
-        ASSERT(gbuf);
-        const uint32_t N = (uint32_t)ARRAY_SIZE(gbuf->pbo_picking.color);
-        uint32_t frame = gbuf->pbo_picking.frame++;
-        uint32_t queue = (frame) % N;
-        uint32_t read  = (frame + N-1) % N;
-
-        uint8_t  color[4];
-
-        PUSH_GPU_SECTION("READ PICKING DATA")
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, gbuf->fbo);
-        glReadBuffer(GL_COLOR_ATTACHMENT_PICKING);
-
-        // Queue async reads from current frame to pixel pack buffer
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[queue]);
-        glReadPixels(x, y, 1, 1, GL_BGRA, GL_UNSIGNED_BYTE, 0);
-
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[queue]);
-        glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
-
-        // Read values from previous frames pixel pack buffer
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.color[read]);
-        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(color), color);
-
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, gbuf->pbo_picking.depth[read]);
-        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(depth), &depth);
-
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-        POP_GPU_SECTION()
-
-        // BGRA
-        idx = (color[0] << 16) | (color[1] << 8) | (color[2] << 0) | (color[3] << 24);
-
-#if EXPERIMENTAL_GFX_API
-    }
-#endif
-
-    if (out_idx) {
-        *out_idx = idx;
-    }
-    if (out_depth) {
-        *out_depth = depth;
-    }
 }

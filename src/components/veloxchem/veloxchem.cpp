@@ -65,6 +65,9 @@
 // Complement to veloxchem green (magentaish)
 #define F32_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
 
+constexpr PickingSourceID PickingSource_Nto = HASH_STR_LIT64("Picking Source Nto");
+constexpr PickingSourceID PickingSource_Orb = HASH_STR_LIT64("Picking Source Orb");
+
 // Broadening min max values
 static const double gamma_min = 0.1;
 static const double gamma_max = 1.0;
@@ -382,9 +385,7 @@ struct VeloxChem : viamd::EventHandler {
 
         md_grid_t grid = {0};
 
-        size_t num_atoms = 0;
-        vec4_t*   atom_xyzr = nullptr;      // in Atomic Units (Bohr)
-        uint32_t* atom_group_idx = nullptr;
+        md_array(uint32_t) atom_group_idx = nullptr;
 
         md_gl_rep_t gl_rep = {0};
 
@@ -423,7 +424,7 @@ struct VeloxChem : viamd::EventHandler {
 
         GBuffer gbuf = {};
         PickingSurface picking_surface = {};
-        //PickingData picking = {};
+
         Camera camera = {};
 		ViewTransform target = {};
 
@@ -1007,14 +1008,15 @@ struct VeloxChem : viamd::EventHandler {
 
     void update_nto_group_colors() {
         ScopedTemp temp_reset;
-        uint32_t* colors = (uint32_t*)md_temp_push(sizeof(uint32_t) * nto.num_atoms);
-        for (size_t i = 0; i < nto.num_atoms; ++i) {
+		size_t num_atoms = md_vlx_number_of_atoms(vlx);
+        uint32_t* colors = (uint32_t*)md_temp_push(sizeof(uint32_t) * num_atoms);
+        for (size_t i = 0; i < num_atoms; ++i) {
             const size_t group_idx = nto.atom_group_idx[i];
             const uint32_t color = group_idx < nto.group.count ? convert_color(nto.group.color[group_idx]) : U32_MAGENTA;
             colors[i] = color;
         }
 
-        md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)nto.num_atoms, colors, 0);
+        md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)num_atoms, colors, 0);
     }
 
     void init_from_file(str_t filename, ApplicationState& state) {
@@ -1081,17 +1083,21 @@ struct VeloxChem : viamd::EventHandler {
                     calculate_bounding_volumes(&oabb, &aabb, state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, qm_to_atom_idx, md_vlx_number_of_atoms(vlx));
 
                     // NTO
+
                     size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
                     if (num_excited_states > 0) {
                         //nto.show_window = true;
-                        nto.camera = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, nto.distance_scale);
+
+                        picking_surface_init(&nto.picking_surface, PickingSource_Nto);
+                        nto.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, nto.distance_scale);
+                        nto.camera = nto.target;
 
 						size_t num_vlx_atoms = md_vlx_number_of_atoms(vlx);
 						nto.atom_group_idx = md_array_create(uint32_t, num_vlx_atoms, arena);
                         MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_vlx_atoms);
 
                         snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
-                        nto.group.color[0] = vec4_t{ 0, 0, 0, 1 };
+                        nto.group.color[0] = vec4_t{ 0.25f, 0.25f, 0.25f, 1.0f };
 
                         for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
                             ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
@@ -1103,10 +1109,11 @@ struct VeloxChem : viamd::EventHandler {
                         extract_file(&file, filename);
 
                         if (str_eq_cstr(file, "tq.out")) {
+                            // Hardcoded values for a particular dataset
                             uint32_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
                             //nto.atom_group_idx = index_from_text;
                             nto.group.count = 3;
-                            MEMCPY(nto.atom_group_idx, index_from_text, sizeof(index_from_text));
+                            MEMCPY(nto.atom_group_idx, index_from_text, MIN(sizeof(index_from_text), md_array_bytes(nto.atom_group_idx)));
                             snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Thio");
                             snprintf(nto.group.label[2], sizeof(nto.group.label[2]), "Quin");
                         }
@@ -2010,7 +2017,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (index_hovered) {
                     nto->group.hovered_index = (int8_t)i;
                     bar_color = make_highlight_color(bar_color);
-                    for (size_t atom_i = 0; atom_i < nto->num_atoms; atom_i++) {
+                    for (size_t atom_i = 0; atom_i < md_array_size(nto->atom_group_idx); atom_i++) {
                         if (nto->atom_group_idx[atom_i] == (uint32_t)i) {
                             md_bitfield_set_bit(&state->selection.highlight_mask, atom_i);
                         }
@@ -3713,9 +3720,9 @@ struct VeloxChem : viamd::EventHandler {
         if (ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
 
             const double* occ_alpha = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_ALPHA);
-            const double* occ_beta  = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
+            const double* occ_beta = md_vlx_scf_mo_occupancy(vlx, MD_VLX_MO_TYPE_BETA);
             const double* ene_alpha = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_ALPHA);
-            const double* ene_beta  = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_BETA);
+            const double* ene_beta = md_vlx_scf_mo_energy(vlx, MD_VLX_MO_TYPE_BETA);
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
             md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
@@ -3756,7 +3763,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
                 ImGui::SetItemTooltip("Iso Value");
 
-                orb.iso.values[0] =  (float)iso_val;
+                orb.iso.values[0] = (float)iso_val;
                 orb.iso.values[1] = -(float)iso_val;
                 orb.iso.count = 2;
                 orb.iso.enabled = true;
@@ -3801,15 +3808,16 @@ struct VeloxChem : viamd::EventHandler {
                     // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
                     // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
                     if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
-                        ImGui::TableSetupColumn("MO",                       ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed,         0.0f, Col_Idx);
-                        ImGui::TableSetupColumn((const char*)u8"Occ. α",  ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,  0.0f, Col_Occ_Alpha);
-                        ImGui::TableSetupColumn((const char*)u8"Occ. β",  ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,  0.0f, Col_Occ_Beta);
-                        ImGui::TableSetupColumn((const char*)u8"Ene. α",  ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,  0.0f, Col_Ene_Alpha);
-                        ImGui::TableSetupColumn((const char*)u8"Ene. β",  ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,  0.0f, Col_Ene_Beta);
-                    } else {
-                        ImGui::TableSetupColumn("MO",           ImGuiTableColumnFlags_DefaultSort          | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Idx);
-                        ImGui::TableSetupColumn("Occupancy",    ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Occ_Alpha);
-                        ImGui::TableSetupColumn("Energy",       ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed,   0.0f, Col_Ene_Alpha);
+                        ImGui::TableSetupColumn("MO", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Idx);
+                        ImGui::TableSetupColumn((const char*)u8"Occ. α", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Occ_Alpha);
+                        ImGui::TableSetupColumn((const char*)u8"Occ. β", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Occ_Beta);
+                        ImGui::TableSetupColumn((const char*)u8"Ene. α", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Ene_Alpha);
+                        ImGui::TableSetupColumn((const char*)u8"Ene. β", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Ene_Beta);
+                    }
+                    else {
+                        ImGui::TableSetupColumn("MO", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Idx);
+                        ImGui::TableSetupColumn("Occupancy", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Occ_Alpha);
+                        ImGui::TableSetupColumn("Energy", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Ene_Alpha);
                     }
                     ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
                     ImGui::TableHeadersRow();
@@ -3840,21 +3848,25 @@ struct VeloxChem : viamd::EventHandler {
                             if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                                 if (n == homo_idx[0] && n == orb_homo_idx) {
                                     lbl = "HOMO";
-                                } else if (n == lumo_idx[0] && n == orb_lumo_idx) {
+                                }
+                                else if (n == lumo_idx[0] && n == orb_lumo_idx) {
                                     lbl = "LUMO";
                                 }
-                            } else {
+                            }
+                            else {
                                 if (occ_beta) {
                                     occ += occ_beta[n];
                                 }
                                 if (n == orb_homo_idx) {
                                     lbl = (homo_idx[0] == homo_idx[1]) ? "HOMO" : "SOMO";
-                                } else if (n == orb_lumo_idx) {
+                                }
+                                else if (n == orb_lumo_idx) {
                                     lbl = "LUMO";
                                 }
                             }
                             ImGui::Text("%.1f %s", occ, lbl);
-                        } else {
+                        }
+                        else {
                             ImGui::Text("-");
                         }
                         if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
@@ -3863,25 +3875,29 @@ struct VeloxChem : viamd::EventHandler {
                                 const char* lbl = "";
                                 if (n == homo_idx[1] && n == orb_homo_idx) {
                                     lbl = "HOMO";
-                                } else if (n == lumo_idx[1] && n == orb_lumo_idx) {
+                                }
+                                else if (n == lumo_idx[1] && n == orb_lumo_idx) {
                                     lbl = "LUMO";
                                 }
                                 ImGui::Text("%.1f %s", occ_beta[n], lbl);
-                            } else {
+                            }
+                            else {
                                 ImGui::Text("-");
                             }
                         }
                         ImGui::TableNextColumn();
                         if (ene_alpha) {
                             ImGui::Text("%.4f", ene_alpha[n]);
-                        } else {
+                        }
+                        else {
                             ImGui::Text("-");
                         }
                         if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                             ImGui::TableNextColumn();
                             if (ene_beta) {
                                 ImGui::Text("%.4f", ene_beta[n]);
-                            } else {
+                            }
+                            else {
                                 ImGui::Text("-");
                             }
                         }
@@ -3899,13 +3915,14 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::SameLine();
 
             // These represent the new mo_idx we want to have in each slot
-            int vol_mo_idx[16]  = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+            int vol_mo_idx[16] = { -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1 };
             md_vlx_mo_type_t vol_mo_type[16] = {};
             for (int i = 0; i < num_mos; ++i) {
                 if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                     vol_mo_idx[i] = beg_mo_idx + i / 2;
                     vol_mo_type[i] = (i & 1) ? MD_VLX_MO_TYPE_ALPHA : MD_VLX_MO_TYPE_BETA;
-                } else {
+                }
+                else {
                     vol_mo_idx[i] = beg_mo_idx + i;
                     vol_mo_type[i] = MD_VLX_MO_TYPE_ALPHA;
                 }
@@ -3926,7 +3943,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (vol_mo_idx[i] == orb.vol_mo_idx[j]) {
                         // Swap to correct location
                         ImSwap(orb.vol[i], orb.vol[j]);
-                        ImSwap(orb.vol_mo_idx[i],  orb.vol_mo_idx[j]);
+                        ImSwap(orb.vol_mo_idx[i], orb.vol_mo_idx[j]);
                         ImSwap(orb.vol_mo_type[i], orb.vol_mo_type[j]);
                         found = true;
                         break;
@@ -3941,7 +3958,7 @@ struct VeloxChem : viamd::EventHandler {
 
             if (num_jobs > 0) {
                 const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
-                md_grid_t grid {0};
+                md_grid_t grid{ 0 };
                 init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
                 const int num_tot_mos = (int)num_molecular_orbitals();
 
@@ -3961,7 +3978,8 @@ struct VeloxChem : viamd::EventHandler {
 
                         if (use_gpu_path) {
                             compute_mo_GPU(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
-                        } else {
+                        }
+                        else {
                             orb.vol_task[slot_idx] = compute_mo_async(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
                         }
                     }
@@ -4003,8 +4021,8 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 int x = num_x - i % num_x - 1;
                 int y = num_y - i / num_x - 1;
-                ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x+0), (float)(y+0));
-                ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x+1), (float)(y+1));
+                ImVec2 p0 = canvas_p0 + orb_win_sz * ImVec2((float)(x + 0), (float)(y + 0));
+                ImVec2 p1 = canvas_p0 + orb_win_sz * ImVec2((float)(x + 1), (float)(y + 1));
                 if (-1 < mo_idx && mo_idx < num_orbs) {
                     const ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     const ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.25f);
@@ -4015,13 +4033,16 @@ struct VeloxChem : viamd::EventHandler {
                         int j = (i & 1) ? 0 : 1;
                         if (mo_idx == orb_homo_idx && orb_homo_idx == homo_idx[j]) {
                             lbl = "(HOMO)";
-                        } else if (mo_idx == orb_lumo_idx && orb_lumo_idx == lumo_idx[j]) {
+                        }
+                        else if (mo_idx == orb_lumo_idx && orb_lumo_idx == lumo_idx[j]) {
                             lbl = "(LUMO)";
                         }
-                    } else {
+                    }
+                    else {
                         if (mo_idx == orb_homo_idx) {
                             lbl = (homo_idx[0] == homo_idx[1]) ? "(HOMO)" : "(SOMO)";
-                        } else if (mo_idx == orb_lumo_idx) {
+                        }
+                        else if (mo_idx == orb_lumo_idx) {
                             lbl = "(LUMO)";
                         }
                     }
@@ -4030,26 +4051,27 @@ struct VeloxChem : viamd::EventHandler {
                     snprintf(buf, sizeof(buf), "%i %s", mo_idx + 1, lbl);
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
+                    draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
                     if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                         draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (i & 1) ? (const char*)u8"α" : (const char*)u8"β");
                         snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
-                    } else {
+                    }
+                    else {
                         snprintf(buf, sizeof(buf), "%.4f", ene_alpha[mo_idx]);
                     }
                     float width = ImGui::CalcTextSize(buf).x;
-                    draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0,0,0), buf);
+                    draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0, 0, 0), buf);
                 }
             }
             for (int x = 1; x < orb.num_x; ++x) {
-                ImVec2 p0 = {canvas_p0.x + orb_win_sz.x * x, canvas_p0.y};
-                ImVec2 p1 = {canvas_p0.x + orb_win_sz.x * x, canvas_p1.y};
+                ImVec2 p0 = { canvas_p0.x + orb_win_sz.x * x, canvas_p0.y };
+                ImVec2 p1 = { canvas_p0.x + orb_win_sz.x * x, canvas_p1.y };
                 draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
             }
             for (int y = 1; y < orb.num_y; ++y) {
-                ImVec2 p0 = {canvas_p0.x, canvas_p0.y + orb_win_sz.y * y};
-                ImVec2 p1 = {canvas_p1.x, canvas_p0.y + orb_win_sz.y * y};
+                ImVec2 p0 = { canvas_p0.x, canvas_p0.y + orb_win_sz.y * y };
+                ImVec2 p1 = { canvas_p1.x, canvas_p0.y + orb_win_sz.y * y };
                 draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
             }
 
@@ -4058,7 +4080,7 @@ struct VeloxChem : viamd::EventHandler {
             const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-            int width  = MAX(1, (int)orb_win_sz.x);
+            int width = MAX(1, (int)orb_win_sz.x);
             int height = MAX(1, (int)orb_win_sz.y);
 
             auto& gbuf = orb.gbuf;
@@ -4081,22 +4103,22 @@ struct VeloxChem : viamd::EventHandler {
                 orb.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, orb.distance_scale);
 
                 if (reset_hard) {
-                    orb.camera.position    = orb.target.position;
+                    orb.camera.position = orb.target.position;
                     orb.camera.orientation = orb.target.orientation;
-                    orb.camera.distance    = orb.target.distance;
+                    orb.camera.distance = orb.target.distance;
                 }
             }
 
             if (is_active || is_hovered) {
                 const vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
-                const vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
+                const vec2_t curr = { mouse_pos_in_canvas.x, mouse_pos_in_canvas.y };
                 const vec2_t prev = curr - delta;
 
                 TrackballControllerInput input = {
                     .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
-                    .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
-                    .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
-                    .dolly_delta   = is_hovered ? io.MouseWheel : 0.0f,
+                    .pan_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
+                    .dolly_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
+                    .dolly_delta = is_hovered ? io.MouseWheel : 0.0f,
                     .mouse_coord_prev = prev,
                     .mouse_coord_curr = curr,
                     .screen_size = {canvas_sz.x, canvas_sz.y},
@@ -4106,22 +4128,20 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (orb.show_coordinate_system_widget) {
-                float  ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
-                float  pad = 20.0f;
+                ImVec2 cursor_pos = ImGui::GetCursorPos();
+				defer{ ImGui::SetCursorPos(cursor_pos); };
 
-                ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
-                ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();
+                float ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
+                float pad = 20.0f;
+                ImVec2 size = ImVec2(ext, ext);
+                ImGui::SetCursorPos(cursor_pos + ImVec2(pad, orb_win_sz.y - ext - pad));
 
-                CoordSystemWidgetParam param = {
-                    .pos = ImVec2(min.x + pad, max.y - ext - pad),
-                    .size = {ext, ext},
-                    .view_matrix = camera_world_to_view_matrix(orb.camera),
-                    .camera_ori  = orb.target.orientation,
-                    .camera_pos  = orb.target.position,
-                    .camera_dist = orb.target.distance,
-                };
-
-                ImGui::DrawCoordinateSystemWidget(param);
+                quat_t out_orientation = orb.target.orientation;
+                if (ImGui::CoordinateSystemWidget(&out_orientation, orb.camera.orientation, size)) {
+                    const vec3_t look_at = camera_get_look_at(orb.target);
+                    orb.target.orientation = quat_normalize(out_orientation);
+                    orb.target.position = camera_position_from_look_at(look_at, orb.target.orientation, orb.target.distance);
+                }
             }
 
             if (gl_rep.id) {
@@ -4740,194 +4760,9 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    struct InteractionCanvasState {
-        md_bitfield_t* highlight_mask;
-        md_bitfield_t* selection_mask;
-
-        bool out_canvas_pressed;
-        bool out_open_context_menu;
-    };
-
-    struct SelectionState {
-        PickingHit hit;
-        md_bitfield_t* highlight_mask;
-        md_bitfield_t* selection_mask;
-        SingleSelectionSequence* single_selection_sequence;
-        SelectionGranularity granularity;
-    };
-
-    struct ViewState {
-        const Camera& camera;
-        const mat4_t& MVP;
-        const TrackballControllerParam& trackball_param;
-        ViewTransform* target;
-    };
-
-    static void interaction_canvas(ImVec2 size, SelectionState& select, ViewState& view, const md_system_t& mol) {
-        enum class RegionMode { Append, Remove };
-
-        bool is_selecting = false;
-
-        ScopedTemp temp_reset;
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
-
-        ImGuiWindow* window = ImGui::GetCurrentWindow();
-        if (window) {
-            bool pressed = ImGui::InvisibleButton("canvas", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
-
-            //ImVec2 coord = ImGui::GetMousePos() - ImGui::GetWindowPos();
-
-            ImVec2 canvas_min = ImGui::GetItemRectMin();
-            ImVec2 canvas_max = ImGui::GetItemRectMax();
-            ImVec2 canvas_size = ImGui::GetItemRectSize();
-
-            ImDrawList* dl = window->DrawList;
-            ASSERT(dl);
-
-            if (pressed || ImGui::IsItemActive() || ImGui::IsItemDeactivated()) {
-                if (ImGui::IsKeyPressed(ImGuiMod_Shift, false)) {
-                    ImGui::ResetMouseDragDelta();
-                }
-
-                if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                    RegionMode mode = RegionMode::Append;
-                    if (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-                        mode = RegionMode::Append;
-                    }
-                    else if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
-                        mode = RegionMode::Remove;
-                    }
-
-                    const ImVec2 ext = ImGui::GetMouseDragDelta(mode == RegionMode::Append ? ImGuiMouseButton_Left : ImGuiMouseButton_Right);
-                    const ImVec2 pos = ImGui::GetMousePos() - ext;
-                    const ImU32 fill_col = 0x22222222;
-                    const ImU32 line_col = 0x88888888;
-
-                    // This is relative to the window, clip selection region to canvas
-                    ImVec2 sel_min = ImClamp(ImMin(pos, pos + ext), canvas_min, canvas_max);
-                    ImVec2 sel_max = ImClamp(ImMax(pos, pos + ext), canvas_min, canvas_max);
-
-                    dl->AddRectFilled(sel_min, sel_max, fill_col);
-                    dl->AddRect      (sel_min, sel_max, line_col);
-
-                    // Make it relative to the Canvas
-                    sel_min = sel_min - canvas_min;
-                    sel_max = sel_max - canvas_min;
-
-                    md_bitfield_t mask = md_bitfield_create(temp_alloc);
-
-                    if (sel_min != sel_max) {
-                        md_bitfield_clear(select.highlight_mask);
-                        is_selecting = true;
-
-                        // We probably will not use a visibility mask here to filter out only visible atoms
-                        // But in the case that we will transition back to that, this code snipped is left here
-                        
-                        //md_bitfield_iter_t it = md_bitfield_iter_create(&state.representation.visibility_mask);
-                        //while (md_bitfield_iter_next(&it)) {
-                        //    const uint64_t i = md_bitfield_iter_idx(&it);
-
-                        for (size_t i = 0; i < mol.atom.count; ++i) {
-                            const vec4_t p = mat4_mul_vec4(view.MVP, vec4_set(mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 1.0f));
-                            const vec2_t c = {
-                                ( p.x / p.w * 0.5f + 0.5f) * canvas_size.x,
-                                (-p.y / p.w * 0.5f + 0.5f) * canvas_size.y,
-                            };
-
-                            // Test projected point if within selection region
-                            if (sel_min.x <= c.x && c.x <= sel_max.x && sel_min.y <= c.y && c.y <= sel_max.y) {
-                                md_bitfield_set_bit(&mask, i);
-                            }
-                        }
-                        grow_mask_by_selection_granularity(&mask, select.granularity, mol);
-
-                        if (mode == RegionMode::Append) {
-                            md_bitfield_or(select.highlight_mask, select.selection_mask, &mask);
-                        }
-                        else if (mode == RegionMode::Remove) {
-                            md_bitfield_andnot(select.highlight_mask, select.selection_mask, &mask);
-                        }
-                        if (pressed || ImGui::IsMouseReleased(0)) {
-                            md_bitfield_copy(select.selection_mask, select.highlight_mask);
-                        }
-                    }
-                    else if (pressed) {
-                        if (select.hovered_atom_idx != -1 || select.hovered_bond_idx != -1) {
-                            if (0 <= select.hovered_atom_idx && select.hovered_atom_idx < (int)mol.atom.count) {
-                                if (mode == RegionMode::Append) {
-                                    single_selection_sequence_push_idx(select.single_selection_sequence, select.hovered_atom_idx);
-                                } else {
-                                    single_selection_sequence_pop_idx (select.single_selection_sequence, select.hovered_atom_idx);
-                                }
-                                md_bitfield_set_bit(&mask, select.hovered_atom_idx);
-                            } else if (mol.bond.pairs && 0 <= select.hovered_bond_idx && select.hovered_bond_idx < (int)mol.bond.count) {
-                                md_atom_pair_t pair = mol.bond.pairs[select.hovered_bond_idx];
-                                md_bitfield_set_bit(&mask, pair.idx[0]);
-                                md_bitfield_set_bit(&mask, pair.idx[1]);
-                            }
-                            grow_mask_by_selection_granularity(&mask, select.granularity, mol);
-                            if (mode == RegionMode::Append) {
-                                md_bitfield_or_inplace(select.selection_mask, &mask);
-                            } else {
-                                md_bitfield_andnot_inplace(select.selection_mask, &mask);
-                            }
-                        }
-                        else {
-                            single_selection_sequence_clear(select.single_selection_sequence);
-                            md_bitfield_clear(select.selection_mask);
-                            md_bitfield_clear(select.highlight_mask);
-                        }
-                    }
-                }
-            }
-            else if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) {
-                md_bitfield_clear(select.highlight_mask);
-                if (select.hovered_atom_idx != -1 || select.hovered_bond_idx != -1) {
-                    if (0 <= select.hovered_atom_idx && select.hovered_atom_idx < (int)mol.atom.count) {
-                        md_bitfield_set_bit(select.highlight_mask, select.hovered_atom_idx);
-                    } else if (mol.bond.pairs && 0 <= select.hovered_bond_idx && select.hovered_bond_idx < (int)mol.bond.count) {
-                        md_atom_pair_t pair = mol.bond.pairs[select.hovered_bond_idx];
-                        md_bitfield_set_bit(select.highlight_mask, pair.idx[0]);
-                        md_bitfield_set_bit(select.highlight_mask, pair.idx[1]);
-                    }
-                    grow_mask_by_selection_granularity(select.highlight_mask, select.granularity, mol);
-                }
-            }
-
-            if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
-                if (!ImGui::IsKeyDown(ImGuiMod_Shift) && !is_selecting) {
-                    const ImVec2 delta = ImGui::GetIO().MouseDelta;
-                    const ImVec2 coord = ImGui::GetMousePos() - canvas_min;
-                    const vec2_t mouse_delta = {delta.x, delta.y};
-                    const vec2_t mouse_coord = {coord.x, coord.y};
-                    const float  scroll_delta = ImGui::GetIO().MouseWheel;
-
-                    TrackballControllerInput input;
-                    input.rotate_button = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-                    input.pan_button    = ImGui::IsMouseDown(ImGuiMouseButton_Right);
-                    input.dolly_button  = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
-                    input.mouse_coord_curr = mouse_coord;
-                    input.mouse_coord_prev = mouse_coord - mouse_delta;
-                    input.screen_size = {canvas_size.x, canvas_size.y};
-                    input.dolly_delta = scroll_delta;
-                    input.fov_y = view.camera.fov_y;
-
-                    TrackballFlags flags = TrackballFlags_AnyInteractionReturnsTrue;
-                    if (ImGui::IsItemActive()) {
-                        flags |= TrackballFlags_EnableAllInteractions;
-                    } else {
-                        flags |= TrackballFlags_DollyEnabled;
-                    }
-
-                    camera_controller_trackball(view.target, input, view.trackball_param, flags);
-                }
-            }
-        }
-    }
-
     void delete_group(int index) {
         vec4_t deleted_color = nto.group.color[index];
-        for (size_t i = 0; i < nto.num_atoms; i++) {
+        for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
             if (nto.atom_group_idx[i] == (uint32_t)index) {
                 nto.atom_group_idx[i] = 0;
             }
@@ -4947,7 +4782,7 @@ struct VeloxChem : viamd::EventHandler {
     void copy_group(int from_idx, int to_idx) {
         nto.group.color[to_idx] = nto.group.color[from_idx];
         MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
-        for (size_t i = 0; i < nto.num_atoms; i++) {
+        for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
             if ((int)nto.atom_group_idx[i] == to_idx) {
                 nto.atom_group_idx[i] = (uint32_t)from_idx;
             }
@@ -4965,7 +4800,7 @@ struct VeloxChem : viamd::EventHandler {
         MEMCPY(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
         MEMCPY(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
 
-        for (size_t i = 0; i < nto.num_atoms; i++) {
+        for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
             if ((int)nto.atom_group_idx[i] == a) {
                 nto.atom_group_idx[i] = (uint32_t)b;
             }
@@ -5080,7 +4915,7 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::Checkbox("Hide overlapping text", &hide_overlap_text);
 
             int group_counts[MAX_NTO_GROUPS] = {0};
-            for (size_t i = 0; i < nto.num_atoms; ++i) {
+            for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
                 int group_idx = nto.atom_group_idx[i] < nto.group.count ? nto.atom_group_idx[i] : 0;
                 group_counts[group_idx] += 1;
             }
@@ -5126,7 +4961,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + show_unassigned)) {
                             nto.group.hovered_index = (int8_t)row_n;
                             md_bitfield_clear(&state.selection.highlight_mask);
-                            for (size_t j = 0; j < nto.num_atoms; j++) {
+                            for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
                                 if (nto.atom_group_idx[j] == (uint32_t)row_n) {
                                     //Add j to highlight mask
                                     md_bitfield_set_bit(&state.selection.highlight_mask, j); //TODO: Hover only works if you hold leftMouseBtn
@@ -5224,7 +5059,7 @@ struct VeloxChem : viamd::EventHandler {
                             }
                             else {
                                 if (ImGui::Button(ICON_FA_TRASH_ARROW_UP, button_size)) {
-                                    for (size_t i = 0; i < nto.num_atoms; i++) {
+                                    for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
                                         if (nto.atom_group_idx[i] == (uint32_t)row_n) {
                                             nto.atom_group_idx[i] = (uint32_t)(row_n - 1);
                                         }
@@ -5356,56 +5191,18 @@ struct VeloxChem : viamd::EventHandler {
             mat4_t inv_MVP  = inv_view_mat * inv_proj_mat;
 
             if (rsp.selected != -1) {
-                SelectionState selection = {
-                    .hovered_atom_idx = state.selection.atom_idx.hovered,
-                    .hovered_bond_idx = state.selection.bond_idx.hovered,
-                    .highlight_mask = &state.selection.highlight_mask,
-                    .selection_mask = &state.selection.selection_mask,
-                    .single_selection_sequence = &state.selection.single_selection_sequence,
-                    .granularity = state.selection.granularity,
-                };
-
-                ViewState view = {
-                    .camera = nto.camera,
-                    .MVP = MVP,
-                    .trackball_param = state.view.trackball_param,
-                    .picking_world_coord = nto.picking.world_coord,
-                    .picking_depth = nto.picking.depth,
-					.target = &nto.target,
-                };
-
-                ImRect hovered_canvas_rect = {};
-
                 const int nto_target_idx[2] = {
                     NTO_Attachment,
                     NTO_Detachment,
                 };
 
                 PickingHit hit = {};
-                const ImVec2 mouse_pos = ImGui::GetMousePos();
-                for (int i = 0; i < 2; ++i) {
-                    ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
-                    ImVec2 p1 = grid_p0 + win_sz * ImVec2(1.0f, (float)(i+1));
-                    ImRect rect = {p0, p1};
-                    // Check if mouse is within viewrect and if so poll hit event
-                    if (rect.Contains(mouse_pos)) {
-                        ImVec2 surface_coord = mouse_pos - p0;
-                        surface_coord.y = win_sz.y - surface_coord.y; //Flip Y because surface coord is bottom-left origin
-                        PickingReadbackRequest request = {
-                            .fbo = nto.gbuf.fbo,
-                            .width = nto.gbuf.width,
-                            .height = nto.gbuf.height,
-                            .screen_coord = vec_cast(mouse_pos),
-                            .surface_coord = vec_cast(surface_coord),
-                            .inv_mvp = inv_MVP,
-                        };
-                        picking_surface_submit_readback_and_poll_hit(&hit, &nto.picking_surface, state.picking_handler, request);
-                        break;
-                    }
-                }
 
                 // Draw Attachment / Detachment
                 for (int i = 0; i < 2; ++i) {
+					ImGui::PushID(i);
+					defer { ImGui::PopID(); };
+
                     int idx = nto_target_idx[i];
 
                     ImVec2 p0 = grid_p0 + win_sz * ImVec2(0.0f, (float)(i+0));
@@ -5420,23 +5217,46 @@ struct VeloxChem : viamd::EventHandler {
                         draw_list->PopClipRect();
                         ImGui::PopID();
                     };
-                    interaction_canvas(p1-p0, selection, view, state.mold.sys);
+                    
+                    InteractionSurfaceArgs args = {
+                        .size = {rect.GetWidth(), rect.GetHeight()},
+                        .sys = &state.mold.sys,
+                        .candidate_mask = NULL, // @TODO: CHANGE THIS INTO QM SUBSET IF QM/MM SYSTEM IS PRESENT
+                        .highlight_mask = &state.selection.highlight_mask,
+                        .selection_mask = &state.selection.selection_mask,
+                        .single_selection_sequence = &state.selection.single_selection_sequence,
+                        .selection_granularity = SelectionGranularity::Atom,
+						.camera = &nto.camera,
+						.mvp = &MVP,
+						.inv_mvp = &inv_MVP,
+						.view_target = &nto.target,
+                        .trackball_param = &state.view.trackball_param,
+                        .picking_surface = &nto.picking_surface,
+						.picking_handler = &state.picking_handler,
+                        .expected_source = PickingSource_Nto,
+						.fbo = nto.gbuf.fbo,
+                        .width = nto.gbuf.width,
+						.height = nto.gbuf.height,
+                    };
 
-                    if (ImGui::IsItemHovered()) {
-                        viewport_hovered = true;
-                        if (ImGui::GetIO().MouseDoubleClicked[0]) {
-                            if (view.picking_depth < 1.0f) {
-                                const vec3_t forward = view.camera.orientation * vec3_t{0, 0, 1};
-                                nto.target.position = view.picking_world_coord + forward * view.target->distance;
-                            } else {
-                                reset_view = true;
-                            }
-                        }
+                    interaction_surface(&hit, args);
+                    if (ImGui::IsItemHovered()) viewport_hovered = true;
 
-                        if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0)) {
-                            open_context_menu = true;
+                    if (hit.raw_idx != INVALID_PICKING_IDX) {
+						viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
+                        draw_picking_tooltip_window(hit, state);
+                    }
+                    if (ImGui::GetIO().MouseDoubleClicked[0]) {
+                        if (hit.depth < 1.0f) {
+                            const vec3_t forward = nto.camera.orientation * vec3_t{0, 0, 1};
+                            nto.target.position = hit.world_pos + forward * nto.target.distance;
+                        } else {
+                            reset_view = true;
                         }
-                        hovered_canvas_rect = rect;
+                    }
+
+                    if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0)) {
+                        open_context_menu = true;
                     }
 
                     draw_list->ChannelsSetCurrent(0);
@@ -5444,11 +5264,6 @@ struct VeloxChem : viamd::EventHandler {
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
                     const char* lbl = ((i & 1) == 0) ? "Attachment" : "Detachment";
-
-#if DEBUG
-                    char lbls[64];
-                    snprintf(lbls, sizeof(lbls), "hovered_atom_idx: %i, hovered_bond_idx: %i", state.selection.atom_idx.hovered, state.selection.bond_idx.hovered);
-#endif
 
                     //char buf[32];
                     //snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
@@ -5585,20 +5400,15 @@ struct VeloxChem : viamd::EventHandler {
                 if (nto.show_coordinate_system_widget) {
                     float ext = MIN(win_sz.x, win_sz.y) * 0.4f;
                     float pad = 20.0f;
+                    ImVec2 size = ImVec2(ext, ext);
+                    ImGui::SetCursorScreenPos(canvas_p0 + ImVec2(pad, win_sz.y - ext - pad));
 
-                    ImVec2 min = ImGui::GetItemRectMin() - ImGui::GetWindowPos();
-                    ImVec2 max = ImGui::GetItemRectMax() - ImGui::GetWindowPos();
-
-                    CoordSystemWidgetParam param = {
-                        .pos = ImVec2(min.x + pad, max.y - ext - pad),
-                        .size = {ext, ext},
-                        .view_matrix = camera_world_to_view_matrix(nto.camera),
-                        .camera_ori  = nto.target.orientation,
-                        .camera_pos  = nto.target.position,
-                        .camera_dist = nto.target.distance,
-                    };
-
-                    ImGui::DrawCoordinateSystemWidget(param);
+                    quat_t out_orientation = nto.target.orientation;
+                    if (ImGui::CoordinateSystemWidget(&out_orientation, nto.camera.orientation, size)) {
+                        const vec3_t look_at = camera_get_look_at(nto.target);
+                        nto.target.orientation = quat_normalize(out_orientation);
+                        nto.target.position = camera_position_from_look_at(look_at, nto.target.orientation, nto.target.distance);
+                    }
                 }
 
                 clear_gbuffer(&gbuf);
@@ -5619,7 +5429,7 @@ struct VeloxChem : viamd::EventHandler {
                 glViewport(0, 0, gbuf.width, gbuf.height);
                 glScissor(0, 0, gbuf.width, gbuf.height);
 
-                auto draw_rep = [](md_gl_rep_t& rep, md_gl_shaders_t& shaders, mat4_t& view_mat, mat4_t& proj_mat, uint32_t atom_mask = 0) {
+                auto draw_rep = [&state](md_gl_rep_t& rep, md_gl_shaders_t& shaders, mat4_t& view_mat, mat4_t& proj_mat, uint32_t atom_mask = 0) {
                     md_gl_draw_op_t draw_op = {};
                     draw_op.type = MD_GL_REP_BALL_AND_STICK;
                     draw_op.args.ball_and_stick.ball_scale   = 1.0f;
@@ -5636,6 +5446,12 @@ struct VeloxChem : viamd::EventHandler {
                             .view_matrix = (const float*)view_mat.elem,
                             .proj_matrix = (const float*)proj_mat.elem,
                         },
+
+                        .picking_offset = {
+                            .atom_base = state.picking_range_atom.beg,
+                            .bond_base = state.picking_range_bond.beg,
+                        },
+
                         .atom_mask = atom_mask,
                     };
 
@@ -5861,27 +5677,6 @@ struct VeloxChem : viamd::EventHandler {
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                 glDrawBuffer(GL_BACK);
                 glDisable(GL_SCISSOR_TEST);
-
-                if (hovered_canvas_rect.GetArea() > 0) {
-                    ImVec2 screen_coord  = ImGui::GetMousePos();
-                    ImVec2 surface_coord = ImGui::GetMousePos() - hovered_canvas_rect.Min;
-                    screen_coord.y = hovered_canvas_rect.GetSize().y - screen_coord.y;
-                    extract_picking_data(nto.picking, nto.gbuf, {screen_coord.x, screen_coord.y}, inv_MVP);
-
-                    PickingReadbackRequest request = {
-                        .fbo = nto.gbuf.fbo,
-                        .width = nto.gbuf.width,
-                        .height = nto.gbuf.height,
-                        .surface_coord = {surface_coord.x, surface_coord.y},
-                        .screen_coord = {screen_coord.x, screen_coord.y},
-                        .inv_mvp = inv_MVP,
-                    };
-
-                    PickingHit hit = {};
-                    if (picking_surface_submit_readback_and_poll_hit(&hit, &nto.picking_surface, state.picking_handler, request)) {
-                        viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
-                    }
-                }
             }
             if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1 && !viewport_hovered) {
                 md_bitfield_clear(&state.selection.highlight_mask);
@@ -5894,28 +5689,33 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         if (ImGui::BeginPopup("Context Menu")) {
-            if (ImGui::BeginMenu("Assign to group")) {
-                for (size_t i = 0; i < nto.group.count; i++) {
-                    if (ImGui::MenuItem(nto.group.label[i])) {
-                        for (size_t j = 0; j < nto.num_atoms; j++) {
-                            //Is the atom selected?
-                            if (md_bitfield_test_bit(&state.selection.selection_mask, j)) {
-                                //If so, set its group to the selected group index
-                                nto.atom_group_idx[j] = (uint32_t)i;
+			size_t count = md_bitfield_popcount(&state.selection.selection_mask);
+			if (count == 0) {
+                ImGui::Text("No atoms selected");
+            } else {
+                if (ImGui::BeginMenu("Assign to group")) {
+                    for (size_t i = 0; i < nto.group.count; i++) {
+                        if (ImGui::MenuItem(nto.group.label[i])) {
+                            for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
+                                //Is the atom selected?
+                                if (md_bitfield_test_bit(&state.selection.selection_mask, j)) {
+                                    //If so, set its group to the selected group index
+                                    nto.atom_group_idx[j] = (uint32_t)i;
+                                }
                             }
                         }
                     }
+                    ImGui::EndMenu();
                 }
-                ImGui::EndMenu();
-            }
-            if (nto.group.count < MAX_NTO_GROUPS) {
-                if (ImGui::MenuItem("Assign to new group")) {
-                    //Create a new group and add an item to it
-                    uint32_t group_idx = (uint32_t)(nto.group.count++);
-                    for (size_t i = 0; i < nto.num_atoms; i++) {
-                        if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
-                            //If so, set its group to the selected group index
-                            nto.atom_group_idx[i] = group_idx;
+                if (nto.group.count < MAX_NTO_GROUPS) {
+                    if (ImGui::MenuItem("Assign to new group")) {
+                        //Create a new group and add an item to it
+                        uint32_t group_idx = (uint32_t)(nto.group.count++);
+                        for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
+                            if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
+                                //If so, set its group to the selected group index
+                                nto.atom_group_idx[i] = group_idx;
+                            }
                         }
                     }
                 }
@@ -5924,7 +5724,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         // Create hash to check for changes to trigger update of colors in gl representation
-        uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, sizeof(uint32_t) * nto.num_atoms, 0);
+        uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, md_array_bytes(nto.atom_group_idx), 0);
         uint64_t color_hash    = md_hash64(nto.group.color, sizeof(nto.group.color), atom_idx_hash);
 
         static uint64_t cur_color_hash = 0;
@@ -5989,9 +5789,10 @@ struct VeloxChem : viamd::EventHandler {
 
 					int* ao_to_group = (int*)md_temp_push(sizeof(int) * num_aos);
 
+					size_t num_atoms = md_vlx_number_of_atoms(vlx);
                     for (size_t i = 0; i < num_aos; i++) {
                         int atom_idx = ao_to_atom[i];
-						ASSERT(0 <= atom_idx && (size_t)atom_idx < nto.num_atoms);
+						ASSERT(0 <= atom_idx && (size_t)atom_idx < num_atoms);
                         ao_to_group[i] = (int)nto.atom_group_idx[atom_idx];
                         if (ao_to_group[i] < 0 || ao_to_group[i] >= MAX_NTO_GROUPS) {
                             ao_to_group[i] = 0;

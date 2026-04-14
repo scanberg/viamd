@@ -494,25 +494,22 @@ void DrawCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 c
     }
 }
 
-bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
-    ImGuiContext& g = *GImGui;
+bool CoordinateSystemWidget(quat_t* out_orientation, const quat_t& in_orientation, const ImVec2& size) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
-    if (!window || window->SkipItems)
+    if (!window || window->SkipItems || !out_orientation)
         return false;
 
     ImDrawList& dl = *ImGui::GetWindowDrawList();
-    const ImVec2 wp = window->Pos + param.pos;
-    const ImVec2 ws = param.size;
-
-    const ImGuiID id = window->GetID("coord_system_widget");
-    const ImRect bb(wp, wp + ws);
-    if (!ImGui::ItemAdd(bb, id, 0, ImGuiItemFlags_NoNav)) 
+    if (size.x <= 0.0f || size.y <= 0.0f) {
         return false;
+    }
 
-    bool is_hovered = ImGui::ItemHoverable(bb, id, g.LastItemData.ItemFlags);
+	const ImGuiButtonFlags flags = ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_AllowOverlap;
+    ImGui::InvisibleButton("##coord_system_widget", size, flags);
+    bool is_hovered = ImGui::IsItemHovered();
 
-    const float ext = ImMin(ws.x, ws.y) * 1.0f;
-    const ImVec2 mid = bb.GetCenter();
+    const float ext = ImMin(size.x, size.y) * 1.0f;
+    const ImVec2 mid = ImGui::GetItemRectMin() + ImGui::GetItemRectSize() * 0.5f;
     const float dist = 5.0f;
     const float fovy = (3.1415926534f / 4.0f);
     const float ar   = 1.0f;
@@ -522,7 +519,7 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
     const float h = dist * tanf(fovy * 0.5f);
     const float w = ar * h;
     mat4_t P = mat4_ortho(-w, w, -h, h, near, far);
-    mat4_t V = param.view_matrix;
+    mat4_t V = mat4_from_quat(quat_conj(quat_normalize(in_orientation)));
     mat4_t M = mat4_translate(-0.5f * ext, -0.5f * ext, -0.5f * ext);
 
     V.col[3] = vec4_set(0, 0, -dist, 1);
@@ -642,9 +639,7 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
 
     if (hovered_plane_idx != -1) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            quat_t ori = quat_normalize(param.camera_ori);
-            vec3_t pos = param.camera_pos;
-            float  dst = param.camera_dist;
+            quat_t ori = quat_normalize(in_orientation);
 
             const vec3_t dirs[3] = {
                 { 1, 0, 0},
@@ -652,7 +647,6 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
                 { 0, 0, 1},
             };
             const int i = hovered_plane_idx;
-            const vec3_t look_at = pos - ori * vec3_set(0, 0, dst);
 
             {
                 // Orientate to align with the plane
@@ -698,12 +692,7 @@ bool DrawCoordinateSystemWidget(const CoordSystemWidgetParam& param) {
                 }
             }
 
-            // Look at the same point as before
-            pos = look_at + ori * vec3_set(0, 0, dst);
-
-            param.camera_ori  = ori;
-            param.camera_pos  = pos;
-            param.camera_dist = dst;
+            *out_orientation = ori;
 
             return true;
         }

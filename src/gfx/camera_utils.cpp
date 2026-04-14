@@ -130,6 +130,14 @@ void camera_move(Camera* camera, vec3_t t) {
     camera->position = camera->position + camera->orientation * t;
 }
 
+vec3_t camera_get_look_at(const ViewTransform& transform) {
+    return transform.position - transform.orientation * vec3_t{0, 0, transform.distance};
+}
+
+vec3_t camera_position_from_look_at(const vec3_t& look_at, const quat_t& orientation, float distance) {
+    return look_at + orientation * vec3_t{0, 0, distance};
+}
+
 // high precision version
 static inline vec3_t highp_quat_vec3_mul(const quat_t& q, const vec3_t& v) {
     double u[4] = {q.x, q.y, q.z, q.w};
@@ -191,7 +199,7 @@ void camera_interpolate_look_at(vec3_t* out_pos, quat_t* out_ori, float* out_dis
             lerp(l0.y, l1.y, t),
             lerp(l0.z, l1.z, t),
         };
-        pos = look_at + ori * vec3_t{0, 0, dist};
+        pos = camera_position_from_look_at(look_at, ori, dist);
     }
 
     *out_pos = pos;
@@ -210,9 +218,9 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
 
     if ((flags & TrackballFlags_RotateEnabled) && input.rotate_button && mouse_move) {
         const quat_t q = trackball(ndc_prev, ndc_curr);
-        const vec3_t look_at = transform->position - transform->orientation * vec3_t{0, 0, transform->distance};
+        const vec3_t look_at = camera_get_look_at(*transform);
         transform->orientation = quat_normalize(transform->orientation * q);
-        transform->position = look_at + transform->orientation * vec3_t{0, 0, transform->distance};
+        transform->position = camera_position_from_look_at(look_at, transform->orientation, transform->distance);
         if (flags & TrackballFlags_RotateReturnsTrue) return true;
     } else if ((flags & TrackballFlags_PanEnabled) && input.pan_button && mouse_move) {
         const float aspect_ratio = input.screen_size.x / input.screen_size.y;
@@ -224,9 +232,9 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
     } else if ((flags & TrackballFlags_DollyEnabled) && ((input.dolly_button && mouse_move) || input.dolly_delta != 0.f)) {
         float delta = -(input.mouse_coord_curr.y - input.mouse_coord_prev.y) * powf(transform->distance * param.dolly_drag_scale, param.dolly_drag_exponent);
         delta -= input.dolly_delta * powf(transform->distance * param.dolly_delta_scale, param.dolly_delta_exponent);
-        const vec3_t look_at = transform->position - transform->orientation * vec3_t{0, 0, transform->distance};
+        const vec3_t look_at = camera_get_look_at(*transform);
         transform->distance = CLAMP(transform->distance + delta, param.min_distance, param.max_distance);
-        transform->position = look_at + transform->orientation * vec3_t{0, 0, transform->distance};
+        transform->position = camera_position_from_look_at(look_at, transform->orientation, transform->distance);
         if (flags & TrackballFlags_DollyReturnsTrue) return true;
     }
     return false;

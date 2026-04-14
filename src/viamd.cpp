@@ -21,8 +21,6 @@
 #include <implot.h>
 #include <implot_internal.h>
 
-#define USE_FRAMEBUFFER_SCALE 0
-
 static const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
     for (size_t i = 0; i < len; ++i) {
         if (str_eq(arr[i], str)) {
@@ -195,17 +193,15 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
     }
 }
 
-void draw_picking_tooltip_window(const ApplicationState& state) {
-    if (state.picking_hit.source == 0) return;
-    if (state.picking_hit.domain == 0) return;
-    if (state.picking_hit.raw_idx == INVALID_PICKING_IDX) return;
+void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state) {
+    if (hit.raw_idx == INVALID_PICKING_IDX) return;
     
 	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
     defer { md_vm_arena_temp_end(temp); };
 
     PickingTooltipTextRequest tooltip_request = {
         .app = state,
-        .hit = state.picking_hit,
+        .hit = hit,
         .sb = md_strb_create(state.allocator.frame),
     };
 
@@ -216,39 +212,12 @@ void draw_picking_tooltip_window(const ApplicationState& state) {
         const ImVec2 new_pos = {ImGui::GetMousePos().x + offset.x, ImGui::GetMousePos().y + offset.y};
         ImGui::SetNextWindowPos(new_pos);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
-        ImGui::Begin("##Atom Info", 0,
+        ImGui::Begin("##Picking Tooltip Window", 0,
             ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoDocking);
         ImGui::Text("%s", md_strb_to_cstr(tooltip_request.sb));
         ImGui::End();
         ImGui::PopStyleColor();
     }
-}
-
-void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP) {
-    out_picking = {};
-
-    vec2_t c = coord;
-
-    if (0.f <= coord.x && coord.x < (float)gbuffer.width && 0.f <= coord.y && coord.y < (float)gbuffer.height) {
-        extract_gbuffer_picking_idx_and_depth(&out_picking.idx, &out_picking.depth, &gbuffer, (int)c.x, (int)c.y);
-        const vec4_t viewport = {0, 0, (float)gbuffer.width, (float)gbuffer.height};
-        out_picking.world_coord = mat4_unproject({c.x, c.y, out_picking.depth}, inv_MVP, viewport);
-        out_picking.screen_coord = {c.x, c.y};
-    }
-}
-
-md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx) {
-    if (picking_idx < 0x80000000) {
-        return (md_atom_idx_t)picking_idx;
-    }
-    return -1;
-}
-
-md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx) {
-    if (picking_idx >= 0x80000000) {
-        return (md_bond_idx_t)(picking_idx & 0x7FFFFFFF);
-    }
-    return -1;
 }
 
 void interrupt_async_tasks(ApplicationState* state) {
@@ -2299,7 +2268,7 @@ bool interaction_surface(
     const InteractionSurfaceArgs& args
 ) {
     ASSERT(out_hit);
-    ASSERT(args.mol);
+    ASSERT(args.sys);
     ASSERT(args.highlight_mask);
     ASSERT(args.selection_mask);
     ASSERT(args.single_selection_sequence);
@@ -2337,16 +2306,14 @@ bool interaction_surface(
     if (ImGui::IsItemHovered() && args.fbo && args.width && args.height) {
         const ImVec2 mouse_pos = ImGui::GetMousePos();
         const ImVec2 local_mouse = mouse_pos - canvas_min;
-        const float scale_x = canvas_size.x > 0.0f ? (float)args.width  / canvas_size.x : 0.0f;
-        const float scale_y = canvas_size.y > 0.0f ? (float)args.height / canvas_size.y : 0.0f;
 
         PickingReadbackRequest request = {
             .fbo = args.fbo,
             .width = args.width,
             .height = args.height,
             .surface_coord = {
-                local_mouse.x * scale_x,
-                ((canvas_size.y - local_mouse.y) * scale_y),
+                local_mouse.x,
+                canvas_size.y - local_mouse.y,
             },
             .screen_coord = {local_mouse.x, local_mouse.y},
             .inv_mvp = *args.inv_mvp,
@@ -2396,7 +2363,7 @@ bool interaction_surface(
                     md_bitfield_iter_t it = md_bitfield_iter_create(args.candidate_mask);
                     while (md_bitfield_iter_next(&it)) {
                         const uint64_t idx = md_bitfield_iter_idx(&it);
-                        const vec4_t p = mat4_mul_vec4(*args.mvp, vec4_set(args.mol->atom.x[idx], args.mol->atom.y[idx], args.mol->atom.z[idx], 1.0f));
+                        const vec4_t p = mat4_mul_vec4(*args.mvp, vec4_set(args.sys->atom.x[idx], args.sys->atom.y[idx], args.sys->atom.z[idx], 1.0f));
                         const vec2_t c = {
                             ( p.x / p.w * 0.5f + 0.5f) * canvas_size.x,
                             (-p.y / p.w * 0.5f + 0.5f) * canvas_size.y,
@@ -2407,8 +2374,8 @@ bool interaction_surface(
                         }
                     }
                 } else {
-                    for (size_t idx = 0; idx < args.mol->atom.count; ++idx) {
-                        const vec4_t p = mat4_mul_vec4(*args.mvp, vec4_set(args.mol->atom.x[idx], args.mol->atom.y[idx], args.mol->atom.z[idx], 1.0f));
+                    for (size_t idx = 0; idx < args.sys->atom.count; ++idx) {
+                        const vec4_t p = mat4_mul_vec4(*args.mvp, vec4_set(args.sys->atom.x[idx], args.sys->atom.y[idx], args.sys->atom.z[idx], 1.0f));
                         const vec2_t c = {
                             ( p.x / p.w * 0.5f + 0.5f) * canvas_size.x,
                             (-p.y / p.w * 0.5f + 0.5f) * canvas_size.y,
@@ -2420,7 +2387,7 @@ bool interaction_surface(
                     }
                 }
 
-                grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.mol);
+                grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.sys);
 
                 if (mode == RegionMode::Append) {
                     md_bitfield_or(args.highlight_mask, args.selection_mask, &mask);
@@ -2438,24 +2405,24 @@ bool interaction_surface(
                             const int atom_idx = (int)out_hit->local_idx;
                             single_selection_sequence_push_idx(args.single_selection_sequence, atom_idx);
                             md_bitfield_set_bit(&mask, atom_idx);
-                        } else if (out_hit->domain == PickingDomain_Bond && args.mol->bond.pairs) {
-                            const md_atom_pair_t pair = args.mol->bond.pairs[out_hit->local_idx];
+                        } else if (out_hit->domain == PickingDomain_Bond && args.sys->bond.pairs) {
+                            const md_atom_pair_t pair = args.sys->bond.pairs[out_hit->local_idx];
                             md_bitfield_set_bit(&mask, pair.idx[0]);
                             md_bitfield_set_bit(&mask, pair.idx[1]);
                         }
-                        grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.mol);
+                        grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.sys);
                         md_bitfield_or_inplace(args.selection_mask, &mask);
                     } else {
                         if (out_hit->domain == PickingDomain_Atom) {
                             const int atom_idx = (int)out_hit->local_idx;
                             single_selection_sequence_pop_idx(args.single_selection_sequence, atom_idx);
                             md_bitfield_set_bit(&mask, atom_idx);
-                        } else if (out_hit->domain == PickingDomain_Bond && args.mol->bond.pairs) {
-                            const md_atom_pair_t pair = args.mol->bond.pairs[out_hit->local_idx];
+                        } else if (out_hit->domain == PickingDomain_Bond && args.sys->bond.pairs) {
+                            const md_atom_pair_t pair = args.sys->bond.pairs[out_hit->local_idx];
                             md_bitfield_set_bit(&mask, pair.idx[0]);
                             md_bitfield_set_bit(&mask, pair.idx[1]);
                         }
-                        grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.mol);
+                        grow_mask_by_selection_granularity(&mask, args.selection_granularity, *args.sys);
                         md_bitfield_andnot_inplace(args.selection_mask, &mask);
                     }
                 } else {
@@ -2470,21 +2437,21 @@ bool interaction_surface(
         if (valid_hit) {
             if (out_hit->domain == PickingDomain_Atom) {
                 const int atom_idx = (int)out_hit->local_idx;
-                if (0 <= atom_idx && atom_idx < (int)args.mol->atom.count) {
+                if (0 <= atom_idx && atom_idx < (int)args.sys->atom.count) {
                     md_bitfield_set_bit(args.highlight_mask, atom_idx);
-                    grow_mask_by_selection_granularity(args.highlight_mask, args.selection_granularity, *args.mol);
+                    grow_mask_by_selection_granularity(args.highlight_mask, args.selection_granularity, *args.sys);
                 }
-            } else if (out_hit->domain == PickingDomain_Bond && args.mol->bond.pairs) {
+            } else if (out_hit->domain == PickingDomain_Bond && args.sys->bond.pairs) {
                 const int bond_idx = (int)out_hit->local_idx;
-                if (0 <= bond_idx && bond_idx < (int)args.mol->bond.count) {
-                    const md_atom_pair_t pair = args.mol->bond.pairs[bond_idx];
-                    if (0 <= pair.idx[0] && pair.idx[0] < (int)args.mol->atom.count) {
+                if (0 <= bond_idx && bond_idx < (int)args.sys->bond.count) {
+                    const md_atom_pair_t pair = args.sys->bond.pairs[bond_idx];
+                    if (0 <= pair.idx[0] && pair.idx[0] < (int)args.sys->atom.count) {
                         md_bitfield_set_bit(args.highlight_mask, pair.idx[0]);
                     }
-                    if (0 <= pair.idx[1] && pair.idx[1] < (int)args.mol->atom.count) {
+                    if (0 <= pair.idx[1] && pair.idx[1] < (int)args.sys->atom.count) {
                         md_bitfield_set_bit(args.highlight_mask, pair.idx[1]);
                     }
-                    grow_mask_by_selection_granularity(args.highlight_mask, args.selection_granularity, *args.mol);
+                    grow_mask_by_selection_granularity(args.highlight_mask, args.selection_granularity, *args.sys);
                 }
             }
         }
@@ -2727,21 +2694,16 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
         switch (event.type) {
         case viamd::EventType_ViamdFrameTick:
             break;
-        case viamd::EventType_ViamdPickingRangeReserve:
+        case viamd::EventType_ViamdPickingRangeReserve: {
+			ASSERT(event.payload_type == viamd::EventPayloadType_PickingSpace);
+			PickingSpace* space = (PickingSpace*)event.payload;
+            size_t num_atoms = state->mold.sys.atom.count;
+            size_t num_bonds = state->mold.sys.bond.count;
+            picking_reserve_range(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
+            picking_reserve_range(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
             break;
+        }
         case viamd::EventType_ViamdPickingHit: {
-            ASSERT(event.payload_type == viamd::EventPayloadType_PickingHit);
-            PickingHit* hit = (PickingHit*)event.payload;
-            state->picking_hit = *hit;  // Store hit for defered processing
-            if (hit->domain == PickingDomain_Atom) {
-                md_bitfield_clear(&state->selection.highlight_mask);
-                md_bitfield_set_bit(&state->selection.highlight_mask, hit->local_idx);
-            } else if (hit->domain == PickingDomain_Bond) {
-                md_bitfield_clear(&state->selection.highlight_mask);
-                const md_atom_pair_t* pair = &state->mold.sys.bond.pairs[hit->local_idx];
-                md_bitfield_set_bit(&state->selection.highlight_mask, pair->idx[0]);
-                md_bitfield_set_bit(&state->selection.highlight_mask, pair->idx[1]);
-            }
             break;
         }
         case viamd::EventType_ViamdPickingTooltipTextRequest: {
@@ -2750,6 +2712,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             if (req->hit.domain == PickingDomain_Atom || req->hit.domain == PickingDomain_Bond) {
                 fill_picking_tooltip_text(&req->sb, *state, req->hit);
             }
+            break;
         }
         default:
             break;
