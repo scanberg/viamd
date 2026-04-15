@@ -3250,6 +3250,8 @@ struct VeloxChem : viamd::EventHandler {
                                                                    ImGuiTableFlags_SortMulti |
                                                                    ImGuiTableFlags_SizingStretchProp;
 
+                        bool item_hovered = false;
+
                         if (ImGui::BeginTable("Critical Points Table", 5, table_flags, ImVec2(0, 250.0f))) {
                             ImGui::TableSetupColumn("X",     ImGuiTableColumnFlags_DefaultSort, 0.0f, CriticalPointColumn_X);
                             ImGui::TableSetupColumn("Y",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Y);
@@ -3259,6 +3261,9 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::TableSetupScrollFreeze(0, 1);
                             ImGui::TableHeadersRow();
 
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+                            ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+
                             for (size_t row = 0; row < md_array_size(row_indices); ++row) {
                                 const uint32_t idx = row_indices[row];
                                 const md_topo_vert_t& v = graph.vertices[idx];
@@ -3266,7 +3271,40 @@ struct VeloxChem : viamd::EventHandler {
 
                                 ImGui::TableNextRow();
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.x);
+
+                                ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                                bool is_sel = md_bitfield_test_bit(&critical_points.selection_mask, idx);
+                                bool is_hov = md_bitfield_test_bit(&critical_points.highlight_mask, idx);
+
+                                if (is_hov) {
+                                    ImGui::PushStyleColor(ImGuiCol_Header, IM_YELLOW);
+                                }
+                                else {
+                                    ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                                }
+
+                                char label[64];
+                                snprintf(label, sizeof(label), "%.6f##cp_%u", v.x, idx);
+                                ImGui::Selectable(label, is_sel || is_hov, selectable_flags);
+
+                                if (ImGui::TableGetHoveredRow() == (int)(row + 1)) {
+                                    if (idx < graph.num_vertices) {
+                                        md_bitfield_clear(&critical_points.highlight_mask);
+                                        md_bitfield_set_bit(&critical_points.highlight_mask, idx);
+                                        item_hovered = true;
+
+                                        //Selection
+                                        if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                            md_bitfield_set_bit(&critical_points.selection_mask, idx);
+                                        }
+                                        //Deselect
+                                        else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
+                                            md_bitfield_clear_bit(&critical_points.selection_mask, idx);
+                                        }
+                                    }
+                                }
+
+                                ImGui::PopStyleColor(1);
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%.6f", v.y);
                                 ImGui::TableNextColumn();
@@ -3274,8 +3312,14 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::TableNextColumn();
                                 ImGui::TextUnformatted(md_topo_critical_point_type_str[type]);
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.value);
+                                ImGui::Text("%.6f", v.value);                                
                             }
+
+                            if (!item_hovered && ImGui::IsWindowHovered()) {
+                                md_bitfield_clear(&critical_points.highlight_mask);
+                            }
+
+                            ImGui::PopStyleColor(2);
 
                             ImGui::EndTable();
                         }
