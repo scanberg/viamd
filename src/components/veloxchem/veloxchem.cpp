@@ -861,7 +861,7 @@ struct VeloxChem : viamd::EventHandler {
                         {
                             md_gto_eval_mode_t mode = (type == ElectronicStructureType::MolecularOrbital) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
                             if (use_gpu_path) {
-                                compute_mo_GPU(tex_id, grid, MD_VLX_MO_TYPE_ALPHA, rep->electronic_structure.mo_idx, mode);
+                                compute_mo_GPU(tex_id, grid, MD_VLX_MO_TYPE_ALPHA, rep->electronic_structure.mo_idx, mode, DEFAULT_GTO_CUTOFF_VALUE, data.sys);
                             }
                             else {
                                 compute_mo_async(tex_id, grid, MD_VLX_MO_TYPE_ALPHA, rep->electronic_structure.mo_idx, mode);
@@ -881,7 +881,7 @@ struct VeloxChem : viamd::EventHandler {
                                                        ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
 
                             if (use_gpu_path) {
-                                compute_nto_GPU(tex_id, grid, rep->electronic_structure.nto_idx, rep->electronic_structure.nto_lambda_idx, nto_type, mode);
+                                compute_nto_GPU(tex_id, grid, rep->electronic_structure.nto_idx, rep->electronic_structure.nto_lambda_idx, nto_type, mode, DEFAULT_GTO_CUTOFF_VALUE, data.sys);
                             } else {
                                 compute_nto_async(tex_id, grid, rep->electronic_structure.nto_idx, rep->electronic_structure.nto_lambda_idx, nto_type, mode);
                             }
@@ -1211,7 +1211,7 @@ struct VeloxChem : viamd::EventHandler {
         gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
     }
 
-    bool compute_nto_GPU(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool compute_nto_GPU(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, const md_system_t* system = nullptr) {
         ScopedTemp temp_reset;
 
         size_t num_gtos = md_vlx_nto_gto_count(vlx);
@@ -1222,6 +1222,10 @@ struct VeloxChem : viamd::EventHandler {
             return task_system::INVALID_ID;
         }
         num_gtos = md_gto_cutoff_compute_and_filter(gtos, num_gtos, cutoff_value);
+
+        if (vib.displace_aos && system) {
+            gtos_overwrite_coordinates(gtos, num_gtos, system->atom.x, system->atom.y, system->atom.z);
+        }
 
         // Dispatch Compute shader evaluation
         md_gto_grid_evaluate_GPU(vol_tex, &grid, gtos, num_gtos, mode);
@@ -1344,14 +1348,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         if (vib.displace_aos && system) {
-            // If system is provided, we overwrite the GTO coordinates with the atom coordinates supplied by the system
-            for (size_t orb_idx = 0; orb_idx < orb_data.num_orbs; ++orb_idx) {
-                size_t gto_beg = orb_data.orb_offsets[orb_idx];
-                size_t gto_end = orb_data.orb_offsets[orb_idx + 1];
-                size_t num_gtos = gto_end - gto_beg;
-                md_gto_t* gtos = orb_data.gtos + gto_beg;
-                gtos_overwrite_coordinates(gtos, num_gtos, system->atom.x, system->atom.y, system->atom.z);
-            }
+            gtos_overwrite_coordinates(orb_data.gtos, orb_data.num_gtos, system->atom.x, system->atom.y, system->atom.z);
         }
 
         // Dispatch Compute shader evaluation
@@ -1465,7 +1462,7 @@ struct VeloxChem : viamd::EventHandler {
         md_gto_eval_mode_t mode;
     };
 
-    bool compute_mo_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool compute_mo_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, const md_system_t* system = nullptr) {
         ScopedTemp reset_temp;
 
         size_t num_gtos = md_vlx_mo_gto_count(vlx);
@@ -1478,6 +1475,10 @@ struct VeloxChem : viamd::EventHandler {
             return false;
         }
 
+        if (vib.displace_aos && system) {
+            gtos_overwrite_coordinates(gtos, num_gtos, system->atom.x, system->atom.y, system->atom.z);
+        }
+
         // Dispatch Compute shader evaluation
         md_gto_grid_evaluate_GPU(vol_tex, &grid, gtos, num_gtos, mode);
 
@@ -1485,7 +1486,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // The full electron density that includes all orbitals weighted by their occupancy
-    bool compute_electron_density_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool compute_electron_density_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_mo_type_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE, const md_system_t* system = nullptr) {
         md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(2));
         defer { md_vm_arena_destroy(alloc); };
 
@@ -1503,6 +1504,10 @@ struct VeloxChem : viamd::EventHandler {
         if (!md_vlx_scf_extract_gto_data(&gto_data, vlx, cutoff_value, alloc)) {
             MD_LOG_ERROR("Failed to extract gto data for electron density");
             return false;
+        }
+
+        if (vib.displace_aos && system) {
+            gto_data_overwrite_coordinates(&gto_data, system->atom.x, system->atom.y, system->atom.z);
         }
         
         //size_t matrix_size = md_vlx_scf_density_matrix_size(vlx);
@@ -1679,6 +1684,9 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline void im_sankey_diagram(ApplicationState* state, ImRect area, Nto* nto, bool hide_text_overlaps) {
+        if (!nto->transition_density_hole) return;
+        if (!nto->transition_density_part) return;
+
         ScopedTemp temp_reset;
         md_allocator_i* temp_alloc = md_get_temp_allocator();
         /*
@@ -5395,10 +5403,10 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (nto.show_coordinate_system_widget) {
-                    float ext = MIN(win_sz.x, win_sz.y) * 0.4f;
+                    float ext = MIN(win_sz.x, win_sz.y) * 0.3f;
                     float pad = 20.0f;
                     ImVec2 size = ImVec2(ext, ext);
-                    ImGui::SetCursorScreenPos(canvas_p0 + ImVec2(pad, win_sz.y - ext - pad));
+                    ImGui::SetCursorScreenPos(canvas_p0 + ImVec2(pad, 2.0f * win_sz.y - ext - pad));
 
                     quat_t out_orientation = nto.target.orientation;
                     if (ImGui::CoordinateSystemWidget(&out_orientation, nto.camera.orientation, size)) {
