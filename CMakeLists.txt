@@ -109,6 +109,7 @@ set(COMP_FILES
     src/components/ramachandran/ramachandran.cpp
     src/components/shapespace/shapespace.cpp
     src/components/dataset/dataset.cpp
+    src/components/density_volume/density_volume.cpp
 )
 
 if (VIAMD_ENABLE_VELOXCHEM)

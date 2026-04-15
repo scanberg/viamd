@@ -124,16 +124,6 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 }
 )");
 
-//constexpr ImGuiKey KEY_CONSOLE = ImGuiKey_GraveAccent;
-constexpr ImGuiKey KEY_PLAY_PAUSE          = ImGuiKey_Space;
-constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME  = ImGuiKey_LeftArrow;
-constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME  = ImGuiKey_RightArrow;
-constexpr ImGuiKey KEY_RECOMPILE_SHADERS   = ImGuiKey_F5;
-constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW   = ImGuiKey_F11;
-constexpr ImGuiKey KEY_SCRIPT_EVALUATE     = ImGuiKey_Enter;
-constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD = ImGuiMod_Shift;
-constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT = ImGuiKey_F1;
-
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
 inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
@@ -146,50 +136,12 @@ inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
 inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
 inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
-enum LegendColorMapMode_ {
-    LegendColorMapMode_Opaque,
-    LegendColorMapMode_Transparent,
-    LegendColorMapMode_Split,
-};
-
 enum MarkerType_{
     MarkerType_None,
     MarkerType_Error,
     MarkerType_Warning,
     MarkerType_Visualization,
 };
-
-static void visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0) {
-    md_script_vis_ctx_t ctx = {
-        .ir   = state->script.eval_ir,
-        .mol  = &state->mold.sys,
-        .traj = state->mold.sys.trajectory,
-    };
-    state->script.vis = {0};
-    md_script_vis_init(&state->script.vis, frame_alloc);
-
-    if (md_script_vis_eval_payload(&state->script.vis, payload, subidx, &ctx, flags)) {
-        if (!md_bitfield_empty(&state->script.vis.atom_mask)) {
-            md_bitfield_copy(&state->selection.highlight_mask, &state->script.vis.atom_mask);
-        }
-    }
-}
-
-static void visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0) {
-    md_script_vis_ctx_t ctx = {
-        .ir   = state->script.eval_ir,
-        .mol  = &state->mold.sys,
-        .traj = state->mold.sys.trajectory,
-    };
-    state->script.vis = {0};
-    md_script_vis_init(&state->script.vis, frame_alloc);
-
-    if (md_script_vis_eval_string(&state->script.vis, str, &ctx, flags)) {
-        if (!md_bitfield_empty(&state->script.vis.atom_mask)) {
-            md_bitfield_copy(&state->selection.highlight_mask, &state->script.vis.atom_mask);
-        }
-    }
-}
 
 static void free_histogram(DisplayProperty::Histogram* hist) {
     ASSERT(hist);
@@ -396,7 +348,6 @@ static void draw_representations_window(ApplicationState* state);
 static void draw_timeline_window(ApplicationState* state);
 static void draw_distribution_window(ApplicationState* state);
 static void draw_async_task_window(ApplicationState* state);
-static void draw_density_volume_window(ApplicationState* state);
 static void draw_script_editor_window(ApplicationState* state);
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
 
@@ -420,11 +371,6 @@ static void modify_selection(ApplicationState* state, md_bitfield_t* atom_mask, 
 static void modify_selection(ApplicationState* state, md_urange_t range, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(state);
     modify_field(&state->selection.selection_mask, range, op);
-}
-
-static void set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1) {
-    state->hovered_display_property_label = label;
-    state->hovered_display_property_pop_idx = population_idx;
 }
 
 int main(int argc, char** argv) {
@@ -615,6 +561,11 @@ int main(int argc, char** argv) {
 
         file_queue_process(&state);
 
+        state.script.vis = {0};
+        // @NOTE: We use the persistent allocator here since the visualization data may be pushed inside temp scopes
+        // In which the allocated visualization data needs to survive until the end of the frame where it is consumed for rendering
+        md_script_vis_init(&state.script.vis, state.allocator.persistent);
+
         picking_handler_new_frame(&state.picking_handler);
         viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, picking_handler_current_space(&state.picking_handler));
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
@@ -623,7 +574,6 @@ int main(int argc, char** argv) {
         if (state.show_script_window) draw_script_editor_window(&state);
         if (state.load_dataset.show_window) draw_load_dataset_window(&state);
         if (state.representation.show_window) draw_representations_window(&state);
-        if (state.density_volume.show_window) draw_density_volume_window(&state);
         if (state.distributions.show_window) draw_distribution_window(&state);
         if (state.timeline.show_window) draw_timeline_window(&state);
         if (state.selection.query.show_window) draw_selection_query_window(&state);
@@ -707,7 +657,7 @@ int main(int argc, char** argv) {
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
-            set_hovered_property(&state,  STR_LIT(""));
+            script_set_hovered_property(&state,  STR_LIT(""));
         }
 
         // Capture non-window specific keyboard events
@@ -1551,164 +1501,6 @@ static void update_display_properties(ApplicationState* data) {
     }
 }
 
-static void update_density_volume(ApplicationState* data) {
-    if (data->density_volume.dvr.tf.dirty) {
-        data->density_volume.dvr.tf.dirty = false;
-        // Update colormap texture
-        volume::compute_transfer_function_texture_simple(&data->density_volume.dvr.tf.id, data->density_volume.dvr.tf.colormap, data->density_volume.dvr.tf.alpha_scale);
-    }
-
-    int64_t selected_property = -1;
-    for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
-        const DisplayProperty& dp = data->display_properties[i];
-        if (dp.type == DisplayProperty::Type_Volume && dp.show_in_volume) {
-            selected_property = i;
-            break;
-        }
-    }
-
-    const md_script_property_data_t* prop_data = 0;
-    const md_script_vis_payload_o* vis_payload = 0;
-    uint64_t data_fingerprint = 0;
-
-    static int64_t s_selected_property = 0;
-    if (s_selected_property != selected_property) {
-        s_selected_property = selected_property;
-        data->density_volume.dirty_vol = true;
-        data->density_volume.dirty_rep = true;
-    }
-
-    if (selected_property != -1) {
-        prop_data = data->display_properties[selected_property].prop_data;
-        vis_payload = data->display_properties[selected_property].vis_payload;
-        data_fingerprint = data->display_properties[selected_property].prop_data->fingerprint;
-    }
-    data->density_volume.show_density_volume = selected_property != -1;
-
-    static uint64_t s_script_fingerprint = 0;
-    if (s_script_fingerprint != md_script_ir_fingerprint(data->script.eval_ir)) {
-        s_script_fingerprint = md_script_ir_fingerprint(data->script.eval_ir);
-        data->density_volume.dirty_vol = true;
-        data->density_volume.dirty_rep = true;
-    }
-
-    static uint64_t s_data_fingerprint = 0;
-    if (s_data_fingerprint != data_fingerprint) {
-        s_data_fingerprint = data_fingerprint;
-        data->density_volume.dirty_vol = true;
-    }
-
-    static double s_frame = 0;
-    if (s_frame != data->animation.frame) {
-        s_frame = data->animation.frame;
-        data->density_volume.dirty_rep = true;
-    }
-
-    if (data->density_volume.dirty_rep) {
-        if (prop_data && vis_payload) {
-            data->density_volume.dirty_rep = false;
-            size_t num_reps = 0;
-            bool result = false;
-            md_script_vis_t vis = {};
-
-            if (md_script_ir_valid(data->script.eval_ir)) {
-                md_script_vis_init(&vis, frame_alloc);
-                md_script_vis_ctx_t ctx = {
-                    .ir = data->script.eval_ir,
-                    .mol = &data->mold.sys,
-                    .traj = data->mold.sys.trajectory,
-                };
-                result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_SDF);
-            }
-
-            if (result) {
-                if (vis.sdf.extent) {
-                    const float s = vis.sdf.extent;
-                    vec3_t min_aabb = { -s, -s, -s };
-                    vec3_t max_aabb = { s, s, s };
-                    data->density_volume.model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
-                    data->density_volume.voxel_spacing = vec3_t{2*s / prop_data->dim[1], 2*s / prop_data->dim[2], 2*s / prop_data->dim[3]};
-                }
-                num_reps = md_array_size(vis.sdf.structures);
-            }
-
-            // We need to limit this for performance reasons
-            num_reps = MIN(num_reps, 100);
-
-            const size_t old_size = md_array_size(data->density_volume.gl_reps);
-            if (data->density_volume.gl_reps) {
-                // Only free superflous entries
-                for (size_t i = num_reps; i < old_size; ++i) {
-                    md_gl_rep_destroy(data->density_volume.gl_reps[i]);
-                }
-            }
-            md_array_resize(data->density_volume.gl_reps, num_reps, persistent_alloc);
-            md_array_resize(data->density_volume.rep_model_mats, num_reps, persistent_alloc);
-
-            for (size_t i = old_size; i < num_reps; ++i) {
-                // Only init new entries
-                data->density_volume.gl_reps[i] = md_gl_rep_create(data->mold.gl_mol);
-            }
-
-            const auto& sys = data->mold.sys;
-            auto& rep = data->density_volume.rep;
-			const size_t num_atoms = md_system_atom_count(&sys);
-            const size_t num_bytes = sizeof(uint32_t) * num_atoms;
-            uint32_t* colors = (uint32_t*)md_vm_arena_push(frame_alloc, num_bytes);
-            defer { md_vm_arena_pop(frame_alloc, num_bytes); };
-
-            switch (rep.colormap) {
-            case ColorMapping::Uniform:
-                color_atoms_uniform(colors, num_atoms, convert_color(rep.color));
-                break;
-            case ColorMapping::Type:
-                color_atoms_type(colors, num_atoms, sys);
-                break;
-            case ColorMapping::Serial:
-                color_atoms_idx(colors, num_atoms, sys);
-				break;
-            case ColorMapping::CompName:
-                color_atoms_comp_name(colors, num_atoms, sys);
-                break;
-            case ColorMapping::CompSeqId:
-                color_atoms_comp_seq_id(colors, num_atoms, sys);
-                break;
-            case ColorMapping::InstId:
-                color_atoms_inst_id(colors, num_atoms, sys);
-                break;
-            case ColorMapping::InstIndex:
-                color_atoms_inst_idx(colors, num_atoms, sys);
-                break;
-            case ColorMapping::SecondaryStructure:
-                color_atoms_secondary_structure(colors, num_atoms, sys);
-                break;
-            default:
-                ASSERT(false);
-                break;
-            }
-
-            for (size_t i = 0; i < num_reps; ++i) {
-                filter_colors(colors, num_atoms, &vis.sdf.structures[i]);
-                md_gl_rep_set_color(data->density_volume.gl_reps[i], 0, (uint32_t)num_atoms, colors, 0);
-                data->density_volume.rep_model_mats[i] = vis.sdf.matrices[i];
-            }
-        }
-    }
-
-    if (data->density_volume.dirty_vol) {
-        if (prop_data) {
-            data->density_volume.dirty_vol = false;
-            if (!data->density_volume.volume_texture.id) {
-                int dim[3] = { prop_data->dim[1], prop_data->dim[2], prop_data->dim[3] };
-                gl::init_texture_3D(&data->density_volume.volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
-                MEMCPY(data->density_volume.volume_texture.dim, dim, sizeof(dim));
-                data->density_volume.volume_texture.max_value = prop_data->max_value;
-            }
-            gl::set_texture_3D_data(data->density_volume.volume_texture.id, 0, prop_data->values, GL_R32F);
-        }
-    }
-}
-
 // #misc
 static void update_view_param(ApplicationState* data) {
     ViewParam& param = data->view.param;
@@ -1931,7 +1723,6 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Script Editor", &data->show_script_window);
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
-            ImGui::Checkbox("Density Volumes", &data->density_volume.show_window);
             ImGui::Checkbox("Structure Export", &data->structure_export.show_window);
 
             viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowDrawMenu);
@@ -2975,7 +2766,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str, VIS_FLAGS);
+                        script_visualize_str(state, str, VIS_FLAGS);
                     }
 
                     if (res_idx != -1) {
@@ -2991,7 +2782,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, VIS_FLAGS);
+                            script_visualize_str(state, str, VIS_FLAGS);
                         }
 
                         const int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
@@ -3003,7 +2794,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, VIS_FLAGS);
+                            script_visualize_str(state, str, VIS_FLAGS);
                         }
 
                         str_t resname = md_component_name(&state->mold.sys.component, res_idx);
@@ -3016,7 +2807,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str, VIS_FLAGS);
+                                script_visualize_str(state, str, VIS_FLAGS);
                             }
                         }
                     }
@@ -3032,7 +2823,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str, VIS_FLAGS);
+                        script_visualize_str(state, str, VIS_FLAGS);
                     }
 
                     if (res_idx != -1) {
@@ -3049,7 +2840,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, VIS_FLAGS);
+                            script_visualize_str(state, str, VIS_FLAGS);
                         }
 
                         int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
@@ -3061,7 +2852,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, VIS_FLAGS);
+                            script_visualize_str(state, str, VIS_FLAGS);
                         }
 
                         str_t resname = md_component_name(&state->mold.sys.component, res_idx);
@@ -3074,7 +2865,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str, VIS_FLAGS);
+                                script_visualize_str(state, str, VIS_FLAGS);
                             }
                         }
                     }
@@ -3090,7 +2881,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     }
                     if (ImGui::IsItemHovered()) {
                         str_t str = str_from_cstr(buf);
-                        visualize_str(state, str, VIS_FLAGS);
+                        script_visualize_str(state, str, VIS_FLAGS);
                     }
 
                     if (res_idx != -1) {
@@ -3108,7 +2899,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, VIS_FLAGS);
+                            script_visualize_str(state, str, VIS_FLAGS);
                         }
 
                         int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
@@ -3120,7 +2911,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         }
                         if (ImGui::IsItemHovered()) {
                             str_t str = str_from_cstr(buf);
-                            visualize_str(state, str, VIS_FLAGS);
+                            script_visualize_str(state, str, VIS_FLAGS);
                         }
 
                         str_t resname = md_component_name(&state->mold.sys.component, res_idx);
@@ -3133,7 +2924,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                             }
                             if (ImGui::IsItemHovered()) {
                                 str_t str = str_from_cstr(buf);
-                                visualize_str(state, str, VIS_FLAGS);
+                                script_visualize_str(state, str, VIS_FLAGS);
                             }
                         }
                     }
@@ -4296,8 +4087,8 @@ static void draw_timeline_window(ApplicationState* data) {
                             if ((dp.dim > DISPLAY_PROPERTY_MAX_POPULATION_SIZE)) {
                                 ImGui::SetTooltip("The property has a large population, only the first %i items will be shown", DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
                             }
-                            visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            set_hovered_property(data, str_from_cstr(dp.label));
+                            script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            script_set_hovered_property(data, str_from_cstr(dp.label));
                         }
 
                         if (ImGui::BeginDragDropSource()) {
@@ -4432,7 +4223,7 @@ static void draw_timeline_window(ApplicationState* data) {
                    
                     if (ImPlot::IsPlotHovered()) {
                         md_bitfield_clear(&data->selection.highlight_mask);
-                        set_hovered_property(data,  STR_LIT(""));
+                        script_set_hovered_property(data,  STR_LIT(""));
 
                         print_timeline_tooltip = true;
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
@@ -4564,7 +4355,7 @@ static void draw_timeline_window(ApplicationState* data) {
                         }
 
                         if (hovered_prop_idx != -1) {
-                            set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
+                            script_set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
                         }
 
                         if (int len = (int)strnlen(hovered_label, sizeof(hovered_label))) {
@@ -4605,8 +4396,8 @@ static void draw_timeline_window(ApplicationState* data) {
                         if (!(dp.temporal_subplot_mask & (1 << i))) continue;
 
                         if (ImPlot::IsLegendEntryHovered(dp.label)) {
-                            visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            set_hovered_property(data, str_from_cstr(dp.label));
+                            script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            script_set_hovered_property(data, str_from_cstr(dp.label));
                             hovered_prop_idx = j;
                             hovered_pop_idx = -1;
                         }
@@ -4694,8 +4485,8 @@ static void draw_timeline_window(ApplicationState* data) {
                                         dp.population_mask.flip(k);
                                     }
                                     if (ImGui::IsItemHovered()) {
-                                        visualize_payload(data, dp.vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                                        set_hovered_property(data, str_from_cstr(dp.label), k);
+                                        script_visualize_payload(data, dp.vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                        script_set_hovered_property(data, str_from_cstr(dp.label), k);
                                         hovered_prop_idx = j;
                                         hovered_pop_idx = k;
                                     }
@@ -4808,8 +4599,8 @@ static void draw_timeline_window(ApplicationState* data) {
                     if (ImPlot::IsPlotHovered()) {
                         if (hovered_prop_idx != -1) {
                             const int pop_idx = data->display_properties[hovered_prop_idx].dim > 1 ? hovered_pop_idx : -1;
-                            visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
+                            script_visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            script_set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
                         }
                     }
 
@@ -4903,8 +4694,8 @@ static void draw_distribution_window(ApplicationState* data) {
                             ImGui::SameLine();
                             ImGui::Selectable(dp.label);
                             if (ImGui::IsItemHovered()) {
-                                visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                                set_hovered_property(data, str_from_cstr(dp.label));
+                                script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_set_hovered_property(data, str_from_cstr(dp.label));
                             }
                             if (ImGui::BeginDragDropSource()) {
                                 DisplayPropertyDragDropPayload payload = {i};
@@ -4982,7 +4773,7 @@ static void draw_distribution_window(ApplicationState* data) {
                     char hovered_label[64] = "";
 
                     if (ImPlot::IsPlotHovered()) {
-                        set_hovered_property(data, STR_LIT(""));
+                        script_set_hovered_property(data, STR_LIT(""));
                         
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
                         const ImVec2 mouse_coord = ImPlot::PlotToPixels(mouse_pos);
@@ -5137,8 +4928,8 @@ static void draw_distribution_window(ApplicationState* data) {
                         }
 
                         if (hovered_prop_idx != -1) {
-                            set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
-                            visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            script_set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
+                            script_visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
 
                             if (strnlen(hovered_label, sizeof(hovered_label)) > 0) {
                                 ImGui::SetTooltip("%s", hovered_label);
@@ -5164,8 +4955,8 @@ static void draw_distribution_window(ApplicationState* data) {
                         if (!(dp.distribution_subplot_mask & (1 << i))) continue;
 
                         if (ImPlot::IsLegendEntryHovered(dp.label)) {
-                            visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            set_hovered_property(data, str_from_cstr(dp.label));
+                            script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            script_set_hovered_property(data, str_from_cstr(dp.label));
                             hovered_prop_idx = j;
                             hovered_pop_idx = -1;
                         }
@@ -5260,8 +5051,8 @@ static void draw_distribution_window(ApplicationState* data) {
                                         dp.population_mask.flip(k);
                                     }
                                     if (ImGui::IsItemHovered()) {
-                                        visualize_payload(data, dp.vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                                        set_hovered_property(data, str_from_cstr(dp.label), k);
+                                        script_visualize_payload(data, dp.vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                        script_set_hovered_property(data, str_from_cstr(dp.label), k);
                                         hovered_prop_idx = j;
                                         hovered_pop_idx = k;
                                     }
@@ -5396,8 +5187,8 @@ static void draw_distribution_window(ApplicationState* data) {
 
                     if (ImPlot::IsPlotHovered()) {
                         if (hovered_prop_idx != -1) {
-                            visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
+                            script_visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            script_set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
                         }
 
                         ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
@@ -5429,571 +5220,6 @@ static void draw_distribution_window(ApplicationState* data) {
     }
     ImGui::End();
 }
-
-static void draw_density_volume_window(ApplicationState* data) {
-    ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Density Volume", &data->density_volume.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
-        const ImVec2 button_size = {160, 0};
-        bool volume_changed = false;
-
-        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
-            data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
-        }
-
-        if (ImGui::BeginMenuBar()) {
-            if (ImGui::BeginMenu("Property")) {
-                int64_t selected_index = -1;
-                int64_t candidate_count = 0;
-                for (int64_t i = 0; i < (int64_t)md_array_size(data->display_properties); ++i) {
-                    DisplayProperty& dp = data->display_properties[i];
-                    if (dp.type != DisplayProperty::Type_Volume) continue;
-                    if (!data->timeline.filter.enabled && dp.partial_evaluation) {
-                        continue;
-                    }
-                    ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                    if (ImGui::Selectable(dp.label, dp.show_in_volume)) {
-                        selected_index = i;
-                        volume_changed = true;
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
-                        set_hovered_property(data,  str_from_cstr(dp.label));
-                    }
-                    candidate_count += 1;
-                }
-
-                if (candidate_count == 0) {
-                    ImGui::Text("No volume properties available.");
-                }
-
-                // Currently we only support viewing one volume at a time.
-                // This will probably change over time but not now.
-                if (selected_index != -1) {
-                    for (int64_t i = 0; i < (int64_t)md_array_size(data->display_properties); ++i) {
-                        if (selected_index == i) {
-                            // Toggle bool
-                            data->display_properties[i].show_in_volume = !data->display_properties[i].show_in_volume;
-                        } else {
-                            data->display_properties[i].show_in_volume = false;
-                        }
-                    }
-                }
-                ImGui::EndMenu();
-            }
-            if (ImGui::BeginMenu("Render")) {
-                ImGui::Checkbox("Direct Volume Rendering", &data->density_volume.dvr.enabled);
-                if (data->density_volume.dvr.enabled) {
-                    ImGui::Indent();
-                    if (ImPlot::ColormapButton(ImPlot::GetColormapName(data->density_volume.dvr.tf.colormap), button_size, data->density_volume.dvr.tf.colormap)) {
-                        ImGui::OpenPopup("Colormap Selector");
-                    }
-                    if (ImGui::BeginPopup("Colormap Selector")) {
-                        for (int map = 4; map < ImPlot::GetColormapCount(); ++map) {
-                            if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), button_size, map)) {
-                                data->density_volume.dvr.tf.colormap = map;
-                                data->density_volume.dvr.tf.dirty = true;
-                                ImGui::CloseCurrentPopup();
-                            }
-                        }
-                        ImGui::EndPopup();
-                    }
-                    if (ImGui::SliderFloat("TF Alpha Scaling", &data->density_volume.dvr.tf.alpha_scale, 0.001f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
-                        data->density_volume.dvr.tf.dirty = true;
-                    }
-                    const float tf_min = 0.0f;
-                    const float tf_max = 1000.0f;
-                    ImGui::SliderFloat("TF Min Value", &data->density_volume.dvr.tf.min_val, tf_min, data->density_volume.dvr.tf.max_val, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::SliderFloat("TF Max Value", &data->density_volume.dvr.tf.max_val, data->density_volume.dvr.tf.min_val, tf_max, "%.3f", ImGuiSliderFlags_Logarithmic);
-
-                    ImGui::Unindent();
-                }
-                ImGui::Checkbox("Iso Surfaces", &data->density_volume.iso.enabled);
-                if (data->density_volume.iso.enabled) {
-                    ImGui::Indent();
-                    for (int i = 0; i < (int)data->density_volume.iso.count; ++i) {
-                        ImGui::PushID(i);
-                        ImGui::SliderFloat("##Isovalue", &data->density_volume.iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                        if (ImGui::IsItemDeactivatedAfterEdit()) {
-                            // @TODO(Robin): Sort?
-                        }
-                        ImGui::SameLine();
-                        ImGui::ColorEdit4Minimal("##Color", data->density_volume.iso.colors[i].elem);
-                        ImGui::SameLine();
-                        if (ImGui::DeleteButton(ICON_FA_XMARK)) {
-                            for (int j = i; j < (int)data->density_volume.iso.count - 1; ++j) {
-                                data->density_volume.iso.colors[j] = data->density_volume.iso.colors[j+1];
-                                data->density_volume.iso.values[j] = data->density_volume.iso.values[j+1];
-                            }
-                            data->density_volume.iso.count -= 1;
-                        }
-                        ImGui::PopID();
-                    }
-                    if ((data->density_volume.iso.count < ARRAY_SIZE(data->density_volume.iso.values)) && ImGui::Button("Add", button_size)) {
-                        size_t idx = data->density_volume.iso.count++;
-                        data->density_volume.iso.values[idx] = 0.1f;
-                        data->density_volume.iso.colors[idx] = { 0.2f, 0.1f, 0.9f, 1.0f };
-                        // @TODO(Robin): Sort?
-                    }
-                        ImGui::SameLine();
-                    if (ImGui::Button("Clear", button_size)) {
-                        data->density_volume.iso.count = 0;
-                    }
-                    ImGui::Unindent();
-                }
-                ImGui::EndMenu();
-            }
-
-            if (ImGui::BeginMenu("Clip planes")) {
-                ImGui::RangeSliderFloat("x", &data->density_volume.clip_volume.min.x, &data->density_volume.clip_volume.max.x, 0.0f, 1.0f);
-                ImGui::RangeSliderFloat("y", &data->density_volume.clip_volume.min.y, &data->density_volume.clip_volume.max.y, 0.0f, 1.0f);
-                ImGui::RangeSliderFloat("z", &data->density_volume.clip_volume.min.z, &data->density_volume.clip_volume.max.z, 0.0f, 1.0f);
-                ImGui::EndMenu();
-            }
-            if (ImGui::BeginMenu("Show")) {
-                ImGui::Checkbox("Bounding Box", &data->density_volume.show_bounding_box);
-                if (data->density_volume.show_bounding_box) {
-                    ImGui::Indent();
-                    ImGui::ColorEdit4("Color", data->density_volume.bounding_box_color.elem);
-                    ImGui::Unindent();
-                }
-                ImGui::Checkbox("Reference Structure", &data->density_volume.show_reference_structures);
-                if (data->density_volume.show_reference_structures) {
-                    ImGui::Indent();
-                    auto& rep = data->density_volume.rep;
-                    ImGui::Checkbox("Show Superimposed Structures", &data->density_volume.show_reference_ensemble);
-
-                    if (ImGui::BeginCombo("type", representation_type_str[(int)rep.type])) {
-                        for (int i = 0; i <= (int)RepresentationType::Cartoon; ++i) {
-                            if (ImGui::Selectable(representation_type_str[i], (int)rep.type == i)) {
-                                rep.type = (RepresentationType)i;
-                                data->density_volume.dirty_rep = true;
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-
-                    if (ImGui::BeginCombo("color", color_mapping_str[(int)rep.colormap])) {
-                        for (int i = 0; i < (int)ColorMapping::Property; ++i) {
-                            if (ImGui::Selectable(color_mapping_str[i], (int)rep.type == i)) {
-                                rep.colormap = (ColorMapping)i;
-                                data->density_volume.dirty_rep = true;
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-
-                    if (rep.colormap == ColorMapping::Uniform) {
-                        data->density_volume.dirty_rep |= ImGui::ColorEdit4("color", rep.color.elem, ImGuiColorEditFlags_NoInputs);
-                    }
-
-                    if (rep.type == RepresentationType::SpaceFill || rep.type == RepresentationType::Licorice) {
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("scale", &rep.param[0], 0.1f, 2.f);
-                    }
-                    if (rep.type == RepresentationType::Ribbons) {
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("width", &rep.param[0], 0.1f, 2.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("thickness", &rep.param[1], 0.1f, 2.f);
-                    }
-                    if (rep.type == RepresentationType::Cartoon) {
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("coil scale",  &rep.param[0], 0.1f, 3.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("sheet scale", &rep.param[1], 0.1f, 3.f);
-                        data->density_volume.dirty_rep |= ImGui::SliderFloat("helix scale", &rep.param[2], 0.1f, 3.f);
-                    }
-                    ImGui::Unindent();
-                }
-                ImGui::Checkbox("Legend", &data->density_volume.legend.enabled);
-                if (data->density_volume.legend.enabled) {
-                    ImGui::Indent();
-                    const char* colormap_modes[] = {"Opaque", "Transparent", "Split"};
-                    if (ImGui::BeginCombo("Colormap", colormap_modes[data->density_volume.legend.colormap_mode])) {
-                        for (int i = 0; i < IM_ARRAYSIZE(colormap_modes); ++i) {
-                            if (ImGui::Selectable(colormap_modes[i])) {
-                                data->density_volume.legend.colormap_mode = i;
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                    ImGui::Checkbox("Use Checkerboard", &data->density_volume.legend.checkerboard);
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Use a checkerboard background for transparent parts in the legend.");
-                    }
-                    ImGui::Unindent();
-                }
-                ImGui::Checkbox("Coordinate System Widget", &data->density_volume.show_coordinate_system_widget);
-                ImGui::EndMenu();
-            }
-
-            ImGui::EndMenuBar();
-        }
-
-        update_density_volume(data);
-
-        // Animate camera towards targets
-        camera_animate(&data->density_volume.camera, data->density_volume.target, data->app.timing.delta_s);
-
-        /*
-        // Canvas
-        // Using InvisibleButton() as a convenience 1) it will advance the layout cursor and 2) allows us to use IsItemHovered()/IsItemActive()
-        ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();      // ImDrawList API uses screen coordinates!
-        ImVec2 canvas_p1 = ImVec2(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y);
-        */
-        ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
-        canvas_sz.x = MAX(canvas_sz.x, 50.0f);
-        canvas_sz.y = MAX(canvas_sz.y, 50.0f);
-
-        // This will catch our interactions
-        ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
-
-        // Draw border and background color
-        ImGuiIO& io = ImGui::GetIO();
-
-        ImVec2 canvas_p0 = ImGui::GetItemRectMin();
-        ImVec2 canvas_p1 = ImGui::GetItemRectMax();
-
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        draw_list->AddImage((ImTextureID)(intptr_t)data->density_volume.fbo.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
-        draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
-
-        if (data->density_volume.dvr.enabled && data->density_volume.legend.enabled) {
-            ImVec2 canvas_ext = canvas_p1 - canvas_p0;
-            ImVec2 cmap_ext = {MIN(canvas_ext.x * 0.5f, 250.0f), MIN(canvas_ext.y * 0.25f, 30.0f)};
-            ImVec2 cmap_pad = {10, 10};
-            ImVec2 cmap_pos = canvas_p1 - ImVec2(cmap_ext.x, cmap_ext.y) - cmap_pad;
-            ImPlotColormap cmap = data->density_volume.dvr.tf.colormap;
-            ImPlotContext& gp = *ImPlot::GetCurrentContext();
-            ImU32 checker_bg = IM_COL32(255, 255, 255, 255);
-            ImU32 checker_fg = IM_COL32(128, 128, 128, 255);
-            float checker_size = 8.0f;
-            ImVec2 checker_offset = ImVec2(0,0);
-
-            int mode = data->density_volume.legend.colormap_mode;
-
-            ImVec2 opaque_scl = ImVec2(1,1);
-            ImVec2 transp_scl = ImVec2(0,0);
-
-            if (mode == LegendColorMapMode_Split) {
-                opaque_scl = ImVec2(1.0f, 0.5f);
-                transp_scl = ImVec2(0.0f, 0.5f);
-            }
-
-            ImRect opaque_rect = ImRect(cmap_pos, cmap_pos + cmap_ext * opaque_scl);
-            ImRect transp_rect = ImRect(cmap_pos + cmap_ext * transp_scl, cmap_pos + cmap_ext);
-            
-            // Opaque
-            if (mode == LegendColorMapMode_Opaque || mode == LegendColorMapMode_Split) {
-                ImPlot::RenderColorBar(gp.ColormapData.GetKeys(cmap),gp.ColormapData.GetKeyCount(cmap),*draw_list,opaque_rect,false,false,!gp.ColormapData.IsQual(cmap));
-            }
-            
-            if (mode == LegendColorMapMode_Transparent || mode == LegendColorMapMode_Split) {
-                if (data->density_volume.legend.checkerboard) {
-                    // Checkerboard
-                    ImGui::DrawCheckerboard(draw_list, transp_rect.Min, transp_rect.Max, checker_bg, checker_fg, checker_size, checker_offset);
-                }
-                // Transparent
-                draw_list->AddImage((ImTextureID)(intptr_t)data->density_volume.dvr.tf.id, transp_rect.Min, transp_rect.Max);
-            }
-            
-            // Boarder
-            draw_list->AddRect(cmap_pos, cmap_pos + cmap_ext, IM_COL32(0, 0, 0, 255));
-        }
-
-        const bool is_hovered = ImGui::IsItemHovered();
-        const bool is_active = ImGui::IsItemActive();
-        const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
-        const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
-
-        auto& gbuf = data->density_volume.fbo;
-        int width  = MAX(1, (int)canvas_sz.x);
-        int height = MAX(1, (int)canvas_sz.y);
-        if ((int)gbuf.width != width || (int)gbuf.height != height) {
-            init_gbuffer(&gbuf, width, height);
-        }
-
-        bool reset_hard = false;
-        if (volume_changed) {
-            static bool first_time = true;
-            if (first_time) {
-                reset_hard = true;
-                first_time = false;
-            }
-        }
-        bool reset_view = reset_hard;
-        if (is_hovered) {
-            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                reset_view = true;
-            }
-        }
-
-        if (reset_view) {
-            vec3_t min_ext = vec3_from_vec4(data->density_volume.model_mat * vec4_set(0,0,0,1));
-            vec3_t max_ext = vec3_from_vec4(data->density_volume.model_mat * vec4_set(1,1,1,1));
-            data->density_volume.target = compute_optimal_view(min_ext, max_ext);
-
-            if (reset_hard) {
-				data->density_volume.camera = data->density_volume.target;
-            }
-        }
-
-        if (is_active || is_hovered) {
-            static const TrackballControllerParam param = {
-                .min_distance = 1.0,
-                .max_distance = 1000.0,
-            };
-
-            vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
-            vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
-            vec2_t prev = curr - delta;
-            float  wheel_delta = io.MouseWheel;
-
-            TrackballControllerInput input = {
-                .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
-                .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
-                .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
-                .dolly_delta   = is_hovered ? wheel_delta : 0.0f,
-                .mouse_coord_prev = prev,
-                .mouse_coord_curr = curr,
-                .screen_size = {canvas_sz.x, canvas_sz.y},
-                .fov_y = data->density_volume.camera.fov_y,
-            };
-            camera_controller_trackball(&data->density_volume.target, input, param);
-        }
-
-        if (data->density_volume.show_coordinate_system_widget) {
-            ImVec2 win_size = ImGui::GetWindowSize();
-            float  ext = MIN(win_size.x, win_size.y) * 0.2f;
-            float  pad = 0.1f * ext;
-			ImVec2 size = { ext, ext };
-
-			ImGui::SetCursorScreenPos(ImVec2(pad, win_size.y - ext - pad));
-
-            quat_t out_orientation = data->density_volume.target.orientation;
-            if (ImGui::CoordinateSystemWidget(&out_orientation, data->density_volume.camera.orientation, size)) {
-                const vec3_t look_at = camera_get_look_at(data->density_volume.target);
-                data->density_volume.target.orientation = quat_normalize(out_orientation);
-                data->density_volume.target.position = camera_position_from_look_at(look_at, data->density_volume.target.orientation, data->density_volume.target.distance);
-            }
-        }
-
-        mat4_t view_mat = camera_world_to_view_matrix(data->density_volume.camera);
-        mat4_t proj_mat = camera_view_to_clip_matrix_persp(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
-        mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(data->density_volume.camera, (float)canvas_sz.x / (float)canvas_sz.y);
-
-        PUSH_GPU_SECTION("RENDER DENSITY VOLUME");
-        clear_gbuffer(&gbuf);
-
-        const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-            GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
-
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE);
-        glDepthFunc(GL_LESS);
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-        glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-        glViewport(0, 0, gbuf.width, gbuf.height);
-        glScissor(0, 0,  gbuf.width, gbuf.height);
-
-        int64_t selected_property = -1;
-        for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
-            const DisplayProperty& dp = data->display_properties[i];
-            if (dp.type == DisplayProperty::Type_Volume && dp.show_in_volume) {
-                selected_property = i;
-                break;
-            }
-        }
-
-        size_t num_reps = md_array_size(data->density_volume.gl_reps);
-        if (selected_property > -1 && data->density_volume.show_reference_structures && num_reps > 0) {
-            if (!data->density_volume.show_reference_ensemble) {
-                num_reps = 1;
-            }
-
-            md_gl_draw_op_t* draw_ops = md_array_create(md_gl_draw_op_t, num_reps, frame_alloc);
-
-            md_gl_draw_op_t op = {};
-            op.type = (md_gl_rep_type_t)data->density_volume.rep.type;
-            MEMCPY(&op.args, data->density_volume.rep.param, sizeof(op.args));
-            if (op.type == MD_GL_REP_BALL_AND_STICK) {
-                op.args.ball_and_stick.color_mode = MD_GL_BOND_MODE_NEAREST;
-            } else if (op.type == MD_GL_REP_LICORICE) {
-                op.args.licorice.color_mode = MD_GL_BOND_MODE_NEAREST;
-            }
-
-            for (size_t i = 0; i < num_reps; ++i) {
-                op.rep = data->density_volume.gl_reps[i];
-                op.model_matrix = &data->density_volume.rep_model_mats[i].elem[0][0];
-                draw_ops[i] = op;
-            }
-
-            md_gl_draw_args_t draw_args = {
-                .shaders = data->gl.shaders,
-                .draw_operations = {
-                    .count = md_array_size(draw_ops),
-                    .ops = draw_ops
-                },
-                .view_transform = {
-                    .view_matrix = &view_mat.elem[0][0],
-                    .proj_matrix = &proj_mat.elem[0][0],
-                },
-            };
-
-            md_gl_draw(&draw_args);
-
-            if (is_hovered) {
-                mat4_t inv_MVP = mat4_mul(inv_proj_mat, mat4_transpose(view_mat));
-                const vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
-                // @TODO: Reimplement picking here using the new picking api 
-                //extract_picking_data(data->picking, gbuf, coord, inv_MVP);
-                //if (data->picking.idx != INVALID_PICKING_IDX) {
-                //    draw_info_window(*data, data->picking.idx);
-                //}
-            }
-            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-        }
-
-        if (data->density_volume.show_density_volume) {
-            if (data->density_volume.model_mat != mat4_t{ 0 }) {
-                volume::RenderDesc vol_desc = {
-                    .render_target = {
-                        .depth  = gbuf.tex.depth,
-                        .color  = gbuf.tex.transparency,
-                        .width  = gbuf.width,
-                        .height = gbuf.height,
-                    },
-                    .texture = {
-                        .density_volume = data->density_volume.volume_texture.id,
-                        .transfer_function = data->density_volume.dvr.tf.id,
-                    },
-                    .matrix = {
-                        .model = data->density_volume.model_mat,
-                        .view = view_mat,
-                        .proj = proj_mat,
-                        .inv_proj = inv_proj_mat,
-                    },
-                    .clip_volume = {
-                        .min = data->density_volume.clip_volume.min,
-                        .max = data->density_volume.clip_volume.max,
-                    },
-                    .iso = {
-                        .enabled = data->density_volume.iso.enabled,
-                        .count = data->density_volume.iso.count,
-                        .values = data->density_volume.iso.values,
-                        .colors = data->density_volume.iso.colors,
-                    },
-                    .dvr = {
-                        .enabled = data->density_volume.dvr.enabled,
-                        .min_tf_value = data->density_volume.dvr.tf.min_val,
-                        .max_tf_value = data->density_volume.dvr.tf.max_val,
-                    },
-                    .shading = {
-                        .env_radiance = data->visuals.background.color * data->visuals.background.intensity,
-                        .roughness = 0.3f,
-                        .dir_radiance = {10,10,10},
-                        .ior = 1.5f,
-                        .exposure = data->visuals.tonemapping.exposure,
-                        .gamma = data->visuals.tonemapping.gamma,
-                    },
-                    .voxel_spacing = data->density_volume.voxel_spacing
-                    
-                };
-                volume::render_volume(vol_desc);
-            }
-        }
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-        glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-        glViewport(0, 0, gbuf.width, gbuf.height);
-        glScissor(0, 0, gbuf.width, gbuf.height);
-
-        if (data->density_volume.show_bounding_box) {
-            glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_TRUE);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-            if (data->density_volume.model_mat != mat4_t{0}) {
-                immediate::set_model_view_matrix(mat4_mul(view_mat, data->density_volume.model_mat));
-                immediate::set_proj_matrix(proj_mat);
-
-                uint32_t box_color = convert_color(data->density_volume.bounding_box_color);
-                uint32_t clip_color = convert_color(data->density_volume.clip_volume_color);
-                immediate::draw_box_wireframe({0,0,0}, {1,1,1}, box_color);
-                immediate::draw_box_wireframe(data->density_volume.clip_volume.min, data->density_volume.clip_volume.max, clip_color);
-
-                immediate::render();
-            }
-            glDisable(GL_BLEND);
-        }
-
-        PUSH_GPU_SECTION("Postprocessing")
-        postprocessing::Descriptor postprocess_desc = {
-            .background = {
-                .color = data->visuals.background.color * data->visuals.background.intensity,
-            },
-            .tonemapping = {
-                .enabled = data->visuals.tonemapping.enabled,
-                .mode = data->visuals.tonemapping.tonemapper,
-                .exposure = data->visuals.tonemapping.exposure,
-                .gamma = data->visuals.tonemapping.gamma,
-            },
-            .ambient_occlusion = {
-                .enabled = false,
-            },
-            .depth_of_field = {
-                .enabled = false,
-            },
-            .fxaa = {
-                .enabled = true,
-            },
-            .temporal_aa = {
-                .enabled = false,
-            },
-            .sharpen = {
-                .enabled = false,
-            },
-            .input_textures = {
-                .depth = gbuf.tex.depth,
-                .color = gbuf.tex.color,
-                .normal = gbuf.tex.normal,
-                .velocity = gbuf.tex.velocity,
-                .transparency = gbuf.tex.transparency,
-            }
-        };
-
-        ViewParam view_param = {
-            .matrix = {
-                .curr = {
-                    .view = view_mat,
-                    .proj = proj_mat,
-                    .norm = view_mat,
-                },
-                .inv = {
-                    .proj = inv_proj_mat,
-                }
-            },
-            .clip_planes = {
-                .near = data->density_volume.camera.near_plane,
-                .far = data->density_volume.camera.far_plane,
-            },
-            .resolution = {canvas_sz.x, canvas_sz.y},
-            .fov_y = data->density_volume.camera.fov_y,
-        };
-
-        postprocessing::shade_and_postprocess(postprocess_desc, view_param);
-        POP_GPU_SECTION()
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glDrawBuffer(GL_BACK);
-
-        POP_GPU_SECTION();
-    }
-
-    ImGui::End();
-}
-
-
 
 static void draw_debug_window(ApplicationState* data) {
     ASSERT(data);
@@ -6164,7 +5390,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 }
                 else if (hovered_marker->type == MarkerType_Visualization) {
                     // Clear hovered property
-                    set_hovered_property(state, STR_LIT(""));
+                    script_set_hovered_property(state, STR_LIT(""));
                     if (md_script_ir_valid(state->script.ir)) {
                         const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
                         str_t payload_ident = md_script_payload_ident(payload);
@@ -6179,8 +5405,8 @@ static void draw_script_editor_window(ApplicationState* state) {
                             state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)payload_dim - 1);
                         }
 
-                        visualize_payload(state, payload, state->script.sub_idx, 0);
-                        set_hovered_property(state, payload_ident, state->script.sub_idx);
+                        script_visualize_payload(state, payload, state->script.sub_idx, 0);
+                        script_set_hovered_property(state, payload_ident, state->script.sub_idx);
                     }
                 }
 
@@ -7350,7 +6576,7 @@ static void fill_gbuffer(ApplicationState* data) {
     
         const vec3_t box_ext = vec3_set1(vis.sdf.extent);
         for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
-            immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i], data->density_volume.bounding_box_color);
+            immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i]);
         }
 
         immediate::render();

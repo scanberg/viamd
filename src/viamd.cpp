@@ -460,12 +460,6 @@ void init_system_data(ApplicationState* data) {
     data->script.compile_ir = true;
 }
 
-static inline void clear_density_volume(ApplicationState* state) {
-    md_array_shrink(state->density_volume.gl_reps, 0);
-    md_array_shrink(state->density_volume.rep_model_mats, 0);
-    state->density_volume.model_mat = {0};
-}
-
 void free_system_data(ApplicationState* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
@@ -503,7 +497,6 @@ void free_system_data(ApplicationState* data) {
         md_script_eval_free(data->script.filt_eval);
         data->script.filt_eval = nullptr;
     }
-    clear_density_volume(data);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
@@ -2713,4 +2706,45 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             break;
         }
     }
+}
+
+void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags) {
+    ASSERT(state);
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state->allocator.frame);
+    defer { md_vm_arena_temp_end(temp); };
+
+    md_script_vis_ctx_t ctx = {
+        .ir   = state->script.eval_ir,
+        .mol  = &state->mold.sys,
+        .traj = state->mold.sys.trajectory,
+    };
+
+    if (md_script_vis_eval_payload(&state->script.vis, payload, subidx, &ctx, flags)) {
+        if (!md_bitfield_empty(&state->script.vis.atom_mask)) {
+            md_bitfield_copy(&state->selection.highlight_mask, &state->script.vis.atom_mask);
+        }
+    }
+}
+
+void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags) {
+    ASSERT(state);
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state->allocator.frame);
+    defer { md_vm_arena_temp_end(temp); };
+
+    md_script_vis_ctx_t ctx = {
+        .ir   = state->script.eval_ir,
+        .mol  = &state->mold.sys,
+        .traj = state->mold.sys.trajectory,
+    };
+
+    if (md_script_vis_eval_string(&state->script.vis, str, &ctx, flags)) {
+        if (!md_bitfield_empty(&state->script.vis.atom_mask)) {
+            md_bitfield_copy(&state->selection.highlight_mask, &state->script.vis.atom_mask);
+        }
+    }
+}
+
+void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx) {
+    state->hovered_display_property_label = label;
+    state->hovered_display_property_pop_idx = population_idx;
 }
