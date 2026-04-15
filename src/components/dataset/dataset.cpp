@@ -796,6 +796,6 @@ struct Dataset : viamd::EventHandler {
     }
 };
 
-static Dataset dataset_instance;
+static Dataset instance;
 
 }  // namespace dataset

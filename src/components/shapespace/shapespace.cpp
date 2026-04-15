@@ -94,7 +94,7 @@ struct Shapespace : viamd::EventHandler {
                 draw_window();
                 break;
             case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("ShapeSpace", &show_window);
+                ImGui::Checkbox("Shapespace", &show_window);
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
