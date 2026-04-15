@@ -68,6 +68,8 @@
 constexpr PickingSourceID PickingSource_Nto = HASH_STR_LIT64("Picking Source Nto");
 constexpr PickingSourceID PickingSource_Orb = HASH_STR_LIT64("Picking Source Orb");
 
+constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking Domain Critical Points");
+
 // Broadening min max values
 static const double gamma_min = 0.1;
 static const double gamma_max = 1.0;
@@ -335,6 +337,7 @@ struct VeloxChem : viamd::EventHandler {
         md_topo_extremum_graph_t simp_graph = { 0 };
         Volume density_vol = {0};
         md_grid_t grid = {0};
+        PickingRange picking_range = {};
     } critical_points;
 
     struct Opt {
@@ -598,9 +601,13 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
                 break;
-            case viamd::EventType_ViamdRenderTransparent: {
+            case viamd::EventType_ViamdRenderOpaque: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
 				const ApplicationState& state = *(ApplicationState*)e.payload;
+
+                md_allocator_i* temp_arena = state.allocator.frame;
+                md_vm_arena_temp_t temp_scope = md_vm_arena_temp_begin(temp_arena);
+                defer { md_vm_arena_temp_end(temp_scope); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
 
@@ -608,40 +615,9 @@ struct VeloxChem : viamd::EventHandler {
                     // Render topology as points if available
 				    immediate::set_model_view_matrix(state.view.param.matrix.curr.view);
 				    immediate::set_proj_matrix(state.view.param.matrix.curr.proj);
+                    immediate::set_picking_base_idx(critical_points.picking_range.beg);
 
                     glDisable(GL_DEPTH_TEST);
-
-					uint32_t maxima_offset = (uint32_t)md_topo_offset_maxima(&critical_points.simp_graph);
-					uint32_t maxima_count  = critical_points.simp_graph.num_maxima;
-                    for (size_t i = maxima_offset; i < maxima_offset + maxima_count; ++i) {
-                        vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
-                        pos *= BOHR_TO_ANGSTROM;
-                        immediate::draw_point(pos, immediate::COLOR_RED);
-                    }
-
-					uint32_t splits_offset = (uint32_t)md_topo_offset_split_saddles(&critical_points.simp_graph);
-					uint32_t splits_count = critical_points.simp_graph.num_split_saddles;
-                    for (size_t i = splits_offset; i < splits_offset + splits_count; ++i) {
-                        vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
-                        pos *= BOHR_TO_ANGSTROM;
-                        immediate::draw_point(pos, immediate::COLOR_GREEN);
-					}
-
-					uint32_t minima_offset = (uint32_t)md_topo_offset_minima(&critical_points.simp_graph);
-					uint32_t minima_count = critical_points.simp_graph.num_minima;
-                    for (size_t i = minima_offset; i < minima_offset + minima_count; ++i) {
-                        vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
-                        pos *= BOHR_TO_ANGSTROM;
-						immediate::draw_point(pos, immediate::COLOR_BLUE);
-					}
-
-					uint32_t join_saddles_offset = (uint32_t)md_topo_offset_join_saddles(&critical_points.simp_graph);
-					uint32_t join_saddles_count = critical_points.simp_graph.num_join_saddles;
-                    for (size_t i = join_saddles_offset; i < join_saddles_offset + join_saddles_count; ++i) {
-                        vec3_t pos = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
-                        pos *= BOHR_TO_ANGSTROM;
-                        immediate::draw_point(pos, immediate::COLOR_CYAN);
-					}
 
                     for (size_t i = 0; i < critical_points.simp_graph.num_edges; ++i) {
 						uint32_t i0 = critical_points.simp_graph.edges[i].from;
@@ -657,11 +633,62 @@ struct VeloxChem : viamd::EventHandler {
 						immediate::draw_line(p0, p1, immediate::COLOR_BLACK);
                     }
 
+                    /*
+                        MD_TOPO_UNDEFINED = 0,
+                        MD_TOPO_MAXIMUM = 1,
+                        MD_TOPO_SPLIT_SADDLE = 2,
+                        MD_TOPO_MINIMUM = 3,
+                        MD_TOPO_JOIN_SADDLE = 4,
+                    */
+                    const uint32_t type_colors[5] = {
+                        immediate::COLOR_BLACK, // unknown
+                        immediate::COLOR_RED,   // maximum
+                        immediate::COLOR_GREEN, // split saddle
+                        immediate::COLOR_BLUE,  // minimum
+                        immediate::COLOR_CYAN   // join saddle
+                    };
+
+                    size_t num_verts = critical_points.simp_graph.num_vertices;
+                    immediate::Vertex* vertices = md_vm_arena_push_array(temp_arena, immediate::Vertex, num_verts);
+                    for (size_t i = 0; i < num_verts; ++i) {
+                        md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, i);
+                        vertices[i].coord = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
+                        vertices[i].coord *= BOHR_TO_ANGSTROM;
+                        vertices[i].color = type_colors[type];
+                        vertices[i].picking_idx = (uint32_t)i;
+                    }
+
+                    // Sort on view Z to improve picking, since we cannot use depth testing
+                    const mat4_t view = state.view.param.matrix.curr.view;
+                    std::sort(vertices, vertices + num_verts, [&view](const immediate::Vertex& a, const immediate::Vertex& b) {
+                        float za = view[2][0] * a.coord.x + view[2][1] * a.coord.y + view[2][2] * a.coord.z + view[2][3];
+                        float zb = view[2][0] * b.coord.x + view[2][1] * b.coord.y + view[2][2] * b.coord.z + view[2][3];
+                        return za > zb;
+                    });
+
+                    immediate::draw_points_v(vertices, num_verts);
+
                     immediate::render();
                 }
 
                 //ApplicationState& state = *(ApplicationState*)e.payload;
                 //draw_orb_volume(state);
+                break;
+            }
+            case viamd::EventType_ViamdPickingTooltipTextRequest: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
+                PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)e.payload;
+                if (req) {
+                    if (req->hit.domain == PickingDomain_CriticalPoints) {
+                        uint32_t cp_idx = req->hit.local_idx;
+                        if (cp_idx < critical_points.simp_graph.num_vertices) {
+                            md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
+                            const char* str = md_topo_critical_point_type_str[type];
+                            float value = critical_points.simp_graph.vertices[cp_idx].value;
+                            md_strb_fmt(&req->sb, "Type: %s\nValue: %.5f", str, value);
+                        }
+                    }
+                }
                 break;
             }
 #if 0
@@ -979,6 +1006,15 @@ struct VeloxChem : viamd::EventHandler {
                     data.output_written = true;
                 }
                 break;
+            }
+            case viamd::EventType_ViamdPickingRangeReserve: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_PickingSpace);
+                PickingSpace* space = (PickingSpace*)e.payload;
+                if (critical_points.enabled) {
+                    size_t num_cp = md_topo_total_critical_points(&critical_points.simp_graph);
+                    picking_range_reserve(&critical_points.picking_range, space, PickingDomain_CriticalPoints, num_cp);
+                    break;
+                }
             }
             default:
                 break;
