@@ -6349,7 +6349,7 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
 }
 
 static void fill_gbuffer(ApplicationState* data) {
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+    const GLenum draw_buffers_opaque[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
         GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
     glEnable(GL_CULL_FACE);
@@ -6360,7 +6360,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
     // Enable all draw buffers
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.fbo);
-    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
@@ -6417,7 +6417,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
     // DRAW REPRESENTATIONS
     PUSH_GPU_SECTION("Draw Opaque")
-    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
     draw_representations_opaque(data);
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, data);
     POP_GPU_SECTION()
@@ -6517,7 +6517,10 @@ static void fill_gbuffer(ApplicationState* data) {
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glColorMask(1, 1, 1, 1);
-    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+
+
+    const GLenum draw_buffers_transparent[] = {GL_COLOR_ATTACHMENT_TRANSPARENCY, GL_NONE, GL_NONE, GL_COLOR_ATTACHMENT_PICKING };
+    glDrawBuffers(ARRAY_SIZE(draw_buffers_transparent), draw_buffers_transparent);
 
     PUSH_GPU_SECTION("Draw Transparent")
     draw_representations_transparent(data);

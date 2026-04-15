@@ -318,7 +318,7 @@ struct VeloxChem : viamd::EventHandler {
     int lumo_idx[2] = {};
 
     AABB aabb = {};
-    OABB oabb  = {};
+    OABB oabb = {};
 
     // If this is not NULL, then it means the qm data represented in the vlx object is a subset of the actual system
     // This array then maps the local qm indices into system-wide atom indices.
@@ -338,6 +338,9 @@ struct VeloxChem : viamd::EventHandler {
         Volume density_vol = {0};
         md_grid_t grid = {0};
         PickingRange picking_range = {};
+
+        md_bitfield_t selection_mask = {};
+        md_bitfield_t highlight_mask = {};
     } critical_points;
 
     struct Opt {
@@ -650,11 +653,19 @@ struct VeloxChem : viamd::EventHandler {
 
                     size_t num_verts = critical_points.simp_graph.num_vertices;
                     immediate::Vertex* vertices = md_vm_arena_push_array(temp_arena, immediate::Vertex, num_verts);
+
+                    const vec4_t highlight = state.selection.color.highlight.visible;
                     for (size_t i = 0; i < num_verts; ++i) {
                         md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, i);
+                        vec4_t color = vec4_from_u32(type_colors[type]);
+                        if (md_bitfield_test_bit(&critical_points.highlight_mask, i)) {
+                            // Modify color by emulating a on top layer blend with the highlight color
+                            color = vec4_lerp(color, highlight, 0.5f);
+                        }
+
                         vertices[i].coord = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
                         vertices[i].coord *= BOHR_TO_ANGSTROM;
-                        vertices[i].color = type_colors[type];
+                        vertices[i].color = u32_from_vec4(color);
                         vertices[i].picking_idx = (uint32_t)i;
                     }
 
@@ -675,18 +686,27 @@ struct VeloxChem : viamd::EventHandler {
                 //draw_orb_volume(state);
                 break;
             }
+            case viamd::EventType_ViamdPickingHit: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_PickingHit);
+                ASSERT(e.payload);
+                PickingHit* hit = (PickingHit*)e.payload;
+                md_bitfield_clear(&critical_points.highlight_mask);
+                if (hit->domain == PickingDomain_CriticalPoints) {
+                    md_bitfield_set_bit(&critical_points.highlight_mask, hit->local_idx);
+                }
+                break;
+            }
             case viamd::EventType_ViamdPickingTooltipTextRequest: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
+                ASSERT(e.payload);
                 PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)e.payload;
-                if (req) {
-                    if (req->hit.domain == PickingDomain_CriticalPoints) {
-                        uint32_t cp_idx = req->hit.local_idx;
-                        if (cp_idx < critical_points.simp_graph.num_vertices) {
-                            md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
-                            const char* str = md_topo_critical_point_type_str[type];
-                            float value = critical_points.simp_graph.vertices[cp_idx].value;
-                            md_strb_fmt(&req->sb, "Type: %s\nValue: %.5f", str, value);
-                        }
+                if (req->hit.domain == PickingDomain_CriticalPoints) {
+                    uint32_t cp_idx = req->hit.local_idx;
+                    if (cp_idx < critical_points.simp_graph.num_vertices) {
+                        md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
+                        const char* str = md_topo_critical_point_type_str[type];
+                        float value = critical_points.simp_graph.vertices[cp_idx].value;
+                        md_strb_fmt(&req->sb, "Type: %s\nValue: %.5f", str, value);
                     }
                 }
                 break;
@@ -1217,6 +1237,10 @@ struct VeloxChem : viamd::EventHandler {
 
                     // Export
                     export_state.mo.idx = homo_idx[0];
+
+                    // CriPoAl
+                    md_bitfield_init(&critical_points.selection_mask, arena);
+                    md_bitfield_init(&critical_points.highlight_mask, arena);
                 }
                 else {
                     MD_LOG_INFO("Failed to load VeloxChem data");
@@ -3147,24 +3171,117 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::Text("\tNumber of Split Saddles: %zu", graph.num_split_saddles);
                     ImGui::Text("\tNumber of Minima:        %zu", graph.num_minima);
                     ImGui::Text("\tNumber of Join Saddles:  %zu", graph.num_join_saddles);
-
                     if (ImGui::Button("Print Critical Points Info")) {
-                        size_t tpos = md_temp_get_pos();
-                        defer{ md_temp_set_pos_back(tpos); };
-                        md_array(int) vertex_types = md_array_create(int, critical_points.simp_graph.num_vertices, md_get_temp_allocator());
-                        md_topo_extract_vertex_types(vertex_types, md_array_size(vertex_types), &critical_points.simp_graph);
-                        for (size_t i = 0; i < critical_points.simp_graph.num_vertices; ++i) {
-                            const md_topo_vert_t& v = critical_points.simp_graph.vertices[i];
-							const char* type_cstr = "Unknown";
-                            switch (vertex_types[i]) {
-                            case MD_TOPO_MAXIMUM:      type_cstr = "Maximum";       break;
-                            case MD_TOPO_SPLIT_SADDLE: type_cstr = "Split Saddle";  break;
-                            case MD_TOPO_MINIMUM:      type_cstr = "Minimum";       break;
-                            case MD_TOPO_JOIN_SADDLE:  type_cstr = "Join Saddle";   break;
-                            }
+                        for (size_t i = 0; i < graph.num_vertices; ++i) {
+                            const md_topo_vert_t& v = graph.vertices[i];
+                            const md_topo_critical_point_type_t type = md_topo_vertex_type(&graph, i);
+                            const char* type_cstr = md_topo_critical_point_type_str[type];
                             printf("Vertex %zu: Type=%s, Value=%.6f, Pos=(%.4f, %.4f, %.4f)\n", i, type_cstr, v.value, v.x, v.y, v.z);
                         }
                     }
+
+                    if (graph.num_vertices > 0) {
+                        md_allocator_i* temp_arena = state.allocator.frame;
+                        md_vm_arena_temp_t temp_scope = md_vm_arena_temp_begin(temp_arena);
+                        defer{ md_vm_arena_temp_end(temp_scope); };
+
+                        md_array(int) vertex_types = md_array_create(int, graph.num_vertices, temp_arena);
+                        md_topo_extract_vertex_types(vertex_types, md_array_size(vertex_types), &graph);
+
+                        enum CriticalPointColumn {
+                            CriticalPointColumn_X,
+                            CriticalPointColumn_Y,
+                            CriticalPointColumn_Z,
+                            CriticalPointColumn_Type,
+                            CriticalPointColumn_Value,
+                        };
+
+                        md_array(uint32_t) row_indices = md_array_create(uint32_t, graph.num_vertices, temp_arena);
+                        for (uint32_t i = 0; i < graph.num_vertices; ++i) {
+                            row_indices[i] = i;
+                        }
+
+                        if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+                            if (sort_specs->SpecsCount > 0) {
+                                auto compare_rows = [&graph, &vertex_types, sort_specs](uint32_t lhs_idx, uint32_t rhs_idx) {
+                                    const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
+                                    const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
+
+                                    for (int spec_idx = 0; spec_idx < sort_specs->SpecsCount; ++spec_idx) {
+                                        const ImGuiTableColumnSortSpecs& spec = sort_specs->Specs[spec_idx];
+                                        int cmp = 0;
+                                        switch ((CriticalPointColumn)spec.ColumnUserID) {
+                                        case CriticalPointColumn_X:
+                                            cmp = (lhs.x < rhs.x) ? -1 : (lhs.x > rhs.x ? 1 : 0);
+                                            break;
+                                        case CriticalPointColumn_Y:
+                                            cmp = (lhs.y < rhs.y) ? -1 : (lhs.y > rhs.y ? 1 : 0);
+                                            break;
+                                        case CriticalPointColumn_Z:
+                                            cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
+                                            break;
+                                        case CriticalPointColumn_Type:
+                                            cmp = (vertex_types[lhs_idx] < vertex_types[rhs_idx]) ? -1 : (vertex_types[lhs_idx] > vertex_types[rhs_idx] ? 1 : 0);
+                                            break;
+                                        case CriticalPointColumn_Value:
+                                            cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
+                                            break;
+                                        default:
+                                            break;
+                                        }
+
+                                        if (cmp != 0) {
+                                            return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
+                                        }
+                                    }
+
+                                    return lhs_idx < rhs_idx;
+                                };
+
+                                std::sort(row_indices, row_indices + md_array_size(row_indices), compare_rows);
+                                sort_specs->SpecsDirty = false;
+                            }
+                        }
+
+                        static const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg |
+                                                                   ImGuiTableFlags_Borders |
+                                                                   ImGuiTableFlags_ScrollY |
+                                                                   ImGuiTableFlags_Sortable |
+                                                                   ImGuiTableFlags_SortMulti |
+                                                                   ImGuiTableFlags_SizingStretchProp;
+
+                        if (ImGui::BeginTable("Critical Points Table", 5, table_flags, ImVec2(0, 250.0f))) {
+                            ImGui::TableSetupColumn("X",     ImGuiTableColumnFlags_DefaultSort, 0.0f, CriticalPointColumn_X);
+                            ImGui::TableSetupColumn("Y",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Y);
+                            ImGui::TableSetupColumn("Z",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Z);
+                            ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Type);
+                            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Value);
+                            ImGui::TableSetupScrollFreeze(0, 1);
+                            ImGui::TableHeadersRow();
+
+                            for (size_t row = 0; row < md_array_size(row_indices); ++row) {
+                                const uint32_t idx = row_indices[row];
+                                const md_topo_vert_t& v = graph.vertices[idx];
+                                const int type = vertex_types[idx];
+
+                                ImGui::TableNextRow();
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%.6f", v.x);
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%.6f", v.y);
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%.6f", v.z);
+                                ImGui::TableNextColumn();
+                                ImGui::TextUnformatted(md_topo_critical_point_type_str[type]);
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%.6f", v.value);
+                            }
+
+                            ImGui::EndTable();
+                        }
+                    }
+
+
                 }
 
                 ImGui::TreePop();

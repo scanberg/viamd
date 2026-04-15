@@ -2100,7 +2100,7 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 
     if (desc.input_textures.transparency) {
         PUSH_GPU_SECTION("Add Transparency")
-            glEnable(GL_BLEND);
+        glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         blit_texture(desc.input_textures.transparency);
         glDisable(GL_BLEND);
