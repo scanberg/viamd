@@ -2024,7 +2024,7 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
     mat4_store((float*)M, transform);
 }
 
-bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count) {
+bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count) {
     ASSERT(space);
 
     if (count > 0 && space->num_ranges < ARRAY_SIZE(space->ranges)) {
@@ -2687,8 +2687,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 			PickingSpace* space = (PickingSpace*)event.payload;
             size_t num_atoms = state->mold.sys.atom.count;
             size_t num_bonds = state->mold.sys.bond.count;
-            picking_reserve_range(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
-            picking_reserve_range(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
+            picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
+            picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
             break;
         }
         case viamd::EventType_ViamdPickingHit: {

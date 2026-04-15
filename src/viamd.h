@@ -1249,7 +1249,7 @@ const PickingSpace* picking_handler_find_space(const PickingHandler& handler, ui
 // Reserves a range within the picking space for a specific domain (atoms, bonds, etc).
 // Returns true if the range was successfully reserved, false if there was not enough space. If successful, out_range will be filled with the reserved range.
 // out_range is optional and can be null if the caller does not need the details of the reserved range (e.g. just needs to know if the reservation was successful or not).
-bool picking_reserve_range(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count);
+bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count);
 
 void picking_surface_init(PickingSurface* surface, PickingSourceID source);
 void picking_surface_free(PickingSurface* surface);
