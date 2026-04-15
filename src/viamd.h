@@ -64,6 +64,15 @@
 
 #define INVALID_PICKING_IDX (~0U)
 
+constexpr ImGuiKey KEY_PLAY_PAUSE               = ImGuiKey_Space;
+constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME       = ImGuiKey_LeftArrow;
+constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME       = ImGuiKey_RightArrow;
+constexpr ImGuiKey KEY_RECOMPILE_SHADERS        = ImGuiKey_F5;
+constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW        = ImGuiKey_F11;
+constexpr ImGuiKey KEY_SCRIPT_EVALUATE          = ImGuiKey_Enter;
+constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
+constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F1;
+
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
 constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
 
@@ -847,79 +856,6 @@ struct ApplicationState {
         bool show_window = false;
     } distributions;
 
-    struct {
-        bool show_window = false;
-        bool enabled = false;
-
-        struct {
-            bool enabled = true;
-            struct {
-                uint32_t id = 0;
-                float alpha_scale = 1.f;
-                int colormap = DEFAULT_COLORMAP;
-                bool dirty = true;
-                float min_val = 0.0f;
-                float max_val = 1.0f;
-            } tf;
-        } dvr;
-
-        struct {
-            bool enabled = false;
-            float values[8] = {};
-            vec4_t colors[8] = {};
-            size_t count = 0;
-        } iso;
-
-        struct {
-            uint32_t id = 0;
-            bool dirty = false;
-            int  dim[3] = {0};
-            float max_value = 1.f;
-        } volume_texture;
-
-        GBuffer fbo = {0};
-
-        struct {
-            vec3_t min = {0, 0, 0};
-            vec3_t max = {1, 1, 1};
-        } clip_volume;
-
-        struct {
-            bool enabled = true;
-            bool checkerboard = true;
-            int  colormap_mode = 2;
-        } legend;
-
-        vec3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
-        float resolution_scale = 2.0f;
-
-        vec4_t clip_volume_color = {1,0,0,1};
-        vec4_t bounding_box_color = {0,0,0,1};
-
-        bool show_bounding_box = true;
-        bool show_reference_structures = true;
-        bool show_reference_ensemble = false;
-        bool show_density_volume = false;
-        bool show_coordinate_system_widget = true;
-
-        bool dirty_rep = false;
-        bool dirty_vol = false;
-
-        struct {
-            RepresentationType type = RepresentationType::BallAndStick;
-            ColorMapping colormap = ColorMapping::Type;
-            float param[4] = {1,1,1,1};
-            vec4_t color = {1,1,1,1};
-        } rep;
-
-        md_array(md_gl_rep_t) gl_reps = nullptr;
-        md_array(mat4_t) rep_model_mats = nullptr;
-        mat4_t model_mat = {0};
-
-        Camera camera = {};
-		ViewTransform target = {};
-    } density_volume;
-
     // --- VISUALS ---
     struct {
         struct {
@@ -1367,3 +1303,8 @@ void file_queue_process(ApplicationState* state);
 
 // view
 void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera, bool smooth_transition);
+
+// Script visualization
+void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0);
+void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0);
+void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);
