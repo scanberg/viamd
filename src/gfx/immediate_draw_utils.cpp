@@ -19,6 +19,7 @@ struct DrawCommand {
     uint32_t count = 0;
     int32_t view_matrix_idx = -1;
     int32_t proj_matrix_idx = -1;
+    uint32_t picking_base_idx = 0;
     GLenum primitive_type;
 };
 
@@ -41,9 +42,11 @@ static GLint uniform_loc_mvp_matrix = -1;
 static GLint uniform_loc_normal_matrix = -1;
 static GLint uniform_loc_uv_scale = -1;
 static GLint uniform_loc_point_size = -1;
+static GLint uniform_loc_picking_base_idx = -1;
 
 static int32_t curr_view_matrix_idx = -1;
 static int32_t curr_proj_matrix_idx = -1;
+static uint32_t curr_picking_base_idx = 0;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -53,16 +56,24 @@ uniform mat4 u_mvp_matrix;
 //uniform mat3 u_normal_matrix;
 //uniform vec2 u_uv_scale = vec2(1,1);
 uniform float u_point_size = 1.f;
+uniform uint  u_picking_base_idx = 0u;
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec4 in_color;
+layout(location = 2) in uint in_picking_idx;
 
 out vec4 color;
+flat out uint picking_idx;
 
 void main() {
 	gl_Position = u_mvp_matrix * vec4(in_position, 1);
     gl_PointSize = max(u_point_size, 200.f / gl_Position.w);
 	color = in_color;
+    if (in_picking_idx == 0xFFFFFFFFu) {
+        picking_idx = 0xFFFFFFFFu;
+    } else {
+        picking_idx = in_picking_idx + u_picking_base_idx;
+    }
 }
 )";
 
@@ -71,18 +82,31 @@ static const char* f_shader_src = R"(
 #extension GL_ARB_explicit_attrib_location : enable
 
 in vec4 color;
+flat in uint picking_idx;
 
 layout(location = 0) out vec4 out_color_alpha;
 layout(location = 1) out vec4 out_normal;
+layout(location = 2) out vec2 out_velocity;
+layout(location = 3) out vec4 out_picking_idx;
 
 vec4 encode_normal (vec3 n) {
     float p = sqrt(n.z*8+8);
     return vec4(n.xy/p + 0.5,0,0);
 }
 
+vec4 encode_u32(uint index) {
+    return vec4(
+        (index & 0x000000FFU) >> 0U,
+        (index & 0x0000FF00U) >> 8U,
+        (index & 0x00FF0000U) >> 16U,
+        (index & 0xFF000000U) >> 24U) / 255.0;
+}
+
 void main() {
 	out_color_alpha = color;
 	out_normal = encode_normal(vec3(0,0,1));
+    out_velocity = vec2(0,0);
+    out_picking_idx = encode_u32(picking_idx);
 }
 )";
 
@@ -94,7 +118,8 @@ static inline void append_draw_command(size_t count, GLenum primitive_type) {
     if (last_cmd &&
         last_cmd->primitive_type == primitive_type &&
         last_cmd->view_matrix_idx == curr_view_matrix_idx &&
-        last_cmd->proj_matrix_idx == curr_proj_matrix_idx) {
+        last_cmd->proj_matrix_idx == curr_proj_matrix_idx &&
+        last_cmd->picking_base_idx == curr_picking_base_idx) {
         size_t capacity = max_size - last_cmd->count;
 
         if (count < capacity) {
@@ -110,7 +135,7 @@ static inline void append_draw_command(size_t count, GLenum primitive_type) {
     ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
 
     const size_t offset = md_array_size(indices) - count;
-    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, curr_view_matrix_idx, curr_proj_matrix_idx, primitive_type};
+    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, curr_view_matrix_idx, curr_proj_matrix_idx, curr_picking_base_idx, primitive_type};
     
     md_array_push(commands, cmd, arena);
 }
@@ -150,6 +175,7 @@ void initialize() {
     uniform_loc_normal_matrix = glGetUniformLocation(program, "u_normal_matrix");
     uniform_loc_uv_scale = glGetUniformLocation(program, "u_uv_scale");
     uniform_loc_point_size = glGetUniformLocation(program, "u_point_size");
+    uniform_loc_picking_base_idx = glGetUniformLocation(program, "u_picking_base_idx");
 
     glGenBuffers(1, &vbo);
     glGenBuffers(1, &ibo);
@@ -163,6 +189,9 @@ void initialize() {
 
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (const GLvoid*)offsetof(Vertex, color));
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribIPointer(2, 1, GL_UNSIGNED_INT, sizeof(Vertex), (const GLvoid*)offsetof(Vertex, picking_idx));
 
     glBindVertexArray(0);
 
@@ -201,6 +230,10 @@ void set_model_view_matrix(const mat4_t& model_view_matrix) {
 void set_proj_matrix(const mat4_t& proj_matrix) {
     curr_proj_matrix_idx = (int)md_array_size(matrix_stack);
     md_array_push(matrix_stack, proj_matrix, arena);
+}
+
+void set_picking_base_idx(uint32_t base_idx) {
+    curr_picking_base_idx = base_idx;
 }
 
 void render() {
@@ -251,7 +284,8 @@ void render() {
             mat4_t mvp_matrix = mat4_mul(matrix_stack[cmd.proj_matrix_idx], matrix_stack[cmd.view_matrix_idx]);
             glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
         }
-        // @TODO: Enable textures to be bound...
+
+        glUniform1ui(uniform_loc_picking_base_idx, cmd.picking_base_idx);
 
         glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
     }
@@ -274,10 +308,10 @@ void render() {
 }
 
 // PRIMITIVES
-void draw_point(vec3_t pos, uint32_t color) {
+void draw_point(vec3_t pos, uint32_t color, uint32_t picking_idx) {
     const Index idx = (Index)md_array_size(vertices);
 
-    Vertex v = {pos, color};
+    Vertex v = {pos, color, picking_idx};
     md_array_push(vertices, v,  arena);
     md_array_push(indices, idx, arena);
 
@@ -295,6 +329,7 @@ void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         vec4_t c = convert_color(verts[i].color) * color_mult;
         v[i].coord = verts[i].coord;
         v[i].color = convert_color(c);
+        v[i].picking_idx = verts[i].picking_idx;
     }
 
     for (Index i = idx; i < idx + count; i += 1) {
@@ -308,8 +343,8 @@ void draw_line(vec3_t from, vec3_t to, uint32_t color) {
     const Index idx = (Index)md_array_size(vertices);
 
     Vertex v[2] = {
-        {from, color},
-        {to,   color}
+        {from, color, 0xFFFFFFFF},
+        {to,   color, 0xFFFFFFFF}
     };
     md_array_push_array(vertices, v, 2, arena);
 
@@ -337,6 +372,7 @@ void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         vec4_t c = convert_color(verts[i].color) * color_mult;
         v[i].coord = verts[i].coord;
         v[i].color = convert_color(c);
+        v[i].picking_idx = 0xFFFFFFFFu;
     }
 
     for (Index i = idx; i < idx + count; i += 2) {
@@ -347,14 +383,14 @@ void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult) {
     append_draw_command(count, GL_LINES);
 }
 
-void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color) {
+void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color, uint32_t picking_idx) {
     const Index idx = (Index)md_array_size(vertices);
     //const vec3_t normal = vec3_normalize(vec3_cross(vec3_sub(p1, p0), vec3_sub(p2, p0)));
 
     Vertex v[3] = {
-        {p0, color},
-        {p1, color},
-        {p2, color},
+        {p0, color, picking_idx},
+        {p1, color, picking_idx},
+        {p2, color, picking_idx},
     };
     md_array_push_array(vertices, v, 3, arena);
 
@@ -383,6 +419,7 @@ void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         vec4_t c = convert_color(verts[i].color) * color_mult;
         v[i].coord = verts[i].coord;
         v[i].color = convert_color(c);
+        v[i].picking_idx = verts[i].picking_idx;
     }
 
     for (Index i = idx; i < idx + count; i += 3) {
@@ -394,15 +431,15 @@ void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult) {
     append_draw_command(count, GL_TRIANGLES);
 }
 
-void draw_plane(vec3_t center, vec3_t u, vec3_t v, uint32_t color) {
+void draw_plane(vec3_t center, vec3_t u, vec3_t v, uint32_t color, uint32_t picking_idx) {
     const Index idx = (Index)md_array_size(vertices);
     //const vec3_t normal = vec3_normalize(vec3_cross(u, v));
 
     Vertex vert[4] = {
-        {vec3_sub(center, vec3_add(u, v)), color},
-        {vec3_sub(center, vec3_sub(u, v)), color},
-        {vec3_add(center, vec3_add(u, v)), color},
-        {vec3_add(center, vec3_sub(u, v)), color},
+        {vec3_sub(center, vec3_add(u, v)), color, picking_idx},
+        {vec3_sub(center, vec3_sub(u, v)), color, picking_idx},
+        {vec3_add(center, vec3_add(u, v)), color, picking_idx},
+        {vec3_add(center, vec3_sub(u, v)), color, picking_idx},
     };
     md_array_push_array(vertices, vert, 4, arena);
 

@@ -4,19 +4,6 @@
 
 namespace immediate {
 
-struct Vertex {
-    vec3_t   coord;
-    uint32_t color;
-};
-
-void initialize();
-void shutdown();
-
-void set_model_view_matrix(const mat4_t& model_view_mat);
-void set_proj_matrix(const mat4_t& proj_mat);
-
-void render();
-
 constexpr uint32_t COLOR_WHITE = 0xffffffff;
 constexpr uint32_t COLOR_BLACK = 0xff000000;
 constexpr uint32_t COLOR_RED = 0xff0000ff;
@@ -29,11 +16,27 @@ constexpr uint32_t COLOR_GRAY = 0xff888888;
 
 constexpr uint32_t DEFAULT_COLOR = COLOR_BLACK;
 
-// 3D Primitives
-void draw_point(vec3_t pos, uint32_t color = DEFAULT_COLOR);
-void draw_line(vec3_t from, vec3_t to, uint32_t color = DEFAULT_COLOR);
-void draw_triangle(vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color = DEFAULT_COLOR);
+struct Vertex {
+    vec3_t   coord;
+    uint32_t color;
+    uint32_t picking_idx = 0xFFFFFFFF;
+};
 
+void initialize();
+void shutdown();
+
+void set_model_view_matrix(const mat4_t& model_view_mat);
+void set_proj_matrix(const mat4_t& proj_mat);
+void set_picking_base_idx(uint32_t base_idx);
+
+void render();
+
+// 3D Primitives
+void draw_point(vec3_t pos, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
+void draw_line(vec3_t from, vec3_t to, uint32_t color = DEFAULT_COLOR);
+void draw_triangle(vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
+
+// Batch
 void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
 void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
 void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
@@ -48,7 +51,7 @@ void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult = {1
 
         Draws a plane given a center point and two support vectors.
 */
-void draw_plane(vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color = DEFAULT_COLOR);
+void draw_plane(vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
 void draw_plane_wireframe(vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color = DEFAULT_COLOR, int segments_u = 4, int segments_v = 4);
 
 // Composits
