@@ -604,7 +604,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
                 break;
-            case viamd::EventType_ViamdRenderOpaque: {
+            case viamd::EventType_ViamdRenderTransparent: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
 				const ApplicationState& state = *(ApplicationState*)e.payload;
 
@@ -690,9 +690,12 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_PickingHit);
                 ASSERT(e.payload);
                 PickingHit* hit = (PickingHit*)e.payload;
-                md_bitfield_clear(&critical_points.highlight_mask);
-                if (hit->domain == PickingDomain_CriticalPoints) {
-                    md_bitfield_set_bit(&critical_points.highlight_mask, hit->local_idx);
+
+                if (critical_points.enabled && md_bitfield_validate(&critical_points.highlight_mask)) {
+                    md_bitfield_clear(&critical_points.highlight_mask);
+                    if (hit->domain == PickingDomain_CriticalPoints) {
+                        md_bitfield_set_bit(&critical_points.highlight_mask, hit->local_idx);
+                    }
                 }
                 break;
             }
@@ -3189,58 +3192,18 @@ struct VeloxChem : viamd::EventHandler {
                         md_topo_extract_vertex_types(vertex_types, md_array_size(vertex_types), &graph);
 
                         enum CriticalPointColumn {
+                            CriticalPointColumn_Idx,
                             CriticalPointColumn_X,
                             CriticalPointColumn_Y,
                             CriticalPointColumn_Z,
                             CriticalPointColumn_Type,
                             CriticalPointColumn_Value,
+							CriticalPointColumn_Count
                         };
 
-                        md_array(uint32_t) row_indices = md_array_create(uint32_t, graph.num_vertices, temp_arena);
+                        uint32_t* row_indices = md_vm_arena_push_array(temp_arena, uint32_t, graph.num_vertices);
                         for (uint32_t i = 0; i < graph.num_vertices; ++i) {
                             row_indices[i] = i;
-                        }
-
-                        if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
-                            if (sort_specs->SpecsCount > 0) {
-                                auto compare_rows = [&graph, &vertex_types, sort_specs](uint32_t lhs_idx, uint32_t rhs_idx) {
-                                    const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
-                                    const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
-
-                                    for (int spec_idx = 0; spec_idx < sort_specs->SpecsCount; ++spec_idx) {
-                                        const ImGuiTableColumnSortSpecs& spec = sort_specs->Specs[spec_idx];
-                                        int cmp = 0;
-                                        switch ((CriticalPointColumn)spec.ColumnUserID) {
-                                        case CriticalPointColumn_X:
-                                            cmp = (lhs.x < rhs.x) ? -1 : (lhs.x > rhs.x ? 1 : 0);
-                                            break;
-                                        case CriticalPointColumn_Y:
-                                            cmp = (lhs.y < rhs.y) ? -1 : (lhs.y > rhs.y ? 1 : 0);
-                                            break;
-                                        case CriticalPointColumn_Z:
-                                            cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
-                                            break;
-                                        case CriticalPointColumn_Type:
-                                            cmp = (vertex_types[lhs_idx] < vertex_types[rhs_idx]) ? -1 : (vertex_types[lhs_idx] > vertex_types[rhs_idx] ? 1 : 0);
-                                            break;
-                                        case CriticalPointColumn_Value:
-                                            cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
-                                            break;
-                                        default:
-                                            break;
-                                        }
-
-                                        if (cmp != 0) {
-                                            return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
-                                        }
-                                    }
-
-                                    return lhs_idx < rhs_idx;
-                                };
-
-                                std::sort(row_indices, row_indices + md_array_size(row_indices), compare_rows);
-                                sort_specs->SpecsDirty = false;
-                            }
                         }
 
                         static const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg |
@@ -3250,10 +3213,13 @@ struct VeloxChem : viamd::EventHandler {
                                                                    ImGuiTableFlags_SortMulti |
                                                                    ImGuiTableFlags_SizingStretchProp;
 
-                        bool item_hovered = false;
+                        if (ImGui::IsWindowHovered()) {
+                            md_bitfield_clear(&critical_points.highlight_mask);
+                        }
 
-                        if (ImGui::BeginTable("Critical Points Table", 5, table_flags, ImVec2(0, 250.0f))) {
-                            ImGui::TableSetupColumn("X",     ImGuiTableColumnFlags_DefaultSort, 0.0f, CriticalPointColumn_X);
+                        if (ImGui::BeginTable("Critical Points Table", CriticalPointColumn_Count, table_flags)) {
+							ImGui::TableSetupColumn("Idx",   ImGuiTableColumnFlags_DefaultSort, 0.0f, CriticalPointColumn_Idx);
+                            ImGui::TableSetupColumn("X",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_X);
                             ImGui::TableSetupColumn("Y",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Y);
                             ImGui::TableSetupColumn("Z",     ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Z);
                             ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_None,        0.0f, CriticalPointColumn_Type);
@@ -3261,10 +3227,59 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::TableSetupScrollFreeze(0, 1);
                             ImGui::TableHeadersRow();
 
+                            if (ImGui::IsWindowHovered()) {
+                                md_bitfield_clear(&critical_points.highlight_mask);
+                            }
+
+                            if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+                                if (sort_specs->SpecsCount > 0) {
+                                    auto compare_rows = [&graph, &vertex_types, sort_specs](uint32_t lhs_idx, uint32_t rhs_idx) {
+                                        const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
+                                        const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
+
+                                        for (int spec_idx = 0; spec_idx < sort_specs->SpecsCount; ++spec_idx) {
+                                            const ImGuiTableColumnSortSpecs& spec = sort_specs->Specs[spec_idx];
+                                            int cmp = 0;
+                                            switch ((CriticalPointColumn)spec.ColumnUserID) {
+                                            case CriticalPointColumn_Idx:
+                                                cmp = (lhs_idx < rhs_idx) ? -1 : (lhs_idx > rhs_idx ? 1 : 0);
+												break;
+                                            case CriticalPointColumn_X:
+                                                cmp = (lhs.x < rhs.x) ? -1 : (lhs.x > rhs.x ? 1 : 0);
+                                                break;
+                                            case CriticalPointColumn_Y:
+                                                cmp = (lhs.y < rhs.y) ? -1 : (lhs.y > rhs.y ? 1 : 0);
+                                                break;
+                                            case CriticalPointColumn_Z:
+                                                cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
+                                                break;
+                                            case CriticalPointColumn_Type:
+                                                cmp = (vertex_types[lhs_idx] < vertex_types[rhs_idx]) ? -1 : (vertex_types[lhs_idx] > vertex_types[rhs_idx] ? 1 : 0);
+                                                break;
+                                            case CriticalPointColumn_Value:
+                                                cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
+                                                break;
+                                            default:
+                                                break;
+                                            }
+
+                                            if (cmp != 0) {
+                                                return spec.SortDirection == ImGuiSortDirection_Ascending ? cmp < 0 : cmp > 0;
+                                            }
+                                        }
+
+                                        return lhs_idx < rhs_idx;
+                                    };
+
+                                    std::sort(row_indices, row_indices + graph.num_vertices, compare_rows);
+                                    sort_specs->SpecsDirty = false;
+                                }
+                            }
+
                             ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
                             ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
 
-                            for (size_t row = 0; row < md_array_size(row_indices); ++row) {
+                            for (size_t row = 0; row < graph.num_vertices; ++row) {
                                 const uint32_t idx = row_indices[row];
                                 const md_topo_vert_t& v = graph.vertices[idx];
                                 const int type = vertex_types[idx];
@@ -3283,15 +3298,14 @@ struct VeloxChem : viamd::EventHandler {
                                     ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                                 }
 
-                                char label[64];
-                                snprintf(label, sizeof(label), "%.6f##cp_%u", v.x, idx);
-                                ImGui::Selectable(label, is_sel || is_hov, selectable_flags);
+                                char lbl[16];
+                                snprintf(lbl, sizeof(lbl), "%u", idx);
+                                ImGui::Selectable(lbl, is_sel || is_hov, selectable_flags);
 
                                 if (ImGui::TableGetHoveredRow() == (int)(row + 1)) {
                                     if (idx < graph.num_vertices) {
                                         md_bitfield_clear(&critical_points.highlight_mask);
                                         md_bitfield_set_bit(&critical_points.highlight_mask, idx);
-                                        item_hovered = true;
 
                                         //Selection
                                         if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
@@ -3303,8 +3317,9 @@ struct VeloxChem : viamd::EventHandler {
                                         }
                                     }
                                 }
-
                                 ImGui::PopStyleColor(1);
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%.6f", v.x);
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%.6f", v.y);
                                 ImGui::TableNextColumn();
@@ -3313,10 +3328,6 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::TextUnformatted(md_topo_critical_point_type_str[type]);
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%.6f", v.value);                                
-                            }
-
-                            if (!item_hovered && ImGui::IsWindowHovered()) {
-                                md_bitfield_clear(&critical_points.highlight_mask);
                             }
 
                             ImGui::PopStyleColor(2);

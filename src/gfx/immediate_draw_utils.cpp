@@ -246,9 +246,6 @@ void render() {
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, md_array_bytes(indices), indices, GL_STREAM_DRAW);
 
     glEnable(GL_PROGRAM_POINT_SIZE);
-    //glEnable(GL_BLEND);
-    //glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
     glUseProgram(program);
     glLineWidth(1.f);
 
@@ -294,7 +291,6 @@ void render() {
     glUseProgram(0);
 
     glDisable(GL_PROGRAM_POINT_SIZE);
-    //glDisable(GL_BLEND);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);

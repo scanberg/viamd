@@ -486,9 +486,8 @@ void render_volume(const RenderDesc& desc) {
     for (int i = 0; i < 8; ++i) {
         glGetIntegerv(GL_DRAW_BUFFER0 + i, &bound_draw_buffer[i]);
         // @NOTE: Assume that its tightly packed and if we stumple upon a zero draw buffer index, we enterpret that as the 'end'
-        if (bound_draw_buffer[i] == GL_NONE) {
-            bound_draw_buffer_count = i;
-            break;
+        if (bound_draw_buffer[i] != GL_NONE) {
+            bound_draw_buffer_count = i + 1;
         }
     }
 
@@ -685,10 +684,11 @@ void render_volume(const RenderDesc& desc) {
     if (desc.render_target.color) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
         glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
-        if (bound_draw_buffer_count == 1)
-            glDrawBuffer(bound_draw_buffer[0]);
-        else
+        if (bound_draw_buffer_count > 0) {
             glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
+        } else {
+            glDrawBuffer(GL_NONE);
+        }
     }
 
 }
