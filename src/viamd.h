@@ -1169,7 +1169,7 @@ static inline size_t single_selection_sequence_count(const SingleSelectionSequen
 }
 
 static inline uint64_t generate_fingerprint() {
-    return (uint64_t)md_time_current();
+    return (uint64_t)md_time_now();
 }
 
 void draw_info_window(const ApplicationState& state, uint32_t picking_idx);

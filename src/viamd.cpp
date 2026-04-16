@@ -410,9 +410,9 @@ void init_trajectory_data(ApplicationState* data) {
                 }
             });
 
-            uint64_t time = (uint64_t)md_time_current();
+            uint64_t time = (uint64_t)md_time_now();
             task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time]() {
-                uint64_t t1 = (uint64_t)md_time_current();
+                uint64_t t1 = (uint64_t)md_time_now();
                 double elapsed = md_time_as_seconds(t1 - t0);
                 MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
                 data->trajectory_data.backbone_angles.fingerprint     = generate_fingerprint();
