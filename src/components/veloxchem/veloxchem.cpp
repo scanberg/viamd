@@ -65,24 +65,14 @@
 // Complement to veloxchem green (magentaish)
 #define F32_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
 
-constexpr PickingSourceID PickingSource_Nto = HASH_STR_LIT64("Picking Source Nto");
-constexpr PickingSourceID PickingSource_Orb = HASH_STR_LIT64("Picking Source Orb");
+constexpr uint64_t interaction_surface_nto = HASH_STR_LIT64("interaction surface nto");
+constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface orb");
 
 constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking Domain Critical Points");
 
 // Broadening min max values
 static const double gamma_min = 0.1;
 static const double gamma_max = 1.0;
-
-inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
-inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
-inline const ImVec2& vec_cast(const vec2_t& v) { return *(const ImVec2*)(&v); }
-inline const vec2_t& vec_cast(const ImVec2& v) { return *(const vec2_t*)(&v); }
-
-inline ImVec4& vec_cast(vec4_t& v) { return *(ImVec4*)(&v); }
-inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
-inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
-inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
 // This is the internal storage order of volumes and textures related to NTOs
 enum NTO {
@@ -320,9 +310,13 @@ struct VeloxChem : viamd::EventHandler {
     AABB aabb = {};
     OABB oabb = {};
 
+    // This is the default view which is used as a reset view target
+    ViewTransform default_view = {};
+
     // If this is not NULL, then it means the qm data represented in the vlx object is a subset of the actual system
     // This array then maps the local qm indices into system-wide atom indices.
     const int32_t* qm_to_atom_idx = nullptr;
+    md_bitfield_t* qm_mask = nullptr;
 
     struct Summary {
         bool show_window = false;
@@ -644,23 +638,27 @@ struct VeloxChem : viamd::EventHandler {
                         MD_TOPO_JOIN_SADDLE = 4,
                     */
                     const uint32_t type_colors[5] = {
-                        immediate::COLOR_BLACK, // unknown
-                        immediate::COLOR_RED,   // maximum
-                        immediate::COLOR_GREEN, // split saddle
-                        immediate::COLOR_BLUE,  // minimum
-                        immediate::COLOR_CYAN   // join saddle
+                        0xFF7A7A7A, // unknown
+                        0xFF5B5BD9, // maximum
+                        0xFF5FAE5C, // split saddle
+                        0xFFD49A4C, // minimum
+                        0xFFB9A14A  // join saddle
                     };
 
                     size_t num_verts = critical_points.simp_graph.num_vertices;
                     immediate::Vertex* vertices = md_vm_arena_push_array(temp_arena, immediate::Vertex, num_verts);
 
-                    const vec4_t highlight = state.selection.color.highlight.visible;
+                    vec4_t selection_color = state.selection.color.selection.visible;
+                    vec4_t highlight_color = state.selection.color.highlight.visible;
+                    highlight_color.w += sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE;
                     for (size_t i = 0; i < num_verts; ++i) {
                         md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, i);
                         vec4_t color = vec4_from_u32(type_colors[type]);
-                        if (md_bitfield_test_bit(&critical_points.highlight_mask, i)) {
+                        bool selected = md_bitfield_test_bit(&critical_points.selection_mask, i);
+                        bool highlighted = md_bitfield_test_bit(&critical_points.highlight_mask, i);
+                        if (highlighted) {
                             // Modify color by emulating a on top layer blend with the highlight color
-                            color = vec4_lerp(color, highlight, 0.5f);
+                            color = vec4_lerp(color, highlight_color, highlight_color.w);
                         }
 
                         vertices[i].coord = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
@@ -670,11 +668,11 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     // Sort on view Z to improve picking, since we cannot use depth testing
-                    const mat4_t view = state.view.param.matrix.curr.view;
+                    const mat4_t view = camera_world_to_view_matrix(state.view.camera);
                     std::sort(vertices, vertices + num_verts, [&view](const immediate::Vertex& a, const immediate::Vertex& b) {
-                        float za = view[2][0] * a.coord.x + view[2][1] * a.coord.y + view[2][2] * a.coord.z + view[2][3];
-                        float zb = view[2][0] * b.coord.x + view[2][1] * b.coord.y + view[2][2] * b.coord.z + view[2][3];
-                        return za > zb;
+                        float za = view[0][2] * a.coord.x + view[1][2] * a.coord.y + view[2][2] * a.coord.z + view[3][2];
+                        float zb = view[0][2] * b.coord.x + view[1][2] * b.coord.y + view[2][2] * b.coord.z + view[3][2];
+                        return za < zb;
                     });
 
                     immediate::draw_points_v(vertices, num_verts);
@@ -686,15 +684,78 @@ struct VeloxChem : viamd::EventHandler {
                 //draw_orb_volume(state);
                 break;
             }
-            case viamd::EventType_ViamdPickingHit: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_PickingHit);
+            case viamd::EventType_ViamdInteractionSurface: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_InteractionSurfaceEvent);
                 ASSERT(e.payload);
-                PickingHit* hit = (PickingHit*)e.payload;
+                InteractionSurfaceEvent* event = (InteractionSurfaceEvent*)e.payload;
+                if (event->surface_id == interaction_surface_main) {
+                    if (critical_points.enabled && md_bitfield_validate(&critical_points.highlight_mask)) {
+                        switch (event->kind) {
+                        case InteractionSurfaceEventKind::Hover: [[fallthrough]];
+                        case InteractionSurfaceEventKind::Click: {
+                            md_bitfield_clear(&critical_points.highlight_mask);
+                            if (event->hit.domain == PickingDomain_CriticalPoints) {
+                                md_bitfield_set_bit(&critical_points.highlight_mask, event->hit.local_idx);
+                            }
+                            if (event->selection_mode == InteractionSelectionMode::Append) {
+                                md_bitfield_or_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
+                            } else if (event->selection_mode == InteractionSelectionMode::Remove) {
+                                if (event->hit.domain == PickingDomain_CriticalPoints) {
+                                    md_bitfield_andnot_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
+                                } else if (event->hit.domain == 0) {
+                                    md_bitfield_clear(&critical_points.selection_mask);
+                                }
+                            }
+                            break;
+                        }
+                        case InteractionSurfaceEventKind::RegionSelect: {
+                            md_bitfield_clear(&critical_points.highlight_mask);
+                            if (event->selection_mode == InteractionSelectionMode::Remove) {
+                                // When removing, only consider currently selected items as candidates for region selection
+                                md_bitfield_iter_t it = md_bitfield_iter_create(&critical_points.selection_mask);
+                                while (md_bitfield_iter_next(&it)) {
+                                    size_t idx = md_bitfield_iter_idx(&it);
+                                    vec3_t xyz = { critical_points.simp_graph.vertices[idx].x,
+                                                   critical_points.simp_graph.vertices[idx].y,
+                                                   critical_points.simp_graph.vertices[idx].z };
+                                    xyz *= BOHR_TO_ANGSTROM;
+                                    vec2_t coord = world_to_surface_project(xyz, event->world_to_clip, event->surface_size);
+                                    if (coord.x >= event->region_min.x && coord.x <= event->region_max.x &&
+                                        coord.y >= event->region_min.y && coord.y <= event->region_max.y)
+                                    {
+                                        md_bitfield_set_bit(&critical_points.highlight_mask, idx);
+                                    }
+                                }
+                            } else {
+                                for (size_t i = 0; i < critical_points.simp_graph.num_vertices; ++i) {
+                                    vec3_t xyz = { critical_points.simp_graph.vertices[i].x,
+                                                   critical_points.simp_graph.vertices[i].y,
+                                                   critical_points.simp_graph.vertices[i].z };
+                                    xyz *= BOHR_TO_ANGSTROM;
+                                    vec2_t coord = world_to_surface_project(xyz, event->world_to_clip, event->surface_size);
+                                    if (coord.x >= event->region_min.x && coord.x <= event->region_max.x &&
+                                        coord.y >= event->region_min.y && coord.y <= event->region_max.y)
+                                    {
+                                        md_bitfield_set_bit(&critical_points.highlight_mask, i);
+                                    }
+                                }
+                            }
 
-                if (critical_points.enabled && md_bitfield_validate(&critical_points.highlight_mask)) {
-                    md_bitfield_clear(&critical_points.highlight_mask);
-                    if (hit->domain == PickingDomain_CriticalPoints) {
-                        md_bitfield_set_bit(&critical_points.highlight_mask, hit->local_idx);
+                            if (event->region_phase == InteractionSurfaceEventPhase::Commit) {
+                                // Merge highlight into selection
+                                if (event->selection_mode == InteractionSelectionMode::Append) {
+                                    md_bitfield_or_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
+                                }
+                                else if (event->selection_mode == InteractionSelectionMode::Remove) {
+                                    md_bitfield_andnot_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
+                                }
+                                md_bitfield_clear(&critical_points.highlight_mask);
+                            }
+                            break;
+                        }
+                        default:
+                            break;
+                        }
                     }
                 }
                 break;
@@ -1133,6 +1194,9 @@ struct VeloxChem : viamd::EventHandler {
                         md_bitfield_t mask = md_bitfield_create(state.allocator.frame);
                         md_bitfield_set_indices_u32(&mask, (uint32_t*)qm_to_atom_idx, md_vlx_number_of_atoms(vlx));
                         filter_colors(colors, num_colors, &mask);
+                        reset_view(&default_view, state.mold.sys, &mask);
+                    } else {
+                        reset_view(&default_view, state.mold.sys);
                     }
 
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
@@ -1146,7 +1210,7 @@ struct VeloxChem : viamd::EventHandler {
                     if (num_excited_states > 0) {
                         //nto.show_window = true;
 
-                        picking_surface_init(&nto.picking_surface, PickingSource_Nto);
+                        picking_surface_init(&nto.picking_surface, interaction_surface_nto);
                         nto.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, nto.distance_scale);
                         nto.camera = nto.target;
 
@@ -1232,7 +1296,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     // ORB
                     //orb.show_window = true;
-                    picking_surface_init(&orb.picking_surface, PickingSource_Orb);
+                    picking_surface_init(&orb.picking_surface, interaction_surface_orb);
                     orb.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, orb.distance_scale);
                     orb.camera = orb.target;
                     orb.mo_idx = homo_idx[0];
@@ -5399,16 +5463,14 @@ struct VeloxChem : viamd::EventHandler {
             mat4_t inv_view_mat = camera_view_to_world_matrix(nto.camera);
             mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(nto.camera, aspect_ratio);
 
-            mat4_t MVP      = proj_mat * view_mat;
-            mat4_t inv_MVP  = inv_view_mat * inv_proj_mat;
+            mat4_t world_to_clip = proj_mat * view_mat;
+            mat4_t clip_to_world = inv_view_mat * inv_proj_mat;
 
             if (rsp.selected != -1) {
                 const int nto_target_idx[2] = {
                     NTO_Attachment,
                     NTO_Detachment,
                 };
-
-                PickingHit hit = {};
 
                 // Draw Attachment / Detachment
                 for (int i = 0; i < 2; ++i) {
@@ -5429,47 +5491,61 @@ struct VeloxChem : viamd::EventHandler {
                         draw_list->PopClipRect();
                         ImGui::PopID();
                     };
-                    
-                    InteractionSurfaceArgs args = {
-                        .size = {rect.GetWidth(), rect.GetHeight()},
-                        .sys = &state.mold.sys,
-                        .candidate_mask = NULL, // @TODO: CHANGE THIS INTO QM SUBSET IF QM/MM SYSTEM IS PRESENT
-                        .highlight_mask = &state.selection.highlight_mask,
-                        .selection_mask = &state.selection.selection_mask,
-                        .single_selection_sequence = &state.selection.single_selection_sequence,
-                        .selection_granularity = SelectionGranularity::Atom,
-						.camera = &nto.camera,
-						.mvp = &MVP,
-						.inv_mvp = &inv_MVP,
-						.view_target = &nto.target,
-                        .trackball_param = &state.view.trackball_param,
-                        .picking_surface = &nto.picking_surface,
-						.picking_handler = &state.picking_handler,
-                        .expected_source = PickingSource_Nto,
-						.fbo = nto.gbuf.fbo,
-                        .width = nto.gbuf.width,
-						.height = nto.gbuf.height,
+
+                    InteractionSurfaceState surface = interaction_surface(interaction_surface_nto, vec_cast(rect.GetSize()));
+
+                    InteractionSurfaceViewTransformArgs view_args = {
+                        .camera = nto.camera,
+                        .trackball_param = state.view.trackball_param,
+                        .reset_transform = default_view,
                     };
+                    interaction_surface_view_transform_apply(&nto.target, surface, view_args);
 
-                    interaction_surface(&hit, args);
-                    if (ImGui::IsItemHovered()) viewport_hovered = true;
+                    if (surface.hovered) {
+                        InteractionSurfaceHitArgs hit_args = {
+                            .picking_surface = &nto.picking_surface,
+                            .picking_handler = state.picking_handler,
+                            .fbo = nto.gbuf.fbo,
+                            .width = nto.gbuf.width,
+                            .height = nto.gbuf.height,
+                            .clip_to_world = clip_to_world,
+                        };
 
-                    if (hit.raw_idx != INVALID_PICKING_IDX) {
-						viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
-                        draw_picking_tooltip_window(hit, state);
-                    }
-                    
-                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                        if (hit.depth < 1.0f) {
-                            const vec3_t forward = nto.camera.orientation * vec3_t{0, 0, 1};
-                            nto.target.position = hit.world_pos + forward * nto.target.distance;
+                        PickingHit hit = {};
+                        interaction_surface_hit_extract(&hit, surface, hit_args);
+
+                        InteractionSurfaceEvent event = {};
+                        interaction_surface_event_extract(&event, surface, hit);
+
+                        event.clip_to_world = clip_to_world;
+                        event.world_to_clip = world_to_clip;
+
+                        if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
+                            open_context_menu = true;
+                        } else if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
+                            const md_bitfield_t* candidate_mask = nullptr;
+                            if (event.selection_mode == InteractionSelectionMode::Remove) {
+                                // When removing, only consider currently selected atoms as candidates for region selection
+                                candidate_mask = &state.selection.selection_mask;
+                            }
+                            point_set_region_mask_compute(&state.selection.highlight_mask,
+                                state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, state.mold.sys.atom.count,
+                                candidate_mask, event.world_to_clip, event.region_min, event.region_max, event.surface_size);
+
+                            grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
+                            if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
+                                // Merge highlight into selection
+                                if (event.selection_mode == InteractionSelectionMode::Append) {
+                                    md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                                }
+                                else if (event.selection_mode == InteractionSelectionMode::Remove) {
+                                    md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                                }
+                                md_bitfield_clear(&state.selection.highlight_mask);
+                            }
                         } else {
-                            reset_view = true;
+                            viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
                         }
-                    }
-
-                    if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0)) {
-                        open_context_menu = true;
                     }
 
                     draw_list->ChannelsSetCurrent(0);
@@ -5497,8 +5573,8 @@ struct VeloxChem : viamd::EventHandler {
                         magn_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
                         elec_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
 
-                        auto proj_point = [MVP, win_sz, p0](vec3_t point) -> ImVec2 {
-                            const vec4_t p = mat4_mul_vec4(MVP, vec4_from_vec3(point, 1.0));
+                        auto proj_point = [world_to_clip, win_sz, p0](vec3_t point) -> ImVec2 {
+                            const vec4_t p = mat4_mul_vec4(world_to_clip, vec4_from_vec3(point, 1.0));
                             const ImVec2 c = {
                                 p0.x + ( p.x / p.w * 0.5f + 0.5f) * win_sz.x,
                                 p0.y + (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,

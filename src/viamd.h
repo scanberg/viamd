@@ -62,6 +62,9 @@
 #define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
 #define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
 
+#define HIGHLIGHT_PULSE_TIME_SCALE  5.0
+#define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
+
 #define INVALID_PICKING_IDX (~0U)
 
 constexpr ImGuiKey KEY_PLAY_PAUSE               = ImGuiKey_Space;
@@ -78,9 +81,12 @@ constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg
 
 typedef uint64_t PickingDomainID;
 typedef uint64_t PickingSourceID;
+typedef uint64_t InteractionSurfaceID;
 
 constexpr PickingDomainID PickingDomain_Atom = HASH_STR_LIT64("picking domain atom");
 constexpr PickingDomainID PickingDomain_Bond = HASH_STR_LIT64("picking domain bond");
+
+constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("main interaction main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
 enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Component, Instance };
@@ -600,8 +606,8 @@ struct PickingReadbackSlot {
     uint32_t viewport_height = 0;
     
     vec2_t surface_coord = {0};
-    vec2_t screen_coord = {0};
-    mat4_t inv_mvp = mat4_ident();
+    vec2_t screen_coord  = {0};
+    mat4_t clip_to_world = mat4_ident();
 };
 
 struct PickingSurface {
@@ -623,8 +629,7 @@ struct PickingHit {
     PickingSourceID source = 0;
     PickingDomainID domain = 0;
 
-    uint32_t frame_idx = 0;
-    uint32_t raw_idx = INVALID_PICKING_IDX;
+    uint32_t frame_idx = 0;    uint32_t raw_idx = INVALID_PICKING_IDX;
     uint32_t local_idx = 0;
 
     vec2_t surface_coord = {0};
@@ -639,33 +644,7 @@ struct PickingReadbackRequest {
     uint32_t height = 0;
     vec2_t surface_coord = {0};
     vec2_t screen_coord = {0};
-    mat4_t inv_mvp = mat4_ident();
-};
-
-struct InteractionSurfaceArgs {
-    vec2_t size = {0, 0};
-
-    const md_system_t* sys = nullptr;
-    const md_bitfield_t* candidate_mask = nullptr;
-
-    md_bitfield_t* highlight_mask = nullptr;
-    md_bitfield_t* selection_mask = nullptr;
-    SingleSelectionSequence* single_selection_sequence = nullptr;
-    SelectionGranularity selection_granularity = SelectionGranularity::Atom;
-
-    const Camera* camera = nullptr;
-    const mat4_t* mvp = nullptr;
-    const mat4_t* inv_mvp = nullptr;
-    ViewTransform* view_target = nullptr;
-    const TrackballControllerParam* trackball_param = nullptr;
-
-    PickingSurface* picking_surface = nullptr;
-    const PickingHandler* picking_handler = nullptr;
-    PickingSourceID expected_source = 0;
-
-    uint32_t fbo = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
+    mat4_t clip_to_world = mat4_ident();
 };
 
 struct ApplicationState {
@@ -743,6 +722,7 @@ struct ApplicationState {
 
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};
+        ViewTransform       default_view = {};
 
         bool                interpolate_system_state = false;
         uint32_t            dirty_gpu_buffers = 0;
@@ -1058,6 +1038,41 @@ struct PickingTooltipTextRequest {
     md_strb_t sb = {};
 };
 
+enum class InteractionSelectionMode {
+    None,
+    Append,
+    Remove,
+};
+
+struct InteractionSurfaceState {
+    InteractionSurfaceID surface_id = 0;
+    ImGuiID item_id = 0; // Internal ImGui ID for the *button* used to control interactions.
+
+    bool hovered = false;
+    bool active = false;
+    bool activated = false;
+    bool deactivated = false;
+
+    InteractionSelectionMode selection_mode = InteractionSelectionMode::None;
+
+    vec2_t mouse_local  = {};
+    vec2_t surface_size = {};
+
+    // Local coordinates
+    vec2_t region_min = {};
+    vec2_t region_max = {};
+};
+
+static inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
+static inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
+static inline const ImVec2& vec_cast(const vec2_t& v) { return *(const ImVec2*)(&v); }
+static inline const vec2_t& vec_cast(const ImVec2& v) { return *(const vec2_t*)(&v); }
+
+static inline ImVec4& vec_cast(vec4_t& v) { return *(ImVec4*)(&v); }
+static inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
+static inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
+static inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
+
 static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
     case SelectionOperator::Or:
@@ -1271,7 +1286,7 @@ bool picking_surface_submit_readback(
 bool picking_surface_poll_hit(
     PickingHit* out_hit,
     PickingSurface* surface,
-    const PickingHandler* handler
+    const PickingHandler& handler
 );
 
 // Convenience wrapper for the common frame loop path.
@@ -1283,12 +1298,91 @@ bool picking_surface_submit_readback_and_poll_hit(
     const PickingReadbackRequest& request
 );
 
-// Creates an invisible interactive surface, performs picking and applies the common
-// selection / highlight / camera interaction behavior for pickable canvases.
-// Returns the pressed state from the underlying InvisibleButton.
-bool interaction_surface(
-    PickingHit* out_hit,
-    const InteractionSurfaceArgs& args
+// Creates an invisible interactive surface which forms the basis for picking and interaction.
+InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_t& size);
+
+struct InteractionSurfaceHitArgs {
+    PickingSurface* picking_surface;
+    const PickingHandler& picking_handler;
+    uint32_t fbo;
+    uint32_t width;
+    uint32_t height;
+    const mat4_t& clip_to_world;
+};
+
+bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfaceState& state, const InteractionSurfaceHitArgs& args);
+
+struct InteractionSurfaceViewTransformArgs {
+    const Camera& camera;
+    const TrackballControllerParam& trackball_param = {};
+    const ViewTransform& reset_transform = {};
+};
+
+// Uses the interaction surface state (e.g. mouse position, region selection) to calculate a view transform based on the provided camera and trackball parameters.
+// Modifies the target view transform in place.
+// Reset transform supplied in args represents the *reset target* transform which is optionally applied when the user double clicks the surface.
+void interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args);
+
+enum class InteractionSurfaceEventKind {
+    None,
+    Hover,
+    Click,
+    ContextMenu,
+    RegionSelect,
+};
+
+enum class InteractionSurfaceEventPhase {
+    None,
+    Update,
+    Commit,
+};
+
+struct InteractionSurfaceEvent {
+    InteractionSurfaceID surface_id = 0;
+    ImGuiID item_id = 0;
+
+    InteractionSurfaceEventKind kind = InteractionSurfaceEventKind::Hover;
+    InteractionSelectionMode selection_mode = InteractionSelectionMode::None;
+    InteractionSurfaceEventPhase region_phase = InteractionSurfaceEventPhase::None;
+
+    vec2_t mouse_local = {};
+    vec2_t surface_size = {};
+    vec2_t region_min = {};
+    vec2_t region_max = {};
+
+    mat4_t clip_to_world = mat4_ident();
+    mat4_t world_to_clip = mat4_ident();
+
+    PickingHit hit = {};
+};
+
+void interaction_surface_event_extract(InteractionSurfaceEvent* out_event, const InteractionSurfaceState& state, const PickingHit& hit = {});
+
+// Helper function for projecting world coordinates to surface coordinates, used for interaction surfaces and picking.
+static inline vec2_t world_to_surface_project(
+    const vec3_t& world_coord,
+    const mat4_t& world_to_clip,
+    const vec2_t& surface_size
+) {
+    const vec4_t c = world_to_clip * vec4_set(world_coord.x, world_coord.y, world_coord.z, 1.0f);
+    vec2_t out_coord = {
+        ( c.x / c.w * 0.5f + 0.5f) * surface_size.x,
+        (-c.y / c.w * 0.5f + 0.5f) * surface_size.y,
+    };
+    return out_coord;
+}
+
+void point_set_region_mask_compute(
+    md_bitfield_t* mask,
+    const float x[],
+    const float y[],
+    const float z[],
+    size_t count,
+    const md_bitfield_t* candidate_mask,
+    const mat4_t& world_to_clip,
+    const vec2_t& region_min,
+    const vec2_t& region_max,
+    const vec2_t& surface_size
 );
 
 // File Queue
@@ -1302,7 +1396,7 @@ FileQueue::Entry file_queue_pop(FileQueue* queue);
 void file_queue_process(ApplicationState* state);
 
 // view
-void reset_view(ApplicationState* data, const md_bitfield_t* target, bool move_camera, bool smooth_transition);
+void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfield_t* mask = nullptr);
 
 // Script visualization
 void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0);

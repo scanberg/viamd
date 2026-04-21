@@ -29,7 +29,7 @@ enum : EventType {
 	EventType_ViamdTrajectoryInit			= HASH_STR_LIT("VIAMD Trajectory Initialize"),	// Called when a trajectory is initialized
 	EventType_ViamdTrajectoryFree			= HASH_STR_LIT("VIAMD Trajectory Free"),		// Called when a trajectory is freed
 
-	EventType_ViamdHoverMaskChanged			= HASH_STR_LIT("VIAMD Hover Mask Changed"),
+	EventType_ViamdHighlightMaskChanged		= HASH_STR_LIT("VIAMD Highlight Mask Changed"),
 	EventType_ViamdSelectionMaskChanged		= HASH_STR_LIT("VIAMD Selection Mask Changed"),
 	EventType_ViamdRepresentationChanged	= HASH_STR_LIT("VIAMD Representation Changed"),		// Called when representations have been modified
 
@@ -45,6 +45,9 @@ enum : EventType {
 	EventType_ViamdPickingRangeReserve				= HASH_STR_LIT("VIAMD Picking Range Reserve"),
 	EventType_ViamdPickingHit						= HASH_STR_LIT("VIAMD Picking Hit"),
 	EventType_ViamdPickingTooltipTextRequest		= HASH_STR_LIT("VIAMD Picking Tooltip Text Request"),
+
+	// InteractionSurface
+    EventType_ViamdInteractionSurface				= HASH_STR_LIT("VIAMD Interaction Surface"),
 };
 
 enum : EventPayloadType {
@@ -60,6 +63,7 @@ enum : EventPayloadType {
 	EventPayloadType_PickingHit					= HASH_STR_LIT("Payload Picking Hit"),
 	EventPayloadType_PickingTooltipTextRequest	= HASH_STR_LIT("Payload Picking Tooltip Text Request"),
     EventPayloadType_LoadData					= HASH_STR_LIT("Payload Load Data"),
+    EventPayloadType_InteractionSurfaceEvent    = HASH_STR_LIT("Payload Interaction Surface Event"),
 };
 
 }

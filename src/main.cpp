@@ -70,11 +70,6 @@
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
 #define VIS_FLAGS (MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY | MD_SCRIPT_VISUALIZE_TEXT)
 
-#define HIGHLIGHT_PULSE_TIME_SCALE  5.0
-#define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
-
-constexpr PickingSourceID picking_source_main = HASH_STR_LIT("main picking surface");
-
 // Global data for application
 static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
 static md_allocator_i* persistent_alloc = 0;
@@ -125,16 +120,6 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 )");
 
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
-
-inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
-inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
-inline const ImVec2& vec_cast(const vec2_t& v) { return *(const ImVec2*)(&v); }
-inline const vec2_t& vec_cast(const ImVec2& v) { return *(const vec2_t*)(&v); }
-
-inline ImVec4& vec_cast(vec4_t& v) { return *(ImVec4*)(&v); }
-inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
-inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
-inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
 enum MarkerType_{
     MarkerType_None,
@@ -469,7 +454,7 @@ int main(int argc, char** argv) {
 
     VIAMD_LOG_DEBUG("Initializing framebuffer...");
     init_gbuffer(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
-    picking_surface_init(&state.picking_surface, picking_source_main);
+    picking_surface_init(&state.picking_surface, interaction_surface_main);
 
     for (int i = 0; i < (int)ARRAY_SIZE(state.view.jitter.sequence); ++i) {
         state.view.jitter.sequence[i].x = md_halton(i + 1, 2);
@@ -590,67 +575,80 @@ int main(int argc, char** argv) {
         //ImGui::ShowDemoWindow();
 
         draw_coordinate_system_widget_window(&state.view.target, state.view.camera);
-        {
             
-            ImGui::BeginCanvas("Main interaction window", true);
-            ImVec2 view_size = ImGui::GetContentRegionAvail();
+        ImGui::BeginCanvas("Main interaction window", true);
+        ImVec2 view_size = ImGui::GetContentRegionAvail();
+        InteractionSurfaceState surface_state = interaction_surface(interaction_surface_main, vec_cast(view_size));
+        ImGui::EndCanvas();
 
-            const mat4_t mvp = state.view.param.matrix.curr.proj * state.view.param.matrix.curr.view;
-            const mat4_t inv_mvp = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
+        const mat4_t clip_to_world = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
+        const mat4_t world_to_clip = state.view.param.matrix.curr.proj * state.view.param.matrix.curr.view;
 
-            InteractionSurfaceArgs args = {
-                .size = {view_size.x, view_size.y},
+        ViewTransform reset_transform = state.mold.default_view;
+        PickingHit hit = {};
 
-                .sys = &state.mold.sys,
-                .candidate_mask = &state.representation.visibility_mask,
-
-                .highlight_mask = &state.selection.highlight_mask,
-                .selection_mask = &state.selection.selection_mask,
-                .single_selection_sequence = &state.selection.single_selection_sequence,
-                .selection_granularity = state.selection.granularity,
-
-                .camera = &state.view.camera,
-                .mvp = &mvp,
-                .inv_mvp = &inv_mvp,
-                .view_target = &state.view.target,
-                .trackball_param = &state.view.trackball_param,
-
+        if (surface_state.hovered) {
+            InteractionSurfaceHitArgs args = {
                 .picking_surface = &state.picking_surface,
-                .picking_handler = &state.picking_handler,
-                .expected_source = picking_source_main,
-
+                .picking_handler = state.picking_handler,
                 .fbo = state.gbuffer.fbo,
                 .width = state.gbuffer.width,
                 .height = state.gbuffer.height,
+                .clip_to_world = clip_to_world,
             };
 
-            PickingHit hit = {};
-            interaction_surface(&hit, args);
+            interaction_surface_hit_extract(&hit, surface_state, args);
 
-            if (hit.raw_idx != INVALID_PICKING_IDX) {
-				viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingHit, viamd::EventPayloadType_PickingHit, &hit);
-                draw_picking_tooltip_window(hit, state);
+            if (hit.depth < 1.0f) {
+                reset_transform.distance = state.view.target.distance;
+                reset_transform.orientation = state.view.camera.orientation;
+                reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);                    
             }
 
-            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                if (hit.depth < 1.0f) {
-                    const vec3_t forward = state.view.camera.orientation * vec3_t{0, 0, 1};
-                    state.view.target.position = hit.world_pos + forward * state.view.target.distance;
-                } else {
-                    reset_view(&state, NULL, true, true);
+            InteractionSurfaceEvent event = {};
+            interaction_surface_event_extract(&event, surface_state, hit);
+
+            event.clip_to_world = clip_to_world;
+            event.world_to_clip = world_to_clip;
+
+            if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
+                const md_bitfield_t* candidate_mask = &state.representation.visibility_mask;
+                if (event.selection_mode == InteractionSelectionMode::Remove) {
+                    // When removing, only consider currently selected atoms as candidates for region selection
+                    candidate_mask = &state.selection.selection_mask;
                 }
+                point_set_region_mask_compute(&state.selection.highlight_mask,
+                    state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, state.mold.sys.atom.count,
+                    candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
+
+                grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
+                if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
+                    // Merge highlight into selection
+                    if (event.selection_mode == InteractionSelectionMode::Append) {
+                        md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                    }
+                    else if (event.selection_mode == InteractionSelectionMode::Remove) {
+                        md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                    }
+                    md_bitfield_clear(&state.selection.highlight_mask);
+                }
+            } else if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
+                ImGui::OpenPopup("Context Popup");
             }
-
-            if ((ImGui::IsItemActive() || ImGui::IsItemHovered()) && !ImGui::IsKeyDown(ImGuiMod_Shift) &&
-                ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0, 0))
-            {
-				ImGui::OpenPopup("Context Popup");
-            }
-
-            draw_context_popup(&state, hit);
-
-            ImGui::EndCanvas();
+            
+            // Since this is the main interaction view, we still broadcast all kinds of events, even if we have handled some explicitly here.
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
         }
+
+        InteractionSurfaceViewTransformArgs view_args = {
+            .camera = state.view.camera,
+            .trackball_param = state.view.trackball_param,
+            .reset_transform = reset_transform,
+        };
+
+        interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
+
+        draw_context_popup(&state, hit);
 
         camera_animate(&state.view.camera, state.view.target, state.app.timing.delta_s);
         state.visuals.dof.focus_depth = state.view.camera.distance;
@@ -1051,7 +1049,7 @@ int main(int argc, char** argv) {
         }
 
         if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
-            reset_view(&state, &state.selection.highlight_mask, true, true);
+            reset_view(&state.view.target, state.mold.sys, &state.selection.highlight_mask);
         }
 
         bool do_screenshot = !str_empty(state.screenshot.path_to_file);
@@ -1079,8 +1077,8 @@ int main(int argc, char** argv) {
         uint64_t v_hash = state.representation.visibility_mask_hash;
         uint64_t h_hash = md_bitfield_hash64(&state.selection.highlight_mask, 0);
         uint64_t s_hash = md_bitfield_hash64(&state.selection.selection_mask, 0);
-        uint64_t f_hash = v_hash ^ h_hash ^ s_hash;
-
+        uint64_t f_hash = md_hash64_combine(v_hash, md_hash64_combine(h_hash, s_hash));
+        
         uint64_t r_hash = 0;
         for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
 			md_hash64(&state.representation.reps[i], sizeof(Representation), r_hash);
@@ -1095,7 +1093,7 @@ int main(int argc, char** argv) {
         if (h_hash != highlight_hash) {
             highlight_hash = h_hash;
             // enqueue the event here and do not broadcast (stall)
-            viamd::event_system_enqueue_event(viamd::EventType_ViamdHoverMaskChanged, viamd::EventPayloadType_ApplicationState, &state);
+            viamd::event_system_enqueue_event(viamd::EventType_ViamdHighlightMaskChanged, viamd::EventPayloadType_ApplicationState, &state);
         }
 
         if (s_hash != selection_hash) {
@@ -1571,7 +1569,7 @@ static void draw_main_menu(ApplicationState* data) {
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, WORKSPACE_FILE_EXTENSION)) {
                     load_workspace(data, str_from_cstr(path_buf));
-                    reset_view(data, &data->representation.visibility_mask, false, true);
+                    reset_view(&data->view.camera, data->mold.sys, &data->representation.visibility_mask);
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
@@ -1612,7 +1610,7 @@ static void draw_main_menu(ApplicationState* data) {
         */
         if (ImGui::BeginMenu("Visuals")) {
             if (ImGui::Button("Reset View")) {
-                reset_view(data, &data->representation.visibility_mask, true, true);
+                reset_view(&data->view.target, data->mold.sys, &data->representation.visibility_mask);
             }
             ImGui::Separator();
             ImGui::Checkbox("Vsync", &data->app.window.vsync);
@@ -2293,7 +2291,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                     create_default_representations(data);
                 }
                 data->animation = {};
-                reset_view(data, &data->representation.visibility_mask, true, true);
+                reset_view(&data->view.target, data->mold.sys, &data->representation.visibility_mask);
             }
         }
             [[fallthrough]];
