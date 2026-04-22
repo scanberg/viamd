@@ -1257,7 +1257,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         if (rep->filt_is_valid) {
             filter_colors(colors, num_atoms, &rep->atom_mask);
             state->representation.atom_visibility_mask_dirty = true;
-            md_gl_rep_set_color(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
+            md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
 
 #if EXPERIMENTAL_GFX_API
             md_gfx_rep_attr_t attributes = {};
@@ -2273,7 +2273,7 @@ bool picking_surface_submit_readback_and_poll_hit(
     return picking_surface_poll_hit(out_hit, surface, handler);
 }
 
-InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_t& size) {
+InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_t& size, InteractionSurfaceFlags flags) {
     InteractionSurfaceState state = {};
 
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -2284,8 +2284,8 @@ InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_
 
     state.surface_id = id;
 
-    static const ImGuiButtonFlags flags = ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap;
-    ImGui::InvisibleButton("interaction surface button", vec_cast(size), flags);
+    static const ImGuiButtonFlags btn_flags = ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap;
+    ImGui::InvisibleButton("interaction surface button", vec_cast(size), btn_flags);
     state.item_id = ImGui::GetItemID();
 
     state.hovered = ImGui::IsItemHovered();
@@ -2339,6 +2339,11 @@ InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_
                 state.region_max = vec_cast(sel_max);
             }
         }
+    }
+
+    if (flags & InteractionSurfaceFlags_NoRegionSelect) {
+        state.region_min = { 0, 0 };
+        state.region_max = { 0, 0 };
     }
 
     return state;

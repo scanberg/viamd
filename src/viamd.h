@@ -86,7 +86,7 @@ typedef uint64_t InteractionSurfaceID;
 constexpr PickingDomainID PickingDomain_Atom = HASH_STR_LIT64("picking domain atom");
 constexpr PickingDomainID PickingDomain_Bond = HASH_STR_LIT64("picking domain bond");
 
-constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("main interaction main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
+constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
 enum class PlaybackMode { Stopped, Playing };
 enum class SelectionGranularity { Atom, Component, Instance };
@@ -1298,8 +1298,13 @@ bool picking_surface_submit_readback_and_poll_hit(
     const PickingReadbackRequest& request
 );
 
+enum InteractionSurfaceFlags : uint32_t {
+    InteractionSurfaceFlags_None = 0,
+    InteractionSurfaceFlags_NoRegionSelect  = 1 << 0,
+};
+
 // Creates an invisible interactive surface which forms the basis for picking and interaction.
-InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_t& size);
+InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_t& size, InteractionSurfaceFlags flags = InteractionSurfaceFlags_None);
 
 struct InteractionSurfaceHitArgs {
     PickingSurface* picking_surface;

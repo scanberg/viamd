@@ -14,7 +14,7 @@
 #include <implot_internal.h>
 #include <implot_widgets.h>
 
-constexpr uint64_t PickingSource_DensityVolume = HASH_STR_LIT64("Density Volume");
+constexpr uint64_t interaction_surface_density_vol = HASH_STR_LIT64("interaction surface density volume");
 
 enum LegendColorMapMode_ {
     LegendColorMapMode_Opaque,
@@ -88,14 +88,23 @@ struct DensityVolume : viamd::EventHandler {
         vec4_t color = {1,1,1,1};
     } rep;
 
-    md_array(md_gl_rep_t) gl_reps = nullptr;
-    md_array(mat4_t) rep_model_mats = nullptr;
-    mat4_t model_mat = {0};
+    struct DensityVolumeRepresentation {
+        mat4_t model_mat = mat4_ident();
+        md_array(md_atom_idx_t) atom_indices = nullptr;
+        md_gl_rep_t gl_rep = {};
+        bool enabled = false;
+    };
 
-    GBuffer gbuf = {0};
+    md_array(DensityVolumeRepresentation) reps = nullptr;
+
+    // Base model matrix to position the volume correctly in the world.
+    mat4_t model_mat = mat4_ident();
+
+    GBuffer gbuf = {};
     PickingSurface picking_surface = {};
     Camera camera = {};
 	ViewTransform target = {};
+    ViewTransform default_view = {};
 
     DensityVolume() {
         viamd::event_system_register_handler(*this);
@@ -125,8 +134,12 @@ struct DensityVolume : viamd::EventHandler {
         const md_script_vis_payload_o* vis_payload = 0;
         uint64_t data_fingerprint = 0;
 
+        bool reset_view = false;
         static int64_t s_selected_property = 0;
         if (s_selected_property != selected_property) {
+            if (s_selected_property == -1) {
+                reset_view = true;
+            }
             s_selected_property = selected_property;
             dirty_vol = true;
             dirty_rep = true;
@@ -178,30 +191,17 @@ struct DensityVolume : viamd::EventHandler {
                 if (result) {
                     if (vis.sdf.extent) {
                         const float s = vis.sdf.extent;
-                        vec3_t min_aabb = { -s, -s, -s };
-                        vec3_t max_aabb = { s, s, s };
+                        vec3_t min_aabb = vec3_set1(-s);
+                        vec3_t max_aabb = vec3_set1( s);
                         model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
                         voxel_spacing = vec3_t{2*s / prop_data->dim[1], 2*s / prop_data->dim[2], 2*s / prop_data->dim[3]};
+                        default_view = compute_optimal_view(min_aabb, max_aabb);
+                        if (reset_view) {
+                            target = default_view;
+                            camera = default_view;
+                        }
                     }
                     num_reps = md_array_size(vis.sdf.structures);
-                }
-
-                // We need to limit this for performance reasons
-                num_reps = MIN(num_reps, 100);
-
-                const size_t old_size = md_array_size(gl_reps);
-                if (gl_reps) {
-                    // Only free superflous entries
-                    for (size_t i = num_reps; i < old_size; ++i) {
-                        md_gl_rep_destroy(gl_reps[i]);
-                    }
-                }
-                md_array_resize(gl_reps, num_reps, arena);
-                md_array_resize(rep_model_mats, num_reps, arena);
-
-                for (size_t i = old_size; i < num_reps; ++i) {
-                    // Only init new entries
-                    gl_reps[i] = md_gl_rep_create(state->mold.gl_mol);
                 }
 
                 const md_system_t& sys = state->mold.sys;
@@ -239,10 +239,32 @@ struct DensityVolume : viamd::EventHandler {
                     break;
                 }
 
+                // We need to limit this for performance reasons
+                num_reps = MIN(num_reps, 100);
+
+                const size_t old_size = md_array_size(reps);
+                if (reps) {
+                    // Only free superflous entries
+                    for (size_t i = num_reps; i < old_size; ++i) {
+                        md_gl_rep_destroy(reps[i].gl_rep);
+                        md_array_free(reps[i].atom_indices, arena);
+                    }
+                }
+                md_array_resize(reps, num_reps, arena);
+
+                for (size_t i = old_size; i < num_reps; ++i) {
+                    // Only init new entries
+                    reps[i].gl_rep = md_gl_rep_create(state->mold.gl_mol);
+                    reps[i].atom_indices = nullptr;
+                }
+
                 for (size_t i = 0; i < num_reps; ++i) {
                     filter_colors(colors, num_atoms, &vis.sdf.structures[i]);
-                    md_gl_rep_set_color(gl_reps[i], 0, (uint32_t)num_atoms, colors, 0);
-                    rep_model_mats[i] = vis.sdf.matrices[i];
+                    md_gl_rep_set_atom_colors(reps[i].gl_rep, 0, (uint32_t)num_atoms, colors, 0);
+                    reps[i].model_mat = vis.sdf.matrices[i];
+                    size_t popcount = md_bitfield_popcount(&vis.sdf.structures[i]);
+                    md_array_resize(reps[i].atom_indices, popcount, arena);
+                    md_bitfield_iter_extract_indices(reps[i].atom_indices, popcount, md_bitfield_iter_create(&vis.sdf.structures[i]));
                 }
             }
         }
@@ -271,7 +293,6 @@ struct DensityVolume : viamd::EventHandler {
         ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Density Volume", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
             const ImVec2 button_size = {160, 0};
-            bool volume_changed = false;
 
             if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
                 state->animation.mode = state->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
@@ -290,7 +311,6 @@ struct DensityVolume : viamd::EventHandler {
                         ImPlot::ItemIcon(dp.color); ImGui::SameLine();
                         if (ImGui::Selectable(dp.label, dp.show_in_volume)) {
                             selected_index = i;
-                            volume_changed = true;
                         }
                         if (ImGui::IsItemHovered()) {
                             script_visualize_payload(state, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
@@ -474,18 +494,91 @@ struct DensityVolume : viamd::EventHandler {
                 init_gbuffer(&gbuf, width, height);
             }
 
-            // @NOTE: We cannot use the *standard* interaction surface here
-            // Since we render a bunch of structures, each with its own model matrix
-            // This means that the picking logic needs to be aware of all those model matrices, which is a bit of a pain to implement in a robust way.
+            ViewTransform reset_transform = default_view;
 
-            // This will catch our interactions
-            ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
+            const float aspect_ratio = canvas_sz.x / canvas_sz.y;
+            const mat4_t world_to_view = camera_world_to_view_matrix(camera);
+            const mat4_t view_to_world = camera_view_to_world_matrix(camera);
+
+            const mat4_t view_to_clip  = camera_view_to_clip_matrix_persp(camera, aspect_ratio);
+            const mat4_t clip_to_view  = camera_clip_to_view_matrix_persp(camera, aspect_ratio);
+
+            const mat4_t world_to_clip = view_to_clip * world_to_view;
+            const mat4_t clip_to_world = view_to_world * clip_to_view;
+
+            const TrackballControllerParam trackball_param = {
+                .min_distance = 1.0,
+                .max_distance = 1000.0,
+            };
+
+            const InteractionSurfaceFlags surface_flags = InteractionSurfaceFlags_NoRegionSelect;
+            InteractionSurfaceState surface_state = interaction_surface(interaction_surface_density_vol, vec_cast(canvas_sz), surface_flags);
             const ImVec2 canvas_p0 = ImGui::GetItemRectMin();
             const ImVec2 canvas_p1 = ImGui::GetItemRectMax();
+            const ImRect canvas_rect = ImRect(canvas_p0, canvas_p1);
+
+            if (surface_state.hovered) {
+                InteractionSurfaceHitArgs args = {
+                    .picking_surface = &picking_surface,
+                    .picking_handler = state->picking_handler,
+                    .fbo = gbuf.fbo,
+                    .width = gbuf.width,
+                    .height = gbuf.height,
+                    .clip_to_world = clip_to_world,
+                };
+
+                PickingHit hit = {};
+                interaction_surface_hit_extract(&hit, surface_state, args);
+
+                if (hit.depth < 1.0f) {
+                    reset_transform.distance = target.distance;
+                    reset_transform.orientation = camera.orientation;
+                    reset_transform.position = hit.world_pos + camera.orientation * vec3_set(0, 0, target.distance);                    
+                }
+
+                InteractionSurfaceEvent event = {};
+                interaction_surface_event_extract(&event, surface_state, hit);
+
+                event.clip_to_world = clip_to_world;
+                event.world_to_clip = world_to_clip;
+
+                if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
+                    /*
+                    const md_bitfield_t* candidate_mask = &state.representation.visibility_mask;
+                    if (event.selection_mode == InteractionSelectionMode::Remove) {
+                        // When removing, only consider currently selected atoms as candidates for region selection
+                        candidate_mask = &state->selection.selection_mask;
+                    }
+                    point_set_region_mask_compute(&state->selection.highlight_mask,
+                        state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, state->mold.sys.atom.count,
+                        candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
+
+                    grow_mask_by_selection_granularity(&state->selection.highlight_mask, state->selection.granularity, state->mold.sys);
+                    if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
+                        // Merge highlight into selection
+                        if (event.selection_mode == InteractionSelectionMode::Append) {
+                            md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                        }
+                        else if (event.selection_mode == InteractionSelectionMode::Remove) {
+                            md_bitfield_andnot_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                        }
+                        md_bitfield_clear(&state->selection.highlight_mask);
+                    }
+                    */
+                } else {
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+                }
+            }
+
+            InteractionSurfaceViewTransformArgs view_args = {
+                .camera = camera,
+                .trackball_param = trackball_param,
+                .reset_transform = reset_transform,
+            };
+
+            interaction_surface_view_transform_apply(&target, surface_state, view_args);
 
             // Draw border and background color
-            ImGuiIO& io = ImGui::GetIO();
-
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddImage((ImTextureID)(intptr_t)gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
@@ -533,67 +626,12 @@ struct DensityVolume : viamd::EventHandler {
                 draw_list->AddRect(cmap_pos, cmap_pos + cmap_ext, IM_COL32(0, 0, 0, 255), 0.0f, 0, 0.1f);
             }
 
-            const bool is_hovered = ImGui::IsItemHovered();
-            const bool is_active = ImGui::IsItemActive();
-            const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
-            const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
-
-            bool reset_hard = false;
-            if (volume_changed) {
-                static bool first_time = true;
-                if (first_time) {
-                    reset_hard = true;
-                    first_time = false;
-                }
-            }
-            bool reset_view = reset_hard;
-            if (is_hovered) {
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    reset_view = true;
-                }
-            }
-
-            if (reset_view) {
-                vec3_t min_ext = vec3_from_vec4(model_mat * vec4_set(0,0,0,1));
-                vec3_t max_ext = vec3_from_vec4(model_mat * vec4_set(1,1,1,1));
-                target = compute_optimal_view(min_ext, max_ext);
-
-                if (reset_hard) {
-				    camera = target;
-                }
-            }
-
-            if (is_active || is_hovered) {
-                static const TrackballControllerParam param = {
-                    .min_distance = 1.0,
-                    .max_distance = 1000.0,
-                };
-
-                vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
-                vec2_t curr = {mouse_pos_in_canvas.x, mouse_pos_in_canvas.y};
-                vec2_t prev = curr - delta;
-                float  wheel_delta = io.MouseWheel;
-
-                TrackballControllerInput input = {
-                    .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
-                    .pan_button    = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
-                    .dolly_button  = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
-                    .dolly_delta   = is_hovered ? wheel_delta : 0.0f,
-                    .mouse_coord_prev = prev,
-                    .mouse_coord_curr = curr,
-                    .screen_size = {canvas_sz.x, canvas_sz.y},
-                    .fov_y = camera.fov_y,
-                };
-                camera_controller_trackball(&target, input, param);
-            }
-
             if (show_coordinate_system_widget) {
-                ImVec2 win_size = ImGui::GetWindowSize();
-                float  ext = MIN(win_size.x, win_size.y) * 0.2f;
+                float  ext = MIN(canvas_rect.GetWidth(), canvas_rect.GetHeight()) * 0.2f;
                 float  pad = 0.1f * ext;
 			    ImVec2 size = { ext, ext };
 
-			    ImGui::SetCursorScreenPos(ImVec2(pad, win_size.y - ext - pad));
+			    ImGui::SetCursorScreenPos(ImVec2(canvas_p0.x + pad, canvas_p1.y - ext - pad));
 
                 quat_t out_orientation = target.orientation;
                 if (ImGui::CoordinateSystemWidget(&out_orientation, camera.orientation, size)) {
@@ -602,10 +640,6 @@ struct DensityVolume : viamd::EventHandler {
                     target.position = camera_position_from_look_at(look_at, target.orientation, target.distance);
                 }
             }
-
-            mat4_t view_mat = camera_world_to_view_matrix(camera);
-            mat4_t proj_mat = camera_view_to_clip_matrix_persp(camera, (float)canvas_sz.x / (float)canvas_sz.y);
-            mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(camera, (float)canvas_sz.x / (float)canvas_sz.y);
 
             PUSH_GPU_SECTION("RENDER DENSITY VOLUME");
             clear_gbuffer(&gbuf);
@@ -634,7 +668,7 @@ struct DensityVolume : viamd::EventHandler {
                 }
             }
 
-            size_t num_reps = md_array_size(gl_reps);
+            size_t num_reps = md_array_size(reps);
             if (selected_property > -1 && show_reference_structures && num_reps > 0) {
                 if (!show_reference_ensemble) {
                     num_reps = 1;
@@ -652,8 +686,8 @@ struct DensityVolume : viamd::EventHandler {
                 }
 
                 for (size_t i = 0; i < num_reps; ++i) {
-                    op.rep = gl_reps[i];
-                    op.model_matrix = &rep_model_mats[i].elem[0][0];
+                    op.rep = reps[i].gl_rep;
+                    op.model_matrix = &reps[i].model_mat.elem[0][0];
                     draw_ops[i] = op;
                 }
 
@@ -664,72 +698,65 @@ struct DensityVolume : viamd::EventHandler {
                         .ops = draw_ops
                     },
                     .view_transform = {
-                        .view_matrix = &view_mat.elem[0][0],
-                        .proj_matrix = &proj_mat.elem[0][0],
+                        .view_matrix = &world_to_view.elem[0][0],
+                        .proj_matrix = &view_to_clip.elem[0][0],
                     },
+                    .picking_offset = {
+                        .atom_base = state->picking_range_atom.beg,
+                        .bond_base = state->picking_range_bond.beg,
+                    }
                 };
 
                 md_gl_draw(&draw_args);
 
-                if (is_hovered) {
-                    mat4_t inv_MVP = mat4_mul(inv_proj_mat, mat4_transpose(view_mat));
-                    const vec2_t coord = {mouse_pos_in_canvas.x, (float)gbuf.height - mouse_pos_in_canvas.y};
-                    // @TODO: Reimplement picking here using the new picking api 
-                    //extract_picking_data(data->picking, gbuf, coord, inv_MVP);
-                    //if (data->picking.idx != INVALID_PICKING_IDX) {
-                    //    draw_info_window(*data, data->picking.idx);
-                    //}
-                }
                 glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
             }
 
             if (show_density_volume) {
-                if (model_mat != mat4_t{ 0 }) {
-                    volume::RenderDesc vol_desc = {
-                        .render_target = {
-                            .depth  = gbuf.tex.depth,
-                            .color  = gbuf.tex.transparency,
-                            .width  = gbuf.width,
-                            .height = gbuf.height,
-                        },
-                        .texture = {
-                            .density_volume = volume_texture.id,
-                            .transfer_function = dvr.tf.id,
-                        },
-                        .matrix = {
-                            .model = model_mat,
-                            .view = view_mat,
-                            .proj = proj_mat,
-                            .inv_proj = inv_proj_mat,
-                        },
-                        .clip_volume = {
-                            .min = clip_volume.min,
-                            .max = clip_volume.max,
-                        },
-                        .iso = {
-                            .enabled = iso.enabled,
-                            .count = iso.count,
-                            .values = iso.values,
-                            .colors = iso.colors,
-                        },
-                        .dvr = {
-                            .enabled = dvr.enabled,
-                            .min_tf_value = dvr.tf.min_val,
-                            .max_tf_value = dvr.tf.max_val,
-                        },
-                        .shading = {
-                            .env_radiance = state->visuals.background.color * state->visuals.background.intensity,
-                            .roughness = 0.3f,
-                            .dir_radiance = {10,10,10},
-                            .ior = 1.5f,
-                            .exposure = state->visuals.tonemapping.exposure,
-                            .gamma = state->visuals.tonemapping.gamma,
-                        },
-                        .voxel_spacing = voxel_spacing
+                volume::RenderDesc vol_desc = {
+                    .render_target = {
+                        .depth  = gbuf.tex.depth,
+                        .color  = gbuf.tex.transparency,
+                        .width  = gbuf.width,
+                        .height = gbuf.height,
+                    },
+                    .texture = {
+                        .density_volume = volume_texture.id,
+                        .transfer_function = dvr.tf.id,
+                    },
+                    .matrix = {
+                        .model = model_mat,
+                        .view = world_to_view,
+                        .proj = view_to_clip,
+                        .inv_proj = clip_to_view,
+                    },
+                    .clip_volume = {
+                        .min = clip_volume.min,
+                        .max = clip_volume.max,
+                    },
+                    .iso = {
+                        .enabled = iso.enabled,
+                        .count = iso.count,
+                        .values = iso.values,
+                        .colors = iso.colors,
+                    },
+                    .dvr = {
+                        .enabled = dvr.enabled,
+                        .min_tf_value = dvr.tf.min_val,
+                        .max_tf_value = dvr.tf.max_val,
+                    },
+                    .shading = {
+                        .env_radiance = state->visuals.background.color * state->visuals.background.intensity,
+                        .roughness = 0.3f,
+                        .dir_radiance = {10,10,10},
+                        .ior = 1.5f,
+                        .exposure = state->visuals.tonemapping.exposure,
+                        .gamma = state->visuals.tonemapping.gamma,
+                    },
+                    .voxel_spacing = voxel_spacing
                     
-                    };
-                    volume::render_volume(vol_desc);
-                }
+                };
+                volume::render_volume(vol_desc);
             }
 
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
@@ -737,23 +764,22 @@ struct DensityVolume : viamd::EventHandler {
             glViewport(0, 0, gbuf.width, gbuf.height);
             glScissor(0, 0, gbuf.width, gbuf.height);
 
-            if (show_bounding_box) {
+            if (show_bounding_box && selected_property != -1) {
                 glEnable(GL_DEPTH_TEST);
                 glDepthMask(GL_TRUE);
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-                if (model_mat != mat4_t{0}) {
-                    immediate::set_model_view_matrix(mat4_mul(view_mat, model_mat));
-                    immediate::set_proj_matrix(proj_mat);
+                immediate::set_model_view_matrix(mat4_mul(world_to_view, model_mat));
+                immediate::set_proj_matrix(view_to_clip);
 
-                    uint32_t box_color = convert_color(bounding_box_color);
-                    uint32_t clip_color = convert_color(clip_volume_color);
-                    immediate::draw_box_wireframe({0,0,0}, {1,1,1}, box_color);
-                    immediate::draw_box_wireframe(clip_volume.min, clip_volume.max, clip_color);
+                uint32_t box_color = convert_color(bounding_box_color);
+                uint32_t clip_color = convert_color(clip_volume_color);
+                immediate::draw_box_wireframe({0,0,0}, {1,1,1}, box_color);
+                immediate::draw_box_wireframe(clip_volume.min, clip_volume.max, clip_color);
 
-                    immediate::render();
-                }
+                immediate::render();
+
                 glDisable(GL_BLEND);
             }
 
@@ -795,12 +821,12 @@ struct DensityVolume : viamd::EventHandler {
             ViewParam view_param = {
                 .matrix = {
                     .curr = {
-                        .view = view_mat,
-                        .proj = proj_mat,
-                        .norm = view_mat,
+                        .view = world_to_view,
+                        .proj = view_to_clip,
+                        .norm = world_to_view,
                     },
                     .inv = {
-                        .proj = inv_proj_mat,
+                        .proj = clip_to_view,
                     }
                 },
                 .clip_planes = {
@@ -832,7 +858,7 @@ struct DensityVolume : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState* state = (ApplicationState*)e.payload;
                 arena = md_arena_allocator_create(state->allocator.persistent, MEGABYTES(1));
-                picking_surface_init(&picking_surface, PickingSource_DensityVolume);
+                picking_surface_init(&picking_surface, interaction_surface_density_vol);
                 break;
             }
             case viamd::EventType_ViamdShutdown: {
@@ -844,8 +870,7 @@ struct DensityVolume : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemFree: {
-                md_array_shrink(gl_reps, 0);
-                md_array_shrink(rep_model_mats, 0);
+                md_array_shrink(reps, 0);
                 model_mat = {0};
                 break;
             }

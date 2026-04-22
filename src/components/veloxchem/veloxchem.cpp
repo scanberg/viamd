@@ -1135,7 +1135,7 @@ struct VeloxChem : viamd::EventHandler {
             colors[i] = color;
         }
 
-        md_gl_rep_set_color(nto.gl_rep, 0, (uint32_t)num_atoms, colors, 0);
+        md_gl_rep_set_atom_colors(nto.gl_rep, 0, (uint32_t)num_atoms, colors, 0);
     }
 
     void init_from_file(str_t filename, ApplicationState& state) {
@@ -1200,7 +1200,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
-                    md_gl_rep_set_color(gl_rep, 0, (uint32_t)num_colors, colors, 0);
+                    md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
 
                     calculate_bounding_volumes(&oabb, &aabb, state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, qm_to_atom_idx, md_vlx_number_of_atoms(vlx));
 
@@ -4459,6 +4459,10 @@ struct VeloxChem : viamd::EventHandler {
                     .view_transform = {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
+                    },
+                    .picking_offset = {
+                       .atom_base = state.picking_range_atom.beg,
+                       .bond_base = state.picking_range_bond.beg,
                     },
                 };
 
