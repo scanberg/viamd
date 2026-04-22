@@ -1692,13 +1692,13 @@ void interpolate_system_state(ApplicationState* state) {
     } 
 
     if (state->operations.unwrap_structures) {
-        size_t num_structures = md_index_data_num_ranges(&sys.structure);
+        size_t num_structures = md_structure_count(&sys.structure);
         task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
             for (uint32_t i = range_beg; i < range_end; ++i) {
-                int*     s_idx = md_index_range_ptr(&data->state->mold.sys.structure, i);
-                size_t   s_len = md_index_range_size(&data->state->mold.sys.structure, i);
-                md_util_unwrap(data->dst_x, data->dst_y, data->dst_z, s_idx, s_len, &data->state->mold.sys.bond, &data->unitcell);
+                md_structure_t structure = {};
+                md_structure_extract(&structure, &data->state->mold.sys.structure, i);
+                md_util_unwrap_structure(data->dst_x, data->dst_y, data->dst_z, &structure, &data->unitcell);
             }
         });
         tasks[num_tasks++] = unwrap_task;

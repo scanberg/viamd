@@ -2000,7 +2000,7 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             if (do_unwrap) {
-                md_util_system_unwrap(&data->mold.sys);
+                md_util_system_unwrap_structures(&data->mold.sys);
                 data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
             }
 
