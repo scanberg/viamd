@@ -4356,8 +4356,8 @@ struct VeloxChem : viamd::EventHandler {
             const ImVec2 origin(canvas_min.x, canvas_min.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-            int width  = MAX(1, (int)orb_win_sz.x);
-            int height = MAX(1, (int)orb_win_sz.y);
+            int width  = MAX(1, (int)orb_win_sz.x * io.DisplayFramebufferScale.x);
+            int height = MAX(1, (int)orb_win_sz.y * io.DisplayFramebufferScale.y);
 
             auto& gbuf = orb.gbuf;
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
@@ -5665,8 +5665,8 @@ struct VeloxChem : viamd::EventHandler {
                 const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
                 const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-                int width  = MAX(1, (int)win_sz.x);
-                int height = MAX(1, (int)win_sz.y);
+                int width  = MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
+                int height = MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
 
                 auto& gbuf = nto.gbuf;
                 if ((int)gbuf.width != width || (int)gbuf.height != height) {

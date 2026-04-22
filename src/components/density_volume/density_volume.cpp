@@ -92,7 +92,7 @@ struct DensityVolume : viamd::EventHandler {
     md_array(mat4_t) rep_model_mats = nullptr;
     mat4_t model_mat = {0};
 
-    GBuffer fbo = {0};
+    GBuffer gbuf = {0};
     PickingSurface picking_surface = {};
     Camera camera = {};
 	ViewTransform target = {};
@@ -468,9 +468,8 @@ struct DensityVolume : viamd::EventHandler {
 
             const ImVec2 canvas_sz = ImMax(ImGui::GetContentRegionAvail(), ImVec2(50.0f, 50.0f));   // Resize canvas to what's available
 
-            auto& gbuf = fbo;
-            int width  = (int)canvas_sz.x;
-            int height = (int)canvas_sz.y;
+            int width  = (int)(canvas_sz.x * ImGui::GetIO().DisplayFramebufferScale.x);
+            int height = (int)(canvas_sz.y * ImGui::GetIO().DisplayFramebufferScale.y);
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
                 init_gbuffer(&gbuf, width, height);
             }
@@ -488,7 +487,7 @@ struct DensityVolume : viamd::EventHandler {
             ImGuiIO& io = ImGui::GetIO();
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddImage((ImTextureID)(intptr_t)fbo.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
+            draw_list->AddImage((ImTextureID)(intptr_t)gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
             if (dvr.enabled && legend.enabled) {
@@ -531,15 +530,13 @@ struct DensityVolume : viamd::EventHandler {
                 }
             
                 // Boarder
-                draw_list->AddRect(cmap_pos, cmap_pos + cmap_ext, IM_COL32(0, 0, 0, 255));
+                draw_list->AddRect(cmap_pos, cmap_pos + cmap_ext, IM_COL32(0, 0, 0, 255), 0.0f, 0, 0.1f);
             }
 
             const bool is_hovered = ImGui::IsItemHovered();
             const bool is_active = ImGui::IsItemActive();
             const ImVec2 origin(canvas_p0.x, canvas_p0.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
-
-
 
             bool reset_hard = false;
             if (volume_changed) {
