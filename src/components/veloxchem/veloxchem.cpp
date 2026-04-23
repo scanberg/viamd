@@ -651,15 +651,22 @@ struct VeloxChem : viamd::EventHandler {
                     vec4_t selection_color = state.selection.color.selection.visible;
                     vec4_t highlight_color = state.selection.color.highlight.visible;
                     highlight_color.w += sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE;
+                    highlight_color.w = CLAMP(highlight_color.w, 0.0f, 1.0f);
+
+                    float saturation_scale = md_bitfield_popcount(&critical_points.selection_mask) > 0 ? state.selection.color.saturation : 1.0f;
+
                     for (size_t i = 0; i < num_verts; ++i) {
                         md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, i);
-                        vec4_t color = vec4_from_u32(type_colors[type]);
+                        vec4_t base_color = vec4_from_u32(type_colors[type]);
+
                         bool selected = md_bitfield_test_bit(&critical_points.selection_mask, i);
                         bool highlighted = md_bitfield_test_bit(&critical_points.highlight_mask, i);
-                        if (highlighted) {
-                            // Modify color by emulating a on top layer blend with the highlight color
-                            color = vec4_lerp(color, highlight_color, highlight_color.w);
-                        }
+
+                        float sat  = selected ? 1.0f : saturation_scale;
+                        float tint = highlighted ? highlight_color.w : 0.0f;;
+
+                        vec4_t color = selected ? selection_color : base_color;
+                        color = tint_color(color, highlight_color, tint, sat);
 
                         vertices[i].coord = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
                         vertices[i].coord *= BOHR_TO_ANGSTROM;
@@ -770,7 +777,7 @@ struct VeloxChem : viamd::EventHandler {
                         md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
                         const char* str = md_topo_critical_point_type_str[type];
                         float value = critical_points.simp_graph.vertices[cp_idx].value;
-                        md_strb_fmt(&req->sb, "Type: %s\nValue: %.5f", str, value);
+                        md_strb_fmt(&req->sb, "Type: %s\nValue: %.7f", str, value);
                     }
                 }
                 break;
@@ -3372,12 +3379,12 @@ struct VeloxChem : viamd::EventHandler {
                                         md_bitfield_set_bit(&critical_points.highlight_mask, idx);
 
                                         //Selection
-                                        if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                            md_bitfield_set_bit(&critical_points.selection_mask, idx);
-                                        }
-                                        //Deselect
-                                        else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                            md_bitfield_clear_bit(&critical_points.selection_mask, idx);
+                                        if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                                            if (ImGui::IsKeyDown(ImGuiKey_MouseLeft)) {
+                                                md_bitfield_set_bit(&critical_points.selection_mask, idx);
+                                            } else if (ImGui::IsKeyDown(ImGuiKey_MouseRight)) {
+                                                md_bitfield_clear_bit(&critical_points.selection_mask, idx);
+                                            }
                                         }
                                     }
                                 }
@@ -3391,7 +3398,7 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::TableNextColumn();
                                 ImGui::TextUnformatted(md_topo_critical_point_type_str[type]);
                                 ImGui::TableNextColumn();
-                                ImGui::Text("%.6f", v.value);                                
+                                ImGui::Text("%.8f", v.value);                                
                             }
 
                             ImGui::PopStyleColor(2);
@@ -4403,13 +4410,11 @@ struct VeloxChem : viamd::EventHandler {
                 draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
             }
 
-            const bool is_hovered = ImGui::IsItemHovered();
-            const bool is_active = ImGui::IsItemActive();
             const ImVec2 origin(canvas_min.x, canvas_min.y);  // Lock scrolled origin
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
-            int width  = MAX(1, (int)orb_win_sz.x * io.DisplayFramebufferScale.x);
-            int height = MAX(1, (int)orb_win_sz.y * io.DisplayFramebufferScale.y);
+            int width  = MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
+            int height = MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
 
             auto& gbuf = orb.gbuf;
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
