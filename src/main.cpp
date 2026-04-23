@@ -6424,8 +6424,8 @@ static void fill_gbuffer(ApplicationState* data) {
 
     if (!use_gfx) {
         PUSH_GPU_SECTION("Selection")
-        const bool atom_selection_empty = md_bitfield_popcount(&data->selection.selection_mask) == 0;
-        const bool atom_highlight_empty = md_bitfield_popcount(&data->selection.highlight_mask) == 0;
+        const bool atom_selection_empty = md_bitfield_empty(&data->selection.selection_mask);
+        const bool atom_highlight_empty = md_bitfield_empty(&data->selection.highlight_mask);
 
         glDepthMask(0);
 
