@@ -284,6 +284,46 @@ void color_atoms_inst_id            (uint32_t* colors, size_t count, const md_sy
 void color_atoms_inst_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
 void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const SecondaryStructurePalette& palette = SecondaryStructurePalette());
 
+static inline vec4_t scale_saturation(vec4_t rgba, float scale) {
+    vec3_t lab = linear_srgb_to_oklab(vec3_from_vec4(rgba));
+    lab.y *= scale;
+    lab.z *= scale;
+    return vec4_from_vec3(oklab_to_linear_srgb(lab), rgba.w);
+}
+
+static inline uint32_t scale_saturation(uint32_t rgba_u32, float scale) {
+    return convert_color(scale_saturation(convert_color(rgba_u32), scale));
+}
+
+static inline vec4_t tint_color(vec4_t base_rgba, vec4_t tint_rgba, float tint_strength, float saturation) {
+    const float t = CLAMP(tint_strength, 0.0f, 1.0f);
+    const float s = CLAMP(saturation, 0.0f, 1.0f);
+
+    vec3_t base_lab = linear_srgb_to_oklab(vec3_from_vec4(base_rgba));
+    vec3_t tint_lab = linear_srgb_to_oklab(vec3_from_vec4(tint_rgba));
+
+    // Match the same perceptual idea as tint_colors():
+    // small lightness pull, stronger chroma pull.
+    const float L_coeff  = 0.1f * t;
+    const float ab_coeff = 1.0f * t;
+
+    vec3_t out_lab = {
+        base_lab.x * (1.0f - L_coeff)  + tint_lab.x * L_coeff,
+        base_lab.y * (1.0f - ab_coeff) + tint_lab.y * ab_coeff,
+        base_lab.z * (1.0f - ab_coeff) + tint_lab.z * ab_coeff,
+    };
+
+    // Then apply saturation independently by scaling chroma in OKLab.
+    out_lab.y *= s;
+    out_lab.z *= s;
+
+    return vec4_from_vec3(oklab_to_linear_srgb(out_lab), base_rgba.w);
+}
+
+static inline uint32_t tint_color(uint32_t base_rgba_u32, uint32_t tint_rgba_u32, float tint_strength, float saturation) {
+    return convert_color(tint_color(convert_color(base_rgba_u32), convert_color(tint_rgba_u32), tint_strength, saturation));
+}
+
 void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask);
 void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale);
 void scale_saturation(uint32_t* colors, size_t count, float scale);
