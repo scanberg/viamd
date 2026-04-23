@@ -1297,7 +1297,7 @@ struct VeloxChem : viamd::EventHandler {
                     // ORB
                     //orb.show_window = true;
                     picking_surface_init(&orb.picking_surface, interaction_surface_orb);
-                    orb.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, orb.distance_scale);
+                    orb.target = default_view;
                     orb.camera = orb.target;
                     orb.mo_idx = homo_idx[0];
                     orb.scroll_to_idx = homo_idx[0];
@@ -4267,21 +4267,30 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }
 
+            ImVec2 canvas_sz = ImMax(ImVec2(50.0f, 50.0f), ImGui::GetContentRegionAvail());   // Resize canvas to what's available
+
             // Animate camera towards targets
             const double dt = state.app.timing.delta_s;
             camera_animate(&orb.camera, orb.target, dt);
 
-            ImVec2 canvas_sz = ImMax(ImVec2(50.0f, 50.0f), ImGui::GetContentRegionAvail());   // Resize canvas to what's available
-
-            // This will catch our interactions
-            ImGui::InvisibleButton("canvas", canvas_sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_AllowOverlap);
+            ImGui::Dummy(canvas_sz);
 
             // Draw border and background color
             ImGuiIO& io = ImGui::GetIO();
 
             ImVec2 canvas_min = ImGui::GetItemRectMin();
+            ImVec2 canvas_max = ImGui::GetItemRectMax();
             ImVec2 orb_win_sz = ImFloor(canvas_sz / ImVec2((float)num_x, (float)num_y));
-            ImVec2 canvas_max = canvas_min + orb_win_sz * ImVec2((float)num_x, (float)num_y);
+
+            const float aspect = orb_win_sz.x / orb_win_sz.y;
+
+            const mat4_t world_to_view = camera_world_to_view_matrix(orb.camera);
+            const mat4_t view_to_clip  = camera_view_to_clip_matrix_persp(orb.camera, aspect);
+            const mat4_t world_to_clip = mat4_mul(view_to_clip, world_to_view);
+
+            const mat4_t view_to_world = camera_view_to_world_matrix(orb.camera);
+            const mat4_t clip_to_view  = camera_clip_to_view_matrix_persp(orb.camera, aspect);
+            const mat4_t clip_to_world = mat4_mul(view_to_world, clip_to_view);
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_min, canvas_max, IM_COL32(255, 255, 255, 255));
@@ -4289,18 +4298,61 @@ struct VeloxChem : viamd::EventHandler {
             const int num_orbs = (int)num_molecular_orbitals();
 
             for (int i = 0; i < num_mos; ++i) {
+                ImGui::PushID(i);
+                defer { ImGui::PopID(); };
+
                 int mo_idx = beg_mo_idx + i;
                 if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
                     mo_idx = beg_mo_idx + i / 2;
                 }
                 int x = num_x - i % num_x - 1;
                 int y = num_y - i / num_x - 1;
-                ImVec2 p0 = canvas_min + orb_win_sz * ImVec2((float)(x + 0), (float)(y + 0));
-                ImVec2 p1 = canvas_min + orb_win_sz * ImVec2((float)(x + 1), (float)(y + 1));
                 if (-1 < mo_idx && mo_idx < num_orbs) {
+                    const ImVec2 p0 = canvas_min + orb_win_sz * ImVec2((float)(x + 0), (float)(y + 0));
+                    const ImVec2 p1 = canvas_min + orb_win_sz * ImVec2((float)(x + 1), (float)(y + 1));
                     const ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     const ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.25f);
                     const ImVec2 text_pos_br = ImVec2(p1.x - TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+
+                    const ImVec2 sz = p1 - p0;
+
+                    ImGui::SetCursorScreenPos(p0);
+                    InteractionSurfaceState surface_state = interaction_surface(interaction_surface_orb, vec_cast(sz), InteractionSurfaceFlags_NoRegionSelect);
+           
+                    ViewTransform reset_transform = default_view;
+
+                    PickingHit hit = {};
+                    if (surface_state.hovered) {
+                        InteractionSurfaceHitArgs hit_args = {
+                            .picking_surface = &orb.picking_surface,
+                            .picking_handler = state.picking_handler,
+                            .fbo = orb.gbuf.fbo,
+                            .width = orb.gbuf.width,
+                            .height = orb.gbuf.height,
+                            .clip_to_world = clip_to_world,
+                        };
+                        interaction_surface_hit_extract(&hit, surface_state, hit_args);
+
+                        InteractionSurfaceEvent event = {};
+                        interaction_surface_event_extract(&event, surface_state, hit);
+
+                        viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+                    }
+
+                    if (hit.depth < 1.0f) {
+                        reset_transform.distance = orb.target.distance;
+                        reset_transform.orientation = orb.camera.orientation;
+                        reset_transform.position = hit.world_pos + orb.camera.orientation * vec3_set(0, 0, orb.target.distance);     
+                    }
+
+                    InteractionSurfaceViewTransformArgs view_args = {
+                        .camera = orb.camera,
+                        .trackball_param = state.view.trackball_param,
+                        .reset_transform = reset_transform,
+                    };
+
+                    interaction_surface_view_transform_apply(&orb.target, surface_state, view_args);
+
 
                     const char* lbl = "";
                     if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
@@ -4367,50 +4419,11 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }
 
-            bool reset_hard = false;
-            bool reset_view = false;
-            if (is_hovered) {
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                    reset_view = true;
-                }
-            }
-
-            if (reset_view) {
-                orb.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, orb.distance_scale);
-
-                if (reset_hard) {
-                    orb.camera.position = orb.target.position;
-                    orb.camera.orientation = orb.target.orientation;
-                    orb.camera.distance = orb.target.distance;
-                }
-            }
-
-            if (is_active || is_hovered) {
-                const vec2_t delta = { io.MouseDelta.x, io.MouseDelta.y };
-                const vec2_t curr = { mouse_pos_in_canvas.x, mouse_pos_in_canvas.y };
-                const vec2_t prev = curr - delta;
-
-                TrackballControllerInput input = {
-                    .rotate_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Left),
-                    .pan_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Right),
-                    .dolly_button = is_active && ImGui::IsMouseDown(ImGuiMouseButton_Middle),
-                    .dolly_delta = is_hovered ? io.MouseWheel : 0.0f,
-                    .mouse_coord_prev = prev,
-                    .mouse_coord_curr = curr,
-                    .screen_size = {canvas_sz.x, canvas_sz.y},
-                    .fov_y = orb.camera.fov_y,
-                };
-                camera_controller_trackball(&orb.target, input);
-            }
-
             if (orb.show_coordinate_system_widget) {
-                ImVec2 cursor_pos = ImGui::GetCursorPos();
-				defer{ ImGui::SetCursorPos(cursor_pos); };
-
                 float ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
                 float pad = 20.0f;
                 ImVec2 size = ImVec2(ext, ext);
-                ImGui::SetCursorPos(cursor_pos + ImVec2(pad, orb_win_sz.y - ext - pad));
+                ImGui::SetCursorScreenPos(ImVec2(canvas_min.x + pad, canvas_max.y - ext - pad));
 
                 quat_t out_orientation = orb.target.orientation;
                 if (ImGui::CoordinateSystemWidget(&out_orientation, orb.camera.orientation, size)) {
