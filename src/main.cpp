@@ -441,6 +441,14 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+#if MD_ENABLE_GPU
+    VIAMD_LOG_DEBUG("Initializing GPU device...");
+    state.gpu_device = md_gpu_create_device();
+    if (!state.gpu_device) {
+        VIAMD_LOG_ERROR("Failed to create GPU device");
+    }
+#endif
+
     state.app.window.vsync = true;
     state.app.file_drop.user_data = &state;
     state.app.file_drop.callback = [](size_t num_files, const str_t file_paths[], void* user_data) {
@@ -1200,6 +1208,12 @@ int main(int argc, char** argv) {
     task_system::shutdown();
 
     destroy_gbuffer(&state.gbuffer);
+#if MD_ENABLE_GPU
+    if (state.gpu_device) {
+        md_gpu_destroy_device(state.gpu_device);
+        state.gpu_device = nullptr;
+    }
+#endif
     application::shutdown(&state.app);
 
     return 0;

@@ -11,6 +11,10 @@
 #include <md_script.h>
 #include <md_gl.h>
 
+#if MD_ENABLE_GPU
+#include <core/md_gpu.h>
+#endif
+
 #include <app/IconsFontAwesome6.h>
 #include <app/application.h>
 #include <gfx/camera.h>
@@ -650,6 +654,10 @@ struct PickingReadbackRequest {
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
+
+#if MD_ENABLE_GPU
+    md_gpu_device_t gpu_device = nullptr;
+#endif
 
     struct {
         md_allocator_i* frame = nullptr;
