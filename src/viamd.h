@@ -474,6 +474,7 @@ struct ElectronicStructureRepresentation {
 
     // Optical scaling factor which controls attenuation of light within iso surfaces.
     double iso_optical_density = 0.005;
+	double iso_index_of_refraction = 1.2;
 
     bool use_atom_colors = false;
 

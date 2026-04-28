@@ -3877,7 +3877,12 @@ static void draw_representations_window(ApplicationState* state) {
                         const double min_tau = 0.0;
                         const double max_tau = 1.0;
 			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
-                        ImGui::SetItemTooltip("Optical density of the isosurfaces");
+                        ImGui::SetItemTooltip("Optical density of isosurfaces");
+
+                        const double min_iof = 1.0;
+                        const double max_iof = 2.0;
+						ImGui::SliderScalar("iso ior", ImGuiDataType_Double, &rep.electronic_structure.iso_index_of_refraction, &min_iof, &max_iof, "%.4f");
+						ImGui::SetItemTooltip("Index of refraction for isosurfaces");
                     }
                     if (rep.electronic_structure.use_atom_colors) {
                         if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
@@ -8081,7 +8086,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25,
                 .roughness = 0.3f,
                 .dir_radiance = {10,10,10},
-                .ior = 1.5f,
+                .ior = (float)rep.electronic_structure.iso_index_of_refraction,
                 .exposure = state->visuals.tonemapping.exposure,
                 .gamma = state->visuals.tonemapping.gamma,
         },
