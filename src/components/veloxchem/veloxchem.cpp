@@ -60,10 +60,10 @@
 #define U32_MAGENTA IM_COL32(255, 0, 255, 255)
 
 #define U32_VELOXCHEM_GREEN IM_COL32(0, 162, 135, 191)
-#define F32_VELOXCHEM_GREEN {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f}
+#define VEC4_VELOXCHEM_GREEN {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f}
 
 // Complement to veloxchem green (magentaish)
-#define F32_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
+#define VEC4_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
 
 constexpr uint64_t interaction_surface_nto = HASH_STR_LIT64("interaction surface nto");
 constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface orb");
@@ -408,8 +408,8 @@ struct VeloxChem : viamd::EventHandler {
         vec4_t col_neg = { 1.0f, 0.804f, 0.0f,   0.75f };
 
         vec4_t col_den = { 1.0f, 1.0f, 1.0f, 0.75f };
-        vec4_t col_att = F32_VELOXCHEM_GREEN;
-        vec4_t col_det = F32_VELOXCHEM_MAGENTA;
+        vec4_t col_att = VEC4_VELOXCHEM_GREEN;
+        vec4_t col_det = VEC4_VELOXCHEM_MAGENTA;
 
         struct {
             bool enabled = false;
