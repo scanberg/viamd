@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
+# Must be set before project() so the toolchain picks it up
+if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment version")
+endif()
+
 project(viamd LANGUAGES C CXX)
 
 include(ext/mdlib/cmake/Common.cmake)
@@ -186,18 +191,36 @@ if (WIN32)
 endif()
 
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if (_is_multi_config)
+    # Multi-config generators (Xcode, Visual Studio) append the config name at build time
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
 if (VIAMD_ENABLE_VELOXCHEM)
-    create_copy_resource_dir_target(viamd_copy_basis "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis"      "${VIAMD_BIN_DIR}/basis")
-    add_dependencies(viamd viamd_copy_basis)
+    if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
+        # Bundle build: embed basis files inside Contents/MacOS/basis/ so that
+        # the exe-relative lookup in md_vlx.c finds them without any code changes.
+        file(GLOB_RECURSE _BASIS_FILES "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis/*")
+        target_sources(viamd PRIVATE ${_BASIS_FILES})
+        set_source_files_properties(${_BASIS_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/basis")
+    else()
+        create_copy_resource_dir_target(viamd_copy_basis "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis" "${VIAMD_BIN_DIR}/basis")
+        add_dependencies(viamd viamd_copy_basis)
+    endif()
 endif()
 
 if (VIAMD_ENABLE_DEFAULT_DATASET)
-    create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets"      "${VIAMD_BIN_DIR}/datasets")
-    add_dependencies(viamd viamd_copy_datasets)
+    if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
+        # Bundle build: embed dataset files inside Contents/MacOS/datasets/ so that
+        # the exe-relative lookup in main.cpp finds them without any code changes.
+        file(GLOB_RECURSE _DS_FILES "${CMAKE_CURRENT_SOURCE_DIR}/datasets/*")
+        target_sources(viamd PRIVATE ${_DS_FILES})
+        set_source_files_properties(${_DS_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/datasets")
+    else()
+        create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
+        add_dependencies(viamd viamd_copy_datasets)
+    endif()
     set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DATASET_DIR=\"datasets\")
 endif()
 

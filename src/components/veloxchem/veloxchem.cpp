@@ -1,4 +1,4 @@
-﻿#define IMGUI_DEFINE_MATH_OPERATORS
+#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <event.h>
 #include <viamd_event.h>
@@ -261,6 +261,9 @@ struct VeloxChem : viamd::EventHandler {
     md_vlx_t* vlx = nullptr;
 
     bool use_gpu_path = false;
+#if MD_ENABLE_GPU
+    md_gpu_device_t gpu_device = nullptr;
+#endif
 
     // GL representations
     md_gl_rep_t gl_rep = {};
@@ -293,9 +296,14 @@ struct VeloxChem : viamd::EventHandler {
         uint64_t simp_hash = 0;
         md_topo_extremum_graph_t raw_graph = { 0 };
         md_topo_extremum_graph_t simp_graph = { 0 };
-        Volume density_vol = {0};
         md_grid_t grid = {0};
         PickingRange picking_range = {};
+#if MD_ENABLE_GPU
+        md_gpu_image_t      gpu_density_image = nullptr;
+        md_gto_density_buf_t density_buf = {};
+#else
+        Volume density_vol = {0};
+#endif
 
         md_bitfield_t selection_mask = {};
         md_bitfield_t highlight_mask = {};
@@ -521,7 +529,9 @@ struct VeloxChem : viamd::EventHandler {
                 glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
                 glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
                 use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
-
+#if MD_ENABLE_GPU
+                gpu_device = state.gpu_device;
+#endif
                 break;
             }
             case viamd::EventType_ViamdShutdown:
@@ -993,11 +1003,11 @@ struct VeloxChem : viamd::EventHandler {
                         }
                         case ElectronicStructureType::ElectronDensity:
                         {
-                            if (use_gpu_path) {
+                            //if (use_gpu_path) {
                                 compute_electron_density_GPU(tex_id, grid, MD_VLX_SPIN_ALPHA);
-                            } else {
-                                compute_electron_density_async(tex_id, grid, MD_VLX_SPIN_ALPHA);
-                            }
+                            //} else {
+                            //    compute_electron_density_async(tex_id, grid, MD_VLX_SPIN_ALPHA);
+                            //}
                             break;
                         }
                         default:
@@ -1093,7 +1103,14 @@ struct VeloxChem : viamd::EventHandler {
         md_gl_rep_destroy(gl_rep);
         md_vlx_destroy(vlx);
         md_arena_allocator_reset(arena);
+#if MD_ENABLE_GPU
+        if (critical_points.gpu_density_image) {
+            md_gpu_destroy_image(critical_points.gpu_density_image);
+        }
+        md_gto_density_buf_destroy(&critical_points.density_buf);
+#else
         gl::free_texture(&critical_points.density_vol.tex_id);
+#endif
         md_topo_extremum_graph_free(&critical_points.raw_graph);
         md_topo_extremum_graph_free(&critical_points.simp_graph);
         critical_points = {};
@@ -1604,14 +1621,63 @@ struct VeloxChem : viamd::EventHandler {
 
     // The full electron density that includes all orbitals weighted by their occupancy
     bool compute_electron_density_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+        (void)cutoff_value;
         const double* density_matrix = md_vlx_scf_density_matrix_data(vlx, mo_type);
         if (!density_matrix) {
             MD_LOG_ERROR("Failed to retrieve density matrix");
             return false;
         }
 
-        md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, density_matrix, false);
+#if MD_ENABLE_GPU
+        if (gpu_device) {
+            // Metal path: dispatch density evaluation on GPU, then read back into the GL texture
+            md_gpu_image_desc_t img_desc = {
+                .width  = (uint32_t)grid.dim[0],
+                .height = (uint32_t)grid.dim[1],
+                .depth  = (uint32_t)grid.dim[2],
+                .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
+                .flags  = MD_GPU_IMAGE_STORAGE,
+            };
+            md_gpu_image_t img = md_gpu_create_image(gpu_device, &img_desc);
+            md_gto_density_buf_t buf = {};
+            bool success = false;
 
+            if (img && md_gto_density_buf_create(&buf, gpu_device, &basis, (const float*)atom_xyz, density_matrix, cutoff_value, cutoff_value)) {
+                md_gpu_fence_t fence = nullptr;
+                if (md_gto_grid_evaluate_density_gpu(gpu_device, &buf, img, &grid, &fence)) {
+                    md_gpu_fence_wait(fence);
+                    md_gpu_destroy_fence(fence);
+
+                    // Readback: copy GPU image into a CPU-visible staging buffer, then upload to GL
+                    size_t num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
+                    md_gpu_buffer_desc_t staging_desc = { .size = num_voxels * sizeof(float), .flags = MD_GPU_BUFFER_CPU_VISIBLE };
+                    md_gpu_buffer_t staging = md_gpu_create_buffer(gpu_device, &staging_desc);
+                    if (staging) {
+                        md_gpu_queue_t          queue = md_gpu_acquire_compute_queue(gpu_device);
+                        md_gpu_command_buffer_t cmd   = md_gpu_acquire_command_buffer(queue);
+                        md_gpu_cmd_copy_image_to_buffer(cmd, img, staging);
+                        md_gpu_fence_t rfence = md_gpu_queue_submit(queue, cmd);
+                        md_gpu_fence_wait(rfence);
+                        md_gpu_destroy_fence(rfence);
+
+                        const float* pixels = (const float*)md_gpu_map_buffer(staging);
+                        gl::set_texture_3D_data(vol_tex, 0, pixels, GL_R32F);
+                        md_gpu_unmap_buffer(staging);
+                        md_gpu_destroy_buffer(staging);
+                        success = true;
+                    }
+                }
+            }
+
+            md_gto_density_buf_destroy(&buf);
+            if (img) md_gpu_destroy_image(img);
+
+            if (success) return true;
+            MD_LOG_ERROR("compute_electron_density_GPU: Metal path failed, falling back to GL");
+        }
+#endif
+
+        md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, density_matrix, false);
         return true;
     }
 
@@ -2687,7 +2753,6 @@ struct VeloxChem : viamd::EventHandler {
                 const double* energy = md_vlx_scf_history_energy(vlx);
                 double* energy_offsets = nullptr;
                 double ref_energy = 0.0;
-                double y1_to_y2_mult = 1.0;
 
                 // We set up iterations as doubles for easier use
                 if (num_iter > 0) {
@@ -2699,7 +2764,6 @@ struct VeloxChem : viamd::EventHandler {
                     for (size_t i = 0; i < num_iter; i++) {
                         energy_offsets[i] = fabs(energy[i] - ref_energy);
                     }
-                    y1_to_y2_mult = axis_conversion_multiplier(grad_norm, energy_offsets, num_iter, num_iter);
                 }
 
                 if (num_iter > 1) {
@@ -2875,72 +2939,72 @@ struct VeloxChem : viamd::EventHandler {
                     uint64_t vol_hash = md_hash64(&vol_res, sizeof(vol_res), frame_idx);
 
                     // Update volume if required
+                    const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
+#if MD_ENABLE_GPU
+                    if (critical_points.vol_hash != vol_hash || critical_points.gpu_density_image == nullptr) {
+                        critical_points.vol_hash = vol_hash;
+                        init_grid(&critical_points.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
+
+                        // Destroy and recreate the GPU density image at new dimensions
+                        if (critical_points.gpu_density_image) {
+                            md_gpu_destroy_image(critical_points.gpu_density_image);
+                            critical_points.gpu_density_image = nullptr;
+                        }
+                        md_gto_density_buf_destroy(&critical_points.density_buf);
+
+                        md_gpu_image_desc_t img_desc = {
+                            .width  = (uint32_t)critical_points.grid.dim[0],
+                            .height = (uint32_t)critical_points.grid.dim[1],
+                            .depth  = (uint32_t)critical_points.grid.dim[2],
+                            .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
+                            .flags  = MD_GPU_IMAGE_STORAGE,
+                        };
+                        critical_points.gpu_density_image = md_gpu_create_image(state.gpu_device, &img_desc);
+
+                        const double* density_matrix = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_ALPHA);
+                        if (density_matrix && critical_points.gpu_density_image) {
+                            if (md_gto_density_buf_create(&critical_points.density_buf, state.gpu_device, &basis, (const float*)atom_xyz, density_matrix, DEFAULT_GTO_CUTOFF_VALUE, 0.0)) {
+                                md_gpu_fence_t fence = nullptr;
+                                if (md_gto_grid_evaluate_density_gpu(state.gpu_device, &critical_points.density_buf, critical_points.gpu_density_image, &critical_points.grid, &fence)) {
+                                    md_gpu_fence_wait(fence);
+                                    md_gpu_destroy_fence(fence);
+                                } else {
+                                    MD_LOG_ERROR("Failed to evaluate electron density on GPU for critical points analysis");
+                                }
+                            } else {
+                                MD_LOG_ERROR("Failed to create GPU density buffer for critical points analysis");
+                            }
+                        } else {
+                            MD_LOG_ERROR("Failed to retrieve density matrix or create GPU image for critical points analysis");
+                        }
+                    }
+#else
                     if (critical_points.vol_hash != vol_hash || critical_points.density_vol.tex_id == 0) {
                         critical_points.vol_hash = vol_hash;
-                        const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
                         init_grid(&critical_points.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
                         init_volume(&critical_points.density_vol, critical_points.grid, GL_R32F);
                         if (!compute_electron_density_GPU(critical_points.density_vol.tex_id, critical_points.grid, MD_VLX_SPIN_ALPHA)) {
                             MD_LOG_ERROR("Failed to compute electron density volume for critical points analysis");
                         }
                     }
+#endif
 
                     uint64_t raw_hash = vol_hash;
 
                     if (critical_points.raw_hash != raw_hash) {
                         critical_points.raw_hash = raw_hash;
                         md_topo_extremum_graph_free(&critical_points.raw_graph);
-                        #if MD_ENABLE_GPU
-                        glBindTexture(GL_TEXTURE_3D, critical_points.density_vol.tex_id);
-                        int w, h, d;
-                        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &w);
-                        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
-                        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH, &d);
-
-                        // 1. Read GL texture to CPU
-                        float* data = (float*)malloc(w * h * d * sizeof(float));
-                        glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, data);
-
-                        md_gpu_image_desc_t img_desc = {
-                            .width = (uint32_t)w,
-                            .height = (uint32_t)h,
-                            .depth = (uint32_t)d,
-                            .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
-                            .flags = MD_GPU_IMAGE_STORAGE,
-                        };
-
-                        // 2. Create md_gpu image + staging buffer, upload
-                        md_gpu_image_t img = md_gpu_create_image(state.gpu_device, &img_desc);
-                        
-                        md_gpu_buffer_desc_t buf_desc = {
-                            .size = w * h * d * sizeof(float),
-                            .flags = MD_GPU_BUFFER_CPU_VISIBLE,
-                        };
-                        md_gpu_buffer_t staging = md_gpu_create_buffer(state.gpu_device, &buf_desc);
-                        memcpy(md_gpu_map_buffer(staging), data, w*h*d*sizeof(float));
-                        md_gpu_unmap_buffer(staging);
-
-                        // 3. Copy buffer → image
-                        md_gpu_queue_t queue = md_gpu_acquire_compute_queue(state.gpu_device);
-                        md_gpu_command_buffer_t cmd = md_gpu_acquire_command_buffer(state.gpu_device);
-                        md_gpu_cmd_copy_buffer_to_image(cmd, staging, img);
-                        md_gpu_fence_t f = md_gpu_queue_submit(queue, cmd);
-                        md_gpu_fence_wait(f); md_gpu_destroy_fence(f);
-                        md_gpu_destroy_buffer(staging);
-                        free(data);
-
-                        glBindTexture(GL_TEXTURE_3D, 0);
-
-                        if (!md_topo_compute_extremum_graph_gpu(&critical_points.raw_graph, state.gpu_device, img, &critical_points.grid, 0.0f)) {
-                            MD_LOG_ERROR("Failed to compute extremum graph for electron density");
+#if MD_ENABLE_GPU
+                        if (critical_points.gpu_density_image) {
+                            if (!md_topo_compute_extremum_graph_gpu(&critical_points.raw_graph, state.gpu_device, critical_points.gpu_density_image, &critical_points.grid, 0.0f)) {
+                                MD_LOG_ERROR("Failed to compute extremum graph for electron density");
+                            }
                         }
-
-                        md_gpu_destroy_image(img); 
-                        #else
+#else
                         if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, critical_points.density_vol.tex_id, &critical_points.grid, 0.0f)) {
                             MD_LOG_ERROR("Failed to compute extremum graph for electron density");
                         }
-                        #endif
+#endif
                     }
 
                     ImGui::Checkbox("Enable Graph Simplification", &enable_simplification);
@@ -2956,7 +3020,7 @@ struct VeloxChem : viamd::EventHandler {
                         critical_points.simp_hash = simp_hash;
 
                         md_topo_extremum_graph_free(&critical_points.simp_graph);
-                        if (enable_simplification) {
+                        if (enable_simplification && critical_points.raw_graph.num_vertices > 0) {
                             //const md_topo_extremum_graph_t& graph = critical_points.raw_graph;
                             md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
                             defer{ md_arena_allocator_destroy(temp_alloc); };
@@ -4791,11 +4855,11 @@ struct VeloxChem : viamd::EventHandler {
                         break;
                     }
                     case ElectronicStructureType::ElectronDensity:
-                        if (use_gpu_path) {
+                        //if (use_gpu_path) {
                             compute_electron_density_GPU(vol.tex_id, grid, MD_VLX_SPIN_ALPHA);
-                        } else {
-                            task = compute_electron_density_async(vol.tex_id, grid, MD_VLX_SPIN_ALPHA);
-                        }
+                        //} else {
+                        //    task = compute_electron_density_async(vol.tex_id, grid, MD_VLX_SPIN_ALPHA);
+                        //}
                         break;
                     default:
                         MD_LOG_ERROR("Unsupported export type");
