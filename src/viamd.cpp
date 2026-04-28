@@ -2671,7 +2671,8 @@ void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfi
     max_ext += vec4_set1(radius);
 
     mat3_t basis = mat3_transpose(PCA);
-    ViewTransform opt_view = compute_optimal_view(vec3_from_vec4(min_ext), vec3_from_vec4(max_ext), basis);
+    vec3_t half_ext = (vec3_from_vec4(max_ext) - vec3_from_vec4(min_ext)) * 0.5f;
+    ViewTransform opt_view = compute_optimal_view(com, half_ext, basis);
 
     if (count <= 4) {
         // Apply same as double click camera reset, but center on COM of target, also use optimal distance but keep current orientation
@@ -2764,6 +2765,32 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)event.payload;
             if (req->hit.domain == PickingDomain_Atom || req->hit.domain == PickingDomain_Bond) {
                 fill_picking_tooltip_text(&req->sb, *state, req->hit);
+            }
+            break;
+        }
+        case viamd::EventType_ViamdViewFit: {
+            ASSERT(event.payload_type == viamd::EventPayloadType_ViewFitRequest);
+            ViewFitRequest* req = (ViewFitRequest*)event.payload;
+            if (req) {
+                md_bitfield_t* bf = nullptr;
+                switch (req->round) {
+                case ViewFitRound_Highlight:
+                    bf = &state->selection.highlight_mask; break;
+                case ViewFitRound_Selection:
+                    bf = &state->selection.selection_mask; break;
+                case ViewFitRound_Visible:
+                    bf = &state->representation.visibility_mask; break;
+                default:
+                    break;
+                }
+
+                size_t popcount = bf ? md_bitfield_popcount(bf) : 0;
+                if (popcount > 0) {
+                    vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
+                    if (dst_xyzw) {
+                        md_util_system_extract_xyzw_from_mask(dst_xyzw, bf, &state->mold.sys);
+                    }
+                }
             }
             break;
         }

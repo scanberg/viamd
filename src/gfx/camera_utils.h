@@ -113,7 +113,7 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
 
 //void camera_controller_fps(Camera* camera, const FpsControllerState& state);
 
-ViewTransform compute_optimal_view(const vec3_t& min_ext, const vec3_t& max_ext, const mat3_t& basis = mat3_ident(), float distance_scale = 3.0f);
+ViewTransform compute_optimal_view(const vec3_t& center, const vec3_t& half_ext, const mat3_t& basis = mat3_ident(), float distance_scale = 3.0f);
 
 // Lazy stupid procedure on top of interpolate_look_at
 void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor = 0.12f);

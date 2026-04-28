@@ -48,6 +48,7 @@ enum : EventType {
 
 	// InteractionSurface
     EventType_ViamdInteractionSurface				= HASH_STR_LIT("VIAMD Interaction Surface"),
+    EventType_ViamdViewFit							= HASH_STR_LIT("VIAMD View Fit"),
 };
 
 enum : EventPayloadType {
@@ -64,6 +65,7 @@ enum : EventPayloadType {
 	EventPayloadType_PickingTooltipTextRequest	= HASH_STR_LIT("Payload Picking Tooltip Text Request"),
     EventPayloadType_LoadData					= HASH_STR_LIT("Payload Load Data"),
     EventPayloadType_InteractionSurfaceEvent    = HASH_STR_LIT("Payload Interaction Surface Event"),
+	EventPayloadType_ViewFitRequest				= HASH_STR_LIT("Payload View Fit Request"),
 };
 
 }
