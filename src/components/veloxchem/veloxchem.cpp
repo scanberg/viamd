@@ -1105,7 +1105,7 @@ struct VeloxChem : viamd::EventHandler {
         md_arena_allocator_reset(arena);
 #if MD_ENABLE_GPU
         if (critical_points.gpu_density_image) {
-            md_gpu_destroy_image(critical_points.gpu_density_image);
+            md_gpu_image_destroy(critical_points.gpu_density_image);
         }
         md_gto_density_buf_destroy(&critical_points.density_buf);
 #else
@@ -1638,7 +1638,7 @@ struct VeloxChem : viamd::EventHandler {
                 .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
                 .flags  = MD_GPU_IMAGE_STORAGE,
             };
-            md_gpu_image_t img = md_gpu_create_image(gpu_device, &img_desc);
+            md_gpu_image_t img = md_gpu_image_create(gpu_device, &img_desc);
             md_gto_density_buf_t buf = {};
             bool success = false;
 
@@ -1646,31 +1646,30 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_fence_t fence = nullptr;
                 if (md_gto_grid_evaluate_density_gpu(gpu_device, &buf, img, &grid, &fence)) {
                     md_gpu_fence_wait(fence);
-                    md_gpu_destroy_fence(fence);
+                    md_gpu_fence_destroy(fence);
 
                     // Readback: copy GPU image into a CPU-visible staging buffer, then upload to GL
                     size_t num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
                     md_gpu_buffer_desc_t staging_desc = { .size = num_voxels * sizeof(float), .flags = MD_GPU_BUFFER_CPU_VISIBLE };
-                    md_gpu_buffer_t staging = md_gpu_create_buffer(gpu_device, &staging_desc);
+                    md_gpu_buffer_t staging = md_gpu_buffer_create(gpu_device, &staging_desc);
                     if (staging) {
-                        md_gpu_queue_t          queue = md_gpu_acquire_compute_queue(gpu_device);
-                        md_gpu_command_buffer_t cmd   = md_gpu_acquire_command_buffer(queue);
+                        md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
+                        md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
                         md_gpu_cmd_copy_image_to_buffer(cmd, img, staging);
                         md_gpu_fence_t rfence = md_gpu_queue_submit(queue, cmd);
                         md_gpu_fence_wait(rfence);
-                        md_gpu_destroy_fence(rfence);
+                        md_gpu_fence_destroy(rfence);
 
-                        const float* pixels = (const float*)md_gpu_map_buffer(staging);
+                        const float* pixels = (const float*)md_gpu_buffer_cpu_ptr(staging);
                         gl::set_texture_3D_data(vol_tex, 0, pixels, GL_R32F);
-                        md_gpu_unmap_buffer(staging);
-                        md_gpu_destroy_buffer(staging);
+                        md_gpu_buffer_destroy(staging);
                         success = true;
                     }
                 }
             }
 
             md_gto_density_buf_destroy(&buf);
-            if (img) md_gpu_destroy_image(img);
+            if (img) md_gpu_image_destroy(img);
 
             if (success) return true;
             MD_LOG_ERROR("compute_electron_density_GPU: Metal path failed, falling back to GL");
@@ -2947,7 +2946,7 @@ struct VeloxChem : viamd::EventHandler {
 
                         // Destroy and recreate the GPU density image at new dimensions
                         if (critical_points.gpu_density_image) {
-                            md_gpu_destroy_image(critical_points.gpu_density_image);
+                            md_gpu_image_destroy(critical_points.gpu_density_image);
                             critical_points.gpu_density_image = nullptr;
                         }
                         md_gto_density_buf_destroy(&critical_points.density_buf);
@@ -2959,7 +2958,7 @@ struct VeloxChem : viamd::EventHandler {
                             .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
                             .flags  = MD_GPU_IMAGE_STORAGE,
                         };
-                        critical_points.gpu_density_image = md_gpu_create_image(state.gpu_device, &img_desc);
+                        critical_points.gpu_density_image = md_gpu_image_create(state.gpu_device, &img_desc);
 
                         const double* density_matrix = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_ALPHA);
                         if (density_matrix && critical_points.gpu_density_image) {
@@ -2967,7 +2966,7 @@ struct VeloxChem : viamd::EventHandler {
                                 md_gpu_fence_t fence = nullptr;
                                 if (md_gto_grid_evaluate_density_gpu(state.gpu_device, &critical_points.density_buf, critical_points.gpu_density_image, &critical_points.grid, &fence)) {
                                     md_gpu_fence_wait(fence);
-                                    md_gpu_destroy_fence(fence);
+                                    md_gpu_fence_destroy(fence);
                                 } else {
                                     MD_LOG_ERROR("Failed to evaluate electron density on GPU for critical points analysis");
                                 }
@@ -2996,9 +2995,11 @@ struct VeloxChem : viamd::EventHandler {
                         md_topo_extremum_graph_free(&critical_points.raw_graph);
 #if MD_ENABLE_GPU
                         if (critical_points.gpu_density_image) {
-                            if (!md_topo_compute_extremum_graph_gpu(&critical_points.raw_graph, state.gpu_device, critical_points.gpu_density_image, &critical_points.grid, 0.0f)) {
+                            md_topo_gpu_work_t* work = md_topo_compute_extremum_graph_gpu(state.gpu_device, critical_points.gpu_density_image, &critical_points.grid, 0.0f);
+                            if (!work) {
                                 MD_LOG_ERROR("Failed to compute extremum graph for electron density");
                             }
+                            md_topo_gpu_work_finish(&critical_points.raw_graph, work);
                         }
 #else
                         if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, critical_points.density_vol.tex_id, &critical_points.grid, 0.0f)) {

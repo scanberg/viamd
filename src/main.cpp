@@ -443,7 +443,7 @@ int main(int argc, char** argv) {
 
 #if MD_ENABLE_GPU
     VIAMD_LOG_DEBUG("Initializing GPU device...");
-    state.gpu_device = md_gpu_create_device();
+    state.gpu_device = md_gpu_device_create();
     if (!state.gpu_device) {
         VIAMD_LOG_ERROR("Failed to create GPU device");
     }
@@ -1210,7 +1210,7 @@ int main(int argc, char** argv) {
     destroy_gbuffer(&state.gbuffer);
 #if MD_ENABLE_GPU
     if (state.gpu_device) {
-        md_gpu_destroy_device(state.gpu_device);
+        md_gpu_device_destroy(state.gpu_device);
         state.gpu_device = nullptr;
     }
 #endif
