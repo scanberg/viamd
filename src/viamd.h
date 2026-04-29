@@ -1046,6 +1046,26 @@ struct PickingTooltipTextRequest {
     md_strb_t sb = {};
 };
 
+enum ViewFitRound {
+    ViewFitRound_Highlight = 0,
+    ViewFitRound_Selection,
+    ViewFitRound_Visible,
+};
+
+// This is the supplied event payload for requesting a view fit.
+// The idea is to construct a weighted point cloud of whatever is 'highlighted'
+// And then the view fit system can decide how to best fit the view based on that point cloud.
+// This is dispatched in rounds starting with the top most priority being Highlight, then Selection and lastly Visible.
+// If the point cloud is empty for a certain mode, the next mode will be dispatched, until a non empty point cloud is found or all modes are exhausted.
+
+struct ViewFitRequest {
+    const ApplicationState& app;
+	uint64_t surface_id = 0;        // Source of the view fit request, can be used to filter out irrelevant requests or for debugging.
+	md_array(vec4_t) xyzw = nullptr;
+	md_allocator_i* alloc = nullptr;
+    ViewFitRound round;
+};
+
 enum class InteractionSelectionMode {
     None,
     Append,

@@ -60,10 +60,10 @@
 #define U32_MAGENTA IM_COL32(255, 0, 255, 255)
 
 #define U32_VELOXCHEM_GREEN IM_COL32(0, 162, 135, 191)
-#define F32_VELOXCHEM_GREEN {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f}
+#define VEC4_VELOXCHEM_GREEN {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f}
 
 // Complement to veloxchem green (magentaish)
-#define F32_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
+#define VEC4_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
 
 constexpr uint64_t interaction_surface_nto = HASH_STR_LIT64("interaction surface nto");
 constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface orb");
@@ -375,8 +375,8 @@ struct VeloxChem : viamd::EventHandler {
         vec4_t col_neg = { 1.0f, 0.804f, 0.0f,   0.75f };
 
         vec4_t col_den = { 1.0f, 1.0f, 1.0f, 0.75f };
-        vec4_t col_att = F32_VELOXCHEM_GREEN;
-        vec4_t col_det = F32_VELOXCHEM_MAGENTA;
+        vec4_t col_att = VEC4_VELOXCHEM_GREEN;
+        vec4_t col_det = VEC4_VELOXCHEM_MAGENTA;
 
         struct {
             bool enabled = false;
@@ -1084,8 +1084,44 @@ struct VeloxChem : viamd::EventHandler {
                 if (critical_points.enabled) {
                     size_t num_cp = md_topo_total_critical_points(&critical_points.simp_graph);
                     picking_range_reserve(&critical_points.picking_range, space, PickingDomain_CriticalPoints, num_cp);
-                    break;
                 }
+                break;
+            }
+            case viamd::EventType_ViamdViewFit: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_ViewFitRequest);
+                ViewFitRequest* req = (ViewFitRequest*)e.payload;
+                if (req && req->surface_id == interaction_surface_main) {
+                    md_bitfield_t* bf = nullptr;
+                    switch (req->round) {
+                    case ViewFitRound_Highlight:
+                        bf = &critical_points.highlight_mask; break;
+                    case ViewFitRound_Selection:
+                        bf = &critical_points.selection_mask; break;
+					case ViewFitRound_Visible: [[fallthrough]];
+                    default:
+                        break;
+                    }
+
+                    // Add highlighted atoms to the mask used for view fitting, so that they are included in the computed optimal view
+                    if (critical_points.enabled) {
+                        size_t popcount = bf ? md_bitfield_popcount(bf) : 0;
+                        if (popcount > 0) {
+                            vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
+                            if (dst_xyzw) {
+                                md_bitfield_iter_t it = md_bitfield_iter_create(bf);
+                                while (md_bitfield_iter_next(&it)) {
+                                    size_t idx = md_bitfield_iter_idx(&it);
+                                    dst_xyzw->x = critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM;
+                                    dst_xyzw->y = critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM;
+                                    dst_xyzw->z = critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM;
+                                    dst_xyzw->w = 1.0f;
+                                    dst_xyzw++;
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
             }
             default:
                 break;
@@ -1206,7 +1242,9 @@ struct VeloxChem : viamd::EventHandler {
                         //nto.show_window = true;
 
                         picking_surface_init(&nto.picking_surface, interaction_surface_nto);
-                        nto.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, nto.distance_scale);
+						vec3_t center = (oabb.min_ext + oabb.max_ext) * 0.5f * BOHR_TO_ANGSTROM;
+						vec3_t half_ext = (oabb.max_ext - oabb.min_ext) * 0.5f * BOHR_TO_ANGSTROM;
+                        nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
                         nto.camera = nto.target;
 
 						size_t num_vlx_atoms = md_vlx_number_of_atoms(vlx);
@@ -5686,7 +5724,9 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (reset_view) {
-                    nto.target = compute_optimal_view(oabb.min_ext * BOHR_TO_ANGSTROM, oabb.max_ext * BOHR_TO_ANGSTROM, oabb.orientation, nto.distance_scale);
+					vec3_t center = vec3_lerp(aabb.min_ext, aabb.max_ext, 0.5f) * BOHR_TO_ANGSTROM;
+					vec3_t half_ext = (aabb.max_ext - aabb.min_ext) * 0.5f * BOHR_TO_ANGSTROM;
+                    nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
                 }
 
                 if (nto.show_coordinate_system_widget) {

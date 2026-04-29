@@ -195,7 +195,7 @@ struct DensityVolume : viamd::EventHandler {
                         vec3_t max_aabb = vec3_set1( s);
                         model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
                         voxel_spacing = vec3_t{2*s / prop_data->dim[1], 2*s / prop_data->dim[2], 2*s / prop_data->dim[3]};
-                        default_view = compute_optimal_view(min_aabb, max_aabb);
+                        default_view = compute_optimal_view((min_aabb + max_aabb) * 0.5f, (max_aabb - min_aabb) * 0.5f);
                         if (reset_view) {
                             target = default_view;
                             camera = default_view;

@@ -1057,7 +1057,61 @@ int main(int argc, char** argv) {
         }
 
         if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
-            reset_view(&state.view.target, state.mold.sys, &state.selection.highlight_mask);
+			ViewFitRequest fit_request = {
+				.app = state,
+				.surface_id = interaction_surface_main,
+                .xyzw = nullptr,
+                .alloc = state.allocator.frame,
+				.round = ViewFitRound_Highlight,
+            };
+			viamd::event_system_broadcast_event(viamd::EventType_ViamdViewFit, viamd::EventPayloadType_ViewFitRequest, &fit_request);
+
+			if (fit_request.xyzw == nullptr) {
+                // If no highlight, fallback to selection
+                fit_request.round = ViewFitRound_Selection;
+                viamd::event_system_broadcast_event(viamd::EventType_ViamdViewFit, viamd::EventPayloadType_ViewFitRequest, &fit_request);
+			}
+			if (fit_request.xyzw == nullptr) {
+                // If no selection, fallback to all
+                fit_request.round = ViewFitRound_Visible;
+                viamd::event_system_broadcast_event(viamd::EventType_ViamdViewFit, viamd::EventPayloadType_ViewFitRequest, &fit_request);
+            }
+
+            size_t count = md_array_size(fit_request.xyzw);
+            if (count > 0) {
+                // Extract OBB from returned pointcloud
+                vec3_t com = md_util_com_compute_vec4(fit_request.xyzw, 0, count, 0);
+                mat3_t cov = mat3_covariance_matrix_vec4(fit_request.xyzw, 0, count, com);
+                mat3_eigen_t eigen = mat3_eigen(cov);
+                mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+
+                // Compute min and maximum extent along the PCA axes
+                mat3_t basis = mat3_transpose(PCA);
+                vec3_t min_obb = vec3_set1(FLT_MAX);
+                vec3_t max_obb = vec3_set1(-FLT_MAX);
+
+                // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
+                for (size_t i = 0; i < count; ++i) {
+                    vec3_t xyz = vec3_from_vec4(fit_request.xyzw[i]);
+                    xyz = mat3_mul_vec3(PCA, xyz);
+                    min_obb = vec3_min(min_obb, xyz);
+                    max_obb = vec3_max(max_obb, xyz);
+                }
+
+				vec3_t ext = max_obb - min_obb;
+				float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
+
+                if (max_ext > 3.0f) {
+                    vec3_t half_ext = (max_obb - min_obb) * 0.5f;
+                    state.view.target = compute_optimal_view(com, half_ext, basis);
+                } else {
+                    state.view.target.position = com + state.view.target.orientation * vec3_set(0, 0, state.view.target.distance);
+                }
+                state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
+            }
+            else {
+				state.view.target = state.mold.default_view;
+            }
         }
 
         bool do_screenshot = !str_empty(state.screenshot.path_to_file);

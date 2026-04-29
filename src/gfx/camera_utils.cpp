@@ -240,41 +240,39 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
     return false;
 }
 
-ViewTransform compute_optimal_view(const vec3_t& in_min_ext, const vec3_t& in_max_ext, const mat3_t& in_basis, float distance_scale) {
-    const vec3_t ext = in_max_ext - in_min_ext;
-    const float len = MAX(vec3_length(ext * 0.5f), 5.0f);
+ViewTransform compute_optimal_view(const vec3_t& center, const vec3_t& half_ext, const mat3_t& basis, float distance_scale) {
+    const float len = MAX(vec3_length(half_ext * 0.5f), 5.0f);
+    const float max_ext = MAX(MAX(half_ext.x, half_ext.y), half_ext.z);
+    const float min_ext = MIN(MIN(half_ext.x, half_ext.y), half_ext.z);
 
-    const float max_ext = MAX(MAX(ext.x, ext.y), ext.z);
-    const float min_ext = MIN(MIN(ext.x, ext.y), ext.z);
-    const float aniso_ext = max_ext / min_ext;
+	vec3_t up  = vec3_set(0, 0, 1);
+    vec3_t dir = vec3_normalize(vec3_set(0.6f, 0.5f, 1.0f));
+    if (max_ext > 0.0f) {
+        const float aniso_ext = max_ext / min_ext;
 
-    // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
+        // We want to align the view such that we the longest axis of the aabb align with the X-axis, the mid axis with the Y-axis
+        int l[3] = { 0, 1, 2 };
+        auto swap = [](int& a, int& b) { int t = a; a = b; b = t; };
+        if (aniso_ext > 1.1f) {
+            // The aabb is not uniform, so we sort the axes by length
+            if (half_ext[l[0]] < half_ext[l[1]]) swap(l[0], l[1]);
+            if (half_ext[l[1]] < half_ext[l[2]]) swap(l[1], l[2]);
+            if (half_ext[l[0]] < half_ext[l[1]]) swap(l[0], l[1]);
+            // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
+        }
 
-    int l[3] = { 0, 1, 2 };
-
-    auto swap = [](int& a, int& b) { int t = a; a = b; b = t; };
-
-    if (aniso_ext > 1.1f) {
-        // The aabb is not uniform, so we sort the axes by length
-        if (ext[l[0]] < ext[l[1]]) swap(l[0], l[1]);
-        if (ext[l[1]] < ext[l[2]]) swap(l[1], l[2]);
-        if (ext[l[0]] < ext[l[1]]) swap(l[0], l[1]);
-        // Now the axes are sorted with respect to the length l[0] > l[1] > l[2]
+               up    = basis[l[1]];
+        vec3_t right = basis[l[0]];
+        vec3_t out   = basis[l[2]];
+        dir = vec3_normalize(right * dir.x + up * dir.y + out * dir.z);
     }
 
-    const vec3_t right = in_basis[l[0]];
-    const vec3_t up    = in_basis[l[1]];
-    const vec3_t out   = in_basis[l[2]];
-
-    const vec3_t dir = vec3_normalize(right * 0.6f + up * 0.5f + out * 1.0f);
-
-    const vec3_t cen = in_basis * ((in_min_ext + in_max_ext) * 0.5f);
-    const vec3_t pos = cen + dir * len * distance_scale;
+    const vec3_t pos = center + dir * len * distance_scale;
 
     ViewTransform result = {
-        .orientation = quat_from_mat4(mat4_look_at(pos, cen, up)),
+        .orientation = quat_from_mat4(mat4_look_at(pos, center, up)),
         .position = pos,
-        .distance = vec3_length(pos - cen),
+        .distance = vec3_length(pos - center),
 	};
     
     return result;
