@@ -613,7 +613,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     vec4_t selection_color = state.selection.color.selection.visible;
                     vec4_t highlight_color = state.selection.color.highlight.visible;
-                    highlight_color.w += sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE;
+                    highlight_color.w += (float)(sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE);
                     highlight_color.w = CLAMP(highlight_color.w, 0.0f, 1.0f);
 
                     float saturation_scale = md_bitfield_popcount(&critical_points.selection_mask) > 0 ? state.selection.color.saturation : 1.0f;
@@ -1111,9 +1111,9 @@ struct VeloxChem : viamd::EventHandler {
                                 md_bitfield_iter_t it = md_bitfield_iter_create(bf);
                                 while (md_bitfield_iter_next(&it)) {
                                     size_t idx = md_bitfield_iter_idx(&it);
-                                    dst_xyzw->x = critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM;
-                                    dst_xyzw->y = critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM;
-                                    dst_xyzw->z = critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM;
+                                    dst_xyzw->x = (float)critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM;
+                                    dst_xyzw->y = (float)critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM;
+                                    dst_xyzw->z = (float)critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM;
                                     dst_xyzw->w = 1.0f;
                                     dst_xyzw++;
                                 }
@@ -1668,11 +1668,11 @@ struct VeloxChem : viamd::EventHandler {
             md_gpu_image_t img = md_gpu_image_create(gpu_device, &img_desc);
 
             if (img) {
-                md_gto_density_buf_layout_t layout = md_gto_density_buf_compute_layout(&basis, (const float*)atom_xyz, density_matrix, cutoff_value, cutoff_value);
+                md_gto_eval_buf_layout_t layout = md_gto_eval_buf_compute_layout_density(&basis);
                 md_gpu_buffer_desc_t buf_desc = { .size = layout.total_size, .flags = MD_GPU_BUFFER_CPU_VISIBLE };
                 md_gpu_buffer_t gpu_buf = md_gpu_buffer_create(gpu_device, &buf_desc);
                 if (gpu_buf) {
-                    md_gto_density_buf_fill(gpu_buf, &layout, &basis, (const float*)atom_xyz, density_matrix, cutoff_value);
+                    md_gto_eval_buf_fill_density(gpu_buf, &layout, &basis, (const float*)atom_xyz, density_matrix, cutoff_value);
                     md_gpu_fence_t fence = md_gto_grid_evaluate_density_gpu(gpu_device, gpu_buf, &layout, img, &grid);
                     if (fence) {
                         md_gpu_fence_wait(fence);
@@ -2989,12 +2989,12 @@ struct VeloxChem : viamd::EventHandler {
                             };
                             md_gpu_image_t gpu_density_image = md_gpu_image_create(state.gpu_device, &img_desc);
 
-                            md_gto_density_buf_layout_t layout = md_gto_density_buf_compute_layout(&basis, (const float*)atom_xyz, density_matrix, DEFAULT_GTO_CUTOFF_VALUE, 0.0);
+                            md_gto_eval_buf_layout_t layout = md_gto_eval_buf_compute_layout_density(&basis);
                             md_gpu_buffer_desc_t buf_desc = { .size = layout.total_size, .flags = MD_GPU_BUFFER_CPU_VISIBLE };
                             md_gpu_buffer_t density_buf = md_gpu_buffer_create(state.gpu_device, &buf_desc);
 
                             if (gpu_density_image && density_buf) {
-                                md_gto_density_buf_fill(density_buf, &layout, &basis, (const float*)atom_xyz, density_matrix, DEFAULT_GTO_CUTOFF_VALUE);
+                                md_gto_eval_buf_fill_density(density_buf, &layout, &basis, (const float*)atom_xyz, density_matrix, DEFAULT_GTO_CUTOFF_VALUE);
                                 md_gpu_fence_t fence = md_gto_grid_evaluate_density_gpu(state.gpu_device, density_buf, &layout, gpu_density_image, &grid);
                                 if (fence) {
                                     md_gpu_fence_wait(fence);

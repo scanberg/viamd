@@ -2671,6 +2671,12 @@ void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfi
 
     mat3_t basis = mat3_transpose(PCA);
     vec3_t half_ext = (vec3_from_vec4(max_ext) - vec3_from_vec4(min_ext)) * 0.5f;
+
+    mat3_t A = {};
+    md_unitcell_A_extract(A.elem, &sys.unitcell);
+    mat4_t unitcell_transform = mat4_translate_vec3(-mat3_mul_vec3(A, vec3_set1(0.5f)));
+    com = mat4_mul_vec3(unitcell_transform, com, 1.0f);
+
     ViewTransform opt_view = compute_optimal_view(com, half_ext, basis);
 
     if (count <= 4) {
@@ -2681,11 +2687,6 @@ void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfi
         // Copy full optimal view
         *transform = opt_view;
     }
-    
-    mat3_t A = {};
-    md_unitcell_A_extract(A.elem, &sys.unitcell);
-    mat4_t unitcell_transform = mat4_translate_vec3(-mat3_mul_vec3(A, vec3_set1(0.5f)));
-	transform->position = mat4_mul_vec3(unitcell_transform, transform->position, 1.0f);
 }
 
 void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_events) {
