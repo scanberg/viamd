@@ -2414,20 +2414,19 @@ void interaction_surface_event_extract(InteractionSurfaceEvent* event, const Int
     event->region_max   = state.region_max;
     event->hit = hit;
 
-    if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
+    if (ImGui::IsKeyDown(ImGuiMod_Shift) && state.region_max != state.region_min) {
         event->selection_mode = state.selection_mode;
-        if (state.region_max != state.region_min) {
-            event->kind = InteractionSurfaceEventKind::RegionSelect;
-            if (state.active) {
-                event->region_phase = InteractionSurfaceEventPhase::Update;
-            } else if (state.deactivated) {
-                event->region_phase = InteractionSurfaceEventPhase::Commit;
-            }
-        } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
-            event->kind = InteractionSurfaceEventKind::Click;
-            if (state.deactivated) {
-                event->region_phase = InteractionSurfaceEventPhase::Commit;
-            }
+        event->kind = InteractionSurfaceEventKind::RegionSelect;
+        if (state.active) {
+            event->region_phase = InteractionSurfaceEventPhase::Update;
+        } else if (state.deactivated) {
+            event->region_phase = InteractionSurfaceEventPhase::Commit;
+        }
+    } else if (ImGui::IsKeyDown(ImGuiMod_Shift) && (ImGui::IsMouseReleased(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Right))) {
+        event->selection_mode = state.selection_mode;
+        event->kind = InteractionSurfaceEventKind::Click;
+        if (state.deactivated) {
+            event->region_phase = InteractionSurfaceEventPhase::Commit;
         }
     } else if (state.hovered) {
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0)) {
