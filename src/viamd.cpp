@@ -2727,7 +2727,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             }
                         }
                     } else if (surf->hit.domain == PickingDomain_Bond) {
-                        int32_t bond_idx = surf->hit.local_idx;
+                        size_t bond_idx = surf->hit.local_idx;
                         if (bond_idx < state->mold.sys.bond.count) {
                             md_bitfield_set_bit(&state->selection.highlight_mask, state->mold.sys.bond.pairs[bond_idx].idx[0]);
                             md_bitfield_set_bit(&state->selection.highlight_mask, state->mold.sys.bond.pairs[bond_idx].idx[1]);
