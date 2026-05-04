@@ -1,4 +1,4 @@
-#define IMGUI_DEFINE_MATH_OPERATORS
+﻿#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <event.h>
 #include <viamd_event.h>
@@ -134,49 +134,47 @@ struct AABB {
     vec3_t max_ext = { 0 };
 };
 
-static void calculate_bounding_volumes(OABB* oabb, AABB* aabb, const vec3_t* atom_xyz, size_t count) {
+static void calculate_bounding_volumes(OABB* oabb, AABB* aabb, const vec4_t* atom_xyzw, size_t count) {
     md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
     defer{ md_arena_allocator_destroy(temp_arena); };
 
-    vec4_t* xyzw = (vec4_t*)md_arena_allocator_push(temp_arena, sizeof(vec4_t) * count);
     vec4_t acc = vec4_zero();
     for (size_t i = 0; i < count; ++i) {
-        xyzw[i] = vec4_set(atom_xyz[i].x, atom_xyz[i].y, atom_xyz[i].z, 1.0f);
-        acc = vec4_add(acc, xyzw[i]);
+        acc = vec4_add(acc, atom_xyzw[i]);
     }
     vec3_t com = acc.w > 0.0f ? vec3_from_vec4(acc / acc.w) : vec3_zero();
 
-    mat3_t cov = mat3_covariance_matrix_vec4(xyzw, nullptr, count, com);
+    mat3_t cov = mat3_covariance_matrix_vec4(atom_xyzw, nullptr, count, com);
     mat3_eigen_t eigen = mat3_eigen(cov);
     mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+    mat4_t T = mat4_from_mat3(PCA);
 
     // Compute min and maximum extent along the PCA axes
-    oabb->orientation = mat3_transpose(PCA);
-    oabb->min_ext = vec3_set1( FLT_MAX);
-    oabb->max_ext = vec3_set1(-FLT_MAX);
+    vec4_t oabb_min = vec4_set1( FLT_MAX);
+    vec4_t oabb_max = vec4_set1(-FLT_MAX);
 
-    aabb->min_ext = vec3_set1(FLT_MAX);
-    aabb->max_ext = vec3_set1(-FLT_MAX);
+    vec4_t aabb_min = vec4_set1(FLT_MAX);
+    vec4_t aabb_max = vec4_set1(-FLT_MAX);
 
     // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < count; ++i) {
-        vec3_t xyz = atom_xyz[i];
-        aabb->min_ext = vec3_min(aabb->min_ext, xyz);
-        aabb->max_ext = vec3_max(aabb->max_ext, xyz);
+        aabb_min = vec4_min(aabb_min, atom_xyzw[i]);
+        aabb_max = vec4_max(aabb_max, atom_xyzw[i]);
 
-        vec3_t xyz_pca = mat3_mul_vec3(PCA, xyz);
-        oabb->min_ext = vec3_min(oabb->min_ext, xyz_pca);
-        oabb->max_ext = vec3_max(oabb->max_ext, xyz_pca);
+        vec4_t xyzw_pca = mat4_mul_vec4(T, atom_xyzw[i]);
+        oabb_min = vec4_min(oabb_min, xyzw_pca);
+        oabb_max = vec4_max(oabb_max, xyzw_pca);
     }
 
     // Apply padding
     const float pad = 6.0f;
 
-    aabb->min_ext -= vec3_set1(pad);
-    aabb->max_ext += vec3_set1(pad);
+    aabb->min_ext = vec3_from_vec4(aabb_min - pad);
+    aabb->max_ext = vec3_from_vec4(aabb_max + pad);
 
-    oabb->min_ext -= vec3_set1(pad);
-    oabb->max_ext += vec3_set1(pad);
+    oabb->orientation = mat3_transpose(PCA);
+    oabb->min_ext = vec3_from_vec4(oabb_min - pad);
+    oabb->max_ext = vec3_from_vec4(oabb_max + pad);
 }
 
 // Construct texture to world transformation matrix for Volume
@@ -260,6 +258,37 @@ static void attribute_charge(double out_charge[], const int* ao_to_idx, const do
 	md_temp_set_pos_back(temp_pos);
 }
 
+#if MD_ENABLE_GPU
+// Call once per command buffer before any GTO evaluate that needs atom positions.
+// Clears *dirty on success. Safe to call when !(*dirty) — returns immediately.
+static void gpu_upload_atoms_if_dirty(
+    md_gpu_command_buffer_t  cmd,
+    md_gpu_bump_alloc_t*     bump,
+    md_gpu_buffer_t          gpu_atoms,
+    const float*             atom_xyzw,   // packed xyzw, stride = sizeof(vec4_t)
+    uint32_t                 num_atoms,
+    bool*                    dirty,
+    bool                     is_discrete)
+{
+    if (!*dirty) return;
+
+    if (!is_discrete) {
+        md_gto_gpu_atom_pack((float*)md_gpu_buffer_cpu_ptr(gpu_atoms),
+                             atom_xyzw, sizeof(vec4_t), num_atoms);
+    } else {
+        size_t sz = md_gto_gpu_atom_buffer_size(num_atoms);
+        md_gpu_alloc_t mem = md_gpu_bump_push(bump, sz, 0);
+        md_gto_gpu_atom_pack((float*)mem.cpu, atom_xyzw, sizeof(vec4_t), num_atoms);
+        md_gpu_cmd_copy_buffer(cmd, bump->buffer, gpu_atoms, sz, mem.offset, 0);
+        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_atoms,
+                                     MD_GPU_BARRIER_STAGE_TRANSFER,
+                                     MD_GPU_BARRIER_STAGE_COMPUTE);
+    }
+
+    *dirty = false;
+}
+#endif
+
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
     md_vlx_t* vlx = nullptr;
@@ -267,10 +296,14 @@ struct VeloxChem : viamd::EventHandler {
     bool use_gpu_path = false;
 #if MD_ENABLE_GPU
     md_gpu_device_t         gpu_device  = nullptr;
-    md_gto_gpu_basis_t      gpu_basis   = nullptr;
-    md_gpu_buffer_t         gpu_atoms   = nullptr;
-    md_gpu_buffer_t         gpu_coeff   = nullptr;
-    md_gpu_image_t          gpu_volume  = nullptr;
+    md_gpu_bump_alloc_t     gpu_bump    = {0};
+
+    md_gto_gpu_basis_t      gpu_basis   = nullptr;  // CGTO basis buffer, contains a gpu representation of the current basis set for vlx object
+    md_gpu_buffer_t         gpu_atoms   = nullptr;  // Packed float4 atom positions (xyz in Bohr, w unused), length = number of atoms in system
+    md_gpu_buffer_t         gpu_coeff   = nullptr;  // Buffer for storing AO coefficients for evaluation.
+    md_gpu_image_t          gpu_volume  = nullptr;  // 3d R32F texture for storing evaluated orbital / density values.
+
+    bool gpu_atoms_dirty = true;
 #endif
 
     // GL representations
@@ -283,7 +316,8 @@ struct VeloxChem : viamd::EventHandler {
     OABB oabb = {};
 
     // Up to date packed atom xyz in BOHR ready to be supplied for evaluation
-    vec3_t* atom_xyz = nullptr;
+    // The w component is padding for now. 16-bytes are used for better alignment (gpu buffer 1:1)
+    vec4_t* atom_xyzw = nullptr;
 
     // This is the default view which is used as a reset view target
     ViewTransform default_view = {};
@@ -303,7 +337,11 @@ struct VeloxChem : viamd::EventHandler {
         uint64_t raw_hash = 0;
         uint64_t simp_hash = 0;
 
-        md_topo_extremum_graph_t raw_graph = { 0 };
+#if MD_ENABLE_GPU
+        md_topo_gpu_context_t* topo_ctx      = nullptr;
+        uint32_t               topo_dims[3]  = {};
+#endif
+        md_topo_extremum_graph_t raw_graph  = { 0 };
         md_topo_extremum_graph_t simp_graph = { 0 };
 
         PickingRange picking_range = {};
@@ -534,10 +572,14 @@ struct VeloxChem : viamd::EventHandler {
                 use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
 #if MD_ENABLE_GPU
                 gpu_device = state.gpu_device;
+                md_gpu_bump_init(&gpu_bump, gpu_device, MEGABYTES(1));
 #endif
                 break;
             }
             case viamd::EventType_ViamdShutdown:
+#if MD_ENABLE_GPU
+                md_gpu_bump_free(&gpu_bump);
+#endif
                 md_arena_allocator_destroy(arena);
                 break;
             case viamd::EventType_ViamdFrameTick: {
@@ -780,23 +822,26 @@ struct VeloxChem : viamd::EventHandler {
                 if (vlx) {
                     // Update atom_xyz
                     if (qm_to_atom_idx) {
-                        ASSERT(md_array_size(atom_xyz) == md_vlx_number_of_atoms(vlx));
-                        for (size_t i = 0; i < md_array_size(atom_xyz); ++i) {
+                        ASSERT(md_array_size(atom_xyzw) == md_vlx_number_of_atoms(vlx));
+                        for (size_t i = 0; i < md_array_size(atom_xyzw); ++i) {
                             int sys_idx = qm_to_atom_idx[i];
-                            atom_xyz[i].x = (float)(state.mold.sys.atom.x[sys_idx] * ANGSTROM_TO_BOHR);
-                            atom_xyz[i].y = (float)(state.mold.sys.atom.y[sys_idx] * ANGSTROM_TO_BOHR);
-                            atom_xyz[i].z = (float)(state.mold.sys.atom.z[sys_idx] * ANGSTROM_TO_BOHR);
+                            atom_xyzw[i].x = (float)(state.mold.sys.atom.x[sys_idx] * ANGSTROM_TO_BOHR);
+                            atom_xyzw[i].y = (float)(state.mold.sys.atom.y[sys_idx] * ANGSTROM_TO_BOHR);
+                            atom_xyzw[i].z = (float)(state.mold.sys.atom.z[sys_idx] * ANGSTROM_TO_BOHR);
                         }
                     } else {
-                        ASSERT(md_array_size(atom_xyz) == state.mold.sys.atom.count);
-                        for (size_t i = 0; i < md_array_size(atom_xyz); ++i) {
-                            atom_xyz[i].x = (float)(state.mold.sys.atom.x[i] * ANGSTROM_TO_BOHR);
-                            atom_xyz[i].y = (float)(state.mold.sys.atom.y[i] * ANGSTROM_TO_BOHR);
-                            atom_xyz[i].z = (float)(state.mold.sys.atom.z[i] * ANGSTROM_TO_BOHR);
+                        ASSERT(md_array_size(atom_xyzw) == state.mold.sys.atom.count);
+                        for (size_t i = 0; i < md_array_size(atom_xyzw); ++i) {
+                            atom_xyzw[i].x = (float)(state.mold.sys.atom.x[i] * ANGSTROM_TO_BOHR);
+                            atom_xyzw[i].y = (float)(state.mold.sys.atom.y[i] * ANGSTROM_TO_BOHR);
+                            atom_xyzw[i].z = (float)(state.mold.sys.atom.z[i] * ANGSTROM_TO_BOHR);
                         }
                     }
                     // Recalculate OBB and AABB
-                    calculate_bounding_volumes(&oabb, &aabb, atom_xyz, md_array_size(atom_xyz));
+                    calculate_bounding_volumes(&oabb, &aabb, atom_xyzw, md_array_size(atom_xyzw));
+#if MD_ENABLE_GPU
+                    gpu_atoms_dirty = true;
+#endif
                 }
 
                 for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
@@ -1090,7 +1135,7 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_PickingSpace);
                 PickingSpace* space = (PickingSpace*)e.payload;
                 if (critical_points.enabled) {
-                    size_t num_cp = md_topo_total_critical_points(&critical_points.simp_graph);
+                    size_t num_cp = md_topo_num_critical_points(&critical_points.simp_graph);
                     picking_range_reserve(&critical_points.picking_range, space, PickingDomain_CriticalPoints, num_cp);
                 }
                 break;
@@ -1138,10 +1183,14 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void reset_data() {
+#if MD_ENABLE_GPU
         md_gto_gpu_basis_destroy(gpu_basis);
         md_gpu_buffer_destroy(gpu_atoms);
         md_gpu_buffer_destroy(gpu_coeff);
         md_gpu_image_destroy(gpu_volume);
+        md_gpu_bump_reset(&gpu_bump);
+        md_topo_gpu_context_destroy(critical_points.topo_ctx);
+#endif
 
         //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
@@ -1187,14 +1236,17 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 
                 if (md_vlx_parse_file(vlx, filename)) {
-                    MD_LOG_INFO("Successfully loaded VeloxChem data");
+                    if (!md_vlx_gto_basis_extract(&basis, vlx, arena)) {
+                        MD_LOG_ERROR("Failed to extract GTO basis from VLX object");
+                        return;
+                    }
+                    size_t num_vlx_atoms = md_vlx_number_of_atoms(vlx);
 
                     const int* local_to_global = md_vlx_local_to_global_atom_idx(vlx);
                     if (local_to_global) {
                         // This means that the vlx file is derived from a larger system and only contains data for a subset.
                         // We can support this by remapping atom indices.
                         // *HOWEVER* The VLX h5 file can be loaded as a stand alone system and in such case, the mapping should not be applied.
-                        size_t num_vlx_atoms = md_vlx_number_of_atoms(vlx);
                         if (num_vlx_atoms < state.mold.sys.atom.count) {
                             // @TODO: Check atomic numbers consistency as well
                             const uint8_t* atomic_numbers = md_vlx_atomic_numbers(vlx);
@@ -1222,8 +1274,6 @@ struct VeloxChem : viamd::EventHandler {
                     lumo_idx[0] = (int)md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
                     lumo_idx[1] = (int)md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_BETA);
 
-                    md_vlx_gto_basis_extract(&basis, vlx, arena);
-
                     size_t num_colors = state.mold.sys.atom.count;
                     uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, num_colors * sizeof(uint32_t));
                     color_atoms_type(colors, num_colors, state.mold.sys);
@@ -1240,31 +1290,38 @@ struct VeloxChem : viamd::EventHandler {
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
 
-                    md_array_resize(atom_xyz, md_vlx_number_of_atoms(vlx), arena);
+                    md_array_resize(atom_xyzw, num_vlx_atoms, arena);
                     const dvec3_t* atom_vlx = md_vlx_atom_coordinates(vlx);
-                    for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
-                        atom_xyz[i] = vec3_set((float)atom_vlx[i].x, (float)atom_vlx[i].y, (float)atom_vlx[i].z) * ANGSTROM_TO_BOHR;
+                    for (size_t i = 0; i < num_vlx_atoms; ++i) {
+                        dvec3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
+                        atom_xyzw[i] = vec4_set(xyz.x, xyz.y, xyz.z, 1.0f);
                     }
-                    calculate_bounding_volumes(&oabb, &aabb, atom_xyz, md_array_size(atom_xyz));
+                    calculate_bounding_volumes(&oabb, &aabb, atom_xyzw, md_array_size(atom_xyzw));
 
 #if MD_ENABLE_GPU
+                    md_gpu_device_info_t gpu_info = {};
+                    md_gpu_device_info(gpu_device, &gpu_info);
+
+                    // Default buffer flags for buffers used for orbital evaluation.
+                    // If we have a unified memory architecture, we can make the buffers CPU visible and avoid staging + copy.
+
+                    md_gpu_buffer_flags_t buffer_flags = gpu_info.is_discrete ? MD_GPU_BUFFER_NONE : MD_GPU_BUFFER_CPU_VISIBLE;
+
                     md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
                     gpu_basis = md_gto_gpu_basis_create(gpu_device, &basis_desc);
 
-                    md_gpu_device_info_t gpu_info = {};
-                    md_gpu_device_info(gpu_device, &gpu_info);
                     uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-                    uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+                    uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
 
                     md_gpu_buffer_desc_t gpu_atom_desc = {
                         .size  = md_gto_gpu_atom_buffer_size(num_atoms),
-                        .flags = gpu_info.is_uma ? (md_gpu_buffer_flags_t)MD_GPU_BUFFER_CPU_VISIBLE : (md_gpu_buffer_flags_t)MD_GPU_BUFFER_NONE,
+                        .flags = buffer_flags,
                     };
                     gpu_atoms = md_gpu_buffer_create(gpu_device, &gpu_atom_desc);
 
                     md_gpu_buffer_desc_t gpu_coeff_desc = {
                         .size  = md_gto_gpu_coeff_size_density(num_cgtos),
-                        .flags = gpu_info.is_uma ? (md_gpu_buffer_flags_t)MD_GPU_BUFFER_CPU_VISIBLE : (md_gpu_buffer_flags_t)MD_GPU_BUFFER_NONE,
+                        .flags = buffer_flags,
                     };
                     gpu_coeff = md_gpu_buffer_create(gpu_device, &gpu_coeff_desc);
 
@@ -1273,7 +1330,7 @@ struct VeloxChem : viamd::EventHandler {
                         .height = 512,
                         .depth  = 512,
                         .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
-                        .flags = MD_GPU_IMAGE_STORAGE,
+                        .flags  = MD_GPU_IMAGE_STORAGE,
                     };
                     gpu_volume = md_gpu_image_create(gpu_device, &gpu_img_desc);
 #endif
@@ -1290,7 +1347,6 @@ struct VeloxChem : viamd::EventHandler {
                         nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
                         nto.camera = nto.target;
 
-						size_t num_vlx_atoms = md_vlx_number_of_atoms(vlx);
 						nto.atom_group_idx = md_array_create(uint32_t, num_vlx_atoms, arena);
                         MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_vlx_atoms);
 
@@ -1384,9 +1440,11 @@ struct VeloxChem : viamd::EventHandler {
                     // CriPoAl
                     md_bitfield_init(&critical_points.selection_mask, arena);
                     md_bitfield_init(&critical_points.highlight_mask, arena);
+
+                    MD_LOG_INFO("Successfully initialized VeloxChem data");
                 }
                 else {
-                    MD_LOG_INFO("Failed to load VeloxChem data");
+                    MD_LOG_INFO("Failed to initialize VeloxChem data");
                     reset_data();
                 }
             }
@@ -1420,12 +1478,60 @@ struct VeloxChem : viamd::EventHandler {
             MD_LOG_ERROR("Failed to retrieve NTO coefficients for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             return false;
         }
-#if MD_ENABLE_GPU
 
+#if MD_ENABLE_GPU
+        bool success = false;
+        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+            size_t   num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
+            size_t   rb_size    = num_voxels * sizeof(float);
+
+            md_gpu_device_info_t gpu_info = {};
+            md_gpu_device_info(gpu_device, &gpu_info);
+
+            md_gpu_bump_reset(&gpu_bump);
+
+            size_t coeff_sz = md_gto_gpu_coeff_size_mo(1, num_cgtos);
+            size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
+            md_gpu_bump_ensure(&gpu_bump, rb_size + coeff_sz + atom_sz + 1024);
+
+            md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size, 256);
+
+            md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
+            md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
+
+            const double* coeff_ptrs[1] = { nto_coeffs };
+
+            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+
+            if (!gpu_info.is_discrete) {
+                md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
+            } else {
+                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
+                md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
+                md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
+                md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+            }
+
+            md_gto_grid_evaluate_mo_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
+            md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_image_region_t region = {
+                .offset = {0},
+                .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+            };
+            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
+
+            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
+                gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
+                success = true;
+            }
+        }
+        return success;
 #else
-        md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, nto_coeffs, cutoff_value, mode);
-#endif
+        md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), nto_coeffs, cutoff_value, mode);
         return true;
+#endif
     }
 
     bool extract_attachment_detachment_orb_data(md_orbital_data_t* orb_data, double cutoff, AttachmentDetachmentType type, size_t nto_idx, md_allocator_i* alloc) {
@@ -1467,7 +1573,7 @@ struct VeloxChem : viamd::EventHandler {
             }
             MEMCPY(mo_coeffs, nto_src, sizeof(double) * num_ao);
 
-            size_t num_pruned = md_gto_expand_with_mo(temp_gtos, &basis, (const float*)atom_xyz, mo_coeffs, cutoff);
+            size_t num_pruned = md_gto_expand_with_mo(temp_gtos, &basis, (const float*)atom_xyzw, sizeof(vec4_t), mo_coeffs, cutoff);
             md_array_push_array(orb_data->gtos, temp_gtos, num_pruned, alloc);
             md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
             md_array_push(orb_data->orb_scaling, (float)lambda[i], alloc);
@@ -1504,7 +1610,7 @@ struct VeloxChem : viamd::EventHandler {
             for (size_t mo_idx = 0; mo_idx < num_mo; ++mo_idx) {
                 double occ = occ_a[mo_idx] + occ_b[mo_idx];
                 md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, mo_idx, MD_VLX_SPIN_ALPHA);
-                size_t num_gtos = md_gto_expand_with_mo(temp_gtos, &basis, (const float*)atom_xyz, mo_coeffs, cutoff);
+                size_t num_gtos = md_gto_expand_with_mo(temp_gtos, &basis, (const float*)atom_xyzw, sizeof(vec4_t), mo_coeffs, cutoff);
                 md_array_push_array(orb_data->gtos, temp_gtos, num_gtos, alloc);
                 md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
                 md_array_push(orb_data->orb_scaling, (float)occ, alloc);
@@ -1518,7 +1624,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (occ_a[mo_idx] > 0.0) {
                     md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, mo_idx, MD_VLX_SPIN_ALPHA);
-                    size_t num_gtos = md_gto_expand_with_mo(temp_gtos, &basis, (const float*)atom_xyz, mo_coeffs, cutoff);
+                    size_t num_gtos = md_gto_expand_with_mo(temp_gtos, &basis, (const float*)atom_xyzw, sizeof(vec4_t), mo_coeffs, cutoff);
                     md_array_push_array(orb_data->gtos, temp_gtos, num_gtos, alloc);
                     md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
                     md_array_push(orb_data->orb_scaling, (float)occ_a[mo_idx], alloc);
@@ -1526,7 +1632,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (occ_b[mo_idx] > 0.0) {
                     md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, mo_idx, MD_VLX_SPIN_BETA);
-                    size_t num_gtos = md_gto_expand_with_mo(temp_gtos, &basis, (const float*)atom_xyz, mo_coeffs, cutoff);
+                    size_t num_gtos = md_gto_expand_with_mo(temp_gtos, &basis, (const float*)atom_xyzw, sizeof(vec4_t), mo_coeffs, cutoff);
                     md_array_push_array(orb_data->gtos, temp_gtos, num_gtos, alloc);
                     md_array_push(orb_data->orb_offsets, (uint32_t)md_array_size(orb_data->gtos), alloc);
                     md_array_push(orb_data->orb_scaling, (float)occ_b[mo_idx], alloc);
@@ -1562,8 +1668,57 @@ struct VeloxChem : viamd::EventHandler {
             scales[i] = lambda[i];
         }
 
-        md_gto_grid_evaluate_multi_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, coeffs, scales, num_lambdas, cutoff_value, MD_GTO_EVAL_MODE_PSI_SQUARED);
+#if MD_ENABLE_GPU
+        bool success = false;
+        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+            size_t   num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
+            size_t   rb_size    = num_voxels * sizeof(float);
+
+            md_gpu_device_info_t gpu_info = {};
+            md_gpu_device_info(gpu_device, &gpu_info);
+
+            md_gpu_bump_reset(&gpu_bump);
+
+            size_t coeff_sz = md_gto_gpu_coeff_size_mo(num_lambdas, num_cgtos);
+            size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
+            md_gpu_bump_ensure(&gpu_bump, rb_size + coeff_sz + atom_sz + 1024);
+
+            md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size, 256);
+
+            md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
+            md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
+
+            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+
+            if (!gpu_info.is_discrete) {
+                md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeffs, scales, num_lambdas, num_cgtos);
+            } else {
+                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
+                md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeffs, scales, num_lambdas, num_cgtos);
+                md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
+                md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+            }
+
+            md_gto_grid_evaluate_mo_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, num_lambdas, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
+            md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_image_region_t region = {
+                .offset = {0},
+                .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+            };
+            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
+
+            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
+                gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
+                success = true;
+            }
+        }
+        return success;
+#else
+        md_gto_grid_evaluate_multi_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), coeffs, scales, num_lambdas, cutoff_value, MD_GTO_EVAL_MODE_PSI_SQUARED);
         return true;
+#endif
     }
 
     // Compute attachment / detachment density
@@ -1630,7 +1785,7 @@ struct VeloxChem : viamd::EventHandler {
 
         size_t max_gtos = md_gto_pgto_count(&basis);
         md_gto_t* gtos  = (md_gto_t*)md_vm_arena_push(alloc, sizeof(md_gto_t) * max_gtos);
-        size_t num_gtos = md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, mo_coeffs, cutoff_value);
+        size_t num_gtos = md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyzw, sizeof(vec4_t), mo_coeffs, cutoff_value);
 
         md_orbital_data_t orb_data = {
             .num_gtos = num_gtos,
@@ -1692,80 +1847,57 @@ struct VeloxChem : viamd::EventHandler {
 #if MD_ENABLE_GPU
         bool success = false;
         if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
-            uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-            uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
-            size_t coeff_size = md_gto_gpu_coeff_size_mo(1, num_cgtos);
-            size_t atom_size  = md_gto_gpu_atom_buffer_size(num_atoms);
+            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+            size_t   num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
+            size_t   rb_size    = num_voxels * sizeof(float);
 
             md_gpu_device_info_t gpu_info = {};
             md_gpu_device_info(gpu_device, &gpu_info);
+
+            md_gpu_bump_reset(&gpu_bump);
+
+            // Pre-size the bump before any pushes so no reallocation occurs mid-session.
+            // A reallocation would destroy the old mapping and invalidate rb_mem.cpu.
+            size_t coeff_sz = md_gto_gpu_coeff_size_mo(1, num_cgtos);
+            size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
+            md_gpu_bump_ensure(&gpu_bump, rb_size + coeff_sz + atom_sz + 1024);
+
+            // Reserve readback region first so its offset is known before recording
+            md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size, 256);
 
             md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
             md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
 
             const double* coeff_ptrs[1] = { ao_coeffs };
 
-            if (gpu_info.is_uma) {
-                // Pack directly into the CPU-visible coeff buffer
-                float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
-                md_gto_gpu_coeff_pack_mo(dst, coeff_ptrs, nullptr, 1, num_cgtos);
+            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
 
-                float* atom_dst = (float*)md_gpu_buffer_cpu_ptr(gpu_atoms);
-                md_gto_gpu_atom_pack(atom_dst, (const float*)atom_xyz, num_atoms);
+            if (!gpu_info.is_discrete) {
+                md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
             } else {
-                // Pack into a temporary staging buffer, record copy into cmd
-                md_gpu_bump_alloc_t bump = {0};
-                bump.device = gpu_device;
-                if (md_gpu_bump_ensure(&bump, coeff_size + atom_size + 64)) {
-                    md_gpu_alloc_t a_atoms = md_gpu_bump_push(&bump, atom_size, 16);
-                    md_gto_gpu_atom_pack((float*)a_atoms.cpu, (const float*)atom_xyz, num_atoms);
-                    md_gpu_cmd_copy_buffer(cmd, bump.buffer, gpu_atoms, atom_size, a_atoms.offset, 0);
-                    md_gpu_cmd_barrier_buffer_ex(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-
-                    md_gpu_alloc_t a_coeff = md_gpu_bump_push(&bump, coeff_size, 16);
-                    md_gto_gpu_coeff_pack_mo((float*)a_coeff.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
-                    md_gto_gpu_coeff_upload_mo(cmd, gpu_coeff, bump.buffer, a_coeff.offset, 1, num_cgtos);
-                    // Submit + wait so staging can be freed before bump goes out of scope
-                    md_gpu_fence_t sfence = md_gpu_queue_submit(queue, cmd);
-                    if (sfence) { md_gpu_fence_wait(sfence); md_gpu_fence_destroy(sfence); }
-                    md_gpu_bump_free(&bump);
-
-                    // Acquire a fresh cmd for the evaluate + readback
-                    queue = md_gpu_queue_acquire(gpu_device);
-                    cmd   = md_gpu_command_buffer_acquire(queue);
-                } else {
-                    MD_LOG_ERROR("compute_mo_GPU: staging alloc failed");
-                }
+                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
+                md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
+                md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
+                md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
             md_gto_grid_evaluate_mo_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
-            md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
-            if (fence) {
-                md_gpu_fence_wait(fence);
-                md_gpu_fence_destroy(fence);
+            md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_image_region_t region = {
+                .offset = {0},
+                .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+            };
+            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-                size_t num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
-                md_gpu_buffer_desc_t rb_desc = { .size = num_voxels * sizeof(float), .flags = MD_GPU_BUFFER_CPU_VISIBLE };
-                md_gpu_buffer_t rb_buf = md_gpu_buffer_create(gpu_device, &rb_desc);
-                if (rb_buf) {
-                    md_gpu_queue_t          rqueue = md_gpu_queue_acquire(gpu_device);
-                    md_gpu_command_buffer_t rcmd   = md_gpu_command_buffer_acquire(rqueue);
-                    md_gpu_cmd_copy_image_to_buffer(rcmd, gpu_volume, rb_buf);
-                    md_gpu_fence_t rfence = md_gpu_queue_submit(rqueue, rcmd);
-                    if (rfence) {
-                        md_gpu_fence_wait(rfence);
-                        md_gpu_fence_destroy(rfence);
-                        const float* pixels = (const float*)md_gpu_buffer_cpu_ptr(rb_buf);
-                        gl::set_texture_3D_data(vol_tex, 0, pixels, GL_R32F);
-                        success = true;
-                    }
-                    md_gpu_buffer_destroy(rb_buf);
-                }
+            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
+                gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
+                success = true;
             }
         }
         return success;
 #else
-        md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, mo_coeffs, cutoff_value, mode);
+        md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), ao_coeffs, cutoff_value, mode);
         return true;
 #endif
     }
@@ -1780,93 +1912,56 @@ struct VeloxChem : viamd::EventHandler {
         }
 
 #if MD_ENABLE_GPU
-        if (gpu_device) {
-            bool success = false;
+        bool success = false;
+        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+            size_t   num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
+            size_t   rb_size    = num_voxels * sizeof(float);
 
-            md_gpu_image_desc_t img_desc = {
-                .width  = (uint32_t)grid.dim[0],
-                .height = (uint32_t)grid.dim[1],
-                .depth  = (uint32_t)grid.dim[2],
-                .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
-                .flags  = MD_GPU_IMAGE_STORAGE,
-            };
-            md_gpu_image_t img = md_gpu_image_create(gpu_device, &img_desc);
+            md_gpu_device_info_t gpu_info = {};
+            md_gpu_device_info(gpu_device, &gpu_info);
 
-            if (img) {
-            if (gpu_basis && gpu_atoms && gpu_coeff) {
-                uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-                uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
-                size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
-                size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
-                md_gpu_device_info_t gpu_info = {};
-                md_gpu_device_info(gpu_device, &gpu_info);
+            md_gpu_bump_reset(&gpu_bump);
 
-                md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
-                md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
+            size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
+            size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
+            md_gpu_bump_ensure(&gpu_bump, rb_size + coeff_sz + atom_sz + 1024);
 
-                if (gpu_info.is_uma) {
-                    float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
-                    md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
+            md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size, 256);
 
-                    float* atom_dst = (float*)md_gpu_buffer_cpu_ptr(gpu_atoms);
-                    md_gto_gpu_atom_pack(atom_dst, (const float*)atom_xyz, num_atoms);
-                } else {
-                    md_gpu_bump_alloc_t bump = {0};
-                    bump.device = gpu_device;
-                    if (md_gpu_bump_ensure(&bump, coeff_sz + atom_sz + 64)) {
-                        md_gpu_alloc_t a_atoms = md_gpu_bump_push(&bump, atom_sz, 16);
-                        md_gto_gpu_atom_pack((float*)a_atoms.cpu, (const float*)atom_xyz, num_atoms);
-                        md_gpu_cmd_copy_buffer(cmd, bump.buffer, gpu_atoms, atom_sz, a_atoms.offset, 0);
-                        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+            md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
+            md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
 
-                        md_gpu_alloc_t a_coeff = md_gpu_bump_push(&bump, coeff_sz, 16);
-                        md_gto_gpu_coeff_pack_density((float*)a_coeff.cpu, density_matrix, num_cgtos);
-                        md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, bump.buffer, a_coeff.offset, num_cgtos);
-                        // Submit staging copy, then proceed with a fresh cmd for evaluate+readback
-                        md_gpu_fence_t sfence = md_gpu_queue_submit(queue, cmd);
-                        if (sfence) { md_gpu_fence_wait(sfence); md_gpu_fence_destroy(sfence); }
-                        md_gpu_bump_free(&bump);
-                        queue = md_gpu_queue_acquire(gpu_device);
-                        cmd   = md_gpu_command_buffer_acquire(queue);
-                    } else {
-                        MD_LOG_ERROR("compute_electron_density_GPU: staging alloc failed");
-                    }
-                }
+            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
 
-                md_gto_grid_evaluate_density_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, img, &grid);
-                md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
-                if (fence) {
-                        md_gpu_fence_wait(fence);
-                        md_gpu_fence_destroy(fence);
-
-                        size_t num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
-                        md_gpu_buffer_desc_t staging_desc = { .size = num_voxels * sizeof(float), .flags = MD_GPU_BUFFER_CPU_VISIBLE };
-                        md_gpu_buffer_t staging_buf = md_gpu_buffer_create(gpu_device, &staging_desc);
-                        if (staging_buf) {
-                            md_gpu_queue_t          rqueue = md_gpu_queue_acquire(gpu_device);
-                            md_gpu_command_buffer_t rcmd   = md_gpu_command_buffer_acquire(rqueue);
-                            md_gpu_cmd_copy_image_to_buffer(rcmd, img, staging_buf);
-                            md_gpu_fence_t rfence = md_gpu_queue_submit(rqueue, rcmd);
-                            md_gpu_fence_wait(rfence);
-                            md_gpu_fence_destroy(rfence);
-
-                            const float* pixels = (const float*)md_gpu_buffer_cpu_ptr(staging_buf);
-                            gl::set_texture_3D_data(vol_tex, 0, pixels, GL_R32F);
-                            md_gpu_buffer_destroy(staging_buf);
-                            success = true;
-                        }
-                    }
-                }
-                md_gpu_image_destroy(img);
+            if (!gpu_info.is_discrete) {
+                md_gto_gpu_coeff_pack_density((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), density_matrix, num_cgtos);
+            } else {
+                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 16);
+                md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu, density_matrix, num_cgtos);
+                md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, num_cgtos);
+                md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            if (success) return true;
-            MD_LOG_ERROR("compute_electron_density_GPU: Metal path failed, falling back to GL");
-        }
-#endif
+            md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid);
+            md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_image_region_t region = {
+                .offset = {0},
+                .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+            };
+            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-        md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, density_matrix, false);
+            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
+                gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
+                success = true;
+            }
+        }
+        return success;
+#else
+        md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false);
         return true;
+#endif
     }
 
     task_system::ID compute_electron_density_async(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
@@ -1933,7 +2028,7 @@ struct VeloxChem : viamd::EventHandler {
 
         size_t max_gtos = md_gto_pgto_count(&basis);
         md_gto_t* gtos  = (md_gto_t*)md_vm_arena_push(alloc, sizeof(md_gto_t) * max_gtos);
-        size_t num_gtos = md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyz, mo_coeffs, cutoff_value);
+        size_t num_gtos = md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyzw, sizeof(vec4_t), mo_coeffs, cutoff_value);
         if (num_gtos == 0) {
             MD_LOG_ERROR("Failed to expand GTO for orbital index: %zu", mo_idx);
             md_vm_arena_destroy(alloc);
@@ -3138,103 +3233,80 @@ struct VeloxChem : viamd::EventHandler {
                         const double* density_matrix = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_ALPHA);
                         if (density_matrix) {
 #if MD_ENABLE_GPU
-                            md_gpu_image_desc_t img_desc = {
-                                .width  = (uint32_t)grid.dim[0],
-                                .height = (uint32_t)grid.dim[1],
-                                .depth  = (uint32_t)grid.dim[2],
-                                .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
-                                .flags  = MD_GPU_IMAGE_STORAGE,
-                            };
-                            md_gpu_image_t gpu_density_image = md_gpu_image_create(state.gpu_device, &img_desc);
-
-                            md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
-                            md_gto_gpu_basis_t gto_basis = md_gto_gpu_basis_create(state.gpu_device, &basis_desc);
-                            md_gpu_buffer_t atom_buf = NULL;
-                            md_gpu_buffer_t coeff_buf = NULL;
-                            if (gto_basis) {
-                                md_gpu_device_info_t _info = {};
-                                md_gpu_device_info(state.gpu_device, &_info);
-                                uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gto_basis);
-                                uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gto_basis);
-
-                                md_gpu_buffer_desc_t atom_desc = {
-                                    .size  = md_gto_gpu_atom_buffer_size(num_atoms),
-                                    .flags = _info.is_uma ? (md_gpu_buffer_flags_t)MD_GPU_BUFFER_CPU_VISIBLE : (md_gpu_buffer_flags_t)MD_GPU_BUFFER_NONE,
-                                };
-                                atom_buf = md_gpu_buffer_create(state.gpu_device, &atom_desc);
-
-                                md_gpu_buffer_desc_t coeff_desc = {
-                                    .size  = md_gto_gpu_coeff_size_density(num_cgtos),
-                                    .flags = _info.is_uma ? (md_gpu_buffer_flags_t)MD_GPU_BUFFER_CPU_VISIBLE : (md_gpu_buffer_flags_t)MD_GPU_BUFFER_NONE,
-                                };
-                                coeff_buf = md_gpu_buffer_create(state.gpu_device, &coeff_desc);
-                            }
-
-                            if (gpu_density_image && gto_basis && atom_buf && coeff_buf) {
-                                uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gto_basis);
-                                uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gto_basis);
-                                size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
+                            if (gpu_volume && gpu_basis && gpu_atoms && gpu_coeff) {
+                                size_t num_cgtos = basis.num_shells;
+                                size_t coeff_sz = md_gto_gpu_coeff_size_density(basis.num_shells);
                                 size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
+
+                                md_gpu_image_desc_t img_desc = {
+                                    .width  = (uint32_t)grid.dim[0],
+                                    .height = (uint32_t)grid.dim[1],
+                                    .depth  = (uint32_t)grid.dim[2],
+                                    .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
+                                    .flags = MD_GPU_IMAGE_STORAGE | MD_GPU_IMAGE_SAMPLED,
+                                };
+
+                                md_gpu_image_t img = md_gpu_image_create(state.gpu_device, &img_desc);
+
                                 md_gpu_device_info_t gpu_info = {};
                                 md_gpu_device_info(state.gpu_device, &gpu_info);
 
                                 md_gpu_queue_t          queue = md_gpu_queue_acquire(state.gpu_device);
                                 md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
 
-                                if (gpu_info.is_uma) {
-                                    float* dst = (float*)md_gpu_buffer_cpu_ptr(coeff_buf);
+                                gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+
+                                if (!gpu_info.is_discrete) {
+                                    float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
                                     md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
-
-                                    float* atom_dst = (float*)md_gpu_buffer_cpu_ptr(atom_buf);
-                                    md_gto_gpu_atom_pack(atom_dst, (const float*)atom_xyz, num_atoms);
                                 } else {
-                                    md_gpu_bump_alloc_t bump = {0};
-                                    bump.device = state.gpu_device;
-                                    if (md_gpu_bump_ensure(&bump, coeff_sz + atom_sz + 64)) {
-                                        md_gpu_alloc_t a_atoms = md_gpu_bump_push(&bump, atom_sz, 16);
-                                        md_gto_gpu_atom_pack((float*)a_atoms.cpu, (const float*)atom_xyz, num_atoms);
-                                        md_gpu_cmd_copy_buffer(cmd, bump.buffer, atom_buf, atom_sz, a_atoms.offset, 0);
-                                        md_gpu_cmd_barrier_buffer_ex(cmd, atom_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                                    if (md_gpu_bump_ensure(&gpu_bump, coeff_sz + atom_sz + 64)) {
+                                        md_gpu_alloc_t a_atoms = md_gpu_bump_push(&gpu_bump, atom_sz, 16);
+                                        md_gto_gpu_atom_pack((float*)a_atoms.cpu, (const float*)atom_xyzw, sizeof(vec4_t), num_atoms);
+                                        md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_atoms, atom_sz, a_atoms.offset, 0);
+                                        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
 
-                                        md_gpu_alloc_t a_coeff = md_gpu_bump_push(&bump, coeff_sz, 16);
+                                        md_gpu_alloc_t a_coeff = md_gpu_bump_push(&gpu_bump, coeff_sz, 16);
                                         md_gto_gpu_coeff_pack_density((float*)a_coeff.cpu, density_matrix, num_cgtos);
-                                        md_gto_gpu_coeff_upload_density(cmd, coeff_buf, bump.buffer, a_coeff.offset, num_cgtos);
-                                        md_gpu_fence_t sfence = md_gpu_queue_submit(queue, cmd);
-                                        if (sfence) { md_gpu_fence_wait(sfence); md_gpu_fence_destroy(sfence); }
-                                        md_gpu_bump_free(&bump);
-                                        queue = md_gpu_queue_acquire(state.gpu_device);
-                                        cmd   = md_gpu_command_buffer_acquire(queue);
+                                        md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, a_coeff.offset, num_cgtos);
+                                        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
                                     } else {
                                         MD_LOG_ERROR("Critical points density GPU: staging alloc failed");
                                     }
                                 }
 
-                                md_gto_grid_evaluate_density_gpu(cmd, gto_basis, atom_buf, coeff_buf, gpu_density_image, &grid);
-                                md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
-                                if (fence) {
-                                    md_gpu_fence_wait(fence);
-                                    md_gpu_fence_destroy(fence);
+                                md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, img, &grid);
+                                md_gpu_cmd_barrier_image(cmd, img); // @TODO: Make more explicit and detailed
 
-                                    md_topo_gpu_work_t* work = md_topo_compute_extremum_graph_gpu(state.gpu_device, gpu_density_image, &grid, 0.0f);
-                                    if (!work) {
-                                        MD_LOG_ERROR("Failed to compute extremum graph for electron density");
-                                    }
-                                    md_topo_gpu_work_finish(&critical_points.raw_graph, work);
-                                } else {
-                                    MD_LOG_ERROR("Failed to evaluate electron density on GPU for critical points analysis");
+                                // Ensure topo context exists with the correct volume dimensions
+                                uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
+                                if (!critical_points.topo_ctx ||
+                                    critical_points.topo_dims[0] != new_dims[0] ||
+                                    critical_points.topo_dims[1] != new_dims[1] ||
+                                    critical_points.topo_dims[2] != new_dims[2])
+                                {
+                                    md_topo_gpu_context_destroy(critical_points.topo_ctx);
+                                    critical_points.topo_ctx = md_topo_gpu_context_create(state.gpu_device, new_dims[0], new_dims[1], new_dims[2]);
+                                    critical_points.topo_dims[0] = new_dims[0];
+                                    critical_points.topo_dims[1] = new_dims[1];
+                                    critical_points.topo_dims[2] = new_dims[2];
                                 }
-                            } else {
-                                MD_LOG_ERROR("Failed to create GPU density image or basis/coefficient buffers for critical points analysis");
-                            }
+                                if (critical_points.topo_ctx) {
+                                    md_topo_gpu_cmd_record(cmd, critical_points.topo_ctx, img, &grid, 0.0f);
+                                    md_gpu_queue_submit(queue, cmd, NULL);
+                                    md_topo_gpu_context_get_result(&critical_points.raw_graph, critical_points.topo_ctx);
+                                } else {
+                                    MD_LOG_ERROR("Failed to create topo GPU context for electron density");
+                                }
 
-                            if (atom_buf) md_gpu_buffer_destroy(atom_buf);
-                            if (coeff_buf) md_gpu_buffer_destroy(coeff_buf);
-                            if (gto_basis) md_gto_gpu_basis_destroy(gto_basis);
-                            if (gpu_density_image) md_gpu_image_destroy(gpu_density_image);
+                                md_gpu_image_destroy(img);
+                            } else {
+                                MD_LOG_ERROR("GPU resources not available for critical points analysis");
+                            }
 #else
                             uint32_t tex_id = 0;
                             if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
-                                md_gto_grid_evaluate_density_GL(tex_id, &grid, &basis, (const float*)atom_xyz, density_matrix, false);
+                                md_gto_grid_evaluate_density_GL(tex_id, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false);
 
                                 if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, tex_id, &grid, 0.0f)) {
                                     MD_LOG_ERROR("Failed to compute extremum graph for electron density");
@@ -3260,223 +3332,22 @@ struct VeloxChem : viamd::EventHandler {
 
                         md_topo_extremum_graph_free(&critical_points.simp_graph);
                         if (enable_simplification && critical_points.raw_graph.num_vertices > 0) {
-                            //const md_topo_extremum_graph_t& graph = critical_points.raw_graph;
-                            md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-                            defer{ md_arena_allocator_destroy(temp_alloc); };
-
-                            // Extract explicit vertices and edges to work with
-                            md_array(int) vertex_type       = md_array_create(int, critical_points.raw_graph.num_vertices, temp_alloc);
-                            md_array(md_topo_vert_t) vertex = md_array_create(md_topo_vert_t, critical_points.raw_graph.num_vertices, temp_alloc);
-                            md_array(md_topo_edge_t) edge   = md_array_create(md_topo_edge_t, critical_points.raw_graph.num_edges, temp_alloc);
-
-                            // Construct adjacency information for each vertex
-                            md_array(md_array(int)) vertex_adj = md_array_create(md_array(int), critical_points.raw_graph.num_vertices, temp_alloc);
-
-                            md_topo_extract_vertex_types(vertex_type, md_array_size(vertex_type), &critical_points.raw_graph);
-                            MEMCPY(vertex, critical_points.raw_graph.vertices, md_array_bytes(vertex));
-                            MEMSET(vertex_adj, 0, md_array_bytes(vertex_adj));
-                            MEMCPY(edge, critical_points.raw_graph.edges, md_array_bytes(edge));
-
-                            for (size_t i = 0; i < md_array_size(edge); ++i) {
-                                md_topo_edge_t e = edge[i];
-                                md_array_push(vertex_adj[e.from], (int)e.to, temp_alloc);
-                                md_array_push(vertex_adj[e.to], (int)e.from, temp_alloc);
-                            }
-
-                            // Placeholders
-                            bool threshold_simplification = true;
-                            bool prune_duplicate_saddles  = true;
-
-                            if (threshold_simplification) {
-                                for (size_t i = 0; i < md_array_size(vertex); ++i) {
-                                    if (vertex[i].value < simp_threshold) {
-                                        vertex_type[i] = 0;  // Mark vertex as dead
-                                    }
-                                }
-                            }
-
-                            if (prune_duplicate_saddles) {
-                                // What we want to do here is to find all pairs of maxima that are connected by multiple saddles
-                                // From this set of saddles, we want to keep only the one with the highest value, and mark the rest for removal
-                                // If there is a saddle that is connected to those two maximas, but also connected to others, we want to reindex it to
-                                // the 'maximum' saddle within the set
-
-                                // Divide multi connected saddles (3+ connections) into single connections
-                                for (size_t i = 0; i < md_array_size(vertex); ++i) {
-                                    if (vertex_type[i] != MD_TOPO_SPLIT_SADDLE) continue;
-                                    size_t num_adj = md_array_size(vertex_adj[i]);
-                                    if (num_adj <= 2) continue;  // Only interested in saddles with 3 or more connections
-                                    // For each pair of adjacent maxima, create a new saddle vertex
-                                    for (size_t j = 0; j < num_adj - 1; ++j) {
-                                        for (size_t k = j + 1; k < num_adj; ++k) {
-                                            int max_a = vertex_adj[i][j];
-                                            int max_b = vertex_adj[i][k];
-                                            // Create new saddle vertex
-                                            md_topo_vert_t new_saddle = vertex[i];
-                                            md_array_push(vertex, new_saddle, temp_alloc);
-                                            md_array_push(vertex_adj, NULL,   temp_alloc);
-                                            int new_saddle_idx = (int)(md_array_size(vertex) - 1);
-                                            vertex_type[new_saddle_idx] = MD_TOPO_SPLIT_SADDLE;
-                                            // Update adjacency
-                                            md_array_push(vertex_adj[new_saddle_idx], max_a, temp_alloc);
-                                            md_array_push(vertex_adj[new_saddle_idx], max_b, temp_alloc);
-                                            // Update edges
-                                            md_topo_edge_t edge_a = { .from = (uint32_t)max_a, .to = (uint32_t)new_saddle_idx };
-                                            md_topo_edge_t edge_b = { .from = (uint32_t)max_b, .to = (uint32_t)new_saddle_idx };
-                                            md_array_push(edge, edge_a, temp_alloc);
-                                            md_array_push(edge, edge_b, temp_alloc);
-                                        }
-                                    }
-                                    // Mark original saddle as dead
-                                    vertex_type[i] = 0;
-                                }
-
-                                md_array(int) saddle_list = 0;
-
-                                // Iterate over all Maxima pairs
-                                for (size_t i = 0; i < md_array_size(vertex) - 1; ++i) {
-                                    if (vertex_type[i] != MD_TOPO_MAXIMUM) continue;
-                                    for (size_t j = i + 1; j < md_array_size(vertex); ++j) {
-                                        if (vertex_type[j] != MD_TOPO_MAXIMUM) continue;
-
-                                        md_array_shrink(saddle_list, 0);
-
-                                        // Find all saddles connecting the Maxima i and j
-                                        for (size_t k = 0; k < md_array_size(vertex); ++k) {
-                                            if (vertex_type[k] != MD_TOPO_SPLIT_SADDLE) continue;
-                                            // Test all saddles to see if they connect the pair of maximas
-                                            size_t num_adj = md_array_size(vertex_adj[k]);
-                                            if (num_adj != 2) continue;  // Saddles must connect exactly two maxima
-
-                                            bool connects_i = false;
-                                            bool connects_j = false;
-                                            for (size_t m = 0; m < num_adj; ++m) {
-                                                int v = vertex_adj[k][m];
-                                                if (v == (int)i) connects_i = true;
-                                                if (v == (int)j) connects_j = true;
-                                            }
-                                            if (connects_i && connects_j) {
-                                                md_array_push(saddle_list, (int)k, temp_alloc);
-                                            }
-                                        }
-
-                                        // If we found multiple saddles, we need to prune them
-                                        if (md_array_size(saddle_list) > 1) {
-
-                                            float saddle_max = -FLT_MAX;
-                                            int   saddle_max_idx = -1;
-
-                                            // Find maximum saddle
-                                            for (size_t k = 0; k < md_array_size(saddle_list); ++k) {
-                                                int idx = saddle_list[k];
-                                                if (vertex[idx].value > saddle_max) {
-                                                    saddle_max = vertex[idx].value;
-                                                    saddle_max_idx = idx;
-                                                }
-                                            }
-
-                                            // Mark all other saddles as dead
-                                            for (size_t k = 0; k < md_array_size(saddle_list); ++k) {
-                                                int idx = saddle_list[k];
-                                                if (idx == saddle_max_idx) continue;
-                                                vertex_type[idx] = 0;  // Mark saddle as dead
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Construct a new simplified graph
-                            uint32_t num_vertices = 0;
-                            uint32_t num_maxima = 0;
-                            uint32_t num_split_saddles = 0;
-                            uint32_t num_minima = 0;
-                            uint32_t num_join_saddles = 0;
-
-                            // Create a remapping from old to new vertex indices
-                            md_array(int) vertex_remap = md_array_create(int, md_array_size(vertex), temp_alloc);
-                            MEMSET(vertex_remap, -1, md_array_bytes(vertex_remap));
-
-                            for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
-                                int new_idx = 0;
-                                switch (vertex_type[i]) {
-                                    case MD_TOPO_MAXIMUM:      new_idx = num_maxima++;        break;
-                                    case MD_TOPO_SPLIT_SADDLE: new_idx = num_split_saddles++; break;
-                                    case MD_TOPO_MINIMUM:      new_idx = num_minima++;        break;
-                                    case MD_TOPO_JOIN_SADDLE:  new_idx = num_join_saddles++;  break;
-                                    default: continue;
-                                }
-                                vertex_remap[i] = new_idx;
-                                num_vertices++;
-                            }
-
-                            uint32_t offset_maxima = 0;
-                            uint32_t offset_split_saddle = offset_maxima + num_maxima;
-                            uint32_t offset_minima = offset_split_saddle + num_split_saddles;
-                            uint32_t offset_join_saddle = offset_minima + num_minima;
-
-                            // Adjust remapping to global indices
-                            for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
-                                switch (vertex_type[i]) {
-                                    case MD_TOPO_SPLIT_SADDLE: vertex_remap[i] += offset_split_saddle;  break;
-                                    case MD_TOPO_MINIMUM:      vertex_remap[i] += offset_minima;        break;
-                                    case MD_TOPO_JOIN_SADDLE:  vertex_remap[i] += offset_join_saddle;   break;
-                                }
-                            }
-
-                            md_topo_extremum_graph_t& simp_graph = critical_points.simp_graph;
-                            simp_graph.num_vertices         = num_vertices;
-                            simp_graph.num_maxima           = num_maxima;
-                            simp_graph.num_split_saddles    = num_split_saddles;
-                            simp_graph.num_minima           = num_minima;
-                            simp_graph.num_join_saddles     = num_join_saddles;
-
-                            // Allocate vertex data
-                            simp_graph.vertices = (md_topo_vert_t*)md_alloc(simp_graph.alloc, sizeof(md_topo_vert_t) * simp_graph.num_vertices);
-
-                            // Fill in vertex data
-                            for (size_t i = 0; i < md_array_size(vertex_type); ++i) {
-                                int idx = vertex_remap[i];
-                                if (idx != -1) {
-                                    simp_graph.vertices[idx] = vertex[i];
-                                }
-                            }
-
-                            size_t num_edges = 0;
-                            for (size_t i = 0; i < md_array_size(edge); ++i) {
-                                md_topo_edge_t e = edge[i];
-                                if (vertex_remap[e.from] != -1 && vertex_remap[e.to] != -1) {
-                                    num_edges++;
-                                }
-                            }
-
-                            simp_graph.num_edges = (uint32_t)num_edges;
-                            simp_graph.edges     = (md_topo_edge_t*)md_alloc(simp_graph.alloc, sizeof(md_topo_edge_t) * simp_graph.num_edges);
-
-                            // Fill in edge data
-                            size_t edge_counter = 0;
-                            for (size_t i = 0; i < md_array_size(edge); ++i) {
-                                md_topo_edge_t old_edge = edge[i];
-                                int from = vertex_remap[old_edge.from];
-                                int to   = vertex_remap[old_edge.to];
-                                if (from != -1 && to != -1) {
-                                    md_topo_edge_t new_edge = { (uint32_t)from, (uint32_t)to };
-                                    simp_graph.edges[edge_counter++] = new_edge;
-                                }
-                            }
-                        }
-                        else {
+                            md_topo_simplify(&critical_points.simp_graph, &critical_points.raw_graph, simp_threshold, true);
+                        } else {
                             md_topo_extremum_graph_copy(&critical_points.simp_graph, &critical_points.raw_graph);
                         }
                     }
 
+                    uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
+                    md_topo_count_vertex_types(vertex_count, &critical_points.simp_graph);
+
                     const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
                     ImGui::Text("Number of Edges:           %zu", graph.num_edges);
                     ImGui::Text("Number of Critical Points: %zu", graph.num_vertices);
-                    ImGui::Text("\tNumber of Maxima:        %zu", graph.num_maxima);
-                    ImGui::Text("\tNumber of Split Saddles: %zu", graph.num_split_saddles);
-                    ImGui::Text("\tNumber of Minima:        %zu", graph.num_minima);
-                    ImGui::Text("\tNumber of Join Saddles:  %zu", graph.num_join_saddles);
+                    ImGui::Text("\tNumber of Maxima:        %u", vertex_count[MD_TOPO_MAXIMUM]);
+                    ImGui::Text("\tNumber of Split Saddles: %u", vertex_count[MD_TOPO_SPLIT_SADDLE]);
+                    ImGui::Text("\tNumber of Minima:        %u", vertex_count[MD_TOPO_MINIMUM]);
+                    ImGui::Text("\tNumber of Join Saddles:  %u", vertex_count[MD_TOPO_JOIN_SADDLE]);
                     if (ImGui::Button("Print Critical Points Info")) {
                         for (size_t i = 0; i < graph.num_vertices; ++i) {
                             const md_topo_vert_t& v = graph.vertices[i];
@@ -3490,9 +3361,6 @@ struct VeloxChem : viamd::EventHandler {
                         md_allocator_i* temp_arena = state.allocator.frame;
                         md_vm_arena_temp_t temp_scope = md_vm_arena_temp_begin(temp_arena);
                         defer{ md_vm_arena_temp_end(temp_scope); };
-
-                        md_array(int) vertex_types = md_array_create(int, graph.num_vertices, temp_arena);
-                        md_topo_extract_vertex_types(vertex_types, md_array_size(vertex_types), &graph);
 
                         enum CriticalPointColumn {
                             CriticalPointColumn_Idx,
@@ -3536,7 +3404,7 @@ struct VeloxChem : viamd::EventHandler {
 
                             if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
                                 if (sort_specs->SpecsCount > 0) {
-                                    auto compare_rows = [&graph, &vertex_types, sort_specs](uint32_t lhs_idx, uint32_t rhs_idx) {
+                                    auto compare_rows = [&graph, sort_specs](uint32_t lhs_idx, uint32_t rhs_idx) {
                                         const md_topo_vert_t& lhs = graph.vertices[lhs_idx];
                                         const md_topo_vert_t& rhs = graph.vertices[rhs_idx];
 
@@ -3557,7 +3425,7 @@ struct VeloxChem : viamd::EventHandler {
                                                 cmp = (lhs.z < rhs.z) ? -1 : (lhs.z > rhs.z ? 1 : 0);
                                                 break;
                                             case CriticalPointColumn_Type:
-                                                cmp = (vertex_types[lhs_idx] < vertex_types[rhs_idx]) ? -1 : (vertex_types[lhs_idx] > vertex_types[rhs_idx] ? 1 : 0);
+                                                cmp = (graph.types[lhs_idx] < graph.types[rhs_idx]) ? -1 : (graph.types[lhs_idx] > graph.types[rhs_idx] ? 1 : 0);
                                                 break;
                                             case CriticalPointColumn_Value:
                                                 cmp = (lhs.value < rhs.value) ? -1 : (lhs.value > rhs.value ? 1 : 0);
@@ -3585,7 +3453,7 @@ struct VeloxChem : viamd::EventHandler {
                             for (size_t row = 0; row < graph.num_vertices; ++row) {
                                 const uint32_t idx = row_indices[row];
                                 const md_topo_vert_t& v = graph.vertices[idx];
-                                const int type = vertex_types[idx];
+                                const int type = graph.types[idx];
 
                                 ImGui::TableNextRow();
                                 ImGui::TableNextColumn();

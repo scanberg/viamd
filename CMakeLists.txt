@@ -248,6 +248,13 @@ target_include_directories(viamd
 set_target_properties(viamd PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${VIAMD_BIN_DIR}")
 
+# Enable Vulkan validation layers when debugging in Visual Studio.
+# Only applies when the Vulkan backend is active (MD_ENABLE_GPU=ON, non-Apple).
+if (MD_ENABLE_GPU AND NOT APPLE AND WIN32)
+    set_target_properties(viamd PROPERTIES
+        VS_DEBUGGER_ENVIRONMENT "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation\nVK_LOADER_DEBUG=error")
+endif()
+
 target_link_options(viamd PRIVATE ${VIAMD_LINK_FLAGS} $<$<CONFIG:Debug>:${VIAMD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_LINK_FLAGS_REL}>)
 target_link_libraries(viamd
     glfw

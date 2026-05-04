@@ -4105,7 +4105,7 @@ static float distance_to_linesegment(vec2_t line_beg, vec2_t line_end, vec2_t po
     } else if (t > 1.0f) {
         return vec2_dist(point, line_end);
     } else {
-        return vec2_dist(point, vec2_add(line_beg, vec2_mul_f(v, t)));
+        return vec2_dist(point, vec2_add(line_beg, vec2_mul1(v, t)));
     }
 }
 
@@ -6815,7 +6815,7 @@ static void draw_representations_opaque(ApplicationState* data) {
         else {
             vec3_t ext = { 0 };
             md_unitcell_diag_extract_float(ext.elem, &data->mold.sys.unitcell);
-            float min_half_box_ext = vec3_reduce_min(vec3_mul_f(ext, 0.5f));
+            float min_half_box_ext = vec3_reduce_min(vec3_mul1(ext, 0.5f));
             max_bond_length = MAX(3.0, min_half_box_ext);
         }
 
@@ -7000,7 +7000,7 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
     else {
         vec3_t ext = { 0 };
         md_unitcell_diag_extract_float(ext.elem, &data->mold.sys.unitcell);
-        float min_half_box_ext = vec3_reduce_min(vec3_mul_f(ext, 0.5f));
+        float min_half_box_ext = vec3_reduce_min(vec3_mul1(ext, 0.5f));
         max_bond_length = MAX(3.0, min_half_box_ext);
     }
 
