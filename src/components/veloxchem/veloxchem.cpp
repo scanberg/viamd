@@ -268,6 +268,7 @@ struct VeloxChem : viamd::EventHandler {
 #if MD_ENABLE_GPU
     md_gpu_device_t         gpu_device  = nullptr;
     md_gto_gpu_basis_t      gpu_basis   = nullptr;
+    md_gpu_buffer_t         gpu_atoms   = nullptr;
     md_gpu_buffer_t         gpu_coeff   = nullptr;
     md_gpu_image_t          gpu_volume  = nullptr;
 #endif
@@ -1138,6 +1139,7 @@ struct VeloxChem : viamd::EventHandler {
 
     void reset_data() {
         md_gto_gpu_basis_destroy(gpu_basis);
+        md_gpu_buffer_destroy(gpu_atoms);
         md_gpu_buffer_destroy(gpu_coeff);
         md_gpu_image_destroy(gpu_volume);
 
@@ -1246,13 +1248,22 @@ struct VeloxChem : viamd::EventHandler {
                     calculate_bounding_volumes(&oabb, &aabb, atom_xyz, md_array_size(atom_xyz));
 
 #if MD_ENABLE_GPU
-                    md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .atom_xyz = (const float*)atom_xyz, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
+                    md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
                     gpu_basis = md_gto_gpu_basis_create(gpu_device, &basis_desc);
 
                     md_gpu_device_info_t gpu_info = {};
                     md_gpu_device_info(gpu_device, &gpu_info);
+                    uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+                    uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+
+                    md_gpu_buffer_desc_t gpu_atom_desc = {
+                        .size  = md_gto_gpu_atom_buffer_size(num_atoms),
+                        .flags = gpu_info.is_uma ? (md_gpu_buffer_flags_t)MD_GPU_BUFFER_CPU_VISIBLE : (md_gpu_buffer_flags_t)MD_GPU_BUFFER_NONE,
+                    };
+                    gpu_atoms = md_gpu_buffer_create(gpu_device, &gpu_atom_desc);
+
                     md_gpu_buffer_desc_t gpu_coeff_desc = {
-                        .size  = md_gto_gpu_coeff_size_density(basis.num_shells),
+                        .size  = md_gto_gpu_coeff_size_density(num_cgtos),
                         .flags = gpu_info.is_uma ? (md_gpu_buffer_flags_t)MD_GPU_BUFFER_CPU_VISIBLE : (md_gpu_buffer_flags_t)MD_GPU_BUFFER_NONE,
                     };
                     gpu_coeff = md_gpu_buffer_create(gpu_device, &gpu_coeff_desc);
@@ -1680,8 +1691,11 @@ struct VeloxChem : viamd::EventHandler {
 
 #if MD_ENABLE_GPU
         bool success = false;
-        if (gpu_device && gpu_basis && gpu_coeff && gpu_volume) {
-            size_t coeff_size = md_gto_gpu_coeff_size_mo(1, basis.num_shells);
+        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+            uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
+            size_t coeff_size = md_gto_gpu_coeff_size_mo(1, num_cgtos);
+            size_t atom_size  = md_gto_gpu_atom_buffer_size(num_atoms);
 
             md_gpu_device_info_t gpu_info = {};
             md_gpu_device_info(gpu_device, &gpu_info);
@@ -1694,15 +1708,23 @@ struct VeloxChem : viamd::EventHandler {
             if (gpu_info.is_uma) {
                 // Pack directly into the CPU-visible coeff buffer
                 float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
-                md_gto_gpu_coeff_pack_mo(dst, coeff_ptrs, nullptr, 1, basis.num_shells);
+                md_gto_gpu_coeff_pack_mo(dst, coeff_ptrs, nullptr, 1, num_cgtos);
+
+                float* atom_dst = (float*)md_gpu_buffer_cpu_ptr(gpu_atoms);
+                md_gto_gpu_atom_pack(atom_dst, (const float*)atom_xyz, num_atoms);
             } else {
                 // Pack into a temporary staging buffer, record copy into cmd
                 md_gpu_bump_alloc_t bump = {0};
                 bump.device = gpu_device;
-                if (md_gpu_bump_ensure(&bump, coeff_size)) {
-                    md_gpu_alloc_t a = md_gpu_bump_push(&bump, coeff_size, 16);
-                    md_gto_gpu_coeff_pack_mo((float*)a.cpu, coeff_ptrs, nullptr, 1, basis.num_shells);
-                    md_gto_gpu_coeff_upload_mo(cmd, gpu_coeff, bump.buffer, a.offset, 1, basis.num_shells);
+                if (md_gpu_bump_ensure(&bump, coeff_size + atom_size + 64)) {
+                    md_gpu_alloc_t a_atoms = md_gpu_bump_push(&bump, atom_size, 16);
+                    md_gto_gpu_atom_pack((float*)a_atoms.cpu, (const float*)atom_xyz, num_atoms);
+                    md_gpu_cmd_copy_buffer(cmd, bump.buffer, gpu_atoms, atom_size, a_atoms.offset, 0);
+                    md_gpu_cmd_barrier_buffer_ex(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+
+                    md_gpu_alloc_t a_coeff = md_gpu_bump_push(&bump, coeff_size, 16);
+                    md_gto_gpu_coeff_pack_mo((float*)a_coeff.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
+                    md_gto_gpu_coeff_upload_mo(cmd, gpu_coeff, bump.buffer, a_coeff.offset, 1, num_cgtos);
                     // Submit + wait so staging can be freed before bump goes out of scope
                     md_gpu_fence_t sfence = md_gpu_queue_submit(queue, cmd);
                     if (sfence) { md_gpu_fence_wait(sfence); md_gpu_fence_destroy(sfence); }
@@ -1716,7 +1738,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }
 
-            md_gto_grid_evaluate_mo_gpu(cmd, gpu_basis, gpu_coeff, 1, gpu_volume, &grid, mode);
+            md_gto_grid_evaluate_mo_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
             md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
             if (fence) {
                 md_gpu_fence_wait(fence);
@@ -1771,8 +1793,11 @@ struct VeloxChem : viamd::EventHandler {
             md_gpu_image_t img = md_gpu_image_create(gpu_device, &img_desc);
 
             if (img) {
-            if (gpu_basis && gpu_coeff) {
-                size_t coeff_sz = md_gto_gpu_coeff_size_density(basis.num_shells);
+            if (gpu_basis && gpu_atoms && gpu_coeff) {
+                uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+                uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
+                size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
+                size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
                 md_gpu_device_info_t gpu_info = {};
                 md_gpu_device_info(gpu_device, &gpu_info);
 
@@ -1781,14 +1806,22 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (gpu_info.is_uma) {
                     float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
-                    md_gto_gpu_coeff_pack_density(dst, density_matrix, basis.num_shells);
+                    md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
+
+                    float* atom_dst = (float*)md_gpu_buffer_cpu_ptr(gpu_atoms);
+                    md_gto_gpu_atom_pack(atom_dst, (const float*)atom_xyz, num_atoms);
                 } else {
                     md_gpu_bump_alloc_t bump = {0};
                     bump.device = gpu_device;
-                    if (md_gpu_bump_ensure(&bump, coeff_sz)) {
-                        md_gpu_alloc_t a = md_gpu_bump_push(&bump, coeff_sz, 16);
-                        md_gto_gpu_coeff_pack_density((float*)a.cpu, density_matrix, basis.num_shells);
-                        md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, bump.buffer, a.offset, basis.num_shells);
+                    if (md_gpu_bump_ensure(&bump, coeff_sz + atom_sz + 64)) {
+                        md_gpu_alloc_t a_atoms = md_gpu_bump_push(&bump, atom_sz, 16);
+                        md_gto_gpu_atom_pack((float*)a_atoms.cpu, (const float*)atom_xyz, num_atoms);
+                        md_gpu_cmd_copy_buffer(cmd, bump.buffer, gpu_atoms, atom_sz, a_atoms.offset, 0);
+                        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+
+                        md_gpu_alloc_t a_coeff = md_gpu_bump_push(&bump, coeff_sz, 16);
+                        md_gto_gpu_coeff_pack_density((float*)a_coeff.cpu, density_matrix, num_cgtos);
+                        md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, bump.buffer, a_coeff.offset, num_cgtos);
                         // Submit staging copy, then proceed with a fresh cmd for evaluate+readback
                         md_gpu_fence_t sfence = md_gpu_queue_submit(queue, cmd);
                         if (sfence) { md_gpu_fence_wait(sfence); md_gpu_fence_destroy(sfence); }
@@ -1800,7 +1833,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-                md_gto_grid_evaluate_density_gpu(cmd, gpu_basis, gpu_coeff, img, &grid);
+                md_gto_grid_evaluate_density_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, img, &grid);
                 md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
                 if (fence) {
                         md_gpu_fence_wait(fence);
@@ -3114,21 +3147,34 @@ struct VeloxChem : viamd::EventHandler {
                             };
                             md_gpu_image_t gpu_density_image = md_gpu_image_create(state.gpu_device, &img_desc);
 
-                            md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .atom_xyz = (const float*)atom_xyz, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
+                            md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
                             md_gto_gpu_basis_t gto_basis = md_gto_gpu_basis_create(state.gpu_device, &basis_desc);
+                            md_gpu_buffer_t atom_buf = NULL;
                             md_gpu_buffer_t coeff_buf = NULL;
                             if (gto_basis) {
                                 md_gpu_device_info_t _info = {};
                                 md_gpu_device_info(state.gpu_device, &_info);
+                                uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gto_basis);
+                                uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gto_basis);
+
+                                md_gpu_buffer_desc_t atom_desc = {
+                                    .size  = md_gto_gpu_atom_buffer_size(num_atoms),
+                                    .flags = _info.is_uma ? (md_gpu_buffer_flags_t)MD_GPU_BUFFER_CPU_VISIBLE : (md_gpu_buffer_flags_t)MD_GPU_BUFFER_NONE,
+                                };
+                                atom_buf = md_gpu_buffer_create(state.gpu_device, &atom_desc);
+
                                 md_gpu_buffer_desc_t coeff_desc = {
-                                    .size  = md_gto_gpu_coeff_size_density(basis.num_shells),
+                                    .size  = md_gto_gpu_coeff_size_density(num_cgtos),
                                     .flags = _info.is_uma ? (md_gpu_buffer_flags_t)MD_GPU_BUFFER_CPU_VISIBLE : (md_gpu_buffer_flags_t)MD_GPU_BUFFER_NONE,
                                 };
                                 coeff_buf = md_gpu_buffer_create(state.gpu_device, &coeff_desc);
                             }
 
-                            if (gpu_density_image && gto_basis && coeff_buf) {
-                                size_t coeff_sz = md_gto_gpu_coeff_size_density(basis.num_shells);
+                            if (gpu_density_image && gto_basis && atom_buf && coeff_buf) {
+                                uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gto_basis);
+                                uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gto_basis);
+                                size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
+                                size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
                                 md_gpu_device_info_t gpu_info = {};
                                 md_gpu_device_info(state.gpu_device, &gpu_info);
 
@@ -3137,14 +3183,22 @@ struct VeloxChem : viamd::EventHandler {
 
                                 if (gpu_info.is_uma) {
                                     float* dst = (float*)md_gpu_buffer_cpu_ptr(coeff_buf);
-                                    md_gto_gpu_coeff_pack_density(dst, density_matrix, basis.num_shells);
+                                    md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
+
+                                    float* atom_dst = (float*)md_gpu_buffer_cpu_ptr(atom_buf);
+                                    md_gto_gpu_atom_pack(atom_dst, (const float*)atom_xyz, num_atoms);
                                 } else {
                                     md_gpu_bump_alloc_t bump = {0};
                                     bump.device = state.gpu_device;
-                                    if (md_gpu_bump_ensure(&bump, coeff_sz)) {
-                                        md_gpu_alloc_t a = md_gpu_bump_push(&bump, coeff_sz, 16);
-                                        md_gto_gpu_coeff_pack_density((float*)a.cpu, density_matrix, basis.num_shells);
-                                        md_gto_gpu_coeff_upload_density(cmd, coeff_buf, bump.buffer, a.offset, basis.num_shells);
+                                    if (md_gpu_bump_ensure(&bump, coeff_sz + atom_sz + 64)) {
+                                        md_gpu_alloc_t a_atoms = md_gpu_bump_push(&bump, atom_sz, 16);
+                                        md_gto_gpu_atom_pack((float*)a_atoms.cpu, (const float*)atom_xyz, num_atoms);
+                                        md_gpu_cmd_copy_buffer(cmd, bump.buffer, atom_buf, atom_sz, a_atoms.offset, 0);
+                                        md_gpu_cmd_barrier_buffer_ex(cmd, atom_buf, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+
+                                        md_gpu_alloc_t a_coeff = md_gpu_bump_push(&bump, coeff_sz, 16);
+                                        md_gto_gpu_coeff_pack_density((float*)a_coeff.cpu, density_matrix, num_cgtos);
+                                        md_gto_gpu_coeff_upload_density(cmd, coeff_buf, bump.buffer, a_coeff.offset, num_cgtos);
                                         md_gpu_fence_t sfence = md_gpu_queue_submit(queue, cmd);
                                         if (sfence) { md_gpu_fence_wait(sfence); md_gpu_fence_destroy(sfence); }
                                         md_gpu_bump_free(&bump);
@@ -3155,7 +3209,7 @@ struct VeloxChem : viamd::EventHandler {
                                     }
                                 }
 
-                                md_gto_grid_evaluate_density_gpu(cmd, gto_basis, coeff_buf, gpu_density_image, &grid);
+                                md_gto_grid_evaluate_density_gpu(cmd, gto_basis, atom_buf, coeff_buf, gpu_density_image, &grid);
                                 md_gpu_fence_t fence = md_gpu_queue_submit(queue, cmd);
                                 if (fence) {
                                     md_gpu_fence_wait(fence);
@@ -3173,6 +3227,7 @@ struct VeloxChem : viamd::EventHandler {
                                 MD_LOG_ERROR("Failed to create GPU density image or basis/coefficient buffers for critical points analysis");
                             }
 
+                            if (atom_buf) md_gpu_buffer_destroy(atom_buf);
                             if (coeff_buf) md_gpu_buffer_destroy(coeff_buf);
                             if (gto_basis) md_gto_gpu_basis_destroy(gto_basis);
                             if (gpu_density_image) md_gpu_image_destroy(gpu_density_image);
