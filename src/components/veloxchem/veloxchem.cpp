@@ -1514,7 +1514,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_grid_evaluate_mo_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
+            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
             md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
@@ -1701,7 +1701,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_grid_evaluate_mo_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, num_lambdas, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
+            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, num_lambdas, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
             md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
@@ -1882,7 +1882,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_grid_evaluate_mo_gpu(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
+            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
             md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
@@ -3234,49 +3234,11 @@ struct VeloxChem : viamd::EventHandler {
                         if (density_matrix) {
 #if MD_ENABLE_GPU
                             if (gpu_volume && gpu_basis && gpu_atoms && gpu_coeff) {
-                                size_t num_cgtos = basis.num_shells;
+                                uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+                                uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
+
                                 size_t coeff_sz = md_gto_gpu_coeff_size_density(basis.num_shells);
                                 size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
-
-                                md_gpu_image_desc_t img_desc = {
-                                    .width  = (uint32_t)grid.dim[0],
-                                    .height = (uint32_t)grid.dim[1],
-                                    .depth  = (uint32_t)grid.dim[2],
-                                    .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
-                                    .flags = MD_GPU_IMAGE_STORAGE | MD_GPU_IMAGE_SAMPLED,
-                                };
-
-                                md_gpu_image_t img = md_gpu_image_create(state.gpu_device, &img_desc);
-
-                                md_gpu_device_info_t gpu_info = {};
-                                md_gpu_device_info(state.gpu_device, &gpu_info);
-
-                                md_gpu_queue_t          queue = md_gpu_queue_acquire(state.gpu_device);
-                                md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
-
-                                gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
-
-                                if (!gpu_info.is_discrete) {
-                                    float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
-                                    md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
-                                } else {
-                                    if (md_gpu_bump_ensure(&gpu_bump, coeff_sz + atom_sz + 64)) {
-                                        md_gpu_alloc_t a_atoms = md_gpu_bump_push(&gpu_bump, atom_sz, 16);
-                                        md_gto_gpu_atom_pack((float*)a_atoms.cpu, (const float*)atom_xyzw, sizeof(vec4_t), num_atoms);
-                                        md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_atoms, atom_sz, a_atoms.offset, 0);
-                                        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-
-                                        md_gpu_alloc_t a_coeff = md_gpu_bump_push(&gpu_bump, coeff_sz, 16);
-                                        md_gto_gpu_coeff_pack_density((float*)a_coeff.cpu, density_matrix, num_cgtos);
-                                        md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, a_coeff.offset, num_cgtos);
-                                        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-                                    } else {
-                                        MD_LOG_ERROR("Critical points density GPU: staging alloc failed");
-                                    }
-                                }
-
-                                md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, img, &grid);
-                                md_gpu_cmd_barrier_image(cmd, img); // @TODO: Make more explicit and detailed
 
                                 // Ensure topo context exists with the correct volume dimensions
                                 uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
@@ -3291,15 +3253,40 @@ struct VeloxChem : viamd::EventHandler {
                                     critical_points.topo_dims[1] = new_dims[1];
                                     critical_points.topo_dims[2] = new_dims[2];
                                 }
+
                                 if (critical_points.topo_ctx) {
-                                    md_topo_gpu_cmd_record(cmd, critical_points.topo_ctx, img, &grid, 0.0f);
+
+                                    md_gpu_bump_reset(&gpu_bump);
+                                    md_gpu_bump_ensure(&gpu_bump, coeff_sz + atom_sz + 512);
+
+                                    md_gpu_device_info_t gpu_info = {};
+                                    md_gpu_device_info(state.gpu_device, &gpu_info);
+
+                                    md_gpu_queue_t          queue = md_gpu_queue_acquire(state.gpu_device);
+                                    md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
+
+                                    gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+
+                                    if (!gpu_info.is_discrete) {
+                                        float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
+                                        md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
+                                    } else {
+                                        md_gpu_alloc_t a_coeff = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
+                                        md_gto_gpu_coeff_pack_density((float*)a_coeff.cpu, density_matrix, num_cgtos);
+                                        md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, a_coeff.offset, num_cgtos);
+                                        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                                    }
+
+                                    md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid);
+                                    md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+                                    md_topo_gpu_cmd_record(cmd, critical_points.topo_ctx, gpu_volume, &grid, 0.0f);
                                     md_gpu_queue_submit(queue, cmd, NULL);
-                                    md_topo_gpu_context_get_result(&critical_points.raw_graph, critical_points.topo_ctx);
+
+                                    md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
                                 } else {
                                     MD_LOG_ERROR("Failed to create topo GPU context for electron density");
                                 }
 
-                                md_gpu_image_destroy(img);
                             } else {
                                 MD_LOG_ERROR("GPU resources not available for critical points analysis");
                             }
