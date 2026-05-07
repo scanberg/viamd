@@ -1010,12 +1010,7 @@ struct VeloxChem : viamd::EventHandler {
                         case ElectronicStructureType::MolecularOrbitalDensity:
                         {
                             md_gto_eval_mode_t mode = (type == ElectronicStructureType::MolecularOrbital) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-                            //if (use_gpu_path) {
-                                compute_mo_GPU(tex_id, grid, MD_VLX_SPIN_ALPHA, rep->electronic_structure.mo_idx, mode, DEFAULT_GTO_CUTOFF_VALUE);
-                            //}
-                            //else {
-                            //    compute_mo_async(tex_id, grid, MD_VLX_SPIN_ALPHA, rep->electronic_structure.mo_idx, mode);
-                            //}
+                            evaluate_mo(tex_id, grid, MD_VLX_SPIN_ALPHA, rep->electronic_structure.mo_idx, mode, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
                         case ElectronicStructureType::NaturalTransitionOrbitalParticle:
@@ -1030,31 +1025,19 @@ struct VeloxChem : viamd::EventHandler {
                                                        type == ElectronicStructureType::NaturalTransitionOrbitalHole)
                                                        ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
 
-                            //if (use_gpu_path) {
-                                compute_nto_GPU(tex_id, grid, rep->electronic_structure.nto_idx, rep->electronic_structure.nto_lambda_idx, nto_type, mode, DEFAULT_GTO_CUTOFF_VALUE);
-                            //} else {
-                            //    compute_nto_async(tex_id, grid, rep->electronic_structure.nto_idx, rep->electronic_structure.nto_lambda_idx, nto_type, mode);
-                            //}
+                            evaluate_nto(tex_id, grid, rep->electronic_structure.nto_idx, rep->electronic_structure.nto_lambda_idx, nto_type, mode, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
                         case ElectronicStructureType::AttachmentDensity:
                         case ElectronicStructureType::DetachmentDensity:
                         {
                             AttachmentDetachmentType nto_type = (type == ElectronicStructureType::AttachmentDensity) ? AttachmentDetachmentType::Attachment : AttachmentDetachmentType::Detachment;
-                            //if (use_gpu_path) {
-                                compute_attachment_detachment_density_GPU(tex_id, grid, rep->electronic_structure.nto_idx, nto_type, DEFAULT_GTO_CUTOFF_VALUE);
-                            //} else {
-                            //    compute_attachment_detachment_density_async(tex_id, grid, rep->electronic_structure.nto_idx, nto_type);
-                            //}
+                            evaluate_attachment_detachment_density(tex_id, grid, rep->electronic_structure.nto_idx, nto_type, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
                         case ElectronicStructureType::ElectronDensity:
                         {
-                            //if (use_gpu_path) {
-                                compute_electron_density_GPU(tex_id, grid, MD_VLX_SPIN_ALPHA);
-                            //} else {
-                            //    compute_electron_density_async(tex_id, grid, MD_VLX_SPIN_ALPHA);
-                            //}
+                            evaluate_electron_density(tex_id, grid, MD_VLX_SPIN_ALPHA);
                             break;
                         }
                         default:
@@ -1472,7 +1455,7 @@ struct VeloxChem : viamd::EventHandler {
         gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
     }
 
-    bool compute_nto_GPU(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool evaluate_nto(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         const double* nto_coeffs = md_vlx_rsp_nto_coefficients(vlx, nto_idx, lambda_idx, type);
         if (!nto_coeffs) {
             MD_LOG_ERROR("Failed to retrieve NTO coefficients for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
@@ -1647,7 +1630,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // Compute attachment / detachment density
-    bool compute_attachment_detachment_density_GPU(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, AttachmentDetachmentType type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool evaluate_attachment_detachment_density(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, AttachmentDetachmentType type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         md_vlx_nto_type_t nto_type = (type == AttachmentDetachmentType::Attachment) ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
 
         const double* lambda = md_vlx_rsp_nto_lambdas(vlx, nto_idx);
@@ -1721,122 +1704,7 @@ struct VeloxChem : viamd::EventHandler {
 #endif
     }
 
-    // Compute attachment / detachment density
-    task_system::ID compute_attachment_detachment_density_async(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, AttachmentDetachmentType type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-
-        md_orbital_data_t orb_data = {0};
-        if (!extract_attachment_detachment_orb_data(&orb_data, cutoff_value, type, nto_idx, alloc)) {
-            md_vm_arena_destroy(alloc);
-            return task_system::INVALID_ID;
-        }
-
-        struct Payload {
-            AsyncGridEvalArgs args;
-            md_allocator_i* arena;
-            uint32_t tex;
-        };
-
-        // Allocate data for payload struct + volume
-        Payload* payload = (Payload*)md_vm_arena_push(alloc, sizeof(Payload));
-        *payload = {
-            .args = {
-                .grid = grid,
-                .grid_data = (float*)md_vm_arena_push_zero(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
-                .orb  = orb_data,
-                .mode = MD_GTO_EVAL_MODE_PSI_SQUARED,
-            },
-            .arena = alloc,
-            .tex = vol_tex,
-        };
-
-        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
-
-        // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
-            // Ensure that the dimensions of the texture have not changed during evaluation
-            int dim[3];
-            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
-                gl::set_texture_3D_data(data->tex, 0, data->args.grid_data, GL_R32F);
-            }
-
-            md_vm_arena_destroy(data->arena);
-        });
-
-        task_system::set_task_dependency(main_task, async_task);
-        task_system::enqueue_task(async_task);
-
-        return async_task;
-    }
-
-    task_system::ID compute_nto_async(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-
-        size_t num_ao    = md_vlx_scf_number_of_atomic_orbitals(vlx);
-        double* mo_coeffs = (double*)md_vm_arena_push(alloc, sizeof(double) * num_ao);
-
-        const double* nto_src = md_vlx_rsp_nto_coefficients(vlx, nto_idx, lambda_idx, type);
-        if (!nto_src) {
-            MD_LOG_ERROR("Failed to extract NTO coefficients for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
-            md_vm_arena_destroy(alloc);
-            return task_system::INVALID_ID;
-        }
-        MEMCPY(mo_coeffs, nto_src, sizeof(double) * num_ao);
-
-        size_t max_gtos = md_gto_pgto_count(&basis);
-        md_gto_t* gtos  = (md_gto_t*)md_vm_arena_push(alloc, sizeof(md_gto_t) * max_gtos);
-        size_t num_gtos = md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyzw, sizeof(vec4_t), mo_coeffs, cutoff_value);
-
-        md_orbital_data_t orb_data = {
-            .num_gtos = num_gtos,
-            .gtos = gtos,
-        };
-
-        struct Payload {
-            AsyncGridEvalArgs args;
-            md_allocator_i* alloc;
-            uint32_t tex;
-        };
-
-        Payload* payload = (Payload*)md_vm_arena_push(alloc, sizeof(Payload));
-        *payload = {
-            .args = {
-                .grid = grid,
-                .grid_data = (float*)md_vm_arena_push_zero(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
-                .orb = orb_data,
-                .mode = mode,
-            },
-            .alloc = alloc,
-            .tex = vol_tex,
-        };
-
-        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
-
-        // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
-            // Ensure that the dimensions of the texture have not changed during evaluation
-            int dim[3];
-            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
-                gl::set_texture_3D_data(data->tex, 0, data->args.grid_data, GL_R32F);
-            }
-
-            md_vm_arena_destroy(data->alloc);
-        });
-
-        task_system::set_task_dependency(main_task, async_task);
-        task_system::enqueue_task(async_task);
-
-        return async_task;
-    }
-
-    struct AsyncGridEvalArgs {
-        md_grid_t  grid;
-        float*     grid_data;
-        md_orbital_data_t orb;
-        md_gto_eval_mode_t mode;
-    };
-
-    bool compute_mo_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool evaluate_mo(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, mo_type);
         if (!ao_coeffs) {
             MD_LOG_ERROR("Failed to retrieve AO coefficients for Molecular Orbital index: %zu", mo_idx);
@@ -1902,7 +1770,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // The full electron density that includes all orbitals weighted by their occupancy
-    bool compute_electron_density_GPU(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool evaluate_electron_density(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         (void)cutoff_value;
         const double* density_matrix = md_vlx_scf_density_matrix_data(vlx, mo_type);
         if (!density_matrix) {
@@ -1961,119 +1829,6 @@ struct VeloxChem : viamd::EventHandler {
         md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false);
         return true;
 #endif
-    }
-
-    task_system::ID compute_electron_density_async(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
-        (void)mo_type;
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-
-        md_orbital_data_t orb_data = {0};
-        if (!extract_electron_density_orb_data(&orb_data, cutoff_value, alloc)) {
-            md_vm_arena_destroy(alloc);
-            return task_system::INVALID_ID;
-        }
-
-        // Clear volume texture
-        gl::clear_texture_3D(vol_tex, 0);
-
-        struct Payload {
-            AsyncGridEvalArgs args;
-            uint32_t tex;
-            md_allocator_i* arena;
-        };
-
-        Payload* payload = (Payload*)md_vm_arena_push(alloc, sizeof(Payload));
-        *payload = {
-            .args = {
-                .grid = grid,
-                .grid_data = (float*)md_vm_arena_push_zero(alloc, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]),
-                .orb = orb_data,
-                .mode = MD_GTO_EVAL_MODE_PSI_SQUARED,
-             },
-            .tex = vol_tex,
-            .arena = alloc,
-        };
-
-        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
-
-        // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
-            // Ensure that the dimensions of the texture have not changed during evaluation
-            int dim[3];
-            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
-                gl::set_texture_3D_data(data->tex, 0, data->args.grid_data, GL_R32F);
-            }
-
-            md_vm_arena_destroy(data->arena);
-        });
-
-        task_system::set_task_dependency(main_task, async_task);
-        task_system::enqueue_task(async_task);
-
-        return async_task;
-    }
-
-    task_system::ID compute_mo_async(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
-        md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(1));
-
-        size_t num_ao    = md_vlx_scf_number_of_atomic_orbitals(vlx);
-        double* mo_coeffs = (double*)md_vm_arena_push(alloc, sizeof(double) * num_ao);
-
-        if (!md_vlx_scf_mo_coefficients_extract(mo_coeffs, vlx, mo_idx, mo_type)) {
-            MD_LOG_ERROR("Failed to extract MO coefficients for orbital index: %zu", mo_idx);
-            md_vm_arena_destroy(alloc);
-            return task_system::INVALID_ID;
-        }
-
-        size_t max_gtos = md_gto_pgto_count(&basis);
-        md_gto_t* gtos  = (md_gto_t*)md_vm_arena_push(alloc, sizeof(md_gto_t) * max_gtos);
-        size_t num_gtos = md_gto_expand_with_mo(gtos, &basis, (const float*)atom_xyzw, sizeof(vec4_t), mo_coeffs, cutoff_value);
-        if (num_gtos == 0) {
-            MD_LOG_ERROR("Failed to expand GTO for orbital index: %zu", mo_idx);
-            md_vm_arena_destroy(alloc);
-            return task_system::INVALID_ID;
-        }
-
-        md_orbital_data_t orb_data = {
-            .num_gtos = num_gtos,
-            .gtos = gtos,
-        };
-
-        struct Payload {
-            AsyncGridEvalArgs args;
-            uint32_t tex;
-            md_allocator_i* arena;
-        };
-
-        Payload* payload = (Payload*)md_vm_arena_push(alloc, sizeof(Payload));
-        *payload = {
-            .args = {
-                .grid = grid,
-                .grid_data = (float*)md_vm_arena_push_zero(alloc, sizeof(float) * md_grid_num_points(&grid)),
-                .orb = orb_data,
-                .mode = mode,
-            },
-            .tex = vol_tex,
-            .arena = alloc,
-        };
-
-        task_system::ID async_task = evaluate_gto_on_grid_async(&payload->args);
-
-        // Launch task for main (render) thread to update the volume texture
-        task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update Volume"), [data = payload]() {
-            // Ensure that the dimensions of the texture have not changed during evaluation
-            int dim[3];
-            if (gl::get_texture_dim(dim, data->tex) && MEMCMP(dim, data->args.grid.dim, sizeof(dim)) == 0) {
-                gl::set_texture_3D_data(data->tex, 0, data->args.grid_data, GL_R32F);
-            }
-
-            md_vm_arena_destroy(data->arena);
-        });
-
-        task_system::set_task_dependency(main_task, async_task);
-        task_system::enqueue_task(async_task);
-
-        return async_task;
     }
 
     static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 0.2f) {
@@ -2503,100 +2258,6 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    // This sets up and returns a async task which evaluates and orbital data on a grid in parallel
-    task_system::ID evaluate_gto_on_grid_async(AsyncGridEvalArgs* args) {
-        ASSERT(args);
-
-        // We evaluate the in parallel over smaller NxNxN blocks
-        const uint32_t num_blocks = (args->grid.dim[0] / BLK_DIM) * (args->grid.dim[1] / BLK_DIM) * (args->grid.dim[2] / BLK_DIM);
-        task_system::ID async_task = task_system::create_pool_task(STR_LIT("Evaluate Orbital"), num_blocks, [data = args](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
-            MD_LOG_DEBUG("Starting async eval of orbital grid [%i][%i][%i]", data->grid.dim[0], data->grid.dim[1], data->grid.dim[2]);
-
-            // Number of NxNxN blocks in each dimension
-            int num_blk[3] = {
-                data->grid.dim[0] / BLK_DIM,
-                data->grid.dim[1] / BLK_DIM,
-                data->grid.dim[2] / BLK_DIM,
-            };
-
-            md_grid_t* grid = &data->grid;
-            mat4_t world_to_model = compute_world_to_model_mat(grid->orientation, grid->origin);
-
-            size_t temp_pos = md_temp_get_pos();
-            md_gto_t* sub_gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * data->orb.num_gtos);
-
-            for (int blk_idx = (int)range_beg; blk_idx < (int)range_end; ++blk_idx) {
-                // Determine block index from linear input index i
-                int blk[3] = {
-                    (blk_idx % num_blk[0]),
-                    (blk_idx / num_blk[0]) % num_blk[1],
-                    (blk_idx / (num_blk[0] * num_blk[1])),
-                };
-
-                int off_idx[3] = { blk[0] * BLK_DIM, blk[1] * BLK_DIM, blk[2] * BLK_DIM };
-                int len_idx[3] = { BLK_DIM, BLK_DIM, BLK_DIM };
-
-                int beg_idx[3] = {off_idx[0], off_idx[1], off_idx[2]};
-                int end_idx[3] = {off_idx[0] + len_idx[0], off_idx[1] + len_idx[1], off_idx[2] + len_idx[2]};
-
-                // The aabb is in model space
-                vec4_t aabb_min = {
-                    beg_idx[0] * data->grid.spacing.x,
-                    beg_idx[1] * data->grid.spacing.y,
-                    beg_idx[2] * data->grid.spacing.z,
-                    0
-                };
-                vec4_t aabb_max = {
-                    end_idx[0] * data->grid.spacing.x,
-                    end_idx[1] * data->grid.spacing.y,
-                    end_idx[2] * data->grid.spacing.z,
-                    0
-                };
-
-                if (data->orb.num_orbs <= 1) {
-                    size_t num_sub_gtos = 0;
-                    // Transform GTO xyz into model space of the volume and perform AABB overlap test
-                    for (size_t i = 0; i < data->orb.num_gtos; ++i) {
-                        float cutoff = data->orb.gtos[i].cutoff;
-                        if (cutoff == 0.0f) continue;
-
-                        vec4_t coord = world_to_model * vec4_set(data->orb.gtos[i].x, data->orb.gtos[i].y, data->orb.gtos[i].z, 1.0f);
-                        vec4_t clamped = vec4_clamp(coord, aabb_min, aabb_max);
-                        if (vec4_distance_squared(coord, clamped) < cutoff * cutoff) {
-                            sub_gtos[num_sub_gtos++] = data->orb.gtos[i];
-                        }
-                    }
-
-                    md_gto_grid_evaluate_sub(data->grid_data, &data->grid, off_idx, len_idx, sub_gtos, num_sub_gtos, data->mode);
-                } else {
-                    for (size_t orb_idx = 0; orb_idx < data->orb.num_orbs; ++orb_idx) {
-                        size_t num_sub_gtos = 0;
-                        // Transform GTO xyz into model space of the volume and perform AABB overlap test
-                        size_t beg = data->orb.orb_offsets[orb_idx];
-                        size_t end = data->orb.orb_offsets[orb_idx + 1];
-                        for (size_t i = beg; i < end; ++i) {
-                            float cutoff = data->orb.gtos[i].cutoff;
-                            if (cutoff == 0.0f) continue;
-
-                            vec4_t coord = world_to_model * vec4_set(data->orb.gtos[i].x, data->orb.gtos[i].y, data->orb.gtos[i].z, 1.0f);
-                            vec4_t clamped = vec4_clamp(coord, aabb_min, aabb_max);
-                            if (vec4_distance_squared(coord, clamped) < cutoff * cutoff) {
-                                sub_gtos[num_sub_gtos++] = data->orb.gtos[i];
-                            }
-                        }
-
-                        md_gto_grid_evaluate_sub(data->grid_data, &data->grid, off_idx, len_idx, sub_gtos, num_sub_gtos, data->mode);
-                    }
-                }
-            }
-
-            md_temp_set_pos_back(temp_pos);
-        });
-
-        return async_task;
-    }
-
     static inline double axis_conversion_multiplier(const double* y1_array, const double* y2_array, size_t y1_array_size, size_t y2_array_size) {
         double y1_max = 0;
         double y2_max = 0;
@@ -2661,30 +2322,6 @@ struct VeloxChem : viamd::EventHandler {
         double x = (p - p_0) / sigma;
         return intensity * exp(-log(2) * pow(x,2));
     }
-
-    
-    /*
-    * We return to this at a later stage
-    void save_absorption(str_t filename, md_array(double)* x_values, const char* x_lable, md_array(double)* y_values_osc, md_array(double)* y_values_cgs, int step) {
-        md_file_t file = md_file_open(filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE);
-        if (!md_file_valid(file)) {
-            MD_LOG_ERROR("Could not open workspace file for writing: '%.*s", (int)filename.len, filename.ptr);
-            return;
-        }
-        defer{ md_file_close(&file); };
-
-        // md_array(char*) rows = md_array_create(char*, md_array_size(*x_values), )
-        //double* x_values = (double*)md_temp_push(sizeof(double) * num_samples);
-        // I want to create an array with the rows to print to the file. What type should this be, and how do I create it?
-
-        
-        for (int i = 0; i < md_array_size(*x_values); i += 5) {
-
-        }
-    }
-
-
-    */
 
     static inline void osc_to_eps(double* eps_out, const double* x, size_t num_samples, const double* osc_peaks, const double* x_peaks, size_t num_peaks, double (*distr_func)(double x, double x_0, double gamma), double gamma) {
         // Physical constants
@@ -4349,18 +3986,8 @@ struct VeloxChem : viamd::EventHandler {
                     orb.vol_mo_type[slot_idx] = mo_type;
 
                     if (-1 < mo_idx && mo_idx < num_tot_mos) {
-                        if (task_system::task_is_running(orb.vol_task[slot_idx])) {
-                            task_system::task_interrupt(orb.vol_task[slot_idx]);
-                        }
-
                         init_volume(&orb.vol[slot_idx], grid);
-
-                        if (use_gpu_path) {
-                            compute_mo_GPU(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
-                        }
-                        else {
-                            orb.vol_task[slot_idx] = compute_mo_async(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
-                        }
+                        evaluate_mo(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
                     }
                 }
             }
@@ -4382,8 +4009,8 @@ struct VeloxChem : viamd::EventHandler {
 
             const float aspect = orb_win_sz.x / orb_win_sz.y;
 
-            const mat4_t world_to_view = camera_world_to_view_matrix(orb.camera);
-            const mat4_t view_to_clip  = camera_view_to_clip_matrix_persp(orb.camera, aspect);
+            //const mat4_t world_to_view = camera_world_to_view_matrix(orb.camera);
+            //const mat4_t view_to_clip  = camera_view_to_clip_matrix_persp(orb.camera, aspect);
 
             const mat4_t view_to_world = camera_view_to_world_matrix(orb.camera);
             const mat4_t clip_to_view  = camera_clip_to_view_matrix_persp(orb.camera, aspect);
@@ -4902,18 +4529,12 @@ struct VeloxChem : viamd::EventHandler {
                     Volume vol = {};
                     init_volume(&vol, grid, GL_R32F);
 
-                    task_system::ID task = task_system::INVALID_ID;
-
                     switch (export_state.orb_type) {
                     case ElectronicStructureType::MolecularOrbital:
                     case ElectronicStructureType::MolecularOrbitalDensity:
                     {
                         md_gto_eval_mode_t mode = (export_state.orb_type == ElectronicStructureType::MolecularOrbital) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-                        if (use_gpu_path) {
-                           compute_mo_GPU(vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, mode);
-                        } else {
-                            task = compute_mo_async(vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, mode);
-                        }
+                        evaluate_mo(vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, mode);
                         break;
                     }
                     case ElectronicStructureType::NaturalTransitionOrbitalParticle:
@@ -4927,11 +4548,8 @@ struct VeloxChem : viamd::EventHandler {
                         md_gto_eval_mode_t mode = (export_state.orb_type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle ||
                                                    export_state.orb_type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole)
                                                       ? MD_GTO_EVAL_MODE_PSI_SQUARED : MD_GTO_EVAL_MODE_PSI;
-                        if (use_gpu_path) {
-                            compute_nto_GPU(vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, mode);
-                        } else {
-                            task = compute_nto_async(vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, mode);
-                        }
+                        
+                        evaluate_nto(vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, mode);
                         break;
                     }
                     case ElectronicStructureType::AttachmentDensity:
@@ -4940,19 +4558,11 @@ struct VeloxChem : viamd::EventHandler {
                         AttachmentDetachmentType type = (export_state.orb_type == ElectronicStructureType::AttachmentDensity)
                                                             ? AttachmentDetachmentType::Attachment
                                                             : AttachmentDetachmentType::Detachment;
-                        if (use_gpu_path) {
-                            compute_attachment_detachment_density_GPU(vol.tex_id, grid, export_state.nto.idx, type);
-                        } else {
-                            task = compute_attachment_detachment_density_async(vol.tex_id, grid, export_state.nto.idx, type);
-                        }
+                        evaluate_attachment_detachment_density(vol.tex_id, grid, export_state.nto.idx, type);
                         break;
                     }
                     case ElectronicStructureType::ElectronDensity:
-                        //if (use_gpu_path) {
-                            compute_electron_density_GPU(vol.tex_id, grid, MD_VLX_SPIN_ALPHA);
-                        //} else {
-                        //    task = compute_electron_density_async(vol.tex_id, grid, MD_VLX_SPIN_ALPHA);
-                        //}
+                        evaluate_electron_density(vol.tex_id, grid, MD_VLX_SPIN_ALPHA);
                         break;
                     default:
                         MD_LOG_ERROR("Unsupported export type");
@@ -5514,13 +5124,8 @@ struct VeloxChem : viamd::EventHandler {
                         init_volume(&nto.vol[NTO_Attachment], nto.grid, GL_R32F);
                         init_volume(&nto.vol[NTO_Detachment], nto.grid, GL_R32F);
 
-                        if (use_gpu_path) {
-                            compute_attachment_detachment_density_GPU(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Attachment);
-                            compute_attachment_detachment_density_GPU(nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Detachment);
-                        } else {
-                            nto.vol_task[NTO_Attachment] = compute_attachment_detachment_density_async(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Attachment);
-                            nto.vol_task[NTO_Detachment] = compute_attachment_detachment_density_async(nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Detachment);
-                        }
+                        evaluate_attachment_detachment_density(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Attachment);
+                        evaluate_attachment_detachment_density(nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Detachment);
 
                         for (size_t lambda_idx = 0; lambda_idx < num_lambdas; ++lambda_idx) {
                             size_t pi = (size_t)NTO_Part_0 + lambda_idx;
@@ -5536,14 +5141,8 @@ struct VeloxChem : viamd::EventHandler {
                             init_volume(&nto.vol[pi], nto.grid);
                             init_volume(&nto.vol[hi], nto.grid);
 
-                            if (use_gpu_path) {
-                                compute_nto_GPU(nto.vol[pi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI);
-                                compute_nto_GPU(nto.vol[hi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI);
-                            } else {
-                                nto.vol_task[pi] = compute_nto_async(nto.vol[pi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI);
-                                nto.vol_task[hi] = compute_nto_async(nto.vol[hi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI);
-                            }
-
+                            evaluate_nto(nto.vol[pi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI);
+                            evaluate_nto(nto.vol[hi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI);
                         }
                         if (task_system::task_is_running(nto.seg_task[0])) {
                             task_system::task_interrupt(nto.seg_task[0]);
