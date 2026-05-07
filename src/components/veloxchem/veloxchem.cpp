@@ -1190,7 +1190,6 @@ struct VeloxChem : viamd::EventHandler {
         md_gpu_bump_reset(&gpu_bump);
         md_topo_gpu_context_destroy(critical_points.topo_ctx);
 #endif
-
         //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
         md_vlx_destroy(vlx);
@@ -1202,6 +1201,7 @@ struct VeloxChem : viamd::EventHandler {
         critical_points.simp_graph.alloc = arena;
         basis = {};  // arena reset above invalidates allocations; zero the struct
         vlx = nullptr;
+        atom_xyzw = nullptr;
         orb = VeloxChem::Orb{};
         nto = VeloxChem::Nto{};
         rsp = VeloxChem::Rsp{};
