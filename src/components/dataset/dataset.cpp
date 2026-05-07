@@ -1,4 +1,4 @@
-﻿#include <viamd_event.h>
+#include <viamd_event.h>
 #include <viamd.h>
 #include <event.h>
 
@@ -150,13 +150,15 @@ struct Dataset : viamd::EventHandler {
         size_t inst_count = md_system_instance_count(&sys);
 
         if (atom_count == 0) return;
+        
+        md_array_resize(atom_types, atom_count, arena);
 
         // Map atom types into dataset items
         for (size_t i = 0; i < type_count; ++i) {
             str_t atom_type_name = md_atom_type_name(&sys.atom.type, i);
             DatasetItem item = { .key = i };
             snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(atom_type_name));
-            md_array_push(atom_types, item, arena);
+            atom_types[i] = item;
         }
 
         // Count and set indices for each atom type

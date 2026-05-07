@@ -1,4 +1,4 @@
-﻿
+
 #include <md_util.h>
 #include <md_filter.h>
 
@@ -968,10 +968,10 @@ void remove_all_selections(ApplicationState* state) {
     md_array_shrink(state->selection.stored_selections, 0);
 }
 
-void remove_selection(ApplicationState* state, int idx) {
+void remove_selection(ApplicationState* state, size_t idx) {
     ASSERT(state);
-    if (idx < 0 || (int)md_array_size(state->selection.stored_selections) <= idx) {
-        VIAMD_LOG_ERROR("Index [%i] out of range when trying to remove selection", idx);
+    if (md_array_size(state->selection.stored_selections) <= idx) {
+        VIAMD_LOG_ERROR("Index [%zu] out of range when trying to remove selection", idx);
     }
     auto item = &state->selection.stored_selections[idx];
     md_bitfield_free(&item->atom_mask);
@@ -1023,7 +1023,7 @@ Representation* clone_representation(ApplicationState* state, const Representati
     return clone;
 }
 
-void remove_representation(ApplicationState* state, int idx) {
+void remove_representation(ApplicationState* state, size_t idx) {
     ASSERT(state);
     ASSERT(idx < md_array_size(state->representation.reps));
     auto& rep = state->representation.reps[idx];

@@ -10,6 +10,8 @@ project(viamd LANGUAGES C CXX)
 
 include(ext/mdlib/cmake/Common.cmake)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # If configured using single configuration generator, set default build type to Release
 if (NOT EXISTS ${CMAKE_BINARY_DIR}/CMakeCache.txt)
   if (NOT CMAKE_BUILD_TYPE)

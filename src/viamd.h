@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <core/md_str.h>
 #include <core/md_os.h>
@@ -1258,13 +1258,13 @@ void save_workspace(ApplicationState* state, str_t file);
 
 // Selections
 Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* bf = 0);
-void remove_selection(ApplicationState* state, int idx);
+void remove_selection(ApplicationState* state, size_t idx);
 void remove_all_selections(ApplicationState* state);
 
 // Representations
 Representation* create_representation(ApplicationState* state, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
 Representation* clone_representation(ApplicationState* state, const Representation& rep);
-void remove_representation(ApplicationState* state, int idx);
+void remove_representation(ApplicationState* state, size_t idx);
 void update_representation(ApplicationState* state, Representation* rep);
 void update_representation_info(ApplicationState* state);
 void update_all_representations(ApplicationState* state);
