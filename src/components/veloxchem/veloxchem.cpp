@@ -280,9 +280,7 @@ static void gpu_upload_atoms_if_dirty(
         md_gpu_alloc_t mem = md_gpu_bump_push(bump, sz, 0);
         md_gto_gpu_atom_pack((float*)mem.cpu, atom_xyzw, sizeof(vec4_t), num_atoms);
         md_gpu_cmd_copy_buffer(cmd, bump->buffer, gpu_atoms, sz, mem.offset, 0);
-        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_atoms,
-                                     MD_GPU_BARRIER_STAGE_TRANSFER,
-                                     MD_GPU_BARRIER_STAGE_COMPUTE);
+        md_gpu_cmd_barrier_buffer(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     }
 
     *dirty = false;
@@ -1494,11 +1492,11 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
                 md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
                 md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
-                md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
             md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
-            md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
                 .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
@@ -1681,11 +1679,11 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
                 md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeffs, scales, num_lambdas, num_cgtos);
                 md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
-                md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
             md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, num_lambdas, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
-            md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
                 .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
@@ -1746,11 +1744,11 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
                 md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
                 md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
-                md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
             md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
-            md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
                 .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
@@ -1808,11 +1806,11 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
                 md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu, density_matrix, num_cgtos);
                 md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, num_cgtos);
-                md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
             md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid);
-            md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
                 .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
@@ -2910,11 +2908,11 @@ struct VeloxChem : viamd::EventHandler {
                                         md_gpu_alloc_t a_coeff = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
                                         md_gto_gpu_coeff_pack_density((float*)a_coeff.cpu, density_matrix, num_cgtos);
                                         md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, a_coeff.offset, num_cgtos);
-                                        md_gpu_cmd_barrier_buffer_ex(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                                        md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
                                     }
 
                                     md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid);
-                                    md_gpu_cmd_barrier_image_ex(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+                                    md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
                                     md_topo_gpu_cmd_record(cmd, critical_points.topo_ctx, gpu_volume, &grid, 0.0f);
 
                                     md_gpu_queue_submit(queue, cmd, NULL);
