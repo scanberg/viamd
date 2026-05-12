@@ -151,7 +151,8 @@ struct Dataset : viamd::EventHandler {
 
         if (atom_count == 0) return;
         
-        md_array_resize(atom_types, atom_count, arena);
+        md_array_resize(atom_types, type_count, arena);
+        MEMSET(atom_types, 0, md_array_bytes(atom_types));
 
         // Map atom types into dataset items
         for (size_t i = 0; i < type_count; ++i) {
