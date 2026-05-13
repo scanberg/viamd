@@ -457,13 +457,13 @@ void draw_plane_wireframe(vec3_t center, vec3_t vec_u, vec3_t vec_v, uint32_t co
 
     for (int i = 0; i <= segments_u; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_u);
-        const vec3_t u = vec3_mul_f(vec_u, t);
+        const vec3_t u = vec3_mul1(vec_u, t);
         draw_line(vec3_sub(center, vec3_add(vec_v, u)), vec3_add(center, vec3_add(vec_v, u)), color);
     }
 
     for (int i = 0; i <= segments_v; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_v);
-        const vec3_t v = vec3_mul_f(vec_v, t);
+        const vec3_t v = vec3_mul1(vec_v, t);
         draw_line(vec3_sub(center, vec3_add(vec_u, v)), vec3_add(center, vec3_add(vec_u, v)), color);
     }
 }
@@ -560,9 +560,9 @@ void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec
 
 void draw_basis(mat4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
     const vec3_t o = vec3_from_vec4(basis.col[3]);
-    const vec3_t x = vec3_add(o, vec3_mul_f(vec3_from_vec4(basis.col[0]), scale));
-    const vec3_t y = vec3_add(o, vec3_mul_f(vec3_from_vec4(basis.col[1]), scale));
-    const vec3_t z = vec3_add(o, vec3_mul_f(vec3_from_vec4(basis.col[2]), scale));
+    const vec3_t x = vec3_add(o, vec3_mul1(vec3_from_vec4(basis.col[0]), scale));
+    const vec3_t y = vec3_add(o, vec3_mul1(vec3_from_vec4(basis.col[1]), scale));
+    const vec3_t z = vec3_add(o, vec3_mul1(vec3_from_vec4(basis.col[2]), scale));
 
     draw_line(o, x, x_color);
     draw_line(o, y, y_color);

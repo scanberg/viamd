@@ -1,4 +1,4 @@
-﻿#define IMGUI_DEFINE_MATH_OPERATORS
+#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <core/md_log.h>
 #include <core/md_array.h>
@@ -323,7 +323,7 @@ struct Shapespace : viamd::EventHandler {
                     if (num_structures > 1) {
                         len += snprintf(buf, sizeof(buf), "Structure: %i, ", structure_idx + 1);
                     }
-                    len += snprintf(buf + len, sizeof(buf) - len, "Frame: %i, lin: %.2f, plan: %.2f, iso: %.2f", frame_idx, w.x, w.y, w.z);
+                    snprintf(buf + len, sizeof(buf) - len, "Frame: %i, lin: %.2f, plan: %.2f, iso: %.2f", frame_idx, w.x, w.y, w.z);
                     ImGui::SetTooltip("%s", buf);
 
                     if (structure_idx < (int)md_array_size(bitfields)) {

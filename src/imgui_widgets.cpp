@@ -538,10 +538,10 @@ bool CoordinateSystemWidget(quat_t* out_orientation, const quat_t& in_orientatio
     vec4_t z = mat4_mul_vec4(P, vz);
 
     // Perspective divide
-    O = vec4_div_f(O, O.w);
-    x = vec4_div_f(x, x.w);
-    y = vec4_div_f(y, y.w);
-    z = vec4_div_f(z, z.w);
+    O = vec4_div1(O, O.w);
+    x = vec4_div1(x, x.w);
+    y = vec4_div1(y, y.w);
+    z = vec4_div1(z, z.w);
 
     // Vector
     const ImVec2 o = mid + ImVec2(O.x, -O.y);
