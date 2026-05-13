@@ -2777,6 +2777,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     } else if (surf->hit.domain == 0) {
                         if (surf->selection_mode == InteractionSelectionMode::Remove) {
                             md_bitfield_clear(&state->selection.selection_mask);
+                            single_selection_sequence_clear(&state->selection.single_selection_sequence);
                         }
                     }
 

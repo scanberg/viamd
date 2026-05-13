@@ -1388,9 +1388,7 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
 
 static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
     ASSERT(seq);
-    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
-        seq->idx[i] = -1;
-    }
+    MEMSET(seq->idx, -1, sizeof(seq->idx));
 }
 
 static inline void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {

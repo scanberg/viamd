@@ -1810,6 +1810,7 @@ static void draw_main_menu(ApplicationState* data) {
             if (num_selected_atoms == 0) ImGui::PopDisabled();
             if (ImGui::MenuItem("Clear")) {
                 md_bitfield_clear(&data->selection.selection_mask);
+                single_selection_sequence_clear(&data->selection.single_selection_sequence);
             }
             ImGui::Spacing();
             ImGui::Separator();
@@ -3080,6 +3081,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 }
                 if (ImGui::MenuItem("Clear")) {
                     md_bitfield_clear(&state->selection.selection_mask);
+                    single_selection_sequence_clear(&state->selection.single_selection_sequence);
                 }
             }
             ImGui::EndMenu();
