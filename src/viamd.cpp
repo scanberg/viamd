@@ -1,4 +1,4 @@
-
+﻿
 #include <md_util.h>
 #include <md_filter.h>
 
@@ -718,10 +718,12 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_flt_vec(rep->scale.elem, 4, arg);
                 } else if (str_eq(ident, STR_LIT("DynamicEval"))) {
                     viamd::extract_bool(rep->dynamic_evaluation, arg);
-                } else if (str_eq(ident, STR_LIT("ElectronicStructureMoIdx"))) {
-                    viamd::extract_int(rep->electronic_structure.mo_idx, arg);
-                } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoIdx"))) {
-                    viamd::extract_int(rep->electronic_structure.nto_idx, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureMoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureOrbitalIdx"))) {
+                    viamd::extract_int(rep->electronic_structure.orbital_idx, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoIdx")) || str_eq(ident, STR_LIT("ElectronicStructureExcitedStateIdx"))) {
+                    viamd::extract_int(rep->electronic_structure.excited_state_idx, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoLambdaIdx"))) {
+                    viamd::extract_int(rep->electronic_structure.nto_lambda_idx, arg);
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureRes"))) {
                     int res;
                     viamd::extract_int(res, arg);
@@ -729,7 +731,30 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureType"))) {
                     int type;
                     viamd::extract_int(type, arg);
-                    rep->electronic_structure.type = (ElectronicStructureType)type;
+                    electronic_structure_set_legacy_type(&rep->electronic_structure, type);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureSource"))) {
+                    int source;
+                    viamd::extract_int(source, arg);
+                    rep->electronic_structure.source = (ElectronicStructureSource)source;
+                    electronic_structure_set_source_defaults(&rep->electronic_structure);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureField"))) {
+                    int field;
+                    viamd::extract_int(field, arg);
+                    electronic_structure_set_legacy_field(&rep->electronic_structure, field);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureUseMagnitude"))) {
+                    viamd::extract_bool(rep->electronic_structure.use_magnitude, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureSpin"))) {
+                    int spin;
+                    viamd::extract_int(spin, arg);
+                    rep->electronic_structure.spin = (ElectronicStructureSpin)spin;
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoComponent"))) {
+                    int component;
+                    viamd::extract_int(component, arg);
+                    rep->electronic_structure.nto_component = (ElectronicStructureNtoComponent)component;
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureTransitionDensityComponent"))) {
+                    int component;
+                    viamd::extract_int(component, arg);
+                    rep->electronic_structure.transition_density_component = (ElectronicStructureTransitionDensityComponent)component;
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureIso"))) {
                     viamd::extract_dbl(rep->electronic_structure.iso_value, arg);
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureColPos"))) {
@@ -905,9 +930,16 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
 
         if (rep.type == RepresentationType::ElectronicStructure) {
-            viamd::write_int(state,  STR_LIT("ElectronicStructureMoIdx"),    rep.electronic_structure.mo_idx);
-            viamd::write_int(state,  STR_LIT("ElectronicStructureNtoIdx"),   rep.electronic_structure.nto_idx);
-            viamd::write_int(state,  STR_LIT("ElectronicStructureType"),(int)rep.electronic_structure.type);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureMoIdx"),    rep.electronic_structure.orbital_idx);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureNtoIdx"),   rep.electronic_structure.excited_state_idx);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureNtoLambdaIdx"), rep.electronic_structure.nto_lambda_idx);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureType"),     electronic_structure_legacy_type(rep.electronic_structure));
+            viamd::write_int(state,  STR_LIT("ElectronicStructureSource"),   (int)rep.electronic_structure.source);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureField"),    (int)electronic_structure_legacy_field(rep.electronic_structure));
+            viamd::write_bool(state, STR_LIT("ElectronicStructureUseMagnitude"), rep.electronic_structure.use_magnitude);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureSpin"),     (int)rep.electronic_structure.spin);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureNtoComponent"), (int)rep.electronic_structure.nto_component);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureTransitionDensityComponent"), (int)rep.electronic_structure.transition_density_component);
             viamd::write_int(state,  STR_LIT("ElectronicStructureRes"), (int)rep.electronic_structure.resolution);
             viamd::write_dbl(state,  STR_LIT("ElectronicStructureIso"),      rep.electronic_structure.iso_value);
             viamd::write_vec4(state, STR_LIT("ElectronicStructureColPos"),   rep.electronic_structure.col_psi_pos);
@@ -1008,7 +1040,7 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     if (!str_empty(filter)) {
         str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
     }
-    rep->electronic_structure.mo_idx = (int)state->representation.info.alpha.homo_idx;
+    rep->electronic_structure.orbital_idx = (int)state->representation.info.alpha.homo_idx;
     init_representation(state, rep);
     return rep;
 }
@@ -1226,8 +1258,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
         break;
     case RepresentationType::ElectronicStructure: {
-        size_t num_mos = state->representation.info.alpha.num_orbitals;
-        rep->type_is_valid = num_mos > 0;
+        rep->type_is_valid = electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, rep->electronic_structure.source);
         if (rep->type_is_valid && rep->enabled) {
             EvalElectronicStructure data = {
                 .sys = &state->mold.sys,

@@ -47,6 +47,8 @@
 
 #define FORCE_CPU_PATH 0
 
+#define USE_AABB_GRID 1
+
 // Resolution for broadened plots
 #define NUM_SAMPLES 1024
 
@@ -95,6 +97,29 @@ enum class AttachmentDetachmentType {
     Detachment,
 };
 
+static md_vlx_spin_t vlx_spin_from_electronic_structure(ElectronicStructureSpin spin) {
+    ASSERT(spin == ElectronicStructureSpin::Alpha || spin == ElectronicStructureSpin::Beta);
+    return spin == ElectronicStructureSpin::Beta ? MD_VLX_SPIN_BETA : MD_VLX_SPIN_ALPHA;
+}
+
+static md_gto_op_t gto_op_from_use_magnitude(bool use_magnitude) {
+    return MD_GTO_OP_SET | (use_magnitude ? MD_GTO_OP_ABS : 0);
+}
+
+static const char* electronic_structure_value_mode_str(ElectronicStructureSource source, ElectronicStructureSpin spin, bool use_magnitude) {
+    switch (source) {
+    case ElectronicStructureSource::MolecularOrbital:
+    case ElectronicStructureSource::NaturalTransitionOrbital:
+        return use_magnitude ? "Magnitude" : "Signed";
+    case ElectronicStructureSource::TransitionDensity:
+        return "Density";
+    case ElectronicStructureSource::ElectronDensity:
+        return spin == ElectronicStructureSpin::Difference ? (use_magnitude ? "Magnitude" : "Signed") : "Density";
+    default:
+        return "";
+    }
+}
+
 enum x_unit_t {
     X_UNIT_EV,
     X_UNIT_NM,
@@ -134,10 +159,46 @@ struct AABB {
     vec3_t max_ext = { 0 };
 };
 
-static void calculate_bounding_volumes(OABB* oabb, AABB* aabb, const vec4_t* atom_xyzw, size_t count) {
-    md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-    defer{ md_arena_allocator_destroy(temp_arena); };
+static mat3_t mat3_PCA(const vec4_t* xyzw, size_t count) {
+    vec3_t acc = vec3_zero();
+    for (size_t i = 0; i < count; ++i) {
+        acc = vec3_add(acc, vec3_from_vec4(xyzw[i]));
+    }
+    vec3_t mean = acc / (float)count;
 
+    mat3_t cov = mat3_covariance_matrix_vec4(xyzw, nullptr, count, mean);
+    mat3_eigen_t eigen = mat3_eigen(cov);
+    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+    return PCA;
+}
+
+static void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, size_t count, const mat3_t& orientation = mat3_ident()) {
+    vec4_t min_v = vec4_set1( FLT_MAX);
+    vec4_t max_v = vec4_set1(-FLT_MAX);
+
+    mat4_t rot = mat4_from_mat3(orientation);
+
+    for (size_t i = 0; i < count; ++i) {
+        vec4_t v = mat4_mul_vec4(rot, xyzw[i]);
+        min_v = vec4_min(min_v, v);
+        max_v = vec4_max(max_v, v);
+    }
+
+    // Padding
+    const float pad = 6.0f;
+    min_v -= pad;
+    max_v += pad;
+
+    out_min[0] = min_v.x;
+    out_min[1] = min_v.y;
+    out_min[2] = min_v.z;
+
+    out_max[0] = max_v.x;
+    out_max[1] = max_v.y;
+    out_max[2] = max_v.z;
+}
+
+static void calculate_bounding_volumes(OABB* oabb, AABB* aabb, const vec4_t* atom_xyzw, size_t count) {
     vec4_t acc = vec4_zero();
     for (size_t i = 0; i < count; ++i) {
         acc = vec4_add(acc, atom_xyzw[i]);
@@ -153,7 +214,7 @@ static void calculate_bounding_volumes(OABB* oabb, AABB* aabb, const vec4_t* ato
     vec4_t oabb_min = vec4_set1( FLT_MAX);
     vec4_t oabb_max = vec4_set1(-FLT_MAX);
 
-    vec4_t aabb_min = vec4_set1(FLT_MAX);
+    vec4_t aabb_min = vec4_set1( FLT_MAX);
     vec4_t aabb_max = vec4_set1(-FLT_MAX);
 
     // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
@@ -499,7 +560,11 @@ struct VeloxChem : viamd::EventHandler {
 
     struct Export {
         char export_path[1024] = {};
-        ElectronicStructureType orb_type = ElectronicStructureType::MolecularOrbital;
+        ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
+        bool use_magnitude = false;
+        ElectronicStructureSpin spin = ElectronicStructureSpin::Total;
+        ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
+        ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
         VolumeResolution resolution = VolumeResolution::Mid;
 
         struct {
@@ -571,12 +636,20 @@ struct VeloxChem : viamd::EventHandler {
 #if MD_ENABLE_GPU
                 gpu_device = state.gpu_device;
                 md_gpu_bump_init(&gpu_bump, gpu_device, MEGABYTES(1));
+                md_gto_gpu_initialize(gpu_device);
+                md_topo_gpu_initialize(gpu_device);
 #endif
                 break;
             }
             case viamd::EventType_ViamdShutdown:
 #if MD_ENABLE_GPU
                 md_gpu_bump_free(&gpu_bump);
+                md_gto_gpu_shutdown();
+                md_topo_gpu_shutdown();
+                md_gto_gpu_basis_destroy(gpu_basis);
+                md_gpu_buffer_destroy(gpu_atoms);
+                md_gpu_buffer_destroy(gpu_coeff);
+                md_gpu_image_destroy(gpu_volume);
 #endif
                 md_arena_allocator_destroy(arena);
                 break;
@@ -834,8 +907,10 @@ struct VeloxChem : viamd::EventHandler {
                             atom_xyzw[i].z = (float)(state.mold.sys.atom.z[i] * ANGSTROM_TO_BOHR);
                         }
                     }
-                    // Recalculate OBB and AABB
-                    calculate_bounding_volumes(&oabb, &aabb, atom_xyzw, md_array_size(atom_xyzw));
+                    // Recalculate OABB and AABB
+                    oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
+                    calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
+                    calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));
 #if MD_ENABLE_GPU
                     gpu_atoms_dirty = true;
 #endif
@@ -885,7 +960,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 // @TODO: Check condition of wheter or not to include beta orbitals
-                if (false) {
+                if (true) {
                     const double* occ = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA);
                     const double* ene = md_vlx_scf_mo_energy   (vlx, MD_VLX_SPIN_BETA);
 
@@ -931,18 +1006,13 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 
                 if (md_vlx_scf_number_of_molecular_orbitals(vlx) > 0) {
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::MolecularOrbital);
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::MolecularOrbitalDensity);
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::ElectronDensity);
+                    info.electronic_structure_source_mask |= ElectronicStructureSourceFlag_MolecularOrbital;
+                    info.electronic_structure_source_mask |= ElectronicStructureSourceFlag_ElectronDensity;
                 }
 
                 if (md_vlx_rsp_number_of_excited_states(vlx) > 0) {
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalParticle);
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalHole);
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalDensityParticle);
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::NaturalTransitionOrbitalDensityHole);
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::AttachmentDensity);
-                    info.electronic_structure_type_mask |= (1 << (int)ElectronicStructureType::DetachmentDensity);
+                    info.electronic_structure_source_mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
+                    info.electronic_structure_source_mask |= ElectronicStructureSourceFlag_TransitionDensity;
                 }
                 
 				size_t num_atomic_properties = md_vlx_atomic_property_count(vlx);
@@ -980,15 +1050,18 @@ struct VeloxChem : viamd::EventHandler {
                 Representation* rep = data.rep;
 
                 {
-                    ElectronicStructureType type = rep->electronic_structure.type;
+                    const ElectronicStructureRepresentation& es = rep->electronic_structure;
                     uint64_t frame_hash = md_hash64(&data.frame, sizeof(data.frame), 0);
-                    uint64_t vol_hash =
-                        (uint64_t)rep->electronic_structure.type |
-                        ((uint64_t)rep->electronic_structure.resolution << 8) |
-                        ((uint64_t)rep->electronic_structure.mo_idx << 16) |
-                        ((uint64_t)rep->electronic_structure.nto_idx << 32) |
-                        ((uint64_t)rep->electronic_structure.nto_lambda_idx << 48);
-
+                    uint64_t vol_hash = 0;
+                    vol_hash = md_hash64(&es.source, sizeof(es.source), vol_hash);
+                    vol_hash = md_hash64(&es.use_magnitude, sizeof(es.use_magnitude), vol_hash);
+                    vol_hash = md_hash64(&es.spin, sizeof(es.spin), vol_hash);
+                    vol_hash = md_hash64(&es.nto_component, sizeof(es.nto_component), vol_hash);
+                    vol_hash = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), vol_hash);
+                    vol_hash = md_hash64(&es.resolution, sizeof(es.resolution), vol_hash);
+                    vol_hash = md_hash64(&es.orbital_idx, sizeof(es.orbital_idx), vol_hash);
+                    vol_hash = md_hash64(&es.excited_state_idx, sizeof(es.excited_state_idx), vol_hash);
+                    vol_hash = md_hash64(&es.nto_lambda_idx, sizeof(es.nto_lambda_idx), vol_hash);
                     vol_hash = md_hash64_combine(vol_hash, frame_hash);
 
                     if (vol_hash != rep->electronic_structure.vol_hash) {
@@ -998,44 +1071,40 @@ struct VeloxChem : viamd::EventHandler {
                         const double samples_per_unit_length = samples_per_angstrom * BOHR_TO_ANGSTROM;
 
                         md_grid_t grid = {};
+#if USE_AABB_GRID
+                        init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+#else
                         init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
+#endif
                         init_volume(&rep->electronic_structure.density_vol, grid, GL_R32F);
 
                         uint32_t tex_id = rep->electronic_structure.density_vol.tex_id;
 
-                        switch (type) {
-                        case ElectronicStructureType::MolecularOrbital:
-                        case ElectronicStructureType::MolecularOrbitalDensity:
+                        switch (es.source) {
+                        case ElectronicStructureSource::MolecularOrbital:
                         {
-                            md_gto_eval_mode_t mode = (type == ElectronicStructureType::MolecularOrbital) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-                            evaluate_mo(tex_id, grid, MD_VLX_SPIN_ALPHA, rep->electronic_structure.mo_idx, mode, DEFAULT_GTO_CUTOFF_VALUE);
+                            md_gto_op_t op = gto_op_from_use_magnitude(es.use_magnitude);
+                            md_vlx_spin_t spin = vlx_spin_from_electronic_structure(es.spin);
+                            evaluate_mo(tex_id, grid, spin, es.orbital_idx, op, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
-                        case ElectronicStructureType::NaturalTransitionOrbitalParticle:
-                        case ElectronicStructureType::NaturalTransitionOrbitalHole:
-                        case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
-                        case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
+                        case ElectronicStructureSource::NaturalTransitionOrbital:
                         {
-                            md_vlx_nto_type_t nto_type  = (type == ElectronicStructureType::NaturalTransitionOrbitalParticle ||
-                                                           type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle)
-                                                           ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
-                            md_gto_eval_mode_t mode = (type == ElectronicStructureType::NaturalTransitionOrbitalParticle ||
-                                                       type == ElectronicStructureType::NaturalTransitionOrbitalHole)
-                                                       ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-
-                            evaluate_nto(tex_id, grid, rep->electronic_structure.nto_idx, rep->electronic_structure.nto_lambda_idx, nto_type, mode, DEFAULT_GTO_CUTOFF_VALUE);
+                            md_vlx_nto_type_t nto_type = es.nto_component == ElectronicStructureNtoComponent::Particle ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
+                            md_gto_op_t op = gto_op_from_use_magnitude(es.use_magnitude);
+                            evaluate_nto(tex_id, grid, es.excited_state_idx, es.nto_lambda_idx, nto_type, op, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
-                        case ElectronicStructureType::AttachmentDensity:
-                        case ElectronicStructureType::DetachmentDensity:
+                        case ElectronicStructureSource::TransitionDensity:
                         {
-                            AttachmentDetachmentType nto_type = (type == ElectronicStructureType::AttachmentDensity) ? AttachmentDetachmentType::Attachment : AttachmentDetachmentType::Detachment;
-                            evaluate_attachment_detachment_density(tex_id, grid, rep->electronic_structure.nto_idx, nto_type, DEFAULT_GTO_CUTOFF_VALUE);
+                            AttachmentDetachmentType nto_type = es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment ? AttachmentDetachmentType::Attachment : AttachmentDetachmentType::Detachment;
+                            evaluate_attachment_detachment_density(tex_id, grid, es.excited_state_idx, nto_type, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
-                        case ElectronicStructureType::ElectronDensity:
+                        case ElectronicStructureSource::ElectronDensity:
                         {
-                            evaluate_electron_density(tex_id, grid, MD_VLX_SPIN_ALPHA);
+                            md_gto_op_t op = gto_op_from_use_magnitude(es.spin == ElectronicStructureSpin::Difference && es.use_magnitude);
+                            evaluate_electron_density(tex_id, grid, es.spin, op);
                             break;
                         }
                         default:
@@ -1276,7 +1345,9 @@ struct VeloxChem : viamd::EventHandler {
                         dvec3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
                         atom_xyzw[i] = vec4_set(xyz.x, xyz.y, xyz.z, 1.0f);
                     }
-                    calculate_bounding_volumes(&oabb, &aabb, atom_xyzw, md_array_size(atom_xyzw));
+                    oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
+                    calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
+                    calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));
 
 #if MD_ENABLE_GPU
                     md_gpu_device_info_t gpu_info = {};
@@ -1378,7 +1449,11 @@ struct VeloxChem : viamd::EventHandler {
                         }
                         nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
 
+#if USE_AABB_GRID
+                        init_grid(&nto.grid, mat3_ident(), aabb.min_ext, aabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
+#else
                         init_grid(&nto.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
+#endif
                     }
 
                     // RSP
@@ -1453,7 +1528,7 @@ struct VeloxChem : viamd::EventHandler {
         gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
     }
 
-    bool evaluate_nto(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool evaluate_nto(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         const double* nto_coeffs = md_vlx_rsp_nto_coefficients(vlx, nto_idx, lambda_idx, type);
         if (!nto_coeffs) {
             MD_LOG_ERROR("Failed to retrieve NTO coefficients for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
@@ -1495,7 +1570,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
+            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI, op);
             md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
@@ -1510,7 +1585,7 @@ struct VeloxChem : viamd::EventHandler {
         }
         return success;
 #else
-        md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), nto_coeffs, cutoff_value, mode);
+        md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), nto_coeffs, cutoff_value, MD_GTO_EVAL_MODE_PSI, op);
         return true;
 #endif
     }
@@ -1570,7 +1645,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, num_lambdas, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI_SQUARED);
+            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, num_lambdas, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_OP_SET);
             md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
@@ -1585,12 +1660,12 @@ struct VeloxChem : viamd::EventHandler {
         }
         return success;
 #else
-        md_gto_grid_evaluate_multi_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), coeffs, scales, num_lambdas, cutoff_value, MD_GTO_EVAL_MODE_PSI_SQUARED);
+        md_gto_grid_evaluate_multi_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), coeffs, scales, num_lambdas, cutoff_value, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_OP_SET);
         return true;
 #endif
     }
 
-    bool evaluate_mo(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_eval_mode_t mode, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool evaluate_mo(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, mo_type);
         if (!ao_coeffs) {
             MD_LOG_ERROR("Failed to retrieve AO coefficients for Molecular Orbital index: %zu", mo_idx);
@@ -1635,7 +1710,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, mode);
+            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI, op);
             md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
@@ -1650,15 +1725,60 @@ struct VeloxChem : viamd::EventHandler {
         }
         return success;
 #else
-        md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), ao_coeffs, cutoff_value, mode);
+        md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), ao_coeffs, cutoff_value, MD_GTO_EVAL_MODE_PSI, op);
         return true;
 #endif
     }
 
     // The full electron density that includes all orbitals weighted by their occupancy
-    bool evaluate_electron_density(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    bool evaluate_electron_density(uint32_t vol_tex, const md_grid_t& grid, ElectronicStructureSpin spin, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         (void)cutoff_value;
-        const double* density_matrix = md_vlx_scf_density_matrix_data(vlx, mo_type);
+        const double* density_matrix_alpha = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_ALPHA);
+        const double* density_matrix_beta  = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_BETA);
+        const double* density_matrix = nullptr;
+        const size_t density_matrix_dim = md_vlx_scf_density_matrix_size(vlx);
+        const size_t density_matrix_count = density_matrix_dim * density_matrix_dim;
+
+        if (density_matrix_count == 0 || (!density_matrix_alpha && spin != ElectronicStructureSpin::Beta)) {
+            MD_LOG_ERROR("Failed to retrieve density matrix");
+            return false;
+        }
+
+        size_t temp_pos = md_temp_get_pos();
+        defer { md_temp_set_pos_back(temp_pos); };
+
+        switch (spin) {
+        case ElectronicStructureSpin::None:
+        case ElectronicStructureSpin::Total:
+            if (density_matrix_beta) {
+                double* density_matrix_total = (double*)md_temp_push(sizeof(double) * density_matrix_count);
+                for (size_t i = 0; i < density_matrix_count; ++i) {
+                    density_matrix_total[i] = density_matrix_alpha[i] + density_matrix_beta[i];
+                }
+                density_matrix = density_matrix_total;
+            } else {
+                density_matrix = density_matrix_alpha;
+            }
+            break;
+        case ElectronicStructureSpin::Alpha:
+            density_matrix = density_matrix_alpha;
+            break;
+        case ElectronicStructureSpin::Beta:
+            density_matrix = density_matrix_beta;
+            break;
+        case ElectronicStructureSpin::Difference:
+            if (density_matrix_alpha && density_matrix_beta) {
+                double* density_matrix_difference = (double*)md_temp_push(sizeof(double) * density_matrix_count);
+                for (size_t i = 0; i < density_matrix_count; ++i) {
+                    density_matrix_difference[i] = density_matrix_alpha[i] - density_matrix_beta[i];
+                }
+                density_matrix = density_matrix_difference;
+            }
+            break;
+        default:
+            break;
+        }
+
         if (!density_matrix) {
             MD_LOG_ERROR("Failed to retrieve density matrix");
             return false;
@@ -1697,7 +1817,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid);
+            md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid, op);
             md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
@@ -1712,7 +1832,7 @@ struct VeloxChem : viamd::EventHandler {
         }
         return success;
 #else
-        md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false);
+        md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false, op);
         return true;
 #endif
     }
@@ -2742,7 +2862,11 @@ struct VeloxChem : viamd::EventHandler {
                     // Update volume if required
                     const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)vol_res] * BOHR_TO_ANGSTROM);
                     md_grid_t grid = { 0 };
-                    init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
+#if USE_OABB_GRID
+                    init_grid(&grid, oabb.orientation, oabb.center, oabb.extents, samples_per_unit_length);
+#else
+                    init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+#endif
 
                     // Compute a hash of the current state
                     size_t frame_idx = (size_t)(state.animation.frame + 0.5);
@@ -2799,7 +2923,7 @@ struct VeloxChem : viamd::EventHandler {
                                         md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
                                     }
 
-                                    md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid);
+                                    md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid, MD_GTO_OP_SET);
                                     md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
                                     md_topo_gpu_cmd_record(cmd, critical_points.topo_ctx, gpu_volume, &grid, 0.0f);
 
@@ -2816,7 +2940,7 @@ struct VeloxChem : viamd::EventHandler {
 #else
                             uint32_t tex_id = 0;
                             if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
-                                md_gto_grid_evaluate_density_GL(tex_id, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false);
+                                md_gto_grid_evaluate_density_GL(tex_id, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false, MD_GTO_OP_SET);
 
                                 if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, tex_id, &grid, 0.0f)) {
                                     MD_LOG_ERROR("Failed to compute extremum graph for electron density");
@@ -3860,8 +3984,12 @@ struct VeloxChem : viamd::EventHandler {
 
             if (num_jobs > 0) {
                 const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
-                md_grid_t grid{ 0 };
+                md_grid_t grid { 0 };
+#if USE_AABB_GRID
+                init_grid(&grid, mat3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+#else
                 init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
+#endif
                 const int num_tot_mos = (int)num_molecular_orbitals();
 
                 for (int i = 0; i < num_jobs; ++i) {
@@ -3873,7 +4001,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     if (-1 < mo_idx && mo_idx < num_tot_mos) {
                         init_volume(&orb.vol[slot_idx], grid);
-                        evaluate_mo(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_EVAL_MODE_PSI);
+                        evaluate_mo(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_OP_SET);
                     }
                 }
             }
@@ -4199,18 +4327,21 @@ struct VeloxChem : viamd::EventHandler {
     void draw_export_window(ApplicationState& state) {
         if (!export_state.show_window) return;
         if (ImGui::Begin("VeloxChem Export", &export_state.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-            if (ImGui::BeginCombo("Orbital Type", electronic_structure_type_str[(int)export_state.orb_type])) {
-                for (int i = 0; i < (int)ElectronicStructureType::Count; i++) {
-                    bool is_selected = ((int)export_state.orb_type == i);
-                    bool disabled = false;
-
-                    if (i == (int)ElectronicStructureType::AttachmentDensity || i == (int)ElectronicStructureType::DetachmentDensity) {
-                        disabled = (md_vlx_rsp_number_of_excited_states(vlx) == 0);    
-                    }
+            if (ImGui::BeginCombo("Source", electronic_structure_source_str[(int)export_state.source])) {
+                for (int i = 0; i < (int)ElectronicStructureSource::Count; i++) {
+                    ElectronicStructureSource source = (ElectronicStructureSource)i;
+                    bool is_selected = (export_state.source == source);
+                    bool disabled = (source == ElectronicStructureSource::NaturalTransitionOrbital ||
+                                     source == ElectronicStructureSource::TransitionDensity) &&
+                                    (md_vlx_rsp_number_of_excited_states(vlx) == 0);
 
                     if (disabled) ImGui::PushDisabled();
-                    if (ImGui::Selectable(electronic_structure_type_str[i], is_selected)) {
-                        export_state.orb_type = (ElectronicStructureType)i;
+                    if (ImGui::Selectable(electronic_structure_source_str[i], is_selected)) {
+                        export_state.source = source;
+                        export_state.use_magnitude = false;
+                        if (export_state.source == ElectronicStructureSource::ElectronDensity) {
+                            export_state.spin = ElectronicStructureSpin::Total;
+                        }
                     }
                     if (disabled) ImGui::PopDisabled();
 
@@ -4221,28 +4352,70 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndCombo();
             }
 
+            if (export_state.source == ElectronicStructureSource::MolecularOrbital ||
+                export_state.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+                (export_state.source == ElectronicStructureSource::ElectronDensity && export_state.spin == ElectronicStructureSpin::Difference)) {
+                const char* magnitude_label = "Magnitude";
+                ImGui::Checkbox(magnitude_label, &export_state.use_magnitude);
+            }
+
+            if (export_state.source == ElectronicStructureSource::NaturalTransitionOrbital) {
+                ImGui::Combo("Component", (int*)&export_state.nto_component, electronic_structure_nto_component_str, IM_ARRAYSIZE(electronic_structure_nto_component_str));
+            }
+
+            if (export_state.source == ElectronicStructureSource::TransitionDensity) {
+                ImGui::Combo("Component", (int*)&export_state.transition_density_component, electronic_structure_transition_density_component_str, IM_ARRAYSIZE(electronic_structure_transition_density_component_str));
+            }
+
+            if (export_state.source == ElectronicStructureSource::ElectronDensity) {
+                const bool has_beta_density = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_BETA) != nullptr;
+                if (has_beta_density) {
+                    const ElectronicStructureSpin spin_options[] = {
+                        ElectronicStructureSpin::Total,
+                        ElectronicStructureSpin::Alpha,
+                        ElectronicStructureSpin::Beta,
+                        ElectronicStructureSpin::Difference,
+                    };
+                    const char* spin_labels[] = { "Total", "Alpha", "Beta", "Difference" };
+                    int spin_idx = 0;
+                    for (int i = 0; i < (int)IM_ARRAYSIZE(spin_options); ++i) {
+                        if (export_state.spin == spin_options[i]) {
+                            spin_idx = i;
+                            break;
+                        }
+                    }
+                    if (export_state.spin != spin_options[spin_idx]) {
+                        export_state.spin = spin_options[spin_idx];
+                    }
+                    if (ImGui::Combo("Spin", &spin_idx, spin_labels, IM_ARRAYSIZE(spin_labels))) {
+                        export_state.spin = spin_options[spin_idx];
+                        if (export_state.spin != ElectronicStructureSpin::Difference) {
+                            export_state.use_magnitude = false;
+                        }
+                    }
+                } else {
+                    export_state.spin = ElectronicStructureSpin::Total;
+                    export_state.use_magnitude = false;
+                }
+            }
+
             int orb_idx = 0;
             bool show_mo_combo = false;
             bool show_lambda_combo = false;
             bool show_excited_state_combo = false;
 
-            switch (export_state.orb_type) {
-            case ElectronicStructureType::MolecularOrbital:
-            case ElectronicStructureType::MolecularOrbitalDensity:
+            switch (export_state.source) {
+            case ElectronicStructureSource::MolecularOrbital:
                 show_mo_combo = true;
                 break;
-            case ElectronicStructureType::NaturalTransitionOrbitalParticle:
-            case ElectronicStructureType::NaturalTransitionOrbitalHole:
-            case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
-            case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
+            case ElectronicStructureSource::NaturalTransitionOrbital:
                 show_excited_state_combo = true;
                 show_lambda_combo = true;
                 break;
-            case ElectronicStructureType::AttachmentDensity:
-            case ElectronicStructureType::DetachmentDensity:
+            case ElectronicStructureSource::TransitionDensity:
                 show_excited_state_combo = true;
                 break;
-            case ElectronicStructureType::ElectronDensity:
+            case ElectronicStructureSource::ElectronDensity:
                 break;
             default:
                 break;
@@ -4415,40 +4588,31 @@ struct VeloxChem : viamd::EventHandler {
                     Volume vol = {};
                     init_volume(&vol, grid, GL_R32F);
 
-                    switch (export_state.orb_type) {
-                    case ElectronicStructureType::MolecularOrbital:
-                    case ElectronicStructureType::MolecularOrbitalDensity:
+                    switch (export_state.source) {
+                    case ElectronicStructureSource::MolecularOrbital:
                     {
-                        md_gto_eval_mode_t mode = (export_state.orb_type == ElectronicStructureType::MolecularOrbital) ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED;
-                        evaluate_mo(vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, mode);
+                        md_gto_op_t op = gto_op_from_use_magnitude(export_state.use_magnitude);
+                        evaluate_mo(vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, op);
                         break;
                     }
-                    case ElectronicStructureType::NaturalTransitionOrbitalParticle:
-                    case ElectronicStructureType::NaturalTransitionOrbitalHole:
-                    case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
-                    case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
+                    case ElectronicStructureSource::NaturalTransitionOrbital:
                     {
-                        md_vlx_nto_type_t type = (export_state.orb_type == ElectronicStructureType::NaturalTransitionOrbitalParticle ||
-                                                  export_state.orb_type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle)
-                                                      ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
-                        md_gto_eval_mode_t mode = (export_state.orb_type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle ||
-                                                   export_state.orb_type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole)
-                                                      ? MD_GTO_EVAL_MODE_PSI_SQUARED : MD_GTO_EVAL_MODE_PSI;
+                        md_vlx_nto_type_t type = export_state.nto_component == ElectronicStructureNtoComponent::Particle ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
+                        md_gto_op_t op = gto_op_from_use_magnitude(export_state.use_magnitude);
                         
-                        evaluate_nto(vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, mode);
+                        evaluate_nto(vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, op);
                         break;
                     }
-                    case ElectronicStructureType::AttachmentDensity:
-                    case ElectronicStructureType::DetachmentDensity:
+                    case ElectronicStructureSource::TransitionDensity:
                     {
-                        AttachmentDetachmentType type = (export_state.orb_type == ElectronicStructureType::AttachmentDensity)
+                        AttachmentDetachmentType type = (export_state.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment)
                                                             ? AttachmentDetachmentType::Attachment
                                                             : AttachmentDetachmentType::Detachment;
                         evaluate_attachment_detachment_density(vol.tex_id, grid, export_state.nto.idx, type);
                         break;
                     }
-                    case ElectronicStructureType::ElectronDensity:
-                        evaluate_electron_density(vol.tex_id, grid, MD_VLX_SPIN_ALPHA);
+                    case ElectronicStructureSource::ElectronDensity:
+                        evaluate_electron_density(vol.tex_id, grid, export_state.spin, gto_op_from_use_magnitude(export_state.spin == ElectronicStructureSpin::Difference && export_state.use_magnitude));
                         break;
                     default:
                         MD_LOG_ERROR("Unsupported export type");
@@ -4474,7 +4638,11 @@ struct VeloxChem : viamd::EventHandler {
                     switch (file_format) {
                     case EXPORT_FILE_FORMAT_CUBE: {
                         md_file_printf(file, "Cube file generated by VIAMD\n");
-                        md_file_printf(file, "%s\n", electronic_structure_type_str[(int)export_state.orb_type]);
+                        if (export_state.source == ElectronicStructureSource::ElectronDensity) {
+                            md_file_printf(file, "%s %s %s\n", electronic_structure_source_str[(int)export_state.source], electronic_structure_value_mode_str(export_state.source, export_state.spin, export_state.use_magnitude), electronic_structure_spin_str[(int)export_state.spin]);
+                        } else {
+                            md_file_printf(file, "%s %s\n", electronic_structure_source_str[(int)export_state.source], electronic_structure_value_mode_str(export_state.source, export_state.spin, export_state.use_magnitude));
+                        }
 
                         md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", -(int)natoms, origin.x, origin.y, origin.z);
                         md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol.dim[0], step_x.x, step_x.y, step_x.z);
@@ -5027,8 +5195,8 @@ struct VeloxChem : viamd::EventHandler {
                             init_volume(&nto.vol[pi], nto.grid);
                             init_volume(&nto.vol[hi], nto.grid);
 
-                            evaluate_nto(nto.vol[pi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI);
-                            evaluate_nto(nto.vol[hi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI);
+                            evaluate_nto(nto.vol[pi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_OP_SET);
+                            evaluate_nto(nto.vol[hi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_OP_SET);
                         }
                         if (task_system::task_is_running(nto.seg_task[0])) {
                             task_system::task_interrupt(nto.seg_task[0]);

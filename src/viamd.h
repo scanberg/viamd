@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_str.h>
 #include <core/md_os.h>
@@ -166,7 +166,76 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Property",
 };
 
-enum class ElectronicStructureType {
+enum class ElectronicStructureSource {
+    MolecularOrbital,
+    NaturalTransitionOrbital,
+    TransitionDensity,
+    ElectronDensity,
+    Count
+};
+
+static const char* electronic_structure_source_str[(int)ElectronicStructureSource::Count] = {
+    "Molecular Orbital",
+    "Natural Transition Orbital",
+    "Transition Density",
+    "Electron Density",
+};
+
+enum ElectronicStructureSourceFlag_ : uint32_t {
+    ElectronicStructureSourceFlag_MolecularOrbital          = 1u << (int)ElectronicStructureSource::MolecularOrbital,
+    ElectronicStructureSourceFlag_NaturalTransitionOrbital  = 1u << (int)ElectronicStructureSource::NaturalTransitionOrbital,
+    ElectronicStructureSourceFlag_TransitionDensity         = 1u << (int)ElectronicStructureSource::TransitionDensity,
+    ElectronicStructureSourceFlag_ElectronDensity           = 1u << (int)ElectronicStructureSource::ElectronDensity,
+};
+
+typedef uint32_t ElectronicStructureSourceFlags;
+
+enum class ElectronicStructureField {
+    Amplitude,
+    Density,
+    Count
+};
+
+enum class ElectronicStructureSpin {
+    None,
+    Alpha,
+    Beta,
+    Total,
+    Difference,
+    Count
+};
+
+static const char* electronic_structure_spin_str[(int)ElectronicStructureSpin::Count] = {
+    "None",
+    "Alpha",
+    "Beta",
+    "Total",
+    "Difference",
+};
+
+enum class ElectronicStructureNtoComponent {
+    Particle,
+    Hole,
+    Count
+};
+
+static const char* electronic_structure_nto_component_str[(int)ElectronicStructureNtoComponent::Count] = {
+    "Particle",
+    "Hole",
+};
+
+enum class ElectronicStructureTransitionDensityComponent {
+    Attachment,
+    Detachment,
+    Count
+};
+
+static const char* electronic_structure_transition_density_component_str[(int)ElectronicStructureTransitionDensityComponent::Count] = {
+    "Attachment",
+    "Detachment",
+};
+
+enum class ElectronicStructureLegacyType {
     MolecularOrbital,
     MolecularOrbitalDensity,
     NaturalTransitionOrbitalParticle,
@@ -176,19 +245,7 @@ enum class ElectronicStructureType {
     AttachmentDensity,
     DetachmentDensity,
     ElectronDensity,
-    Count
-};
-
-static const char* electronic_structure_type_str[(int)ElectronicStructureType::Count] = {
-    (const char*)u8"Molecular Orbital (Ψ)",
-    (const char*)u8"Molecular Orbital Density (Ψ²)",
-    (const char*)u8"Natural Transition Orbital (NTO) Particle",
-    (const char*)u8"Natural Transition Orbital (NTO) Hole",
-    (const char*)u8"Natural Transition Orbital Density (NTO²) Particle",
-    (const char*)u8"Natural Transition Orbital Density (NTO²) Hole",
-    (const char*)u8"Attachment Density (A)",
-    (const char*)u8"Detachment Density (D)",
-    (const char*)u8"Electron Density (ρ)",
+    Count,
 };
 
 enum MolBit_ {
@@ -441,7 +498,7 @@ struct RepresentationInfo {
     DipoleMoment magnetic_dipoles;
     DipoleMoment velocity_dipoles;
 
-    uint32_t electronic_structure_type_mask;
+    ElectronicStructureSourceFlags electronic_structure_source_mask = 0;
 
     md_array(AtomProperty) atom_properties = nullptr;
 
@@ -508,15 +565,174 @@ struct ElectronicStructureRepresentation {
         int colormap = DEFAULT_COLORMAP;
     } dvr;
 
-    ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
-    int mo_idx = 0;
-    int nto_idx = 0;
+    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
+    bool use_magnitude = false;
+    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
+    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
+    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+
+    int orbital_idx = 0;
+    int excited_state_idx = 0;
     int nto_lambda_idx = 0;
 
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
     uint64_t tf_hash = 0;
 };
+
+static inline ElectronicStructureSourceFlags electronic_structure_source_flag(ElectronicStructureSource source) {
+    return 1u << (uint32_t)source;
+}
+
+static inline bool electronic_structure_source_supported(ElectronicStructureSourceFlags mask, ElectronicStructureSource source) {
+    return (mask & electronic_structure_source_flag(source)) != 0;
+}
+
+static inline bool electronic_structure_uses_orbital_idx(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::MolecularOrbital;
+}
+
+static inline bool electronic_structure_uses_excited_state_idx(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+           rep.source == ElectronicStructureSource::TransitionDensity;
+}
+
+static inline bool electronic_structure_uses_nto_lambda_idx(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::NaturalTransitionOrbital;
+}
+
+static inline bool electronic_structure_uses_magnitude_toggle(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::MolecularOrbital ||
+           rep.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+           (rep.source == ElectronicStructureSource::ElectronDensity && rep.spin == ElectronicStructureSpin::Difference);
+}
+
+static inline bool electronic_structure_uses_spin(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::MolecularOrbital ||
+           rep.source == ElectronicStructureSource::ElectronDensity;
+}
+
+static inline bool electronic_structure_is_signed(const ElectronicStructureRepresentation& rep) {
+    return electronic_structure_uses_magnitude_toggle(rep) && !rep.use_magnitude;
+}
+
+static inline ElectronicStructureField electronic_structure_legacy_field(const ElectronicStructureRepresentation& rep) {
+    return rep.use_magnitude ? ElectronicStructureField::Density : ElectronicStructureField::Amplitude;
+}
+
+static inline void electronic_structure_set_legacy_field(ElectronicStructureRepresentation* rep, int field) {
+    ASSERT(rep);
+    rep->use_magnitude = (rep->source == ElectronicStructureSource::MolecularOrbital ||
+                          rep->source == ElectronicStructureSource::NaturalTransitionOrbital) &&
+                         (ElectronicStructureField)field == ElectronicStructureField::Density;
+}
+
+static inline void electronic_structure_set_source_defaults(ElectronicStructureRepresentation* rep) {
+    ASSERT(rep);
+    switch (rep->source) {
+    case ElectronicStructureSource::MolecularOrbital:
+        if (rep->spin != ElectronicStructureSpin::Alpha && rep->spin != ElectronicStructureSpin::Beta) {
+            rep->spin = ElectronicStructureSpin::Alpha;
+        }
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureSource::NaturalTransitionOrbital:
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureSource::TransitionDensity:
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureSource::ElectronDensity:
+        rep->spin = ElectronicStructureSpin::Total;
+        rep->use_magnitude = false;
+        break;
+    default:
+        ASSERT(false);
+        break;
+    }
+}
+
+static inline void electronic_structure_set_legacy_type(ElectronicStructureRepresentation* rep, int type) {
+    ASSERT(rep);
+    switch ((ElectronicStructureLegacyType)type) {
+    case ElectronicStructureLegacyType::MolecularOrbital:
+        rep->source = ElectronicStructureSource::MolecularOrbital;
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureLegacyType::MolecularOrbitalDensity:
+        rep->source = ElectronicStructureSource::MolecularOrbital;
+        rep->use_magnitude = true;
+        break;
+    case ElectronicStructureLegacyType::NaturalTransitionOrbitalParticle:
+        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->use_magnitude = false;
+        rep->nto_component = ElectronicStructureNtoComponent::Particle;
+        break;
+    case ElectronicStructureLegacyType::NaturalTransitionOrbitalHole:
+        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->use_magnitude = false;
+        rep->nto_component = ElectronicStructureNtoComponent::Hole;
+        break;
+    case ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle:
+        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->use_magnitude = true;
+        rep->nto_component = ElectronicStructureNtoComponent::Particle;
+        break;
+    case ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole:
+        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->use_magnitude = true;
+        rep->nto_component = ElectronicStructureNtoComponent::Hole;
+        break;
+    case ElectronicStructureLegacyType::AttachmentDensity:
+        rep->source = ElectronicStructureSource::TransitionDensity;
+        rep->use_magnitude = false;
+        rep->transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+        break;
+    case ElectronicStructureLegacyType::DetachmentDensity:
+        rep->source = ElectronicStructureSource::TransitionDensity;
+        rep->use_magnitude = false;
+        rep->transition_density_component = ElectronicStructureTransitionDensityComponent::Detachment;
+        break;
+    case ElectronicStructureLegacyType::ElectronDensity:
+        rep->source = ElectronicStructureSource::ElectronDensity;
+        rep->use_magnitude = false;
+        rep->spin = ElectronicStructureSpin::Total;
+        break;
+    default:
+        ASSERT(false);
+        break;
+    }
+}
+
+
+static inline int electronic_structure_legacy_type(const ElectronicStructureRepresentation& rep) {
+    switch (rep.source) {
+    case ElectronicStructureSource::MolecularOrbital:
+        return (int)(!rep.use_magnitude ?
+            ElectronicStructureLegacyType::MolecularOrbital :
+            ElectronicStructureLegacyType::MolecularOrbitalDensity);
+    case ElectronicStructureSource::NaturalTransitionOrbital:
+        if (!rep.use_magnitude) {
+            return (int)(rep.nto_component == ElectronicStructureNtoComponent::Particle ?
+                ElectronicStructureLegacyType::NaturalTransitionOrbitalParticle :
+                ElectronicStructureLegacyType::NaturalTransitionOrbitalHole);
+        }
+        return (int)(rep.nto_component == ElectronicStructureNtoComponent::Particle ?
+            ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle :
+            ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole);
+    case ElectronicStructureSource::TransitionDensity:
+        return (int)(rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment ?
+            ElectronicStructureLegacyType::AttachmentDensity :
+            ElectronicStructureLegacyType::DetachmentDensity);
+    case ElectronicStructureSource::ElectronDensity:
+        return (int)ElectronicStructureLegacyType::ElectronDensity;
+    default:
+        ASSERT(false);
+        return 0;
+    }
+}
 
 struct AtomicPropertyRepresentation {
     int colormap = DEFAULT_COLORMAP;

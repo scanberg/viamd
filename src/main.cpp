@@ -3263,7 +3263,9 @@ static void draw_animation_window(ApplicationState* data) {
         }
         switch (data->animation.mode) {
             case PlaybackMode::Playing:
-                if (ImGui::Button((const char*)ICON_FA_PAUSE)) data->animation.mode = PlaybackMode::Stopped;
+                if (ImGui::Button((const char*)ICON_FA_PAUSE)) {
+                    data->animation.mode = PlaybackMode::Stopped;
+                }
                 break;
             case PlaybackMode::Stopped:
                 if (ImGui::Button((const char*)ICON_FA_PLAY)) {
@@ -3389,14 +3391,18 @@ static void draw_representations_window(ApplicationState* state) {
                 }
             } else {
                 ImGuiComboFlags flags = 0;
-                if (ImGui::BeginCombo("volume src", electronic_structure_type_str[(int)rep.electronic_structure.type], flags)) {
-                    for (int n = 0; n < (int)ElectronicStructureType::Count; n++) {
-                        bool is_selected = ((int)rep.electronic_structure.type == n);
-                        bool disabled = !((1 << n) & state->representation.info.electronic_structure_type_mask);
+                ElectronicStructureRepresentation& es = rep.electronic_structure;
+
+                if (ImGui::BeginCombo("volume src", electronic_structure_source_str[(int)es.source], flags)) {
+                    for (int n = 0; n < (int)ElectronicStructureSource::Count; n++) {
+                        ElectronicStructureSource source = (ElectronicStructureSource)n;
+                        bool is_selected = (es.source == source);
+                        bool disabled = !electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, source);
 
                         if (disabled) ImGui::PushDisabled();
-                        if (ImGui::Selectable(electronic_structure_type_str[n], is_selected)) {
-                            rep.electronic_structure.type = (ElectronicStructureType)n;
+                        if (ImGui::Selectable(electronic_structure_source_str[n], is_selected)) {
+                            es.source = source;
+                            electronic_structure_set_source_defaults(&es);
                             update_rep = true;
                         }
                         if (disabled) ImGui::PopDisabled();
@@ -3408,36 +3414,90 @@ static void draw_representations_window(ApplicationState* state) {
                     ImGui::EndCombo();
                 }
                 if (advanced) {
-                    if (ImGui::Combo("volume res", (int*)&rep.electronic_structure.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
+                    if (ImGui::Combo("volume res", (int*)&es.resolution, volume_resolution_str, IM_ARRAYSIZE(volume_resolution_str))) {
                         update_rep = true;
                     }
                 }
 
-                const bool show_molecular_orbitals = (rep.electronic_structure.type == ElectronicStructureType::MolecularOrbital ||
-                                                      rep.electronic_structure.type == ElectronicStructureType::MolecularOrbitalDensity);
+                const bool show_spin = electronic_structure_uses_spin(es);
+                if (show_spin) {
+                    const bool has_beta = state->representation.info.beta.num_orbitals > 0;
+                    if (es.source == ElectronicStructureSource::MolecularOrbital) {
+                        if (es.spin != ElectronicStructureSpin::Alpha && es.spin != ElectronicStructureSpin::Beta) {
+                            es.spin = ElectronicStructureSpin::Alpha;
+                            update_rep = true;
+                        }
+                        if (has_beta) {
+                            const char* spin_options[] = { "Alpha", "Beta" };
+                            int spin_idx = es.spin == ElectronicStructureSpin::Beta ? 1 : 0;
+                            if (ImGui::Combo("spin", &spin_idx, spin_options, IM_ARRAYSIZE(spin_options))) {
+                                es.spin = spin_idx == 1 ? ElectronicStructureSpin::Beta : ElectronicStructureSpin::Alpha;
+                                update_rep = true;
+                            }
+                        }
+                    }
+                    else if (es.source == ElectronicStructureSource::ElectronDensity) {
+                        if (has_beta) {
+                            const ElectronicStructureSpin spin_options[] = {
+                                ElectronicStructureSpin::Total,
+                                ElectronicStructureSpin::Alpha,
+                                ElectronicStructureSpin::Beta,
+                                ElectronicStructureSpin::Difference,
+                            };
+                            const char* spin_labels[] = { "Total", "Alpha", "Beta", "Difference" };
+                            int spin_idx = 0;
+                            for (int i = 0; i < (int)IM_ARRAYSIZE(spin_options); ++i) {
+                                if (es.spin == spin_options[i]) {
+                                    spin_idx = i;
+                                    break;
+                                }
+                            }
+                            if (es.spin != spin_options[spin_idx]) {
+                                es.spin = spin_options[spin_idx];
+                                update_rep = true;
+                            }
+                            if (ImGui::Combo("spin", &spin_idx, spin_labels, IM_ARRAYSIZE(spin_labels))) {
+                                es.spin = spin_options[spin_idx];
+                                if (es.spin != ElectronicStructureSpin::Difference) {
+                                    es.use_magnitude = false;
+                                }
+                                update_rep = true;
+                            }
+                        } else if (es.spin != ElectronicStructureSpin::Total) {
+                            es.spin = ElectronicStructureSpin::Total;
+                            es.use_magnitude = false;
+                            update_rep = true;
+                        }
+                    }
+                }
 
-                const bool show_exited_states = (rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalParticle ||
-                                                 rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalHole ||
-                                                 rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle ||
-                                                 rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole ||
-                                                 rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity ||
-                                                 rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity);
+                if (es.source == ElectronicStructureSource::NaturalTransitionOrbital) {
+                    if (ImGui::Combo("component", (int*)&es.nto_component, electronic_structure_nto_component_str, IM_ARRAYSIZE(electronic_structure_nto_component_str))) {
+                        update_rep = true;
+                    }
+                }
 
-                const bool show_lambdas =   (rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalParticle ||
-                                             rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalHole ||
-                                             rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityParticle ||
-                                             rep.electronic_structure.type == ElectronicStructureType::NaturalTransitionOrbitalDensityHole);
+                if (es.source == ElectronicStructureSource::TransitionDensity) {
+                    if (ImGui::Combo("component", (int*)&es.transition_density_component, electronic_structure_transition_density_component_str, IM_ARRAYSIZE(electronic_structure_transition_density_component_str))) {
+                        update_rep = true;
+                    }
+                }
+
+                const bool show_molecular_orbitals = electronic_structure_uses_orbital_idx(es);
+                const bool show_exited_states = electronic_structure_uses_excited_state_idx(es);
+                const bool show_lambdas = electronic_structure_uses_nto_lambda_idx(es);
 
                 if (show_molecular_orbitals) {
                     if (state->representation.info.alpha.label) {
-                        if (ImGui::BeginCombo("orbital idx", state->representation.info.alpha.label[rep.electronic_structure.mo_idx].ptr)) {
+                        es.orbital_idx = CLAMP(es.orbital_idx, 0, (int)state->representation.info.alpha.num_orbitals - 1);
+                        if (ImGui::BeginCombo("orbital idx", state->representation.info.alpha.label[es.orbital_idx].ptr)) {
                             for (int n = 0; n < (int)state->representation.info.alpha.num_orbitals; n++) {
-                                bool is_selected = (rep.electronic_structure.mo_idx == n);
+                                bool is_selected = (es.orbital_idx == n);
                                 if (ImGui::Selectable(state->representation.info.alpha.label[n].ptr, is_selected)) {
-                                    if (rep.electronic_structure.mo_idx != n) {
+                                    if (es.orbital_idx != n) {
                                         update_rep = true;
                                     }
-                                    rep.electronic_structure.mo_idx = n;
+                                    es.orbital_idx = n;
                                 }
 
                                 if (is_selected) {
@@ -3451,14 +3511,15 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (show_exited_states) {
                     if (state->representation.info.nto.label) {
-                        if (ImGui::BeginCombo("state idx", state->representation.info.nto.label[rep.electronic_structure.nto_idx].ptr)) {
+                        es.excited_state_idx = CLAMP(es.excited_state_idx, 0, (int)state->representation.info.nto.num_orbitals - 1);
+                        if (ImGui::BeginCombo("state idx", state->representation.info.nto.label[es.excited_state_idx].ptr)) {
                             for (int n = 0; n < (int)state->representation.info.nto.num_orbitals; n++) {
-                                const bool is_selected = (rep.electronic_structure.nto_idx == n);
+                                const bool is_selected = (es.excited_state_idx == n);
                                 if (ImGui::Selectable(state->representation.info.nto.label[n].ptr, is_selected)) {
-                                    if (rep.electronic_structure.nto_idx != n) {
+                                    if (es.excited_state_idx != n) {
                                         update_rep = true;
                                     }
-                                    rep.electronic_structure.nto_idx = n;
+                                    es.excited_state_idx = n;
                                 }
 
                                 if (is_selected) {
@@ -3469,19 +3530,19 @@ static void draw_representations_window(ApplicationState* state) {
                         }
                         if (show_lambdas) {
                             if (state->representation.info.nto.lambda) {
-                                const NaturalTransitionOrbitalLambda& lambda = state->representation.info.nto.lambda[rep.electronic_structure.nto_idx];
+                                const NaturalTransitionOrbitalLambda& lambda = state->representation.info.nto.lambda[es.excited_state_idx];
                                 const int num_lambdas = (int)lambda.num_lambdas;
                                 if (num_lambdas > 0) {
-                                    rep.electronic_structure.nto_lambda_idx = CLAMP(rep.electronic_structure.nto_lambda_idx, 0, num_lambdas - 1);
+                                    es.nto_lambda_idx = CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
                                     if (lambda.label) {
-                                        if (ImGui::BeginCombo("lambda idx", lambda.label[rep.electronic_structure.nto_lambda_idx].ptr)) {
+                                        if (ImGui::BeginCombo("lambda idx", lambda.label[es.nto_lambda_idx].ptr)) {
                                             for (int n = 0; n < (int)num_lambdas; n++) {
-                                                const bool is_selected = (rep.electronic_structure.nto_lambda_idx == n);
+                                                const bool is_selected = (es.nto_lambda_idx == n);
                                                 if (ImGui::Selectable(lambda.label[n].ptr, is_selected)) {
-                                                    if (rep.electronic_structure.nto_lambda_idx != n) {
+                                                    if (es.nto_lambda_idx != n) {
                                                         update_rep = true;
                                                     }
-                                                    rep.electronic_structure.nto_lambda_idx = n;
+                                                    es.nto_lambda_idx = n;
                                                 }
 
                                                 if (is_selected) {
@@ -3516,16 +3577,27 @@ static void draw_representations_window(ApplicationState* state) {
                     }
                 }
 #endif
-                switch (rep.electronic_structure.type) {
-                case ElectronicStructureType::MolecularOrbital:
-                case ElectronicStructureType::NaturalTransitionOrbitalParticle:
-                case ElectronicStructureType::NaturalTransitionOrbitalHole: {
-                    const double iso_min = 1.0e-4;
-                    const double iso_max = 5.0;
-                    ImGui::SliderScalar("iso value", ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+                if (electronic_structure_uses_magnitude_toggle(es)) {
+                    const char* magnitude_label = es.source == ElectronicStructureSource::ElectronDensity ? "magnitude |ρ|" : (const char*)u8"magnitude |Ψ|";
+                    if (ImGui::Checkbox(magnitude_label, &es.use_magnitude)) {
+                        update_rep = true;
+                    }
+                }
+                
+                const double min_tau = 0.0;
+                const double max_tau = 1.0;
+                
+                const double min_power = 2.0;
+                const double max_power = 20.0;
+
+                const double iso_min = 1.0e-8;
+                const double iso_max = 5.0;
+                
+                const char* iso_label = es.source == ElectronicStructureSource::ElectronDensity ? "iso value (ρ)" : (const char*)u8"iso value (Ψ)";
+                
+                if (electronic_structure_is_signed(es)) {
+                    ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic);
                     if (advanced) {
-                        const double min_tau = 0.0;
-                        const double max_tau = 1.0;
 			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
                         ImGui::SetItemTooltip("Optical density of the isosurfaces");
                     }
@@ -3541,44 +3613,30 @@ static void draw_representations_window(ApplicationState* state) {
                     }
 
                     if (advanced && rep.electronic_structure.use_atom_colors) {
-                        const double min_power = 2.0;
-                        const double max_power = 20.0;
                         update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
                     }
-                    break;
                 }
-                case ElectronicStructureType::MolecularOrbitalDensity:
-                case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
-                case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
-                case ElectronicStructureType::AttachmentDensity:
-                case ElectronicStructureType::DetachmentDensity:
-                case ElectronicStructureType::ElectronDensity: {
-                    const double iso_min = 1.0e-8;
-                    const double iso_max = 5.0;
-                    double iso_val = rep.electronic_structure.iso_value * rep.electronic_structure.iso_value;
-                    if (ImGui::SliderScalar("iso value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.7f", ImGuiSliderFlags_Logarithmic)) {
-                        rep.electronic_structure.iso_value = sqrt(iso_val);
-                    }
+                else {
+                    const char* iso_label = es.source == ElectronicStructureSource::ElectronDensity ? "iso value (ρ)" : (const char*)u8"iso value (Ψ)";
+                    ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic);
                     if (advanced) {
-                        const double min_tau = 0.0;
-                        const double max_tau = 1.0;
 			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
                         ImGui::SetItemTooltip("Optical density of the isosurfaces");
                     }
                     if (rep.electronic_structure.use_atom_colors) {
-                        if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                        if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                             ImGui::ColorEdit4("tint attachment", rep.electronic_structure.tint_att.elem);
                         }
-                        else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                        else if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
                             ImGui::ColorEdit4("tint detachment", rep.electronic_structure.tint_det.elem);
                         } else {
                             ImGui::ColorEdit4("tint density", rep.electronic_structure.tint_den.elem);
                         }
                     } else {
-                        if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                        if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                             ImGui::ColorEdit4("color attachment", rep.electronic_structure.col_att.elem);
                         }
-                        else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                        else if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
                             ImGui::ColorEdit4("color detachment", rep.electronic_structure.col_det.elem);
                         } else {
                             ImGui::ColorEdit4("color density",  rep.electronic_structure.col_den.elem);
@@ -3588,14 +3646,8 @@ static void draw_representations_window(ApplicationState* state) {
                         update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
                     }
                     if (advanced && rep.electronic_structure.use_atom_colors) {
-                        const double min_power = 2.0;
-                        const double max_power = 20.0;
                         update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
                     }
-                    break;
-                }
-                default:
-                    ASSERT(false);
                 }
             }
 
@@ -6860,10 +6912,7 @@ static void draw_representations_transparent(ApplicationState* state) {
         IsoDesc iso = {};
         iso.enabled = true;
 
-        switch (rep.electronic_structure.type) {
-        case ElectronicStructureType::MolecularOrbital:
-        case ElectronicStructureType::NaturalTransitionOrbitalParticle:
-        case ElectronicStructureType::NaturalTransitionOrbitalHole:
+        if (electronic_structure_is_signed(rep.electronic_structure)) {
             iso.count = 2;
             iso.values[0] =  rep.electronic_structure.iso_value;
             iso.values[1] = -rep.electronic_structure.iso_value;
@@ -6876,36 +6925,28 @@ static void draw_representations_transparent(ApplicationState* state) {
             }
             iso.optical_densities[0] = rep.electronic_structure.iso_optical_density;
             iso.optical_densities[1] = rep.electronic_structure.iso_optical_density;
-            break;
-        case ElectronicStructureType::MolecularOrbitalDensity:
-        case ElectronicStructureType::NaturalTransitionOrbitalDensityParticle:
-        case ElectronicStructureType::NaturalTransitionOrbitalDensityHole:
-        case ElectronicStructureType::AttachmentDensity:
-        case ElectronicStructureType::DetachmentDensity:
-        case ElectronicStructureType::ElectronDensity:
+        }
+        else {
             iso.count = 1;
-            iso.values[0] = rep.electronic_structure.iso_value * rep.electronic_structure.iso_value;
+            iso.values[0] = rep.electronic_structure.iso_value;
             if (rep.electronic_structure.use_atom_colors) {
-                if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                if (rep.electronic_structure.source == ElectronicStructureSource::TransitionDensity && rep.electronic_structure.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                     iso.colors[0] = rep.electronic_structure.tint_att;
-                } else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                } else if (rep.electronic_structure.source == ElectronicStructureSource::TransitionDensity && rep.electronic_structure.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
                     iso.colors[0] = rep.electronic_structure.tint_det;
                 } else {
                     iso.colors[0] = rep.electronic_structure.tint_den;
                 }
             } else {
-                if (rep.electronic_structure.type == ElectronicStructureType::AttachmentDensity) {
+                if (rep.electronic_structure.source == ElectronicStructureSource::TransitionDensity && rep.electronic_structure.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                     iso.colors[0] = rep.electronic_structure.col_att;
-                } else if (rep.electronic_structure.type == ElectronicStructureType::DetachmentDensity) {
+                } else if (rep.electronic_structure.source == ElectronicStructureSource::TransitionDensity && rep.electronic_structure.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
                     iso.colors[0] = rep.electronic_structure.col_det;
                 } else {
                     iso.colors[0] = rep.electronic_structure.col_den;
                 }
             }
             iso.optical_densities[0] = rep.electronic_structure.iso_optical_density;
-            break;
-        default:
-            ASSERT(false);
         }
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
