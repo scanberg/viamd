@@ -187,46 +187,6 @@ static void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* x
     out_max[2] = max_v.z;
 }
 
-static void calculate_bounding_volumes(OABB* oabb, AABB* aabb, const vec4_t* atom_xyzw, size_t count) {
-    vec4_t acc = vec4_zero();
-    for (size_t i = 0; i < count; ++i) {
-        acc = vec4_add(acc, atom_xyzw[i]);
-    }
-    vec3_t com = acc.w > 0.0f ? vec3_from_vec4(acc / acc.w) : vec3_zero();
-
-    mat3_t cov = mat3_covariance_matrix_vec4(atom_xyzw, nullptr, count, com);
-    mat3_eigen_t eigen = mat3_eigen(cov);
-    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-    mat4_t T = mat4_from_mat3(PCA);
-
-    // Compute min and maximum extent along the PCA axes
-    vec4_t oabb_min = vec4_set1( FLT_MAX);
-    vec4_t oabb_max = vec4_set1(-FLT_MAX);
-
-    vec4_t aabb_min = vec4_set1( FLT_MAX);
-    vec4_t aabb_max = vec4_set1(-FLT_MAX);
-
-    // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
-    for (size_t i = 0; i < count; ++i) {
-        aabb_min = vec4_min(aabb_min, atom_xyzw[i]);
-        aabb_max = vec4_max(aabb_max, atom_xyzw[i]);
-
-        vec4_t xyzw_pca = mat4_mul_vec4(T, atom_xyzw[i]);
-        oabb_min = vec4_min(oabb_min, xyzw_pca);
-        oabb_max = vec4_max(oabb_max, xyzw_pca);
-    }
-
-    // Apply padding
-    const float pad = 6.0f;
-
-    aabb->min_ext = vec3_from_vec4(aabb_min - pad);
-    aabb->max_ext = vec3_from_vec4(aabb_max + pad);
-
-    oabb->orientation = mat3_transpose(PCA);
-    oabb->min_ext = vec3_from_vec4(oabb_min - pad);
-    oabb->max_ext = vec3_from_vec4(oabb_max + pad);
-}
-
 // Construct texture to world transformation matrix for Volume
 // extent is the extent of the volume (dim * voxel_size)
 static inline mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent) {
