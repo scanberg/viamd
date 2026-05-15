@@ -83,13 +83,7 @@ static const double gamma_max = 1.0;
 // This is the internal storage order of volumes and textures related to NTOs
 enum NTO {
     NTO_Attachment,
-    NTO_Part_0,
-    NTO_Part_1,
-    NTO_Part_2,
     NTO_Detachment,
-    NTO_Hole_0,
-    NTO_Hole_1,
-    NTO_Hole_2,
 };
 
 enum class AttachmentDetachmentType {
@@ -448,10 +442,9 @@ struct VeloxChem : viamd::EventHandler {
         bool show_window = false;
         // We have a maximum of 4 orbital slots for each particle and hole
         // A Maximum of 8 will be used in practice, 2 for attachment / detachment + 3*2 for individual lambdas (particle + hole)
-        Volume   vol[8] = {};
-        uint32_t iso_tex[8] = {};
-        task_system::ID vol_task[8] = {};
-        task_system::ID seg_task[2] = {};
+        Volume   vol[2] = {};
+        uint32_t iso_tex[2] = {};
+
         int sel_nto_idx = -1;
 
         md_grid_t grid = {0};
@@ -992,9 +985,10 @@ struct VeloxChem : viamd::EventHandler {
                         info.nto.label[i] = str_printf(info.alloc, "%zu", i + 1);
 
                         const double LAMBDA_CUTOFF = 1.0e-3;
-                        const double* lambdas = md_vlx_rsp_nto_lambdas(vlx, i);
+                        double lambdas[16] = {0};
+                        size_t lambda_count = md_vlx_rsp_nto_lambdas_extract(lambdas, vlx, i, ARRAY_SIZE(lambdas));
                         NaturalTransitionOrbitalLambda lambda_info = {};
-                        for (size_t j = 0; j < 16; ++j) {
+                        for (size_t j = 0; j < lambda_count; ++j) {
                             if (lambdas[j] < LAMBDA_CUTOFF) break;
                             str_t lbl = str_printf(info.alloc, (const char*)u8"λ[%zu] (%.3f)", j + 1, lambdas[j]);
                             md_array_push(lambda_info.label, lbl, info.alloc);
@@ -1529,11 +1523,16 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     bool evaluate_nto(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
-        const double* nto_coeffs = md_vlx_rsp_nto_coefficients(vlx, nto_idx, lambda_idx, type);
-        if (!nto_coeffs) {
+        ScopedTemp temp_reset;
+        const size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
+        const size_t lambda_count = lambda_idx + 1;
+        double* nto_coeff_buffer = (double*)md_temp_push(sizeof(double) * lambda_count * num_aos);
+        size_t num_written = md_vlx_rsp_nto_coefficients_extract(nto_coeff_buffer, nullptr, vlx, nto_idx, type, lambda_count);
+        if (num_written <= lambda_idx) {
             MD_LOG_ERROR("Failed to retrieve NTO coefficients for nto index: %zu and lambda: %zu", nto_idx, lambda_idx);
             return false;
         }
+        const double* nto_coeffs = nto_coeff_buffer + lambda_idx * num_aos;
 
 #if MD_ENABLE_GPU
         bool success = false;
@@ -1594,21 +1593,22 @@ struct VeloxChem : viamd::EventHandler {
     bool evaluate_attachment_detachment_density(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, AttachmentDetachmentType type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         md_vlx_nto_type_t nto_type = (type == AttachmentDetachmentType::Attachment) ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
 
-        const double* lambda = md_vlx_rsp_nto_lambdas(vlx, nto_idx);
+        ScopedTemp temp_reset;
+        const size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
+        double* lambda = (double*)md_temp_push(sizeof(double) * MAX_NTO_LAMBDAS);
+        double* coeff_buffer = (double*)md_temp_push(sizeof(double) * MAX_NTO_LAMBDAS * num_aos);
+        size_t available_lambdas = md_vlx_rsp_nto_coefficients_extract(coeff_buffer, lambda, vlx, nto_idx, nto_type, MAX_NTO_LAMBDAS);
         size_t num_lambdas = 0;
-        if (lambda) {
-            for (size_t i = 0; i < MAX_NTO_LAMBDAS; ++i) {
-                if (lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) break;
-                num_lambdas++;
-            }
+        for (size_t i = 0; i < available_lambdas; ++i) {
+            if (lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) break;
+            num_lambdas++;
         }
         if (num_lambdas == 0) return false;
 
-        ScopedTemp temp_reset;
         const double** coeffs = (const double**)md_temp_push(sizeof(const double*) * num_lambdas);
         double*        scales  = (double*)       md_temp_push(sizeof(double)         * num_lambdas);
         for (size_t i = 0; i < num_lambdas; ++i) {
-            coeffs[i] = md_vlx_rsp_nto_coefficients(vlx, nto_idx, i, nto_type);
+            coeffs[i] = coeff_buffer + i * num_aos;
             scales[i] = lambda[i];
         }
 
@@ -4492,13 +4492,17 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (show_lambda_combo) {
-                const double* lambdas = md_vlx_rsp_nto_lambdas(vlx, (size_t)export_state.nto.idx);
-                if (lambdas) {
+                double lambdas[4] = {0};
+                size_t lambda_count = md_vlx_rsp_nto_lambdas_extract(lambdas, vlx, (size_t)export_state.nto.idx, ARRAY_SIZE(lambdas));
+                if (lambda_count > 0) {
+                    if ((size_t)export_state.nto.lambda_idx >= lambda_count) {
+                        export_state.nto.lambda_idx = (int)lambda_count - 1;
+                    }
                     char lbl[32];
                     int i = export_state.nto.lambda_idx;
                     snprintf(lbl, sizeof(lbl), "%i (%.4f)", i + 1, lambdas[i]);
                     if (ImGui::BeginCombo("Lambda Idx", lbl)) {
-                        for (i = 0; i < 4; i++) {
+                        for (i = 0; i < (int)lambda_count; i++) {
                             const bool is_selected = (export_state.nto.lambda_idx == i);
                             snprintf(lbl, sizeof(lbl), "%i (%.4f)", i + 1, lambdas[i]);
                             if (ImGui::Selectable(lbl, is_selected)) {
@@ -5159,51 +5163,20 @@ struct VeloxChem : viamd::EventHandler {
             if (rsp.selected != -1) {
                 // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
                 // If the occupation parameter is less than this it will not be displayed
-                const double* lambda = md_vlx_rsp_nto_lambdas(vlx, rsp.selected);
-                if (!lambda) {
+                double lambda[MAX_NTO_LAMBDAS] = {0};
+                size_t lambda_count = md_vlx_rsp_nto_lambdas_extract(lambda, vlx, rsp.selected, ARRAY_SIZE(lambda));
+                if (lambda_count == 0) {
                     MD_LOG_ERROR("No lambda information available for NTOs in veloxchem object");
                 } else {
                     if (nto.sel_nto_idx != rsp.selected) {
                         nto.sel_nto_idx = rsp.selected;
                         size_t nto_idx = (size_t)rsp.selected;
 
-                        size_t num_lambdas = 0;
-                        for (size_t i = 0; i < MAX_NTO_LAMBDAS; ++i) {
-                            if (lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) {
-                                break;
-							}
-							num_lambdas++;
-                        }
-
                         init_volume(&nto.vol[NTO_Attachment], nto.grid, GL_R32F);
                         init_volume(&nto.vol[NTO_Detachment], nto.grid, GL_R32F);
 
                         evaluate_attachment_detachment_density(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Attachment);
                         evaluate_attachment_detachment_density(nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Detachment);
-
-                        for (size_t lambda_idx = 0; lambda_idx < num_lambdas; ++lambda_idx) {
-                            size_t pi = (size_t)NTO_Part_0 + lambda_idx;
-                            size_t hi = (size_t)NTO_Hole_0 + lambda_idx;
-
-                            if (task_system::task_is_running(nto.vol_task[pi])) {
-                                task_system::task_interrupt (nto.vol_task[pi]);
-                            }
-                            if (task_system::task_is_running(nto.vol_task[hi])) {
-                                task_system::task_interrupt (nto.vol_task[hi]);
-                            }
-
-                            init_volume(&nto.vol[pi], nto.grid);
-                            init_volume(&nto.vol[hi], nto.grid);
-
-                            evaluate_nto(nto.vol[pi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_OP_SET);
-                            evaluate_nto(nto.vol[hi].tex_id, nto.grid, nto_idx, lambda_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_OP_SET);
-                        }
-                        if (task_system::task_is_running(nto.seg_task[0])) {
-                            task_system::task_interrupt(nto.seg_task[0]);
-                        }
-                        if (task_system::task_is_running(nto.seg_task[1])) {
-                            task_system::task_interrupt(nto.seg_task[1]);
-                        }
                     }
                 }
             }
@@ -5824,14 +5797,19 @@ struct VeloxChem : viamd::EventHandler {
 					size_t num_lambdas = 4;
 
                     // Calculate transition densities for groups
-				    const double* lambdas = md_vlx_rsp_nto_lambdas(vlx, nto_idx);
 				    const double* S = md_vlx_scf_overlap_matrix_data(vlx);
 				    const double* a_part[4] = {0};
 				    const double* a_hole[4] = {0};
+					double* lambdas = (double*)md_temp_push(sizeof(double) * num_lambdas);
+					double* part_coeff = (double*)md_temp_push(sizeof(double) * num_lambdas * num_aos);
+					double* hole_coeff = (double*)md_temp_push(sizeof(double) * num_lambdas * num_aos);
 
+                    const size_t part_count = md_vlx_rsp_nto_coefficients_extract(part_coeff, lambdas, vlx, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, num_lambdas);
+                    const size_t hole_count = md_vlx_rsp_nto_coefficients_extract(hole_coeff, nullptr,  vlx, nto_idx, MD_VLX_NTO_TYPE_HOLE,     num_lambdas);
+                    num_lambdas = MIN(part_count, hole_count);
                     for (size_t i = 0; i < num_lambdas; i++) {
-                        a_part[i] = md_vlx_rsp_nto_coefficients(vlx, nto_idx, i, MD_VLX_NTO_TYPE_PARTICLE);
-                        a_hole[i] = md_vlx_rsp_nto_coefficients(vlx, nto_idx, i, MD_VLX_NTO_TYPE_HOLE);
+                        a_part[i] = part_coeff + i * num_aos;
+                        a_hole[i] = hole_coeff + i * num_aos;
                     }
 
                     double group_density_part[MAX_NTO_GROUPS] = {0};
