@@ -227,12 +227,14 @@ static const char* electronic_structure_nto_component_str[(int)ElectronicStructu
 enum class ElectronicStructureTransitionDensityComponent {
     Attachment,
     Detachment,
+    Difference,
     Count
 };
 
 static const char* electronic_structure_transition_density_component_str[(int)ElectronicStructureTransitionDensityComponent::Count] = {
     "Attachment",
     "Detachment",
+    "Difference"
 };
 
 enum class ElectronicStructureLegacyType {
@@ -515,7 +517,6 @@ struct Volume {
 
 // Descriptor for handling iso surfaces
 struct IsoDesc {
-    bool enabled;
     size_t count;
     float values[8];
     vec4_t colors[8];
@@ -613,7 +614,75 @@ static inline bool electronic_structure_uses_spin(const ElectronicStructureRepre
 }
 
 static inline bool electronic_structure_is_signed(const ElectronicStructureRepresentation& rep) {
+    if (rep.source == ElectronicStructureSource::TransitionDensity &&
+        rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) {
+        return true;
+    }
     return electronic_structure_uses_magnitude_toggle(rep) && !rep.use_magnitude;
+}
+
+static inline bool electronic_structure_uses_density_iso_squared(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::TransitionDensity ||
+           rep.source == ElectronicStructureSource::ElectronDensity;
+}
+
+static inline const char* electronic_structure_iso_value_label() {
+    return "isovalue (*)";
+}
+
+static inline const char* electronic_structure_iso_value_tooltip(const ElectronicStructureRepresentation& rep) {
+    if (electronic_structure_uses_density_iso_squared(rep)) {
+        return electronic_structure_is_signed(rep) ?
+            "Visual surface threshold. Signed density fields render both +isovalue^2 and -isovalue^2 surfaces." :
+            "Visual surface threshold. Density fields render at isovalue^2 for perceptual consistency with amplitude fields.";
+    }
+    return electronic_structure_is_signed(rep) ?
+        "Visual surface threshold. Signed fields render both +isovalue and -isovalue surfaces." :
+        "Visual surface threshold for the rendered field.";
+}
+
+static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const ElectronicStructureRepresentation& rep) {
+    ASSERT(iso);
+    *iso = {};    
+
+    const float iso_value = (float)rep.iso_value;
+    const float iso_threshold = electronic_structure_uses_density_iso_squared(rep) ? iso_value * iso_value : iso_value;
+
+    if (electronic_structure_is_signed(rep)) {
+        iso->count = 2;
+        iso->values[0] =  iso_threshold;
+        iso->values[1] = -iso_threshold;
+        if (rep.use_atom_colors) {
+            iso->colors[0] = rep.tint_psi_pos;
+            iso->colors[1] = rep.tint_psi_neg;
+        } else {
+            iso->colors[0] = rep.col_psi_pos;
+            iso->colors[1] = rep.col_psi_neg;
+        }
+        iso->optical_densities[0] = (float)rep.iso_optical_density;
+        iso->optical_densities[1] = (float)rep.iso_optical_density;
+    } else {
+        iso->count = 1;
+        iso->values[0] = iso_threshold;
+        if (rep.use_atom_colors) {
+            if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
+                iso->colors[0] = rep.tint_att;
+            } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
+                iso->colors[0] = rep.tint_det;
+            } else {
+                iso->colors[0] = rep.tint_den;
+            }
+        } else {
+            if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
+                iso->colors[0] = rep.col_att;
+            } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
+                iso->colors[0] = rep.col_det;
+            } else {
+                iso->colors[0] = rep.col_den;
+            }
+        }
+        iso->optical_densities[0] = (float)rep.iso_optical_density;
+    }
 }
 
 static inline ElectronicStructureField electronic_structure_legacy_field(const ElectronicStructureRepresentation& rep) {
@@ -723,9 +792,9 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
             ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle :
             ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole);
     case ElectronicStructureSource::TransitionDensity:
-        return (int)(rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment ?
-            ElectronicStructureLegacyType::AttachmentDensity :
-            ElectronicStructureLegacyType::DetachmentDensity);
+        return (int)(rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment ?
+            ElectronicStructureLegacyType::DetachmentDensity :
+            ElectronicStructureLegacyType::AttachmentDensity);
     case ElectronicStructureSource::ElectronDensity:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:

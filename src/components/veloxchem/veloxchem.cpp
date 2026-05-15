@@ -86,11 +86,6 @@ enum NTO {
     NTO_Detachment,
 };
 
-enum class AttachmentDetachmentType {
-    Attachment,
-    Detachment,
-};
-
 static md_vlx_spin_t vlx_spin_from_electronic_structure(ElectronicStructureSpin spin) {
     ASSERT(spin == ElectronicStructureSpin::Alpha || spin == ElectronicStructureSpin::Beta);
     return spin == ElectronicStructureSpin::Beta ? MD_VLX_SPIN_BETA : MD_VLX_SPIN_ALPHA;
@@ -270,47 +265,25 @@ static inline void compute_dim(int out_dim[3], const vec3_t& in_ext, double samp
     out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
 }
 
-// Attribute charge contributions encoded in the ao coefficients and overlap matrix to atoms or groups
-// a: ao coefficients of NTO (num_lambdas x num_ao) array
-// S: overlap matrix (num_ao x num_ao) array (row-major)
-static void attribute_charge(double out_charge[], const int* ao_to_idx, const double* lambdas, const double** a, const double* S, size_t num_lambdas, size_t num_ao) {
+// Attribute charge contributions of an AO-basis density matrix D to atoms or groups
+// using a Mulliken-style partitioning: q_g = sum_{mu in g} sum_nu D[mu,nu] * S[mu,nu].
+// Both D and S are symmetric (num_ao x num_ao) row-major matrices.
+// The total tr(D*S) is exactly preserved: sum_g out_charge[g] == tr(D*S).
+static void attribute_charge_density(double out_charge[], const int* ao_to_idx, const double* D, const double* S, size_t num_ao) {
+	ASSERT(D);
+	ASSERT(S);
+	ASSERT(ao_to_idx);
 
-    // Temporary buffer for r[mu] = sum_nu S[mu,nu] * a_k[nu]
-	size_t temp_pos = md_temp_get_pos();
-    double *r = (double*)md_temp_push(num_ao * sizeof(double));
-    ASSERT(r);
-
-    for (size_t k = 0; k < num_lambdas; ++k) {
-        double lam = lambdas[k];
-
-        const double* ak = a[k];
-
-		// Initialize r to zero
-		MEMSET(r, 0, num_ao * sizeof(double));
-
-        // r = S * ak  (row-major S)
-        for (size_t mu = 0; mu < num_ao; ++mu) {
-            double a_mu = ak[mu];
-            const double *S_row = &S[mu * num_ao];
-            // Diagonal term
-            r[mu] += S_row[mu] * a_mu;
-
-            // Upper-triangular terms
-            for (size_t nu = mu + 1; nu < num_ao; ++nu) {
-                double s = S_row[nu];
-                r[mu] += s * ak[nu];
-                r[nu] += s * a_mu;
-            }
-        }
-
-        // accumulate group contributions
-        for (size_t mu = 0; mu < num_ao; ++mu) {
-            int idx = ao_to_idx[mu];
-            out_charge[idx] += lam * ak[mu] * r[mu];
-        }
-    }
-
-	md_temp_set_pos_back(temp_pos);
+	for (size_t mu = 0; mu < num_ao; ++mu) {
+		const int idx = ao_to_idx[mu];
+		const double* D_row = &D[mu * num_ao];
+		const double* S_row = &S[mu * num_ao];
+		double s = 0.0;
+		for (size_t nu = 0; nu < num_ao; ++nu) {
+			s += D_row[nu] * S_row[nu];
+		}
+		out_charge[idx] += s;
+	}
 }
 
 #if MD_ENABLE_GPU
@@ -423,7 +396,6 @@ struct VeloxChem : viamd::EventHandler {
         int scroll_to_idx = -1;
 
         IsoDesc iso = {
-            .enabled = true,
             .count = 2,
             .values = {0.05f, -0.05},
             .colors = {{0.f/255.f,75.f/255.f,135.f/255.f,0.75f}, {255.f/255.f,205.f/255.f,0.f/255.f,0.75f}},
@@ -1091,8 +1063,7 @@ struct VeloxChem : viamd::EventHandler {
                         }
                         case ElectronicStructureSource::TransitionDensity:
                         {
-                            AttachmentDetachmentType nto_type = es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment ? AttachmentDetachmentType::Attachment : AttachmentDetachmentType::Detachment;
-                            evaluate_attachment_detachment_density(tex_id, grid, es.excited_state_idx, nto_type, DEFAULT_GTO_CUTOFF_VALUE);
+                            evaluate_transition_density(tex_id, grid, es.excited_state_idx, es.transition_density_component, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
                         case ElectronicStructureSource::ElectronDensity:
@@ -1589,82 +1560,6 @@ struct VeloxChem : viamd::EventHandler {
 #endif
     }
 
-    // Compute attachment / detachment density
-    bool evaluate_attachment_detachment_density(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, AttachmentDetachmentType type, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
-        md_vlx_nto_type_t nto_type = (type == AttachmentDetachmentType::Attachment) ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
-
-        ScopedTemp temp_reset;
-        const size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
-        double* lambda = (double*)md_temp_push(sizeof(double) * MAX_NTO_LAMBDAS);
-        double* coeff_buffer = (double*)md_temp_push(sizeof(double) * MAX_NTO_LAMBDAS * num_aos);
-        size_t available_lambdas = md_vlx_rsp_nto_coefficients_extract(coeff_buffer, lambda, vlx, nto_idx, nto_type, MAX_NTO_LAMBDAS);
-        size_t num_lambdas = 0;
-        for (size_t i = 0; i < available_lambdas; ++i) {
-            if (lambda[i] < NTO_LAMBDA_CUTOFF_VALUE) break;
-            num_lambdas++;
-        }
-        if (num_lambdas == 0) return false;
-
-        const double** coeffs = (const double**)md_temp_push(sizeof(const double*) * num_lambdas);
-        double*        scales  = (double*)       md_temp_push(sizeof(double)         * num_lambdas);
-        for (size_t i = 0; i < num_lambdas; ++i) {
-            coeffs[i] = coeff_buffer + i * num_aos;
-            scales[i] = lambda[i];
-        }
-
-#if MD_ENABLE_GPU
-        bool success = false;
-        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
-            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
-            uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
-            size_t   num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
-            size_t   rb_size    = num_voxels * sizeof(float);
-
-            md_gpu_device_info_t gpu_info = {};
-            md_gpu_device_info(gpu_device, &gpu_info);
-
-            md_gpu_bump_reset(&gpu_bump);
-
-            size_t coeff_sz = md_gto_gpu_coeff_size_mo(num_lambdas, num_cgtos);
-            size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
-            md_gpu_bump_ensure(&gpu_bump, rb_size + coeff_sz + atom_sz + 1024);
-
-            md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size, 256);
-
-            md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
-            md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
-
-            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
-
-            if (!gpu_info.is_discrete) {
-                md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeffs, scales, num_lambdas, num_cgtos);
-            } else {
-                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
-                md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeffs, scales, num_lambdas, num_cgtos);
-                md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
-                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-            }
-
-            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, num_lambdas, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_OP_SET);
-            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-            md_gpu_image_region_t region = {
-                .offset = {0},
-                .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-            };
-            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
-
-            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
-                gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
-                success = true;
-            }
-        }
-        return success;
-#else
-        md_gto_grid_evaluate_multi_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), coeffs, scales, num_lambdas, cutoff_value, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_OP_SET);
-        return true;
-#endif
-    }
-
     bool evaluate_mo(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, mo_type);
         if (!ao_coeffs) {
@@ -1730,6 +1625,109 @@ struct VeloxChem : viamd::EventHandler {
 #endif
     }
 
+    bool evaluate_density_matrix(uint32_t vol_tex, const md_grid_t& grid, const double* density_matrix, size_t density_matrix_dim, md_gto_op_t op) {
+        if (!density_matrix || density_matrix_dim == 0) {
+            MD_LOG_ERROR("Failed to retrieve density matrix");
+            return false;
+        }
+
+#if MD_ENABLE_GPU
+        bool success = false;
+        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+            uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
+            if (density_matrix_dim != num_cgtos) {
+                MD_LOG_ERROR("Density matrix dimension (%zu) does not match basis dimension (%u)", density_matrix_dim, num_cgtos);
+                return false;
+            }
+
+            size_t num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
+            size_t rb_size = num_voxels * sizeof(float);
+
+            md_gpu_device_info_t gpu_info = {};
+            md_gpu_device_info(gpu_device, &gpu_info);
+
+            md_gpu_bump_reset(&gpu_bump);
+
+            size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
+            size_t atom_sz = md_gto_gpu_atom_buffer_size(num_atoms);
+            md_gpu_bump_ensure(&gpu_bump, rb_size + coeff_sz + atom_sz + 1024);
+
+            md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size, 256);
+
+            md_gpu_queue_t queue = md_gpu_queue_acquire(gpu_device);
+            md_gpu_command_buffer_t cmd = md_gpu_command_buffer_acquire(queue);
+
+            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+
+            if (!gpu_info.is_discrete) {
+                md_gto_gpu_coeff_pack_density((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), density_matrix, num_cgtos);
+            } else {
+                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
+                md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu, density_matrix, num_cgtos);
+                md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, num_cgtos);
+                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+            }
+
+            md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid, op);
+            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_image_region_t region = {
+                .offset = {0},
+                .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+            };
+            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
+
+            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
+                gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
+                success = true;
+            }
+        } 
+        return success;
+#else
+        const size_t basis_dim = md_vlx_scf_number_of_atomic_orbitals(vlx);
+        if (density_matrix_dim != basis_dim) {
+            MD_LOG_ERROR("Density matrix dimension (%zu) does not match basis dimension (%zu)", density_matrix_dim, basis_dim);
+            return false;
+        }
+        md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false, op);
+        return true;
+#endif
+    }
+
+    // Compute transition density from VeloxChem response eigenvectors.
+    bool evaluate_transition_density(uint32_t vol_tex, const md_grid_t& grid, size_t state_idx, ElectronicStructureTransitionDensityComponent component, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+        (void)cutoff_value;
+        md_vlx_transition_density_type_t type = MD_VLX_TRANSITION_DENSITY_ATTACHMENT;
+        switch (component) {
+        case ElectronicStructureTransitionDensityComponent::Attachment:
+            type = MD_VLX_TRANSITION_DENSITY_ATTACHMENT;
+            break;
+        case ElectronicStructureTransitionDensityComponent::Detachment:
+            type = MD_VLX_TRANSITION_DENSITY_DETACHMENT;
+            break;
+        case ElectronicStructureTransitionDensityComponent::Difference:
+            type = MD_VLX_TRANSITION_DENSITY_DIFFERENCE;
+            break;
+        default:
+            break;
+        }
+
+        const size_t density_matrix_dim = md_vlx_rsp_transition_density_matrix_size(vlx, state_idx);
+        if (density_matrix_dim == 0) {
+            MD_LOG_ERROR("Failed to retrieve transition density matrix for state %zu", state_idx + 1);
+            return false;
+        }
+
+        ScopedTemp temp_reset;
+        double* density_matrix = (double*)md_temp_push(sizeof(double) * density_matrix_dim * density_matrix_dim);
+        if (md_vlx_rsp_transition_density_matrix_extract(density_matrix, vlx, state_idx, type) != density_matrix_dim) {
+            MD_LOG_ERROR("Failed to extract transition density matrix for state %zu", state_idx + 1);
+            return false;
+        }
+
+        return evaluate_density_matrix(vol_tex, grid, density_matrix, density_matrix_dim, MD_GTO_OP_SET);
+    }
+
     // The full electron density that includes all orbitals weighted by their occupancy
     bool evaluate_electron_density(uint32_t vol_tex, const md_grid_t& grid, ElectronicStructureSpin spin, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         (void)cutoff_value;
@@ -1784,57 +1782,7 @@ struct VeloxChem : viamd::EventHandler {
             return false;
         }
 
-#if MD_ENABLE_GPU
-        bool success = false;
-        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
-            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
-            uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
-            size_t   num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
-            size_t   rb_size    = num_voxels * sizeof(float);
-
-            md_gpu_device_info_t gpu_info = {};
-            md_gpu_device_info(gpu_device, &gpu_info);
-
-            md_gpu_bump_reset(&gpu_bump);
-
-            size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
-            size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
-            md_gpu_bump_ensure(&gpu_bump, rb_size + coeff_sz + atom_sz + 1024);
-
-            md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size, 256);
-
-            md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
-            md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
-
-            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
-
-            if (!gpu_info.is_discrete) {
-                md_gto_gpu_coeff_pack_density((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), density_matrix, num_cgtos);
-            } else {
-                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
-                md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu, density_matrix, num_cgtos);
-                md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, num_cgtos);
-                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
-            }
-
-            md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid, op);
-            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
-            md_gpu_image_region_t region = {
-                .offset = {0},
-                .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-            };
-            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
-
-            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
-                gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
-                success = true;
-            }
-        }
-        return success;
-#else
-        md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), density_matrix, false, op);
-        return true;
-#endif
+        return evaluate_density_matrix(vol_tex, grid, density_matrix, density_matrix_dim, op);
     }
 
     static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 0.2f) {
@@ -3786,13 +3734,13 @@ struct VeloxChem : viamd::EventHandler {
                 const double iso_min = 1.0e-4;
                 const double iso_max = 5.0;
                 double iso_val = orb.iso.values[0];
+                ImGui::TextUnformatted(electronic_structure_iso_value_label());
                 ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-                ImGui::SetItemTooltip("Iso Value");
+                ImGui::SetItemTooltip("Visual surface threshold. Orbital grids render both +isovalue and -isovalue surfaces.");
 
                 orb.iso.values[0] = (float)iso_val;
                 orb.iso.values[1] = -(float)iso_val;
                 orb.iso.count = 2;
-                orb.iso.enabled = true;
 
                 ImGui::ColorEdit4("##Color Positive", orb.iso.colors[0].elem);
                 ImGui::SetItemTooltip("Color Positive");
@@ -4281,44 +4229,42 @@ struct VeloxChem : viamd::EventHandler {
                 glDrawBuffer(GL_BACK);
                 glDisable(GL_SCISSOR_TEST);
 
-                if (orb.iso.enabled) {
-                    PUSH_GPU_SECTION("ORB GRID RAYCAST")
-                        for (int i = 0; i < num_mos; ++i) {
-                            volume::RenderDesc vol_desc = {
-                                .render_target = {
-                                    .depth  = orb.gbuf.tex.depth,
-                                    .color  = orb.iso_tex[i],
-                                    .width  = orb.gbuf.width,
-                                    .height = orb.gbuf.height,
-                                    .clear_color = true,
-                                },
-                                .texture = {
-                                    .density_volume = orb.vol[i].tex_id,
-                                },
-                                .matrix = {
-                                    .model = orb.vol[i].texture_to_world,
-                                    .view  = view_mat,
-                                    .proj  = proj_mat,
-                                    .inv_proj = inv_proj_mat,
-                                },
-                                .iso = {
-                                    .enabled = true,
-                                    .count  = (size_t)orb.iso.count,
-                                    .values = orb.iso.values,
-                                    .colors = orb.iso.colors,
-                                },
-                                .shading = {
-                                    .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
-                                    .roughness = 0.3f,
-                                    .dir_radiance = {10,10,10},
-                                    .ior = 1.5f,
-                                },
-                                .voxel_spacing = orb.vol[i].voxel_size,
-                            };
-                            volume::render_volume(vol_desc);
-                        }
-                    POP_GPU_SECTION();
-                }
+                PUSH_GPU_SECTION("ORB GRID RAYCAST")
+                    for (int i = 0; i < num_mos; ++i) {
+                        volume::RenderDesc vol_desc = {
+                            .render_target = {
+                                .depth  = orb.gbuf.tex.depth,
+                                .color  = orb.iso_tex[i],
+                                .width  = orb.gbuf.width,
+                                .height = orb.gbuf.height,
+                                .clear_color = true,
+                            },
+                            .texture = {
+                                .density_volume = orb.vol[i].tex_id,
+                            },
+                            .matrix = {
+                                .model = orb.vol[i].texture_to_world,
+                                .view  = view_mat,
+                                .proj  = proj_mat,
+                                .inv_proj = inv_proj_mat,
+                            },
+                            .iso = {
+                                .enabled = true,
+                                .count  = (size_t)orb.iso.count,
+                                .values = orb.iso.values,
+                                .colors = orb.iso.colors,
+                            },
+                            .shading = {
+                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                .roughness = 0.3f,
+                                .dir_radiance = {10,10,10},
+                                .ior = 1.5f,
+                            },
+                            .voxel_spacing = orb.vol[i].voxel_size,
+                        };
+                        volume::render_volume(vol_desc);
+                    }
+                POP_GPU_SECTION();
             }
         }
         ImGui::End();
@@ -4609,10 +4555,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     case ElectronicStructureSource::TransitionDensity:
                     {
-                        AttachmentDetachmentType type = (export_state.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment)
-                                                            ? AttachmentDetachmentType::Attachment
-                                                            : AttachmentDetachmentType::Detachment;
-                        evaluate_attachment_detachment_density(vol.tex_id, grid, export_state.nto.idx, type);
+                        evaluate_transition_density(vol.tex_id, grid, export_state.nto.idx, export_state.transition_density_component);
                         break;
                     }
                     case ElectronicStructureSource::ElectronDensity:
@@ -4770,6 +4713,8 @@ struct VeloxChem : viamd::EventHandler {
     static inline void compute_transition_matrix(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* part_charges) {
         ScopedTemp temp_reset;
 
+        if (num_groups == 0) return;
+
         int* donors         = (int*)   md_temp_push_zero(sizeof(int)    * num_groups);
         int* acceptors      = (int*)   md_temp_push_zero(sizeof(int)    * num_groups);
         double* charge_diff = (double*)md_temp_push_zero(sizeof(double) * num_groups);
@@ -4777,18 +4722,27 @@ struct VeloxChem : viamd::EventHandler {
         int num_donors = 0;
         int num_acceptors = 0;
 
+        // Sanitize inputs: clamp small negative numerical noise to zero before normalization.
         double hole_sum = 0;
         double part_sum = 0;
 
         for (size_t i = 0; i < num_groups; i++) {
-            hole_sum += hole_charges[i];
-            part_sum += part_charges[i];
+            const double h = MAX(0.0, (double)hole_charges[i]);
+            const double p = MAX(0.0, (double)part_charges[i]);
+            hole_sum += h;
+            part_sum += p;
+        }
+
+        // Guard against degenerate inputs (no charge to attribute).
+        if (hole_sum <= 0.0 || part_sum <= 0.0) {
+            MEMSET(out_matrix, 0, sizeof(float) * num_groups * num_groups);
+            return;
         }
 
         for (size_t i = 0; i < num_groups; i++) {
-            // percentages
-            double gsCharge = hole_charges[i] / hole_sum;
-            double esCharge = part_charges[i] / part_sum;
+            // percentages (clamped, normalized so each sums to 1)
+            double gsCharge = MAX(0.0, (double)hole_charges[i]) / hole_sum;
+            double esCharge = MAX(0.0, (double)part_charges[i]) / part_sum;
 
             if (gsCharge > esCharge) {
                 donors[num_donors++] = (int)i;
@@ -4802,15 +4756,21 @@ struct VeloxChem : viamd::EventHandler {
 
         double total_acceptor_charge = 0;
         for (int i = 0; i < num_acceptors; i++) {
-            total_acceptor_charge += charge_diff[acceptors[i]];
+            total_acceptor_charge += MAX(0.0, charge_diff[acceptors[i]]);
+        }
+
+        if (total_acceptor_charge <= 0.0) {
+            return;
         }
 
         for (int i = 0; i < num_donors; i++) {
             int donor = donors[i];
-            double charge_deficit = -charge_diff[donor];
+            double charge_deficit = MAX(0.0, -charge_diff[donor]);
             for (int j = 0; j < num_acceptors; j++) {
                 int acceptor = acceptors[j];
-                double contrib = charge_deficit * charge_diff[acceptor] / total_acceptor_charge;
+                double acc = MAX(0.0, charge_diff[acceptor]);
+                double contrib = charge_deficit * acc / total_acceptor_charge;
+                if (contrib < 0.0) contrib = 0.0;
                 out_matrix[acceptor * num_groups + donor] = (float)contrib;
             }
         }
@@ -4954,9 +4914,9 @@ struct VeloxChem : viamd::EventHandler {
             const double iso_max = 5.0;
             
             ImGui::Spacing();
-            ImGui::Text((const char*)u8"Iso Value (Ψ²)"); 
+            ImGui::TextUnformatted(electronic_structure_iso_value_label()); 
             ImGui::SliderScalar("##Iso Value", ImGuiDataType_Double, &nto.iso_val, &iso_min, &iso_max, "%.6f", ImGuiSliderFlags_Logarithmic);
-            ImGui::SetItemTooltip("Iso Value");
+            ImGui::SetItemTooltip("Visual surface threshold. Attachment and detachment density views render at isovalue^2 for perceptual consistency with NTO amplitudes.");
 
             ImGui::Spacing();
 
@@ -5161,23 +5121,15 @@ struct VeloxChem : viamd::EventHandler {
             bool reset_view = false;
 
             if (rsp.selected != -1) {
-                // This represents the cutoff for contributing orbitals to be part of the orbital 'grid'
-                // If the occupation parameter is less than this it will not be displayed
-                double lambda[MAX_NTO_LAMBDAS] = {0};
-                size_t lambda_count = md_vlx_rsp_nto_lambdas_extract(lambda, vlx, rsp.selected, ARRAY_SIZE(lambda));
-                if (lambda_count == 0) {
-                    MD_LOG_ERROR("No lambda information available for NTOs in veloxchem object");
-                } else {
-                    if (nto.sel_nto_idx != rsp.selected) {
-                        nto.sel_nto_idx = rsp.selected;
-                        size_t nto_idx = (size_t)rsp.selected;
+                if (nto.sel_nto_idx != rsp.selected) {
+                    nto.sel_nto_idx = rsp.selected;
+                    size_t nto_idx = (size_t)rsp.selected;
 
-                        init_volume(&nto.vol[NTO_Attachment], nto.grid, GL_R32F);
-                        init_volume(&nto.vol[NTO_Detachment], nto.grid, GL_R32F);
+                    init_volume(&nto.vol[NTO_Attachment], nto.grid, GL_R32F);
+                    init_volume(&nto.vol[NTO_Detachment], nto.grid, GL_R32F);
 
-                        evaluate_attachment_detachment_density(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Attachment);
-                        evaluate_attachment_detachment_density(nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, AttachmentDetachmentType::Detachment);
-                    }
+                    evaluate_transition_density(nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, ElectronicStructureTransitionDensityComponent::Attachment);
+                    evaluate_transition_density(nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, ElectronicStructureTransitionDensityComponent::Detachment);
                 }
             }
 
@@ -5787,55 +5739,54 @@ struct VeloxChem : viamd::EventHandler {
             // Clear all of the values to zero (matrix, group values)
             MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
-            if (nto.sel_nto_idx != -1) {
-                const size_t nto_idx = (size_t)nto.sel_nto_idx;
+			if (nto.sel_nto_idx != -1) {
+				const size_t nto_idx = (size_t)nto.sel_nto_idx;
 #if 1
-                {
-                    ScopedTemp temp_reset;
+				{
+					ScopedTemp temp_reset;
 
-				    size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
-					size_t num_lambdas = 4;
+					const size_t num_aos = md_vlx_rsp_transition_density_matrix_size(vlx, nto_idx);
+					const double* S = md_vlx_scf_overlap_matrix_data(vlx);
 
-                    // Calculate transition densities for groups
-				    const double* S = md_vlx_scf_overlap_matrix_data(vlx);
-				    const double* a_part[4] = {0};
-				    const double* a_hole[4] = {0};
-					double* lambdas = (double*)md_temp_push(sizeof(double) * num_lambdas);
-					double* part_coeff = (double*)md_temp_push(sizeof(double) * num_lambdas * num_aos);
-					double* hole_coeff = (double*)md_temp_push(sizeof(double) * num_lambdas * num_aos);
+					if (num_aos > 0 && S != NULL) {
+						// Full-density Mulliken attribution from attachment / detachment AO matrices.
+						// hole charges  <- detachment density (D-)
+						// part charges  <- attachment density (D+)
+						double* D_attach = (double*)md_temp_push(sizeof(double) * num_aos * num_aos);
+						double* D_detach = (double*)md_temp_push(sizeof(double) * num_aos * num_aos);
 
-                    const size_t part_count = md_vlx_rsp_nto_coefficients_extract(part_coeff, lambdas, vlx, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, num_lambdas);
-                    const size_t hole_count = md_vlx_rsp_nto_coefficients_extract(hole_coeff, nullptr,  vlx, nto_idx, MD_VLX_NTO_TYPE_HOLE,     num_lambdas);
-                    num_lambdas = MIN(part_count, hole_count);
-                    for (size_t i = 0; i < num_lambdas; i++) {
-                        a_part[i] = part_coeff + i * num_aos;
-                        a_hole[i] = hole_coeff + i * num_aos;
-                    }
+						const size_t a_dim = md_vlx_rsp_transition_density_matrix_extract(D_attach, vlx, nto_idx, MD_VLX_TRANSITION_DENSITY_ATTACHMENT);
+						const size_t d_dim = md_vlx_rsp_transition_density_matrix_extract(D_detach, vlx, nto_idx, MD_VLX_TRANSITION_DENSITY_DETACHMENT);
 
-                    double group_density_part[MAX_NTO_GROUPS] = {0};
-                    double group_density_hole[MAX_NTO_GROUPS] = {0};
+						if (a_dim == num_aos && d_dim == num_aos) {
+							double group_density_part[MAX_NTO_GROUPS] = {0};
+							double group_density_hole[MAX_NTO_GROUPS] = {0};
 
-                    const int* ao_to_atom = md_vlx_ao_to_atom_idx(vlx);
+							const int* ao_to_atom = md_vlx_ao_to_atom_idx(vlx);
+							int* ao_to_group = (int*)md_temp_push(sizeof(int) * num_aos);
 
-					int* ao_to_group = (int*)md_temp_push(sizeof(int) * num_aos);
+							for (size_t i = 0; i < num_aos; i++) {
+								int atom_idx = ao_to_atom[i];
+								ASSERT(0 <= atom_idx && (size_t)atom_idx < md_vlx_number_of_atoms(vlx));
+								int g = (int)nto.atom_group_idx[atom_idx];
+								if (g < 0 || g >= MAX_NTO_GROUPS) g = 0;
+								ao_to_group[i] = g;
+							}
 
-                    for (size_t i = 0; i < num_aos; i++) {
-                        int atom_idx = ao_to_atom[i];
-						ASSERT(0 <= atom_idx && (size_t)atom_idx < md_vlx_number_of_atoms(vlx));
-                        ao_to_group[i] = (int)nto.atom_group_idx[atom_idx];
-                        if (ao_to_group[i] < 0 || ao_to_group[i] >= MAX_NTO_GROUPS) {
-                            ao_to_group[i] = 0;
-                        }
+							attribute_charge_density(group_density_part, ao_to_group, D_attach, S, num_aos);
+							attribute_charge_density(group_density_hole, ao_to_group, D_detach, S, num_aos);
+
+							for (size_t g1 = 0; g1 < nto.group.count; g1++) {
+								// Mulliken populations of the attachment / detachment density are non-negative
+								// in exact arithmetic. Clamp tiny negative numerical noise to zero so that
+								// the downstream transition matrix cannot acquire spurious negative entries.
+								nto.transition_density_part[g1] = (float)MAX(0.0, group_density_part[g1]);
+								nto.transition_density_hole[g1] = (float)MAX(0.0, group_density_hole[g1]);
+							}
+							compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
+						}
 					}
-
-					attribute_charge(group_density_part, ao_to_group, lambdas, a_part, S, num_lambdas, num_aos);
-					attribute_charge(group_density_hole, ao_to_group, lambdas, a_hole, S, num_lambdas, num_aos);
-                    for (size_t g1 = 0; g1 < nto.group.count; g1++) {
-                        nto.transition_density_part[g1] = (float)group_density_part[g1];
-                        nto.transition_density_hole[g1] = (float)group_density_hole[g1];
-					}
-					compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
-                }
+				}
 
 #else
                 const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
@@ -5850,8 +5801,8 @@ struct VeloxChem : viamd::EventHandler {
                     task_system::ID eval_detach = 0;
                     task_system::ID seg_detach  = 0;
 
-                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_unit_length) &&
-                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI_SQUARED, samples_per_unit_length))
+                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_unit_length) &&
+                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_unit_length))
                     {
                         task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);

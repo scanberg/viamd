@@ -3595,10 +3595,11 @@ static void draw_representations_window(ApplicationState* state) {
                 const double iso_min = 1.0e-8;
                 const double iso_max = 5.0;
                 
-                const char* iso_label = es.source == ElectronicStructureSource::ElectronDensity ? (const char*)u8"iso value (ρ)" : (const char*)u8"iso value (Ψ)";
+                const char* iso_label = electronic_structure_iso_value_label();
                 
                 if (electronic_structure_is_signed(es)) {
                     ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SetItemTooltip("%s", electronic_structure_iso_value_tooltip(rep.electronic_structure));
                     if (advanced) {
 			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
                         ImGui::SetItemTooltip("Optical density of the isosurfaces");
@@ -3620,6 +3621,7 @@ static void draw_representations_window(ApplicationState* state) {
                 }
                 else {
                     ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SetItemTooltip("%s", electronic_structure_iso_value_tooltip(rep.electronic_structure));
                     if (advanced) {
 			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
                         ImGui::SetItemTooltip("Optical density of the isosurfaces");
@@ -6910,45 +6912,8 @@ static void draw_representations_transparent(ApplicationState* state) {
         if (!rep.enabled) continue;
         if (rep.type != RepresentationType::ElectronicStructure) continue;
 
-        IsoDesc iso = {};
-        iso.enabled = true;
-
-        if (electronic_structure_is_signed(rep.electronic_structure)) {
-            iso.count = 2;
-            iso.values[0] =  rep.electronic_structure.iso_value;
-            iso.values[1] = -rep.electronic_structure.iso_value;
-            if (rep.electronic_structure.use_atom_colors) {
-                iso.colors[0] = rep.electronic_structure.tint_psi_pos;
-                iso.colors[1] = rep.electronic_structure.tint_psi_neg;
-            } else {
-                iso.colors[0] =  rep.electronic_structure.col_psi_pos;
-                iso.colors[1] =  rep.electronic_structure.col_psi_neg;
-            }
-            iso.optical_densities[0] = rep.electronic_structure.iso_optical_density;
-            iso.optical_densities[1] = rep.electronic_structure.iso_optical_density;
-        }
-        else {
-            iso.count = 1;
-            iso.values[0] = rep.electronic_structure.iso_value;
-            if (rep.electronic_structure.use_atom_colors) {
-                if (rep.electronic_structure.source == ElectronicStructureSource::TransitionDensity && rep.electronic_structure.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
-                    iso.colors[0] = rep.electronic_structure.tint_att;
-                } else if (rep.electronic_structure.source == ElectronicStructureSource::TransitionDensity && rep.electronic_structure.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
-                    iso.colors[0] = rep.electronic_structure.tint_det;
-                } else {
-                    iso.colors[0] = rep.electronic_structure.tint_den;
-                }
-            } else {
-                if (rep.electronic_structure.source == ElectronicStructureSource::TransitionDensity && rep.electronic_structure.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
-                    iso.colors[0] = rep.electronic_structure.col_att;
-                } else if (rep.electronic_structure.source == ElectronicStructureSource::TransitionDensity && rep.electronic_structure.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
-                    iso.colors[0] = rep.electronic_structure.col_det;
-                } else {
-                    iso.colors[0] = rep.electronic_structure.col_den;
-                }
-            }
-            iso.optical_densities[0] = rep.electronic_structure.iso_optical_density;
-        }
+        IsoDesc iso;
+        electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
 		flag_representation_as_dirty(&state->representation.reps[i]);
@@ -6980,7 +6945,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .enabled = state->visuals.temporal_aa.enabled,
             },
             .iso = {
-                .enabled = iso.enabled,
+                .enabled = true,
                 .count   = iso.count,
                 .values  = iso.values,
                 .colors  = iso.colors,
