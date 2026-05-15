@@ -9,6 +9,10 @@ endif()
 
 project(viamd LANGUAGES C CXX)
 
+if (APPLE)
+    enable_language(OBJC)
+endif()
+
 include(ext/mdlib/cmake/Common.cmake)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -77,10 +81,6 @@ add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
-
-if (MD_ENABLE_GPU AND APPLE)
-    enable_language(OBJC)
-endif()
 
 # Copy many of the fields from mdlib
 set(VIAMD_EXTRA_LIBS)
