@@ -3580,7 +3580,7 @@ static void draw_representations_window(ApplicationState* state) {
                 }
 #endif
                 if (electronic_structure_uses_magnitude_toggle(es)) {
-                    const char* magnitude_label = es.source == ElectronicStructureSource::ElectronDensity ? "magnitude |ρ|" : (const char*)u8"magnitude |Ψ|";
+                    const char* magnitude_label = es.source == ElectronicStructureSource::ElectronDensity ? (const char*)u8"magnitude |ρ|" : (const char*)u8"magnitude |Ψ|";
                     if (ImGui::Checkbox(magnitude_label, &es.use_magnitude)) {
                         update_rep = true;
                     }
@@ -3595,7 +3595,7 @@ static void draw_representations_window(ApplicationState* state) {
                 const double iso_min = 1.0e-8;
                 const double iso_max = 5.0;
                 
-                const char* iso_label = es.source == ElectronicStructureSource::ElectronDensity ? "iso value (ρ)" : (const char*)u8"iso value (Ψ)";
+                const char* iso_label = es.source == ElectronicStructureSource::ElectronDensity ? (const char*)u8"iso value (ρ)" : (const char*)u8"iso value (Ψ)";
                 
                 if (electronic_structure_is_signed(es)) {
                     ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic);
@@ -3619,7 +3619,6 @@ static void draw_representations_window(ApplicationState* state) {
                     }
                 }
                 else {
-                    const char* iso_label = es.source == ElectronicStructureSource::ElectronDensity ? "iso value (ρ)" : (const char*)u8"iso value (Ψ)";
                     ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic);
                     if (advanced) {
 			            ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);

@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
+# Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
 # Must be set before project() so the toolchain picks it up
