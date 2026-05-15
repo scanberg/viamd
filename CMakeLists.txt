@@ -67,11 +67,6 @@ endif ()
 
 find_package(OpenGL REQUIRED)
 
-option(MD_ENABLE_GPU OFF)
-if (MD_ENABLE_GPU AND APPLE)
-    enable_language(OBJC)
-endif()
-
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
@@ -82,6 +77,10 @@ add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
+
+if (MD_ENABLE_GPU AND APPLE)
+    enable_language(OBJC)
+endif()
 
 # Copy many of the fields from mdlib
 set(VIAMD_EXTRA_LIBS)
