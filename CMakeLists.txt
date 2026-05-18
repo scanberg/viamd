@@ -4,7 +4,7 @@ include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
 # Must be set before project() so the toolchain picks it up
 if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment version")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS deployment version")
 endif()
 
 project(viamd LANGUAGES C CXX)
