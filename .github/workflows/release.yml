@@ -36,7 +36,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-macos-x64:
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,7 +51,7 @@ jobs:
           github-binarycache: true
       - name: cmake
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-osx-release -DVCPKG_MANIFEST_MODE=OFF -DHDF5_USE_STATIC_LIBRARIES=TRUE -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13 -DVIAMD_CREATE_MACOSX_BUNDLE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_VELOXCHEM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF
+          cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-osx-release -DVCPKG_MANIFEST_MODE=OFF -DHDF5_USE_STATIC_LIBRARIES=TRUE -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13 -DMD_ENABLE_AVX=ON -DMD_ENABLE_AVX2=ON -DMD_ENABLE_AVX512=OFF -DMD_ENABLE_FMA=ON -DVIAMD_CREATE_MACOSX_BUNDLE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_VELOXCHEM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF
       - name: build
         run: |
           cmake --build build --target viamd
