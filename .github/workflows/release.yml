@@ -4,6 +4,29 @@ on:
     tags:
       - 'v*.*.*'
 jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: cmake
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVIAMD_CREATE_MACOSX_BUNDLE=ON -DMD_UNITTEST=OFF -DMD_BENCHMARK=OFF
+      - name: build
+        run: |
+          cmake --build build --target viamd
+      - name: archive
+        run: |
+          cd build/bin && zip -r ../../viamd_macos.zip viamd.app
+      - name: release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            viamd_macos.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
     runs-on: windows-2022
     steps:

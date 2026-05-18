@@ -158,18 +158,20 @@ source_group("src/gfx" FILES ${GFX_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 source_group("src/component" FILES ${COMP_FILES})
 
-add_executable(viamd ${OSX_BUNDLE} ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
+if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
+    set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
+endif()
+
+add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
+
+if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
+    set_target_properties(viamd PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_ICON_FILE viamd.icns)
+    set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+endif()
 
 install(TARGETS viamd DESTINATION bin)
-
-if (APPLE)
-    if (VIAMD_CREATE_MACOSX_BUNDLE)
-        set(OSX_BUNDLE "MACOSX_BUNDLE")
-        set(MACOSX_BUNDLE_ICON_FILE viamd.icns)
-        set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
-        set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
-    endif()
-endif()
 
 # The question is how this should be treated on Linux...
 # For now we simply don't copy the datasets
