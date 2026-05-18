@@ -10,23 +10,44 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: vcpkg build
+      - name: vcpkg build arm64
         uses: johnwason/vcpkg-action@v6
-        id: vcpkg
+        id: vcpkg-arm64
         with:
           pkgs: hdf5
           triplet: arm64-osx-release
           token: ${{ github.token }}
           github-binarycache: true
-      - name: cmake
+      - name: vcpkg build x64
+        uses: johnwason/vcpkg-action@v6
+        id: vcpkg-x64
+        with:
+          pkgs: hdf5
+          triplet: x64-osx-release
+          token: ${{ github.token }}
+          github-binarycache: true
+      - name: cmake arm64
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=arm64-osx-release -DVCPKG_MANIFEST_MODE=OFF -DHDF5_USE_STATIC_LIBRARIES=TRUE -DCMAKE_BUILD_TYPE=Release -DVIAMD_CREATE_MACOSX_BUNDLE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_VELOXCHEM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF
-      - name: build
+          cmake -S . -B build_arm64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=arm64-osx-release -DVCPKG_MANIFEST_MODE=OFF -DHDF5_USE_STATIC_LIBRARIES=TRUE -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DVIAMD_CREATE_MACOSX_BUNDLE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_VELOXCHEM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF
+      - name: build arm64
         run: |
-          cmake --build build --target viamd
+          cmake --build build_arm64 --target viamd
+      - name: cmake x86_64
+        run: |
+          cmake -S . -B build_x64 -G Ninja -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-osx-release -DVCPKG_MANIFEST_MODE=OFF -DHDF5_USE_STATIC_LIBRARIES=TRUE -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DVIAMD_CREATE_MACOSX_BUNDLE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_VELOXCHEM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF
+      - name: build x86_64
+        run: |
+          cmake --build build_x64 --target viamd
+      - name: create universal binary
+        run: |
+          cp -R build_arm64/bin/viamd.app build_universal_app
+          lipo -create \
+            build_arm64/bin/viamd.app/Contents/MacOS/viamd \
+            build_x64/bin/viamd.app/Contents/MacOS/viamd \
+            -output build_universal_app/Contents/MacOS/viamd
       - name: archive
         run: |
-          cd build/bin && zip -r ../../viamd_macos.zip viamd.app
+          zip -r viamd_macos.zip build_universal_app/
       - name: release
         uses: softprops/action-gh-release@v1
         with:
@@ -59,12 +80,12 @@ jobs:
         uses: thedoctor0/zip-release@main
         with:
           type: 'zip'
-          filename: 'viamd_win.zip'
+          filename: 'viamd_win_x64_avx2.zip'
           path: 'bin/Release/.'
       - name: release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            viamd_win.zip
+            viamd_win_x64_avx2.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
