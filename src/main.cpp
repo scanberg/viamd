@@ -2089,8 +2089,32 @@ static void draw_main_menu(ApplicationState* data) {
                         MD_LOG_DEBUG("Failed to extract frame data");
                     } else {
                         MD_LOG_DEBUG("RECALCULATING BONDS");
+                        // Store user defined bonds (at the end of the bond arrays) so we can put them back after covalent bond inference.
+                        md_bond_data_t& bond_data = data->mold.sys.bond;
+                        md_array(md_atom_pair_t)  bond_pairs = 0;
+                        md_array(md_bond_flags_t) bond_flags = 0;
+
+                        int64_t num_bonds = (int64_t)md_array_size(bond_data.pairs);
+                        if (num_bonds > 0) {
+                            for (int64_t i = num_bonds - 1; i >= 0; --i) {
+                                if (bond_data.flags[i] & MD_BOND_FLAG_USER_DEFINED) {
+                                    md_array_push(bond_pairs, bond_data.pairs[i], frame_alloc);
+                                    md_array_push(bond_flags, bond_data.flags[i], frame_alloc);
+                                }
+                            }
+                        }
+
                         md_bond_data_clear(&data->mold.sys.bond);
                         md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, data->mold.sys.alloc);
+
+                        // Add back user defined bonds
+                        if (md_array_size(bond_pairs) > 0) {
+                            for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
+                                md_array_push(data->mold.sys.bond.pairs, bond_pairs[i], data->mold.sys.alloc);
+                                md_array_push(data->mold.sys.bond.flags, bond_flags[i], data->mold.sys.alloc);
+                            }
+                        }
+
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     }
                 } else {

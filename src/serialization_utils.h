@@ -28,6 +28,7 @@ bool  next_entry(str_t& ident, str_t& arg, deserialization_state_t& state);
 
 void write_section_header(serialization_state_t& state, str_t section);
 void write_int(serialization_state_t& state, str_t ident, int64_t val);
+void write_int_vec(serialization_state_t& state, str_t ident, const int* elem, size_t len);
 void write_dbl(serialization_state_t& state, str_t ident, double val);
 void write_flt_vec(serialization_state_t& state, str_t ident, const float* elem, size_t len);
 void write_str(serialization_state_t& state, str_t ident, str_t str);
@@ -41,6 +42,7 @@ static inline void write_flt(serialization_state_t& state, str_t ident, float va
 
 bool extract_bool(bool& val,  str_t arg);
 bool extract_int (int&  val,  str_t arg);
+bool extract_int_vec(int* elem, size_t len, str_t arg);
 bool extract_dbl (double& val, str_t arg);
 bool extract_flt (float& val, str_t arg);
 bool extract_flt_vec (float* elem, size_t len, str_t arg);

@@ -598,6 +598,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     data->animation = {};
 
+    md_array(md_atom_pair_t) user_bonds = 0;    
+
     str_t new_molecule_file   = {};
     str_t new_trajectory_file = {};
     bool  new_coarse_grained  = false;
@@ -785,6 +787,19 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 add_atom_elem_mapping(data, lbl, (md_element_t)elem);
             }
         } */
+        else if (str_eq(section, STR_LIT("UserBonds"))) {
+            str_t ident, arg;
+            while (viamd::next_entry(ident, arg, state)) {
+                if (str_eq(ident, STR_LIT("atoms"))) {
+                    int atom_indices[2] = {-1, -1};
+                    viamd::extract_int_vec(atom_indices, 2, arg);
+                    if (atom_indices[0] >= 0 && atom_indices[1] >= 0) {
+                        md_atom_pair_t pair = { atom_indices[0], atom_indices[1] };
+                        md_array_push(user_bonds, pair, temp_alloc);
+                    }
+                }
+            }
+        }
         else if (str_eq(section, STR_LIT("Script"))) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
@@ -844,6 +859,18 @@ void load_workspace(ApplicationState* data, str_t filename) {
         data->animation.frame = new_frame;
     } else {
         data->files.trajectory[0] = '\0';
+    }
+
+    // Add user bonds
+    size_t num_user_bonds = md_array_size(user_bonds);
+    if (num_user_bonds > 0) {
+        for (size_t i = 0; i < num_user_bonds; ++i) {
+            const md_atom_pair_t& pair = user_bonds[i];
+            if (pair.idx[0] < data->mold.sys.atom.count && pair.idx[1] < data->mold.sys.atom.count) {
+                md_system_bond_insert(&data->mold.sys, pair.idx[0], pair.idx[1], MD_BOND_FLAG_USER_DEFINED);
+            }
+        }
+        data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 
     //apply_atom_elem_mappings(data);
@@ -975,6 +1002,22 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_section_header(state, STR_LIT("Selection"));
         viamd::write_str(state, STR_LIT("Label"), str_from_cstr(sel.name));
         viamd::write_str(state, STR_LIT("Mask"),  encoded_mask);
+    }
+
+    // Save user defined bonds
+    md_array(md_atom_pair_t) user_bonds = 0;
+    for (size_t i = 0; i < app_state->mold.sys.bond.count; ++i) {
+        md_bond_flags_t flags = app_state->mold.sys.bond.flags[i];
+        if (flags & MD_BOND_FLAG_USER_DEFINED) {
+            md_array_push(user_bonds, app_state->mold.sys.bond.pairs[i], temp_alloc);
+        }
+    }
+    if (md_array_size(user_bonds) > 0) {
+        viamd::write_section_header(state, STR_LIT("UserBonds"));
+        for (size_t i = 0; i < md_array_size(user_bonds); ++i) {
+            const md_atom_pair_t& pair = user_bonds[i];
+            viamd::write_int_vec(state, STR_LIT("atoms"), pair.idx, 2);
+        }
     }
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSerialize, viamd::EventPayloadType_SerializationState, &state);

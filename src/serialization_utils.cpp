@@ -43,7 +43,7 @@ bool next_entry(str_t& ident, str_t& arg, deserialization_state_t& state) {
 				str_t haystack = {beg, (size_t)(end-beg)};
 				if (str_find_str(&loc, haystack, esc)) {
 					arg = {beg, loc};
-					state.text = str_substr(state.text, loc + str_len(esc));
+					state.text = str_substr(haystack, loc + str_len(esc));
 				} else {
 					// Error
 					MD_LOG_ERROR("Unbalanced escape sequence in multiline string");
@@ -62,6 +62,17 @@ void write_section_header(serialization_state_t& state, str_t section) {
 
 void write_int(serialization_state_t& state, str_t ident, int64_t val) {
 	md_strb_fmt(&state.sb, STR_FMT "=%i\n", STR_ARG(ident), (int)val);
+}
+
+void write_int_vec(serialization_state_t& state, str_t ident, const int* elem, size_t len) {
+	md_strb_fmt(&state.sb, STR_FMT "=", STR_ARG(ident));
+	for (size_t i = 0; i < len; ++i) {
+		md_strb_fmt(&state.sb, "%i", elem[i]);
+		if (i < len - 1) {
+			md_strb_push_char(&state.sb, ',');
+		}
+	}
+	md_strb_push_char(&state.sb, '\n');
 }
 
 void write_dbl(serialization_state_t& state, str_t ident, double val) {
@@ -120,6 +131,17 @@ bool extract_int(int& val, str_t arg) {
 		return true;
 	}
 	return false;
+}
+
+bool extract_int_vec(int* elem, size_t len, str_t arg) {
+	str_t tok;
+	size_t count = 0;
+	while (count < len && extract_token_delim(&tok, &arg, ',')) {
+		if (is_int(tok)) {
+			elem[count++] = (int)parse_int(tok);
+		}
+	}
+	return count == len;
 }
 
 bool extract_dbl (double& val, str_t arg) {
