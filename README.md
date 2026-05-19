@@ -18,7 +18,10 @@ The results can then be viewed in the different windows exposed in the applicati
 ### Windows
 For windows, we recommend to use the latest binary available on the [release page](https://github.com/scanberg/viamd/releases/).
 
-### Ubuntu and MacOs
+### MacOs
+For MacOS, we recommend to use the latest binary available on the [release page](https://github.com/scanberg/viamd/releases/).
+
+### Building for Ubuntu and MacOs
 To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your machine, you can follow the procedure described in details in the wiki for [Linux](https://github.com/scanberg/viamd/wiki/0.-Building#linux) and [MacOS](https://github.com/scanberg/viamd/wiki/0.-Building#mac).
 
 ## Documentation
