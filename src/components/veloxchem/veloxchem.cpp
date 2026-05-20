@@ -2642,13 +2642,23 @@ struct VeloxChem : viamd::EventHandler {
                             energy_offsets[i] = fabs(energies[i] - ref_energy) * HARTREE_TO_KJ_PER_MOL;
                         }
 
-                        if (ImPlot::BeginPlot("OPT")) {
+                        const ImPlotFlags plot_flags = ImPlotFlags_NoMouseText;
+                        if (ImPlot::BeginPlot("OPT", ImVec2(-1, 0), plot_flags)) {
+                            const double x_pad = 0.5;
+                            const double y_pad = 0.3;
+                            
                             ImPlot::SetupAxes("Step", "Energy (kJ/mol)");
-                            ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (double)num_steps);
+                            ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_SymLog);
+                            ImPlot::SetupAxisLimits(ImAxis_X1, 1.0 - x_pad, (double)num_steps + x_pad);
+                            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0 - y_pad, energy_offsets[0] * 1.1);
                             ImPlot::SetupLegend(ImPlotLocation_NorthEast);
                             ImPlot::PlotLine("Energy", energy_offsets, (int)num_steps, 1.0, 1.0);
 
                             plot_peaks("##opt_peaks", nullptr, energy_offsets, num_steps, opt.selected, opt.hovered);
+
+                            if (opt.hovered != -1) {
+                                ImGui::SetTooltip("Step %d\nEnergy: %.8f kJ/mol", opt.hovered + 1, energy_offsets[opt.hovered]);
+                            }
 
                             ImPlot::EndPlot();
                         }
