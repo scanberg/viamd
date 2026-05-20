@@ -59,6 +59,7 @@ option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
+set(VIAMD_MACOS_BUNDLE_ID "org.scanberg.viamd" CACHE STRING "macOS bundle identifier")
 set(VIAMD_NUM_WORKER_THREADS "0" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation), 0 = Use available cores")
 
 # MDLIB OPTIONS
@@ -160,6 +161,7 @@ source_group("src/component" FILES ${COMP_FILES})
 
 if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
+    set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 endif()
 
 add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
@@ -167,8 +169,10 @@ add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHA
 if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     set_target_properties(viamd PROPERTIES
         MACOSX_BUNDLE TRUE
-        MACOSX_BUNDLE_ICON_FILE viamd.icns)
-    set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+        MACOSX_BUNDLE_BUNDLE_NAME "viamd"
+        MACOSX_BUNDLE_ICON_FILE viamd.icns
+        MACOSX_BUNDLE_GUI_IDENTIFIER "${VIAMD_MACOS_BUNDLE_ID}"
+    )
 endif()
 
 install(TARGETS viamd DESTINATION bin)

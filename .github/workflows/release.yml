@@ -24,9 +24,14 @@ jobs:
       - name: build
         run: |
           cmake --build build --target viamd
+      - name: codesign
+        run: |
+          APP="build/bin/viamd.app"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
       - name: archive
         run: |
-          cd build/bin && zip -r ../../viamd_macos_arm64.zip viamd.app
+          ditto -c -k --keepParent --sequesterRsrc build/bin/viamd.app viamd_macos_arm64.zip
       - name: release
         uses: softprops/action-gh-release@v1
         with:
@@ -55,9 +60,14 @@ jobs:
       - name: build
         run: |
           cmake --build build --target viamd
+      - name: codesign
+        run: |
+          APP="build/bin/viamd.app"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
       - name: archive
         run: |
-          cd build/bin && zip -r ../../viamd_macos_x64.zip viamd.app
+          ditto -c -k --keepParent --sequesterRsrc build/bin/viamd.app viamd_macos_x64.zip
       - name: release
         uses: softprops/action-gh-release@v1
         with:
