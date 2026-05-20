@@ -2800,7 +2800,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         if (num_atoms_selected == 2) {
             // Suggest construction of covalent bond
             int idx[2];
-            MEMCPY(idx, state->selection.single_selection_sequence.idx, sizeof(idx));
+            md_bitfield_iter_extract_indices(idx, 2, md_bitfield_iter_create(&state->selection.selection_mask));
 
             md_bond_idx_t bond_idx = md_system_bond_find(&state->mold.sys, idx[0], idx[1]);
             if (bond_idx == -1) {
@@ -2812,23 +2812,20 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     ImGui::CloseCurrentPopup();
                 }
-            }
-        }
-        if (hit.domain == PickingDomain_Bond) {
-            // Suggest removal of covalent bond
-            md_bond_idx_t bond_idx = hit.local_idx;
-			md_atom_pair_t pair = md_bond_pair(&state->mold.sys.bond, bond_idx);
-            if (pair.idx[0] != -1 && pair.idx[1] != -1) {
-                char buf[256];
-                snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", pair.idx[0] + 1, pair.idx[1] + 1);
-                if (ImGui::MenuItem(buf)) {
-                    md_system_bond_remove(&state->mold.sys, bond_idx);
-					md_system_bond_build_connectivity(&state->mold.sys);
-                    state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                    ImGui::CloseCurrentPopup();
+            } else {
+				md_bond_flags_t flags = md_system_bond_flags(&state->mold.sys, bond_idx);
+                if (flags & MD_BOND_FLAG_USER_DEFINED) {
+                    char buf[256];
+                    snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
+                    if (ImGui::MenuItem(buf)) {
+                        md_system_bond_remove(&state->mold.sys, bond_idx);
+                        md_system_bond_build_connectivity(&state->mold.sys);
+                        state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                        ImGui::CloseCurrentPopup();
+                    }
                 }
             }
-		}
+        }
         if (ImGui::BeginMenu("Script")) {
             bool any_suggestions = false;
             if (num_atoms_selected <= 4 && sss_count > 1) {
