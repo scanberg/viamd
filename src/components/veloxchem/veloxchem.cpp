@@ -287,6 +287,8 @@ struct VeloxChem : viamd::EventHandler {
     md_gto_gpu_basis_t      gpu_basis   = nullptr;  // CGTO basis buffer, contains a gpu representation of the current basis set for vlx object
     md_gpu_buffer_t         gpu_atoms   = nullptr;  // Packed float4 atom positions (xyz in Bohr, w unused), length = number of atoms in system
     md_gpu_buffer_t         gpu_coeff   = nullptr;  // Buffer for storing AO coefficients for evaluation.
+
+    // This is merely for temporary storage during evaluation, i.e. critical points. Other more persistent volumes should store their own images
     md_gpu_image_t          gpu_volume  = nullptr;  // 3d R32F texture for storing evaluated orbital / density values.
 
     bool gpu_atoms_dirty = true;
@@ -1452,6 +1454,16 @@ struct VeloxChem : viamd::EventHandler {
         vol->voxel_size = grid.spacing * scl;
         gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
     }
+
+#if MD_ENABLE_GPU
+    void ensure_gpu_image_volume(md_gpu_image_t* image, const md_gpu_image_desc_t& desc, md_gpu_device_t device) {
+        if (!image || !device) return;
+        if (*image) {
+            md_gpu_image_destroy(*image);
+        }
+        *image = md_gpu_image_create(device, &desc);
+    }
+#endif
 
     bool evaluate_nto(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         ScopedTemp temp_reset;

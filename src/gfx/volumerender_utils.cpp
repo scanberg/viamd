@@ -14,6 +14,10 @@
 
 #include <shaders.inl>
 
+#if MD_ENABLE_GPU
+#include <volume_gpu_shaders.inl>
+#endif
+
 #define PUSH_GPU_SECTION(lbl)                                                                       \
     {                                                                                               \
         if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); \
@@ -98,6 +102,189 @@ struct UniformData {
     vec3_t dir_radiance;
     float  F0;
 };
+
+#if MD_ENABLE_GPU
+
+static constexpr uint32_t GPU_ISO_SHADER_WG_X = 8;
+static constexpr uint32_t GPU_ISO_SHADER_WG_Y = 8;
+
+struct GpuIsoParams {
+    mat4_t inv_view_proj;
+    mat4_t world_to_texture;
+    mat4_t texture_to_world;
+
+    vec4_t target;
+    uint32_t volume_dim_iso_count[4];
+
+    vec4_t clip_min_sampling;
+    vec4_t clip_max_extinction;
+
+    vec4_t env_roughness;
+    vec4_t dir_specular;
+    vec4_t light_exposure;
+    vec4_t gamma_flags;
+
+    vec4_t iso_values[2];
+    vec4_t iso_colors[GPU_ISO_MAX_SURFACE_COUNT];
+};
+
+static_assert((sizeof(GpuIsoParams) % 16) == 0);
+
+static void gpu_iso_params_init(GpuIsoParams* params, const GpuIsoRenderDesc& desc) {
+    ASSERT(params);
+    MEMSET(params, 0, sizeof(GpuIsoParams));
+
+    const uint32_t iso_count = (uint32_t)CLAMP((int)desc.iso.count, 0, (int)GPU_ISO_MAX_SURFACE_COUNT);
+    const mat4_t view_proj = desc.matrix.proj * desc.matrix.view;
+
+    params->inv_view_proj = mat4_inverse(view_proj);
+    params->texture_to_world = desc.volume.texture_to_world;
+    params->world_to_texture = mat4_inverse(desc.volume.texture_to_world);
+
+    params->target = vec4_set(
+        (float)desc.target.width,
+        (float)desc.target.height,
+        desc.target.width  > 0 ? 1.0f / (float)desc.target.width  : 0.0f,
+        desc.target.height > 0 ? 1.0f / (float)desc.target.height : 0.0f);
+
+    params->volume_dim_iso_count[0] = MAX(desc.volume.dim[0], 1u);
+    params->volume_dim_iso_count[1] = MAX(desc.volume.dim[1], 1u);
+    params->volume_dim_iso_count[2] = MAX(desc.volume.dim[2], 1u);
+    params->volume_dim_iso_count[3] = iso_count;
+
+    params->clip_min_sampling = vec4_set(desc.volume.clip_min.x, desc.volume.clip_min.y, desc.volume.clip_min.z, MAX(desc.sampling.sampling_rate, 0.01f));
+    params->clip_max_extinction = vec4_set(desc.volume.clip_max.x, desc.volume.clip_max.y, desc.volume.clip_max.z, MAX(desc.shading.interior_extinction, 0.0f));
+
+    params->env_roughness = vec4_set(desc.shading.env_radiance.x, desc.shading.env_radiance.y, desc.shading.env_radiance.z, CLAMP(desc.shading.roughness, 0.0f, 1.0f));
+    params->dir_specular = vec4_set(desc.shading.dir_radiance.x, desc.shading.dir_radiance.y, desc.shading.dir_radiance.z, CLAMP(desc.shading.specular, 0.0f, 1.0f));
+
+    vec3_t light_dir = desc.shading.light_dir_world;
+    if (vec3_length(light_dir) <= 1.0e-6f) {
+        light_dir = vec3_set(1.0f, 1.0f, 1.0f);
+    }
+    light_dir = vec3_normalize(light_dir);
+    params->light_exposure = vec4_set(light_dir.x, light_dir.y, light_dir.z, MAX(desc.shading.exposure, 0.0f));
+    params->gamma_flags = vec4_set(MAX(desc.shading.gamma, 0.01f), (float)desc.flags, 0.0f, 0.0f);
+
+    for (uint32_t i = 0; i < iso_count; ++i) {
+        params->iso_values[i / 4][i % 4] = desc.iso.values ? desc.iso.values[i] : 0.0f;
+        params->iso_colors[i] = desc.iso.colors ? desc.iso.colors[i] : vec4_set(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+}
+
+bool gpu_iso_renderer_init(GpuIsoRenderer* renderer, md_gpu_device_t device) {
+    if (!renderer || !device) {
+        return false;
+    }
+
+    if (renderer->device && renderer->device != device) {
+        gpu_iso_renderer_free(renderer);
+    }
+
+    if (renderer->pipeline) {
+        return true;
+    }
+
+    renderer->device = device;
+
+    md_gpu_compute_pipeline_desc_t pipeline_desc = {
+        .shader_bytes = volume_iso_raycaster_start,
+        .shader_byte_size = volume_iso_raycaster_size(),
+        .threadgroup_size = {GPU_ISO_SHADER_WG_X, GPU_ISO_SHADER_WG_Y, 1},
+    };
+    renderer->pipeline = md_gpu_compute_pipeline_create(device, &pipeline_desc);
+    if (!renderer->pipeline) {
+        MD_LOG_ERROR("Failed to create volume iso compute pipeline");
+        gpu_iso_renderer_free(renderer);
+        return false;
+    }
+
+    md_gpu_sampler_desc_t sampler_desc = {
+        .min_filter = MD_GPU_FILTER_LINEAR,
+        .mag_filter = MD_GPU_FILTER_LINEAR,
+        .address_u = MD_GPU_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .address_v = MD_GPU_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .address_w = MD_GPU_ADDRESS_MODE_CLAMP_TO_EDGE,
+    };
+    renderer->linear_sampler = md_gpu_sampler_create(device, &sampler_desc);
+    if (!renderer->linear_sampler) {
+        MD_LOG_ERROR("Failed to create volume iso sampler");
+        gpu_iso_renderer_free(renderer);
+        return false;
+    }
+
+    for (uint32_t i = 0; i < GPU_ISO_PARAM_BUFFER_COUNT; ++i) {
+        md_gpu_buffer_desc_t buffer_desc = {
+            .size = sizeof(GpuIsoParams),
+            .flags = MD_GPU_BUFFER_CPU_VISIBLE,
+        };
+        renderer->param_buffers[i] = md_gpu_buffer_create(device, &buffer_desc);
+        if (!renderer->param_buffers[i] || !md_gpu_buffer_cpu_ptr(renderer->param_buffers[i])) {
+            MD_LOG_ERROR("Failed to create volume iso parameter buffer");
+            gpu_iso_renderer_free(renderer);
+            return false;
+        }
+    }
+
+    renderer->param_buffer_idx = 0;
+    return true;
+}
+
+void gpu_iso_renderer_free(GpuIsoRenderer* renderer) {
+    if (!renderer) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < GPU_ISO_PARAM_BUFFER_COUNT; ++i) {
+        if (renderer->param_buffers[i]) {
+            md_gpu_buffer_destroy(renderer->param_buffers[i]);
+        }
+    }
+
+    if (renderer->pipeline) {
+        md_gpu_compute_pipeline_destroy(renderer->pipeline);
+    }
+
+    if (renderer->linear_sampler) {
+        md_gpu_sampler_destroy(renderer->linear_sampler);
+    }
+
+    *renderer = {};
+}
+
+bool render_volume_iso_gpu(md_gpu_command_buffer_t cmd, GpuIsoRenderer* renderer, const GpuIsoRenderDesc& desc) {
+    if (!cmd || !renderer || !desc.target.color || !desc.volume.scalar_volume) {
+        return false;
+    }
+
+    if (desc.target.width == 0 || desc.target.height == 0 || desc.iso.count == 0 || !desc.iso.values || !desc.iso.colors) {
+        return false;
+    }
+
+    md_gpu_device_t device = md_gpu_command_buffer_device(cmd);
+    if (!gpu_iso_renderer_init(renderer, device)) {
+        return false;
+    }
+
+    md_gpu_buffer_t param_buffer = renderer->param_buffers[renderer->param_buffer_idx];
+    renderer->param_buffer_idx = (renderer->param_buffer_idx + 1) % GPU_ISO_PARAM_BUFFER_COUNT;
+
+    GpuIsoParams* params = (GpuIsoParams*)md_gpu_buffer_cpu_ptr(param_buffer);
+    gpu_iso_params_init(params, desc);
+
+    md_gpu_cmd_push_debug_group(cmd, "Volume Iso Raycast");
+    md_gpu_cmd_bind_compute_pipeline(cmd, renderer->pipeline);
+    md_gpu_cmd_bind_buffer(cmd, 0, param_buffer);
+    md_gpu_cmd_bind_image(cmd, 0, desc.target.color);
+    md_gpu_cmd_bind_sampled_image(cmd, 1, desc.volume.scalar_volume);
+    md_gpu_cmd_bind_sampler(cmd, 0, renderer->linear_sampler);
+    md_gpu_cmd_dispatch(cmd, DIV_UP(desc.target.width, GPU_ISO_SHADER_WG_X), DIV_UP(desc.target.height, GPU_ISO_SHADER_WG_Y), 1);
+    md_gpu_cmd_pop_debug_group(cmd);
+
+    return true;
+}
+
+#endif
 
 void initialize() {
     glGetIntegerv(GL_MAJOR_VERSION, (GLint*)&gl.version.major);

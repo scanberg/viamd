@@ -3,6 +3,10 @@
 #include <core/md_vec_math.h>
 #include <core/md_str.h>
 
+#if MD_ENABLE_GPU
+#include <core/md_gpu.h>
+#endif
+
 namespace volume {
 
 void initialize();
@@ -117,6 +121,90 @@ struct RenderDesc {
 };
 
 void render_volume(const RenderDesc& desc);
+
+#if MD_ENABLE_GPU
+
+static constexpr uint32_t GPU_ISO_MAX_SURFACE_COUNT = 8;
+static constexpr uint32_t GPU_ISO_PARAM_BUFFER_COUNT = 3;
+
+enum GpuIsoRenderFlags : uint32_t {
+    GPU_ISO_RENDER_FLAG_NONE = 0,
+    GPU_ISO_RENDER_FLAG_USE_ABS_FIELD = 1u << 0,
+    GPU_ISO_RENDER_FLAG_TEMPORAL_JITTER = 1u << 1,
+};
+
+struct GpuIsoRenderer {
+    md_gpu_device_t device = nullptr;
+    md_gpu_compute_pipeline_t pipeline = nullptr;
+    md_gpu_sampler_t linear_sampler = nullptr;
+    md_gpu_buffer_t param_buffers[GPU_ISO_PARAM_BUFFER_COUNT] = {};
+    uint32_t param_buffer_idx = 0;
+};
+
+struct GpuIsoRenderDesc {
+    struct {
+        md_gpu_image_t color = nullptr;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    } target;
+
+    struct {
+        md_gpu_image_t scalar_volume = nullptr;
+        uint32_t dim[3] = {};
+        mat4_t texture_to_world = {
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+        };
+        vec3_t clip_min = {0, 0, 0};
+        vec3_t clip_max = {1, 1, 1};
+    } volume;
+
+    struct {
+        mat4_t view = {
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+        };
+        mat4_t proj = {
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+        };
+    } matrix;
+
+    struct {
+        size_t count = 0;
+        const float* values = nullptr;
+        const vec4_t* colors = nullptr;
+    } iso;
+
+    struct {
+        vec3_t env_radiance = {0, 0, 0};
+        float roughness = 0.4f;
+        vec3_t dir_radiance = {1, 1, 1};
+        float specular = 0.04f;
+        vec3_t light_dir_world = {1, 1, 1};
+        float exposure = 1.0f;
+        float gamma = 2.2f;
+        float interior_extinction = 0.0f;
+    } shading;
+
+    struct {
+        float sampling_rate = 2.0f;
+    } sampling;
+
+    uint32_t flags = GPU_ISO_RENDER_FLAG_NONE;
+};
+
+bool gpu_iso_renderer_init(GpuIsoRenderer* renderer, md_gpu_device_t device);
+void gpu_iso_renderer_free(GpuIsoRenderer* renderer);
+bool render_volume_iso_gpu(md_gpu_command_buffer_t cmd, GpuIsoRenderer* renderer, const GpuIsoRenderDesc& desc);
+
+#endif
 
 
 }  // namespace volume

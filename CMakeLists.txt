@@ -150,21 +150,43 @@ set(SHADER_FILES
     src/shaders/ssao/blur.frag
 )
 
-# Bake shaders into a single header file
-create_resources("${SHADER_FILES}" "gen/shaders.inl")
+set(VOLUME_SLANG_FILES
+    src/shaders/volume/iso_raycaster.slang
+)
+
+# Bake shaders into a single generated header file
+set(VIAMD_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+file(MAKE_DIRECTORY "${VIAMD_GENERATED_INCLUDE_DIR}")
+create_resources("${SHADER_FILES}" "${VIAMD_GENERATED_INCLUDE_DIR}/shaders.inl")
 
 source_group("src" FILES ${SRC_FILES})
 source_group("src/app" FILES ${APP_FILES})
 source_group("src/gfx" FILES ${GFX_FILES})
-source_group("shaders" FILES ${SHADER_FILES})
+source_group("shaders" FILES ${SHADER_FILES} ${VOLUME_SLANG_FILES})
 source_group("src/component" FILES ${COMP_FILES})
+
+set_source_files_properties(${VOLUME_SLANG_FILES} PROPERTIES HEADER_FILE_ONLY TRUE)
 
 if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
     set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 endif()
 
-add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
+add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${VOLUME_SLANG_FILES} ${COMP_FILES})
+
+if (MD_ENABLE_GPU)
+    if (APPLE)
+        set(MD_GPU_BACKEND "METAL")
+    else()
+        set(MD_GPU_BACKEND "VULKAN")
+    endif()
+    include(ext/mdlib/cmake/CompileSlangShaders.cmake)
+    compile_slang_shaders(volume_gpu_shaders.inl
+        TARGET viamd
+        NAMESPACE volume
+        SOURCES ${VOLUME_SLANG_FILES}
+    )
+endif()
 
 if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     set_target_properties(viamd PROPERTIES
@@ -247,6 +269,7 @@ target_compile_features(viamd PRIVATE cxx_std_20)
 
 target_include_directories(viamd
     PRIVATE
+        ${VIAMD_GENERATED_INCLUDE_DIR}
         src
         gen
         ext/gl3w

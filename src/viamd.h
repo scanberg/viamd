@@ -13,6 +13,7 @@
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
+#include <core/md_gpu_util.h>
 #endif
 
 #include <app/IconsFontAwesome6.h>
@@ -21,6 +22,7 @@
 #include <gfx/camera_utils.h>
 #include <gfx/view_param.h>
 #include <gfx/postprocessing_utils.h>
+#include <gfx/volumerender_utils.h>
 
 #include <task_system.h>
 #include <loader.h>
@@ -510,9 +512,12 @@ struct RepresentationInfo {
 struct Volume {
     mat4_t world_to_model   = {};   // Roto-translation into volume local axes, no scaling applied (preserves world length units)
     mat4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
-    vec3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
+    vec3_t voxel_size  = {1, 1, 1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
     uint32_t tex_id = 0;
+#if MD_ENABLE_GPU
+    md_gpu_image_t gpu_image = {};
+#endif
 };
 
 // Descriptor for handling iso surfaces
@@ -942,6 +947,11 @@ struct ApplicationState {
 
 #if MD_ENABLE_GPU
     md_gpu_device_t gpu_device = nullptr;
+    md_gpu_bump_alloc_t gpu_bump = {};
+    volume::GpuIsoRenderer gpu_iso_renderer = {};
+    md_gpu_image_t gpu_volume_transparency = nullptr;
+    uint32_t gpu_volume_transparency_width = 0;
+    uint32_t gpu_volume_transparency_height = 0;
 #endif
 
     struct {
