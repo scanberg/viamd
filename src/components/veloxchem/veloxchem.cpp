@@ -670,11 +670,8 @@ struct VeloxChem : viamd::EventHandler {
                         bool selected = md_bitfield_test_bit(&critical_points.selection_mask, i);
                         bool highlighted = md_bitfield_test_bit(&critical_points.highlight_mask, i);
 
-                        float sat  = selected ? 1.0f : saturation_scale;
-                        float tint = highlighted ? highlight_color.w : 0.0f;;
-
-                        vec4_t color = selected ? selection_color : base_color;
-                        color = tint_color(color, highlight_color, tint, sat);
+                        vec4_t color = selected ? selection_color : tint_color(base_color, base_color, 0.0f, saturation_scale);
+                        color = highlighted ? vec4_lerp(color, highlight_color, highlight_color.w) : color;
 
                         vertices[i].coord = {critical_points.simp_graph.vertices[i].x, critical_points.simp_graph.vertices[i].y, critical_points.simp_graph.vertices[i].z};
                         vertices[i].coord *= BOHR_TO_ANGSTROM;
