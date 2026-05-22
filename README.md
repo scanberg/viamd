@@ -1,7 +1,7 @@
 # VIAMD
 Visual Interactive Analysis of Molecular Dynamics
 
-VIAMD is an interactive analysis tool for molecular dynamics (MD) written in C/C++. VIAMD is developed at the PDC Center for High Performance Computing (KTH, Stockholm). It exposes a rudementary script language that is used to declare operations which are performed over the frames of the trajectory.
+VIAMD is an interactive analysis tool for molecular dynamics (MD) written in C/C++. VIAMD is developed at the PDC Center for High Performance Computing (KTH, Stockholm). It exposes a rudimentary scripting language used to declare operations that are performed over trajectory frames.
 The results can then be viewed in the different windows exposed in the application. 
 <p align="center">
 <img src="https://github.com/scanberg/viamd/assets/38646069/5651ef62-28bc-4f41-8234-75cf9ba85612" alt="This is an overview of the viamd software" width="800"/>
@@ -16,10 +16,13 @@ The results can then be viewed in the different windows exposed in the applicati
 ## Running VIAMD 
 
 ### Windows
-For windows, we recommend to use the latest binary available on the [release page](https://github.com/scanberg/viamd/releases/).
+For Windows, we recommend using the latest binary available on the [release page](https://github.com/scanberg/viamd/releases/).
 
-### MacOs
-For MacOS, we recommend to use the latest binary available on the [release page](https://github.com/scanberg/viamd/releases/).
+### macOs
+For macOS, we recommend using the latest binary available on the [release page](https://github.com/scanberg/viamd/releases/).
+*NOTE* To be able to run this, you will have to do some magic in a terminal to be able to run the app bundle:
+```xattr -dr com.apple.quarantine viamd.app```
+
 
 ### Building for Ubuntu and MacOs
 To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your machine, you can follow the procedure described in details in the wiki for [Linux](https://github.com/scanberg/viamd/wiki/0.-Building#linux) and [MacOS](https://github.com/scanberg/viamd/wiki/0.-Building#mac).
