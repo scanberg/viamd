@@ -431,7 +431,8 @@ int main(int argc, char** argv) {
     md_bitfield_init(&state.selection.highlight_mask, persistent_alloc);
     md_bitfield_init(&state.selection.query.mask, persistent_alloc);
     md_bitfield_init(&state.selection.grow.mask, persistent_alloc);
-    md_bitfield_init(&state.operations.target_mask, persistent_alloc);
+    md_bitfield_init(&state.operations.selection_mask, persistent_alloc);
+    md_bitfield_init(&state.operations.recenter_query.mask, persistent_alloc);
     md_bitfield_init(&state.representation.visibility_mask, persistent_alloc);
 
     // Init platform
@@ -1014,6 +1015,8 @@ int main(int argc, char** argv) {
                 }
             }
         }
+
+        recenter_update(&state);
 
 		// Perform once per-frame updates of representations (if required)
 		update_all_representations(&state);
@@ -1799,8 +1802,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            ImGui::Combo("Granularity", (int*)(&data->selection.granularity), "Atom\0Residue\0Chain\0\0");
-            int64_t num_selected_atoms = md_bitfield_popcount(&data->selection.selection_mask);
+            ImGui::Combo("Granularity", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
+            size_t num_selected_atoms = md_bitfield_popcount(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
                 md_bitfield_not_inplace(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
             }
@@ -1959,13 +1962,17 @@ static void draw_main_menu(ApplicationState* data) {
 
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
+                if (ImGui::IsWindowHovered) {
+                    md_bitfield_clear(&data->selection.highlight_mask);
+                }
                 /*
                 ImGui::TableSetupColumn("Once", 0);
                 ImGui::TableSetupColumn("Always", 0);
                 ImGui::TableHeadersRow();
                 */
                 const float button_width = (ImGui::GetFontSize() / 20.f) * 150.f;
-                const bool recenter_available = !md_bitfield_empty(&data->operations.target_mask);
+                const md_bitfield_t& target_mask = recenter_get_active_target_mask(data);
+                const bool recenter_available = !md_bitfield_empty(&target_mask);
 
                 ImGui::TableNextRow();
 
@@ -1985,8 +1992,7 @@ static void draw_main_menu(ApplicationState* data) {
                     } else {
                         ImGui::SetTooltip("Recenter the system (Once)");
                         // Highlight the target atoms that the system will be recentered around
-                        md_bitfield_clear(&data->selection.highlight_mask);
-                        md_bitfield_copy (&data->selection.highlight_mask, &data->operations.target_mask);
+                        md_bitfield_copy (&data->selection.highlight_mask, &target_mask);
                     }
                 }
 
@@ -2003,10 +2009,22 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SetItemTooltip("Recenter the system (Always)");
 
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Checkbox(ICON_FA_ROTATE, &data->operations.rotate);
-                ImGui::SetItemTooltip("Rotate");
+                ImGui::Checkbox(ICON_FA_ANCHOR_LOCK, &data->operations.fixate_orientation);
+                ImGui::SetItemTooltip("Fixate Orientation");
 
+                ImGui::SameLine();
+                ImGui::Checkbox(ICON_FA_COMMENT_DOTS, &data->operations.recenter_query.enabled);
+                ImGui::SetItemTooltip("Use query as recentering target");
+
+                if (data->operations.recenter_query.enabled) {
+                    auto& recenter_query = data->operations.recenter_query;
+                    ImGui::SameLine();
+                    if (ImGui::InputQuery("##recenter-query", recenter_query.query, sizeof(recenter_query.query), recenter_query.valid, recenter_query.error)) {
+                        recenter_mark_query_dirty(data);
+                    }
+                }
                 ImGui::TableNextRow();
+
                 ImGui::TableSetColumnIndex(0);
                 if (ImGui::Button("PBC", ImVec2(button_width,0))) {
                     do_pbc = true;
@@ -3092,8 +3110,10 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         
         if (num_atoms_selected > 0) {
             if (ImGui::MenuItem("Set as Recenter Target")) {
-                md_bitfield_clear(&state->operations.target_mask);
-                md_bitfield_copy(&state->operations.target_mask, &state->selection.selection_mask);
+                md_bitfield_clear(&state->operations.selection_mask);
+                md_bitfield_copy(&state->operations.selection_mask, &state->selection.selection_mask);
+                recenter_mark_selection_dirty(state);
+                state->operations.recenter_query.enabled = false;
                 recenter_update_target_data(state);
                 ImGui::CloseCurrentPopup();
             }

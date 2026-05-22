@@ -80,14 +80,14 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
         }
         
         if (comp_idx != -1 && (state.selection.granularity == SelectionGranularity::Atom || state.selection.granularity == SelectionGranularity::Component)) {
-            md_strb_fmt(sb, "comp[%i]", comp_idx + 1);
+            md_strb_fmt(sb, "component[%i]", comp_idx + 1);
             if (comp_name) {
                 md_strb_fmt(sb, ": " STR_FMT, STR_ARG(comp_name));
             }
 			md_strb_fmt(sb, " (seq_id: %i)\n", comp_seq_id);
         }
         if (inst_idx != -1) {
-            md_strb_fmt(sb, "inst[%i]", inst_idx + 1);
+            md_strb_fmt(sb, "structure[%i]", inst_idx + 1);
             if (inst_id) {
                 md_strb_fmt(sb, ": " STR_FMT, STR_ARG(inst_id));
             }
@@ -544,7 +544,15 @@ void init_trajectory_data(ApplicationState* data) {
 
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
-        md_bitfield_clear(&data->operations.target_mask);
+        md_bitfield_clear(&data->operations.recenter_query.mask);
+        md_bitfield_clear(&data->operations.selection_mask);
+        recenter_mark_selection_dirty(data);
+        data->operations.recenter_query.valid = false;
+        data->operations.recenter_query.dynamic = false;
+        data->operations.recenter_query.evaluated_version = 0;
+        data->operations.recenter_query.ir_fingerprint = 0;
+        data->operations.initial_frame.target_version = 0;
+        recenter_mark_query_dirty(data);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
         if (data->mold.sys.protein_backbone.segment.count > 0) {
@@ -1853,7 +1861,8 @@ void interpolate_system_state(ApplicationState* state) {
     }
 
     if (state->operations.recenter) {
-        size_t num_idx = md_bitfield_popcount(&state->operations.target_mask);
+        const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+        size_t num_idx = md_bitfield_popcount(&target_mask);
         if (num_idx > 0) {
             // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
             task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [data = &payload]() {
@@ -2164,14 +2173,78 @@ void interpolate_system_state(ApplicationState* state) {
     state->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
 }
 
+void recenter_mark_query_dirty(ApplicationState* state) {
+    ASSERT(state);
+    state->operations.recenter_query.version += 1;
+    if (state->operations.recenter_query.version == 0) {
+        state->operations.recenter_query.version = 1;
+    }
+}
+
+void recenter_mark_selection_dirty(ApplicationState* state) {
+    ASSERT(state);
+    state->operations.selection_version += 1;
+    if (state->operations.selection_version == 0) {
+        state->operations.selection_version = 1;
+    }
+}
+
+const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* state) {
+    ASSERT(state);
+    return state->operations.recenter_query.enabled ? state->operations.recenter_query.mask : state->operations.selection_mask;
+}
+
+uint64_t recenter_get_active_target_version(const ApplicationState* state) {
+    ASSERT(state);
+    const uint64_t source_version = state->operations.recenter_query.enabled ? state->operations.recenter_query.evaluated_version : state->operations.selection_version;
+    const uint64_t source_idx = state->operations.recenter_query.enabled ? 1 : 0;
+    return (source_version << 1) | source_idx;
+}
+
+bool recenter_update_query_mask(ApplicationState* state) {
+    ASSERT(state);
+
+    auto& query = state->operations.recenter_query;
+    const uint64_t ir_fingerprint = state->script.ir ? state->script.ir_fingerprint : 0;
+    if (query.ir_fingerprint != ir_fingerprint) {
+        query.ir_fingerprint = ir_fingerprint;
+        recenter_mark_query_dirty(state);
+    }
+
+    if (!query.enabled) {
+        return false;
+    }
+
+    if (query.dynamic) {
+        recenter_mark_query_dirty(state);
+    }
+
+    if (query.evaluated_version == query.version) {
+        return false;
+    }
+
+    md_bitfield_clear(&query.mask);
+    query.dynamic = false;
+    query.valid = md_filter(&query.mask, str_from_cstr(query.query), &state->mold.sys, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, state->script.ir, &query.dynamic, query.error, sizeof(query.error));
+    query.evaluated_version = query.version;
+    return true;
+}
+
+void recenter_update(ApplicationState* state) {
+    ASSERT(state);
+    recenter_update_query_mask(state);
+    recenter_update_target_data(state);
+}
+
 void recenter_update_target_data(ApplicationState* state) {
     if (!state->mold.sys.trajectory) return;
 
-    uint64_t hash = md_bitfield_hash64(&state->operations.target_mask, 0xDEADBEEF);
-    if (hash != state->operations.initial_frame.hash) {
+    const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+    const uint64_t target_version = recenter_get_active_target_version(state);
+    if (target_version != state->operations.initial_frame.target_version) {
         // Need to recalculate the initial frame
-        state->operations.initial_frame.hash = hash;
-        size_t count = md_bitfield_popcount(&state->operations.target_mask);
+        state->operations.initial_frame.target_version = target_version;
+        size_t count = md_bitfield_popcount(&target_mask);
 
         md_array_resize(state->operations.initial_frame.xyzw, count, state->allocator.persistent);
 
@@ -2187,7 +2260,7 @@ void recenter_update_target_data(ApplicationState* state) {
 
             md_trajectory_load_frame(state->mold.sys.trajectory, 0, NULL, temp_x, temp_y, temp_z);
 
-            md_bitfield_iter_t it = md_bitfield_iter_create(&state->operations.target_mask);
+            md_bitfield_iter_t it = md_bitfield_iter_create(&target_mask);
             int dst_idx = 0;
             while (md_bitfield_iter_next(&it)) {
                 uint64_t src_idx = md_bitfield_iter_idx(&it);
@@ -2195,7 +2268,8 @@ void recenter_update_target_data(ApplicationState* state) {
                 state->operations.initial_frame.xyzw[dst_idx++] = vec4_set(temp_x[src_idx], temp_y[src_idx], temp_z[src_idx], mass);
             }
 
-            state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.xyzw, NULL, count, &state->mold.sys.unitcell);
+            md_util_unwrap_vec4(state->operations.initial_frame.xyzw, NULL, count, &state->mold.sys.bond, &state->mold.sys.unitcell);
+            state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.xyzw, NULL, count, NULL);
         }
     }
 }
@@ -2204,7 +2278,8 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
     ASSERT(M);
     ASSERT(state);
 
-    size_t count = md_bitfield_popcount(&state->operations.target_mask);
+    const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+    size_t count = md_bitfield_popcount(&target_mask);
     mat4_t transform = mat4_ident();
 
     if (count > 0) {
@@ -2213,7 +2288,7 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
 
         // Extract xyzw subset of target
         vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec4_t) * count);
-        md_util_system_extract_xyzw_from_mask(target_xyzw, &state->operations.target_mask, &state->mold.sys);
+        md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &state->mold.sys);
 
         // Unwrap target structure (required for rotation)
         md_util_unwrap_vec4(target_xyzw, NULL, count, &state->mold.sys.bond, &state->mold.sys.unitcell);
@@ -2227,11 +2302,12 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
         } 
 
         // Calculate COM
-        vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, count, &state->mold.sys.unitcell);
+        vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, count, NULL);
+
 
         // Calculate Rotation
         mat3_t R = mat3_ident();
-        if (state->operations.rotate && state->operations.initial_frame.xyzw) {
+        if (state->operations.fixate_orientation && state->operations.initial_frame.xyzw) {
             ASSERT(md_array_size(state->operations.initial_frame.xyzw) == count);
             const vec4_t* xyzw[2] = {
                 state->operations.initial_frame.xyzw,
