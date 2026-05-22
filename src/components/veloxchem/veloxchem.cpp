@@ -1702,18 +1702,18 @@ struct VeloxChem : viamd::EventHandler {
             return false;
         }
 
-        size_t temp_pos = md_temp_get_pos();
-        defer { md_temp_set_pos_back(temp_pos); };
+        double* temp_mem = nullptr;
+        defer { if (temp_mem) free(temp_mem); };
 
         switch (spin) {
         case ElectronicStructureSpin::None:
         case ElectronicStructureSpin::Total:
             if (density_matrix_beta) {
-                double* density_matrix_total = (double*)md_temp_push(sizeof(double) * density_matrix_count);
+                temp_mem = (double*)malloc(sizeof(double) * density_matrix_count);
                 for (size_t i = 0; i < density_matrix_count; ++i) {
-                    density_matrix_total[i] = density_matrix_alpha[i] + density_matrix_beta[i];
+                    temp_mem[i] = density_matrix_alpha[i] + density_matrix_beta[i];
                 }
-                density_matrix = density_matrix_total;
+                density_matrix = temp_mem;
             } else {
                 density_matrix = density_matrix_alpha;
             }
@@ -1726,11 +1726,11 @@ struct VeloxChem : viamd::EventHandler {
             break;
         case ElectronicStructureSpin::Difference:
             if (density_matrix_alpha && density_matrix_beta) {
-                double* density_matrix_difference = (double*)md_temp_push(sizeof(double) * density_matrix_count);
+                temp_mem = (double*)malloc(sizeof(double) * density_matrix_count);
                 for (size_t i = 0; i < density_matrix_count; ++i) {
-                    density_matrix_difference[i] = density_matrix_alpha[i] - density_matrix_beta[i];
+                    temp_mem[i] = density_matrix_alpha[i] - density_matrix_beta[i];
                 }
-                density_matrix = density_matrix_difference;
+                density_matrix = temp_mem;
             }
             break;
         default:
