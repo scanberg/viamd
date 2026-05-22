@@ -80,14 +80,14 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
         }
         
         if (comp_idx != -1 && (state.selection.granularity == SelectionGranularity::Atom || state.selection.granularity == SelectionGranularity::Component)) {
-            md_strb_fmt(sb, "comp[%i]", comp_idx + 1);
+            md_strb_fmt(sb, "component[%i]", comp_idx + 1);
             if (comp_name) {
                 md_strb_fmt(sb, ": " STR_FMT, STR_ARG(comp_name));
             }
 			md_strb_fmt(sb, " (seq_id: %i)\n", comp_seq_id);
         }
         if (inst_idx != -1) {
-            md_strb_fmt(sb, "inst[%i]", inst_idx + 1);
+            md_strb_fmt(sb, "structure[%i]", inst_idx + 1);
             if (inst_id) {
                 md_strb_fmt(sb, ": " STR_FMT, STR_ARG(inst_id));
             }
@@ -296,6 +296,112 @@ void clear_system_frame_cache(ApplicationState* state) {
     clear_frame_cache(&state->mold.frame_cache);
 }
 
+enum class SecondaryStructureRenderClass : uint8_t {
+    Coil,
+    Helix,
+    Sheet,
+};
+
+static SecondaryStructureRenderClass secondary_structure_render_class(md_secondary_structure_t ss) {
+    switch (ss) {
+    case MD_SECONDARY_STRUCTURE_HELIX_310:
+    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
+    case MD_SECONDARY_STRUCTURE_HELIX_PI:
+        return SecondaryStructureRenderClass::Helix;
+    case MD_SECONDARY_STRUCTURE_BETA_SHEET:
+    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
+        return SecondaryStructureRenderClass::Sheet;
+    case MD_SECONDARY_STRUCTURE_COIL:
+    case MD_SECONDARY_STRUCTURE_TURN:
+    case MD_SECONDARY_STRUCTURE_BEND:
+    case MD_SECONDARY_STRUCTURE_UNKNOWN:
+    default:
+        return SecondaryStructureRenderClass::Coil;
+    }
+}
+
+static md_secondary_structure_t secondary_structure_from_render_class(SecondaryStructureRenderClass cls) {
+    switch (cls) {
+    case SecondaryStructureRenderClass::Helix:
+        return MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
+    case SecondaryStructureRenderClass::Sheet:
+        return MD_SECONDARY_STRUCTURE_BETA_SHEET;
+    case SecondaryStructureRenderClass::Coil:
+    default:
+        return MD_SECONDARY_STRUCTURE_COIL;
+    }
+}
+
+static void secondary_structure_render_denoise(md_secondary_structure_t* dst, const md_secondary_structure_t* src, size_t num_frames, size_t stride) {
+    ASSERT(dst);
+    ASSERT(src);
+
+    if (num_frames == 0 || stride == 0) {
+        return;
+    }
+
+    size_t arena_size = MAX(MEGABYTES(1), sizeof(SecondaryStructureRenderClass) * num_frames * 2);
+    md_allocator_i* temp_arena = md_vm_arena_create(arena_size);
+    defer { md_vm_arena_destroy(temp_arena); };
+
+    SecondaryStructureRenderClass* classes = (SecondaryStructureRenderClass*)md_vm_arena_push(temp_arena, sizeof(SecondaryStructureRenderClass) * num_frames);
+    SecondaryStructureRenderClass* filtered = (SecondaryStructureRenderClass*)md_vm_arena_push(temp_arena, sizeof(SecondaryStructureRenderClass) * num_frames);
+
+    constexpr int window_radius = 2;
+
+    for (size_t seg_idx = 0; seg_idx < stride; ++seg_idx) {
+        for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
+            classes[frame_idx] = secondary_structure_render_class(src[frame_idx * stride + seg_idx]);
+        }
+
+        for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
+            int counts[3] = {0, 0, 0};
+            size_t beg = frame_idx > window_radius ? frame_idx - window_radius : 0;
+            size_t end = MIN(frame_idx + window_radius + 1, num_frames);
+            for (size_t j = beg; j < end; ++j) {
+                counts[(int)classes[j]] += 1;
+            }
+
+            SecondaryStructureRenderClass majority = classes[frame_idx];
+            int majority_count = 0;
+            for (int j = 0; j < 3; ++j) {
+                if (counts[j] > majority_count) {
+                    majority = (SecondaryStructureRenderClass)j;
+                    majority_count = counts[j];
+                }
+            }
+
+            filtered[frame_idx] = majority_count > (int)((end - beg) / 2) ? majority : classes[frame_idx];
+        }
+
+        size_t run_beg = 0;
+        while (run_beg < num_frames) {
+            size_t run_end = run_beg + 1;
+            while (run_end < num_frames && filtered[run_end] == filtered[run_beg]) {
+                ++run_end;
+            }
+
+            size_t run_len = run_end - run_beg;
+            if (run_beg > 0 && run_end < num_frames && filtered[run_beg - 1] == filtered[run_end]) {
+                SecondaryStructureRenderClass replacement = filtered[run_beg - 1];
+                bool replace_single = run_len <= 1;
+                bool replace_short_structured = run_len <= 2 && replacement != SecondaryStructureRenderClass::Coil;
+                if (replace_single || replace_short_structured) {
+                    for (size_t j = run_beg; j < run_end; ++j) {
+                        filtered[j] = replacement;
+                    }
+                }
+            }
+
+            run_beg = run_end;
+        }
+
+        for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
+            dst[frame_idx * stride + seg_idx] = secondary_structure_from_render_class(filtered[frame_idx]);
+        }
+    }
+}
+
 // #trajectorydata
 void free_trajectory_data(ApplicationState* state) {
     ASSERT(state);
@@ -309,8 +415,9 @@ void free_trajectory_data(ApplicationState* state) {
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
     md_array_free(state->display_properties, state->allocator.persistent);
 
-    md_array_free(state->trajectory_data.backbone_angles.data,     state->allocator.persistent);
-    md_array_free(state->trajectory_data.secondary_structure.data, state->allocator.persistent);
+    md_array_free(state->trajectory_data.backbone_angles.data,               state->allocator.persistent);
+    md_array_free(state->trajectory_data.secondary_structure.data,           state->allocator.persistent);
+    md_array_free(state->trajectory_data.secondary_structure_render.data,    state->allocator.persistent);
 
     free_frame_cache(&state->mold.frame_cache, state->allocator.persistent);
 }
@@ -350,6 +457,11 @@ void init_trajectory_data(ApplicationState* data) {
             data->trajectory_data.secondary_structure.count = data->mold.sys.protein_backbone.segment.count * num_frames;
             md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
             MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_bytes(data->trajectory_data.secondary_structure.data));
+
+            data->trajectory_data.secondary_structure_render.stride = data->mold.sys.protein_backbone.segment.count;
+            data->trajectory_data.secondary_structure_render.count = data->mold.sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(data->trajectory_data.secondary_structure_render.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(data->trajectory_data.secondary_structure_render.data, 0, md_array_bytes(data->trajectory_data.secondary_structure_render.data));
 
             data->trajectory_data.backbone_angles.stride = data->mold.sys.protein_backbone.segment.count;
             data->trajectory_data.backbone_angles.count = data->mold.sys.protein_backbone.segment.count * num_frames;
@@ -399,12 +511,19 @@ void init_trajectory_data(ApplicationState* data) {
             });
 
             uint64_t time = (uint64_t)md_time_now();
-            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time]() {
+            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time, num_frames]() {
+                secondary_structure_render_denoise(
+                    data->trajectory_data.secondary_structure_render.data,
+                    data->trajectory_data.secondary_structure.data,
+                    num_frames,
+                    data->trajectory_data.secondary_structure.stride);
+
                 uint64_t t1 = (uint64_t)md_time_now();
                 double elapsed = md_time_as_seconds(t1 - t0);
                 MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
                 data->trajectory_data.backbone_angles.fingerprint     = generate_fingerprint();
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
+                data->trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
 
 				data->mold.interpolate_system_state = true;
                 data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
@@ -425,7 +544,15 @@ void init_trajectory_data(ApplicationState* data) {
 
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
-        md_bitfield_clear(&data->operations.target_mask);
+        md_bitfield_clear(&data->operations.recenter_query.mask);
+        md_bitfield_clear(&data->operations.selection_mask);
+        recenter_mark_selection_dirty(data);
+        data->operations.recenter_query.valid = false;
+        data->operations.recenter_query.dynamic = false;
+        data->operations.recenter_query.evaluated_version = 0;
+        data->operations.recenter_query.ir_fingerprint = 0;
+        data->operations.initial_frame.target_version = 0;
+        recenter_mark_query_dirty(data);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
         if (data->mold.sys.protein_backbone.segment.count > 0) {
@@ -446,14 +573,15 @@ void init_system_data(ApplicationState* data) {
         const float max_aabb_ext = vec3_reduce_max(vec3_sub(aabb_max, aabb_min));
 
         // Calculate a default view transform to use later as a reset target
-        reset_view(&data->mold.default_view, data->mold.sys);
+        ViewTransform default_view = {};
+        reset_view(&default_view, data->mold.sys);
 
         data->view.camera.near_plane = 1.0f;
         data->view.camera.far_plane = 100000.0f;
         data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 
-        data->view.target = data->mold.default_view;
-        data->view.camera = data->mold.default_view;
+        data->view.target = default_view;
+        data->view.camera = default_view;
         
 
 #if EXPERIMENTAL_GFX_API
@@ -1723,6 +1851,8 @@ void interpolate_system_state(ApplicationState* state) {
                     };
 
                     md_util_infer_covalent_bonds(&data->state->mold.sys.bond, src_state->atom_x, src_state->atom_y, src_state->atom_z, &src_state->unitcell, &sys, sys.alloc);
+                    md_bond_build_connectivity(&data->state->mold.sys.bond, sys.atom.count, sys.alloc);
+
                     data->state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 });
                 tasks[num_tasks++] = recalc_bond_task;
@@ -1731,7 +1861,8 @@ void interpolate_system_state(ApplicationState* state) {
     }
 
     if (state->operations.recenter) {
-        size_t num_idx = md_bitfield_popcount(&state->operations.target_mask);
+        const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+        size_t num_idx = md_bitfield_popcount(&target_mask);
         if (num_idx > 0) {
             // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
             task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [data = &payload]() {
@@ -1884,13 +2015,43 @@ void interpolate_system_state(ApplicationState* state) {
         size_t num_backbone_segments = sys.protein_backbone.segment.count;
         task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
+            const md_secondary_structure_t* ss_data = data->state->trajectory_data.secondary_structure_render.data ?
+                data->state->trajectory_data.secondary_structure_render.data :
+                data->state->trajectory_data.secondary_structure.data;
+            const size_t ss_stride = data->state->trajectory_data.secondary_structure_render.data ?
+                data->state->trajectory_data.secondary_structure_render.stride :
+                data->state->trajectory_data.secondary_structure.stride;
             const md_secondary_structure_t* src_ss[4] = {
-                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
-                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
-                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
-                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[3],
+                ss_data + ss_stride * data->frames[0],
+                ss_data + ss_stride * data->frames[1],
+                ss_data + ss_stride * data->frames[2],
+                ss_data + ss_stride * data->frames[3],
             };
             const md_secondary_structure_t* src_ss_nearest = data->t < 0.5f ? src_ss[1] : src_ss[2];
+            auto normalize_ss = [](md_gl_secondary_structure_t ss) {
+                ss.helix = CLAMP(ss.helix, 0.0f, 1.0f);
+                ss.sheet = CLAMP(ss.sheet, 0.0f, 1.0f);
+                float sum = ss.helix + ss.sheet;
+                if (sum > 1.0f) {
+                    ss.helix /= sum;
+                    ss.sheet /= sum;
+                }
+                return ss;
+            };
+            auto blend_ss = [normalize_ss](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b, float t) {
+                md_gl_secondary_structure_t ss = {
+                    .helix = lerp(a.helix, b.helix, t),
+                    .sheet = lerp(a.sheet, b.sheet, t),
+                };
+                return normalize_ss(ss);
+            };
+            auto smoothstep5 = [](float t) {
+                t = CLAMP(t, 0.0f, 1.0f);
+                return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+            };
+            auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                return a.helix == b.helix && a.sheet == b.sheet;
+            };
             switch (mode) {
             default:
                 MD_LOG_DEBUG("Unsupported interpolation mode for secondary structure interpolation");
@@ -1908,10 +2069,7 @@ void interpolate_system_state(ApplicationState* state) {
                 for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
                     md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
-                    md_gl_secondary_structure_t ss_gl_i = {
-                        .helix = lerp(ss_gl[0].helix, ss_gl[1].helix, data->t),
-                        .sheet = lerp(ss_gl[0].sheet, ss_gl[1].sheet, data->t),
-                    };
+                    md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[0], ss_gl[1], data->t);
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
                     data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
@@ -1929,36 +2087,16 @@ void interpolate_system_state(ApplicationState* state) {
                         md_gl_secondary_structure_convert(ss[2]),
                         md_gl_secondary_structure_convert(ss[3]),
                     };
-                    
-                    
-                    // Cleanup isolated coils temporally to reduce noise during transitions.
-                    // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
-                    // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
-                    
-                    #if 0
-                    const md_gl_secondary_structure_t ss_coil = { 0,0 };
-                    const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
 
-                    auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
-                        return a.helix == b.helix && a.sheet == b.sheet;
-                    };
-
-                    if (is_eq(ss_gl[1], ss_coil)) {
-                        if (is_eq(ss_gl[0], ss_gl[2]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[1], ss_gl[0])) {
-                            ss_gl[1] = ss_gl[0];
-                        }
+                    // Cleanup isolated temporal assignments to reduce noise during transitions.
+                    if (is_eq(ss_gl[0], ss_gl[2]) && !is_eq(ss_gl[1], ss_gl[0])) {
+                        ss_gl[1] = ss_gl[0];
                     }
-                    if (is_eq(ss_gl[2], ss_coil)) {
-                        if (is_eq(ss_gl[0], ss_gl[1]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[0])) {
-                            ss_gl[2] = ss_gl[0];
-                        }
+                    if (is_eq(ss_gl[1], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[1])) {
+                        ss_gl[2] = ss_gl[1];
                     }
-#endif
 
-                    md_gl_secondary_structure_t ss_gl_i = {
-                        .helix = cubic_spline(ss_gl[0].helix, ss_gl[1].helix, ss_gl[2].helix, ss_gl[3].helix, data->t, data->s),
-                        .sheet = cubic_spline(ss_gl[0].sheet, ss_gl[1].sheet, ss_gl[2].sheet, ss_gl[3].sheet, data->t, data->s),
-                    };
+                    md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[1], ss_gl[2], smoothstep5(data->t));
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
                     data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
@@ -1977,6 +2115,7 @@ void interpolate_system_state(ApplicationState* state) {
                 return a.helix == b.helix && a.sheet == b.sheet;
             };
             const md_gl_secondary_structure_t ss_coil = { 0,0 };
+            const md_gl_secondary_structure_t ss_helix = { .helix = 1.0f };
             const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
 
             md_gl_secondary_structure_t* ss_gl = data->state->interpolated_properties.secondary_structure;
@@ -1984,7 +2123,10 @@ void interpolate_system_state(ApplicationState* state) {
                 size_t range_beg = data->state->mold.sys.protein_backbone.range.offset[i];
                 size_t range_end = data->state->mold.sys.protein_backbone.range.offset[i + 1];
                 for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
-                    // Set isolated coils between sheets to sheet to reduce noise during transitions, as this is likely a result of flickering during secondary structure assignment
+                    // Set isolated coils between matching structured segments to reduce noise during transitions.
+                    if (is_eq(ss_gl[j - 1], ss_helix) && is_eq(ss_gl[j + 1], ss_helix) && is_eq(ss_gl[j], ss_coil)) {
+                        ss_gl[j] = ss_helix;
+                    }
                     if (is_eq(ss_gl[j - 1], ss_sheet) && is_eq(ss_gl[j + 1], ss_sheet) && is_eq(ss_gl[j], ss_coil)) {
                         ss_gl[j] = ss_sheet;
                     }
@@ -2031,14 +2173,78 @@ void interpolate_system_state(ApplicationState* state) {
     state->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
 }
 
+void recenter_mark_query_dirty(ApplicationState* state) {
+    ASSERT(state);
+    state->operations.recenter_query.version += 1;
+    if (state->operations.recenter_query.version == 0) {
+        state->operations.recenter_query.version = 1;
+    }
+}
+
+void recenter_mark_selection_dirty(ApplicationState* state) {
+    ASSERT(state);
+    state->operations.selection_version += 1;
+    if (state->operations.selection_version == 0) {
+        state->operations.selection_version = 1;
+    }
+}
+
+const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* state) {
+    ASSERT(state);
+    return state->operations.recenter_query.enabled ? state->operations.recenter_query.mask : state->operations.selection_mask;
+}
+
+uint64_t recenter_get_active_target_version(const ApplicationState* state) {
+    ASSERT(state);
+    const uint64_t source_version = state->operations.recenter_query.enabled ? state->operations.recenter_query.evaluated_version : state->operations.selection_version;
+    const uint64_t source_idx = state->operations.recenter_query.enabled ? 1 : 0;
+    return (source_version << 1) | source_idx;
+}
+
+bool recenter_update_query_mask(ApplicationState* state) {
+    ASSERT(state);
+
+    auto& query = state->operations.recenter_query;
+    const uint64_t ir_fingerprint = state->script.ir ? state->script.ir_fingerprint : 0;
+    if (query.ir_fingerprint != ir_fingerprint) {
+        query.ir_fingerprint = ir_fingerprint;
+        recenter_mark_query_dirty(state);
+    }
+
+    if (!query.enabled) {
+        return false;
+    }
+
+    if (query.dynamic) {
+        recenter_mark_query_dirty(state);
+    }
+
+    if (query.evaluated_version == query.version) {
+        return false;
+    }
+
+    md_bitfield_clear(&query.mask);
+    query.dynamic = false;
+    query.valid = md_filter(&query.mask, str_from_cstr(query.query), &state->mold.sys, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, state->script.ir, &query.dynamic, query.error, sizeof(query.error));
+    query.evaluated_version = query.version;
+    return true;
+}
+
+void recenter_update(ApplicationState* state) {
+    ASSERT(state);
+    recenter_update_query_mask(state);
+    recenter_update_target_data(state);
+}
+
 void recenter_update_target_data(ApplicationState* state) {
     if (!state->mold.sys.trajectory) return;
 
-    uint64_t hash = md_bitfield_hash64(&state->operations.target_mask, 0xDEADBEEF);
-    if (hash != state->operations.initial_frame.hash) {
+    const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+    const uint64_t target_version = recenter_get_active_target_version(state);
+    if (target_version != state->operations.initial_frame.target_version) {
         // Need to recalculate the initial frame
-        state->operations.initial_frame.hash = hash;
-        size_t count = md_bitfield_popcount(&state->operations.target_mask);
+        state->operations.initial_frame.target_version = target_version;
+        size_t count = md_bitfield_popcount(&target_mask);
 
         md_array_resize(state->operations.initial_frame.xyzw, count, state->allocator.persistent);
 
@@ -2054,7 +2260,7 @@ void recenter_update_target_data(ApplicationState* state) {
 
             md_trajectory_load_frame(state->mold.sys.trajectory, 0, NULL, temp_x, temp_y, temp_z);
 
-            md_bitfield_iter_t it = md_bitfield_iter_create(&state->operations.target_mask);
+            md_bitfield_iter_t it = md_bitfield_iter_create(&target_mask);
             int dst_idx = 0;
             while (md_bitfield_iter_next(&it)) {
                 uint64_t src_idx = md_bitfield_iter_idx(&it);
@@ -2062,7 +2268,8 @@ void recenter_update_target_data(ApplicationState* state) {
                 state->operations.initial_frame.xyzw[dst_idx++] = vec4_set(temp_x[src_idx], temp_y[src_idx], temp_z[src_idx], mass);
             }
 
-            state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.xyzw, NULL, count, &state->mold.sys.unitcell);
+            md_util_unwrap_vec4(state->operations.initial_frame.xyzw, NULL, count, &state->mold.sys.bond, &state->mold.sys.unitcell);
+            state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.xyzw, NULL, count, NULL);
         }
     }
 }
@@ -2071,7 +2278,8 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
     ASSERT(M);
     ASSERT(state);
 
-    size_t count = md_bitfield_popcount(&state->operations.target_mask);
+    const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+    size_t count = md_bitfield_popcount(&target_mask);
     mat4_t transform = mat4_ident();
 
     if (count > 0) {
@@ -2080,7 +2288,7 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
 
         // Extract xyzw subset of target
         vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec4_t) * count);
-        md_util_system_extract_xyzw_from_mask(target_xyzw, &state->operations.target_mask, &state->mold.sys);
+        md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &state->mold.sys);
 
         // Unwrap target structure (required for rotation)
         md_util_unwrap_vec4(target_xyzw, NULL, count, &state->mold.sys.bond, &state->mold.sys.unitcell);
@@ -2094,11 +2302,12 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
         } 
 
         // Calculate COM
-        vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, count, &state->mold.sys.unitcell);
+        vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, count, NULL);
+
 
         // Calculate Rotation
         mat3_t R = mat3_ident();
-        if (state->operations.rotate && state->operations.initial_frame.xyzw) {
+        if (state->operations.fixate_orientation && state->operations.initial_frame.xyzw) {
             ASSERT(md_array_size(state->operations.initial_frame.xyzw) == count);
             const vec4_t* xyzw[2] = {
                 state->operations.initial_frame.xyzw,
@@ -2442,8 +2651,9 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
     return false;
 }
 
-void interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args) {
+InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args) {
     ASSERT(target);
+    InteractionSurfaceViewTransformResult result = {};
     if (state.active || state.hovered) {
         if (state.selection_mode == InteractionSelectionMode::None) {
             const vec2_t delta = vec_cast(ImGui::GetIO().MouseDelta);
@@ -2470,10 +2680,11 @@ void interaction_surface_view_transform_apply(ViewTransform* target, const Inter
             camera_controller_trackball(target, input, args.trackball_param, flags);
 
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                *target = args.reset_transform;
+                result.reset_requested = true;
             }
         }
     }
+    return result;
 }
 
 void interaction_surface_event_extract(InteractionSurfaceEvent* event, const InteractionSurfaceState& state, const PickingHit& hit) {

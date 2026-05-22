@@ -25,7 +25,8 @@ inline bool InputQuery(const char* label, char* buf, size_t buf_size, bool is_va
 	if (!is_valid) ImGui::PushInvalid();
 	bool result = ImGui::InputText(label, buf, buf_size, flags);
 	if (!is_valid) ImGui::PopInvalid();
-	if (ImGui::IsItemHovered() && !is_valid && err_text) {
+    size_t err_len = err_text ? strlen(err_text) : 0;
+	if (ImGui::IsItemHovered() && !is_valid && err_len > 0) {
 		ImGui::SetTooltip("%s", err_text);
 	}
 	return result;

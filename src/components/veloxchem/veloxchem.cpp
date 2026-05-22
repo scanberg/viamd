@@ -1135,9 +1135,9 @@ struct VeloxChem : viamd::EventHandler {
                                 md_bitfield_iter_t it = md_bitfield_iter_create(bf);
                                 while (md_bitfield_iter_next(&it)) {
                                     size_t idx = md_bitfield_iter_idx(&it);
-                                    dst_xyzw->x = (float)critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM;
-                                    dst_xyzw->y = (float)critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM;
-                                    dst_xyzw->z = (float)critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM;
+                                    dst_xyzw->x = (float)(critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM);
+                                    dst_xyzw->y = (float)(critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM);
+                                    dst_xyzw->z = (float)(critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM);
                                     dst_xyzw->w = 1.0f;
                                     dst_xyzw++;
                                 }
@@ -1265,7 +1265,7 @@ struct VeloxChem : viamd::EventHandler {
                     const dvec3_t* atom_vlx = md_vlx_atom_coordinates(vlx);
                     for (size_t i = 0; i < num_vlx_atoms; ++i) {
                         dvec3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
-                        atom_xyzw[i] = vec4_set(xyz.x, xyz.y, xyz.z, 1.0f);
+                        atom_xyzw[i] = vec4_set((float)xyz.x, (float)xyz.y, (float)xyz.z, 1.0f);
                     }
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
                     calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
@@ -1699,18 +1699,18 @@ struct VeloxChem : viamd::EventHandler {
             return false;
         }
 
-        size_t temp_pos = md_temp_get_pos();
-        defer { md_temp_set_pos_back(temp_pos); };
+        double* temp_mem = nullptr;
+        defer { if (temp_mem) free(temp_mem); };
 
         switch (spin) {
         case ElectronicStructureSpin::None:
         case ElectronicStructureSpin::Total:
             if (density_matrix_beta) {
-                double* density_matrix_total = (double*)md_temp_push(sizeof(double) * density_matrix_count);
+                temp_mem = (double*)malloc(sizeof(double) * density_matrix_count);
                 for (size_t i = 0; i < density_matrix_count; ++i) {
-                    density_matrix_total[i] = density_matrix_alpha[i] + density_matrix_beta[i];
+                    temp_mem[i] = density_matrix_alpha[i] + density_matrix_beta[i];
                 }
-                density_matrix = density_matrix_total;
+                density_matrix = temp_mem;
             } else {
                 density_matrix = density_matrix_alpha;
             }
@@ -1723,11 +1723,11 @@ struct VeloxChem : viamd::EventHandler {
             break;
         case ElectronicStructureSpin::Difference:
             if (density_matrix_alpha && density_matrix_beta) {
-                double* density_matrix_difference = (double*)md_temp_push(sizeof(double) * density_matrix_count);
+                temp_mem = (double*)malloc(sizeof(double) * density_matrix_count);
                 for (size_t i = 0; i < density_matrix_count; ++i) {
-                    density_matrix_difference[i] = density_matrix_alpha[i] - density_matrix_beta[i];
+                    temp_mem[i] = density_matrix_alpha[i] - density_matrix_beta[i];
                 }
-                density_matrix = density_matrix_difference;
+                density_matrix = temp_mem;
             }
             break;
         default:
@@ -3971,8 +3971,6 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImGui::SetCursorScreenPos(p0);
                     InteractionSurfaceState surface_state = interaction_surface(interaction_surface_orb, vec_cast(sz), InteractionSurfaceFlags_NoRegionSelect);
-           
-                    ViewTransform reset_transform = default_view;
 
                     PickingHit hit = {};
                     if (surface_state.hovered) {
@@ -3992,19 +3990,21 @@ struct VeloxChem : viamd::EventHandler {
                         viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
                     }
 
-                    if (hit.depth < 1.0f) {
-                        reset_transform.distance = orb.target.distance;
-                        reset_transform.orientation = orb.camera.orientation;
-                        reset_transform.position = hit.world_pos + orb.camera.orientation * vec3_set(0, 0, orb.target.distance);     
-                    }
-
                     InteractionSurfaceViewTransformArgs view_args = {
                         .camera = orb.camera,
                         .trackball_param = state.view.trackball_param,
-                        .reset_transform = reset_transform,
                     };
 
-                    interaction_surface_view_transform_apply(&orb.target, surface_state, view_args);
+                    InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&orb.target, surface_state, view_args);
+                    if (view_result.reset_requested) {
+                        ViewTransform reset_transform = default_view;
+                        if (hit.depth < 1.0f) {
+                            reset_transform.distance = orb.target.distance;
+                            reset_transform.orientation = orb.camera.orientation;
+                            reset_transform.position = hit.world_pos + orb.camera.orientation * vec3_set(0, 0, orb.target.distance);
+                        }
+                        orb.target = reset_transform;
+                    }
 
 
                     const char* lbl = "";
@@ -5154,9 +5154,11 @@ struct VeloxChem : viamd::EventHandler {
                     InteractionSurfaceViewTransformArgs view_args = {
                         .camera = nto.camera,
                         .trackball_param = state.view.trackball_param,
-                        .reset_transform = default_view,
                     };
-                    interaction_surface_view_transform_apply(&nto.target, surface, view_args);
+                    InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&nto.target, surface, view_args);
+                    if (view_result.reset_requested) {
+                        nto.target = default_view;
+                    }
 
                     if (surface.hovered) {
                         InteractionSurfaceHitArgs hit_args = {

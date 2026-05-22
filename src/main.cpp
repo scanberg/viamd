@@ -431,7 +431,8 @@ int main(int argc, char** argv) {
     md_bitfield_init(&state.selection.highlight_mask, persistent_alloc);
     md_bitfield_init(&state.selection.query.mask, persistent_alloc);
     md_bitfield_init(&state.selection.grow.mask, persistent_alloc);
-    md_bitfield_init(&state.operations.target_mask, persistent_alloc);
+    md_bitfield_init(&state.operations.selection_mask, persistent_alloc);
+    md_bitfield_init(&state.operations.recenter_query.mask, persistent_alloc);
     md_bitfield_init(&state.representation.visibility_mask, persistent_alloc);
 
     // Init platform
@@ -592,7 +593,6 @@ int main(int argc, char** argv) {
         const mat4_t clip_to_world = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
         const mat4_t world_to_clip = state.view.param.matrix.curr.proj * state.view.param.matrix.curr.view;
 
-        ViewTransform reset_transform = state.mold.default_view;
         PickingHit hit = {};
 
         if (surface_state.hovered) {
@@ -606,12 +606,6 @@ int main(int argc, char** argv) {
             };
 
             interaction_surface_hit_extract(&hit, surface_state, args);
-
-            if (hit.depth < 1.0f) {
-                reset_transform.distance = state.view.target.distance;
-                reset_transform.orientation = state.view.camera.orientation;
-                reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);                    
-            }
 
             InteractionSurfaceEvent event = {};
             interaction_surface_event_extract(&event, surface_state, hit);
@@ -651,10 +645,20 @@ int main(int argc, char** argv) {
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
             .trackball_param = state.view.trackball_param,
-            .reset_transform = reset_transform,
         };
 
-        interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
+        InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
+        if (view_result.reset_requested) {
+            ViewTransform reset_transform = {};
+            if (hit.depth < 1.0f) {
+                reset_transform.distance = state.view.target.distance;
+                reset_transform.orientation = state.view.camera.orientation;
+                reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
+            } else {
+                reset_view(&reset_transform, state.mold.sys);
+            }
+            state.view.target = reset_transform;
+        }
 
         draw_context_popup(&state, hit);
 
@@ -1012,6 +1016,8 @@ int main(int argc, char** argv) {
             }
         }
 
+        recenter_update(&state);
+
 		// Perform once per-frame updates of representations (if required)
 		update_all_representations(&state);
 
@@ -1110,7 +1116,7 @@ int main(int argc, char** argv) {
                 state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
-				state.view.target = state.mold.default_view;
+                reset_view(&state.view.target, state.mold.sys);
             }
         }
 
@@ -1796,8 +1802,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            ImGui::Combo("Granularity", (int*)(&data->selection.granularity), "Atom\0Residue\0Chain\0\0");
-            int64_t num_selected_atoms = md_bitfield_popcount(&data->selection.selection_mask);
+            ImGui::Combo("Granularity", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
+            size_t num_selected_atoms = md_bitfield_popcount(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
                 md_bitfield_not_inplace(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
             }
@@ -1956,13 +1962,17 @@ static void draw_main_menu(ApplicationState* data) {
 
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
+                if (ImGui::IsWindowHovered) {
+                    md_bitfield_clear(&data->selection.highlight_mask);
+                }
                 /*
                 ImGui::TableSetupColumn("Once", 0);
                 ImGui::TableSetupColumn("Always", 0);
                 ImGui::TableHeadersRow();
                 */
                 const float button_width = (ImGui::GetFontSize() / 20.f) * 150.f;
-                const bool recenter_available = !md_bitfield_empty(&data->operations.target_mask);
+                const md_bitfield_t& target_mask = recenter_get_active_target_mask(data);
+                const bool recenter_available = !md_bitfield_empty(&target_mask);
 
                 ImGui::TableNextRow();
 
@@ -1982,8 +1992,7 @@ static void draw_main_menu(ApplicationState* data) {
                     } else {
                         ImGui::SetTooltip("Recenter the system (Once)");
                         // Highlight the target atoms that the system will be recentered around
-                        md_bitfield_clear(&data->selection.highlight_mask);
-                        md_bitfield_copy (&data->selection.highlight_mask, &data->operations.target_mask);
+                        md_bitfield_copy (&data->selection.highlight_mask, &target_mask);
                     }
                 }
 
@@ -2000,10 +2009,22 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SetItemTooltip("Recenter the system (Always)");
 
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Checkbox(ICON_FA_ROTATE, &data->operations.rotate);
-                ImGui::SetItemTooltip("Rotate");
+                ImGui::Checkbox(ICON_FA_ANCHOR_LOCK, &data->operations.fixate_orientation);
+                ImGui::SetItemTooltip("Fixate Orientation");
 
+                ImGui::SameLine();
+                ImGui::Checkbox(ICON_FA_COMMENT_DOTS, &data->operations.recenter_query.enabled);
+                ImGui::SetItemTooltip("Use query as recentering target");
+
+                if (data->operations.recenter_query.enabled) {
+                    auto& recenter_query = data->operations.recenter_query;
+                    ImGui::SameLine();
+                    if (ImGui::InputQuery("##recenter-query", recenter_query.query, sizeof(recenter_query.query), recenter_query.valid, recenter_query.error)) {
+                        recenter_mark_query_dirty(data);
+                    }
+                }
                 ImGui::TableNextRow();
+
                 ImGui::TableSetColumnIndex(0);
                 if (ImGui::Button("PBC", ImVec2(button_width,0))) {
                     do_pbc = true;
@@ -2076,6 +2097,7 @@ static void draw_main_menu(ApplicationState* data) {
             if (do_bonds) {
                 if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
                     const auto& mol = data->mold.sys;
+                    // Closest frame to the current animation time
                     uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
                     md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
                     defer { md_vm_arena_temp_end(temp_pos); };
@@ -2086,34 +2108,12 @@ static void draw_main_menu(ApplicationState* data) {
                     md_trajectory_frame_header_t frame_header;
 
                     if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
-                        MD_LOG_DEBUG("Failed to extract frame data");
+                        MD_LOG_ERROR("Failed to extract frame data");
                     } else {
                         MD_LOG_DEBUG("RECALCULATING BONDS");
-                        // Store user defined bonds (at the end of the bond arrays) so we can put them back after covalent bond inference.
-                        md_bond_data_t& bond_data = data->mold.sys.bond;
-                        md_array(md_atom_pair_t)  bond_pairs = 0;
-                        md_array(md_bond_flags_t) bond_flags = 0;
 
-                        int64_t num_bonds = (int64_t)md_array_size(bond_data.pairs);
-                        if (num_bonds > 0) {
-                            for (int64_t i = num_bonds - 1; i >= 0; --i) {
-                                if (bond_data.flags[i] & MD_BOND_FLAG_USER_DEFINED) {
-                                    md_array_push(bond_pairs, bond_data.pairs[i], frame_alloc);
-                                    md_array_push(bond_flags, bond_data.flags[i], frame_alloc);
-                                }
-                            }
-                        }
-
-                        md_bond_data_clear(&data->mold.sys.bond);
                         md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, data->mold.sys.alloc);
-
-                        // Add back user defined bonds
-                        if (md_array_size(bond_pairs) > 0) {
-                            for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
-                                md_array_push(data->mold.sys.bond.pairs, bond_pairs[i], data->mold.sys.alloc);
-                                md_array_push(data->mold.sys.bond.flags, bond_flags[i], data->mold.sys.alloc);
-                            }
-                        }
+                        md_bond_build_connectivity(&data->mold.sys.bond, data->mold.sys.atom.count, data->mold.sys.alloc);
 
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     }
@@ -3110,8 +3110,10 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         
         if (num_atoms_selected > 0) {
             if (ImGui::MenuItem("Set as Recenter Target")) {
-                md_bitfield_clear(&state->operations.target_mask);
-                md_bitfield_copy(&state->operations.target_mask, &state->selection.selection_mask);
+                md_bitfield_clear(&state->operations.selection_mask);
+                md_bitfield_copy(&state->operations.selection_mask, &state->selection.selection_mask);
+                recenter_mark_selection_dirty(state);
+                state->operations.recenter_query.enabled = false;
                 recenter_update_target_data(state);
                 ImGui::CloseCurrentPopup();
             }

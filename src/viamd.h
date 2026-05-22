@@ -92,52 +92,12 @@ constexpr PickingDomainID PickingDomain_Bond = HASH_STR_LIT64("picking domain bo
 
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
-enum class PlaybackMode { Stopped, Playing };
-enum class SelectionGranularity { Atom, Component, Instance };
-enum class SelectionOperator { Or, And, AndNot, Set, Clear };
-enum class SelectionGrowthMode { CovalentBond, Radial };
-enum class CameraMode { Perspective, Orthographic };
-
-enum class InterpolationMode {
-    Nearest,
-    Linear,
-    CubicSpline,
-    Count
-};
-
-static const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
-    "Nearest",
-    "Linear",
-    "Cubic Spline",
-};
-
-// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
-enum AtomBit_ {
-    AtomBit_Highlighted = 1,
-    AtomBit_Selected    = 2,
-    AtomBit_Visible     = 4,
-};
-
-enum class RepresentationType {
-    SpaceFill = MD_GL_REP_SPACE_FILL,
-    Licorice = MD_GL_REP_LICORICE,
-    BallAndStick = MD_GL_REP_BALL_AND_STICK,
-    Ribbons = MD_GL_REP_RIBBONS,
-    Cartoon = MD_GL_REP_CARTOON,
-    ElectronicStructure,
-//    DipoleMoment,
-    Count
-};
-
-static const char* representation_type_str[(int)RepresentationType::Count] = {
-    "Spacefill",
-    "Licorice",
-    "Ball And Stick",
-    "Ribbons",
-    "Cartoon",
-    "Electronic Structure",
-//    "Dipole Moment"
-};
+enum class PlaybackMode { Stopped, Playing, Count };
+enum class SelectionGranularity { Atom, Component, Instance, Count };
+enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
+enum class SelectionGrowthMode { CovalentBond, Radial, Count };
+enum class CameraMode { Perspective, Orthographic, Count };
+enum class InterpolationMode { Nearest, Linear, CubicSpline, Count };
 
 enum class ColorMapping {
     Uniform,
@@ -153,6 +113,82 @@ enum class ColorMapping {
     Count
 };
 
+enum class ElectronicStructureSource {
+    MolecularOrbital,
+    NaturalTransitionOrbital,
+    TransitionDensity,
+    ElectronDensity,
+    Count
+};
+
+enum class ElectronicStructureField {
+    Amplitude,
+    Density,
+    Count
+};
+
+enum class ElectronicStructureSpin {
+    None,
+    Alpha,
+    Beta,
+    Total,
+    Difference,
+    Count
+};
+
+// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
+enum AtomBit_ {
+    AtomBit_None        = 0,
+    AtomBit_Highlighted = 1u << 0,
+    AtomBit_Selected    = 1u << 1,
+    AtomBit_Visible     = 1u << 2,
+};
+
+enum MolBit_ {
+    MolBit_None                     = 0,
+    MolBit_DirtyPosition            = 1u << 0,
+    MolBit_DirtyRadius              = 1u << 1,
+    MolBit_DirtySecondaryStructure  = 1u << 2,
+    MolBit_DirtyFlags               = 1u << 3,
+    MolBit_DirtyBonds               = 1u << 4,
+    MolBit_ClearVelocity            = 1u << 5,
+};
+
+enum class RepresentationType {
+    SpaceFill = MD_GL_REP_SPACE_FILL,
+    Licorice = MD_GL_REP_LICORICE,
+    BallAndStick = MD_GL_REP_BALL_AND_STICK,
+    Ribbons = MD_GL_REP_RIBBONS,
+    Cartoon = MD_GL_REP_CARTOON,
+    ElectronicStructure,
+//    DipoleMoment,
+    Count
+};
+
+static const char* selection_granularity_str[(int)SelectionGranularity::Count] = {
+    "Atom",
+    "Component",
+    "Instance",
+};
+
+static const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
+    "Nearest",
+    "Linear",
+    "Cubic Spline",
+};
+
+static const char* representation_type_str[(int)RepresentationType::Count] = {
+    "Spacefill",
+    "Licorice",
+    "Ball And Stick",
+    "Ribbons",
+    "Cartoon",
+    "Electronic Structure",
+//    "Dipole Moment"
+};
+
+
+
 static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Uniform Color",
     "Type",
@@ -166,13 +202,6 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Property",
 };
 
-enum class ElectronicStructureSource {
-    MolecularOrbital,
-    NaturalTransitionOrbital,
-    TransitionDensity,
-    ElectronDensity,
-    Count
-};
 
 static const char* electronic_structure_source_str[(int)ElectronicStructureSource::Count] = {
     "Molecular Orbital",
@@ -190,20 +219,7 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
 
 typedef uint32_t ElectronicStructureSourceFlags;
 
-enum class ElectronicStructureField {
-    Amplitude,
-    Density,
-    Count
-};
 
-enum class ElectronicStructureSpin {
-    None,
-    Alpha,
-    Beta,
-    Total,
-    Difference,
-    Count
-};
 
 static const char* electronic_structure_spin_str[(int)ElectronicStructureSpin::Count] = {
     "None",
@@ -248,15 +264,6 @@ enum class ElectronicStructureLegacyType {
     DetachmentDensity,
     ElectronDensity,
     Count,
-};
-
-enum MolBit_ {
-    MolBit_DirtyPosition            = 1u << 0,
-    MolBit_DirtyRadius              = 1u << 1,
-    MolBit_DirtySecondaryStructure  = 1u << 2,
-    MolBit_DirtyFlags               = 1u << 3,
-    MolBit_DirtyBonds               = 1u << 4,
-    MolBit_ClearVelocity            = 1u << 5,
 };
 
 // This is viamd's representation of a property
@@ -1015,7 +1022,6 @@ struct ApplicationState {
 
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};
-        ViewTransform       default_view = {};
 
         bool                interpolate_system_state = false;
         uint32_t            dirty_gpu_buffers = 0;
@@ -1210,17 +1216,31 @@ struct ApplicationState {
 
     struct {
         bool recenter = false;
-        bool rotate   = false;
+        bool fixate_orientation = false;
+
+        struct {
+            char query[256] = "";
+            char error[256] = "";
+            bool valid = false;
+            bool enabled = false;
+            bool dynamic = false; // represents whether the query needs to be re-evaluated per frame.
+            uint64_t version = 1;
+            uint64_t evaluated_version = 0;
+            uint64_t ir_fingerprint = 0;
+            md_bitfield_t mask = { 0 };
+        } recenter_query;
 
         bool apply_pbc = false;
         bool unwrap_structures = false;
         bool recalc_bonds = false;
 
-        // For recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
-        md_bitfield_t target_mask = {0};
+        // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
+        // This is populated by assigning a user defined selection.
+        uint64_t selection_version = 1;
+        md_bitfield_t selection_mask = {0};
 
         struct {
-            uint64_t hash = 0;
+            uint64_t target_version = 0;
 
             // Need to store the initial frame position for recentering and orienting to work properly when applying on trajectories
             vec4_t* xyzw = nullptr;
@@ -1248,6 +1268,12 @@ struct ApplicationState {
             md_secondary_structure_t* data = nullptr;
             uint64_t fingerprint = 0;
         } secondary_structure;
+        struct {
+            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
+            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
+            md_secondary_structure_t* data = nullptr;
+            uint64_t fingerprint = 0;
+        } secondary_structure_render;
         struct {
             size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
@@ -1562,6 +1588,13 @@ void recompute_atom_visibility_mask(ApplicationState* state);
 
 // Recentering operations (low level)
 
+void recenter_mark_query_dirty(ApplicationState* state);
+void recenter_mark_selection_dirty(ApplicationState* state);
+const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* state);
+uint64_t recenter_get_active_target_version(const ApplicationState* state);
+bool recenter_update_query_mask(ApplicationState* state);
+void recenter_update(ApplicationState* state);
+
 // Update the required initial frame data for the recentering target (if needed)
 void recenter_update_target_data(ApplicationState* state);
 void recenter_calculate_transform(float M[4][4], const ApplicationState* state);
@@ -1631,13 +1664,16 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
 struct InteractionSurfaceViewTransformArgs {
     const Camera& camera;
     const TrackballControllerParam& trackball_param = {};
-    const ViewTransform& reset_transform = {};
+};
+
+struct InteractionSurfaceViewTransformResult {
+    bool reset_requested = false;
 };
 
 // Uses the interaction surface state (e.g. mouse position, region selection) to calculate a view transform based on the provided camera and trackball parameters.
 // Modifies the target view transform in place.
-// Reset transform supplied in args represents the *reset target* transform which is optionally applied when the user double clicks the surface.
-void interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args);
+// Returns interaction outcomes which the caller may use to apply domain-specific behavior such as view reset.
+InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args);
 
 enum class InteractionSurfaceEventKind {
     None,
