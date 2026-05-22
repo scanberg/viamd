@@ -296,6 +296,112 @@ void clear_system_frame_cache(ApplicationState* state) {
     clear_frame_cache(&state->mold.frame_cache);
 }
 
+enum class SecondaryStructureRenderClass : uint8_t {
+    Coil,
+    Helix,
+    Sheet,
+};
+
+static SecondaryStructureRenderClass secondary_structure_render_class(md_secondary_structure_t ss) {
+    switch (ss) {
+    case MD_SECONDARY_STRUCTURE_HELIX_310:
+    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
+    case MD_SECONDARY_STRUCTURE_HELIX_PI:
+        return SecondaryStructureRenderClass::Helix;
+    case MD_SECONDARY_STRUCTURE_BETA_SHEET:
+    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
+        return SecondaryStructureRenderClass::Sheet;
+    case MD_SECONDARY_STRUCTURE_COIL:
+    case MD_SECONDARY_STRUCTURE_TURN:
+    case MD_SECONDARY_STRUCTURE_BEND:
+    case MD_SECONDARY_STRUCTURE_UNKNOWN:
+    default:
+        return SecondaryStructureRenderClass::Coil;
+    }
+}
+
+static md_secondary_structure_t secondary_structure_from_render_class(SecondaryStructureRenderClass cls) {
+    switch (cls) {
+    case SecondaryStructureRenderClass::Helix:
+        return MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
+    case SecondaryStructureRenderClass::Sheet:
+        return MD_SECONDARY_STRUCTURE_BETA_SHEET;
+    case SecondaryStructureRenderClass::Coil:
+    default:
+        return MD_SECONDARY_STRUCTURE_COIL;
+    }
+}
+
+static void secondary_structure_render_denoise(md_secondary_structure_t* dst, const md_secondary_structure_t* src, size_t num_frames, size_t stride) {
+    ASSERT(dst);
+    ASSERT(src);
+
+    if (num_frames == 0 || stride == 0) {
+        return;
+    }
+
+    size_t arena_size = MAX(MEGABYTES(1), sizeof(SecondaryStructureRenderClass) * num_frames * 2);
+    md_allocator_i* temp_arena = md_vm_arena_create(arena_size);
+    defer { md_vm_arena_destroy(temp_arena); };
+
+    SecondaryStructureRenderClass* classes = (SecondaryStructureRenderClass*)md_vm_arena_push(temp_arena, sizeof(SecondaryStructureRenderClass) * num_frames);
+    SecondaryStructureRenderClass* filtered = (SecondaryStructureRenderClass*)md_vm_arena_push(temp_arena, sizeof(SecondaryStructureRenderClass) * num_frames);
+
+    constexpr int window_radius = 2;
+
+    for (size_t seg_idx = 0; seg_idx < stride; ++seg_idx) {
+        for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
+            classes[frame_idx] = secondary_structure_render_class(src[frame_idx * stride + seg_idx]);
+        }
+
+        for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
+            int counts[3] = {0, 0, 0};
+            size_t beg = frame_idx > window_radius ? frame_idx - window_radius : 0;
+            size_t end = MIN(frame_idx + window_radius + 1, num_frames);
+            for (size_t j = beg; j < end; ++j) {
+                counts[(int)classes[j]] += 1;
+            }
+
+            SecondaryStructureRenderClass majority = classes[frame_idx];
+            int majority_count = 0;
+            for (int j = 0; j < 3; ++j) {
+                if (counts[j] > majority_count) {
+                    majority = (SecondaryStructureRenderClass)j;
+                    majority_count = counts[j];
+                }
+            }
+
+            filtered[frame_idx] = majority_count > (int)((end - beg) / 2) ? majority : classes[frame_idx];
+        }
+
+        size_t run_beg = 0;
+        while (run_beg < num_frames) {
+            size_t run_end = run_beg + 1;
+            while (run_end < num_frames && filtered[run_end] == filtered[run_beg]) {
+                ++run_end;
+            }
+
+            size_t run_len = run_end - run_beg;
+            if (run_beg > 0 && run_end < num_frames && filtered[run_beg - 1] == filtered[run_end]) {
+                SecondaryStructureRenderClass replacement = filtered[run_beg - 1];
+                bool replace_single = run_len <= 1;
+                bool replace_short_structured = run_len <= 2 && replacement != SecondaryStructureRenderClass::Coil;
+                if (replace_single || replace_short_structured) {
+                    for (size_t j = run_beg; j < run_end; ++j) {
+                        filtered[j] = replacement;
+                    }
+                }
+            }
+
+            run_beg = run_end;
+        }
+
+        for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
+            dst[frame_idx * stride + seg_idx] = secondary_structure_from_render_class(filtered[frame_idx]);
+        }
+    }
+}
+
 // #trajectorydata
 void free_trajectory_data(ApplicationState* state) {
     ASSERT(state);
@@ -309,8 +415,9 @@ void free_trajectory_data(ApplicationState* state) {
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
     md_array_free(state->display_properties, state->allocator.persistent);
 
-    md_array_free(state->trajectory_data.backbone_angles.data,     state->allocator.persistent);
-    md_array_free(state->trajectory_data.secondary_structure.data, state->allocator.persistent);
+    md_array_free(state->trajectory_data.backbone_angles.data,               state->allocator.persistent);
+    md_array_free(state->trajectory_data.secondary_structure.data,           state->allocator.persistent);
+    md_array_free(state->trajectory_data.secondary_structure_render.data,    state->allocator.persistent);
 
     free_frame_cache(&state->mold.frame_cache, state->allocator.persistent);
 }
@@ -350,6 +457,11 @@ void init_trajectory_data(ApplicationState* data) {
             data->trajectory_data.secondary_structure.count = data->mold.sys.protein_backbone.segment.count * num_frames;
             md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
             MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_bytes(data->trajectory_data.secondary_structure.data));
+
+            data->trajectory_data.secondary_structure_render.stride = data->mold.sys.protein_backbone.segment.count;
+            data->trajectory_data.secondary_structure_render.count = data->mold.sys.protein_backbone.segment.count * num_frames;
+            md_array_resize(data->trajectory_data.secondary_structure_render.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+            MEMSET(data->trajectory_data.secondary_structure_render.data, 0, md_array_bytes(data->trajectory_data.secondary_structure_render.data));
 
             data->trajectory_data.backbone_angles.stride = data->mold.sys.protein_backbone.segment.count;
             data->trajectory_data.backbone_angles.count = data->mold.sys.protein_backbone.segment.count * num_frames;
@@ -399,12 +511,19 @@ void init_trajectory_data(ApplicationState* data) {
             });
 
             uint64_t time = (uint64_t)md_time_now();
-            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time]() {
+            task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time, num_frames]() {
+                secondary_structure_render_denoise(
+                    data->trajectory_data.secondary_structure_render.data,
+                    data->trajectory_data.secondary_structure.data,
+                    num_frames,
+                    data->trajectory_data.secondary_structure.stride);
+
                 uint64_t t1 = (uint64_t)md_time_now();
                 double elapsed = md_time_as_seconds(t1 - t0);
                 MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
                 data->trajectory_data.backbone_angles.fingerprint     = generate_fingerprint();
                 data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
+                data->trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
 
 				data->mold.interpolate_system_state = true;
                 data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
@@ -1887,13 +2006,43 @@ void interpolate_system_state(ApplicationState* state) {
         size_t num_backbone_segments = sys.protein_backbone.segment.count;
         task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
+            const md_secondary_structure_t* ss_data = data->state->trajectory_data.secondary_structure_render.data ?
+                data->state->trajectory_data.secondary_structure_render.data :
+                data->state->trajectory_data.secondary_structure.data;
+            const size_t ss_stride = data->state->trajectory_data.secondary_structure_render.data ?
+                data->state->trajectory_data.secondary_structure_render.stride :
+                data->state->trajectory_data.secondary_structure.stride;
             const md_secondary_structure_t* src_ss[4] = {
-                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[0],
-                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[1],
-                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[2],
-                (md_secondary_structure_t*)data->state->trajectory_data.secondary_structure.data + data->state->trajectory_data.secondary_structure.stride * data->frames[3],
+                ss_data + ss_stride * data->frames[0],
+                ss_data + ss_stride * data->frames[1],
+                ss_data + ss_stride * data->frames[2],
+                ss_data + ss_stride * data->frames[3],
             };
             const md_secondary_structure_t* src_ss_nearest = data->t < 0.5f ? src_ss[1] : src_ss[2];
+            auto normalize_ss = [](md_gl_secondary_structure_t ss) {
+                ss.helix = CLAMP(ss.helix, 0.0f, 1.0f);
+                ss.sheet = CLAMP(ss.sheet, 0.0f, 1.0f);
+                float sum = ss.helix + ss.sheet;
+                if (sum > 1.0f) {
+                    ss.helix /= sum;
+                    ss.sheet /= sum;
+                }
+                return ss;
+            };
+            auto blend_ss = [normalize_ss](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b, float t) {
+                md_gl_secondary_structure_t ss = {
+                    .helix = lerp(a.helix, b.helix, t),
+                    .sheet = lerp(a.sheet, b.sheet, t),
+                };
+                return normalize_ss(ss);
+            };
+            auto smoothstep5 = [](float t) {
+                t = CLAMP(t, 0.0f, 1.0f);
+                return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+            };
+            auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+                return a.helix == b.helix && a.sheet == b.sheet;
+            };
             switch (mode) {
             default:
                 MD_LOG_DEBUG("Unsupported interpolation mode for secondary structure interpolation");
@@ -1911,10 +2060,7 @@ void interpolate_system_state(ApplicationState* state) {
                 for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
                     md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
-                    md_gl_secondary_structure_t ss_gl_i = {
-                        .helix = lerp(ss_gl[0].helix, ss_gl[1].helix, data->t),
-                        .sheet = lerp(ss_gl[0].sheet, ss_gl[1].sheet, data->t),
-                    };
+                    md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[0], ss_gl[1], data->t);
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
                     data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
@@ -1932,36 +2078,16 @@ void interpolate_system_state(ApplicationState* state) {
                         md_gl_secondary_structure_convert(ss[2]),
                         md_gl_secondary_structure_convert(ss[3]),
                     };
-                    
-                    
-                    // Cleanup isolated coils temporally to reduce noise during transitions.
-                    // This is a common issue with secondary structure assignment during transitions, where a segment might flip between coil and helix/sheet rapidly, creating a flickering effect.
-                    // We compare indices 0, 1, 2, 3 and if idx 1 or 2 differs from the other 3 (which are the same), we set 1 to be the same as the others, effectively removing isolated coil assignments.
-                    
-                    #if 0
-                    const md_gl_secondary_structure_t ss_coil = { 0,0 };
-                    const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
 
-                    auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
-                        return a.helix == b.helix && a.sheet == b.sheet;
-                    };
-
-                    if (is_eq(ss_gl[1], ss_coil)) {
-                        if (is_eq(ss_gl[0], ss_gl[2]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[1], ss_gl[0])) {
-                            ss_gl[1] = ss_gl[0];
-                        }
+                    // Cleanup isolated temporal assignments to reduce noise during transitions.
+                    if (is_eq(ss_gl[0], ss_gl[2]) && !is_eq(ss_gl[1], ss_gl[0])) {
+                        ss_gl[1] = ss_gl[0];
                     }
-                    if (is_eq(ss_gl[2], ss_coil)) {
-                        if (is_eq(ss_gl[0], ss_gl[1]) && is_eq(ss_gl[0], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[0])) {
-                            ss_gl[2] = ss_gl[0];
-                        }
+                    if (is_eq(ss_gl[1], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[1])) {
+                        ss_gl[2] = ss_gl[1];
                     }
-#endif
 
-                    md_gl_secondary_structure_t ss_gl_i = {
-                        .helix = cubic_spline(ss_gl[0].helix, ss_gl[1].helix, ss_gl[2].helix, ss_gl[3].helix, data->t, data->s),
-                        .sheet = cubic_spline(ss_gl[0].sheet, ss_gl[1].sheet, ss_gl[2].sheet, ss_gl[3].sheet, data->t, data->s),
-                    };
+                    md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[1], ss_gl[2], smoothstep5(data->t));
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
                     data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
@@ -1980,6 +2106,7 @@ void interpolate_system_state(ApplicationState* state) {
                 return a.helix == b.helix && a.sheet == b.sheet;
             };
             const md_gl_secondary_structure_t ss_coil = { 0,0 };
+            const md_gl_secondary_structure_t ss_helix = { .helix = 1.0f };
             const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
 
             md_gl_secondary_structure_t* ss_gl = data->state->interpolated_properties.secondary_structure;
@@ -1987,7 +2114,10 @@ void interpolate_system_state(ApplicationState* state) {
                 size_t range_beg = data->state->mold.sys.protein_backbone.range.offset[i];
                 size_t range_end = data->state->mold.sys.protein_backbone.range.offset[i + 1];
                 for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
-                    // Set isolated coils between sheets to sheet to reduce noise during transitions, as this is likely a result of flickering during secondary structure assignment
+                    // Set isolated coils between matching structured segments to reduce noise during transitions.
+                    if (is_eq(ss_gl[j - 1], ss_helix) && is_eq(ss_gl[j + 1], ss_helix) && is_eq(ss_gl[j], ss_coil)) {
+                        ss_gl[j] = ss_helix;
+                    }
                     if (is_eq(ss_gl[j - 1], ss_sheet) && is_eq(ss_gl[j + 1], ss_sheet) && is_eq(ss_gl[j], ss_coil)) {
                         ss_gl[j] = ss_sheet;
                     }

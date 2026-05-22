@@ -1250,6 +1250,12 @@ struct ApplicationState {
         struct {
             size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
+            md_secondary_structure_t* data = nullptr;
+            uint64_t fingerprint = 0;
+        } secondary_structure_render;
+        struct {
+            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
+            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
             md_backbone_angles_t* data = nullptr;
             uint64_t fingerprint = 0;
         } backbone_angles;
