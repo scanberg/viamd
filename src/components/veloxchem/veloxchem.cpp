@@ -117,6 +117,18 @@ enum x_unit_t {
     X_UNIT_COUNT,
 };
 
+md_gpu_image_format_t gpu_format_from_gl(GLenum format) {
+    switch (format) {
+        case GL_R8:         return MD_GPU_IMAGE_FORMAT_R8_UINT;
+        case GL_R16:        return MD_GPU_IMAGE_FORMAT_R16_UINT;
+        case GL_R32F:       return MD_GPU_IMAGE_FORMAT_R32_FLOAT;
+        case GL_RGBA8:      return MD_GPU_IMAGE_FORMAT_RGBA8_UNORM;
+        case GL_RGBA16F:    return MD_GPU_IMAGE_FORMAT_RGBA16_FLOAT;
+        case GL_RGBA32F:    return MD_GPU_IMAGE_FORMAT_RGBA32_FLOAT;
+        default:            return (md_gpu_image_format_t)-1;
+    }
+}
+
 // Predefined samples per Ångström for corresponding VolumeRes (Low, Mid, High)
 static const double volume_resolution_samples_per_angstrom[3] = {
     4.0,
@@ -249,18 +261,14 @@ static void attribute_charge_density(double out_charge[], const int* ao_to_idx, 
 #if MD_ENABLE_GPU
 // Call once per command buffer before any GTO evaluate that needs atom positions.
 // Clears *dirty on success. Safe to call when !(*dirty) — returns immediately.
-static void gpu_upload_atoms_if_dirty(
+static void gpu_upload_atoms_cmd(
     md_gpu_command_buffer_t  cmd,
     md_gpu_bump_alloc_t*     bump,
     md_gpu_buffer_t          gpu_atoms,
     const float*             atom_xyzw,   // packed xyzw, stride = sizeof(vec4_t)
-    uint32_t                 num_atoms,
-    bool*                    dirty,
-    bool                     is_discrete)
+    uint32_t                 num_atoms)
 {
-    if (!*dirty) return;
-
-    if (!is_discrete) {
+    if (md_gpu_buffer_flags(gpu_atoms) & MD_GPU_BUFFER_CPU_VISIBLE) {
         md_gto_gpu_atom_pack((float*)md_gpu_buffer_cpu_ptr(gpu_atoms),
                              atom_xyzw, sizeof(vec4_t), num_atoms);
     } else {
@@ -268,10 +276,7 @@ static void gpu_upload_atoms_if_dirty(
         md_gpu_alloc_t mem = md_gpu_bump_push(bump, sz, 0);
         md_gto_gpu_atom_pack((float*)mem.cpu, atom_xyzw, sizeof(vec4_t), num_atoms);
         md_gpu_cmd_copy_buffer(cmd, bump->buffer, gpu_atoms, sz, mem.offset, 0);
-        md_gpu_cmd_barrier_buffer(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     }
-
-    *dirty = false;
 }
 #endif
 
@@ -282,6 +287,7 @@ struct VeloxChem : viamd::EventHandler {
     bool use_gpu_path = false;
 #if MD_ENABLE_GPU
     md_gpu_device_t         gpu_device  = nullptr;
+    md_gpu_device_info_t    gpu_info    = {};
     md_gpu_bump_alloc_t     gpu_bump    = {0};
 
     md_gto_gpu_basis_t      gpu_basis   = nullptr;  // CGTO basis buffer, contains a gpu representation of the current basis set for vlx object
@@ -993,7 +999,7 @@ struct VeloxChem : viamd::EventHandler {
                     vol_hash = md_hash64_combine(vol_hash, frame_hash);
 
                     if (vol_hash != rep->electronic_structure.vol_hash) {
-                        rep->electronic_structure.vol_hash = vol_hash;
+                        bool eval_success = false;
 
                         const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)rep->electronic_structure.resolution];
                         const double samples_per_unit_length = samples_per_angstrom * BOHR_TO_ANGSTROM;
@@ -1008,35 +1014,86 @@ struct VeloxChem : viamd::EventHandler {
 
                         uint32_t tex_id = rep->electronic_structure.density_vol.tex_id;
 
+#if MD_ENABLE_GPU
+                        md_gpu_image_t out_vol = rep->electronic_structure.density_vol.gpu_image;
+                        bool use_gpu_eval = es.source == ElectronicStructureSource::MolecularOrbital && out_vol && !es.dvr.enabled && !es.use_atom_colors;
+                        md_gpu_queue_t queue = nullptr;
+                        md_gpu_command_buffer_t cmd = nullptr;
+
+                        if (use_gpu_eval) {
+                            md_gpu_bump_reset(&gpu_bump);
+                            queue = md_gpu_queue_acquire(gpu_device);
+                            cmd = md_gpu_command_buffer_acquire(queue);
+                            if (cmd && gpu_atoms_dirty) {
+                                gpu_upload_atoms_cmd(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, md_array_size(atom_xyzw));
+                                md_gpu_cmd_barrier_buffer(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                            }
+                            use_gpu_eval = cmd != nullptr;
+                        } else if (gpu_atoms_dirty && gpu_device && gpu_atoms) {
+                            md_gpu_bump_reset(&gpu_bump);
+                            md_gpu_queue_t atom_queue = md_gpu_queue_acquire(gpu_device);
+                            md_gpu_command_buffer_t atom_cmd = md_gpu_command_buffer_acquire(atom_queue);
+                            if (atom_cmd) {
+                                gpu_upload_atoms_cmd(atom_cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, md_array_size(atom_xyzw));
+                                md_gpu_cmd_barrier_buffer(atom_cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                                gpu_atoms_dirty = !md_gpu_queue_submit(atom_queue, atom_cmd, nullptr);
+                            }
+                        }
+#endif
+
                         switch (es.source) {
                         case ElectronicStructureSource::MolecularOrbital:
                         {
                             md_gto_op_t op = gto_op_from_use_magnitude(es.use_magnitude);
                             md_vlx_spin_t spin = vlx_spin_from_electronic_structure(es.spin);
-                            evaluate_mo(tex_id, grid, spin, es.orbital_idx, op, DEFAULT_GTO_CUTOFF_VALUE);
+#if MD_ENABLE_GPU
+                            if (use_gpu_eval) {
+                                eval_success = gpu_eval_mo_cmd(cmd, out_vol, grid, spin, es.orbital_idx, op);
+                                if (eval_success) {
+                                    md_gpu_cmd_barrier_image(cmd, out_vol, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+                                }
+                            } else {
+                                eval_success = evaluate_mo(tex_id, grid, spin, es.orbital_idx, op, DEFAULT_GTO_CUTOFF_VALUE);
+                            }
+#else
+                            eval_success = evaluate_mo(tex_id, grid, spin, es.orbital_idx, op, DEFAULT_GTO_CUTOFF_VALUE);
+#endif
                             break;
                         }
                         case ElectronicStructureSource::NaturalTransitionOrbital:
                         {
                             md_vlx_nto_type_t nto_type = es.nto_component == ElectronicStructureNtoComponent::Particle ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
                             md_gto_op_t op = gto_op_from_use_magnitude(es.use_magnitude);
-                            evaluate_nto(tex_id, grid, es.excited_state_idx, es.nto_lambda_idx, nto_type, op, DEFAULT_GTO_CUTOFF_VALUE);
+                            eval_success = evaluate_nto(tex_id, grid, es.excited_state_idx, es.nto_lambda_idx, nto_type, op, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
                         case ElectronicStructureSource::TransitionDensity:
                         {
-                            evaluate_transition_density(tex_id, grid, es.excited_state_idx, es.transition_density_component, DEFAULT_GTO_CUTOFF_VALUE);
+                            eval_success = evaluate_transition_density(tex_id, grid, es.excited_state_idx, es.transition_density_component, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
                         }
                         case ElectronicStructureSource::ElectronDensity:
                         {
                             md_gto_op_t op = gto_op_from_use_magnitude(es.spin == ElectronicStructureSpin::Difference && es.use_magnitude);
-                            evaluate_electron_density(tex_id, grid, es.spin, op);
+                            eval_success = evaluate_electron_density(tex_id, grid, es.spin, op);
                             break;
                         }
                         default:
                             MD_LOG_ERROR("Invalid Orbital Type supplied to Compute Orbital Event");
                             break;
+                        }
+
+#if MD_ENABLE_GPU
+                        if (use_gpu_eval) {
+                            const bool submitted = md_gpu_queue_submit(queue, cmd, nullptr);
+                            gpu_atoms_dirty = gpu_atoms_dirty && !submitted;
+                            eval_success = eval_success && submitted;
+                        }
+#endif
+                        if (eval_success) {
+                            rep->electronic_structure.vol_hash = vol_hash;
+                        } else {
+                            MD_LOG_ERROR("Failed to evaluate electronic structure volume");
                         }
                     }
 
@@ -1453,17 +1510,25 @@ struct VeloxChem : viamd::EventHandler {
         vol->texture_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, extent * scl);
         vol->voxel_size = grid.spacing * scl;
         gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
-    }
-
 #if MD_ENABLE_GPU
-    void ensure_gpu_image_volume(md_gpu_image_t* image, const md_gpu_image_desc_t& desc, md_gpu_device_t device) {
-        if (!image || !device) return;
-        if (*image) {
-            md_gpu_image_destroy(*image);
+        md_gpu_image_desc_t desc = {
+            .width  = (uint32_t)vol->dim[0],
+            .height = (uint32_t)vol->dim[1],
+            .depth  = (uint32_t)vol->dim[2],
+            .format = gpu_format_from_gl(format),
+            .flags  = MD_GPU_IMAGE_STORAGE | MD_GPU_IMAGE_SAMPLED,
+        };
+
+        md_gpu_image_desc_t curr_desc = {};
+        md_gpu_image_desc_extract(vol->gpu_image, &curr_desc);
+        if (MEMCMP(&curr_desc, &desc, sizeof(md_gpu_image_desc_t)) != 0) {
+            if (vol->gpu_image) {
+                md_gpu_image_destroy(vol->gpu_image);
+            }
+            vol->gpu_image = md_gpu_image_create(gpu_device, &desc);
         }
-        *image = md_gpu_image_create(device, &desc);
-    }
 #endif
+    }
 
     bool evaluate_nto(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         ScopedTemp temp_reset;
@@ -1501,8 +1566,6 @@ struct VeloxChem : viamd::EventHandler {
 
             const double* coeff_ptrs[1] = { nto_coeffs };
 
-            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
-
             if (!gpu_info.is_discrete) {
                 md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
             } else {
@@ -1531,6 +1594,43 @@ struct VeloxChem : viamd::EventHandler {
         return true;
 #endif
     }
+
+#if MD_ENABLE_GPU
+    // A better and more sleek gpu pure version for populating cmd buffer with work to evaluate MOs
+    bool gpu_eval_mo_cmd(md_gpu_command_buffer_t cmd, md_gpu_image_t vol, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_op_t op) {
+        const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, mo_type);
+        if (!ao_coeffs) {
+            MD_LOG_ERROR("Failed to retrieve AO coefficients for Molecular Orbital index: %zu", mo_idx);
+            return false;
+        }
+        bool success = false;
+        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff) {
+            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+
+            // Pre-size the bump before any pushes so no reallocation occurs mid-session.
+            // A reallocation would destroy the old mapping and invalidate rb_mem.cpu.
+            size_t coeff_sz = md_gto_gpu_coeff_size_mo(1, num_cgtos);
+            size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
+            md_gpu_bump_ensure(&gpu_bump, coeff_sz + atom_sz + 1024);
+
+            const double* coeff_ptrs[1] = { ao_coeffs };
+
+            if (md_gpu_buffer_flags(gpu_coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
+                md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
+            } else {
+                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz, 0);
+                md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
+                md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
+                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+            }
+
+            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, vol, &grid, MD_GTO_EVAL_MODE_PSI, op);
+            success = true;
+        }
+        return success;
+    }
+#endif
 
     bool evaluate_mo(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, mo_type);
@@ -1566,8 +1666,6 @@ struct VeloxChem : viamd::EventHandler {
 
             const double* coeff_ptrs[1] = { ao_coeffs };
 
-            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
-
             if (!gpu_info.is_discrete) {
                 md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
             } else {
@@ -1584,7 +1682,7 @@ struct VeloxChem : viamd::EventHandler {
                 .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
             };
             md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
-
+            
             if (md_gpu_queue_submit(queue, cmd, nullptr)) {
                 gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
                 success = true;
@@ -1629,8 +1727,6 @@ struct VeloxChem : viamd::EventHandler {
 
             md_gpu_queue_t queue = md_gpu_queue_acquire(gpu_device);
             md_gpu_command_buffer_t cmd = md_gpu_command_buffer_acquire(queue);
-
-            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
 
             if (!gpu_info.is_discrete) {
                 md_gto_gpu_coeff_pack_density((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), density_matrix, num_cgtos);
@@ -2840,8 +2936,6 @@ struct VeloxChem : viamd::EventHandler {
 
                                     md_gpu_queue_t          queue = md_gpu_queue_acquire(state.gpu_device);
                                     md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
-
-                                    gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
 
                                     if (!gpu_info.is_discrete) {
                                         float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);

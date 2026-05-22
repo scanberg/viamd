@@ -6988,7 +6988,7 @@ static void draw_representations_transparent(ApplicationState* state) {
         bool rendered = false;
 #if MD_ENABLE_GPU
         const ElectronicStructureRepresentation& es = rep.electronic_structure;
-        const bool gpu_supported = !es.dvr.enabled && !es.use_atom_colors;
+        const bool gpu_supported = es.source == ElectronicStructureSource::MolecularOrbital && !es.dvr.enabled && !es.use_atom_colors;
         if (gpu_supported && state->gpu_device && es.density_vol.gpu_image) {
             md_gpu_image_t color_target = ensure_gpu_volume_transparency_target(state);
             if (color_target) {
