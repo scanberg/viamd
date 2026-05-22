@@ -1138,9 +1138,9 @@ struct VeloxChem : viamd::EventHandler {
                                 md_bitfield_iter_t it = md_bitfield_iter_create(bf);
                                 while (md_bitfield_iter_next(&it)) {
                                     size_t idx = md_bitfield_iter_idx(&it);
-                                    dst_xyzw->x = (float)critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM;
-                                    dst_xyzw->y = (float)critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM;
-                                    dst_xyzw->z = (float)critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM;
+                                    dst_xyzw->x = (float)(critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM);
+                                    dst_xyzw->y = (float)(critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM);
+                                    dst_xyzw->z = (float)(critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM);
                                     dst_xyzw->w = 1.0f;
                                     dst_xyzw++;
                                 }
@@ -1268,7 +1268,7 @@ struct VeloxChem : viamd::EventHandler {
                     const dvec3_t* atom_vlx = md_vlx_atom_coordinates(vlx);
                     for (size_t i = 0; i < num_vlx_atoms; ++i) {
                         dvec3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
-                        atom_xyzw[i] = vec4_set(xyz.x, xyz.y, xyz.z, 1.0f);
+                        atom_xyzw[i] = vec4_set((float)xyz.x, (float)xyz.y, (float)xyz.z, 1.0f);
                     }
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
                     calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
