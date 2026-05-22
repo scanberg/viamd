@@ -592,7 +592,6 @@ int main(int argc, char** argv) {
         const mat4_t clip_to_world = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
         const mat4_t world_to_clip = state.view.param.matrix.curr.proj * state.view.param.matrix.curr.view;
 
-        ViewTransform reset_transform = state.mold.default_view;
         PickingHit hit = {};
 
         if (surface_state.hovered) {
@@ -606,12 +605,6 @@ int main(int argc, char** argv) {
             };
 
             interaction_surface_hit_extract(&hit, surface_state, args);
-
-            if (hit.depth < 1.0f) {
-                reset_transform.distance = state.view.target.distance;
-                reset_transform.orientation = state.view.camera.orientation;
-                reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);                    
-            }
 
             InteractionSurfaceEvent event = {};
             interaction_surface_event_extract(&event, surface_state, hit);
@@ -651,10 +644,20 @@ int main(int argc, char** argv) {
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
             .trackball_param = state.view.trackball_param,
-            .reset_transform = reset_transform,
         };
 
-        interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
+        InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
+        if (view_result.reset_requested) {
+            ViewTransform reset_transform = {};
+            if (hit.depth < 1.0f) {
+                reset_transform.distance = state.view.target.distance;
+                reset_transform.orientation = state.view.camera.orientation;
+                reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
+            } else {
+                reset_view(&reset_transform, state.mold.sys);
+            }
+            state.view.target = reset_transform;
+        }
 
         draw_context_popup(&state, hit);
 
@@ -1110,7 +1113,7 @@ int main(int argc, char** argv) {
                 state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
-				state.view.target = state.mold.default_view;
+                reset_view(&state.view.target, state.mold.sys);
             }
         }
 
@@ -2076,6 +2079,7 @@ static void draw_main_menu(ApplicationState* data) {
             if (do_bonds) {
                 if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
                     const auto& mol = data->mold.sys;
+                    // Closest frame to the current animation time
                     uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
                     md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
                     defer { md_vm_arena_temp_end(temp_pos); };
@@ -2086,34 +2090,12 @@ static void draw_main_menu(ApplicationState* data) {
                     md_trajectory_frame_header_t frame_header;
 
                     if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
-                        MD_LOG_DEBUG("Failed to extract frame data");
+                        MD_LOG_ERROR("Failed to extract frame data");
                     } else {
                         MD_LOG_DEBUG("RECALCULATING BONDS");
-                        // Store user defined bonds (at the end of the bond arrays) so we can put them back after covalent bond inference.
-                        md_bond_data_t& bond_data = data->mold.sys.bond;
-                        md_array(md_atom_pair_t)  bond_pairs = 0;
-                        md_array(md_bond_flags_t) bond_flags = 0;
 
-                        int64_t num_bonds = (int64_t)md_array_size(bond_data.pairs);
-                        if (num_bonds > 0) {
-                            for (int64_t i = num_bonds - 1; i >= 0; --i) {
-                                if (bond_data.flags[i] & MD_BOND_FLAG_USER_DEFINED) {
-                                    md_array_push(bond_pairs, bond_data.pairs[i], frame_alloc);
-                                    md_array_push(bond_flags, bond_data.flags[i], frame_alloc);
-                                }
-                            }
-                        }
-
-                        md_bond_data_clear(&data->mold.sys.bond);
                         md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, data->mold.sys.alloc);
-
-                        // Add back user defined bonds
-                        if (md_array_size(bond_pairs) > 0) {
-                            for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
-                                md_array_push(data->mold.sys.bond.pairs, bond_pairs[i], data->mold.sys.alloc);
-                                md_array_push(data->mold.sys.bond.flags, bond_flags[i], data->mold.sys.alloc);
-                            }
-                        }
+                        md_bond_build_connectivity(&data->mold.sys.bond, data->mold.sys.atom.count, data->mold.sys.alloc);
 
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     }

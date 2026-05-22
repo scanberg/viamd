@@ -3974,8 +3974,6 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImGui::SetCursorScreenPos(p0);
                     InteractionSurfaceState surface_state = interaction_surface(interaction_surface_orb, vec_cast(sz), InteractionSurfaceFlags_NoRegionSelect);
-           
-                    ViewTransform reset_transform = default_view;
 
                     PickingHit hit = {};
                     if (surface_state.hovered) {
@@ -3995,19 +3993,21 @@ struct VeloxChem : viamd::EventHandler {
                         viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
                     }
 
-                    if (hit.depth < 1.0f) {
-                        reset_transform.distance = orb.target.distance;
-                        reset_transform.orientation = orb.camera.orientation;
-                        reset_transform.position = hit.world_pos + orb.camera.orientation * vec3_set(0, 0, orb.target.distance);     
-                    }
-
                     InteractionSurfaceViewTransformArgs view_args = {
                         .camera = orb.camera,
                         .trackball_param = state.view.trackball_param,
-                        .reset_transform = reset_transform,
                     };
 
-                    interaction_surface_view_transform_apply(&orb.target, surface_state, view_args);
+                    InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&orb.target, surface_state, view_args);
+                    if (view_result.reset_requested) {
+                        ViewTransform reset_transform = default_view;
+                        if (hit.depth < 1.0f) {
+                            reset_transform.distance = orb.target.distance;
+                            reset_transform.orientation = orb.camera.orientation;
+                            reset_transform.position = hit.world_pos + orb.camera.orientation * vec3_set(0, 0, orb.target.distance);
+                        }
+                        orb.target = reset_transform;
+                    }
 
 
                     const char* lbl = "";
@@ -5157,9 +5157,11 @@ struct VeloxChem : viamd::EventHandler {
                     InteractionSurfaceViewTransformArgs view_args = {
                         .camera = nto.camera,
                         .trackball_param = state.view.trackball_param,
-                        .reset_transform = default_view,
                     };
-                    interaction_surface_view_transform_apply(&nto.target, surface, view_args);
+                    InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&nto.target, surface, view_args);
+                    if (view_result.reset_requested) {
+                        nto.target = default_view;
+                    }
 
                     if (surface.hovered) {
                         InteractionSurfaceHitArgs hit_args = {

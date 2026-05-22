@@ -446,14 +446,15 @@ void init_system_data(ApplicationState* data) {
         const float max_aabb_ext = vec3_reduce_max(vec3_sub(aabb_max, aabb_min));
 
         // Calculate a default view transform to use later as a reset target
-        reset_view(&data->mold.default_view, data->mold.sys);
+        ViewTransform default_view = {};
+        reset_view(&default_view, data->mold.sys);
 
         data->view.camera.near_plane = 1.0f;
         data->view.camera.far_plane = 100000.0f;
         data->view.trackball_param.max_distance = MAX(max_cell_ext, max_aabb_ext) * 10.0f;
 
-        data->view.target = data->mold.default_view;
-        data->view.camera = data->mold.default_view;
+        data->view.target = default_view;
+        data->view.camera = default_view;
         
 
 #if EXPERIMENTAL_GFX_API
@@ -1723,6 +1724,8 @@ void interpolate_system_state(ApplicationState* state) {
                     };
 
                     md_util_infer_covalent_bonds(&data->state->mold.sys.bond, src_state->atom_x, src_state->atom_y, src_state->atom_z, &src_state->unitcell, &sys, sys.alloc);
+                    md_bond_build_connectivity(&data->state->mold.sys.bond, sys.atom.count, sys.alloc);
+
                     data->state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 });
                 tasks[num_tasks++] = recalc_bond_task;
@@ -2442,8 +2445,9 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
     return false;
 }
 
-void interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args) {
+InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args) {
     ASSERT(target);
+    InteractionSurfaceViewTransformResult result = {};
     if (state.active || state.hovered) {
         if (state.selection_mode == InteractionSelectionMode::None) {
             const vec2_t delta = vec_cast(ImGui::GetIO().MouseDelta);
@@ -2470,10 +2474,11 @@ void interaction_surface_view_transform_apply(ViewTransform* target, const Inter
             camera_controller_trackball(target, input, args.trackball_param, flags);
 
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                *target = args.reset_transform;
+                result.reset_requested = true;
             }
         }
     }
+    return result;
 }
 
 void interaction_surface_event_extract(InteractionSurfaceEvent* event, const InteractionSurfaceState& state, const PickingHit& hit) {

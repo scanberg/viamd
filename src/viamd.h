@@ -1015,7 +1015,6 @@ struct ApplicationState {
 
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};
-        ViewTransform       default_view = {};
 
         bool                interpolate_system_state = false;
         uint32_t            dirty_gpu_buffers = 0;
@@ -1631,13 +1630,16 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
 struct InteractionSurfaceViewTransformArgs {
     const Camera& camera;
     const TrackballControllerParam& trackball_param = {};
-    const ViewTransform& reset_transform = {};
+};
+
+struct InteractionSurfaceViewTransformResult {
+    bool reset_requested = false;
 };
 
 // Uses the interaction surface state (e.g. mouse position, region selection) to calculate a view transform based on the provided camera and trackball parameters.
 // Modifies the target view transform in place.
-// Reset transform supplied in args represents the *reset target* transform which is optionally applied when the user double clicks the surface.
-void interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args);
+// Returns interaction outcomes which the caller may use to apply domain-specific behavior such as view reset.
+InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args);
 
 enum class InteractionSurfaceEventKind {
     None,
