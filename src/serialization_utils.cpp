@@ -1,4 +1,5 @@
 #include <serialization_utils.h>
+#include <core/md_allocator.h>
 #include <core/md_parse.h>
 #include <core/md_bitfield.h>
 #include <core/md_base64.h>
@@ -99,8 +100,7 @@ void write_str(serialization_state_t& state, str_t ident, str_t str) {
 }
 
 void write_bitfield(serialization_state_t& state, str_t ident, const md_bitfield_t* bf) {
-	size_t tmp_pos = md_temp_get_pos();
-	defer { md_temp_set_pos_back(tmp_pos); };
+	ScopedTemp temp_reset;
 
 	void*  serialized_data = md_temp_push(md_bitfield_serialize_size_in_bytes(bf));
 	size_t serialized_size = md_bitfield_serialize(serialized_data, bf);
@@ -189,8 +189,7 @@ bool extract_to_char_buf(char* buf, size_t cap, str_t arg) {
 }
 
 bool extract_bitfield(md_bitfield_t* bf, str_t arg) {
-	size_t tmp_pos = md_temp_get_pos();
-	defer { md_temp_set_pos_back(tmp_pos); };
+	ScopedTemp temp_reset;
 
 	// Bitfield starts with ###
 	// and ends with ###

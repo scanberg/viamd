@@ -346,7 +346,7 @@ static void boxes_for_gauss(int* box_w, int n, float sigma) {  // Number of boxe
 static void blur_density_box(vec4_t* data, int dim, int num_passes) {
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
 
-    const md_allocator_i* alloc = md_get_temp_allocator();    // Thread safe allocator!
+    const md_allocator_i* alloc = md_get_temp_arena();    // Thread safe allocator!
     vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
     defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
 
@@ -368,7 +368,7 @@ static void blur_density_box(vec4_t* data, int dim, int num_passes) {
 static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
 
-    const md_allocator_i* alloc = md_get_temp_allocator();    // Thread safe allocator!
+    const md_allocator_i* alloc = md_get_temp_arena();    // Thread safe allocator!
     vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
     defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
 
@@ -1221,8 +1221,9 @@ struct Ramachandran : viamd::EventHandler {
         };
 
         const size_t mem_size = sizeof(float) * density_tex_dim * density_tex_dim * 4;
-        float* density_map = (float*)md_alloc(md_get_heap_allocator(), mem_size);
-        defer { md_free(md_get_heap_allocator(), density_map, mem_size); };
+        md_temp_t temp_scope = md_temp_begin();
+        defer { md_temp_end(temp_scope); };
+        float* density_map = (float*)md_temp_push(mem_size);
         MEMSET(density_map, 0, mem_size);
 
         // Create reference densities since these never change

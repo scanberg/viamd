@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.26)
 # Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
@@ -273,6 +273,7 @@ target_include_directories(viamd
         src
         gen
         ext/gl3w
+        ext/imgui
         ext/enkiTS/src
 )
 
@@ -289,7 +290,6 @@ endif()
 target_link_options(viamd PRIVATE ${VIAMD_LINK_FLAGS} $<$<CONFIG:Debug>:${VIAMD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_LINK_FLAGS_REL}>)
 target_link_libraries(viamd
     glfw
-    imgui
     nativefiledialog
     mdlib
     stb

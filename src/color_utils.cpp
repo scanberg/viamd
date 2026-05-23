@@ -1,5 +1,6 @@
 ﻿#include "color_utils.h"
 
+#include <core/md_allocator.h>
 #include <core/md_hash.h>
 #include <md_system.h>
 #include <md_util.h>
@@ -178,8 +179,8 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
             uint32_t range_end = sys.protein_backbone.range.offset[i+1];
             uint32_t range_ext = range_end - range_beg;
 
-            size_t temp_pos = md_temp_get_pos();
-            uint32_t* seg_colors = (uint32_t*)md_temp_push(sizeof(uint32_t) * range_ext);
+            ScopedTemp temp_reset;
+            uint32_t* seg_colors = md_temp_push_array(uint32_t, range_ext);
             for (size_t j = 0; j < range_ext; ++j) {
                 md_secondary_structure_t ss = sys.protein_backbone.segment.secondary_structure[range_beg + j];
                 uint32_t color = color_unknown;
@@ -218,7 +219,6 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
                 md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
                 set_colors(colors + range.beg, range.end - range.beg, color);
             }
-            md_temp_set_pos_back(temp_pos);
         }
     } else {
         set_colors(colors, count, color_unknown);
