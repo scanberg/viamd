@@ -3237,7 +3237,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
 static void draw_animation_window(ApplicationState* data) {
     ASSERT(data);
-    int num_frames = (int)md_trajectory_num_frames(data->mold.sys.trajectory);
+    size_t num_frames = md_trajectory_num_frames(data->mold.sys.trajectory);
     if (num_frames == 0) return;
 
     ASSERT(data->timeline.x_values);
@@ -3245,7 +3245,7 @@ static void draw_animation_window(ApplicationState* data) {
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-        ImGui::Text("Num Frames: %i", num_frames);
+        ImGui::Text("Num Frames: %zu", num_frames);
         md_unit_t time_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
         double t   = frame_to_time(data->animation.frame, *data);
         double min = data->timeline.x_values[0];

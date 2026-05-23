@@ -250,6 +250,7 @@ target_include_directories(viamd
         src
         gen
         ext/gl3w
+        ext/imgui
         ext/enkiTS/src
 )
 
@@ -266,7 +267,6 @@ endif()
 target_link_options(viamd PRIVATE ${VIAMD_LINK_FLAGS} $<$<CONFIG:Debug>:${VIAMD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_LINK_FLAGS_REL}>)
 target_link_libraries(viamd
     glfw
-    imgui
     nativefiledialog
     mdlib
     stb
