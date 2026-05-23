@@ -140,8 +140,6 @@ struct Dataset : viamd::EventHandler {
         }
         clear_dataset_items();
 
-        md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-
         const md_system_t& sys = data.mold.sys;
 
         size_t type_count = md_system_atom_type_count(&sys);
@@ -150,6 +148,10 @@ struct Dataset : viamd::EventHandler {
         size_t inst_count = md_system_instance_count(&sys);
 
         if (atom_count == 0) return;
+
+        md_temp_t temp_scope = md_temp_begin();
+        md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+        defer { md_temp_end(temp_scope); };
         
         md_array_resize(atom_types, type_count, arena);
         MEMSET(atom_types, 0, md_array_bytes(atom_types));
@@ -259,7 +261,6 @@ struct Dataset : viamd::EventHandler {
             }
         }
 
-		md_vm_arena_destroy(temp_arena);
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final {

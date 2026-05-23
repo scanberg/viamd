@@ -2,6 +2,7 @@
 #include <core/md_str.h>
 #include <core/md_log.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_str_builder.h>
 
 #include <string.h>
@@ -43,9 +44,9 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
                 return false;
             }
             file = str_substr(file, 1, file.len - 2);
-            str_t path = str_printf(md_get_temp_allocator(), "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
+            str_t path = str_printf(md_get_temp_arena(), "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
 
-            str_t inc_src = load_textfile(path, md_get_temp_allocator());
+            str_t inc_src = load_textfile(path, md_get_temp_arena());
             if (inc_src) {
                 str_t base = {};
                 extract_folder_path(&base, path);
@@ -68,7 +69,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
            type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
 
     GLuint shader = glCreateShader(type);
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
+    md_strb_t sb = md_strb_create(md_get_temp_arena());
     
     if (defines) {
         str_t version_str = {};
@@ -111,14 +112,14 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
     ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER ||
         type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
 
-    str_t src = load_textfile(filename, md_get_temp_allocator());
+    str_t src = load_textfile(filename, md_get_temp_arena());
     if (!src) {
         MD_LOG_ERROR("Failed to open source file for shader '%.*s'", (int)src.len, src.ptr);
         return 0;
     }
 
     GLuint shader = glCreateShader(type);
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
+    md_strb_t sb = md_strb_create(md_get_temp_arena());
 
     if (defines) {
         str_t version_str = {};
@@ -437,9 +438,10 @@ bool gl::clear_texture_1D(GLuint texture, int level) {
         glGetTexLevelParameteriv(GL_TEXTURE_1D, 0, GL_TEXTURE_WIDTH,  &w);
         size_t bytes = w * get_bytes_per_pixel(format);
         if (bytes > 0) {
-            void* data = calloc(bytes, 1);
+            md_temp_t temp_scope = md_temp_begin();
+            void* data = md_temp_push_zero(bytes);
             glTexSubImage1D(GL_TEXTURE_1D, level, 0, w, pixel_channel, pixel_type, data);
-            free(data);
+            md_temp_end(temp_scope);
             result = true;
         }
     }
@@ -475,9 +477,10 @@ bool gl::clear_texture_2D(GLuint texture, int level) {
 
         size_t bytes = w * h * get_bytes_per_pixel(format);
         if (bytes > 0) {
-            void* data = calloc(bytes, 1);
+            md_temp_t temp_scope = md_temp_begin();
+            void* data = md_temp_push_zero(bytes);
             glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, w, h, pixel_channel, pixel_type, data);
-            free(data);
+            md_temp_end(temp_scope);
             result = true;
         }
     }
@@ -513,9 +516,10 @@ bool gl::clear_texture_3D(GLuint texture, int level) {
 
         size_t bytes = w * h * d * get_bytes_per_pixel(format);
         if (bytes > 0) {
-            void* data = calloc(bytes, 1);
+            md_temp_t temp_scope = md_temp_begin();
+            void* data = md_temp_push_zero(bytes);
             glTexSubImage3D(GL_TEXTURE_3D, level, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
-            free(data);
+            md_temp_end(temp_scope);
             result = true;
         }
     }

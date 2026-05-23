@@ -196,8 +196,8 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
 void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state) {
     if (hit.raw_idx == INVALID_PICKING_IDX) return;
     
-	md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state.allocator.frame);
-    defer { md_vm_arena_temp_end(temp); };
+	md_temp_t temp = md_temp_begin_arena(state.allocator.frame);
+    defer { md_temp_end(temp); };
 
     PickingTooltipTextRequest tooltip_request = {
         .app = state,
@@ -340,12 +340,11 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
         return;
     }
 
-    size_t arena_size = MAX(MEGABYTES(1), sizeof(SecondaryStructureRenderClass) * num_frames * 2);
-    md_allocator_i* temp_arena = md_vm_arena_create(arena_size);
-    defer { md_vm_arena_destroy(temp_arena); };
+    md_temp_t temp_scope = md_temp_begin();
+    defer { md_temp_end(temp_scope); };
 
-    SecondaryStructureRenderClass* classes = (SecondaryStructureRenderClass*)md_vm_arena_push(temp_arena, sizeof(SecondaryStructureRenderClass) * num_frames);
-    SecondaryStructureRenderClass* filtered = (SecondaryStructureRenderClass*)md_vm_arena_push(temp_arena, sizeof(SecondaryStructureRenderClass) * num_frames);
+    SecondaryStructureRenderClass* classes = (SecondaryStructureRenderClass*)md_temp_push(sizeof(SecondaryStructureRenderClass) * num_frames);
+    SecondaryStructureRenderClass* filtered = (SecondaryStructureRenderClass*)md_temp_push(sizeof(SecondaryStructureRenderClass) * num_frames);
 
     constexpr int window_radius = 2;
 
@@ -477,13 +476,13 @@ void init_trajectory_data(ApplicationState* data) {
                 md_system_t sys = data->mold.sys;
                 md_trajectory_i* traj = data->mold.sys.trajectory;
 
-                md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-                defer { md_vm_arena_destroy(temp_arena); };
+                md_temp_t temp_scope = md_temp_begin();
+                defer { md_temp_end(temp_scope); };
 
                 const size_t capacity = ALIGN_TO(sys.atom.count, 16);
-                float* x = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
-                float* y = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
-                float* z = (float*)md_vm_arena_push(temp_arena, sizeof(float) * capacity);
+                float* x = (float*)md_temp_push(sizeof(float) * capacity);
+                float* y = (float*)md_temp_push(sizeof(float) * capacity);
+                float* z = (float*)md_temp_push(sizeof(float) * capacity);
 
                 md_trajectory_reader_i reader;
                 if (md_trajectory_reader_init(&reader, traj)) {
@@ -709,7 +708,7 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
 
 void load_workspace(ApplicationState* data, str_t filename) {
     ScopedTemp temp_reset;
-    md_allocator_i* temp_alloc = md_get_temp_allocator();
+    md_allocator_i* temp_alloc = temp_reset.allocator();
 
     str_t txt = load_textfile(filename, temp_alloc);
 
@@ -994,7 +993,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
     if (num_user_bonds > 0) {
         for (size_t i = 0; i < num_user_bonds; ++i) {
             const md_atom_pair_t& pair = user_bonds[i];
-            if (pair.idx[0] < data->mold.sys.atom.count && pair.idx[1] < data->mold.sys.atom.count) {
+            if (pair.idx[0] >= 0 && pair.idx[1] >= 0 && (size_t)pair.idx[0] < data->mold.sys.atom.count && (size_t)pair.idx[1] < data->mold.sys.atom.count) {
                 md_system_bond_insert(&data->mold.sys, pair.idx[0], pair.idx[1], MD_BOND_FLAG_USER_DEFINED);
             }
         }
@@ -1273,8 +1272,8 @@ void update_representation(ApplicationState* state, Representation* rep) {
     size_t num_atoms = md_system_atom_count(&sys);
 
     md_allocator_i* frame_alloc = state->allocator.frame;
-    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-    defer { md_vm_arena_temp_end(tmp); };
+    md_temp_t tmp = md_temp_begin_arena(frame_alloc);
+    defer { md_temp_end(tmp); };
 
     const size_t bytes = num_atoms * sizeof(uint32_t);
 
@@ -1643,8 +1642,8 @@ void interpolate_system_state(ApplicationState* state) {
     const uint32_t grain_size = 1024;
 
     md_allocator_i* temp_arena = state->allocator.frame;
-    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(temp_arena);
-    defer { md_vm_arena_temp_end(tmp); };
+    md_temp_t tmp = md_temp_begin_arena(temp_arena);
+    defer { md_temp_end(tmp); };
 
     struct Payload {
         ApplicationState* state;
@@ -1683,8 +1682,8 @@ void interpolate_system_state(ApplicationState* state) {
         .dst_x = sys.atom.x,
         .dst_y = sys.atom.y,
         .dst_z = sys.atom.z,
-        .aabb_min = (vec3_t*)md_vm_arena_push(temp_arena, num_threads * sizeof(vec3_t)),
-        .aabb_max = (vec3_t*)md_vm_arena_push(temp_arena, num_threads * sizeof(vec3_t)),
+        .aabb_min = (vec3_t*)md_temp_push(num_threads * sizeof(vec3_t)),
+        .aabb_max = (vec3_t*)md_temp_push(num_threads * sizeof(vec3_t)),
     };
 
     int requested_frames[4] = { 0 };
@@ -1917,8 +1916,7 @@ void interpolate_system_state(ApplicationState* state) {
             const float* y = data->state->mold.sys.atom.y + range_beg;
             const float* z = data->state->mold.sys.atom.z + range_beg;
 
-            size_t temp_pos = md_temp_get_pos();
-            defer { md_temp_set_pos_back(temp_pos); };
+            ScopedTemp temp_reset;
             float* r = (float*)md_temp_push(sizeof(float) * range_len);
             md_atom_extract_radii(r, range_beg, range_len, &data->state->mold.sys.atom);
 
@@ -2283,8 +2281,8 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
     mat4_t transform = mat4_ident();
 
     if (count > 0) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state->allocator.frame);
-        defer { md_vm_arena_temp_end(temp); };
+        md_temp_t temp = md_temp_begin_arena(state->allocator.frame);
+        defer { md_temp_end(temp); };
 
         // Extract xyzw subset of target
         vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec4_t) * count);
@@ -3002,7 +3000,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     md_bitfield_clear(&state->selection.highlight_mask);
                     if (surf->hit.domain == PickingDomain_Atom) {
                         int32_t atom_idx = surf->hit.local_idx;
-                        if (atom_idx < state->mold.sys.atom.count) {
+                        if (atom_idx >= 0 && (size_t)atom_idx < state->mold.sys.atom.count) {
                             md_bitfield_set_bit(&state->selection.highlight_mask, atom_idx);
                             if (surf->selection_mode == InteractionSelectionMode::Append) {
                                 single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
@@ -3088,8 +3086,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
 void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags) {
     ASSERT(state);
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state->allocator.frame);
-    defer { md_vm_arena_temp_end(temp); };
+    md_temp_t temp = md_temp_begin_arena(state->allocator.frame);
+    defer { md_temp_end(temp); };
 
     md_script_vis_ctx_t ctx = {
         .ir   = state->script.eval_ir,
@@ -3106,8 +3104,8 @@ void script_visualize_payload(ApplicationState* state, const md_script_vis_paylo
 
 void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags) {
     ASSERT(state);
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(state->allocator.frame);
-    defer { md_vm_arena_temp_end(temp); };
+    md_temp_t temp = md_temp_begin_arena(state->allocator.frame);
+    defer { md_temp_end(temp); };
 
     md_script_vis_ctx_t ctx = {
         .ir   = state->script.eval_ir,

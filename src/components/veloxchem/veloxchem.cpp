@@ -18,6 +18,7 @@
 #include <md_xvg.h>
 #include <core/md_vec_math.h>
 #include <core/md_log.h>
+#include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 
 #if MD_ENABLE_GPU
@@ -612,8 +613,8 @@ struct VeloxChem : viamd::EventHandler {
 				const ApplicationState& state = *(ApplicationState*)e.payload;
 
                 md_allocator_i* temp_arena = state.allocator.frame;
-                md_vm_arena_temp_t temp_scope = md_vm_arena_temp_begin(temp_arena);
-                defer { md_vm_arena_temp_end(temp_scope); };
+                md_temp_t temp_scope = md_temp_begin_arena(temp_arena);
+                defer { md_temp_end(temp_scope); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
 				    glBindFramebuffer(GL_FRAMEBUFFER, state.gbuffer.fbo);
@@ -654,7 +655,7 @@ struct VeloxChem : viamd::EventHandler {
                     };
 
                     size_t num_verts = critical_points.simp_graph.num_vertices;
-                    immediate::Vertex* vertices = md_vm_arena_push_array(temp_arena, immediate::Vertex, num_verts);
+                    immediate::Vertex* vertices = md_temp_push_array(immediate::Vertex, num_verts);
 
                     vec4_t selection_color = state.selection.color.selection.visible;
                     vec4_t highlight_color = state.selection.color.highlight.visible;
@@ -1041,8 +1042,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (col_hash != rep->electronic_structure.col_hash) {
                             rep->electronic_structure.col_hash = col_hash;
                             if (data.atom_colors) {
-                                md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-                                defer{ md_arena_allocator_destroy(temp_arena); };
+                                ScopedTemp temp_reset;
 
 								const int downsample_factor = 1;
 
@@ -1699,14 +1699,15 @@ struct VeloxChem : viamd::EventHandler {
             return false;
         }
 
+        md_temp_t temp_scope = md_temp_begin();
+        defer { md_temp_end(temp_scope); };
         double* temp_mem = nullptr;
-        defer { if (temp_mem) free(temp_mem); };
 
         switch (spin) {
         case ElectronicStructureSpin::None:
         case ElectronicStructureSpin::Total:
             if (density_matrix_beta) {
-                temp_mem = (double*)malloc(sizeof(double) * density_matrix_count);
+                temp_mem = md_temp_push_array(double, density_matrix_count);
                 for (size_t i = 0; i < density_matrix_count; ++i) {
                     temp_mem[i] = density_matrix_alpha[i] + density_matrix_beta[i];
                 }
@@ -1723,7 +1724,7 @@ struct VeloxChem : viamd::EventHandler {
             break;
         case ElectronicStructureSpin::Difference:
             if (density_matrix_alpha && density_matrix_beta) {
-                temp_mem = (double*)malloc(sizeof(double) * density_matrix_count);
+                temp_mem = md_temp_push_array(double, density_matrix_count);
                 for (size_t i = 0; i < density_matrix_count; ++i) {
                     temp_mem[i] = density_matrix_alpha[i] - density_matrix_beta[i];
                 }
@@ -1799,7 +1800,7 @@ struct VeloxChem : viamd::EventHandler {
         if (!nto->transition_density_part) return;
 
         ScopedTemp temp_reset;
-        md_allocator_i* temp_alloc = md_get_temp_allocator();
+        md_allocator_i* temp_alloc = temp_reset.allocator();
         /*
         * A sankey diagram needs to implement bezier curves, that are connecting two points
         */
@@ -2552,8 +2553,7 @@ struct VeloxChem : viamd::EventHandler {
 
         static ImPlotRect lims{ 0,1,0,1 };
 
-        size_t temp_pos = md_temp_get_pos();
-        defer {  md_temp_set_pos_back(temp_pos); };
+        ScopedTemp temp_reset;
 
         // The actual plot
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
@@ -2908,8 +2908,8 @@ struct VeloxChem : viamd::EventHandler {
 
                     if (graph.num_vertices > 0) {
                         md_allocator_i* temp_arena = state.allocator.frame;
-                        md_vm_arena_temp_t temp_scope = md_vm_arena_temp_begin(temp_arena);
-                        defer{ md_vm_arena_temp_end(temp_scope); };
+                        md_temp_t temp_scope = md_temp_begin_arena(temp_arena);
+                        defer{ md_temp_end(temp_scope); };
 
                         enum CriticalPointColumn {
                             CriticalPointColumn_Idx,
@@ -2921,7 +2921,7 @@ struct VeloxChem : viamd::EventHandler {
 							CriticalPointColumn_Count
                         };
 
-                        uint32_t* row_indices = md_vm_arena_push_array(temp_arena, uint32_t, graph.num_vertices);
+                        uint32_t* row_indices = md_temp_push_array(uint32_t, graph.num_vertices);
                         for (uint32_t i = 0; i < graph.num_vertices; ++i) {
                             row_indices[i] = i;
                         }
@@ -4499,8 +4499,9 @@ struct VeloxChem : viamd::EventHandler {
 
                     defer { md_file_close(&file); };
 
-                    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(4));
-                    defer { md_vm_arena_destroy(temp_arena); };
+                    md_temp_t temp_scope = md_temp_begin();
+                    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+                    defer { md_temp_end(temp_scope); };
 
                     Volume vol = {};
                     init_volume(&vol, grid, GL_R32F);
@@ -4537,7 +4538,7 @@ struct VeloxChem : viamd::EventHandler {
                     size_t              natoms = md_vlx_number_of_atoms(vlx);
                     const dvec3_t* vlx_coords  = md_vlx_atom_coordinates(vlx);
                     const uint8_t* vlx_numbers = md_vlx_atomic_numbers(vlx);
-                    float* data = (float*)md_vm_arena_push(temp_arena, num_samples * sizeof(float));
+                    float* data = (float*)md_temp_push(num_samples * sizeof(float));
 
                     vec3_t origin = grid.origin;
                     vec3_t step_x = grid.orientation[0] * grid.spacing[0];
@@ -5721,8 +5722,8 @@ struct VeloxChem : viamd::EventHandler {
 						// Full-density Mulliken attribution from attachment / detachment AO matrices.
 						// hole charges  <- detachment density (D-)
 						// part charges  <- attachment density (D+)
-						double* D_attach = (double*)md_temp_push(sizeof(double) * num_aos * num_aos);
-						double* D_detach = (double*)md_temp_push(sizeof(double) * num_aos * num_aos);
+                        double* D_attach = (double*)md_temp_push(sizeof(double) * num_aos * num_aos);
+                        double* D_detach = (double*)md_temp_push(sizeof(double) * num_aos * num_aos);
 
 						const size_t a_dim = md_vlx_rsp_transition_density_matrix_extract(D_attach, vlx, nto_idx, MD_VLX_TRANSITION_DENSITY_ATTACHMENT);
 						const size_t d_dim = md_vlx_rsp_transition_density_matrix_extract(D_detach, vlx, nto_idx, MD_VLX_TRANSITION_DENSITY_DETACHMENT);
@@ -5732,7 +5733,7 @@ struct VeloxChem : viamd::EventHandler {
 							double group_density_hole[MAX_NTO_GROUPS] = {0};
 
 							const int* ao_to_atom = md_vlx_ao_to_atom_idx(vlx);
-							int* ao_to_group = (int*)md_temp_push(sizeof(int) * num_aos);
+                            int* ao_to_group = (int*)md_temp_push(sizeof(int) * num_aos);
 
 							for (size_t i = 0; i < num_aos; i++) {
 								int atom_idx = ao_to_atom[i];

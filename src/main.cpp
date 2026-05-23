@@ -174,8 +174,8 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
     ASSERT(mask);
     ASSERT(dim > 0);
 
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(frame_alloc);
-    defer { md_vm_arena_temp_end(temp); };
+    md_temp_t temp = md_temp_begin_arena(frame_alloc);
+    defer { md_temp_end(temp); };
 
     hist->dim = aggregate ? 1 : dim;
     md_array_resize(hist->bins, (size_t)(hist->dim * num_bins), hist->alloc);
@@ -1962,7 +1962,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
-                if (ImGui::IsWindowHovered) {
+                if (ImGui::IsWindowHovered()) {
                     md_bitfield_clear(&data->selection.highlight_mask);
                 }
                 /*
@@ -2099,8 +2099,8 @@ static void draw_main_menu(ApplicationState* data) {
                     const auto& mol = data->mold.sys;
                     // Closest frame to the current animation time
                     uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
-                    md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(frame_alloc);
-                    defer { md_vm_arena_temp_end(temp_pos); };
+                    md_temp_t temp_pos = md_temp_begin_arena(frame_alloc);
+                    defer { md_temp_end(temp_pos); };
 
                     float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
                     float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
@@ -2478,8 +2478,8 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     int range_beg = indices[0];
     int prev_idx  = -1;
 
-    size_t temp_pos = md_temp_get_pos();
-    defer { md_temp_set_pos_back(temp_pos); };
+    md_temp_t temp = md_temp_begin();
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     md_array(md_irange_t) items = 0;
     
@@ -2489,10 +2489,10 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
         if (idx - prev_idx > 1) {
             if (prev_idx > range_beg) {
                 md_irange_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
-                md_array_push(items, item, md_get_temp_allocator());
+                md_array_push(items, item, temp_alloc);
             } else if (prev_idx != -1) {
                 md_irange_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
-                md_array_push(items, item, md_get_temp_allocator());
+                md_array_push(items, item, temp_alloc);
             }
             range_beg = idx;
         }
@@ -2502,10 +2502,10 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
 
     if (prev_idx - range_beg > 0) {
         md_irange_t item = {range_beg - ref_idx + 1, prev_idx - ref_idx + 1};
-        md_array_push(items, item, md_get_temp_allocator());
+        md_array_push(items, item, temp_alloc);
     } else if (prev_idx != -1) {
         md_irange_t item = {prev_idx - ref_idx + 1, prev_idx - ref_idx + 1};
-        md_array_push(items, item, md_get_temp_allocator());
+        md_array_push(items, item, temp_alloc);
     }
 
     const int64_t num_items = (int64_t)md_array_size(items);
@@ -2523,6 +2523,7 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
         }
     }
     if (num_items > 1) sb += "}";
+    md_temp_end(temp);
 }
 
 static void write_script_atom_ranges(md_strb_t* sb, const md_bitfield_t* bf, int ref_idx = 0) {
@@ -5874,8 +5875,8 @@ static void draw_property_export_window(ApplicationState* data) {
 
         if (export_clicked) {
             md_allocator_i* alloc = frame_alloc;
-            md_vm_arena_temp_t temp = md_vm_arena_temp_begin(frame_alloc);
-            defer { md_vm_arena_temp_end(temp); };
+            md_temp_t temp = md_temp_begin_arena(frame_alloc);
+            defer { md_temp_end(temp); };
 
             ASSERT(property_idx != -1);
             char path_buf[1024];
@@ -6072,8 +6073,8 @@ void draw_structure_export_window(ApplicationState* data) {
     ASSERT(data);
 
     if (ImGui::Begin("Structure Export", &data->structure_export.show_window)) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(frame_alloc);
-        defer { md_vm_arena_temp_end(temp); };
+        md_temp_t temp = md_temp_begin_arena(frame_alloc);
+        defer { md_temp_end(temp); };
 
         const md_system_t* sys = &data->mold.sys;
         const md_trajectory_i* traj = data->mold.sys.trajectory;
@@ -6343,8 +6344,8 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyRadius) {
-        md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-        defer { md_vm_arena_temp_end(tmp); };
+        md_temp_t tmp = md_temp_begin_arena(frame_alloc);
+        defer { md_temp_end(tmp); };
 
         float* radii = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
         md_atom_extract_radii(radii, 0, mol.atom.count, &mol.atom);
@@ -6356,8 +6357,8 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyFlags) {
-        md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-        defer { md_vm_arena_temp_end(tmp); };
+        md_temp_t tmp = md_temp_begin_arena(frame_alloc);
+        defer { md_temp_end(tmp); };
 
         uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
         MEMSET(flags, 0, mol.atom.count * sizeof(uint8_t));
@@ -6402,8 +6403,8 @@ static void update_md_buffers(ApplicationState* data) {
 }
 
 void create_screenshot(str_t path) {
-    md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(frame_alloc);
-    defer { md_vm_arena_temp_end(tmp); };
+    md_temp_t tmp = md_temp_begin_arena(frame_alloc);
+    defer { md_temp_end(tmp); };
 
     int viewport[4] = {};
     int fbo = 0;
