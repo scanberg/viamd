@@ -25,7 +25,7 @@ struct IsoParams {
     float4 clip_max_extinction;    // clip_max.xyz, interior_extinction
 
     float4 env_roughness;          // env_radiance.rgb, roughness
-    float4 dir_specular;           // dir_radiance.rgb, specular
+    float4 dir_ior;                // dir_radiance.rgb, material IOR
     float4 light_exposure;         // light_dir_world.xyz, exposure
     float4 gamma_flags;            // gamma, flags, unused, unused
 
@@ -34,15 +34,23 @@ struct IsoParams {
 };
 
 struct RayState {
-    float3 premul_radiance;
+    float3 radiance;
     float transmittance;
     uint inside_mask;
 };
+
+struct IsoPushConstants {
+    uint reserved;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<IsoPushConstants> push_constants;
 
 [[vk::binding(0)]] StructuredBuffer<IsoParams> params_buf;
 
 [[vk::binding(16)]] RWTexture2D<float4> out_color;
 [[vk::binding(33)]] Texture3D<float> scalar_volume;
+[[vk::binding(34)]] Texture2D<float> depth_buffer;
 [[vk::binding(48)]] SamplerState scalar_sampler;
 
 float3 transform_point(float4x4 mat, float3 pos) {
@@ -141,15 +149,78 @@ float segment_length_world(IsoParams params, float3 p0_tex, float3 p1_tex) {
     return length(p1 - p0);
 }
 
-float3 tonemap(IsoParams params, float3 hdr) {
-    float exposure = max(params.light_exposure.w, 0.0f);
-    float gamma = max(params.gamma_flags.x, 0.01f);
-    float3 color = 1.0f - exp(-max(hdr, float3(0.0f)) * exposure);
-    return pow(saturate(color), float3(1.0f / gamma));
+float3 aces_input_transform(float3 color) {
+    return float3(
+        dot(color, float3(0.59719f, 0.35458f, 0.04823f)),
+        dot(color, float3(0.07600f, 0.90834f, 0.01566f)),
+        dot(color, float3(0.02840f, 0.13383f, 0.83777f)));
 }
 
-float3 shade_surface(IsoParams params, float3 pos_tex, float3 ray_dir_world, float4 base_color) {
-    float3 pos_world = transform_point(params.texture_to_world, pos_tex);
+float3 aces_output_transform(float3 color) {
+    return float3(
+        dot(color, float3( 1.60475f, -0.53108f, -0.07367f)),
+        dot(color, float3(-0.10208f,  1.10813f, -0.00605f)),
+        dot(color, float3(-0.00327f, -0.07276f,  1.07602f)));
+}
+
+float3 rrt_and_odt_fit(float3 value) {
+    float3 a = value * (value + 0.0245786f) - 0.000090537f;
+    float3 b = value * (0.983729f * value + 0.4329510f) + 0.238081f;
+    return a / b;
+}
+
+float3 aces_fitted(float3 color) {
+    color = aces_input_transform(color);
+    color = rrt_and_odt_fit(color);
+    color = aces_output_transform(color);
+    return saturate(color);
+}
+
+float3 tonemap(IsoParams params, float3 hdr) {
+    const float exposure_bias = 0.125f;
+    const float white_point = 24.0f;
+
+    float exposure = max(params.light_exposure.w, 0.0f);
+    float gamma = max(params.gamma_flags.x, 0.01f);
+
+    float3 exposed = max(hdr, float3(0.0f)) * (exposure_bias * exposure);
+    float3 white_scale = max(aces_fitted(float3(white_point * exposure_bias * exposure)), float3(EPSILON));
+    float3 color = saturate(aces_fitted(exposed) / white_scale);
+
+    return pow(color, float3(1.0f / gamma));
+}
+
+float fresnel_schlick_dielectric(float cos_theta_i, float eta_i, float eta_t) {
+    cos_theta_i = saturate(cos_theta_i);
+    eta_i = max(eta_i, EPSILON);
+    eta_t = max(eta_t, EPSILON);
+
+    float r0 = (eta_i - eta_t) / (eta_i + eta_t);
+    float f0 = r0 * r0;
+    float one_minus_cos = 1.0f - cos_theta_i;
+    float one_minus_cos2 = one_minus_cos * one_minus_cos;
+    return saturate(f0 + (1.0f - f0) * one_minus_cos2 * one_minus_cos2 * one_minus_cos);
+}
+
+float distribution_ggx(float ndot_h, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float ndot_h2 = ndot_h * ndot_h;
+    float denom = ndot_h2 * (a2 - 1.0f) + 1.0f;
+    return a2 / max(PI * denom * denom, EPSILON);
+}
+
+float geometry_schlick_ggx(float ndot_v, float roughness) {
+    float r = roughness + 1.0f;
+    float k = (r * r) * 0.125f;
+    return ndot_v / max(ndot_v * (1.0f - k) + k, EPSILON);
+}
+
+float geometry_smith(float ndot_v, float ndot_l, float roughness) {
+    return geometry_schlick_ggx(ndot_v, roughness) * geometry_schlick_ggx(ndot_l, roughness);
+}
+
+float3 shade_surface(IsoParams params, float3 pos_tex, float3 ray_dir_world, float4 base_color, bool entering, out float view_fresnel) {
     float3 V = normalize(-ray_dir_world);
     float3 L = normalize(params.light_exposure.xyz);
 
@@ -160,22 +231,36 @@ float3 shade_surface(IsoParams params, float3 pos_tex, float3 ray_dir_world, flo
         N = -N;
     }
 
-    float roughness = saturate(params.env_roughness.w);
-    float specular_strength = saturate(params.dir_specular.w);
+    float roughness = clamp(params.env_roughness.w, 0.04f, 1.0f);
+    float material_ior = max(params.dir_ior.w, 1.0f);
+    float eta_i = entering ? 1.0f : material_ior;
+    float eta_t = entering ? material_ior : 1.0f;
     float3 albedo = max(base_color.rgb, float3(0.0f));
+    float base_alpha = saturate(base_color.a);
 
     float NdotL = saturate(dot(N, L));
     float NdotV = saturate(dot(N, V));
-    float3 hdr = albedo * params.env_roughness.rgb * INV_PI;
+    float3 hdr = float3(0.0f);
 
     if (NdotL > 0.0f) {
         float3 H = normalize(L + V);
         float NdotH = saturate(dot(N, H));
-        float shininess = lerp(96.0f, 4.0f, roughness);
-        float spec = pow(NdotH, shininess) * specular_strength * (0.25f + 0.75f * NdotV);
-        hdr += (albedo * INV_PI + float3(spec)) * params.dir_specular.rgb * NdotL;
+        float HdotV = saturate(dot(H, V));
+
+        float F = fresnel_schlick_dielectric(HdotV, eta_i, eta_t);
+        float D = distribution_ggx(NdotH, roughness);
+        float G = geometry_smith(NdotV, NdotL, roughness);
+
+        float specular = (D * G * F) / max(4.0f * NdotV * NdotL, 1.0e-4f);
+        float diffuse_weight = base_alpha * (1.0f - F);
+        hdr += (diffuse_weight * albedo * INV_PI + float3(specular)) * params.dir_ior.rgb * NdotL;
     }
 
+    float env_fresnel = fresnel_schlick_dielectric(NdotV, eta_i, eta_t);
+    float env_diffuse_weight = base_alpha * (1.0f - env_fresnel);
+    hdr += (env_diffuse_weight * albedo + float3(env_fresnel)) * params.env_roughness.rgb;
+
+    view_fresnel = env_fresnel;
     return hdr;
 }
 
@@ -203,15 +288,19 @@ void accumulate_absorption(inout RayState state, IsoParams params, float3 p0_tex
     state.transmittance *= saturate(transmittance);
 }
 
-void accumulate_surface(inout RayState state, IsoParams params, float3 pos_tex, float3 ray_dir_world, float4 base_color) {
-    float alpha = saturate(base_color.a);
-    if (alpha <= EPSILON || state.transmittance <= ERT_TRANSMITTANCE) {
+void accumulate_surface(inout RayState state, IsoParams params, float3 pos_tex, float3 ray_dir_world, float4 base_color, bool entering) {
+    if (state.transmittance <= ERT_TRANSMITTANCE) {
         return;
     }
 
-    float3 hdr = shade_surface(params, pos_tex, ray_dir_world, base_color);
-    state.premul_radiance += state.transmittance * hdr * alpha;
-    state.transmittance *= (1.0f - alpha);
+    float view_fresnel = 1.0f;
+    float3 hdr = shade_surface(params, pos_tex, ray_dir_world, base_color, entering, view_fresnel);
+    float base_alpha = saturate(base_color.a);
+    float transmission = saturate((1.0f - base_alpha) * (1.0f - view_fresnel));
+    float opacity = 1.0f - transmission;
+
+    state.radiance += state.transmittance * hdr;
+    state.transmittance *= (1.0f - opacity);
 }
 
 int find_iso_hits(IsoParams params, float d0, float d1, out float hit_frac[MAX_ISO_COUNT], out uint hit_idx[MAX_ISO_COUNT]) {
@@ -276,7 +365,8 @@ void process_segment(inout RayState state, IsoParams params, float3 p0_tex, floa
         accumulate_absorption(state, params, seg_start, seg_end);
 
         float4 iso_color = params.iso_colors[iso_idx];
-        accumulate_surface(state, params, seg_end, ray_dir_world, iso_color);
+        bool entering = (state.inside_mask & (1u << iso_idx)) == 0u;
+        accumulate_surface(state, params, seg_end, ray_dir_world, iso_color, entering);
 
         state.inside_mask ^= (1u << iso_idx);
         last_frac = frac;
@@ -295,6 +385,11 @@ void main(uint3 pixel : SV_DispatchThreadID) {
     IsoParams params = params_buf[0];
     uint2 target_dim = uint2(uint(params.target.x), uint(params.target.y));
     if (any(pixel.xy >= target_dim)) {
+        return;
+    }
+
+    if (push_constants.reserved != 0u) {
+        out_color[pixel.xy] = float4(0.0f);
         return;
     }
 
@@ -328,6 +423,14 @@ void main(uint3 pixel : SV_DispatchThreadID) {
 
     t_entry = max(t_entry, 0.0f);
     t_exit = min(t_exit, ray_len_tex);
+
+    float depth = depth_buffer.Load(int3(pixel.xy, 0));
+    if (depth < 1.0f) {
+        float3 stop_world = transform_point(params.inv_view_proj, float3(ndc, depth * 2.0f - 1.0f));
+        float3 stop_tex = transform_point(params.world_to_texture, stop_world);
+        t_exit = min(t_exit, dot(stop_tex - near_tex, ray_dir_tex));
+    }
+
     float ray_len = t_exit - t_entry;
     if (ray_len <= EPSILON) {
         out_color[pixel.xy] = float4(0.0f);
@@ -343,7 +446,7 @@ void main(uint3 pixel : SV_DispatchThreadID) {
     float step_tex = max(ray_len / ceil(num_samples), 1.0e-5f);
 
     RayState state;
-    state.premul_radiance = float3(0.0f);
+    state.radiance = float3(0.0f);
     state.transmittance = 1.0f;
     state.inside_mask = 0u;
 
@@ -371,6 +474,5 @@ void main(uint3 pixel : SV_DispatchThreadID) {
     }
 
     float opacity = saturate(1.0f - state.transmittance);
-    float3 straight_hdr = (opacity > EPSILON) ? (state.premul_radiance / opacity) : float3(0.0f);
-    out_color[pixel.xy] = float4(tonemap(params, straight_hdr), opacity);
+    out_color[pixel.xy] = float4(tonemap(params, state.radiance), opacity);
 }
