@@ -122,7 +122,7 @@ struct GpuIsoParams {
     vec4_t clip_max_extinction;
 
     vec4_t env_roughness;
-    vec4_t dir_specular;
+    vec4_t dir_ior;
     vec4_t light_exposure;
     vec4_t gamma_flags;
 
@@ -157,8 +157,9 @@ static void gpu_iso_params_init(GpuIsoParams* params, const GpuIsoRenderDesc& de
     params->clip_min_sampling = vec4_set(desc.volume.clip_min.x, desc.volume.clip_min.y, desc.volume.clip_min.z, MAX(desc.sampling.sampling_rate, 0.01f));
     params->clip_max_extinction = vec4_set(desc.volume.clip_max.x, desc.volume.clip_max.y, desc.volume.clip_max.z, MAX(desc.shading.interior_extinction, 0.0f));
 
+    const float ior = MAX(desc.shading.ior, 1.0f);
     params->env_roughness = vec4_set(desc.shading.env_radiance.x, desc.shading.env_radiance.y, desc.shading.env_radiance.z, CLAMP(desc.shading.roughness, 0.0f, 1.0f));
-    params->dir_specular = vec4_set(desc.shading.dir_radiance.x, desc.shading.dir_radiance.y, desc.shading.dir_radiance.z, CLAMP(desc.shading.specular, 0.0f, 1.0f));
+    params->dir_ior = vec4_set(desc.shading.dir_radiance.x, desc.shading.dir_radiance.y, desc.shading.dir_radiance.z, ior);
 
     vec3_t light_dir = desc.shading.light_dir_world;
     if (vec3_length(light_dir) <= 1.0e-6f) {
@@ -255,7 +256,7 @@ void gpu_iso_renderer_free(GpuIsoRenderer* renderer) {
 }
 
 bool render_volume_iso_gpu(md_gpu_command_buffer_t cmd, GpuIsoRenderer* renderer, const GpuIsoRenderDesc& desc) {
-    if (!cmd || !renderer || !desc.target.color || !desc.volume.scalar_volume) {
+    if (!cmd || !renderer || !desc.target.color || !desc.target.depth || !desc.volume.scalar_volume) {
         return false;
     }
 
@@ -276,9 +277,12 @@ bool render_volume_iso_gpu(md_gpu_command_buffer_t cmd, GpuIsoRenderer* renderer
 
     md_gpu_cmd_push_debug_group(cmd, "Volume Iso Raycast");
     md_gpu_cmd_bind_compute_pipeline(cmd, renderer->pipeline);
+    const uint32_t push_constants = 0;
+    md_gpu_cmd_push_constants(cmd, &push_constants, sizeof(push_constants));
     md_gpu_cmd_bind_buffer(cmd, 0, param_buffer);
     md_gpu_cmd_bind_image(cmd, 0, desc.target.color);
     md_gpu_cmd_bind_sampled_image(cmd, 1, desc.volume.scalar_volume);
+    md_gpu_cmd_bind_sampled_image(cmd, 2, desc.target.depth);
     md_gpu_cmd_bind_sampler(cmd, 0, renderer->linear_sampler);
     md_gpu_cmd_dispatch(cmd, DIV_UP(desc.target.width, GPU_ISO_SHADER_WG_X), DIV_UP(desc.target.height, GPU_ISO_SHADER_WG_Y), 1);
     md_gpu_cmd_pop_debug_group(cmd);

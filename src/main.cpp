@@ -1276,6 +1276,10 @@ int main(int argc, char** argv) {
         md_gpu_image_destroy(state.gpu_volume_transparency);
         state.gpu_volume_transparency = nullptr;
     }
+    if (state.gpu_volume_depth) {
+        md_gpu_image_destroy(state.gpu_volume_depth);
+        state.gpu_volume_depth = nullptr;
+    }
     md_gpu_bump_free(&state.gpu_bump);
     if (state.gpu_device) {
         md_gpu_device_destroy(state.gpu_device);
@@ -6967,6 +6971,41 @@ static md_gpu_image_t ensure_gpu_volume_transparency_target(ApplicationState* st
 
     return state->gpu_volume_transparency;
 }
+
+static md_gpu_image_t ensure_gpu_volume_depth_target(ApplicationState* state) {
+    ASSERT(state);
+
+    const uint32_t width = state->gbuffer.width;
+    const uint32_t height = state->gbuffer.height;
+    if (!state->gpu_device || width == 0 || height == 0) {
+        return nullptr;
+    }
+
+    if (state->gpu_volume_depth &&
+        (state->gpu_volume_depth_width != width || state->gpu_volume_depth_height != height)) {
+        md_gpu_image_destroy(state->gpu_volume_depth);
+        state->gpu_volume_depth = nullptr;
+        state->gpu_volume_depth_width = 0;
+        state->gpu_volume_depth_height = 0;
+    }
+
+    if (!state->gpu_volume_depth) {
+        md_gpu_image_desc_t image_desc = {
+            .width = width,
+            .height = height,
+            .depth = 1,
+            .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
+            .flags = MD_GPU_IMAGE_SAMPLED,
+        };
+        state->gpu_volume_depth = md_gpu_image_create(state->gpu_device, &image_desc);
+        if (state->gpu_volume_depth) {
+            state->gpu_volume_depth_width = width;
+            state->gpu_volume_depth_height = height;
+        }
+    }
+
+    return state->gpu_volume_depth;
+}
 #endif
 
 static void draw_representations_transparent(ApplicationState* state) {
@@ -6994,10 +7033,12 @@ static void draw_representations_transparent(ApplicationState* state) {
         const bool gpu_supported = es.source == ElectronicStructureSource::MolecularOrbital && !es.dvr.enabled && !es.use_atom_colors;
         if (gpu_supported && state->gpu_device && es.density_vol.gpu_image) {
             md_gpu_image_t color_target = ensure_gpu_volume_transparency_target(state);
-            if (color_target) {
+            md_gpu_image_t depth_target = ensure_gpu_volume_depth_target(state);
+            if (color_target && depth_target) {
                 volume::GpuIsoRenderDesc desc = {
                     .target = {
                         .color = color_target,
+                        .depth = depth_target,
                         .width = state->gbuffer.width,
                         .height = state->gbuffer.height,
                     },
@@ -7025,7 +7066,7 @@ static void draw_representations_transparent(ApplicationState* state) {
                         .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25f,
                         .roughness = 0.3f,
                         .dir_radiance = {10, 10, 10},
-                        .specular = 0.04f,
+                        .ior = 1.5f,
                         .light_dir_world = {1, 1, 1},
                         .exposure = state->visuals.tonemapping.exposure,
                         .gamma = state->visuals.tonemapping.gamma,
@@ -7042,10 +7083,27 @@ static void draw_representations_transparent(ApplicationState* state) {
                 md_gpu_command_buffer_t cmd = md_gpu_command_buffer_acquire(queue);
                 if (cmd) {
                     const size_t color_target_size = (size_t)state->gbuffer.width * (size_t)state->gbuffer.height * 4;
+                    const size_t depth_target_size = (size_t)state->gbuffer.width * (size_t)state->gbuffer.height * sizeof(float);
                     md_gpu_bump_reset(&state->gpu_bump);
-                    md_gpu_alloc_t readback = md_gpu_bump_push(&state->gpu_bump, color_target_size, 256);
+                    md_gpu_bump_ensure(&state->gpu_bump, depth_target_size + color_target_size + 512);
+                    md_gpu_alloc_t depth_upload = md_gpu_bump_push(&state->gpu_bump, depth_target_size);
+                    md_gpu_alloc_t readback = md_gpu_bump_push(&state->gpu_bump, color_target_size);
 
-                    const bool recorded = volume::render_volume_iso_gpu(cmd, &state->gpu_iso_renderer, desc);
+                    if (depth_upload.cpu) {
+                        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                        glBindTexture(GL_TEXTURE_2D, state->gbuffer.tex.depth);
+                        glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, depth_upload.cpu);
+                        glBindTexture(GL_TEXTURE_2D, 0);
+
+                        md_gpu_image_region_t depth_region = {
+                            .offset = {0, 0, 0},
+                            .extent = {state->gbuffer.width, state->gbuffer.height, 1},
+                        };
+                        md_gpu_cmd_copy_buffer_to_image_region(cmd, state->gpu_bump.buffer, depth_upload.offset, depth_target, depth_region);
+                        md_gpu_cmd_barrier_image(cmd, depth_target, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                    }
+
+                    const bool recorded = depth_upload.cpu && volume::render_volume_iso_gpu(cmd, &state->gpu_iso_renderer, desc);
                     if (recorded && readback.cpu) {
                         md_gpu_cmd_barrier_image(cmd, color_target, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
                         md_gpu_image_region_t color_region = {

@@ -959,6 +959,9 @@ struct ApplicationState {
     md_gpu_image_t gpu_volume_transparency = nullptr;
     uint32_t gpu_volume_transparency_width = 0;
     uint32_t gpu_volume_transparency_height = 0;
+    md_gpu_image_t gpu_volume_depth = nullptr;
+    uint32_t gpu_volume_depth_width = 0;
+    uint32_t gpu_volume_depth_height = 0;
 #endif
 
     struct {

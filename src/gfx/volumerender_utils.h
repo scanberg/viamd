@@ -144,6 +144,7 @@ struct GpuIsoRenderer {
 struct GpuIsoRenderDesc {
     struct {
         md_gpu_image_t color = nullptr;
+        md_gpu_image_t depth = nullptr;
         uint32_t width = 0;
         uint32_t height = 0;
     } target;
@@ -186,7 +187,7 @@ struct GpuIsoRenderDesc {
         vec3_t env_radiance = {0, 0, 0};
         float roughness = 0.4f;
         vec3_t dir_radiance = {1, 1, 1};
-        float specular = 0.04f;
+        float ior = 1.5f;
         vec3_t light_dir_world = {1, 1, 1};
         float exposure = 1.0f;
         float gamma = 2.2f;
