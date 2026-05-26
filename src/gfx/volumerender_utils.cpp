@@ -407,13 +407,13 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
                     point_world.w = 1.0f; // Ignore radius for distance calculation, we will use it as part of the influence factor instead
                     float dist2 = vec4_distance_squared(voxel_pos_world, point_world);
 
-                    float inv2sig2  = 1.0 / (2.0 * sigma * sigma);
-                    float w = exp(-dist2 * inv2sig2 * power);
+                    float inv2sig2 = 1.0f / (2.0f * sigma * sigma);
+                    float w = expf(-dist2 * inv2sig2 * power);
                     acc += w * convert_color(point_color[i]);
                     sum += w;
                 }
 
-                vec4_t color = (sum > 0.0) ? acc / sum : vec4_set(1.0, 1.0, 1.0, 0.0);
+                vec4_t color = (sum > 0.0f) ? acc / sum : vec4_set(1.0f, 1.0f, 1.0f, 0.0f);
                 acc /= sum;
                 int linear_idx = x + y * volume_dim[0] + z * volume_dim[0] * volume_dim[1];
                 result[linear_idx] = color;
