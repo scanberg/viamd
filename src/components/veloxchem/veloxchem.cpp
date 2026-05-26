@@ -248,31 +248,54 @@ static void attribute_charge_density(double out_charge[], const int* ao_to_idx, 
 }
 
 #if MD_ENABLE_GPU
-// Call once per command buffer before any GTO evaluate that needs atom positions.
+
+// Call once per pass before any GTO evaluate that needs atom positions.
 // Clears *dirty on success. Safe to call when !(*dirty) — returns immediately.
-static void gpu_upload_atoms_if_dirty(
-    md_gpu_command_buffer_t  cmd,
+static void gpu_upload_atoms(
+    md_gpu_pass_t            pass,
     md_gpu_bump_alloc_t*     bump,
     md_gpu_buffer_t          gpu_atoms,
     const float*             atom_xyzw,   // packed xyzw, stride = sizeof(vec4_t)
-    uint32_t                 num_atoms,
-    bool*                    dirty,
-    bool                     is_discrete)
+    uint32_t                 num_atoms)
 {
-    if (!*dirty) return;
-
-    if (!is_discrete) {
-        md_gto_gpu_atom_pack((float*)md_gpu_buffer_cpu_ptr(gpu_atoms),
-                             atom_xyzw, sizeof(vec4_t), num_atoms);
+	if (md_gpu_buffer_flags(gpu_atoms) & MD_GPU_BUFFER_CPU_VISIBLE) {
+        md_gto_gpu_atom_pack((float*)md_gpu_buffer_cpu_ptr(gpu_atoms), atom_xyzw, sizeof(vec4_t), num_atoms);
     } else {
         size_t sz = md_gto_gpu_atom_buffer_size(num_atoms);
         md_gpu_alloc_t mem = md_gpu_bump_push(bump, sz);
         md_gto_gpu_atom_pack((float*)mem.cpu, atom_xyzw, sizeof(vec4_t), num_atoms);
-        md_gpu_cmd_copy_buffer(cmd, bump->buffer, gpu_atoms, sz, mem.offset, 0);
-        md_gpu_cmd_barrier_buffer(cmd, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+        md_gpu_pass_copy_buffer(pass, bump->buffer, gpu_atoms, sz, mem.offset, 0);
+        md_gpu_pass_barrier_buffer(pass, gpu_atoms, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     }
+}
 
-    *dirty = false;
+static md_gpu_pass_t gpu_begin_gto_volume_pass(
+    md_gpu_device_t device,
+    const char* label,
+    md_gto_gpu_basis_t gpu_basis,
+    md_gpu_buffer_t gpu_atoms,
+    md_gpu_buffer_t gpu_coeff,
+    md_gpu_image_t gpu_volume,
+    md_gpu_buffer_t scratch)
+{
+    md_gpu_pass_buffer_usage_t buffers[4] = {
+        { .buffer = md_gto_gpu_basis_buffer(gpu_basis), .usage = MD_GPU_PASS_RESOURCE_READ },
+        { .buffer = gpu_atoms, .usage = MD_GPU_PASS_RESOURCE_READ | MD_GPU_PASS_RESOURCE_TRANSFER_DST },
+        { .buffer = gpu_coeff, .usage = MD_GPU_PASS_RESOURCE_READ | MD_GPU_PASS_RESOURCE_TRANSFER_DST },
+        { .buffer = scratch, .usage = MD_GPU_PASS_RESOURCE_TRANSFER_SRC | MD_GPU_PASS_RESOURCE_TRANSFER_DST },
+    };
+    md_gpu_pass_image_usage_t images[1] = {{
+        .image = gpu_volume,
+        .usage = MD_GPU_PASS_RESOURCE_WRITE | MD_GPU_PASS_RESOURCE_TRANSFER_SRC,
+    }};
+    md_gpu_pass_desc_t desc = {
+        .label = label,
+        .buffers = buffers,
+        .buffer_count = (uint32_t)ARRAY_SIZE(buffers),
+        .images = images,
+        .image_count = (uint32_t)ARRAY_SIZE(images),
+    };
+    return md_gpu_pass_begin(device, &desc);
 }
 #endif
 
@@ -1009,7 +1032,68 @@ struct VeloxChem : viamd::EventHandler {
                         {
                             md_gto_op_t op = gto_op_from_use_magnitude(es.use_magnitude);
                             md_vlx_spin_t spin = vlx_spin_from_electronic_structure(es.spin);
-                            evaluate_mo(tex_id, grid, spin, es.orbital_idx, op, DEFAULT_GTO_CUTOFF_VALUE);
+							size_t mo_idx = es.orbital_idx;
+                            const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, spin);
+                            if (!ao_coeffs) {
+                                MD_LOG_ERROR("Failed to retrieve AO coefficients for Molecular Orbital index: %zu", mo_idx);
+                                return;
+                            }
+#if MD_ENABLE_GPU
+                            md_gpu_bump_reset(&gpu_bump);
+
+                            bool success = false;
+                            if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+                                uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
+                                uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+                                size_t   num_voxels = (size_t)grid.dim[0] * grid.dim[1] * grid.dim[2];
+                                size_t   rb_size    = num_voxels * sizeof(float);
+
+                                // Pre-size the bump before any pushes so no reallocation occurs mid-session.
+                                // A reallocation would destroy the old mapping and invalidate rb_mem.cpu.
+                                size_t coeff_sz = md_gto_gpu_coeff_size_mo(1, num_cgtos);
+                                size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
+                                md_gpu_bump_ensure(&gpu_bump, rb_size + coeff_sz + atom_sz + 1024);
+
+                                // Reserve readback region first so its offset is known before recording
+                                md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size);
+
+                                const double* coeff_ptrs[1] = { ao_coeffs };
+                                md_gpu_alloc_t coeff_mem = {};
+
+                                md_gpu_pass_t pass = gpu_begin_gto_volume_pass(gpu_device, "VeloxChem MO", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+                                ASSERT(pass);
+
+                                if (md_gpu_buffer_flags(gpu_coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
+                                    md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
+                                } else {
+                                    coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz);
+                                    md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
+                                    md_gto_gpu_coeff_upload_mo_pass(pass, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, 1, num_cgtos);
+                                }
+
+                                if (gpu_atoms_dirty) {
+                                    gpu_upload_atoms(pass, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms);
+									gpu_atoms_dirty = false;
+                                }
+
+                                md_gto_gpu_mo_pass_record(pass, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI, op);
+                                md_gpu_pass_barrier_image(pass, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+                                md_gpu_image_region_t region = {
+                                    .offset = {0},
+                                    .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+                                };
+                                md_gpu_pass_copy_image_region_to_buffer(pass, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
+
+                                md_gpu_pass_id_t pass_id = md_gpu_pass_end(pass);
+                                if (pass_id.value) {
+                                    md_gpu_pass_wait(gpu_device, pass_id);
+                                    gl::set_texture_3D_data(tex_id, 0, rb_mem.cpu, GL_R32F);
+                                    success = true;
+                                }
+                            }
+#else
+                            md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), ao_coeffs, cutoff_value, MD_GTO_EVAL_MODE_PSI, op);
+#endif
                             break;
                         }
                         case ElectronicStructureSource::NaturalTransitionOrbital:
@@ -1451,6 +1535,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     bool evaluate_nto(uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+        (void)cutoff_value;
         ScopedTemp temp_reset;
         const size_t num_aos = md_vlx_scf_number_of_atomic_orbitals(vlx);
         const size_t lambda_count = lambda_idx + 1;
@@ -1481,31 +1566,38 @@ struct VeloxChem : viamd::EventHandler {
 
             md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size);
 
-            md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
-            md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
-
             const double* coeff_ptrs[1] = { nto_coeffs };
-
-            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+            md_gpu_alloc_t coeff_mem = {};
 
             if (!gpu_info.is_discrete) {
                 md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
             } else {
-                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz);
+                coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz);
                 md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
-                md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
-                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI, op);
-            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_pass_t pass = gpu_begin_gto_volume_pass(gpu_device, "VeloxChem NTO", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+            if (!pass) return false;
+
+            if (gpu_atoms_dirty) {
+                gpu_upload_atoms(pass, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms);
+				gpu_atoms_dirty = false;
+            }
+            if (gpu_info.is_discrete) {
+                md_gto_gpu_coeff_upload_mo_pass(pass, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, 1, num_cgtos);
+            }
+
+            md_gto_gpu_mo_pass_record(pass, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI, op);
+            md_gpu_pass_barrier_image(pass, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
                 .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
             };
-            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
+            md_gpu_pass_copy_image_region_to_buffer(pass, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
+            md_gpu_pass_id_t pass_id = md_gpu_pass_end(pass);
+            if (pass_id.value) {
+                md_gpu_pass_wait(gpu_device, pass_id);
                 gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
                 success = true;
             }
@@ -1518,6 +1610,7 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     bool evaluate_mo(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+        (void)cutoff_value;
         const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, mo_type);
         if (!ao_coeffs) {
             MD_LOG_ERROR("Failed to retrieve AO coefficients for Molecular Orbital index: %zu", mo_idx);
@@ -1546,31 +1639,36 @@ struct VeloxChem : viamd::EventHandler {
             // Reserve readback region first so its offset is known before recording
             md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size);
 
-            md_gpu_queue_t          queue = md_gpu_queue_acquire(gpu_device);
-            md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
-
             const double* coeff_ptrs[1] = { ao_coeffs };
+            md_gpu_alloc_t coeff_mem = {};
 
-            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+            md_gpu_pass_t pass = gpu_begin_gto_volume_pass(gpu_device, "VeloxChem MO", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+            if (!pass) return false;
 
             if (!gpu_info.is_discrete) {
                 md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
             } else {
-                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz);
+                coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz);
                 md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
-                md_gpu_cmd_copy_buffer(cmd, gpu_bump.buffer, gpu_coeff, coeff_sz, coeff_mem.offset, 0);
-                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+                md_gto_gpu_coeff_upload_mo_pass(pass, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, 1, num_cgtos);
             }
 
-            md_gto_gpu_mo_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI, op);
-            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            if (gpu_atoms_dirty) {
+                gpu_upload_atoms(pass, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms);
+                gpu_atoms_dirty = false;
+            }
+
+            md_gto_gpu_mo_pass_record(pass, gpu_basis, gpu_atoms, gpu_coeff, 1, gpu_volume, &grid, MD_GTO_EVAL_MODE_PSI, op);
+            md_gpu_pass_barrier_image(pass, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
                 .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
             };
-            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
+            md_gpu_pass_copy_image_region_to_buffer(pass, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
+            md_gpu_pass_id_t pass_id = md_gpu_pass_end(pass);
+            if (pass_id.value) {
+                md_gpu_pass_wait(gpu_device, pass_id);
                 gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
                 success = true;
             }
@@ -1612,29 +1710,37 @@ struct VeloxChem : viamd::EventHandler {
 
             md_gpu_alloc_t rb_mem = md_gpu_bump_push(&gpu_bump, rb_size);
 
-            md_gpu_queue_t queue = md_gpu_queue_acquire(gpu_device);
-            md_gpu_command_buffer_t cmd = md_gpu_command_buffer_acquire(queue);
-
-            gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+            md_gpu_alloc_t coeff_mem = {};
 
             if (!gpu_info.is_discrete) {
                 md_gto_gpu_coeff_pack_density((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), density_matrix, num_cgtos);
             } else {
-                md_gpu_alloc_t coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz);
+                coeff_mem = md_gpu_bump_push(&gpu_bump, coeff_sz);
                 md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu, density_matrix, num_cgtos);
-                md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, num_cgtos);
-                md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
             }
 
-            md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid, op);
-            md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
+            md_gpu_pass_t pass = gpu_begin_gto_volume_pass(gpu_device, "VeloxChem Density", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+            if (!pass) return false;
+
+            if (gpu_atoms_dirty) {
+                gpu_upload_atoms(pass, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms);
+				gpu_atoms_dirty = false;
+            }
+            if (gpu_info.is_discrete) {
+                md_gto_gpu_coeff_upload_density_pass(pass, gpu_coeff, gpu_bump.buffer, coeff_mem.offset, num_cgtos);
+            }
+
+            md_gto_gpu_density_pass_record(pass, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid, op);
+            md_gpu_pass_barrier_image(pass, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_TRANSFER);
             md_gpu_image_region_t region = {
                 .offset = {0},
                 .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
             };
-            md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
+            md_gpu_pass_copy_image_region_to_buffer(pass, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-            if (md_gpu_queue_submit(queue, cmd, nullptr)) {
+            md_gpu_pass_id_t pass_id = md_gpu_pass_end(pass);
+            if (pass_id.value) {
+                md_gpu_pass_wait(gpu_device, pass_id);
                 gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
                 success = true;
             }
@@ -2796,10 +2902,10 @@ struct VeloxChem : viamd::EventHandler {
 #if MD_ENABLE_GPU
                             if (gpu_volume && gpu_basis && gpu_atoms && gpu_coeff) {
                                 uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-                                uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
+                                uint32_t num_gto_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
 
-                                size_t coeff_sz = md_gto_gpu_coeff_size_density(basis.num_shells);
-                                size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_atoms);
+                                size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
+                                size_t atom_sz  = md_gto_gpu_atom_buffer_size(num_gto_atoms);
 
                                 // Ensure topo context exists with the correct volume dimensions
                                 uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
@@ -2823,28 +2929,42 @@ struct VeloxChem : viamd::EventHandler {
                                     md_gpu_device_info_t gpu_info = {};
                                     md_gpu_device_info(state.gpu_device, &gpu_info);
 
-                                    md_gpu_queue_t          queue = md_gpu_queue_acquire(state.gpu_device);
-                                    md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
-
-                                    gpu_upload_atoms_if_dirty(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms, &gpu_atoms_dirty, gpu_info.is_discrete);
+                                    md_gpu_alloc_t a_coeff = {};
 
                                     if (!gpu_info.is_discrete) {
                                         float* dst = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
                                         md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
                                     } else {
-                                        md_gpu_alloc_t a_coeff = md_gpu_bump_push(&gpu_bump, coeff_sz);
+                                        a_coeff = md_gpu_bump_push(&gpu_bump, coeff_sz);
                                         md_gto_gpu_coeff_pack_density((float*)a_coeff.cpu, density_matrix, num_cgtos);
-                                        md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, gpu_bump.buffer, a_coeff.offset, num_cgtos);
-                                        md_gpu_cmd_barrier_buffer(cmd, gpu_coeff, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
                                     }
 
-                                    md_gto_gpu_density_cmd_record(cmd, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid, MD_GTO_OP_SET);
-                                    md_gpu_cmd_barrier_image(cmd, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-                                    md_topo_gpu_cmd_record(cmd, critical_points.topo_ctx, gpu_volume, &grid, 0.0f);
+                                    md_gpu_pass_t gto_pass = gpu_begin_gto_volume_pass(state.gpu_device, "VeloxChem Critical Points Density", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+                                    if (gto_pass) {
+                                        if (gpu_atoms_dirty) {
+                                            gpu_upload_atoms(gto_pass, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_gto_atoms);
+                                            gpu_atoms_dirty = false;
+                                        }
+                                        if (gpu_info.is_discrete) {
+                                            md_gto_gpu_coeff_upload_density_pass(gto_pass, gpu_coeff, gpu_bump.buffer, a_coeff.offset, num_cgtos);
+                                        }
+                                        md_gto_gpu_density_pass_record(gto_pass, gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, &grid, MD_GTO_OP_SET);
+                                        md_gpu_pass_barrier_image(gto_pass, gpu_volume, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
+                                        md_gpu_pass_id_t gto_pass_id = md_gpu_pass_end(gto_pass);
+                                        if (gto_pass_id.value) {
+                                            md_gpu_pass_wait(state.gpu_device, gto_pass_id);
 
-                                    md_gpu_queue_submit(queue, cmd, NULL);
+                                            md_gpu_queue_t          queue = md_gpu_queue_acquire(state.gpu_device);
+                                            md_gpu_command_buffer_t cmd   = md_gpu_command_buffer_acquire(queue);
+                                            md_topo_gpu_cmd_record(cmd, critical_points.topo_ctx, gpu_volume, &grid, 0.0f);
 
-                                    md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
+                                            md_gpu_queue_submit(queue, cmd, NULL);
+
+                                            md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
+                                        } else {
+                                            MD_LOG_ERROR("Failed to submit VeloxChem critical-points density pass");
+                                        }
+                                    }
                                 } else {
                                     MD_LOG_ERROR("Failed to create topo GPU context for electron density");
                                 }
