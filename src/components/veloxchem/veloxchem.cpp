@@ -268,23 +268,6 @@ static void gpu_upload_atoms(
         md_gpu_barrier(pass, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
     }
 }
-
-static md_gpu_pass_t gpu_begin_gto_volume(
-    md_gpu_device_t device,
-    const char* label,
-    md_gto_gpu_basis_t gpu_basis,
-    md_gpu_buffer_t gpu_atoms,
-    md_gpu_buffer_t gpu_coeff,
-    md_gpu_image_t gpu_volume,
-    md_gpu_buffer_t scratch)
-{
-    (void)gpu_basis;
-    (void)gpu_atoms;
-    (void)gpu_coeff;
-    (void)gpu_volume;
-    (void)scratch;
-    return md_gpu_begin(device, label);
-}
 #endif
 
 struct VeloxChem : viamd::EventHandler {
@@ -526,27 +509,6 @@ struct VeloxChem : viamd::EventHandler {
 
     size_t num_natural_transition_orbitals() const {
         return md_vlx_rsp_number_of_excited_states(vlx);
-    }
-
-    // Build atom positions in Bohr (VLX atom index space) into a pre-allocated float[3*num_vlx_atoms].
-    // If vib.displace_aos and system are set, system coordinates are used instead of VLX coordinates.
-    void build_atom_xyz_bohr(float* out, const md_system_t* system = nullptr) {
-        size_t num_atoms = md_vlx_number_of_atoms(vlx);
-        const dvec3_t* vlx_coords = md_vlx_atom_coordinates(vlx);
-        if (vib.displace_aos && system) {
-            for (size_t i = 0; i < num_atoms; i++) {
-                int sys_idx = qm_to_atom_idx ? qm_to_atom_idx[i] : (int)i;
-                out[3*i+0] = (float)(system->atom.x[sys_idx] * ANGSTROM_TO_BOHR);
-                out[3*i+1] = (float)(system->atom.y[sys_idx] * ANGSTROM_TO_BOHR);
-                out[3*i+2] = (float)(system->atom.z[sys_idx] * ANGSTROM_TO_BOHR);
-            }
-        } else {
-            for (size_t i = 0; i < num_atoms; i++) {
-                out[3*i+0] = (float)(vlx_coords[i].x * ANGSTROM_TO_BOHR);
-                out[3*i+1] = (float)(vlx_coords[i].y * ANGSTROM_TO_BOHR);
-                out[3*i+2] = (float)(vlx_coords[i].z * ANGSTROM_TO_BOHR);
-            }
-        }
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final {
@@ -1040,7 +1002,7 @@ struct VeloxChem : viamd::EventHandler {
                                 const double* coeff_ptrs[1] = { ao_coeffs };
                                 md_gpu_alloc_t coeff_mem = {};
 
-                                md_gpu_pass_t pass = gpu_begin_gto_volume(gpu_device, "VeloxChem MO", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+                                md_gpu_pass_t pass = md_gpu_begin(gpu_device, "VeloxChem MO");
                                 ASSERT(pass);
 
                                 if (md_gpu_buffer_flags(gpu_coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
@@ -1555,7 +1517,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
             }
 
-            md_gpu_pass_t pass = gpu_begin_gto_volume(gpu_device, "VeloxChem NTO", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+            md_gpu_pass_t pass = md_gpu_begin(gpu_device, "VeloxChem NTO");
             if (!pass) return false;
 
             if (gpu_atoms_dirty) {
@@ -1621,7 +1583,7 @@ struct VeloxChem : viamd::EventHandler {
             const double* coeff_ptrs[1] = { ao_coeffs };
             md_gpu_alloc_t coeff_mem = {};
 
-            md_gpu_pass_t pass = gpu_begin_gto_volume(gpu_device, "VeloxChem MO", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+            md_gpu_pass_t pass = md_gpu_begin(gpu_device, "VeloxChem MO");
             if (!pass) return false;
 
             if (!gpu_info.is_discrete) {
@@ -1698,7 +1660,7 @@ struct VeloxChem : viamd::EventHandler {
                 md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu, density_matrix, num_cgtos);
             }
 
-            md_gpu_pass_t pass = gpu_begin_gto_volume(gpu_device, "VeloxChem Density", gpu_basis, gpu_atoms, gpu_coeff, gpu_volume, gpu_bump.buffer);
+            md_gpu_pass_t pass = md_gpu_begin(gpu_device, "VeloxChem Density");
             if (!pass) return false;
 
             if (gpu_atoms_dirty) {
