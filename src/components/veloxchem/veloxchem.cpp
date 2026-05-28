@@ -1033,7 +1033,7 @@ struct VeloxChem : viamd::EventHandler {
 								}
                             }
 #else
-                            md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), ao_coeffs, cutoff_value, MD_GTO_EVAL_MODE_PSI, op);
+                            md_gto_grid_evaluate_mo_GL(tex_id, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), ao_coeffs, DEFAULT_GTO_CUTOFF_VALUE, MD_GTO_EVAL_MODE_PSI, op);
 #endif
                             break;
                         }
@@ -1401,6 +1401,8 @@ struct VeloxChem : viamd::EventHandler {
 #else
                         init_grid(&nto.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
 #endif
+                        nto.target = default_view;
+                        nto.camera = nto.target;
                     }
 
                     // RSP
