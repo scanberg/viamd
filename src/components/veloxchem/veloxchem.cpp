@@ -1401,6 +1401,8 @@ struct VeloxChem : viamd::EventHandler {
 #else
                         init_grid(&nto.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
 #endif
+                        nto.target = default_view;
+                        nto.camera = nto.target;
                     }
 
                     // RSP
