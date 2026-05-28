@@ -1033,7 +1033,7 @@ struct VeloxChem : viamd::EventHandler {
 								}
                             }
 #else
-                            md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), ao_coeffs, cutoff_value, MD_GTO_EVAL_MODE_PSI, op);
+                            md_gto_grid_evaluate_mo_GL(tex_id, &grid, &basis, (const float*)atom_xyzw, sizeof(vec4_t), ao_coeffs, DEFAULT_GTO_CUTOFF_VALUE, MD_GTO_EVAL_MODE_PSI, op);
 #endif
                             break;
                         }
