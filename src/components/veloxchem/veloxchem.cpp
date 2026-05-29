@@ -14,6 +14,7 @@
 #include <md_vlx.h>
 #include <md_util.h>
 #include <md_topo.h>
+#include <md_vector_graphics.h>
 #include <md_csv.h>
 #include <md_xvg.h>
 #include <core/md_vec_math.h>
@@ -1810,17 +1811,41 @@ struct VeloxChem : viamd::EventHandler {
         return ImVec4(r, g, b, color.w);
     }
 
+    static inline vec2_t vec2_from_imvec2(ImVec2 v) {
+        return { v.x, v.y };
+    }
+
+    static inline md_vg_color_t vg_color_from_imvec4(const ImVec4& color) {
+        return md_vg_color_from_vec4({ color.x, color.y, color.z, color.w });
+    }
+
+    static inline ImVec2 aligned_text_pos(const char* text, ImVec2 pos, ImVec2 alignment = { 0,0 }) {
+        return pos - ImGui::CalcTextSize(text) * alignment;
+    }
+
+    static inline void compute_vertical_sankey_bezier(ImVec2* p1, ImVec2* p2, ImVec2* p3, ImVec2* p4, ImVec2 source_pos, ImVec2 dest_pos, float thickness) {
+        ASSERT(p1);
+        ASSERT(p2);
+        ASSERT(p3);
+        ASSERT(p4);
+
+        *p1 = ImVec2(source_pos.x + thickness * 0.5f, source_pos.y);
+        *p4 = ImVec2(dest_pos.x + thickness * 0.5f, dest_pos.y);
+
+        const float dist = fabsf(p1->y - p4->y);
+        const float curve_offset = dist * 0.25f;
+
+        *p2 = ImVec2(source_pos.x + thickness * 0.5f, source_pos.y - curve_offset);
+        *p3 = ImVec2(dest_pos.x + thickness * 0.5f, dest_pos.y + curve_offset);
+    }
+
     // Draws a vertical flow based on cubic bezier and returns the abs delta from the mouse cursor to this line
     static inline ImVec2 draw_vertical_sankey_flow(ImDrawList* draw_list, ImVec2 source_pos, ImVec2 dest_pos, float thickness, ImU32 flow_color) {
-        // Define the control points for the Bezier curve
-        ImVec2 p1 = ImVec2(source_pos.x + thickness / 2, source_pos.y);  // Start point (bottom-center of source node)
-        ImVec2 p4 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y);  // End point (top-center of destination node)
-
-        float dist = fabsf(p1.y - p4.y);
-        float curve_offset = dist / 4;
-
-        ImVec2 p2 = ImVec2(source_pos.x + thickness / 2, source_pos.y - curve_offset);  // Control point 1
-        ImVec2 p3 = ImVec2(dest_pos.x + thickness / 2, dest_pos.y + curve_offset);  // Control point 2
+        ImVec2 p1 = {};
+        ImVec2 p2 = {};
+        ImVec2 p3 = {};
+        ImVec2 p4 = {};
+        compute_vertical_sankey_bezier(&p1, &p2, &p3, &p4, source_pos, dest_pos, thickness);
 
         const int num_segments = 50;
 
@@ -1839,9 +1864,288 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline void draw_aligned_text(ImDrawList* draw_list, const char* text, ImVec2 pos, ImVec2 alignment = { 0,0 }) {
-        ImVec2 text_size = ImGui::CalcTextSize(text);
-        ImVec2 text_pos = pos - text_size * alignment;
-        draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
+        draw_list->AddText(aligned_text_pos(text, pos, alignment), ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
+    }
+
+    static inline void vg_sankey_diagram(md_vg_scene_t* scene, ImRect area, Nto* nto, bool hide_text_overlaps) {
+        if (!scene) return;
+        if (!nto->transition_density_hole) return;
+        if (!nto->transition_density_part) return;
+
+        ScopedTemp temp_reset;
+        md_allocator_i* temp_alloc = temp_reset.allocator();
+
+        md_vg_add_rect_filled(scene, vec2_from_imvec2(area.Min), vec2_from_imvec2(area.Max), MD_VG_COLOR_RGB(255, 255, 255), 0.0f);
+
+        ImRect plot_area = area;
+        const float plot_percent = 0.8f;
+        plot_area.Expand({ area.GetWidth() * -(1 - plot_percent), area.GetHeight() * -(1 - plot_percent) });
+
+        const float bar_height = plot_area.GetHeight() * 0.05f;
+        int num_bars = 0;
+        for (size_t i = 0; i < nto->group.count; ++i) {
+            if (nto->transition_density_hole[i] != 0.0f) {
+                num_bars += 1;
+            }
+        }
+        const int num_gaps = MAX(num_bars - 1, 0);
+        const float gap_size = plot_area.GetWidth() * 0.05f;
+        const float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
+
+        float hole_sum = 0.0f;
+        float part_sum = 0.0f;
+        for (size_t i = 0; i < nto->group.count; ++i) {
+            hole_sum += nto->transition_density_hole[i];
+            part_sum += nto->transition_density_part[i];
+        }
+        hole_sum = MAX(hole_sum, 1.0e-6f);
+        part_sum = MAX(part_sum, 1.0e-6f);
+
+        float* hole_percentages = md_temp_push_array(float, nto->group.count);
+        float* part_percentages = md_temp_push_array(float, nto->group.count);
+        for (size_t i = 0; i < nto->group.count; ++i) {
+            hole_percentages[i] = nto->transition_density_hole[i] / hole_sum;
+            part_percentages[i] = nto->transition_density_part[i] / part_sum;
+        }
+
+        float* start_positions = md_temp_push_array(float, nto->group.count);
+        float cur_bottom_pos = plot_area.Min.x;
+        for (size_t i = 0; i < nto->group.count; ++i) {
+            start_positions[i] = cur_bottom_pos;
+            cur_bottom_pos += bars_avail_width * hole_percentages[i];
+            if (hole_percentages[i] != 0.0f) {
+                cur_bottom_pos += gap_size;
+            }
+        }
+
+        float* end_positions = md_temp_push_array(float, nto->group.count);
+        float* sub_end_positions = md_temp_push_array(float, nto->group.count);
+        float cur_pos = plot_area.Min.x;
+        for (size_t end_i = 0; end_i < nto->group.count; ++end_i) {
+            end_positions[end_i] = cur_pos;
+            sub_end_positions[end_i] = cur_pos;
+            cur_pos += bars_avail_width * part_percentages[end_i];
+            if (hole_percentages[end_i] != 0.0f) {
+                cur_pos += gap_size;
+            }
+        }
+
+        ImVec2* curve_midpoints = md_temp_push_zero_array(ImVec2, nto->group.count * nto->group.count);
+        ImVec2* curve_directions = md_temp_push_zero_array(ImVec2, nto->group.count * nto->group.count);
+        float* curve_percentages = md_temp_push_zero_array(float, nto->group.count * nto->group.count);
+
+        const float font_size = ImGui::GetFontSize();
+        const md_vg_color_t text_color = MD_VG_COLOR_RGB(0, 0, 0);
+        const md_vg_color_t outline_color = MD_VG_COLOR_RGBA(0, 0, 0, 128);
+
+        for (size_t beg_i = 0; beg_i < nto->group.count; ++beg_i) {
+            if (hole_percentages[beg_i] == 0.0f) continue;
+
+            ImVec2 start_pos = { start_positions[beg_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
+            ImVec4 start_col = vec_cast(nto->group.color[beg_i]);
+            start_col.w = 0.5f;
+
+            for (size_t end_i = 0; end_i < nto->group.count; ++end_i) {
+                const float percentage = nto->transition_matrix[end_i * nto->group.count + beg_i];
+                if (percentage <= 0.0f) continue;
+
+                const float width = bars_avail_width * percentage;
+                ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
+                ImVec4 end_col = vec_cast(nto->group.color[end_i]);
+
+                ImVec2 p1 = {};
+                ImVec2 p2 = {};
+                ImVec2 p3 = {};
+                ImVec2 p4 = {};
+                compute_vertical_sankey_bezier(&p1, &p2, &p3, &p4, start_pos, end_pos, width);
+
+                md_vg_style_t flow_style = md_vg_style_stroke(vg_color_from_imvec4(start_col), width);
+                flow_style.line_cap = MD_VG_LINE_CAP_BUTT;
+                flow_style.line_join = MD_VG_LINE_JOIN_ROUND;
+                if (end_i != beg_i) {
+                    flow_style.stroke = md_vg_paint_linear_gradient(vec2_from_imvec2({ start_pos.x, start_pos.y }), vec2_from_imvec2({ start_pos.x, end_pos.y }), vg_color_from_imvec4(start_col), vg_color_from_imvec4(end_col));
+                }
+                md_vg_add_bezier_cubic_styled(scene, vec2_from_imvec2(p1), vec2_from_imvec2(p2), vec2_from_imvec2(p3), vec2_from_imvec2(p4), &flow_style);
+
+                char label[32];
+                snprintf(label, sizeof(label), "%3.2f%%", percentage * 100.0f);
+                const ImVec2 label_size = ImGui::CalcTextSize(label);
+                if (width > label_size.x) {
+                    const ImVec2 midpoint = (start_pos + end_pos) * 0.5f + ImVec2{ width * 0.5f, 0.0f };
+                    const vec2_t direction = vec2_normalize({ start_pos.x - end_pos.x, start_pos.y - end_pos.y });
+                    const size_t idx = beg_i * nto->group.count + end_i;
+                    curve_midpoints[idx] = midpoint;
+                    curve_directions[idx] = { direction.x, direction.y };
+                    curve_percentages[idx] = percentage;
+                }
+
+                start_pos.x += width;
+                sub_end_positions[end_i] += width;
+            }
+        }
+
+        bool text_overlap = true;
+        ImVec2 curve_text_size = ImGui::CalcTextSize("99.99%");
+        const float text_spacing = 4.0f;
+
+        while (text_overlap) {
+            text_overlap = false;
+            for (size_t beg_i = 0; beg_i < nto->group.count; ++beg_i) {
+                for (size_t end_i = 0; end_i < nto->group.count; ++end_i) {
+                    const size_t index1 = beg_i * nto->group.count + end_i;
+                    ImRect rect1 = { curve_midpoints[index1] - curve_text_size * 0.5f, curve_midpoints[index1] + curve_text_size * 0.5f };
+
+                    for (size_t beg_j = 0; beg_j < nto->group.count; ++beg_j) {
+                        for (size_t end_j = 0; end_j < nto->group.count; ++end_j) {
+                            const size_t index2 = beg_j * nto->group.count + end_j;
+                            if (index1 == index2) continue;
+
+                            ImRect rect2 = { curve_midpoints[index2] - curve_text_size * 0.5f, curve_midpoints[index2] + curve_text_size * 0.5f };
+                            if (curve_midpoints[index1].y == 0.0f || curve_midpoints[index2].y == 0.0f) continue;
+
+                            while (rect1.Overlaps(rect2)) {
+                                text_overlap = true;
+                                curve_midpoints[index1] += curve_directions[index1] * curve_text_size.y * text_spacing;
+                                curve_midpoints[index2] -= curve_directions[index2] * curve_text_size.y * text_spacing;
+                                rect1 = { curve_midpoints[index1] - curve_text_size * 0.5f, curve_midpoints[index1] + curve_text_size * 0.5f };
+                                rect2 = { curve_midpoints[index2] - curve_text_size * 0.5f, curve_midpoints[index2] + curve_text_size * 0.5f };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (size_t beg_i = 0; beg_i < nto->group.count; ++beg_i) {
+            for (size_t end_i = 0; end_i < nto->group.count; ++end_i) {
+                const size_t index = beg_i * nto->group.count + end_i;
+                const float percentage = curve_percentages[index];
+                if (percentage <= 0.0f) continue;
+
+                char label[16];
+                snprintf(label, sizeof(label), "%3.2f%%", percentage * 100.0f);
+                const ImVec2 pos = aligned_text_pos(label, curve_midpoints[index], { 0.5f, 0.5f });
+                md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, str_from_cstr(label));
+            }
+        }
+
+        md_array(bool) show_start_text = md_array_create(bool, nto->group.count, temp_alloc);
+        md_array(bool) show_end_text = md_array_create(bool, nto->group.count, temp_alloc);
+        md_array(int) size_order = md_array_create(int, nto->group.count, temp_alloc);
+        md_array(float) text_sizes = md_array_create(float, nto->group.count, temp_alloc);
+        md_array(ImRect) rectangles = md_array_create(ImRect, nto->group.count, temp_alloc);
+
+        for (size_t i = 0; i < nto->group.count; ++i) {
+            show_start_text[i] = true;
+            show_end_text[i] = true;
+        }
+
+        if (hide_text_overlaps) {
+            for (int i = 0; i < (int)nto->group.count; ++i) {
+                size_order[i] = i;
+                text_sizes[i] = MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
+                const float midpoint = start_positions[i] + bars_avail_width * hole_percentages[i] * 0.5f;
+                rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0.0f, midpoint + text_sizes[i] * 0.5f, 1.0f };
+            }
+
+            std::sort(size_order, size_order + nto->group.count, [values = hole_percentages](int a, int b) {
+                return values[a] > values[b];
+            });
+
+            for (int i = 1; i < (int)nto->group.count; ++i) {
+                for (int j = i - 1; j >= 0; --j) {
+                    if (hole_percentages[i] == 0.0f) {
+                        show_start_text[size_order[i]] = false;
+                        break;
+                    }
+                    if (show_start_text[size_order[j]] && rectangles[size_order[i]].Overlaps(rectangles[size_order[j]])) {
+                        show_start_text[size_order[i]] = false;
+                        break;
+                    }
+                }
+            }
+
+            for (int i = 0; i < (int)nto->group.count; ++i) {
+                size_order[i] = i;
+                const float midpoint = end_positions[i] + bars_avail_width * part_percentages[i] * 0.5f;
+                rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0.0f, midpoint + text_sizes[i] * 0.5f, 1.0f };
+            }
+
+            std::sort(size_order, size_order + nto->group.count, [values = part_percentages](int a, int b) {
+                return values[a] > values[b];
+            });
+
+            for (int i = 1; i < (int)nto->group.count; ++i) {
+                for (int j = i - 1; j >= 0; --j) {
+                    if (hole_percentages[i] == 0.0f) {
+                        show_end_text[size_order[i]] = false;
+                        break;
+                    }
+                    if (show_end_text[size_order[j]] && rectangles[size_order[i]].Overlaps(rectangles[size_order[j]])) {
+                        show_end_text[size_order[i]] = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (size_t i = 0; i < nto->group.count; ++i) {
+            if (hole_percentages[i] == 0.0f) continue;
+
+            const ImVec4 bar_color = vec_cast(nto->group.color[i]);
+
+            char start_label[16];
+            char end_label[16];
+            snprintf(start_label, sizeof(start_label), "%3.2f%%", hole_percentages[i] * 100.0f);
+            snprintf(end_label, sizeof(end_label), "%3.2f%%", part_percentages[i] * 100.0f);
+
+            ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
+            ImVec2 start_p1 = { start_positions[i] + bars_avail_width * hole_percentages[i], plot_area.Max.y };
+            ImVec2 start_midpoint = { (start_p0.x + start_p1.x) * 0.5f, start_p1.y };
+
+            ImVec2 end_p0 = { end_positions[i], plot_area.Min.y };
+            ImVec2 end_p1 = { end_positions[i] + bars_avail_width * part_percentages[i], plot_area.Min.y + bar_height };
+            ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
+
+            md_vg_add_rect_filled(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), vg_color_from_imvec4(bar_color), 0.0f);
+            md_vg_add_rect(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), outline_color, 0.0f, 1.0f);
+            if (show_start_text[i]) {
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], start_midpoint, { 0.5f, -0.2f })), font_size, text_color, str_from_cstr(nto->group.label[i]));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(start_label, start_midpoint, { 0.5f, -1.2f })), font_size, text_color, str_from_cstr(start_label));
+            }
+
+            md_vg_add_rect_filled(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), vg_color_from_imvec4(bar_color), 0.0f);
+            md_vg_add_rect(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), outline_color, 0.0f, 1.0f);
+            if (show_end_text[i]) {
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], end_midpoint, { 0.5f, 1.2f })), font_size, text_color, str_from_cstr(nto->group.label[i]));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(end_label, end_midpoint, { 0.5f, 2.2f })), font_size, text_color, str_from_cstr(end_label));
+            }
+        }
+    }
+
+    static inline bool export_sankey_svg(ImVec2 size, Nto* nto, bool hide_text_overlaps) {
+        if (!nto || !nto->transition_density_hole || !nto->transition_density_part || !nto->transition_matrix) {
+            MD_LOG_ERROR("Transition diagram export failed: sankey data is not initialized");
+            return false;
+        }
+
+        char path_buf[1024] = {};
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("svg"))) {
+            return false;
+        }
+
+        ScopedTemp temp_reset;
+        md_vg_scene_t scene = {};
+        md_vg_scene_init(&scene, { size.x, size.y }, temp_reset.allocator());
+        vg_sankey_diagram(&scene, { 0.0f, 0.0f, size.x, size.y }, nto, hide_text_overlaps);
+
+        const bool success = md_vg_scene_write_svg_file(&scene, str_from_cstr(path_buf));
+        if (success) {
+            MD_LOG_INFO("Exported transition diagram SVG to '%s'", path_buf);
+        } else {
+            MD_LOG_ERROR("Failed to export transition diagram SVG to '%s'", path_buf);
+        }
+        return success;
     }
 
     static inline void im_sankey_diagram(ApplicationState* state, ImRect area, Nto* nto, bool hide_text_overlaps) {
@@ -1905,15 +2209,15 @@ struct VeloxChem : viamd::EventHandler {
         hole_sum = MAX(hole_sum, 1.0e-6f);
         part_sum = MAX(part_sum, 1.0e-6f);
 
-        md_array(float) hole_percentages = md_array_create(float, nto->group.count, temp_alloc);
-        md_array(float) part_percentages = md_array_create(float, nto->group.count, temp_alloc);
+        float* hole_percentages = md_temp_push_array(float, nto->group.count);
+        float* part_percentages = md_temp_push_array(float, nto->group.count);
         for (size_t i = 0; i < nto->group.count; i++) {
             hole_percentages[i] = nto->transition_density_hole[i] / hole_sum;
             part_percentages[i] = nto->transition_density_part[i] / part_sum;
         }
 
         //Calculate start positions
-        md_array(float) start_positions = md_array_create(float, nto->group.count, temp_alloc);
+        float* start_positions = md_temp_push_array(float, nto->group.count);
         float cur_bottom_pos = plot_area.Min.x;
         for (size_t i = 0; i < nto->group.count; i++) {
             start_positions[i] = cur_bottom_pos;
@@ -1924,8 +2228,8 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         //Calculate end positions
-        md_array(float) end_positions = md_array_create(float, nto->group.count, temp_alloc);
-        md_array(float) sub_end_positions = md_array_create(float, nto->group.count, temp_alloc);
+        float* end_positions = md_temp_push_array(float, nto->group.count);
+        float* sub_end_positions = md_temp_push_array(float, nto->group.count);
         float cur_pos = plot_area.Min.x;
         for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
             end_positions[end_i] = cur_pos;
@@ -1946,36 +2250,23 @@ struct VeloxChem : viamd::EventHandler {
         const float min_test_width = 1.0f;
 
         //Draw curves
-        md_array(float) curve_widths = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
-        md_array(ImVec2) curve_midpoints = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
-        md_array(ImVec2) curve_directions = md_array_create(ImVec2, nto->group.count * nto->group.count, temp_alloc);
-        md_array(float) curve_percentages = md_array_create(float, nto->group.count * nto->group.count, temp_alloc);
-        for (size_t i = 0; i < nto->group.count * nto->group.count; i++) {
-            curve_widths[i] = 0;
-            curve_midpoints[i] = { 0, 0 };
-            curve_directions[i] = { 0, 0 };
-            curve_percentages[i] = 0;
-        }
-        /*for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
-            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                curve_widths[start_i * nto->group.count + end_i] = 0.0;
-                curve_midpoints[start_i * nto->group.count + end_i] = ImVec2{};
-                curve_directions[start_i * nto->group.count + end_i] = ImVec2{};
-            }
-        }*/
+        float* curve_widths      = md_temp_push_zero_array(float, nto->group.count * nto->group.count);
+        ImVec2* curve_midpoints  = md_temp_push_zero_array(ImVec2, nto->group.count * nto->group.count);
+        ImVec2* curve_directions = md_temp_push_zero_array(ImVec2, nto->group.count * nto->group.count);
+        float* curve_percentages = md_temp_push_zero_array(float, nto->group.count * nto->group.count);
 
-        for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
-            if (hole_percentages[start_i] != 0.0) {
+        for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
+            if (hole_percentages[beg_i] != 0.0) {
 
-                ImVec2 start_pos = { start_positions[start_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
-                ImVec4 start_col = vec_cast(nto->group.color[start_i]);
+                ImVec2 start_pos = { start_positions[beg_i], plot_area.Max.y - bar_height + 0.1f * bar_height };
+                ImVec4 start_col = vec_cast(nto->group.color[beg_i]);
 
-                start_col.w = 0.5;
+                start_col.w = 0.5f;
                 for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                    float percentage = nto->transition_matrix[end_i * nto->group.count + start_i];
+                    float percentage = nto->transition_matrix[end_i * nto->group.count + beg_i];
                     ImVec4 end_col = vec_cast(nto->group.color[end_i]);
 
-                    if (percentage != 0) {
+                    if (percentage > 0.0f) {
                         float width = bars_avail_width * percentage;
                         ImVec2 end_pos = { sub_end_positions[end_i], plot_area.Min.y + bar_height - 0.1f * bar_height };
 
@@ -1987,7 +2278,7 @@ struct VeloxChem : viamd::EventHandler {
                         bool flow_hovered = mouse_delta.x < MAX(width * 0.5f, min_test_width) && mouse_delta.y < 1.0e-4;
 
                         // Apply a gradient based on y-value from start color to end color if they belong to different groups
-                        if (end_i != start_i) {
+                        if (end_i != beg_i) {
                             ImVec2 grad_p0 = { start_pos.x, start_pos.y };
                             ImVec2 grad_p1 = { start_pos.x, end_pos.y };
                             ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw_list, vert_beg, vert_end, grad_p0, grad_p1, ImGui::ColorConvertFloat4ToU32(start_col), ImGui::ColorConvertFloat4ToU32(end_col));
@@ -2008,10 +2299,10 @@ struct VeloxChem : viamd::EventHandler {
                         if (width > label_size.x) {
                             ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
                             ImVec2 direction = vec_cast(vec2_normalize(vec_cast(start_pos - end_pos)));
-                            curve_midpoints[start_i * nto->group.count + end_i] = midpoint;
-                            curve_directions[start_i * nto->group.count + end_i] = direction;
-                            curve_widths[start_i * nto->group.count + end_i] = width;
-                            curve_percentages[start_i * nto->group.count + end_i] = percentage;
+                            curve_midpoints[beg_i * nto->group.count + end_i] = midpoint;
+                            curve_directions[beg_i * nto->group.count + end_i] = direction;
+                            curve_widths[beg_i * nto->group.count + end_i] = width;
+                            curve_percentages[beg_i * nto->group.count + end_i] = percentage;
                             //draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
                         }
 
@@ -2030,21 +2321,20 @@ struct VeloxChem : viamd::EventHandler {
 
         while (text_overlap) {
             text_overlap = false;
-            for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+            for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
                 for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                    size_t index1 = start_i * nto->group.count + end_i;
+                    size_t index1 = beg_i * nto->group.count + end_i;
                     ImVec2 midpoint1 = curve_midpoints[index1];
                     ImVec2 direction1 = curve_directions[index1];
                     ImRect rect1 = { midpoint1 - (text_size / 2), midpoint1 + (text_size / 2) };
 
-                    for (size_t start_j = 0; start_j < nto->group.count; start_j++) {
+                    for (size_t beg_j = 0; beg_j < nto->group.count; beg_j++) {
                         for (size_t end_j = 0; end_j < nto->group.count; end_j++) {
-                            size_t index2 = (start_j * nto->group.count + end_j);
+                            size_t index2 = (beg_j * nto->group.count + end_j);
                             if (index1 != index2) {
                                 ImVec2 midpoint2 = curve_midpoints[index2];
                                 ImVec2 direction2 = curve_directions[index2] * -1.0;
                                 ImRect rect2 = { midpoint2 - (text_size / 2), midpoint2 + (text_size / 2) };
-
                     
                                 if ((midpoint1.y != 0 && midpoint2.y != 0)) {
                                     while (rect1.Overlaps(rect2)){
@@ -2062,14 +2352,14 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
-        for (size_t start_i = 0; start_i < nto->group.count; start_i++) {
+        for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
             for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                size_t index = start_i * nto->group.count + end_i;
+                size_t index = beg_i * nto->group.count + end_i;
                 ImVec2 midpoint = curve_midpoints[index];
                 float percentage = curve_percentages[index];
                 if (percentage > 0) {
                     char label[16];
-                    snprintf(label, sizeof(label), "%3.2f%%", curve_percentages[start_i * nto->group.count + end_i] * 100);
+                    snprintf(label, sizeof(label), "%3.2f%%", curve_percentages[beg_i * nto->group.count + end_i] * 100);
                     draw_aligned_text(draw_list, label, midpoint, {0.5, 0.5});
                 }
             }
@@ -2079,8 +2369,6 @@ struct VeloxChem : viamd::EventHandler {
         if (hovered_flow_width > 0.0f) {
             draw_vertical_sankey_flow(draw_list, hovered_flow_beg, hovered_flow_end, hovered_flow_width, ImColor(1.0f, 1.0f, 1.0f, 0.2f));
         }
-        //bool next_start_text_visible = true;
-        //bool next_end_text_visible = true;
 
         //Calculate text visibility
         md_array(bool) show_start_text  = md_array_create(bool,   nto->group.count, temp_alloc);
@@ -2088,11 +2376,11 @@ struct VeloxChem : viamd::EventHandler {
         md_array(int)  size_order       = md_array_create(int,    nto->group.count, temp_alloc);
         md_array(float) text_sizes      = md_array_create(float,  nto->group.count, temp_alloc);
         md_array(ImRect) rectangles     = md_array_create(ImRect, nto->group.count, temp_alloc);
+
         for (size_t i = 0; i < nto->group.count; i++) {
             show_start_text[i] = true;
             show_end_text[i] = true;
         }
-
         
         if (hide_text_overlaps) {
             //Start texts
@@ -2110,7 +2398,7 @@ struct VeloxChem : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0 ; j--) {//The bigger ones
-                    if (hole_percentages[i] == 0.0) {
+                    if (hole_percentages[i] == 0.0f) {
                         show_start_text[size_order[i]] = false;
                         break;
                     }
@@ -2132,9 +2420,10 @@ struct VeloxChem : viamd::EventHandler {
             std::sort(size_order, size_order + nto->group.count, [values = part_percentages](int a, int b) {
                 return values[a] > values[b];  // Sort in descending order
             });
+
             for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0; j--) {//The bigger ones
-                    if (hole_percentages[i] == 0.0) {
+                    if (hole_percentages[i] == 0.0f) {
                         show_end_text[size_order[i]] = false;
                         break;
                     }
@@ -2148,19 +2437,18 @@ struct VeloxChem : viamd::EventHandler {
 
         //Draw bars
         for (size_t i = 0; i < nto->group.count; i++) {
-            if (hole_percentages[i] != 0.0) {
+            if (hole_percentages[i] != 0.0f) {
                 ImVec4 bar_color = vec_cast(nto->group.color[i]);
 
                 char start_label1[16];
                 char end_label1[16]; 
-
                 snprintf(start_label1, sizeof(start_label1), "%3.2f%%", hole_percentages[i] * 100);
                 snprintf(end_label1, sizeof(end_label1), "%3.2f%%", part_percentages[i] * 100);
 
                 char start_label2[16];
                 char end_label2[16];
-                snprintf(start_label2, sizeof(start_label1), "%3.2f%%", hole_percentages[i + 1] * 100);
-                snprintf(end_label2, sizeof(end_label1), "%3.2f%%", part_percentages[i + 1] * 100);
+                snprintf(start_label2, sizeof(start_label2), "%3.2f%%", hole_percentages[i + 1] * 100);
+                snprintf(end_label2, sizeof(end_label2), "%3.2f%%", part_percentages[i + 1] * 100);
 
                 //Calculate start
                 ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
@@ -2212,10 +2500,11 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
-        if (mouse_label[0] != '\0') {
+        size_t mouse_label_len = strnlen(mouse_label, sizeof(mouse_label));
+        if (mouse_label_len > 0) {
             ImVec2 offset = { 15, 15 };
             ImVec2 pos = ImGui::GetMousePos() + offset;
-            draw_list->AddText(pos, IM_COL32_BLACK, mouse_label);
+            draw_list->AddText(pos, IM_COL32_BLACK, mouse_label, mouse_label + mouse_label_len);
         }
     }
 
@@ -4860,6 +5149,7 @@ struct VeloxChem : viamd::EventHandler {
         if (num_excited_states == 0) return;
 
         bool open_context_menu = false;
+        bool export_sankey_svg_requested = false;
         static bool edit_mode = false;
 
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
@@ -4868,6 +5158,10 @@ struct VeloxChem : viamd::EventHandler {
             bool viewport_hovered = false;
 
             if (ImGui::BeginMenuBar()) {
+                if (ImGui::BeginMenu("File")) {
+                    export_sankey_svg_requested = ImGui::MenuItem("Export Sankey SVG");
+                    ImGui::EndMenu();
+                }
                 if (ImGui::BeginMenu("Settings")) {
                     ImGui::Text("Iso Colors");
                     ImGui::Checkbox("Link Attachment/Detachment Density Colors", &nto.link_attachment_detachment_density);
@@ -5129,6 +5423,12 @@ struct VeloxChem : viamd::EventHandler {
             ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
             canvas_sz.x = MAX(canvas_sz.x, 50.0f);
             canvas_sz.y = MAX(canvas_sz.y, 50.0f);
+
+            if (export_sankey_svg_requested) {
+                ImVec2 export_sz = { MAX(canvas_sz.x * 0.5f, 1.0f), MAX(canvas_sz.y, 1.0f) };
+                export_sz *= 2.0f;
+                export_sankey_svg(export_sz, &nto, hide_overlap_text);
+            }
 
             ImGui::Dummy(canvas_sz);
 
