@@ -2168,9 +2168,9 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    static inline bool export_sankey_svg(ImVec2 size, Nto* nto, bool hide_text_overlaps) {
+    static inline bool export_transition_diagram(ImVec2 size, Nto* nto, bool hide_text_overlaps) {
         if (!nto || !nto->transition_density_hole || !nto->transition_density_part || !nto->transition_matrix) {
-            MD_LOG_ERROR("Transition diagram export failed: sankey data is not initialized");
+            MD_LOG_ERROR("Transition diagram export failed: transition diagram data is not initialized");
             return false;
         }
 
@@ -2186,9 +2186,9 @@ struct VeloxChem : viamd::EventHandler {
 
         const bool success = md_vg_scene_write_svg_file(&scene, str_from_cstr(path_buf));
         if (success) {
-            MD_LOG_INFO("Exported transition diagram SVG to '%s'", path_buf);
+            MD_LOG_INFO("Exported transition diagram to '%s'", path_buf);
         } else {
-            MD_LOG_ERROR("Failed to export transition diagram SVG to '%s'", path_buf);
+            MD_LOG_ERROR("Failed to export transition diagram to '%s'", path_buf);
         }
         return success;
     }
@@ -5204,7 +5204,7 @@ struct VeloxChem : viamd::EventHandler {
         if (num_excited_states == 0) return;
 
         bool open_context_menu = false;
-        bool export_sankey_svg_requested = false;
+        bool export_transition_diagram_requested = false;
         static bool edit_mode = false;
 
         ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
@@ -5214,7 +5214,7 @@ struct VeloxChem : viamd::EventHandler {
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
-                    export_sankey_svg_requested = ImGui::MenuItem("Export Sankey SVG");
+                    export_transition_diagram_requested = ImGui::MenuItem("Export Transition Diagram");
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Settings")) {
@@ -5479,10 +5479,10 @@ struct VeloxChem : viamd::EventHandler {
             canvas_sz.x = MAX(canvas_sz.x, 50.0f);
             canvas_sz.y = MAX(canvas_sz.y, 50.0f);
 
-            if (export_sankey_svg_requested) {
+            if (export_transition_diagram_requested) {
                 ImVec2 export_sz = { MAX(canvas_sz.x * 0.5f, 1.0f), MAX(canvas_sz.y, 1.0f) };
                 export_sz *= 2.0f;
-                export_sankey_svg(export_sz, &nto, hide_overlap_text);
+                export_transition_diagram(export_sz, &nto, hide_overlap_text);
             }
 
             ImGui::Dummy(canvas_sz);
