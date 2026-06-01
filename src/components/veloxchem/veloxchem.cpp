@@ -1003,8 +1003,12 @@ struct VeloxChem : viamd::EventHandler {
                                 const double* coeff_ptrs[1] = { ao_coeffs };
                                 md_gpu_alloc_t coeff_mem = {};
 
-								md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_device, "VeloxChem MO");
-								ASSERT(cmd);
+                                md_gpu_queue_t gpu_queue = md_gpu_queue_compute(gpu_device);
+                                md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem MO");
+                                ASSERT(cmd);
+                                if (!cmd) {
+                                    break;
+                                }
 
 								if (md_gpu_buffer_flags(gpu_coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
 									md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
@@ -1027,9 +1031,17 @@ struct VeloxChem : viamd::EventHandler {
 								};
 								md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-								md_gpu_event_t event = md_gpu_cmd_submit(cmd);
+                                if (!md_gpu_cmd_end(cmd)) {
+                                    md_gpu_cmd_discard(cmd);
+                                    break;
+                                }
+
+                                md_gpu_event_t event = md_gpu_queue_submit_one(gpu_queue, cmd);
+                                if (!event.value) {
+                                    md_gpu_cmd_discard(cmd);
+                                }
 								if (event.value) {
-									md_gpu_event_wait(gpu_device, event);
+									md_gpu_event_wait(event);
 									gl::set_texture_3D_data(tex_id, 0, rb_mem.cpu, GL_R32F);
 								}
                             }
@@ -1520,8 +1532,11 @@ struct VeloxChem : viamd::EventHandler {
                 md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu, coeff_ptrs, nullptr, 1, num_cgtos);
             }
 
-			md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_device, "VeloxChem NTO");
-			if (!cmd) return false;
+            md_gpu_queue_t gpu_queue = md_gpu_queue_compute(gpu_device);
+            md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem NTO");
+            if (!cmd) {
+                return false;
+            }
 
 			if (gpu_atoms_dirty) {
 				gpu_upload_atoms(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms);
@@ -1539,9 +1554,17 @@ struct VeloxChem : viamd::EventHandler {
 			};
 			md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-			md_gpu_event_t event = md_gpu_cmd_submit(cmd);
+            if (!md_gpu_cmd_end(cmd)) {
+                md_gpu_cmd_discard(cmd);
+                return false;
+            }
+
+            md_gpu_event_t event = md_gpu_queue_submit_one(gpu_queue, cmd);
+            if (!event.value) {
+                md_gpu_cmd_discard(cmd);
+            }
 			if (event.value) {
-				md_gpu_event_wait(gpu_device, event);
+                md_gpu_event_wait(event);
 				gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
 				success = true;
 			}
@@ -1586,8 +1609,11 @@ struct VeloxChem : viamd::EventHandler {
             const double* coeff_ptrs[1] = { ao_coeffs };
             md_gpu_alloc_t coeff_mem = {};
 
-            md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_device, "VeloxChem MO");
-            if (!cmd) return false;
+            md_gpu_queue_t gpu_queue = md_gpu_queue_compute(gpu_device);
+            md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem MO");
+            if (!cmd) {
+                return false;
+            }
 
             if (!gpu_info.is_discrete) {
                 md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
@@ -1610,9 +1636,17 @@ struct VeloxChem : viamd::EventHandler {
             };
             md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-            md_gpu_event_t event = md_gpu_cmd_submit(cmd);
+            if (!md_gpu_cmd_end(cmd)) {
+                md_gpu_cmd_discard(cmd);
+                return false;
+            }
+
+            md_gpu_event_t event = md_gpu_queue_submit_one(gpu_queue, cmd);
+            if (!event.value) {
+                md_gpu_cmd_discard(cmd);
+            }
             if (event.value) {
-                md_gpu_event_wait(gpu_device, event);
+                md_gpu_event_wait(event);
                 gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
                 success = true;
             }
@@ -1663,8 +1697,11 @@ struct VeloxChem : viamd::EventHandler {
                 md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu, density_matrix, num_cgtos);
             }
 
-			md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_device, "VeloxChem Density");
-			if (!cmd) return false;
+            md_gpu_queue_t gpu_queue = md_gpu_queue_compute(gpu_device);
+            md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem Density");
+            if (!cmd) {
+                return false;
+            }
 
 			if (gpu_atoms_dirty) {
 				gpu_upload_atoms(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_atoms);
@@ -1682,9 +1719,17 @@ struct VeloxChem : viamd::EventHandler {
 			};
 			md_gpu_cmd_copy_image_region_to_buffer(cmd, gpu_volume, region, gpu_bump.buffer, rb_mem.offset);
 
-			md_gpu_event_t event = md_gpu_cmd_submit(cmd);
+            if (!md_gpu_cmd_end(cmd)) {
+                md_gpu_cmd_discard(cmd);
+                return false;
+            }
+
+            md_gpu_event_t event = md_gpu_queue_submit_one(gpu_queue, cmd);
+            if (!event.value) {
+                md_gpu_cmd_discard(cmd);
+            }
 			if (event.value) {
-				md_gpu_event_wait(gpu_device, event);
+                md_gpu_event_wait(event);
 				gl::set_texture_3D_data(vol_tex, 0, rb_mem.cpu, GL_R32F);
 				success = true;
 			}
@@ -3157,7 +3202,8 @@ struct VeloxChem : viamd::EventHandler {
                                     md_gpu_bump_reset(&gpu_bump);
                                     md_gpu_bump_ensure(&gpu_bump, coeff_sz + atom_sz + 512);
 
-                                    md_gpu_cmd_t cmd = md_gpu_cmd_begin(state.gpu_device, "VeloxChem Critical Points Density+Topology");
+                                    md_gpu_queue_t gpu_queue = md_gpu_queue_compute(state.gpu_device);
+                                    md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem Critical Points Density+Topology");
                                     if (cmd) {
                                         if (gpu_atoms_dirty) {
                                             gpu_upload_atoms(cmd, &gpu_bump, gpu_atoms, (const float*)atom_xyzw, num_gto_atoms);
@@ -3176,14 +3222,23 @@ struct VeloxChem : viamd::EventHandler {
                                         md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
                                         md_topo_gpu_record(cmd, critical_points.topo_ctx, gpu_volume, &grid, 0.0f);
 
-                                        md_gpu_event_t event = md_gpu_cmd_submit(cmd);
-                                        if (event.value) {
-                                            md_gpu_event_wait(state.gpu_device, event);
-                                            md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
+                                        if (!md_gpu_cmd_end(cmd)) {
+                                            md_gpu_cmd_discard(cmd);
+                                            MD_LOG_ERROR("Failed to end VeloxChem critical-points density/topology cmd");
                                         } else {
-                                            MD_LOG_ERROR("Failed to submit VeloxChem critical-points density/topology cmd");
+                                            md_gpu_event_t event = md_gpu_queue_submit_one(gpu_queue, cmd);
+                                            if (!event.value) {
+                                                md_gpu_cmd_discard(cmd);
+                                            }
+                                            if (event.value) {
+                                                md_gpu_event_wait(event);
+                                                md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
+                                            } else {
+                                                MD_LOG_ERROR("Failed to submit VeloxChem critical-points density/topology cmd");
+                                            }
                                         }
                                     } else {
+                                        md_gpu_cmd_discard(cmd);
                                         MD_LOG_ERROR("Failed to begin VeloxChem critical-points density/topology cmd");
                                     }
                                 } else {
