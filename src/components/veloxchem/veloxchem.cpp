@@ -3015,7 +3015,11 @@ struct VeloxChem : viamd::EventHandler {
                 if (num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
                         const double* energies = md_vlx_opt_energies(vlx);
-                        double ref_energy = energies[num_steps - 1];
+                        // Find minima as the reference energy
+                        double ref_energy = energies[0];
+                        for (size_t i = 1; i < num_steps; ++i) {
+                            ref_energy = MIN(ref_energy, energies[i]);
+                        }
                         double* energy_offsets = (double*)md_temp_push(sizeof(double) * num_steps);
 
                         for (size_t i = 0; i < num_steps; ++i) {
