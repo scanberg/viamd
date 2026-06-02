@@ -427,6 +427,8 @@ int main(int argc, char** argv) {
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
     state.mold.sys_alloc  = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
 
+    md_temp_arena_system_init();
+
     md_bitfield_init(&state.selection.selection_mask, persistent_alloc);
     md_bitfield_init(&state.selection.highlight_mask, persistent_alloc);
     md_bitfield_init(&state.selection.query.mask, persistent_alloc);
