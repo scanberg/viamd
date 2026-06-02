@@ -930,6 +930,8 @@ struct VeloxChem : viamd::EventHandler {
 
                     md_array_push(info.atom_properties, prop, info.alloc);
                 }
+                // Density-property extraction is still wired up on the viamd side only.
+                // Keep the GUI source available there without depending on md_vlx backend support yet.
 
                 // @TODO: Fill in dipole information
                 break;
@@ -1066,6 +1068,11 @@ struct VeloxChem : viamd::EventHandler {
                         {
                             md_gto_op_t op = gto_op_from_use_magnitude(es.spin == ElectronicStructureSpin::Difference && es.use_magnitude);
                             evaluate_electron_density(tex_id, grid, es.spin, op);
+                            break;
+                        }
+                        case ElectronicStructureSource::DensityProperty:
+                        {
+                            evaluate_density_property(tex_id, grid, es.density_property_idx);
                             break;
                         }
                         default:
@@ -1836,6 +1843,22 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         return evaluate_density_matrix(vol_tex, grid, density_matrix, density_matrix_dim, op);
+    }
+
+    bool evaluate_density_property(uint32_t vol_tex, const md_grid_t& grid, size_t prop_idx, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+        (void)cutoff_value;
+        const md_vlx_density_property_t* prop = md_vlx_density_property_by_index(vlx, prop_idx);
+        if (!prop) {
+            MD_LOG_ERROR("Failed to retrieve property matrix for index: %zu", prop_idx);
+            return false;
+        }
+        const double* property_matrix = prop->data;
+        const size_t property_matrix_dim = prop->dim[0];
+        if (!property_matrix) {
+            MD_LOG_ERROR("Failed to retrieve property matrix for index: %zu", prop_idx);
+            return false;
+        }
+        return evaluate_density_matrix(vol_tex, grid, property_matrix, property_matrix_dim, MD_GTO_OP_SET);
     }
 
     static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 0.2f) {
@@ -4644,9 +4667,10 @@ struct VeloxChem : viamd::EventHandler {
                 for (int i = 0; i < (int)ElectronicStructureSource::Count; i++) {
                     ElectronicStructureSource source = (ElectronicStructureSource)i;
                     bool is_selected = (export_state.source == source);
-                    bool disabled = (source == ElectronicStructureSource::NaturalTransitionOrbital ||
+                    bool disabled = source == ElectronicStructureSource::DensityProperty ||
+                                    ((source == ElectronicStructureSource::NaturalTransitionOrbital ||
                                      source == ElectronicStructureSource::TransitionDensity) &&
-                                    (md_vlx_rsp_number_of_excited_states(vlx) == 0);
+                                    (md_vlx_rsp_number_of_excited_states(vlx) == 0));
 
                     if (disabled) ImGui::PushDisabled();
                     if (ImGui::Selectable(electronic_structure_source_str[i], is_selected)) {

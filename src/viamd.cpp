@@ -853,6 +853,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_int(rep->electronic_structure.excited_state_idx, arg);
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoLambdaIdx"))) {
                     viamd::extract_int(rep->electronic_structure.nto_lambda_idx, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyIdx"))) {
+                    viamd::extract_int(rep->electronic_structure.density_property_idx, arg);
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureRes"))) {
                     int res;
                     viamd::extract_int(res, arg);
@@ -896,6 +898,22 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_vec4(rep->electronic_structure.col_att, arg);
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureColDet"))) {
                     viamd::extract_vec4(rep->electronic_structure.col_det, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyIsoCount"))) {
+                    viamd::extract_int(rep->electronic_structure.density_property.num_isos, arg);
+                } else {
+                    for (int i = 0; i < (int)ARRAY_SIZE(rep->electronic_structure.density_property.values); ++i) {
+                        char key[64];
+                        snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoValue%d", i);
+                        if (str_eq(ident, str_from_cstr(key))) {
+                            viamd::extract_dbl(rep->electronic_structure.density_property.values[i], arg);
+                            break;
+                        }
+                        snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoColor%d", i);
+                        if (str_eq(ident, str_from_cstr(key))) {
+                            viamd::extract_vec4(rep->electronic_structure.density_property.colors[i], arg);
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1087,6 +1105,7 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
             viamd::write_int(state,  STR_LIT("ElectronicStructureMoIdx"),    rep.electronic_structure.orbital_idx);
             viamd::write_int(state,  STR_LIT("ElectronicStructureNtoIdx"),   rep.electronic_structure.excited_state_idx);
             viamd::write_int(state,  STR_LIT("ElectronicStructureNtoLambdaIdx"), rep.electronic_structure.nto_lambda_idx);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIdx"), rep.electronic_structure.density_property_idx);
             viamd::write_int(state,  STR_LIT("ElectronicStructureType"),     electronic_structure_legacy_type(rep.electronic_structure));
             viamd::write_int(state,  STR_LIT("ElectronicStructureSource"),   (int)rep.electronic_structure.source);
             viamd::write_int(state,  STR_LIT("ElectronicStructureField"),    (int)electronic_structure_legacy_field(rep.electronic_structure));
@@ -1101,6 +1120,14 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
             viamd::write_vec4(state, STR_LIT("ElectronicStructureColDen"),   rep.electronic_structure.col_den);
             viamd::write_vec4(state, STR_LIT("ElectronicStructureColAtt"),   rep.electronic_structure.col_att);
             viamd::write_vec4(state, STR_LIT("ElectronicStructureColDet"),   rep.electronic_structure.col_det);
+            viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIsoCount"), rep.electronic_structure.density_property.num_isos);
+            for (int i = 0; i < rep.electronic_structure.density_property.num_isos; ++i) {
+                char key[64];
+                snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoValue%d", i);
+                viamd::write_dbl(state, str_from_cstr(key), rep.electronic_structure.density_property.values[i]);
+                snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoColor%d", i);
+                viamd::write_vec4(state, str_from_cstr(key), rep.electronic_structure.density_property.colors[i]);
+            }
         }
     }
 
@@ -1428,8 +1455,9 @@ void update_representation(ApplicationState* state, Representation* rep) {
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
         break;
     case RepresentationType::ElectronicStructure: {
-        rep->type_is_valid = electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, rep->electronic_structure.source);
-        if (rep->type_is_valid && rep->enabled) {
+        const bool backend_supported = electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, rep->electronic_structure.source);
+        rep->type_is_valid = backend_supported || rep->electronic_structure.source == ElectronicStructureSource::DensityProperty;
+        if (backend_supported && rep->type_is_valid && rep->enabled) {
             EvalElectronicStructure data = {
                 .sys = &state->mold.sys,
                 .frame = state->animation.frame,

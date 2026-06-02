@@ -118,6 +118,7 @@ enum class ElectronicStructureSource {
     NaturalTransitionOrbital,
     TransitionDensity,
     ElectronDensity,
+    DensityProperty,
     Count
 };
 
@@ -208,6 +209,7 @@ static const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Natural Transition Orbital",
     "Transition Density",
     "Electron Density",
+    "Density Property",
 };
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
@@ -215,6 +217,7 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_NaturalTransitionOrbital  = 1u << (int)ElectronicStructureSource::NaturalTransitionOrbital,
     ElectronicStructureSourceFlag_TransitionDensity         = 1u << (int)ElectronicStructureSource::TransitionDensity,
     ElectronicStructureSourceFlag_ElectronDensity           = 1u << (int)ElectronicStructureSource::ElectronDensity,
+    ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
@@ -497,6 +500,11 @@ struct AtomProperty {
     float value_max = 0;
 };
 
+struct DensityProperty {
+    uint64_t key    = 0;
+    str_t label     = { 0 };
+};
+
 // Struct to fill in for the different components
 // Which provides information of what representations are available for the currently loaded datasets
 struct RepresentationInfo {
@@ -510,6 +518,7 @@ struct RepresentationInfo {
     ElectronicStructureSourceFlags electronic_structure_source_mask = 0;
 
     md_array(AtomProperty) atom_properties = nullptr;
+    md_array(DensityProperty) density_properties = nullptr;
 
     md_allocator_i* alloc = nullptr;
 };
@@ -559,6 +568,12 @@ struct ElectronicStructureRepresentation {
     vec4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
     vec4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
 
+    struct {
+        int num_isos = 0;
+        double values[8];
+        vec4_t colors[8];
+    } density_property;
+
     // Scaling factor of *power* in the gaussians to splat the color volume (when using atom colors for volumes)
     double gaussian_splatting_power = 10.0;
 
@@ -582,6 +597,7 @@ struct ElectronicStructureRepresentation {
     int orbital_idx = 0;
     int excited_state_idx = 0;
     int nto_lambda_idx = 0;
+    int density_property_idx = 0;
 
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
@@ -594,6 +610,10 @@ static inline ElectronicStructureSourceFlags electronic_structure_source_flag(El
 
 static inline bool electronic_structure_source_supported(ElectronicStructureSourceFlags mask, ElectronicStructureSource source) {
     return (mask & electronic_structure_source_flag(source)) != 0;
+}
+
+static inline bool electronic_structure_is_density_property(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::DensityProperty;
 }
 
 static inline bool electronic_structure_uses_orbital_idx(const ElectronicStructureRepresentation& rep) {
@@ -621,6 +641,9 @@ static inline bool electronic_structure_uses_spin(const ElectronicStructureRepre
 }
 
 static inline bool electronic_structure_is_signed(const ElectronicStructureRepresentation& rep) {
+    if (electronic_structure_is_density_property(rep)) {
+        return false;
+    }
     if (rep.source == ElectronicStructureSource::TransitionDensity &&
         rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) {
         return true;
@@ -633,11 +656,38 @@ static inline bool electronic_structure_uses_density_iso_squared(const Electroni
            rep.source == ElectronicStructureSource::ElectronDensity;
 }
 
+static inline vec4_t electronic_structure_density_property_default_color(const ElectronicStructureRepresentation& rep, int idx) {
+    switch (idx) {
+    case 0: return rep.col_psi_pos;
+    case 1: return rep.col_psi_neg;
+    case 2: return rep.col_den;
+    case 3: return rep.col_att;
+    case 4: return rep.col_det;
+    default: return rep.col_den;
+    }
+}
+
+static inline void electronic_structure_density_property_init_defaults(ElectronicStructureRepresentation* rep) {
+    ASSERT(rep);
+    rep->density_property.num_isos = 2;
+    rep->density_property.values[0] =  0.05;
+    rep->density_property.values[1] = -0.05;
+    rep->density_property.colors[0] = rep->col_psi_pos;
+    rep->density_property.colors[1] = rep->col_psi_neg;
+    for (int i = 2; i < (int)ARRAY_SIZE(rep->density_property.values); ++i) {
+        rep->density_property.values[i] = 0.05 * (double)(i + 1);
+        rep->density_property.colors[i] = electronic_structure_density_property_default_color(*rep, i);
+    }
+}
+
 static inline const char* electronic_structure_iso_value_label() {
     return "isovalue (*)";
 }
 
 static inline const char* electronic_structure_iso_value_tooltip(const ElectronicStructureRepresentation& rep) {
+    if (electronic_structure_is_density_property(rep)) {
+        return "User-defined isosurfaces for arbitrary density-property volumes.";
+    }
     if (electronic_structure_uses_density_iso_squared(rep)) {
         return electronic_structure_is_signed(rep) ?
             "Visual surface threshold. Signed density fields render both +isovalue^2 and -isovalue^2 surfaces." :
@@ -651,6 +701,17 @@ static inline const char* electronic_structure_iso_value_tooltip(const Electroni
 static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const ElectronicStructureRepresentation& rep) {
     ASSERT(iso);
     *iso = {};    
+
+    if (electronic_structure_is_density_property(rep)) {
+        const int num_isos = CLAMP(rep.density_property.num_isos, 0, (int)ARRAY_SIZE(rep.density_property.values));
+        iso->count = (size_t)num_isos;
+        for (int i = 0; i < num_isos; ++i) {
+            iso->values[i] = (float)rep.density_property.values[i];
+            iso->colors[i] = rep.density_property.colors[i];
+            iso->optical_densities[i] = (float)rep.iso_optical_density;
+        }
+        return;
+    }
 
     const float iso_value = (float)rep.iso_value;
     const float iso_threshold = electronic_structure_uses_density_iso_squared(rep) ? iso_value * iso_value : iso_value;
@@ -723,6 +784,15 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
     case ElectronicStructureSource::ElectronDensity:
         rep->spin = ElectronicStructureSpin::Total;
         rep->use_magnitude = false;
+        break;
+    case ElectronicStructureSource::DensityProperty:
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        rep->use_atom_colors = false;
+        rep->density_property_idx = MAX(0, rep->density_property_idx);
+        if (rep->density_property.num_isos <= 0) {
+            electronic_structure_density_property_init_defaults(rep);
+        }
         break;
     default:
         ASSERT(false);
@@ -803,6 +873,8 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
             ElectronicStructureLegacyType::DetachmentDensity :
             ElectronicStructureLegacyType::AttachmentDensity);
     case ElectronicStructureSource::ElectronDensity:
+        return (int)ElectronicStructureLegacyType::ElectronDensity;
+    case ElectronicStructureSource::DensityProperty:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:
         ASSERT(false);
