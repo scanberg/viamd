@@ -49,7 +49,7 @@
 
 #define FORCE_CPU_PATH 0
 
-#define USE_AABB_GRID 1
+#define USE_AABB_GRID 0
 
 // Resolution for broadened plots
 #define NUM_SAMPLES 1024
@@ -167,7 +167,7 @@ static void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* x
     vec4_t min_v = vec4_set1( FLT_MAX);
     vec4_t max_v = vec4_set1(-FLT_MAX);
 
-    mat4_t rot = mat4_from_mat3(orientation);
+    mat4_t rot = mat4_from_mat3(mat3_transpose(orientation));
 
     for (size_t i = 0; i < count; ++i) {
         vec4_t v = mat4_mul_vec4(rot, xyzw[i]);
@@ -178,15 +178,10 @@ static void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* x
     // Padding
     const float pad = 6.0f;
     min_v -= pad;
-    max_v += pad;
+    max_v += pad; 
 
-    out_min[0] = min_v.x;
-    out_min[1] = min_v.y;
-    out_min[2] = min_v.z;
-
-    out_max[0] = max_v.x;
-    out_max[1] = max_v.y;
-    out_max[2] = max_v.z;
+	MEMCPY(out_min, &min_v, sizeof(float) * 3);
+	MEMCPY(out_max, &max_v, sizeof(float) * 3);
 }
 
 // Construct texture to world transformation matrix for Volume
