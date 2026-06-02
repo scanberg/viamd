@@ -127,6 +127,19 @@ vec4 sampleIsoColor(vec3 texPos, vec4 baseColor) {
 #endif
 }
 
+vec4 depth_to_view_coord(vec2 tc, float depth) {
+    vec4 clip_coord = vec4(vec3(tc, depth) * 2.0 - 1.0, 1.0);
+    vec4 view_coord = u_inv_proj_mat * clip_coord;
+    return view_coord / view_coord.w;
+}
+
+vec3 viewDirectionViewSpace() {
+    vec2 tc = gl_FragCoord.xy * u_inv_res;
+    vec3 nearView = depth_to_view_coord(tc, 0.0).xyz;
+    vec3 farView  = depth_to_view_coord(tc, 1.0).xyz;
+    return normalize(nearView - farView);
+}
+
 vec3 sampleGradient(vec3 texPos) {
     vec3 dx = u_gradient_spacing_tex_space[0].xyz;
     vec3 dy = u_gradient_spacing_tex_space[1].xyz;
@@ -238,7 +251,12 @@ float GeometrySmith(float NdotV, float NdotL, float roughness) {
 }
 
 void accumulateSurfaceHit(inout RayState state, vec3 isoPosTex, vec4 baseColor) {
-    vec3 V = -normalize((u_model_to_view_mat * vec4(isoPosTex, 1.0)).xyz);
+    vec3 isoPosView = (u_model_to_view_mat * vec4(isoPosTex, 1.0)).xyz;
+    vec3 V = viewDirectionViewSpace();
+
+    if (dot(V, V) <= EPSILON) {
+        V = -normalize(isoPosView);
+    }
 
     vec3 N = sampleGradient(isoPosTex);
     float nLen = length(N);
