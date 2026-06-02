@@ -3334,12 +3334,13 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     bool advanced = state->representation.advanced_mode;
     bool update_rep = false;
 
+	size_t num_density_props = md_array_size(state->representation.info.density_properties);
+
     if (ImGui::BeginCombo("volume src", electronic_structure_source_str[(int)es.source], flags)) {
         for (int n = 0; n < (int)ElectronicStructureSource::Count; n++) {
             ElectronicStructureSource source = (ElectronicStructureSource)n;
             bool is_selected = (es.source == source);
-            bool disabled = source != ElectronicStructureSource::DensityProperty &&
-                            !electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, source);
+            bool disabled = !electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, source);
 
             if (disabled) ImGui::PushDisabled();
             if (ImGui::Selectable(electronic_structure_source_str[n], is_selected)) {

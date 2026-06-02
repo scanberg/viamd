@@ -925,8 +925,23 @@ struct VeloxChem : viamd::EventHandler {
 
                     md_array_push(info.atom_properties, prop, info.alloc);
                 }
-                // Density-property extraction is still wired up on the viamd side only.
-                // Keep the GUI source available there without depending on md_vlx backend support yet.
+                
+				size_t num_density_properties = md_vlx_density_property_count(vlx);
+                for (size_t i = 0; i < num_density_properties; ++i) {
+                    const md_vlx_density_property_t* vlx_prop = md_vlx_density_property_by_index(vlx, i);
+                    if (!vlx_prop) continue;
+
+					DensityProperty prop = {
+						.key = vlx_prop->key,
+						.label = str_copy(vlx_prop->label, info.alloc),
+					};
+
+                    md_array_push(info.density_properties, prop, info.alloc);
+                }
+
+				if (num_density_properties > 0) {
+					info.electronic_structure_source_mask |= ElectronicStructureSourceFlag_DensityProperty;
+				}
 
                 // @TODO: Fill in dipole information
                 break;
