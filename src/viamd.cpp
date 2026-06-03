@@ -1121,12 +1121,12 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
             viamd::write_vec4(state, STR_LIT("ElectronicStructureColAtt"),   rep.electronic_structure.col_att);
             viamd::write_vec4(state, STR_LIT("ElectronicStructureColDet"),   rep.electronic_structure.col_det);
             viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIsoCount"), rep.electronic_structure.density_property.num_isos);
-            for (int i = 0; i < rep.electronic_structure.density_property.num_isos; ++i) {
+            for (int j = 0; j < rep.electronic_structure.density_property.num_isos; ++j) {
                 char key[64];
-                snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoValue%d", i);
-                viamd::write_dbl(state, str_from_cstr(key), rep.electronic_structure.density_property.values[i]);
-                snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoColor%d", i);
-                viamd::write_vec4(state, str_from_cstr(key), rep.electronic_structure.density_property.colors[i]);
+                snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoValue%d", j);
+                viamd::write_dbl(state, str_from_cstr(key), rep.electronic_structure.density_property.values[j]);
+                snprintf(key, sizeof(key), "ElectronicStructureDensityPropertyIsoColor%d", j);
+                viamd::write_vec4(state, str_from_cstr(key), rep.electronic_structure.density_property.colors[j]);
             }
         }
     }
