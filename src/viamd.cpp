@@ -196,7 +196,7 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
 void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state) {
     if (hit.raw_idx == INVALID_PICKING_IDX) return;
     
-	md_temp_t temp = md_temp_begin_arena(state.allocator.frame);
+	md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
     defer { md_temp_end(temp); };
 
     PickingTooltipTextRequest tooltip_request = {
@@ -340,11 +340,11 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
         return;
     }
 
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
     defer { md_temp_end(temp_scope); };
 
-    SecondaryStructureRenderClass* classes = (SecondaryStructureRenderClass*)md_temp_push(sizeof(SecondaryStructureRenderClass) * num_frames);
-    SecondaryStructureRenderClass* filtered = (SecondaryStructureRenderClass*)md_temp_push(sizeof(SecondaryStructureRenderClass) * num_frames);
+    SecondaryStructureRenderClass* classes  = md_temp_alloc_array(temp_scope, SecondaryStructureRenderClass, num_frames);
+    SecondaryStructureRenderClass* filtered = md_temp_alloc_array(temp_scope, SecondaryStructureRenderClass, num_frames);
 
     constexpr int window_radius = 2;
 
@@ -412,6 +412,10 @@ void free_trajectory_data(ApplicationState* state) {
     state->files.trajectory[0] = '\0';
 
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
+    for (size_t i = 0; i < md_array_size(state->display_properties); ++i) {
+        md_array_free(state->display_properties[i].hist.bins, state->display_properties[i].hist.alloc);
+        state->display_properties[i].hist.bins = nullptr;
+    }
     md_array_free(state->display_properties, state->allocator.persistent);
 
     md_array_free(state->trajectory_data.backbone_angles.data,               state->allocator.persistent);
@@ -476,13 +480,13 @@ void init_trajectory_data(ApplicationState* data) {
                 md_system_t sys = data->mold.sys;
                 md_trajectory_i* traj = data->mold.sys.trajectory;
 
-                md_temp_t temp_scope = md_temp_begin();
+                md_temp_scope_t temp_scope = md_temp_begin();
                 defer { md_temp_end(temp_scope); };
 
                 const size_t capacity = ALIGN_TO(sys.atom.count, 16);
-                float* x = (float*)md_temp_push(sizeof(float) * capacity);
-                float* y = (float*)md_temp_push(sizeof(float) * capacity);
-                float* z = (float*)md_temp_push(sizeof(float) * capacity);
+                float* x = md_temp_alloc_array(temp_scope, float, capacity);
+                float* y = md_temp_alloc_array(temp_scope, float, capacity);
+                float* z = md_temp_alloc_array(temp_scope, float, capacity);
 
                 md_trajectory_reader_i reader;
                 if (md_trajectory_reader_init(&reader, traj)) {
@@ -627,13 +631,15 @@ void free_system_data(ApplicationState* data) {
 
     md_bitfield_clear(&data->selection.selection_mask);
     md_bitfield_clear(&data->selection.highlight_mask);
-    if (data->script.ir) {
-        md_script_ir_free(data->script.ir);
-        data->script.ir = nullptr;
+    md_script_ir_t* ir = data->script.ir;
+    md_script_ir_t* eval_ir = data->script.eval_ir;
+    data->script.ir = nullptr;
+    data->script.eval_ir = nullptr;
+    if (ir) {
+        md_script_ir_free(ir);
     }
-    if (data->script.eval_ir && data->script.eval_ir != data->script.ir) {
-        md_script_ir_free(data->script.eval_ir);
-        data->script.eval_ir = nullptr;
+    if (eval_ir && eval_ir != ir) {
+        md_script_ir_free(eval_ir);
     }
     if (data->script.full_eval) {
         md_script_eval_free(data->script.full_eval);
@@ -707,8 +713,9 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
 }
 
 void load_workspace(ApplicationState* data, str_t filename) {
-    ScopedTemp temp_reset;
-    md_allocator_i* temp_alloc = temp_reset.allocator();
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     str_t txt = load_textfile(filename, temp_alloc);
 
@@ -1299,8 +1306,8 @@ void update_representation(ApplicationState* state, Representation* rep) {
     size_t num_atoms = md_system_atom_count(&sys);
 
     md_allocator_i* frame_alloc = state->allocator.frame;
-    md_temp_t tmp = md_temp_begin_arena(frame_alloc);
-    defer { md_temp_end(tmp); };
+    md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
+    defer { md_temp_end(temp); };
 
     const size_t bytes = num_atoms * sizeof(uint32_t);
 
@@ -1670,8 +1677,8 @@ void interpolate_system_state(ApplicationState* state) {
     const uint32_t grain_size = 1024;
 
     md_allocator_i* temp_arena = state->allocator.frame;
-    md_temp_t tmp = md_temp_begin_arena(temp_arena);
-    defer { md_temp_end(tmp); };
+    md_temp_scope_t temp = md_temp_begin_in(temp_arena);
+    defer { md_temp_end(temp); };
 
     struct Payload {
         ApplicationState* state;
@@ -1710,8 +1717,8 @@ void interpolate_system_state(ApplicationState* state) {
         .dst_x = sys.atom.x,
         .dst_y = sys.atom.y,
         .dst_z = sys.atom.z,
-        .aabb_min = (vec3_t*)md_temp_push(num_threads * sizeof(vec3_t)),
-        .aabb_max = (vec3_t*)md_temp_push(num_threads * sizeof(vec3_t)),
+        .aabb_min = md_temp_alloc_array(temp, vec3_t, num_threads),
+        .aabb_max = md_temp_alloc_array(temp, vec3_t, num_threads),
     };
 
     int requested_frames[4] = { 0 };
@@ -1944,8 +1951,9 @@ void interpolate_system_state(ApplicationState* state) {
             const float* y = data->state->mold.sys.atom.y + range_beg;
             const float* z = data->state->mold.sys.atom.z + range_beg;
 
-            ScopedTemp temp_reset;
-            float* r = (float*)md_temp_push(sizeof(float) * range_len);
+            md_temp_scope_t temp = md_temp_begin();
+            defer { md_temp_end(temp); };
+            float* r = md_temp_alloc_array(temp, float, range_len);
             md_atom_extract_radii(r, range_beg, range_len, &data->state->mold.sys.atom);
 
             vec3_t aabb_min = vec3_set1(FLT_MAX);
@@ -2309,11 +2317,11 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
     mat4_t transform = mat4_ident();
 
     if (count > 0) {
-        md_temp_t temp = md_temp_begin_arena(state->allocator.frame);
+        md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
         defer { md_temp_end(temp); };
 
         // Extract xyzw subset of target
-        vec4_t* target_xyzw = (vec4_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec4_t) * count);
+        vec4_t* target_xyzw = md_temp_alloc_array(temp, vec4_t, count);
         md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &state->mold.sys);
 
         // Unwrap target structure (required for rotation)
@@ -2934,7 +2942,8 @@ void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfi
     ASSERT(transform);
     if (!sys.atom.count) return;
 
-    ScopedTemp temp_reset;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
 
     size_t popcount = 0;
     if (mask) {
@@ -2943,7 +2952,7 @@ void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfi
 
     int32_t* indices = nullptr;
     if (0 < popcount && popcount < sys.atom.count) {
-        indices = (int32_t*)md_temp_push(sizeof(int32_t) * popcount);
+        indices = md_temp_alloc_array(temp, int32_t, popcount);
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(mask));
         if (len > popcount || len > sys.atom.count) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
@@ -3114,8 +3123,6 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
 void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags) {
     ASSERT(state);
-    md_temp_t temp = md_temp_begin_arena(state->allocator.frame);
-    defer { md_temp_end(temp); };
 
     md_script_vis_ctx_t ctx = {
         .ir   = state->script.eval_ir,
@@ -3132,8 +3139,6 @@ void script_visualize_payload(ApplicationState* state, const md_script_vis_paylo
 
 void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags) {
     ASSERT(state);
-    md_temp_t temp = md_temp_begin_arena(state->allocator.frame);
-    defer { md_temp_end(temp); };
 
     md_script_vis_ctx_t ctx = {
         .ir   = state->script.eval_ir,

@@ -179,8 +179,10 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
             uint32_t range_end = sys.protein_backbone.range.offset[i+1];
             uint32_t range_ext = range_end - range_beg;
 
-            ScopedTemp temp_reset;
-            uint32_t* seg_colors = md_temp_push_array(uint32_t, range_ext);
+            md_temp_scope_t temp_scope = md_temp_begin();
+            defer { md_temp_end(temp_scope); };
+
+            uint32_t* seg_colors = md_temp_alloc_array(temp_scope, uint32_t, range_ext);
             for (size_t j = 0; j < range_ext; ++j) {
                 md_secondary_structure_t ss = sys.protein_backbone.segment.secondary_structure[range_beg + j];
                 uint32_t color = color_unknown;

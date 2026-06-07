@@ -272,9 +272,10 @@ void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float
         return;
     }
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
     size_t bytes = sizeof(uint32_t) * res;
-    uint32_t* pixel_data = (uint32_t*)md_temp_push(bytes);
+    uint32_t* pixel_data = (uint32_t*)md_temp_alloc(temp, bytes);
 
     // Update colormap texture
     for (int i = 0; i < res; ++i) {
@@ -290,7 +291,6 @@ void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float
     gl::init_texture_2D(tex, res, 1, GL_RGBA8);
     gl::set_texture_2D_data(*tex, 0, pixel_data, GL_RGBA8);
 
-    md_temp_end(temp);
 }
 
 void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t type, float ramp_scale, float ramp_period, int res) {
@@ -300,9 +300,10 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
         return;
     }
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
     size_t bytes = sizeof(uint32_t) * res;
-    uint32_t* pixel_data = (uint32_t*)md_temp_push(bytes);
+    uint32_t* pixel_data = (uint32_t*)md_temp_alloc(temp, bytes);
 
     const float s = ramp_scale;
     const float p = ramp_period;
@@ -334,7 +335,6 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
     gl::init_texture_2D(tex, res, 1, GL_RGBA8);
     gl::set_texture_2D_data(*tex, 0, pixel_data, GL_RGBA8);
 
-    md_temp_end(temp);
 }
 
 static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
@@ -385,10 +385,11 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
     (void)voxel_spacing;
     (void)world_to_model;
 
-    md_temp_t temp_scope = md_temp_begin();
+    md_temp_scope_t temp_scope = md_temp_begin();
+    defer { md_temp_end(temp_scope); };
 
     size_t bytes = sizeof(vec4_t) * volume_dim[0] * volume_dim[1] * volume_dim[2];
-    vec4_t* result = (vec4_t*)md_temp_push(bytes);
+    vec4_t* result = (vec4_t*)md_temp_alloc(temp_scope, bytes);
     ASSERT(result);
 
     mat4_t index_to_world_mat = mat4_load((const float*)index_to_world);
@@ -426,7 +427,6 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
     glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, volume_dim[0], volume_dim[1], volume_dim[2], GL_RGBA, GL_FLOAT, result);
     glBindTexture(GL_TEXTURE_3D, 0);
 
-    md_temp_end(temp_scope);
 }
 
 // vol_origin is the origin of the volume in world space

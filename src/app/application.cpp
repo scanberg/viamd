@@ -85,7 +85,9 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
     // Zero terminated
-    str_t ztitle = str_copy(title, md_get_temp_arena());
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    str_t ztitle = str_copy(title, md_temp_allocator(temp));
     GLFWwindow* window = glfwCreateWindow((int)width, (int)height, ztitle.ptr, NULL, NULL);
     if (!window) {
         MD_LOG_ERROR("Could not create glfw window.");
@@ -189,8 +191,10 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
             MD_LOG_DEBUG("User dropped file: '%s'", paths[i]);
         }
 
-        ScopedTemp temp_reset;
-        str_t* str_paths = md_temp_push_array(str_t, num_files);
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        str_t* str_paths = md_temp_alloc_array(temp, str_t, num_files);
         for (int i = 0; i < num_files; ++i) {
             str_paths[i] = {paths[i], strlen(paths[i])};
         }
@@ -289,15 +293,19 @@ void render_imgui(Context* ctx) {
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
 bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filter) {    
+    md_temp_scope_t temp = md_temp_begin();
     nfdchar_t* out_path = NULL;
-    defer { if (out_path) free(out_path); };
+    defer {
+        md_temp_end(temp);
+        if (out_path) free(out_path);
+    };
 
     nfdresult_t result = NFD_ERROR;
 
     const char* default_path = 0;
 
     // Zero terminated variant
-    str_t zfilt = str_copy(filter, md_get_temp_arena());
+    str_t zfilt = str_copy(filter, md_temp_allocator(temp));
 
     if (flags & FileDialogFlag_Open) {
         result = NFD_OpenDialog(zfilt.ptr, default_path, &out_path);

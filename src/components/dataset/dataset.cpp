@@ -149,7 +149,7 @@ struct Dataset : viamd::EventHandler {
 
         if (atom_count == 0) return;
 
-        md_temp_t temp_scope = md_temp_begin();
+        md_temp_scope_t temp_scope = md_temp_begin();
         md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
         defer { md_temp_end(temp_scope); };
         

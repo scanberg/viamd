@@ -100,12 +100,13 @@ void write_str(serialization_state_t& state, str_t ident, str_t str) {
 }
 
 void write_bitfield(serialization_state_t& state, str_t ident, const md_bitfield_t* bf) {
-	ScopedTemp temp_reset;
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
 
-	void*  serialized_data = md_temp_push(md_bitfield_serialize_size_in_bytes(bf));
+	void*  serialized_data = md_temp_alloc(temp, md_bitfield_serialize_size_in_bytes(bf));
 	size_t serialized_size = md_bitfield_serialize(serialized_data, bf);
 	if (serialized_size) {
-		char*  base64_data = (char*)md_temp_push(md_base64_encode_size_in_bytes(serialized_size));
+		char*  base64_data = (char*)md_temp_alloc(temp, md_base64_encode_size_in_bytes(serialized_size));
 		size_t base64_size = md_base64_encode(base64_data, serialized_data, serialized_size);
 		if (base64_size) {
 			str_t base64 = {base64_data, base64_size};
@@ -189,7 +190,8 @@ bool extract_to_char_buf(char* buf, size_t cap, str_t arg) {
 }
 
 bool extract_bitfield(md_bitfield_t* bf, str_t arg) {
-	ScopedTemp temp_reset;
+	md_temp_scope_t temp = md_temp_begin();
+	defer { md_temp_end(temp); };
 
 	// Bitfield starts with ###
 	// and ends with ###
@@ -208,7 +210,7 @@ bool extract_bitfield(md_bitfield_t* bf, str_t arg) {
 
 	arg = str_substr(arg, 0, loc);
 	const size_t raw_cap = md_base64_decode_size_in_bytes(str_len(arg));
-	void* raw_ptr = md_temp_push(raw_cap);
+	void* raw_ptr = md_temp_alloc(temp, raw_cap);
 
 	const size_t raw_len = md_base64_decode(raw_ptr, str_ptr(arg), str_len(arg));
 	if (!raw_len || !md_bitfield_deserialize(bf, raw_ptr, raw_len)) {

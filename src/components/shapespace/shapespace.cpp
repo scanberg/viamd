@@ -389,17 +389,17 @@ struct Shapespace : viamd::EventHandler {
                         ApplicationState* app_state = shapespace->app_state;
                         const size_t stride = ALIGN_TO(app_state->mold.sys.atom.count, 8);
                         const size_t bytes = stride * 3 * sizeof(float);
-                        md_temp_t temp_scope = md_temp_begin();
+                        md_temp_scope_t temp_scope = md_temp_begin();
                         md_allocator_i* alloc = md_temp_allocator(temp_scope);
                         defer { md_temp_end(temp_scope); };
 
-                        float* coords = (float*)md_temp_push(bytes);
+                        float* coords = (float*)md_temp_alloc(temp_scope, bytes);
                         float* x = coords + stride * 0;
                         float* y = coords + stride * 1;
                         float* z = coords + stride * 2;
                         float* w = 0;
                         if (shapespace->use_mass) {
-                            w = (float*)md_temp_push(stride * sizeof(float));
+                            w = (float*)md_temp_alloc(temp_scope, stride * sizeof(float));
                             md_atom_extract_masses(w, 0, app_state->mold.sys.atom.count, &app_state->mold.sys.atom);
                         }
 
@@ -448,7 +448,7 @@ struct Shapespace : viamd::EventHandler {
             md_array(str_t)  column_labels = 0;
             md_array(float*) column_values = 0;
 
-            md_temp_t temp_scope = md_temp_begin();
+            md_temp_scope_t temp_scope = md_temp_begin();
             md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
             defer { md_temp_end(temp_scope); };
 

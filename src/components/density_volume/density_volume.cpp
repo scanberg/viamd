@@ -112,7 +112,7 @@ struct DensityVolume : viamd::EventHandler {
 
     void update(ApplicationState* state) {
         md_allocator_i* temp_arena = state->allocator.frame;
-        md_temp_t temp_scope = md_temp_begin_arena(temp_arena);
+        md_temp_scope_t temp_scope = md_temp_begin_in(temp_arena);
         defer { md_temp_end(temp_scope); };
 
         if (dvr.tf.dirty) {
@@ -206,8 +206,10 @@ struct DensityVolume : viamd::EventHandler {
 
                 const md_system_t& sys = state->mold.sys;
 			    const size_t num_atoms = md_system_atom_count(&sys);
+                md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
+                defer { md_temp_end(temp); };
                 const size_t num_bytes = sizeof(uint32_t) * num_atoms;
-                uint32_t* colors = (uint32_t*)md_temp_push(num_bytes);
+                uint32_t* colors = (uint32_t*)md_temp_alloc(temp, num_bytes);
 
                 switch (rep.colormap) {
                 case ColorMapping::Uniform:
@@ -287,7 +289,7 @@ struct DensityVolume : viamd::EventHandler {
         if (!show_window) return;
 
         md_allocator_i* temp_arena = state->allocator.frame;
-        md_temp_t temp_scope = md_temp_begin_arena(temp_arena);
+        md_temp_scope_t temp_scope = md_temp_begin_in(temp_arena);
         defer { md_temp_end(temp_scope); };
 
         ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);

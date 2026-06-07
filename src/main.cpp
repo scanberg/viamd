@@ -174,7 +174,7 @@ static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_b
     ASSERT(mask);
     ASSERT(dim > 0);
 
-    md_temp_t temp = md_temp_begin_arena(frame_alloc);
+    md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
     defer { md_temp_end(temp); };
 
     hist->dim = aggregate ? 1 : dim;
@@ -558,9 +558,7 @@ int main(int argc, char** argv) {
         file_queue_process(&state);
 
         state.script.vis = {0};
-        // @NOTE: We use the persistent allocator here since the visualization data may be pushed inside temp scopes
-        // In which the allocated visualization data needs to survive until the end of the frame where it is consumed for rendering
-        md_script_vis_init(&state.script.vis, state.allocator.persistent);
+        md_script_vis_init(&state.script.vis, state.allocator.frame);
 
         picking_handler_new_frame(&state.picking_handler);
         viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, picking_handler_current_space(&state.picking_handler));
@@ -821,6 +819,10 @@ int main(int argc, char** argv) {
                     // Now we hold all semaphores for the script
                     state.script.compile_ir = false;
                     state.script.time_since_last_change = 0;
+
+                    if (state.script.ir && state.script.ir != state.script.eval_ir) {
+                        md_script_ir_free(state.script.ir);
+                    }
                     
                     state.script.ir = md_script_ir_create(persistent_alloc);
 
@@ -1246,7 +1248,7 @@ int main(int argc, char** argv) {
         viamd::event_system_process_event_queue();
         task_system::execute_main_task_queue();
 
-        md_script_vis_free(&state.script.vis);
+        //md_script_vis_free(&state.script.vis);
 
         // Reset frame allocator
         md_vm_arena_reset(frame_alloc);
@@ -2101,7 +2103,7 @@ static void draw_main_menu(ApplicationState* data) {
                     const auto& mol = data->mold.sys;
                     // Closest frame to the current animation time
                     uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
-                    md_temp_t temp_pos = md_temp_begin_arena(frame_alloc);
+                    md_temp_scope_t temp_pos = md_temp_begin_in(frame_alloc);
                     defer { md_temp_end(temp_pos); };
 
                     float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
@@ -2480,7 +2482,7 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     int range_beg = indices[0];
     int prev_idx  = -1;
 
-    md_temp_t temp = md_temp_begin();
+    md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
     md_array(md_irange_t) items = 0;
@@ -5966,7 +5968,7 @@ static void draw_property_export_window(ApplicationState* data) {
 
         if (export_clicked) {
             md_allocator_i* alloc = frame_alloc;
-            md_temp_t temp = md_temp_begin_arena(frame_alloc);
+            md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
             defer { md_temp_end(temp); };
 
             ASSERT(property_idx != -1);
@@ -6170,7 +6172,7 @@ void draw_structure_export_window(ApplicationState* data) {
     ASSERT(data);
 
     if (ImGui::Begin("Structure Export", &data->structure_export.show_window)) {
-        md_temp_t temp = md_temp_begin_arena(frame_alloc);
+        md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
         defer { md_temp_end(temp); };
 
         const md_system_t* sys = &data->mold.sys;
@@ -6441,7 +6443,7 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyRadius) {
-        md_temp_t tmp = md_temp_begin_arena(frame_alloc);
+        md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
         defer { md_temp_end(tmp); };
 
         float* radii = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
@@ -6454,7 +6456,7 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyFlags) {
-        md_temp_t tmp = md_temp_begin_arena(frame_alloc);
+        md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
         defer { md_temp_end(tmp); };
 
         uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
@@ -6500,7 +6502,7 @@ static void update_md_buffers(ApplicationState* data) {
 }
 
 void create_screenshot(str_t path) {
-    md_temp_t tmp = md_temp_begin_arena(frame_alloc);
+    md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
     defer { md_temp_end(tmp); };
 
     int viewport[4] = {};
