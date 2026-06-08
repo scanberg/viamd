@@ -393,7 +393,7 @@ struct VeloxChem : viamd::EventHandler {
         double iso_val = 0.05;
         vec4_t col_pos = { 0.0f, 0.294f, 0.529f, 0.75f };
         vec4_t col_neg = { 1.0f, 0.804f, 0.0f,   0.75f };
-        vec4_t col_den = { 1.0f, 1.0f, 1.0f, 0.75f };
+        vec4_t col_den = { 1.0f, 1.0f,   1.0f,   0.75f };
         vec4_t col_att = VEC4_VELOXCHEM_GREEN;
         vec4_t col_det = VEC4_VELOXCHEM_MAGENTA;
 
@@ -990,6 +990,15 @@ struct VeloxChem : viamd::EventHandler {
 					info.electronic_structure_source_mask |= ElectronicStructureSourceFlag_DensityProperty;
 				}
 
+                dvec3_t ground_state_dipole = md_vlx_scf_ground_state_dipole_moment(vlx);
+				DipoleMoment ground_state_dipole_info = {
+					.key = HASH_STR_LIT64("ground_state_dipole"),
+					.label = str_copy(STR_LIT("Ground State Dipole Moment"), info.alloc),
+					.vec = { (float)ground_state_dipole.x, (float)ground_state_dipole.y, (float)ground_state_dipole.z },
+				};
+
+				md_array_push(info.dipole_moments, ground_state_dipole_info, info.alloc);
+
                 // @TODO: Fill in dipole information
                 break;
             }
@@ -1378,8 +1387,8 @@ struct VeloxChem : viamd::EventHandler {
                     md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
                     gpu_basis = md_gto_gpu_basis_create(gpu_device, &basis_desc);
 
-                    uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-                    uint32_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
+                    size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+                    size_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
 
                     md_gpu_buffer_desc_t gpu_atom_desc = {
                         .size  = md_gto_gpu_atom_buffer_size(num_atoms),
@@ -1565,7 +1574,7 @@ struct VeloxChem : viamd::EventHandler {
 #if MD_ENABLE_GPU
         bool success = false;
         if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
-            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
             md_gpu_event_t atom_upload_event = ensure_gpu_atoms_uploaded();
 
             md_gpu_device_info_t gpu_info = {};
@@ -1643,8 +1652,8 @@ struct VeloxChem : viamd::EventHandler {
 #if MD_ENABLE_GPU
         bool success = false;
         if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
-            uint32_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
-            uint32_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
+            size_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            size_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
 
             md_gpu_device_info_t gpu_info = {};
             md_gpu_device_info(gpu_device, &gpu_info);
@@ -1723,7 +1732,7 @@ struct VeloxChem : viamd::EventHandler {
 #if MD_ENABLE_GPU
         bool success = false;
         if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
-            uint32_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
             if (density_matrix_dim != num_cgtos) {
                 MD_LOG_ERROR("Density matrix dimension (%zu) does not match basis dimension (%u)", density_matrix_dim, num_cgtos);
                 return false;
@@ -3380,9 +3389,6 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     if (graph.num_vertices > 0) {
-                        md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
-                        defer{ md_temp_end(temp); };
-
                         enum CriticalPointColumn {
                             CriticalPointColumn_Idx,
                             CriticalPointColumn_X,

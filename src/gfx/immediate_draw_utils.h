@@ -19,6 +19,7 @@ constexpr uint32_t DEFAULT_COLOR = COLOR_BLACK;
 struct Vertex {
     vec3_t   coord;
     uint32_t color;
+	vec3_t   normal = {0,0,1};
     uint32_t picking_idx = 0xFFFFFFFF;
 };
 
@@ -31,10 +32,40 @@ void set_picking_base_idx(uint32_t base_idx);
 
 void render();
 
+// Lighting descriptor for render_shaded().
+// All radiance values are in linear light units.
+// light_dir is a world-space direction pointing *towards* the light source.
+struct LightingDesc {
+    vec3_t light_dir    = {0.57735026f, 0.57735026f, 0.57735026f};  // normalized world-space direction towards light
+    vec3_t dir_radiance = {10.f, 10.f, 10.f};                       // directional light colour * intensity
+    vec3_t env_radiance = {1.f,  1.f,  1.f};                        // ambient/environment radiance
+    float  roughness    = 0.4f;
+    float  F0           = 0.04f;                                     // Fresnel reflectance at normal incidence
+};
+
+// Like render(), but triangle draw commands are shaded using the provided lighting descriptor.
+// Lines and points are drawn unlit. The same GBuffer MRT layout (locations 0-3) is written.
+void render_shaded(const LightingDesc& lighting = {});
+
 // 3D Primitives
 void draw_point(vec3_t pos, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
 void draw_line(vec3_t from, vec3_t to, uint32_t color = DEFAULT_COLOR);
 void draw_triangle(vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
+
+// Sphere centered at 'center' with given radius.
+void draw_sphere(vec3_t center, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int stacks = 12, int slices = 16);
+void draw_sphere_wireframe(vec3_t center, float radius, uint32_t color = DEFAULT_COLOR, int stacks = 12, int slices = 16);
+
+// Cylinder from 'from' to 'to' with given radius. Cap geometry is included for the filled variant.
+void draw_cylinder(vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
+void draw_cylinder_wireframe(vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
+
+// Cone with apex at 'tip' and base centered at 'base'.
+void draw_cone(vec3_t base, vec3_t tip, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
+void draw_cone_wireframe(vec3_t base, vec3_t tip, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
+
+// Solid box given axis-aligned min/max corners.
+void draw_box(vec3_t min_box, vec3_t max_box, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
 
 // Batch
 void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});

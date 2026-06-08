@@ -3762,13 +3762,21 @@ static void draw_representations_window(ApplicationState* state) {
             }
             if (!rep.type_is_valid) ImGui::PopInvalid();
 
-            if (rep.type != RepresentationType::ElectronicStructure) {
+            switch (rep.type) {
+            case RepresentationType::ElectronicStructure:
+                update_rep |= draw_representations_window_electronic_structure(state, rep);
+                break;
+            case RepresentationType::DipoleMoment:
+				ImGui::ColorEdit4("color", rep.dipole.color.elem);
+				ImGui::SliderFloat("scale", &rep.dipole.scale, 0.01f, 10.f);
+				ImGui::SliderFloat("radius", &rep.dipole.radius, 0.01f, 0.5f);
+                break;
+			default:
                 if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
                     rep.filt_is_dirty = true;
                     update_rep = true;
                 }
-            } else {
-                update_rep |= draw_representations_window_electronic_structure(state, rep);
+                break;
             }
 
             if (representation_uses_atom_colors(rep)) {
@@ -6932,55 +6940,84 @@ static void draw_representations_opaque(ApplicationState* data) {
         const size_t num_representations = md_array_size(data->representation.reps);
         if (num_representations == 0) return;
 
+		immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
+		immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
+
+		glEnable(GL_DEPTH_TEST);
+
         md_array(md_gl_draw_op_t) draw_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = data->representation.reps[i];
 
-            if (rep.type > RepresentationType::Cartoon) continue;
-
-            if (rep.enabled && rep.type_is_valid) {
-                md_gl_draw_op_t op = {
-                    .type = (md_gl_rep_type_t)rep.type,
-                    .args = {},
-                    .rep = data->representation.reps[i].md_rep,
-                    .model_matrix = NULL,
-                };
-                switch (rep.type) {
-                case RepresentationType::SpaceFill:
-                    op.args.space_fill.radius_scale = rep.scale.x;
-                    break;
-                case RepresentationType::Licorice:
-                    op.args.licorice.radius = rep.scale.x;
-                    op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
-                    op.args.licorice.sharpness = rep.bond_sharpness;
-                    op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
-                    if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
-                        tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+            if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
+                if (rep.enabled && rep.type_is_valid) {
+                    md_gl_draw_op_t op = {
+                        .type = (md_gl_rep_type_t)rep.type,
+                        .args = {},
+                        .rep = data->representation.reps[i].md_rep,
+                        .model_matrix = NULL,
+                    };
+                    switch (rep.type) {
+                    case RepresentationType::SpaceFill:
+                        op.args.space_fill.radius_scale = rep.scale.x;
+                        break;
+                    case RepresentationType::Licorice:
+                        op.args.licorice.radius = rep.scale.x;
+                        op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+                        op.args.licorice.sharpness = rep.bond_sharpness;
+                        op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
+                        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+                            tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+                        }
+                        break;
+                    case RepresentationType::BallAndStick:
+                        op.args.ball_and_stick.ball_scale = rep.scale.x;
+                        op.args.ball_and_stick.stick_radius = rep.scale.y;
+                        op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
+                        op.args.ball_and_stick.sharpness = rep.bond_sharpness;
+                        op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
+                        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
+                            tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
+                        }
+                        break;
+                    case RepresentationType::Ribbons:
+                        op.args.ribbons.width_scale = rep.scale.x;
+                        op.args.ribbons.thickness_scale = rep.scale.y;
+                        break;
+                    case RepresentationType::Cartoon:
+                        op.args.cartoon.coil_scale = rep.scale.x;
+                        op.args.cartoon.sheet_scale = rep.scale.y;
+                        op.args.cartoon.helix_scale = rep.scale.z;
+                        break;
+                    default:
+                        break;
                     }
-                    break;
-                case RepresentationType::BallAndStick:
-                    op.args.ball_and_stick.ball_scale = rep.scale.x;
-                    op.args.ball_and_stick.stick_radius = rep.scale.y;
-                    op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
-                    op.args.ball_and_stick.sharpness = rep.bond_sharpness;
-                    op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
-                    if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
-                        tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
-                    }
-                    break;
-                case RepresentationType::Ribbons:
-                    op.args.ribbons.width_scale = rep.scale.x;
-                    op.args.ribbons.thickness_scale = rep.scale.y;
-                    break;
-                case RepresentationType::Cartoon:
-                    op.args.cartoon.coil_scale  = rep.scale.x;
-                    op.args.cartoon.sheet_scale = rep.scale.y;
-                    op.args.cartoon.helix_scale = rep.scale.z;
-                    break;
-                default:
-                    break;
+                    md_array_push(draw_ops, op, frame_alloc);
                 }
-                md_array_push(draw_ops, op, frame_alloc);
+            }
+            else if (rep.type == RepresentationType::DipoleMoment) {
+                // immediate draw of dipole moment as arrow
+                size_t num_dipoles = md_array_size(data->representation.info.dipole_moments);
+                if (rep.dipole.dipole_idx < num_dipoles) {
+                    const DipoleMoment& dipole = data->representation.info.dipole_moments[rep.dipole.dipole_idx];
+
+                    const vec3_t vec = dipole.vec * rep.dipole.scale;
+
+                    // cylinder body
+                    const float body_scale = 0.8f;
+
+                    const float body_radius = rep.dipole.radius;
+                    const float head_radius = body_radius * 1.5f;
+
+                    vec3_t cyl_beg = rep.dipole.origin;
+                    vec3_t cyl_end = rep.dipole.origin + vec * body_scale;
+                    vec3_t arrow_end = rep.dipole.origin + vec;
+
+                    uint32_t color_u32 = convert_color(rep.dipole.color);
+
+                    immediate::draw_cylinder(cyl_beg, cyl_end, body_radius, color_u32);
+                    immediate::draw_cone(cyl_end, arrow_end, head_radius, color_u32);
+                }
             }
         }
 
@@ -7018,6 +7055,11 @@ static void draw_representations_opaque(ApplicationState* data) {
         };
 
         md_gl_draw(&args);
+
+        glDisable(GL_DEPTH_TEST);
+        immediate::render();
+        glEnable(GL_DEPTH_TEST);
+
 #if EXPERIMENTAL_GFX_API
     }
 #endif
@@ -7030,76 +7072,79 @@ static void draw_representations_transparent(ApplicationState* state) {
     const size_t num_representations = md_array_size(state->representation.reps);
     if (num_representations == 0) return;
 
+    immediate::set_model_view_matrix(state->view.param.matrix.curr.view);
+    immediate::set_proj_matrix(state->view.param.matrix.curr.proj);
+
     for (size_t i = 0; i < num_representations; ++i) {
         const Representation& rep = state->representation.reps[i];
         if (!rep.enabled) continue;
-        if (rep.type != RepresentationType::ElectronicStructure) continue;
-
-        IsoDesc iso;
-        electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
+        if (rep.type == RepresentationType::ElectronicStructure) {
+            IsoDesc iso;
+            electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
-		flag_representation_as_dirty(&state->representation.reps[i]);
+            flag_representation_as_dirty(&state->representation.reps[i]);
 #endif
 
-        volume::RenderDesc desc = {
-            .render_target = {
-                .depth  = state->gbuffer.tex.depth,
-                .color  = state->gbuffer.tex.transparency,
-                .width  = state->gbuffer.width,
-                .height = state->gbuffer.height,
+            volume::RenderDesc desc = {
+                .render_target = {
+                    .depth = state->gbuffer.tex.depth,
+                    .color = state->gbuffer.tex.transparency,
+                    .width = state->gbuffer.width,
+                    .height = state->gbuffer.height,
+                },
+                .texture = {
+                    .density_volume = rep.electronic_structure.density_vol.tex_id,
+                    .color_volume = rep.electronic_structure.color_vol.tex_id,
+                    .transfer_function = rep.electronic_structure.dvr.tf_tex,
+                },
+                .matrix = {
+                    .model = rep.electronic_structure.density_vol.texture_to_world,
+                    .view = state->view.param.matrix.curr.view,
+                    .proj = state->view.param.matrix.curr.proj,
+                    .inv_proj = state->view.param.matrix.inv.proj,
+                },
+                .clip_volume = {
+                    .min = {0,0,0},
+                    .max = {1,1,1},
+                },
+                .temporal = {
+                    .enabled = state->visuals.temporal_aa.enabled,
+                },
+                .iso = {
+                    .enabled = true,
+                    .count = iso.count,
+                    .values = iso.values,
+                    .colors = iso.colors,
+                    .optical_densities = iso.optical_densities,
+                    .use_color_volume = rep.electronic_structure.use_atom_colors,
+                },
+                .dvr = {
+                    .enabled = rep.electronic_structure.dvr.enabled,
+                    .min_tf_value = -1.0f,
+                    .max_tf_value = 1.0f,
+                },
+                .shading = {
+                    .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25,
+                    .roughness = 0.3f,
+                    .dir_radiance = {10,10,10},
+                    .ior = 1.5f,
+                    .exposure = state->visuals.tonemapping.exposure,
+                    .gamma = state->visuals.tonemapping.gamma,
             },
-            .texture = {
-                .density_volume    = rep.electronic_structure.density_vol.tex_id,
-                .color_volume      = rep.electronic_structure.color_vol.tex_id,
-                .transfer_function = rep.electronic_structure.dvr.tf_tex,
-            },
-            .matrix = {
-                .model = rep.electronic_structure.density_vol.texture_to_world,
-                .view  = state->view.param.matrix.curr.view,
-                .proj  = state->view.param.matrix.curr.proj,
-                .inv_proj = state->view.param.matrix.inv.proj,
-            },
-            .clip_volume = {
-                .min = {0,0,0},
-                .max = {1,1,1},
-            },
-            .temporal = {
-                .enabled = state->visuals.temporal_aa.enabled,
-            },
-            .iso = {
-                .enabled = true,
-                .count   = iso.count,
-                .values  = iso.values,
-                .colors  = iso.colors,
-                .optical_densities = iso.optical_densities,
-                .use_color_volume = rep.electronic_structure.use_atom_colors,
-            },
-            .dvr = {
-                .enabled = rep.electronic_structure.dvr.enabled,
-                .min_tf_value = -1.0f,
-                .max_tf_value =  1.0f,
-            },
-            .shading = {
-                .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25,
-                .roughness = 0.3f,
-                .dir_radiance = {10,10,10},
-                .ior = 1.5f,
-                .exposure = state->visuals.tonemapping.exposure,
-                .gamma = state->visuals.tonemapping.gamma,
-        },
-            .voxel_spacing = rep.electronic_structure.density_vol.voxel_size,
-        };
+                .voxel_spacing = rep.electronic_structure.density_vol.voxel_size,
+            };
 
-        volume::render_volume(desc);
+            volume::render_volume(desc);
 
 #if DEBUG
-        immediate::set_model_view_matrix(state->view.param.matrix.curr.view);
-        immediate::set_proj_matrix(state->view.param.matrix.curr.proj);
-        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
-        immediate::render();
+
+            immediate::draw_box_wireframe({ 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
 #endif
+		}
     }
+	// If there was nothing recorded in the immediate buffer, this will be a no-op
+    immediate::render();
 }
 
 static void draw_representations_opaque_lean_and_mean(ApplicationState* data, uint32_t mask) {

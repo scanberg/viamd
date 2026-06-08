@@ -1292,7 +1292,14 @@ void update_all_representations(ApplicationState* state) {
 }
 
 bool representation_uses_atom_colors(const Representation& rep) {
-    return rep.type != RepresentationType::ElectronicStructure || rep.electronic_structure.use_atom_colors;
+    switch (rep.type) {
+        case RepresentationType::ElectronicStructure:
+            return rep.electronic_structure.use_atom_colors;
+        case RepresentationType::DipoleMoment:
+            return false;
+        default:
+            return true;
+    }
 }
 
 void update_representation(ApplicationState* state, Representation* rep) {
@@ -1475,6 +1482,9 @@ void update_representation(ApplicationState* state, Representation* rep) {
         }
         break;
     }
+	case RepresentationType::DipoleMoment:
+		rep->type_is_valid = rep->dipole.dipole_idx < md_array_size(state->representation.info.dipole_moments);
+		break;
     default:
         ASSERT(false);
         break;

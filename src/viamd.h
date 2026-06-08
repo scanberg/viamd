@@ -162,7 +162,7 @@ enum class RepresentationType {
     Ribbons = MD_GL_REP_RIBBONS,
     Cartoon = MD_GL_REP_CARTOON,
     ElectronicStructure,
-//    DipoleMoment,
+    DipoleMoment,
     Count
 };
 
@@ -185,10 +185,8 @@ static const char* representation_type_str[(int)RepresentationType::Count] = {
     "Ribbons",
     "Cartoon",
     "Electronic Structure",
-//    "Dipole Moment"
+    "Dipole Moment"
 };
-
-
 
 static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Uniform Color",
@@ -221,8 +219,6 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
-
-
 
 static const char* electronic_structure_spin_str[(int)ElectronicStructureSpin::Count] = {
     "None",
@@ -462,13 +458,13 @@ struct SingleSelectionSequence {
 
 struct Selection {
     char name[64] = "sel";
-    md_bitfield_t atom_mask{};
+    md_bitfield_t atom_mask {};
 };
 
 struct DipoleMoment {
-    size_t num_dipoles = 0;
-    str_t* label = nullptr;
-    vec3_t* vec  = nullptr;
+	uint64_t key = 0;
+	str_t label = { 0 };
+    vec3_t vec = { 0, 0, 0 };
 };
 
 struct NaturalTransitionOrbitalLambda {
@@ -511,14 +507,12 @@ struct RepresentationInfo {
     MolecularOrbital alpha;
     MolecularOrbital beta;
     NaturalTransitionOrbital nto;
-    DipoleMoment electric_dipoles;
-    DipoleMoment magnetic_dipoles;
-    DipoleMoment velocity_dipoles;
 
     ElectronicStructureSourceFlags electronic_structure_source_mask = 0;
 
     md_array(AtomProperty) atom_properties = nullptr;
     md_array(DensityProperty) density_properties = nullptr;
+	md_array(DipoleMoment) dipole_moments = nullptr;
 
     md_allocator_i* alloc = nullptr;
 };
@@ -891,6 +885,14 @@ struct AtomicPropertyRepresentation {
 	int sub_idx = 0;
 };
 
+struct DipoleRepresentation {
+    int dipole_idx = 0;
+    vec4_t color = { 0, 0, 0, 1 };
+    vec3_t origin = { 0, 0, 0 };
+    float scale = 1.0f;
+	float radius = 0.05f;
+};
+
 struct Representation {
     char name[64] = "rep";
     char filt[256] = "all";
@@ -936,6 +938,7 @@ struct Representation {
 
     ElectronicStructureRepresentation electronic_structure = {};
     AtomicPropertyRepresentation atomic_property = {};
+	DipoleRepresentation dipole = {};
 };
 
 // Event Payload when an electronic structure is to be evaluated
