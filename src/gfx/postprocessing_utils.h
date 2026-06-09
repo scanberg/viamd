@@ -5,12 +5,37 @@
 
 #include <core/md_vec_math.h>
 
-#define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
-#define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
-#define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
-#define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
-#define GL_COLOR_ATTACHMENT_TRANSPARENCY GL_COLOR_ATTACHMENT4
-#define GL_COLOR_ATTACHMENT_TEMPORAL     GL_COLOR_ATTACHMENT5
+enum GbufferTexture : uint32_t {
+    GBUFFER_TEX_COLOR = 0,
+    GBUFFER_TEX_NORMAL = 1,
+    GBUFFER_TEX_VELOCITY = 2,
+    GBUFFER_TEX_PICKING = 3,
+    GBUFFER_TEX_TRANSPARENCY = 4,
+};
+
+enum GBufferMask : uint32_t {
+    GBUFFER_MASK_NONE         = 0,
+
+    // COLOR OUTPUT BUFFERS
+    GBUFFER_MASK_COLOR        = 1 << GBUFFER_TEX_COLOR,
+    GBUFFER_MASK_NORMAL       = 1 << GBUFFER_TEX_NORMAL,
+    GBUFFER_MASK_VELOCITY     = 1 << GBUFFER_TEX_VELOCITY,
+    GBUFFER_MASK_PICKING      = 1 << GBUFFER_TEX_PICKING,
+    GBUFFER_MASK_TRANSPARENCY = 1 << GBUFFER_TEX_TRANSPARENCY,
+
+    GBUFFER_MASK_DEPTH        = 1 << 16,
+    GBUFFER_MASK_STENCIL      = 1 << 17,
+
+    GBUFFER_MASK_ALL          = 0xFFFFFFFFu
+};
+
+ENUM_FLAGS(GBufferMask)
+
+#define GL_COLOR_ATTACHMENT_COLOR        (GL_COLOR_ATTACHMENT0 + GBUFFER_TEX_COLOR)
+#define GL_COLOR_ATTACHMENT_NORMAL       (GL_COLOR_ATTACHMENT0 + GBUFFER_TEX_NORMAL)
+#define GL_COLOR_ATTACHMENT_VELOCITY     (GL_COLOR_ATTACHMENT0 + GBUFFER_TEX_VELOCITY)
+#define GL_COLOR_ATTACHMENT_PICKING      (GL_COLOR_ATTACHMENT0 + GBUFFER_TEX_PICKING)
+#define GL_COLOR_ATTACHMENT_TRANSPARENCY (GL_COLOR_ATTACHMENT0 + GBUFFER_TEX_TRANSPARENCY)
 
 // Poor fit perhaps
 struct GBuffer {
@@ -21,12 +46,12 @@ struct GBuffer {
         uint32_t velocity = 0;
         uint32_t picking = 0;
         uint32_t transparency = 0;
-        uint32_t temporal_accumulation[2] = {};
     } tex;
 
     uint32_t fbo = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    GBufferMask mask = GBUFFER_MASK_NONE;
 };
 
 namespace postprocessing {
@@ -118,7 +143,8 @@ void blur_texture_box(GLuint tex, int num_passes = 1);
 
 }  // namespace postprocessing
 
-void clear_gbuffer(GBuffer* gbuf);
-void init_gbuffer(GBuffer* gbuf, int width, int height);
-void destroy_gbuffer(GBuffer* gbuf);
-void extract_gbuffer_picking_idx_and_depth(uint32_t* out_idx, float* out_depth, GBuffer* fbo, int x, int y);
+void gbuffer_clear(const GBuffer& gbuf, GBufferMask mask = GBUFFER_MASK_ALL);
+void gbuffer_bind(const GBuffer& gbuf, GBufferMask mask = GBUFFER_MASK_ALL);
+
+void gbuffer_init(GBuffer* gbuf, int width, int height, GBufferMask mask = GBUFFER_MASK_ALL);
+void gbuffer_free(GBuffer* gbuf);

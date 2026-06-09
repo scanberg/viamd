@@ -1154,8 +1154,12 @@ struct ApplicationState {
         } grow;
     } selection;
 
-    // --- FRAMEBUFFER ---
-    GBuffer gbuffer {};
+    // --- GBUFFER ---
+    // Primary gbuffer
+    GBuffer gbuffer_primary {};
+
+    // Secondary gbuffer for GUI, transparent objects and graphics on top of the primary gbuffer.
+    GBuffer gbuffer_overlay{};
 
     // --- PICKING ---
     PickingSurface picking_surface {};      // Surface for main viewport picking

@@ -2162,111 +2162,132 @@ void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param) 
 }  // namespace postprocessing
 
 // #gbuffer
-void init_gbuffer(GBuffer* gbuf, int width, int height) {
+void gbuffer_init(GBuffer* gbuf, int width, int height, GBufferMask mask) {
     ASSERT(gbuf);
 
-    bool attach_textures_deferred = false;
+    bool attach_textures = false;
     if (!gbuf->fbo) {
         glGenFramebuffers(1, &gbuf->fbo);
-        attach_textures_deferred = true;
+        attach_textures = true;
     }
 
-    if (!gbuf->tex.depth) glGenTextures(1, &gbuf->tex.depth);
-    if (!gbuf->tex.color) glGenTextures(1, &gbuf->tex.color);
-    if (!gbuf->tex.normal) glGenTextures(1, &gbuf->tex.normal);
-    if (!gbuf->tex.velocity) glGenTextures(1, &gbuf->tex.velocity);
-    if (!gbuf->tex.transparency) glGenTextures(1, &gbuf->tex.transparency);
-    if (!gbuf->tex.picking) glGenTextures(1, &gbuf->tex.picking);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->fbo);
 
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (mask & GBUFFER_MASK_DEPTH) {
+        if (!gbuf->tex.depth) glGenTextures(1, &gbuf->tex.depth);
+        glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
 
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.color);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        bool stencil = (mask & GBUFFER_MASK_STENCIL);
+        GLenum internal_format = stencil ? GL_DEPTH24_STENCIL8 : GL_DEPTH_COMPONENT24;
 
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.normal);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16, width, height, 0, GL_RG, GL_UNSIGNED_SHORT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, internal_format, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.velocity);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        if (attach_textures) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,   GL_TEXTURE_2D, gbuf->tex.depth, 0);
+            if (stencil) {
+                glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, gbuf->tex.depth, 0);
+            }
+        }
+    }
 
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.transparency);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (mask & GBUFFER_MASK_COLOR) {
+        if (!gbuf->tex.color) glGenTextures(1, &gbuf->tex.color);
+        glBindTexture(GL_TEXTURE_2D, gbuf->tex.color);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.picking);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        if (attach_textures)
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_COLOR, GL_TEXTURE_2D, gbuf->tex.color, 0);
+    }
 
-    /*
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.temporal_accumulation[0]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (mask & GBUFFER_MASK_NORMAL) {
+        if (!gbuf->tex.normal) glGenTextures(1, &gbuf->tex.normal);
+        glBindTexture(GL_TEXTURE_2D, gbuf->tex.normal);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindTexture(GL_TEXTURE_2D, gbuf->tex.temporal_accumulation[1]);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    */
+        if (attach_textures)
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_NORMAL, GL_TEXTURE_2D, gbuf->tex.normal, 0);
+    }
 
+    if (mask & GBUFFER_MASK_VELOCITY) {
+        if (!gbuf->tex.velocity) glGenTextures(1, &gbuf->tex.velocity);
+        glBindTexture(GL_TEXTURE_2D, gbuf->tex.velocity);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_HALF_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        if (attach_textures)
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_VELOCITY, GL_TEXTURE_2D, gbuf->tex.velocity, 0);
+    }
+
+    if (mask & GBUFFER_MASK_PICKING) {
+        if (!gbuf->tex.picking) glGenTextures(1, &gbuf->tex.picking);
+        glBindTexture(GL_TEXTURE_2D, gbuf->tex.picking);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        if (attach_textures)
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_PICKING, GL_TEXTURE_2D, gbuf->tex.picking, 0);
+    }
+    
+    if (mask & GBUFFER_MASK_TRANSPARENCY) {
+        if (!gbuf->tex.transparency) glGenTextures(1, &gbuf->tex.transparency);
+        glBindTexture(GL_TEXTURE_2D, gbuf->tex.transparency);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        if (attach_textures)
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_TRANSPARENCY, GL_TEXTURE_2D, gbuf->tex.transparency, 0);
+    }
+
+    ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     gbuf->width = width;
     gbuf->height = height;
-
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-        GL_COLOR_ATTACHMENT_TRANSPARENCY, GL_COLOR_ATTACHMENT_PICKING};
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->fbo);
-    if (attach_textures_deferred) {
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gbuf->tex.depth, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, gbuf->tex.depth, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_COLOR, GL_TEXTURE_2D, gbuf->tex.color, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_NORMAL, GL_TEXTURE_2D, gbuf->tex.normal, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_VELOCITY, GL_TEXTURE_2D, gbuf->tex.velocity, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_TRANSPARENCY, GL_TEXTURE_2D, gbuf->tex.transparency, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_PICKING, GL_TEXTURE_2D, gbuf->tex.picking, 0);
-    }
-    ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
-    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
-    glClearColor(0, 0, 0, 0);
-    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    gbuf->mask = mask;
 }
 
-void clear_gbuffer(GBuffer* gbuffer) {
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY};
+void gbuffer_bind(const GBuffer& gbuf, GBufferMask mask) {
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer->fbo);
-    glViewport(0, 0, gbuffer->width, gbuffer->height);
+    mask &= gbuf.mask;
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+    GLenum draw_buffers[5] = {
+        (mask & GBUFFER_MASK_COLOR) ? GL_COLOR_ATTACHMENT_COLOR : 0,
+        (mask & GBUFFER_MASK_NORMAL) ? GL_COLOR_ATTACHMENT_NORMAL : 0,
+        (mask & GBUFFER_MASK_VELOCITY) ? GL_COLOR_ATTACHMENT_VELOCITY : 0,
+        (mask & GBUFFER_MASK_PICKING) ? GL_COLOR_ATTACHMENT_PICKING : 0,
+        (mask & GBUFFER_MASK_TRANSPARENCY) ? GL_COLOR_ATTACHMENT_TRANSPARENCY : 0,
+    };
+
+    glDrawBuffers(5, draw_buffers);
+    glViewport(0, 0, gbuf.width, gbuf.height);
+}
+
+void gbuffer_clear(const GBuffer& gbuffer, GBufferMask mask) {
+    gbuffer_bind(gbuffer, mask);
 
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
@@ -2277,7 +2298,6 @@ void clear_gbuffer(GBuffer* gbuffer) {
     // Setup gbuffer and clear textures
     PUSH_GPU_SECTION("Clear G-buffer") {
         // Clear color+alpha, normal, velocity, emissive, post_tonemap and depth+stencil
-        glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
         glClearBufferfv(GL_COLOR, 0, zero.elem);
         glClearBufferfv(GL_COLOR, 1, zero.elem);
         glClearBufferfv(GL_COLOR, 2, zero.elem);
@@ -2288,13 +2308,12 @@ void clear_gbuffer(GBuffer* gbuffer) {
     POP_GPU_SECTION()
 }
 
-void destroy_gbuffer(GBuffer* gbuf) {
+void gbuffer_free(GBuffer* gbuf) {
     ASSERT(gbuf);
     if (gbuf->fbo) glDeleteFramebuffers(1, &gbuf->fbo);
     if (gbuf->tex.depth) glDeleteTextures(1, &gbuf->tex.depth);
     if (gbuf->tex.color) glDeleteTextures(1, &gbuf->tex.color);
     if (gbuf->tex.normal) glDeleteTextures(1, &gbuf->tex.normal);
-    if (gbuf->tex.transparency) glDeleteTextures(1, &gbuf->tex.transparency);
     if (gbuf->tex.picking) glDeleteTextures(1, &gbuf->tex.picking);
-    if (gbuf->tex.temporal_accumulation[0]) glDeleteTextures((int)ARRAY_SIZE(gbuf->tex.temporal_accumulation), gbuf->tex.temporal_accumulation);
+    if (gbuf->tex.transparency) glDeleteTextures(1, &gbuf->tex.transparency);
 }

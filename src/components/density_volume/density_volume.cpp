@@ -493,7 +493,7 @@ struct DensityVolume : viamd::EventHandler {
             int width  = (int)(canvas_sz.x * ImGui::GetIO().DisplayFramebufferScale.x);
             int height = (int)(canvas_sz.y * ImGui::GetIO().DisplayFramebufferScale.y);
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                init_gbuffer(&gbuf, width, height);
+                gbuffer_init(&gbuf, width, height);
             }
 
             const float aspect_ratio = canvas_sz.x / canvas_sz.y;
@@ -644,7 +644,7 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             PUSH_GPU_SECTION("RENDER DENSITY VOLUME");
-            clear_gbuffer(&gbuf);
+            gbuffer_clear(gbuf);
 
             const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
                 GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };

@@ -625,7 +625,7 @@ struct VeloxChem : viamd::EventHandler {
                 defer { md_temp_end(temp); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
-				    glBindFramebuffer(GL_FRAMEBUFFER, state.gbuffer.fbo);
+				    glBindFramebuffer(GL_FRAMEBUFFER, state.gbuffer_primary.fbo);
                     // Render topology as points if available
 				    immediate::set_model_view_matrix(state.view.param.matrix.curr.view);
 				    immediate::set_proj_matrix(state.view.param.matrix.curr.proj);
@@ -4544,7 +4544,7 @@ struct VeloxChem : viamd::EventHandler {
 
             auto& gbuf = orb.gbuf;
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                init_gbuffer(&gbuf, width, height);
+                gbuffer_init(&gbuf, width, height);
                 for (int i = 0; i < num_mos; ++i) {
                     gl::init_texture_2D(orb.iso_tex + i, width, height, GL_RGBA8);
                 }
@@ -4570,7 +4570,7 @@ struct VeloxChem : viamd::EventHandler {
                 mat4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
                 mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
 
-                clear_gbuffer(&gbuf);
+                gbuffer_clear(gbuf);
 
                 const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
                     GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
@@ -5825,7 +5825,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 auto& gbuf = nto.gbuf;
                 if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                    init_gbuffer(&gbuf, width, height);
+                    gbuffer_init(&gbuf, width, height);
                     for (int i : nto_target_idx) {
                         gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
                     }
@@ -5857,7 +5857,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-                clear_gbuffer(&gbuf);
+                gbuffer_clear(gbuf);
 
                 const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
                     GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };

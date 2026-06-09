@@ -909,11 +909,11 @@ void draw_cylinder(vec3_t from, vec3_t to, float radius, uint32_t color, uint32_
             };
             md_array_push_array(vertices, sv, 4, arena);
             md_array_push(indices, base + 0, arena);
+            md_array_push(indices, base + 3, arena);
             md_array_push(indices, base + 2, arena);
-            md_array_push(indices, base + 3, arena);
             md_array_push(indices, base + 0, arena);
-            md_array_push(indices, base + 3, arena);
             md_array_push(indices, base + 1, arena);
+            md_array_push(indices, base + 3, arena);
             append_draw_command(6, GL_TRIANGLES);
         }
 
@@ -1020,8 +1020,8 @@ void draw_cone(vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t p
             };
             md_array_push_array(vertices, sv, 3, arena);
             md_array_push(indices, base_idx + 0, arena);
-            md_array_push(indices, base_idx + 1, arena);
             md_array_push(indices, base_idx + 2, arena);
+            md_array_push(indices, base_idx + 1, arena);
             append_draw_command(3, GL_TRIANGLES);
         }
 
@@ -1035,8 +1035,8 @@ void draw_cone(vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t p
             };
             md_array_push_array(vertices, cv, 3, arena);
             md_array_push(indices, base_idx + 0, arena);
-            md_array_push(indices, base_idx + 1, arena);
             md_array_push(indices, base_idx + 2, arena);
+            md_array_push(indices, base_idx + 1, arena);
             append_draw_command(3, GL_TRIANGLES);
         }
     }
@@ -1118,22 +1118,15 @@ void render_shaded(const LightingDesc& lighting) {
 
     // Shaded program state that stays constant for the whole call
     glUseProgram(program_shaded);
+    glUniform3fv(uniform_loc_shaded.light_dir_vs, 1, &lighting.light_dir.x);
     glUniform3fv(uniform_loc_shaded.dir_radiance, 1, &lighting.dir_radiance.x);
     glUniform3fv(uniform_loc_shaded.env_radiance, 1, &lighting.env_radiance.x);
     glUniform1f (uniform_loc_shaded.roughness,    lighting.roughness);
     glUniform1f (uniform_loc_shaded.F0,           lighting.F0);
     glUniform1f (uniform_loc_shaded.point_size,   1.f);
-    glUseProgram(0);
-
-    glUseProgram(program);
-    glUniform1f(uniform_loc_point_size, 1.f);
-    glUseProgram(0);
 
     for (size_t i = 0; i < num_commands; ++i) {
         const auto& cmd = commands[i];
-
-        const bool is_triangle = (cmd.primitive_type == GL_TRIANGLES);
-        GLuint prog = is_triangle ? program_shaded : program;
 
         bool update_view = false;
         bool update_mvp  = false;
@@ -1147,37 +1140,18 @@ void render_shaded(const LightingDesc& lighting) {
             update_mvp = true;
         }
 
-        glUseProgram(prog);
+        if (update_view) {
+            const mat4_t& mv = matrix_stack[cmd.view_matrix_idx];
+            glUniformMatrix4fv(uniform_loc_shaded.mv_matrix, 1, GL_FALSE, &mv.elem[0][0]);
 
-        if (is_triangle) {
-            if (update_view) {
-                const mat4_t& mv = matrix_stack[cmd.view_matrix_idx];
-                glUniformMatrix4fv(uniform_loc_shaded.mv_matrix, 1, GL_FALSE, &mv.elem[0][0]);
-
-                mat3_t normal_mat = mat3_from_mat4(mat4_transpose(mat4_inverse(mv)));
-                glUniformMatrix3fv(uniform_loc_shaded.normal_mat_vs, 1, GL_FALSE, &normal_mat.elem[0][0]);
-
-                // Transform light direction into view-space (no translation, so mat3 is fine)
-                mat3_t mv3 = mat3_from_mat4(mv);
-                vec3_t L_vs = vec3_normalize(mat3_mul_vec3(mv3, lighting.light_dir));
-                glUniform3fv(uniform_loc_shaded.light_dir_vs, 1, &L_vs.x);
-            }
-            if (update_mvp) {
-                mat4_t mvp = mat4_mul(matrix_stack[cmd.proj_matrix_idx], matrix_stack[cmd.view_matrix_idx]);
-                glUniformMatrix4fv(uniform_loc_shaded.mvp_matrix, 1, GL_FALSE, &mvp.elem[0][0]);
-            }
-            glUniform1ui(uniform_loc_shaded.picking_base_idx, cmd.picking_base_idx);
-        } else {
-            if (update_view) {
-                mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(matrix_stack[cmd.view_matrix_idx])));
-                glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix.elem[0][0]);
-            }
-            if (update_mvp) {
-                mat4_t mvp = mat4_mul(matrix_stack[cmd.proj_matrix_idx], matrix_stack[cmd.view_matrix_idx]);
-                glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp.elem[0][0]);
-            }
-            glUniform1ui(uniform_loc_picking_base_idx, cmd.picking_base_idx);
+            mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(mv)));
+            glUniformMatrix3fv(uniform_loc_shaded.normal_mat_vs, 1, GL_FALSE, &normal_matrix.elem[0][0]);
         }
+        if (update_mvp) {
+            mat4_t mvp = mat4_mul(matrix_stack[cmd.proj_matrix_idx], matrix_stack[cmd.view_matrix_idx]);
+            glUniformMatrix4fv(uniform_loc_shaded.mvp_matrix, 1, GL_FALSE, &mvp.elem[0][0]);
+        }
+        glUniform1ui(uniform_loc_shaded.picking_base_idx, cmd.picking_base_idx);
 
         glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
     }
