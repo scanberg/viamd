@@ -1,0 +1,167 @@
+\iffalse meta-comment
+
+File: achemso.ins Copyright (C) 2020,2021 Joseph Wright
+
+It may be distributed and/or modified under the conditions of the
+LaTeX Project Public License (LPPL), either version 1.3c of this
+license or (at your option) any later version.  The latest version
+of this license is in the file
+
+   https://www.latex-project.org/lppl.txt
+
+This file is part of the "achemso bundle" (The Work in LPPL)
+and all files in that bundle must be distributed together.
+
+The released version of this bundle is available from CTAN.
+
+-----------------------------------------------------------------------
+
+The development version of the bundle can be found at
+
+   https://github.com/josephwright/achemso
+
+for those people who are interested.
+
+-----------------------------------------------------------------------
+
+\fi
+
+\input docstrip.tex
+\askforoverwritefalse
+
+\postamble
+
+Originally developed by Mats Dahlgren
+Copyright (C) 1996-1998 by Mats Dahlgren
+Copyright (C) 2008-2021 by
+  Joseph Wright <joseph.wright@morningstar2.co.uk>
+
+Part of this bundle is derived from cite.sty, to which the
+following license applies:
+  Copyright (C) 1989-2009 by Donald Arseneau
+  These macros may be freely transmitted, reproduced, or
+  modified provided that this notice is left intact.
+
+It may be distributed and/or modified under the conditions of
+the LaTeX Project Public License (LPPL), either version 1.3c of
+this license or (at your option) any later version.  The latest
+version of this license is in the file:
+
+   http://www.latex-project.org/lppl.txt
+
+This work is "maintained" (as per LPPL maintenance status) by
+  Joseph Wright.
+
+This work consists of the files achemso.dtx,
+                                achemso-demo.bib and
+                                achemso-demo.tex,
+          and the derived files achemso.cls,
+                                achemso.ins,
+                                achemso.pdf,
+                                achemso.sty,
+                                natmove.sty and
+                                a number of configuration files.
+
+\endpostamble
+
+\keepsilent
+
+\generate{
+  \file{achemso.cls}{\from{achemso.dtx}{class}}
+  \file{achemso.sty}{\from{achemso.dtx}{package}}
+  \file{natmove.sty}{\from{achemso.dtx}{natmove}}
+}
+
+\generate{\file{achemso-aaembp.cfg}{\from{achemso.dtx}{aaembp}}
+          \file{achemso-aaemcq.cfg}{\from{achemso.dtx}{aaemcq}}
+          \file{achemso-aamick.cfg}{\from{achemso.dtx}{aamick}}
+          \file{achemso-aanmf6.cfg}{\from{achemso.dtx}{aanmf6}}
+          \file{achemso-aapmcd.cfg}{\from{achemso.dtx}{aapmcd}}
+          \file{achemso-aastgj.cfg}{\from{achemso.dtx}{aastgj}}
+          \file{achemso-abseba.cfg}{\from{achemso.dtx}{abseba}}
+          \file{achemso-accacs.cfg}{\from{achemso.dtx}{accacs}}
+}
+\generate{\file{achemso-achre4.cfg}{\from{achemso.dtx}{achre4}}
+          \file{achemso-acscii.cfg}{\from{achemso.dtx}{acscii}}
+          \file{achemso-acbcct.cfg}{\from{achemso.dtx}{acbcct}}
+          \file{achemso-acncdm.cfg}{\from{achemso.dtx}{acncdm}}
+          \file{achemso-acsccc.cfg}{\from{achemso.dtx}{acsccc}}
+          \file{achemso-aeecco.cfg}{\from{achemso.dtx}{aeecco}}
+          \file{achemso-aesccq.cfg}{\from{achemso.dtx}{aesccq}}
+          \file{achemso-aelccp.cfg}{\from{achemso.dtx}{aelccp}}
+}
+\generate{\file{achemso-aewcaa.cfg}{\from{achemso.dtx}{aewcaa}}
+          \file{achemso-afsthl.cfg}{\from{achemso.dtx}{afsthl}}
+          \file{achemso-ascefj.cfg}{\from{achemso.dtx}{ascefj}}
+          \file{achemso-amlccd.cfg}{\from{achemso.dtx}{amlccd}}
+          \file{achemso-amlcef.cfg}{\from{achemso.dtx}{amlcef}}
+          \file{achemso-amclct.cfg}{\from{achemso.dtx}{amclct}}
+          \file{achemso-amrcda.cfg}{\from{achemso.dtx}{amrcda}}
+          \file{achemso-ancac3.cfg}{\from{achemso.dtx}{ancac3}}
+}
+\generate{\file{achemso-acsodf.cfg}{\from{achemso.dtx}{acsodf}}
+          \file{achemso-apchd5.cfg}{\from{achemso.dtx}{apchd5}}
+          \file{achemso-aidcbc.cfg}{\from{achemso.dtx}{aidcbc}}
+          \file{achemso-ascecg.cfg}{\from{achemso.dtx}{ascecg}}
+          \file{achemso-asbcd6.cfg}{\from{achemso.dtx}{asbcd6}}
+          \file{achemso-ancham.cfg}{\from{achemso.dtx}{ancham}}
+          \file{achemso-bichaw.cfg}{\from{achemso.dtx}{bichaw}}
+          \file{achemso-bcches.cfg}{\from{achemso.dtx}{bcches}}
+}
+\generate{\file{achemso-bomaf6.cfg}{\from{achemso.dtx}{bomaf6}}
+          \file{achemso-crtoec.cfg}{\from{achemso.dtx}{crtoec}}
+          \file{achemso-chreay.cfg}{\from{achemso.dtx}{chreay}}
+          \file{achemso-cmatex.cfg}{\from{achemso.dtx}{cmatex}}
+          \file{achemso-cgdefu.cfg}{\from{achemso.dtx}{cgdefu}}
+          \file{achemso-enfuem.cfg}{\from{achemso.dtx}{enfuem}}
+          \file{achemso-esthag.cfg}{\from{achemso.dtx}{esthag}}
+          \file{achemso-estlcu.cfg}{\from{achemso.dtx}{estlcu}}
+}
+\generate{\file{achemso-iecred.cfg}{\from{achemso.dtx}{iecred}}
+          \file{achemso-inoraj.cfg}{\from{achemso.dtx}{inoraj}}
+          \file{achemso-jaaucr.cfg}{\from{achemso.dtx}{jaaucr}}
+          \file{achemso-jafcau.cfg}{\from{achemso.dtx}{jafcau}}
+          \file{achemso-jceda8.cfg}{\from{achemso.dtx}{jceda8}}
+          \file{achemso-jceaax.cfg}{\from{achemso.dtx}{jceaax}}
+          \file{achemso-jcisd8.cfg}{\from{achemso.dtx}{jcisd8}}
+          \file{achemso-jctcce.cfg}{\from{achemso.dtx}{jctcce}}
+}
+\generate{\file{achemso-jmcmar.cfg}{\from{achemso.dtx}{jmcmar}}
+          \file{achemso-jnprdf.cfg}{\from{achemso.dtx}{jnprdf}}
+          \file{achemso-joceah.cfg}{\from{achemso.dtx}{joceah}}
+          \file{achemso-jpcafh.cfg}{\from{achemso.dtx}{jpcafh}}
+          \file{achemso-jpcbfk.cfg}{\from{achemso.dtx}{jpcbfk}}
+          \file{achemso-jpccck.cfg}{\from{achemso.dtx}{jpccck}}
+          \file{achemso-jpclcd.cfg}{\from{achemso.dtx}{jpclcd}}
+          \file{achemso-jprobs.cfg}{\from{achemso.dtx}{jprobs}}
+}
+\generate{\file{achemso-jacsat.cfg}{\from{achemso.dtx}{jacsat}}
+          \file{achemso-langd5.cfg}{\from{achemso.dtx}{langd5}}
+          \file{achemso-mamobx.cfg}{\from{achemso.dtx}{mamobx}}
+          \file{achemso-mpohbp.cfg}{\from{achemso.dtx}{mpohbp}}
+          \file{achemso-nalefd.cfg}{\from{achemso.dtx}{nalefd}}
+          \file{achemso-orlef7.cfg}{\from{achemso.dtx}{orlef7}}
+          \file{achemso-oprdfk.cfg}{\from{achemso.dtx}{oprdfk}}
+          \file{achemso-orgnd7.cfg}{\from{achemso.dtx}{orgnd7}}
+}
+
+\generate{\file{achemso-abmcb8.cfg}{\from{achemso.dtx}{abmcb8}}
+          \file{achemso-aeacb3.cfg}{\from{achemso.dtx}{aeacb3}}
+          \file{achemso-aeacc4.cfg}{\from{achemso.dtx}{aeacc4}}
+          \file{achemso-amacgu.cfg}{\from{achemso.dtx}{amacgu}}
+          \file{achemso-amachv.cfg}{\from{achemso.dtx}{amachv}}
+          \file{achemso-anaccx.cfg}{\from{achemso.dtx}{anaccx}}
+          \file{achemso-aoiab5.cfg}{\from{achemso.dtx}{aoiab5}}
+          \file{achemso-apcach.cfg}{\from{achemso.dtx}{apcach}}
+}
+
+\generate{\file{achemso-appccd.cfg}{\from{achemso.dtx}{appccd}}
+}
+
+
+\generate{
+  \file{achemso.bst}{\from{achemso.dtx}{bst}}
+  \file{biochem.bst}{\from{achemso.dtx}{bst,bio}}
+}
+
+\endbatchfile
