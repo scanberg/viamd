@@ -14,6 +14,7 @@
 #include <core/md_log.h>
 #include <core/md_str.h>
 
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
 
