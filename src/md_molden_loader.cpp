@@ -12,6 +12,8 @@
  * - Provide loader interface for VIAMD
  */
 
+#include <cmath>
+
 #include "molden.h"
 
 #include <core/md_allocator.h>
@@ -19,8 +21,6 @@
 #include <core/md_str.h>
 #include <md_system.h>
 #include <md_util.h>
-
-#include <cmath>
 
 extern "C" {
 
