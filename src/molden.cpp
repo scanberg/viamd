@@ -911,21 +911,13 @@ MoldenData parse_molden_string(const std::string& str, std::string* error_msg) {
     MoldenData data;
     std::string local_error;
     
-    // Split into lines
+    // Split into lines (handle LF and CRLF)
     std::vector<std::string> lines;
-    std::string current_line;
-    for (char c : str) {
-        if (c == '\n' || c == '\r') {
-            if (!current_line.empty() || (c == '\n' && !lines.empty())) {
-                lines.push_back(current_line);
-                current_line.clear();
-            }
-        } else {
-            current_line += c;
-        }
-    }
-    if (!current_line.empty()) {
-        lines.push_back(current_line);
+    std::istringstream iss(str);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(line);
     }
     
     // Parse sections
