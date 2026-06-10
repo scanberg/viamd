@@ -1,4 +1,5 @@
 #include <serialization_utils.h>
+#include <core/md_allocator.h>
 #include <core/md_parse.h>
 #include <core/md_bitfield.h>
 #include <core/md_base64.h>
@@ -43,7 +44,7 @@ bool next_entry(str_t& ident, str_t& arg, deserialization_state_t& state) {
 				str_t haystack = {beg, (size_t)(end-beg)};
 				if (str_find_str(&loc, haystack, esc)) {
 					arg = {beg, loc};
-					state.text = str_substr(state.text, loc + str_len(esc));
+					state.text = str_substr(haystack, loc + str_len(esc));
 				} else {
 					// Error
 					MD_LOG_ERROR("Unbalanced escape sequence in multiline string");
@@ -62,6 +63,17 @@ void write_section_header(serialization_state_t& state, str_t section) {
 
 void write_int(serialization_state_t& state, str_t ident, int64_t val) {
 	md_strb_fmt(&state.sb, STR_FMT "=%i\n", STR_ARG(ident), (int)val);
+}
+
+void write_int_vec(serialization_state_t& state, str_t ident, const int* elem, size_t len) {
+	md_strb_fmt(&state.sb, STR_FMT "=", STR_ARG(ident));
+	for (size_t i = 0; i < len; ++i) {
+		md_strb_fmt(&state.sb, "%i", elem[i]);
+		if (i < len - 1) {
+			md_strb_push_char(&state.sb, ',');
+		}
+	}
+	md_strb_push_char(&state.sb, '\n');
 }
 
 void write_dbl(serialization_state_t& state, str_t ident, double val) {
@@ -88,13 +100,13 @@ void write_str(serialization_state_t& state, str_t ident, str_t str) {
 }
 
 void write_bitfield(serialization_state_t& state, str_t ident, const md_bitfield_t* bf) {
-	size_t tmp_pos = md_temp_get_pos();
-	defer { md_temp_set_pos_back(tmp_pos); };
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
 
-	void*  serialized_data = md_temp_push(md_bitfield_serialize_size_in_bytes(bf));
+	void*  serialized_data = md_temp_alloc(temp, md_bitfield_serialize_size_in_bytes(bf));
 	size_t serialized_size = md_bitfield_serialize(serialized_data, bf);
 	if (serialized_size) {
-		char*  base64_data = (char*)md_temp_push(md_base64_encode_size_in_bytes(serialized_size));
+		char*  base64_data = (char*)md_temp_alloc(temp, md_base64_encode_size_in_bytes(serialized_size));
 		size_t base64_size = md_base64_encode(base64_data, serialized_data, serialized_size);
 		if (base64_size) {
 			str_t base64 = {base64_data, base64_size};
@@ -120,6 +132,17 @@ bool extract_int(int& val, str_t arg) {
 		return true;
 	}
 	return false;
+}
+
+bool extract_int_vec(int* elem, size_t len, str_t arg) {
+	str_t tok;
+	size_t count = 0;
+	while (count < len && extract_token_delim(&tok, &arg, ',')) {
+		if (is_int(tok)) {
+			elem[count++] = (int)parse_int(tok);
+		}
+	}
+	return count == len;
 }
 
 bool extract_dbl (double& val, str_t arg) {
@@ -167,8 +190,8 @@ bool extract_to_char_buf(char* buf, size_t cap, str_t arg) {
 }
 
 bool extract_bitfield(md_bitfield_t* bf, str_t arg) {
-	size_t tmp_pos = md_temp_get_pos();
-	defer { md_temp_set_pos_back(tmp_pos); };
+	md_temp_scope_t temp = md_temp_begin();
+	defer { md_temp_end(temp); };
 
 	// Bitfield starts with ###
 	// and ends with ###
@@ -187,7 +210,7 @@ bool extract_bitfield(md_bitfield_t* bf, str_t arg) {
 
 	arg = str_substr(arg, 0, loc);
 	const size_t raw_cap = md_base64_decode_size_in_bytes(str_len(arg));
-	void* raw_ptr = md_temp_push(raw_cap);
+	void* raw_ptr = md_temp_alloc(temp, raw_cap);
 
 	const size_t raw_len = md_base64_decode(raw_ptr, str_ptr(arg), str_len(arg));
 	if (!raw_len || !md_bitfield_deserialize(bf, raw_ptr, raw_len)) {

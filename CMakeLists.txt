@@ -1,8 +1,21 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.26)
+# Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
+include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
-INCLUDE(ext/mdlib/cmake/common.cmake)
+# Must be set before project() so the toolchain picks it up
+if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS deployment version")
+endif()
 
-project(viamd VERSION 0.1.15 LANGUAGES CXX)
+project(viamd LANGUAGES C CXX)
+
+if (APPLE)
+    enable_language(OBJC)
+endif()
+
+include(ext/mdlib/cmake/Common.cmake)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # If configured using single configuration generator, set default build type to Release
 if (NOT EXISTS ${CMAKE_BINARY_DIR}/CMakeCache.txt)
@@ -46,8 +59,8 @@ option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
-set(VIAMD_FRAME_CACHE_SIZE_MB "2048" CACHE STRING "Reserved frame cache size in Megabytes")
-set(VIAMD_NUM_WORKER_THREADS "8" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation)")
+set(VIAMD_MACOS_BUNDLE_ID "org.scanberg.viamd" CACHE STRING "macOS bundle identifier")
+set(VIAMD_NUM_WORKER_THREADS "0" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation), 0 = Use available cores")
 
 # MDLIB OPTIONS
 set(MD_LINK_STDLIB_STATIC ${VIAMD_LINK_STDLIB_STATIC} CACHE BOOL "" FORCE)
@@ -56,17 +69,6 @@ if (VIAMD_ENABLE_VELOXCHEM)
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
     set(MD_VLX_BASIS_FOLDER "basis")
 endif ()
-
-if (APPLE)
-    # Remove once we have proper support for Apple Silicon?
-    # SET(CMAKE_OSX_ARCHITECTURES "x86_64")
-    if (VIAMD_CREATE_MACOSX_BUNDLE)
-        set(OSX_BUNDLE "MACOSX_BUNDLE")
-        set(MACOSX_BUNDLE_ICON_FILE viamd.icns)
-        set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
-        set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
-    endif()
-endif()
 
 find_package(OpenGL REQUIRED)
 
@@ -82,7 +84,7 @@ add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
 
 # Copy many of the fields from mdlib
-set(VIAMD_STDLIBS)
+set(VIAMD_EXTRA_LIBS)
 set(VIAMD_FLAGS ${MD_FLAGS})
 set(VIAMD_FLAGS_DEB ${MD_FLAGS_DEB})
 set(VIAMD_FLAGS_REL ${MD_FLAGS_REL})
@@ -93,10 +95,15 @@ set(VIAMD_DEFINES)
 
 if (VIAMD_LINK_STDLIB_STATIC)
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        set(VIAMD_STDLIBS "-static-libgcc -static-libstdc++")
+        set(VIAMD_EXTRA_LIBS "-static-libgcc -static-libstdc++")
     endif()
-    set(glfw_LIBRARIES ${VIAMD_STDLIBS})
+    set(glfw_LIBRARIES ${VIAMD_EXTRA_LIBS})
 endif()
+
+if (UNIX AND NOT APPLE)
+    list(APPEND VIAMD_EXTRA_LIBS X11)
+endif()
+
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     set(VIAMD_FLAGS ${VIAMD_FLAGS} "-fms-extensions") #Silence pesky warnings of anonymous structs in vector types
@@ -110,6 +117,7 @@ set(COMP_FILES
     src/components/ramachandran/ramachandran.cpp
     src/components/shapespace/shapespace.cpp
     src/components/dataset/dataset.cpp
+    src/components/density_volume/density_volume.cpp
 )
 
 if (VIAMD_ENABLE_VELOXCHEM)
@@ -131,11 +139,13 @@ set(SHADER_FILES
     src/shaders/dof/dof_half_res_prepass.frag
     src/shaders/dof/dof.frag
     src/shaders/velocity/blit_velocity.frag
+    src/shaders/velocity/blit_velocity_dilate.frag
     src/shaders/velocity/blit_tilemax.frag
     src/shaders/velocity/blit_neighbormax.frag
     src/shaders/volume/entryexit.vert
     src/shaders/volume/entryexit.frag
     src/shaders/volume/raycaster.frag
+    src/shaders/volume/splat_color.comp
     src/shaders/ssao/ssao.frag
     src/shaders/ssao/blur.frag
 )
@@ -149,7 +159,21 @@ source_group("src/gfx" FILES ${GFX_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 source_group("src/component" FILES ${COMP_FILES})
 
-add_executable(viamd ${OSX_BUNDLE} ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
+if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
+    set(MACOSX_ICON ${CMAKE_CURRENT_SOURCE_DIR}/icon/viamd.icns)
+    set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+endif()
+
+add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
+
+if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
+    set_target_properties(viamd PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "viamd"
+        MACOSX_BUNDLE_ICON_FILE viamd.icns
+        MACOSX_BUNDLE_GUI_IDENTIFIER "${VIAMD_MACOS_BUNDLE_ID}"
+    )
+endif()
 
 install(TARGETS viamd DESTINATION bin)
 
@@ -175,25 +199,42 @@ if (WIN32)
 endif()
 
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if (_is_multi_config)
+    # Multi-config generators (Xcode, Visual Studio) append the config name at build time
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
 if (VIAMD_ENABLE_VELOXCHEM)
-    create_copy_resource_dir_target(viamd_copy_basis "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis"      "${VIAMD_BIN_DIR}/basis")
-    add_dependencies(viamd viamd_copy_basis)
+    if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
+        # Bundle build: embed basis files inside Contents/MacOS/basis/ so that
+        # the exe-relative lookup in md_vlx.c finds them without any code changes.
+        file(GLOB_RECURSE _BASIS_FILES "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis/*")
+        target_sources(viamd PRIVATE ${_BASIS_FILES})
+        set_source_files_properties(${_BASIS_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/basis")
+    else()
+        create_copy_resource_dir_target(viamd_copy_basis "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/ext/veloxchem/basis" "${VIAMD_BIN_DIR}/basis")
+        add_dependencies(viamd viamd_copy_basis)
+    endif()
 endif()
 
 if (VIAMD_ENABLE_DEFAULT_DATASET)
-    create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets"      "${VIAMD_BIN_DIR}/datasets")
-    add_dependencies(viamd viamd_copy_datasets)
+    if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
+        # Bundle build: embed dataset files inside Contents/MacOS/datasets/ so that
+        # the exe-relative lookup in main.cpp finds them without any code changes.
+        file(GLOB_RECURSE _DS_FILES "${CMAKE_CURRENT_SOURCE_DIR}/datasets/*")
+        target_sources(viamd PRIVATE ${_DS_FILES})
+        set_source_files_properties(${_DS_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "MacOS/datasets")
+    else()
+        create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
+        add_dependencies(viamd viamd_copy_datasets)
+    endif()
     set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DATASET_DIR=\"datasets\")
 endif()
 
 target_compile_definitions(viamd PRIVATE
     ${VIAMD_DEFINES}
     VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}
-    VIAMD_FRAME_CACHE_SIZE=${VIAMD_FRAME_CACHE_SIZE_MB}
     VIAMD_IMGUI_ENABLE_VIEWPORTS=$<BOOL:${VIAMD_IMGUI_ENABLE_VIEWPORTS}>
     VIAMD_IMGUI_ENABLE_DOCKSPACE=$<BOOL:${VIAMD_IMGUI_ENABLE_DOCKSPACE}>
     ${MD_DEFINES}
@@ -209,16 +250,23 @@ target_include_directories(viamd
         src
         gen
         ext/gl3w
+        ext/imgui
         ext/enkiTS/src
 )
 
 set_target_properties(viamd PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${VIAMD_BIN_DIR}")
 
+# Enable Vulkan validation layers when debugging in Visual Studio.
+# Only applies when the Vulkan backend is active (MD_ENABLE_GPU=ON, non-Apple).
+if (MD_ENABLE_GPU AND NOT APPLE AND WIN32)
+    set_target_properties(viamd PROPERTIES
+        VS_DEBUGGER_ENVIRONMENT "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation\nVK_LOADER_DEBUG=error")
+endif()
+
 target_link_options(viamd PRIVATE ${VIAMD_LINK_FLAGS} $<$<CONFIG:Debug>:${VIAMD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_LINK_FLAGS_REL}>)
 target_link_libraries(viamd
     glfw
-    imgui
     nativefiledialog
     mdlib
     stb
@@ -227,6 +275,6 @@ target_link_libraries(viamd
     implot
     atomic_queue
     imgui_notify
-    ${VIAMD_STDLIBS}
+    ${VIAMD_EXTRA_LIBS}
 )
 

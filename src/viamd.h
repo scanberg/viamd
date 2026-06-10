@@ -2,23 +2,51 @@
 
 #include <core/md_str.h>
 #include <core/md_os.h>
+#include <core/md_lru_cache.inl>
+#include <core/md_hash.h>
+#include <core/md_str_builder.h>
+
 #include <md_system.h>
 #include <md_trajectory.h>
 #include <md_script.h>
 #include <md_gl.h>
 
+#if MD_ENABLE_GPU
+#include <core/md_gpu.h>
+#endif
+
+#include <app/IconsFontAwesome6.h>
 #include <app/application.h>
 #include <gfx/camera.h>
 #include <gfx/camera_utils.h>
 #include <gfx/view_param.h>
 #include <gfx/postprocessing_utils.h>
-#include <task_system.h>
 
+#include <task_system.h>
+#include <loader.h>
+#include <event.h>
+
+#define IMGUI_DEFINE_MATH_OPERATORS
+
+#include <TextEditor.h>
+#include <implot.h>
+#include <imgui_notify.h>
+
+#include <bitset>
 #include <stdint.h>
 #include <stddef.h>
 
 #define JITTER_SEQUENCE_SIZE 8  // Number of samples for temporal AA
 #define DEFAULT_COLORMAP 5      // This corresponds to plasma colormap (Do not want to include implot.h just for this)
+#define FRAME_CACHE_SIZE 4      // Number of frames used in the frame cache
+
+#if FRAME_CACHE_SIZE == 4
+#define FRAME_CACHE_LRU_TYPE md_lru_cache4_t
+#elif FRAME_CACHE_SIZE == 8
+#define FRAME_CACHE_LRU_TYPE md_lru_cache8_t
+#else
+#error "Unsupported frame cache size"
+#endif
 
 // For cpu profiling
 #define PUSH_CPU_SECTION(lbl) {};
@@ -28,58 +56,53 @@
 #define PUSH_GPU_SECTION(lbl) { if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); }
 #define POP_GPU_SECTION()     { if (glPopDebugGroup) glPopDebugGroup(); }
 
-enum class PlaybackMode { Stopped, Playing };
-enum class SelectionGranularity { Atom, Component, Instance };
-enum class SelectionOperator { Or, And, AndNot, Set, Clear };
-enum class SelectionGrowth { CovalentBond, Radial };
-enum class CameraMode { Perspective, Orthographic };
+// For logging
+#define VIAMD_LOG_INFO  MD_LOG_INFO
+#define VIAMD_LOG_DEBUG MD_LOG_DEBUG
+#define VIAMD_LOG_ERROR MD_LOG_ERROR
+#define VIAMD_LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
-enum class InterpolationMode {
-    Nearest,
-    Linear,
-    CubicSpline,
-    Count
-};
+#define DISPLAY_PROPERTY_MAX_POPULATION_SIZE 256
+#define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
+#define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
 
-static const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
-    "Nearest",
-    "Linear",
-    "Cubic Spline",
-};
+#define HIGHLIGHT_PULSE_TIME_SCALE  5.0
+#define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
 
-// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
-enum AtomBit_ {
-    AtomBit_Highlighted = 1,
-    AtomBit_Selected    = 2,
-    AtomBit_Visible     = 4,
-};
+#define INVALID_PICKING_IDX (~0U)
 
-enum class RepresentationType {
-    SpaceFill = MD_GL_REP_SPACE_FILL,
-    Licorice = MD_GL_REP_LICORICE,
-    BallAndStick = MD_GL_REP_BALL_AND_STICK,
-    Ribbons = MD_GL_REP_RIBBONS,
-    Cartoon = MD_GL_REP_CARTOON,
-    ElectronicStructure,
-//    DipoleMoment,
-    Count
-};
+constexpr ImGuiKey KEY_PLAY_PAUSE               = ImGuiKey_Space;
+constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME       = ImGuiKey_LeftArrow;
+constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME       = ImGuiKey_RightArrow;
+constexpr ImGuiKey KEY_RECOMPILE_SHADERS        = ImGuiKey_F5;
+constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW        = ImGuiKey_F11;
+constexpr ImGuiKey KEY_SCRIPT_EVALUATE          = ImGuiKey_Enter;
+constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
+constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F1;
 
-static const char* representation_type_str[(int)RepresentationType::Count] = {
-    "Spacefill",
-    "Licorice",
-    "Ball And Stick",
-    "Ribbons",
-    "Cartoon",
-    "Electronic Structure",
-//    "Dipole Moment"
-};
+constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
+constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
+
+typedef uint64_t PickingDomainID;
+typedef uint64_t PickingSourceID;
+typedef uint64_t InteractionSurfaceID;
+
+constexpr PickingDomainID PickingDomain_Atom = HASH_STR_LIT64("picking domain atom");
+constexpr PickingDomainID PickingDomain_Bond = HASH_STR_LIT64("picking domain bond");
+
+constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
+
+enum class PlaybackMode { Stopped, Playing, Count };
+enum class SelectionGranularity { Atom, Component, Instance, Count };
+enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
+enum class SelectionGrowthMode { CovalentBond, Radial, Count };
+enum class CameraMode { Perspective, Orthographic, Count };
+enum class InterpolationMode { Nearest, Linear, CubicSpline, Count };
 
 enum class ColorMapping {
     Uniform,
-    Cpk,
-    AtomLabel,
-    AtomIndex,
+    Type,
+    Serial,
     CompName,
     CompSeqId,
     CompIndex,
@@ -90,11 +113,85 @@ enum class ColorMapping {
     Count
 };
 
+enum class ElectronicStructureSource {
+    MolecularOrbital,
+    NaturalTransitionOrbital,
+    TransitionDensity,
+    ElectronDensity,
+    DensityProperty,
+    Count
+};
+
+enum class ElectronicStructureField {
+    Amplitude,
+    Density,
+    Count
+};
+
+enum class ElectronicStructureSpin {
+    None,
+    Alpha,
+    Beta,
+    Total,
+    Difference,
+    Count
+};
+
+// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
+enum AtomBit_ {
+    AtomBit_None        = 0,
+    AtomBit_Highlighted = 1u << 0,
+    AtomBit_Selected    = 1u << 1,
+    AtomBit_Visible     = 1u << 2,
+};
+
+enum MolBit_ {
+    MolBit_None                     = 0,
+    MolBit_DirtyPosition            = 1u << 0,
+    MolBit_DirtyRadius              = 1u << 1,
+    MolBit_DirtySecondaryStructure  = 1u << 2,
+    MolBit_DirtyFlags               = 1u << 3,
+    MolBit_DirtyBonds               = 1u << 4,
+    MolBit_ClearVelocity            = 1u << 5,
+};
+
+enum class RepresentationType {
+    SpaceFill = MD_GL_REP_SPACE_FILL,
+    Licorice = MD_GL_REP_LICORICE,
+    BallAndStick = MD_GL_REP_BALL_AND_STICK,
+    Ribbons = MD_GL_REP_RIBBONS,
+    Cartoon = MD_GL_REP_CARTOON,
+    ElectronicStructure,
+    DipoleMoment,
+    Count
+};
+
+static const char* selection_granularity_str[(int)SelectionGranularity::Count] = {
+    "Atom",
+    "Component",
+    "Instance",
+};
+
+static const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
+    "Nearest",
+    "Linear",
+    "Cubic Spline",
+};
+
+static const char* representation_type_str[(int)RepresentationType::Count] = {
+    "Spacefill",
+    "Licorice",
+    "Ball And Stick",
+    "Ribbons",
+    "Cartoon",
+    "Electronic Structure",
+    "Dipole Moment"
+};
+
 static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Uniform Color",
-    "CPK",
-    "Atom Label",
-    "Atom Idx",
+    "Type",
+    "Serial",
     "Res Name",
     "Seq Id",
     "Res Idx",
@@ -104,7 +201,58 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Property",
 };
 
-enum class ElectronicStructureType {
+
+static const char* electronic_structure_source_str[(int)ElectronicStructureSource::Count] = {
+    "Molecular Orbital",
+    "Natural Transition Orbital",
+    "Transition Density",
+    "Electron Density",
+    "Density Property",
+};
+
+enum ElectronicStructureSourceFlag_ : uint32_t {
+    ElectronicStructureSourceFlag_MolecularOrbital          = 1u << (int)ElectronicStructureSource::MolecularOrbital,
+    ElectronicStructureSourceFlag_NaturalTransitionOrbital  = 1u << (int)ElectronicStructureSource::NaturalTransitionOrbital,
+    ElectronicStructureSourceFlag_TransitionDensity         = 1u << (int)ElectronicStructureSource::TransitionDensity,
+    ElectronicStructureSourceFlag_ElectronDensity           = 1u << (int)ElectronicStructureSource::ElectronDensity,
+    ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
+};
+
+typedef uint32_t ElectronicStructureSourceFlags;
+
+static const char* electronic_structure_spin_str[(int)ElectronicStructureSpin::Count] = {
+    "None",
+    "Alpha",
+    "Beta",
+    "Total",
+    "Difference",
+};
+
+enum class ElectronicStructureNtoComponent {
+    Particle,
+    Hole,
+    Count
+};
+
+static const char* electronic_structure_nto_component_str[(int)ElectronicStructureNtoComponent::Count] = {
+    "Particle",
+    "Hole",
+};
+
+enum class ElectronicStructureTransitionDensityComponent {
+    Attachment,
+    Detachment,
+    Difference,
+    Count
+};
+
+static const char* electronic_structure_transition_density_component_str[(int)ElectronicStructureTransitionDensityComponent::Count] = {
+    "Attachment",
+    "Detachment",
+    "Difference"
+};
+
+enum class ElectronicStructureLegacyType {
     MolecularOrbital,
     MolecularOrbitalDensity,
     NaturalTransitionOrbitalParticle,
@@ -114,31 +262,109 @@ enum class ElectronicStructureType {
     AttachmentDensity,
     DetachmentDensity,
     ElectronDensity,
-    Count
+    Count,
 };
 
-static const char* electronic_structure_type_str[(int)ElectronicStructureType::Count] = {
-    (const char*)u8"Molecular Orbital (Ψ)",
-    (const char*)u8"Molecular Orbital Density (Ψ²)",
-    (const char*)u8"Natural Transition Orbital (NTO) Particle",
-    (const char*)u8"Natural Transition Orbital (NTO) Hole",
-    (const char*)u8"Natural Transition Orbital Density (NTO²) Particle",
-    (const char*)u8"Natural Transition Orbital Density (NTO²) Hole",
-    (const char*)u8"Attachment Density (A)",
-    (const char*)u8"Detachment Density (D)",
-    (const char*)u8"Electron Density (ρ)",
-};
+// This is viamd's representation of a property
+struct DisplayProperty {
+    enum Type {
+        Type_Temporal,
+        Type_Distribution,
+        Type_Volume,
+        Type_Count
+    };
 
-enum MolBit_ {
-    MolBit_DirtyPosition            = 0x01,
-    MolBit_DirtyRadius              = 0x02,
-    MolBit_DirtySecondaryStructure  = 0x04,
-    MolBit_DirtyFlags               = 0x08,
-    MolBit_DirtyBonds               = 0x10,
-    MolBit_ClearVelocity            = 0x20,
-};
+    enum PlotType {
+        PlotType_Line,      // Single line
+        PlotType_Area,      // Shaded area
+        PlotType_Bars,      // Bar chart
+        PlotType_Scatter,   // Scatter plot
+        PlotType_Count
+    };
 
-struct DisplayProperty;
+    enum ColorType {
+        ColorType_Solid,
+        ColorType_Colormap,
+        ColorType_Count
+    };
+
+    // This is the payload passed to getters for display properties
+    struct Payload {
+        DisplayProperty* display_prop;
+        int dim_idx;
+    };
+
+    // Callback signature for printing out the value (when hovering with mouse for example)
+    typedef int (*PrintValue)(char* buf, size_t buf_cap, int sample_idx, Payload* data);
+
+    struct Histogram {
+        int num_bins;
+        int dim = 0;
+        // Can be multidimensional
+        // Total number of entries will be dim * num_bins
+        md_array(float) bins = 0;
+        double x_min;
+        double x_max;
+        double y_min;
+        double y_max;
+        md_allocator_i* alloc;
+    };
+
+    Type type = Type_Temporal;
+
+    char label[32] = "";
+
+    ColorType color_type = ColorType_Solid;
+    ImVec4 color = {1,1,1,1};
+    ImPlotColormap colormap = ImPlotColormap_Plasma;
+    float colormap_alpha = 1.0f;
+
+    PlotType plot_type = PlotType_Line;
+    ImPlotMarker marker_type = ImPlotMarker_Square;
+    float marker_size = 1.0f;
+    double bar_width_scale = 1.0;
+
+    // We need two getters to support areas (min / max)
+    ImPlotGetter getter[2] = {0,0};
+    PrintValue   print_value = 0;
+
+    bool aggregate_histogram = false;
+
+    int dim = 1;                // Number of values per sample
+    int num_samples = 0;        // Number of samples (length of x)
+    const float* y_values = 0;  // Values (y)
+    const float* x_values = 0;  // Corresponding x values
+
+    int num_bins = 128;         // Requested number of bins for histogram
+
+    md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
+    char unit_str[2][32] = {"",""};
+
+    const md_script_eval_t* eval = NULL;
+
+    md_script_property_flags_t prop_flags = MD_SCRIPT_PROPERTY_FLAG_NONE;
+    const md_script_property_data_t* prop_data = NULL;
+    const md_script_vis_payload_o* vis_payload = NULL;
+
+    uint64_t prop_fingerprint = 0;
+
+    // Encodes which temporal subplots this property is visible in
+    uint32_t temporal_subplot_mask = 0;
+
+    // Encodes which distribution subplots this property is visible in
+    uint32_t distribution_subplot_mask = 0;
+
+    bool show_in_volume = false;
+    bool partial_evaluation = false;
+
+    // Encodes which indices of the population to show (if applicable, i.e. dim > 1)
+    std::bitset<DISPLAY_PROPERTY_MAX_POPULATION_SIZE> population_mask = {};
+
+    STATIC_ASSERT(DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS     <= sizeof(temporal_subplot_mask) * 8,     "Cannot fit temporal subplot mask");
+    STATIC_ASSERT(DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS <= sizeof(distribution_subplot_mask) * 8, "Cannot fit distribution subplot mask");
+
+    Histogram hist = {};
+};
 
 struct LoadDatasetWindowState {
     char path_buf[1024] = "";
@@ -152,8 +378,8 @@ struct LoadDatasetWindowState {
     bool show_window = false;
     bool show_file_dialog = false;
     bool atom_format_valid = false;
-    int  loader_idx = -1;
-    int  atom_format_idx = -1;
+    int  loader_idx = 0;
+    int  atom_format_idx = 0;
 };
 
 // Hint flags for operations to be performed for the files
@@ -198,6 +424,19 @@ static const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] =
     "Custom",
 };
 
+enum class BondColorMode {
+    NearestAtom,
+	SmoothAtom,
+    Uniform,
+    Count,
+};
+
+static const char* bond_color_mode_str[(int)BondColorMode::Count] = {
+    "Nearest Atom",
+    "Smooth Atom",
+    "Uniform Color",
+};
+
 struct FileQueue {
     struct Entry {
         str_t path;
@@ -205,8 +444,8 @@ struct FileQueue {
         int prio;
     };
     Entry arr[8] = {};
-    int head = 0;
-    int tail = 0;
+    uint32_t head = 0;
+    uint32_t tail = 0;
 
     // We use a ring alloc here to do a deep copy of the paths within the added entries
     // Because its a ring alloc, there is no need to free entries
@@ -219,30 +458,13 @@ struct SingleSelectionSequence {
 
 struct Selection {
     char name[64] = "sel";
-    md_bitfield_t atom_mask{};
-};
-
-struct AtomElementMapping {
-    char lbl[31] = "";
-    md_element_t elem = 0;
-};
-
-// We use this to represent a single entity within the loaded system, e.g. a residue type
-struct DatasetItem {
-    char label[32] = "";
-    uint32_t count = 0;
-    float fraction = 0;
-    
-    // Extended metadata for popups
-    uint64_t key = 0;            // Unique key of the type
-    md_array(int) indices = 0;   // Indices into the corresponding structures which are represented by this item: i.e. chain or residue indices (for highlighting)
-    md_array(int) sub_items = 0; // Indices into the items of the subcatagories: i.e. for chain -> unique residues types within that chain
+    md_bitfield_t atom_mask {};
 };
 
 struct DipoleMoment {
-    size_t num_dipoles = 0;
-    str_t* label = nullptr;
-    vec3_t* vec  = nullptr;
+	uint64_t key = 0;
+	str_t label = { 0 };
+    vec3_t vec = { 0, 0, 0 };
 };
 
 struct NaturalTransitionOrbitalLambda {
@@ -267,11 +489,16 @@ struct MolecularOrbital {
 };
 
 struct AtomProperty {
-    uint64_t id;
-    str_t label;
+    uint64_t key    = 0;
+    str_t label     = { 0 };
     int num_idx     = 0;
     float value_min = 0;
     float value_max = 0;
+};
+
+struct DensityProperty {
+    uint64_t key    = 0;
+    str_t label     = { 0 };
 };
 
 // Struct to fill in for the different components
@@ -280,20 +507,19 @@ struct RepresentationInfo {
     MolecularOrbital alpha;
     MolecularOrbital beta;
     NaturalTransitionOrbital nto;
-    DipoleMoment electric_dipoles;
-    DipoleMoment magnetic_dipoles;
-    DipoleMoment velocity_dipoles;
 
-    uint32_t electronic_structure_type_mask;
+    ElectronicStructureSourceFlags electronic_structure_source_mask = 0;
 
     md_array(AtomProperty) atom_properties = nullptr;
+    md_array(DensityProperty) density_properties = nullptr;
+	md_array(DipoleMoment) dipole_moments = nullptr;
 
     md_allocator_i* alloc = nullptr;
 };
 
 struct Volume {
-    //mat4_t index_to_world   = {};
-    mat4_t texture_to_world = {};
+    mat4_t world_to_model   = {};   // Roto-translation into volume local axes, no scaling applied (preserves world length units)
+    mat4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
     vec3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
     uint32_t tex_id = 0;
@@ -301,32 +527,370 @@ struct Volume {
 
 // Descriptor for handling iso surfaces
 struct IsoDesc {
-    bool enabled;
     size_t count;
     float values[8];
     vec4_t colors[8];
+    float optical_densities[8];
 };
 
 struct EvalAtomProperty {
-    uint64_t property_id = 0;
-    int idx = 0; // This is probably rarely applicable
-
-    bool output_written = false;
+    uint64_t key = 0;
+	int idx = 0;    // Represents the index if the property is multidimensional.
     size_t num_values = 0;
     float* dst_values = nullptr;
+    bool output_written = false;
 };
 
-// Event Payload when an electronic structure is to be evaluated
-struct EvalElectronicStructure {
-    // Input information
-    ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
-    int major_idx = 0;
-    int minor_idx = 0;
-    float samples_per_angstrom = 4.0f;
+struct ElectronicStructureRepresentation {
+    Volume density_vol = {};
+    Volume color_vol   = {};
+    VolumeResolution resolution = VolumeResolution::Mid;
 
-    // Output information
-    bool output_written = false;
-    Volume* dst_volume = nullptr;
+    // Shared for all electronic structure representations
+    double iso_value = 0.05;
+
+    // These are default values for different volume types.
+    vec4_t col_psi_pos = {0.f/255.f,75.f/255.f,135.f/255.f,0.75f};
+    vec4_t col_psi_neg = {255.f/255.f,205.f/255.f,0.f/255.f,0.75f};
+    vec4_t col_den     = {255.f/255.f,255.f/255.f,255.f/255.f,0.75f};
+    vec4_t col_att     = {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f};
+    vec4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
+
+    vec4_t tint_psi_pos = { 1.0f, 1.0f, 1.0f, 0.75f };
+    vec4_t tint_psi_neg = { 1.0f, 1.0f, 1.0f, 0.75f };
+    vec4_t tint_den     = { 1.0f, 1.0f, 1.0f, 0.75f };
+    vec4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
+    vec4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
+
+    struct {
+        int num_isos = 0;
+        double values[8];
+        vec4_t colors[8];
+    } density_property;
+
+    // Scaling factor of *power* in the gaussians to splat the color volume (when using atom colors for volumes)
+    double gaussian_splatting_power = 10.0;
+
+    // Optical scaling factor which controls attenuation of light within iso surfaces.
+    double iso_optical_density = 0.005;
+
+    bool use_atom_colors = false;
+
+    struct {
+        bool enabled = false;
+        uint32_t tf_tex = 0;
+        int colormap = DEFAULT_COLORMAP;
+    } dvr;
+
+    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
+    bool use_magnitude = false;
+    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
+    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
+    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+
+    int orbital_idx = 0;
+    int excited_state_idx = 0;
+    int nto_lambda_idx = 0;
+    int density_property_idx = 0;
+
+	uint64_t col_hash = 0;
+	uint64_t vol_hash = 0;
+    uint64_t tf_hash = 0;
+};
+
+static inline ElectronicStructureSourceFlags electronic_structure_source_flag(ElectronicStructureSource source) {
+    return 1u << (uint32_t)source;
+}
+
+static inline bool electronic_structure_source_supported(ElectronicStructureSourceFlags mask, ElectronicStructureSource source) {
+    return (mask & electronic_structure_source_flag(source)) != 0;
+}
+
+static inline bool electronic_structure_is_density_property(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::DensityProperty;
+}
+
+static inline bool electronic_structure_uses_orbital_idx(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::MolecularOrbital;
+}
+
+static inline bool electronic_structure_uses_excited_state_idx(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+           rep.source == ElectronicStructureSource::TransitionDensity;
+}
+
+static inline bool electronic_structure_uses_nto_lambda_idx(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::NaturalTransitionOrbital;
+}
+
+static inline bool electronic_structure_uses_magnitude_toggle(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::MolecularOrbital ||
+           rep.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+           (rep.source == ElectronicStructureSource::ElectronDensity && rep.spin == ElectronicStructureSpin::Difference);
+}
+
+static inline bool electronic_structure_uses_spin(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::MolecularOrbital ||
+           rep.source == ElectronicStructureSource::ElectronDensity;
+}
+
+static inline bool electronic_structure_is_signed(const ElectronicStructureRepresentation& rep) {
+    if (electronic_structure_is_density_property(rep)) {
+        return false;
+    }
+    if (rep.source == ElectronicStructureSource::TransitionDensity &&
+        rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) {
+        return true;
+    }
+    return electronic_structure_uses_magnitude_toggle(rep) && !rep.use_magnitude;
+}
+
+static inline bool electronic_structure_uses_density_iso_squared(const ElectronicStructureRepresentation& rep) {
+    return rep.source == ElectronicStructureSource::TransitionDensity ||
+           rep.source == ElectronicStructureSource::ElectronDensity;
+}
+
+static inline vec4_t electronic_structure_density_property_default_color(const ElectronicStructureRepresentation& rep, int idx) {
+    switch (idx) {
+    case 0: return rep.col_psi_pos;
+    case 1: return rep.col_psi_neg;
+    case 2: return rep.col_den;
+    case 3: return rep.col_att;
+    case 4: return rep.col_det;
+    default: return rep.col_den;
+    }
+}
+
+static inline void electronic_structure_density_property_init_defaults(ElectronicStructureRepresentation* rep) {
+    ASSERT(rep);
+    rep->density_property.num_isos = 2;
+    rep->density_property.values[0] =  0.05;
+    rep->density_property.values[1] = -0.05;
+    rep->density_property.colors[0] = rep->col_psi_pos;
+    rep->density_property.colors[1] = rep->col_psi_neg;
+    for (int i = 2; i < (int)ARRAY_SIZE(rep->density_property.values); ++i) {
+        rep->density_property.values[i] = 0.05 * (double)(i + 1);
+        rep->density_property.colors[i] = electronic_structure_density_property_default_color(*rep, i);
+    }
+}
+
+static inline const char* electronic_structure_iso_value_label() {
+    return "isovalue (*)";
+}
+
+static inline const char* electronic_structure_iso_value_tooltip(const ElectronicStructureRepresentation& rep) {
+    if (electronic_structure_is_density_property(rep)) {
+        return "User-defined isosurfaces for arbitrary density-property volumes.";
+    }
+    if (electronic_structure_uses_density_iso_squared(rep)) {
+        return electronic_structure_is_signed(rep) ?
+            "Visual surface threshold. Signed density fields render both +isovalue^2 and -isovalue^2 surfaces." :
+            "Visual surface threshold. Density fields render at isovalue^2 for perceptual consistency with amplitude fields.";
+    }
+    return electronic_structure_is_signed(rep) ?
+        "Visual surface threshold. Signed fields render both +isovalue and -isovalue surfaces." :
+        "Visual surface threshold for the rendered field.";
+}
+
+static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const ElectronicStructureRepresentation& rep) {
+    ASSERT(iso);
+    *iso = {};    
+
+    if (electronic_structure_is_density_property(rep)) {
+        const int num_isos = CLAMP(rep.density_property.num_isos, 0, (int)ARRAY_SIZE(rep.density_property.values));
+        iso->count = (size_t)num_isos;
+        for (int i = 0; i < num_isos; ++i) {
+            iso->values[i] = (float)rep.density_property.values[i];
+            iso->colors[i] = rep.density_property.colors[i];
+            iso->optical_densities[i] = (float)rep.iso_optical_density;
+        }
+        return;
+    }
+
+    const float iso_value = (float)rep.iso_value;
+    const float iso_threshold = electronic_structure_uses_density_iso_squared(rep) ? iso_value * iso_value : iso_value;
+
+    if (electronic_structure_is_signed(rep)) {
+        iso->count = 2;
+        iso->values[0] =  iso_threshold;
+        iso->values[1] = -iso_threshold;
+        if (rep.use_atom_colors) {
+            iso->colors[0] = rep.tint_psi_pos;
+            iso->colors[1] = rep.tint_psi_neg;
+        } else {
+            iso->colors[0] = rep.col_psi_pos;
+            iso->colors[1] = rep.col_psi_neg;
+        }
+        iso->optical_densities[0] = (float)rep.iso_optical_density;
+        iso->optical_densities[1] = (float)rep.iso_optical_density;
+    } else {
+        iso->count = 1;
+        iso->values[0] = iso_threshold;
+        if (rep.use_atom_colors) {
+            if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
+                iso->colors[0] = rep.tint_att;
+            } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
+                iso->colors[0] = rep.tint_det;
+            } else {
+                iso->colors[0] = rep.tint_den;
+            }
+        } else {
+            if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
+                iso->colors[0] = rep.col_att;
+            } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
+                iso->colors[0] = rep.col_det;
+            } else {
+                iso->colors[0] = rep.col_den;
+            }
+        }
+        iso->optical_densities[0] = (float)rep.iso_optical_density;
+    }
+}
+
+static inline ElectronicStructureField electronic_structure_legacy_field(const ElectronicStructureRepresentation& rep) {
+    return rep.use_magnitude ? ElectronicStructureField::Density : ElectronicStructureField::Amplitude;
+}
+
+static inline void electronic_structure_set_legacy_field(ElectronicStructureRepresentation* rep, int field) {
+    ASSERT(rep);
+    rep->use_magnitude = (rep->source == ElectronicStructureSource::MolecularOrbital ||
+                          rep->source == ElectronicStructureSource::NaturalTransitionOrbital) &&
+                         (ElectronicStructureField)field == ElectronicStructureField::Density;
+}
+
+static inline void electronic_structure_set_source_defaults(ElectronicStructureRepresentation* rep) {
+    ASSERT(rep);
+    switch (rep->source) {
+    case ElectronicStructureSource::MolecularOrbital:
+        if (rep->spin != ElectronicStructureSpin::Alpha && rep->spin != ElectronicStructureSpin::Beta) {
+            rep->spin = ElectronicStructureSpin::Alpha;
+        }
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureSource::NaturalTransitionOrbital:
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureSource::TransitionDensity:
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureSource::ElectronDensity:
+        rep->spin = ElectronicStructureSpin::Total;
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureSource::DensityProperty:
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        rep->use_atom_colors = false;
+        rep->density_property_idx = MAX(0, rep->density_property_idx);
+        if (rep->density_property.num_isos <= 0) {
+            electronic_structure_density_property_init_defaults(rep);
+        }
+        break;
+    default:
+        ASSERT(false);
+        break;
+    }
+}
+
+static inline void electronic_structure_set_legacy_type(ElectronicStructureRepresentation* rep, int type) {
+    ASSERT(rep);
+    switch ((ElectronicStructureLegacyType)type) {
+    case ElectronicStructureLegacyType::MolecularOrbital:
+        rep->source = ElectronicStructureSource::MolecularOrbital;
+        rep->use_magnitude = false;
+        break;
+    case ElectronicStructureLegacyType::MolecularOrbitalDensity:
+        rep->source = ElectronicStructureSource::MolecularOrbital;
+        rep->use_magnitude = true;
+        break;
+    case ElectronicStructureLegacyType::NaturalTransitionOrbitalParticle:
+        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->use_magnitude = false;
+        rep->nto_component = ElectronicStructureNtoComponent::Particle;
+        break;
+    case ElectronicStructureLegacyType::NaturalTransitionOrbitalHole:
+        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->use_magnitude = false;
+        rep->nto_component = ElectronicStructureNtoComponent::Hole;
+        break;
+    case ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle:
+        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->use_magnitude = true;
+        rep->nto_component = ElectronicStructureNtoComponent::Particle;
+        break;
+    case ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole:
+        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->use_magnitude = true;
+        rep->nto_component = ElectronicStructureNtoComponent::Hole;
+        break;
+    case ElectronicStructureLegacyType::AttachmentDensity:
+        rep->source = ElectronicStructureSource::TransitionDensity;
+        rep->use_magnitude = false;
+        rep->transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+        break;
+    case ElectronicStructureLegacyType::DetachmentDensity:
+        rep->source = ElectronicStructureSource::TransitionDensity;
+        rep->use_magnitude = false;
+        rep->transition_density_component = ElectronicStructureTransitionDensityComponent::Detachment;
+        break;
+    case ElectronicStructureLegacyType::ElectronDensity:
+        rep->source = ElectronicStructureSource::ElectronDensity;
+        rep->use_magnitude = false;
+        rep->spin = ElectronicStructureSpin::Total;
+        break;
+    default:
+        ASSERT(false);
+        break;
+    }
+}
+
+
+static inline int electronic_structure_legacy_type(const ElectronicStructureRepresentation& rep) {
+    switch (rep.source) {
+    case ElectronicStructureSource::MolecularOrbital:
+        return (int)(!rep.use_magnitude ?
+            ElectronicStructureLegacyType::MolecularOrbital :
+            ElectronicStructureLegacyType::MolecularOrbitalDensity);
+    case ElectronicStructureSource::NaturalTransitionOrbital:
+        if (!rep.use_magnitude) {
+            return (int)(rep.nto_component == ElectronicStructureNtoComponent::Particle ?
+                ElectronicStructureLegacyType::NaturalTransitionOrbitalParticle :
+                ElectronicStructureLegacyType::NaturalTransitionOrbitalHole);
+        }
+        return (int)(rep.nto_component == ElectronicStructureNtoComponent::Particle ?
+            ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle :
+            ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole);
+    case ElectronicStructureSource::TransitionDensity:
+        return (int)(rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment ?
+            ElectronicStructureLegacyType::DetachmentDensity :
+            ElectronicStructureLegacyType::AttachmentDensity);
+    case ElectronicStructureSource::ElectronDensity:
+        return (int)ElectronicStructureLegacyType::ElectronDensity;
+    case ElectronicStructureSource::DensityProperty:
+        return (int)ElectronicStructureLegacyType::ElectronDensity;
+    default:
+        ASSERT(false);
+        return 0;
+    }
+}
+
+struct AtomicPropertyRepresentation {
+    int colormap = DEFAULT_COLORMAP;
+    float range_beg = 0.0f;
+    float range_end = 1.0f;
+    bool  range_symmetric_zero = true; // Use a symmetric min and max value around zero
+    int idx = 0;
+	int sub_idx = 0;
+};
+
+struct DipoleRepresentation {
+    int dipole_idx = 0;
+    vec4_t color = { 0, 0, 0, 1 };
+    vec3_t origin = { 0, 0, 0 };
+    float scale = 1.0f;
+	float radius = 0.05f;
 };
 
 struct Representation {
@@ -334,8 +898,8 @@ struct Representation {
     char filt[256] = "all";
     char filt_error[256] = "";
 
-    RepresentationType type = RepresentationType::SpaceFill;
-    ColorMapping color_mapping = ColorMapping::Cpk;
+    RepresentationType type = RepresentationType::BallAndStick;
+    ColorMapping color_mapping = ColorMapping::Type;
     md_bitfield_t atom_mask = {};
     md_gl_rep_t md_rep = {};
 #if EXPERIMENTAL_GFX_API
@@ -343,69 +907,128 @@ struct Representation {
 #endif
 
     bool enabled = true;
+	bool needs_update = true;
     bool type_is_valid = false;
     bool filt_is_dirty = true;
     bool filt_is_valid = false;
     bool filt_is_dynamic = false;
     bool dynamic_evaluation = true;
 
-    // User defined color used in uniform mode
-    vec4_t uniform_color = {1.0f, 1.0f, 1.0f, 1.0f};
+    // User defined base color used in uniform mode
+    vec4_t base_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
+    struct {
+        vec4_t color_unknown = {0.50f, 0.50f, 0.50f, 1.0f};
+        vec4_t color_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
+        vec4_t color_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
+        vec4_t color_sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
+    } secondary_structure;
+
+    // Global post processing parameters applied to the final colors.
+    vec4_t tint_color = {1.0f, 0.0f, 0.0f, 1.0f};
+    float tint_scale = 0.0f;
     float saturation = 1.0f;
 
     // scaling parameter (radius, width, height, etc depending on type)
     vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
+	BondColorMode bond_color = BondColorMode::NearestAtom;
+    float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
+	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+    ElectronicStructureRepresentation electronic_structure = {};
+    AtomicPropertyRepresentation atomic_property = {};
+	DipoleRepresentation dipole = {};
+};
+
+// Event Payload when an electronic structure is to be evaluated
+struct EvalElectronicStructure {
+    const md_system_t* sys = 0;
+    double frame = 0.0;
+    Representation* rep = 0;
+    uint32_t* atom_colors = 0;
+};
+
+struct FrameCache {
+    FRAME_CACHE_LRU_TYPE lru = {};
+    md_system_state_t states[FRAME_CACHE_SIZE] = {};
+    int32_t frame_idx[FRAME_CACHE_SIZE] = {};
+};
+
+struct PickingRange {
+    PickingDomainID domain = 0;
+    uint32_t beg = 0;
+    uint32_t end = 0;
+};
+
+struct PickingSpace {
+    size_t num_ranges = 0;
+    PickingRange ranges[8] = {};
+};
+
+struct PickingReadbackSlot {
+    uint32_t color_pbo = 0;
+    uint32_t depth_pbo = 0;
+    
+    uint32_t submitted_frame_idx = 0;
+    bool pending = false;
+    
+    uint32_t viewport_width = 0;
+    uint32_t viewport_height = 0;
+    
+    vec2_t surface_coord = {0};
+    vec2_t screen_coord  = {0};
+    mat4_t clip_to_world = mat4_ident();
+};
+
+struct PickingSurface {
+    PickingSourceID source = 0;
+    uint32_t slot_cursor = 0;
+    PickingReadbackSlot slots[2] = {};
+};
+
+struct PickingHandler {
+    uint32_t frame_idx = 0;
+
     struct {
-        Volume vol = {};
-        VolumeResolution resolution = VolumeResolution::Mid;
+        PickingSpace space = {};
+        uint32_t submitted_frame_idx = 0;
+    } history[2];
+};
 
-        IsoDesc iso_psi {
-            .enabled = true,
-            .count   = 2,
-            .values  = {0.05f, -0.05},
-            .colors  = {{0.f/255.f,75.f/255.f,135.f/255.f,0.75f}, {255.f/255.f,205.f/255.f,0.f/255.f,0.75f}},
-        };
+struct PickingHit {
+    PickingSourceID source = 0;
+    PickingDomainID domain = 0;
 
-        IsoDesc iso_den {
-            .enabled = true,
-            .count   = 1,
-            .values  = {0.0025f},
-            .colors  = {{255.f/255.f,255.f/255.f,255.f/255.f,0.75f}},
-        };
+    uint32_t frame_idx = 0;    uint32_t raw_idx = INVALID_PICKING_IDX;
+    uint32_t local_idx = 0;
 
-        struct {
-            bool enabled = false;
-            uint32_t tf_tex = 0;
-            int colormap = DEFAULT_COLORMAP;
-        } dvr;
+    vec2_t surface_coord = {0};
+    vec2_t screen_coord = {0};
+    vec3_t world_pos = {0};
+    float depth = 1.0f;
+};
 
-        ElectronicStructureType type = ElectronicStructureType::MolecularOrbital;
-        int mo_idx = 0;
-        int nto_idx = 0;
-        int nto_lambda_idx = 0;
-		uint64_t vol_hash = 0;
-        uint64_t tf_hash = 0;
-    } electronic_structure;
-
-    struct {
-        int colormap = DEFAULT_COLORMAP;
-        float range_beg = 0.0f;
-        float range_end = 1.0f;
-        //float map_min = 0.0f;
-        //float map_max = 1.0f;
-        int idx = 0;
-    } prop;
+struct PickingReadbackRequest {
+    uint32_t fbo = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    vec2_t surface_coord = {0};
+    vec2_t screen_coord = {0};
+    mat4_t clip_to_world = mat4_ident();
 };
 
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
 
+#if MD_ENABLE_GPU
+    md_gpu_device_t gpu_device = nullptr;
+#endif
+
     struct {
-        md_allocator_i* frame = 0;
-        md_allocator_i* persistent = 0;
+        md_allocator_i* frame = nullptr;
+        md_allocator_i* persistent = nullptr;
     } allocator;
 
     LoadDatasetWindowState load_dataset;
@@ -436,11 +1059,7 @@ struct ApplicationState {
             vec2_t sequence[JITTER_SEQUENCE_SIZE] {};
         } jitter;
 
-        struct {
-            vec3_t target_position = {};
-            quat_t target_orientation = {};
-            float  target_distance = 0;
-        } animation;
+		ViewTransform target = {};
     } view;
 
     struct {
@@ -453,22 +1072,34 @@ struct ApplicationState {
         str_t path_to_file = {};
     } screenshot;
 
+    struct {
+        md_gl_shaders_t shaders = {};
+        md_gl_shaders_t shaders_lean_and_mean = {};
+    } gl;
+
     // --- MDLIB DATA ---
     struct {
         md_allocator_i*     sys_alloc = nullptr;
-        md_gl_shaders_t     gl_shaders = {};
-        md_gl_shaders_t     gl_shaders_lean_and_mean = {};
+
         md_gl_mol_t         gl_mol = {};
 #if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};
 #endif
         md_system_t         sys = {};
-        md_trajectory_i*    traj = nullptr;
+
+        // The actual interpolated state of the system.
+        // Is only used for rendering and visualization of properties.
+        md_system_state_t   state = {};
+
+		mat4_t 			    unitcell_transform = mat4_ident();
+
+        FrameCache          frame_cache;
 
         vec3_t              sys_aabb_min = {};
         vec3_t              sys_aabb_max = {};
 
-        uint32_t dirty_buffers = 0;
+        bool                interpolate_system_state = false;
+        uint32_t            dirty_gpu_buffers = 0;
     } mold;
 
     DisplayProperty* display_properties = nullptr;
@@ -478,7 +1109,6 @@ struct ApplicationState {
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID backbone_computations = task_system::INVALID_ID;
-        task_system::ID prefetch_frames = task_system::INVALID_ID;
         task_system::ID evaluate_full = task_system::INVALID_ID;
         task_system::ID evaluate_filt = task_system::INVALID_ID;
     } tasks;
@@ -486,21 +1116,10 @@ struct ApplicationState {
     // --- ATOM SELECTION ---
     struct {
         SelectionGranularity granularity = SelectionGranularity::Atom;
-
-        struct {
-            int32_t hovered = -1;
-            int32_t right_click = -1;
-        } atom_idx;
-
-        struct {
-            int32_t hovered = -1;
-            int32_t right_click = -1;
-        } bond_idx;
-
         SingleSelectionSequence single_selection_sequence;
 
-        md_bitfield_t selection_mask{};
-        md_bitfield_t highlight_mask{};
+        md_bitfield_t selection_mask {};
+        md_bitfield_t highlight_mask {};
         Selection* stored_selections = NULL;
 
         struct {
@@ -517,8 +1136,6 @@ struct ApplicationState {
             float saturation = 0.3f;
         } color;
 
-        //bool selecting = false;
-
         struct {
             char buf[256] = "";
             char error[256] = "";
@@ -530,7 +1147,7 @@ struct ApplicationState {
 
         struct {
             md_bitfield_t mask = {0};
-            SelectionGrowth mode = SelectionGrowth::CovalentBond;
+            SelectionGrowthMode mode = SelectionGrowthMode::CovalentBond;
             float extent = 1;
             bool mask_invalid = true;
             bool show_window = false;
@@ -540,11 +1157,17 @@ struct ApplicationState {
     // --- FRAMEBUFFER ---
     GBuffer gbuffer {};
 
-    PickingData picking {};
+    // --- PICKING ---
+    PickingSurface picking_surface {};      // Surface for main viewport picking
+
+    PickingRange   picking_range_atom {};   // Reserved picking range for atoms
+    PickingRange   picking_range_bond {};   // Reserved picking range for bonds
+
+    PickingHandler picking_handler {};      // Handler for managing picking interactions
 
     // --- ANIMATION ---
     struct {
-        double frame = 0.f;  // double precision for long trajectories
+        double frame = 0.0;  // double precision for long trajectories
         float fps = 10.f;
         float tension = 0.0f;
         InterpolationMode interpolation = InterpolationMode::CubicSpline;
@@ -587,86 +1210,11 @@ struct ApplicationState {
         bool show_window = false;
     } distributions;
 
-    struct {
-        bool show_window = false;
-        bool enabled = false;
-
-        struct {
-            bool enabled = true;
-            struct {
-                uint32_t id = 0;
-                float alpha_scale = 1.f;
-                int colormap = DEFAULT_COLORMAP;
-                bool dirty = true;
-                float min_val = 0.0f;
-                float max_val = 1.0f;
-            } tf;
-        } dvr;
-
-        struct {
-            bool enabled = false;
-            float values[8] = {};
-            vec4_t colors[8] = {};
-            size_t count = 0;
-        } iso;
-
-        struct {
-            uint32_t id = 0;
-            bool dirty = false;
-            int  dim[3] = {0};
-            float max_value = 1.f;
-        } volume_texture;
-
-        GBuffer fbo = {0};
-
-        struct {
-            vec3_t min = {0, 0, 0};
-            vec3_t max = {1, 1, 1};
-        } clip_volume;
-
-        struct {
-            bool enabled = true;
-            bool checkerboard = true;
-            int  colormap_mode = 2;
-        } legend;
-
-        vec3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
-        float resolution_scale = 2.0f;
-
-        vec4_t clip_volume_color = {1,0,0,1};
-        vec4_t bounding_box_color = {0,0,0,1};
-
-        bool show_bounding_box = true;
-        bool show_reference_structures = true;
-        bool show_reference_ensemble = false;
-        bool show_density_volume = false;
-        bool show_coordinate_system_widget = true;
-
-        bool dirty_rep = false;
-        bool dirty_vol = false;
-
-        struct {
-            RepresentationType type = RepresentationType::BallAndStick;
-            ColorMapping colormap = ColorMapping::Cpk;
-            float param[4] = {1,1,1,1};
-            vec4_t color = {1,1,1,1};
-        } rep;
-
-        md_array(md_gl_rep_t) gl_reps = nullptr;
-        md_array(mat4_t) rep_model_mats = nullptr;
-        mat4_t model_mat = {0};
-
-        Camera camera = {};
-        quat_t target_ori = {};
-        vec3_t target_pos = {};
-        float  target_dist = 0;
-    } density_volume;
-
     // --- VISUALS ---
     struct {
         struct {
             vec3_t color = {1, 1, 1};
-            float intensity = 24.f;
+            float intensity = 24.0f;
         } background;
 
         struct { 
@@ -686,8 +1234,8 @@ struct ApplicationState {
 
         struct {
             bool enabled = true;
-            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_Filmic;
-            float exposure = 1.f;
+            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_ACES;
+            float exposure = 1.0f;
             float gamma = 2.2f;
         } tonemapping;
 
@@ -737,12 +1285,46 @@ struct ApplicationState {
         uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
         bool show_window = false;
+        bool needs_update = false;
+        bool advanced_mode = false;
     } representation;
 
     struct {
+        bool recenter = false;
+        bool fixate_orientation = false;
+
+        struct {
+            char query[256] = "";
+            char error[256] = "";
+            bool valid = false;
+            bool enabled = false;
+            bool dynamic = false; // represents whether the query needs to be re-evaluated per frame.
+            uint64_t version = 1;
+            uint64_t evaluated_version = 0;
+            uint64_t ir_fingerprint = 0;
+            md_bitfield_t mask = { 0 };
+        } recenter_query;
+
         bool apply_pbc = false;
         bool unwrap_structures = false;
         bool recalc_bonds = false;
+
+        // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
+        // This is populated by assigning a user defined selection.
+        uint64_t selection_version = 1;
+        md_bitfield_t selection_mask = {0};
+
+        struct {
+            uint64_t target_version = 0;
+
+            // Need to store the initial frame position for recentering and orienting to work properly when applying on trajectories
+            vec4_t* xyzw = nullptr;
+            vec3_t  com = {};
+
+            // Alignment matrix for orienting the structure based on principal axes. This is calculated based on the initial frame and applied to all frames for consistent orientation.
+            mat4_t alignment_mat = mat4_ident();
+        } initial_frame;
+
     } operations;
 
     struct {
@@ -751,12 +1333,22 @@ struct ApplicationState {
     } settings;
 
     struct {
+        md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
+    } interpolated_properties;
+
+    struct { 
         struct {
             size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
             md_secondary_structure_t* data = nullptr;
             uint64_t fingerprint = 0;
         } secondary_structure;
+        struct {
+            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
+            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
+            md_secondary_structure_t* data = nullptr;
+            uint64_t fingerprint = 0;
+        } secondary_structure_render;
         struct {
             size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
@@ -772,7 +1364,6 @@ struct ApplicationState {
         vec4_t text_color       = {1,1,1,1};
         vec4_t text_bg_color    = {0,0,0,0.5f};
 
-        str_t text; // The current text in the texteditor
         uint64_t text_hash;
 
         // A bit confusing and a bit of a hack,
@@ -784,9 +1375,6 @@ struct ApplicationState {
         md_script_eval_t* full_eval = nullptr;
         md_script_eval_t* filt_eval = nullptr;
         md_script_vis_t vis = {};
-
-        // Semaphore to control access to IR
-        md_semaphore_t ir_semaphore = {};
 
         // Controls current subindex being visualized (if array)
         int sub_idx = -1;
@@ -817,7 +1405,87 @@ struct ApplicationState {
     bool show_script_window = true;
     bool show_debug_window = false;
     bool show_property_export_window = false;
+
+    TextEditor editor = {};
 };
+
+struct ViamdEventHandler : viamd::EventHandler {
+    ApplicationState* state = nullptr;
+
+    explicit ViamdEventHandler(ApplicationState* s) : state(s) {
+        ASSERT(state);
+        viamd::event_system_register_handler(*this);
+    }
+
+    void process_events(const viamd::Event* events, size_t num_events) final;
+};
+
+struct LoadDataPayload {
+    ApplicationState* app_state;
+    loader::State loader_state;
+    str_t path_to_file;
+};
+
+struct PickingTooltipTextRequest {
+    const ApplicationState& app;
+    const PickingHit& hit;
+    md_strb_t sb = {};
+};
+
+enum ViewFitRound {
+    ViewFitRound_Highlight = 0,
+    ViewFitRound_Selection,
+    ViewFitRound_Visible,
+};
+
+// This is the supplied event payload for requesting a view fit.
+// The idea is to construct a weighted point cloud of whatever is 'highlighted'
+// And then the view fit system can decide how to best fit the view based on that point cloud.
+// This is dispatched in rounds starting with the top most priority being Highlight, then Selection and lastly Visible.
+// If the point cloud is empty for a certain mode, the next mode will be dispatched, until a non empty point cloud is found or all modes are exhausted.
+
+struct ViewFitRequest {
+    const ApplicationState& app;
+	uint64_t surface_id = 0;        // Source of the view fit request, can be used to filter out irrelevant requests or for debugging.
+	md_array(vec4_t) xyzw = nullptr;
+	md_allocator_i* alloc = nullptr;
+    ViewFitRound round;
+};
+
+enum class InteractionSelectionMode {
+    None,
+    Append,
+    Remove,
+};
+
+struct InteractionSurfaceState {
+    InteractionSurfaceID surface_id = 0;
+    ImGuiID item_id = 0; // Internal ImGui ID for the *button* used to control interactions.
+
+    bool hovered = false;
+    bool active = false;
+    bool activated = false;
+    bool deactivated = false;
+
+    InteractionSelectionMode selection_mode = InteractionSelectionMode::None;
+
+    vec2_t mouse_local  = {};
+    vec2_t surface_size = {};
+
+    // Local coordinates
+    vec2_t region_min = {};
+    vec2_t region_max = {};
+};
+
+static inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
+static inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
+static inline const ImVec2& vec_cast(const vec2_t& v) { return *(const ImVec2*)(&v); }
+static inline const vec2_t& vec_cast(const ImVec2& v) { return *(const vec2_t*)(&v); }
+
+static inline ImVec4& vec_cast(vec4_t& v) { return *(ImVec4*)(&v); }
+static inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
+static inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
+static inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
 
 static inline void modify_field(md_bitfield_t* bf, const md_bitfield_t* mask, SelectionOperator op) {
     switch(op) {
@@ -868,16 +1536,16 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
     case SelectionGranularity::Atom:
         break;
     case SelectionGranularity::Component:
-        for (size_t i = 0; i < md_system_comp_count(&sys); ++i) {
-            md_urange_t range = md_system_comp_atom_range(&sys, i);
+        for (size_t i = 0; i < md_system_component_count(&sys); ++i) {
+            md_urange_t range = md_system_component_atom_range(&sys, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
                 md_bitfield_set_range(mask, range.beg, range.end);
             }
         }
         break;
     case SelectionGranularity::Instance:
-        for (size_t i = 0; i < md_system_inst_count(&sys); ++i) {
-            md_urange_t range = md_system_inst_atom_range(&sys, i);
+        for (size_t i = 0; i < md_system_instance_count(&sys); ++i) {
+            md_urange_t range = md_system_instance_atom_range(&sys, i);
             if (md_bitfield_popcount_range(mask, range.beg, range.end)) {
                 md_bitfield_set_range(mask, range.beg, range.end);
             }
@@ -890,9 +1558,7 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
 
 static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
     ASSERT(seq);
-    for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
-        seq->idx[i] = -1;
-    }
+    MEMSET(seq->idx, -1, sizeof(seq->idx));
 }
 
 static inline void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
@@ -949,9 +1615,217 @@ static inline size_t single_selection_sequence_count(const SingleSelectionSequen
     return i;
 }
 
-void draw_info_window(const ApplicationState& state, uint32_t picking_idx);
+static inline uint64_t generate_fingerprint() {
+    return (uint64_t)md_time_now();
+}
 
-void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
+void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state);
 
-md_atom_idx_t atom_idx_from_picking_idx(uint32_t picking_idx);
-md_bond_idx_t bond_idx_from_picking_idx(uint32_t picking_idx);
+//void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
+
+void interrupt_async_tasks(ApplicationState* state);
+
+// Dataset loading
+bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::State& load_state);
+void init_system_data(ApplicationState* state);
+void init_trajectory_data(ApplicationState* state);
+
+// Frame cache operations
+void clear_system_frame_cache(ApplicationState* state);
+
+// Interpolate state
+void interpolate_system_state(ApplicationState* state);
+
+// Workspace
+void load_workspace(ApplicationState* state, str_t file);
+void save_workspace(ApplicationState* state, str_t file);
+
+// Selections
+Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* bf = 0);
+void remove_selection(ApplicationState* state, size_t idx);
+void remove_all_selections(ApplicationState* state);
+
+// Representations
+Representation* create_representation(ApplicationState* state, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
+Representation* clone_representation(ApplicationState* state, const Representation& rep);
+void remove_representation(ApplicationState* state, size_t idx);
+void update_representation(ApplicationState* state, Representation* rep);
+void update_representation_info(ApplicationState* state);
+void update_all_representations(ApplicationState* state);
+bool representation_uses_atom_colors(const Representation& rep);
+
+void flag_representation_as_dirty(Representation* rep);
+void flag_all_representations_as_dirty(ApplicationState* state);
+
+void remove_all_representations(ApplicationState* state);
+void create_default_representations(ApplicationState* state);
+void recompute_atom_visibility_mask(ApplicationState* state);
+
+// Recentering operations (low level)
+
+void recenter_mark_query_dirty(ApplicationState* state);
+void recenter_mark_selection_dirty(ApplicationState* state);
+const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* state);
+uint64_t recenter_get_active_target_version(const ApplicationState* state);
+bool recenter_update_query_mask(ApplicationState* state);
+void recenter_update(ApplicationState* state);
+
+// Update the required initial frame data for the recentering target (if needed)
+void recenter_update_target_data(ApplicationState* state);
+void recenter_calculate_transform(float M[4][4], const ApplicationState* state);
+
+// Picking
+
+void picking_handler_new_frame(PickingHandler* handler);
+PickingSpace* picking_handler_current_space(PickingHandler* handler);
+const PickingSpace* picking_handler_find_space(const PickingHandler& handler, uint32_t submitted_frame_idx);
+
+// Reserves a range within the picking space for a specific domain (atoms, bonds, etc).
+// Returns true if the range was successfully reserved, false if there was not enough space. If successful, out_range will be filled with the reserved range.
+// out_range is optional and can be null if the caller does not need the details of the reserved range (e.g. just needs to know if the reservation was successful or not).
+bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count);
+
+void picking_surface_init(PickingSurface* surface, PickingSourceID source);
+void picking_surface_free(PickingSurface* surface);
+
+// Submits a picking readback request for the given surface. The readback will be performed asynchronously, and the result can be polled using picking_surface_poll_hit.
+bool picking_surface_submit_readback(
+    PickingSurface* surface,
+    uint32_t fbo,
+    uint32_t width,
+    uint32_t height,
+    uint32_t submitted_frame_idx,
+    vec2_t surface_coord,
+    vec2_t screen_coord,
+    const mat4_t& inv_mvp
+);
+
+// Polls for the result of a picking readback request. If a hit is detected, out_hit will be filled with the details of the hit and the function will return true.
+// If no hit is detected the function will return false.
+bool picking_surface_poll_hit(
+    PickingHit* out_hit,
+    PickingSurface* surface,
+    const PickingHandler& handler
+);
+
+// Convenience wrapper for the common frame loop path.
+// Preserves the existing pipeline ordering by submitting the current frame readback and then polling the previous completed one.
+bool picking_surface_submit_readback_and_poll_hit(
+    PickingHit* out_hit,
+    PickingSurface* surface,
+    const PickingHandler& handler,
+    const PickingReadbackRequest& request
+);
+
+enum InteractionSurfaceFlags : uint32_t {
+    InteractionSurfaceFlags_None = 0,
+    InteractionSurfaceFlags_NoRegionSelect  = 1 << 0,
+};
+
+// Creates an invisible interactive surface which forms the basis for picking and interaction.
+InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_t& size, InteractionSurfaceFlags flags = InteractionSurfaceFlags_None);
+
+struct InteractionSurfaceHitArgs {
+    PickingSurface* picking_surface;
+    const PickingHandler& picking_handler;
+    uint32_t fbo;
+    uint32_t width;
+    uint32_t height;
+    const mat4_t& clip_to_world;
+};
+
+bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfaceState& state, const InteractionSurfaceHitArgs& args);
+
+struct InteractionSurfaceViewTransformArgs {
+    const Camera& camera;
+    const TrackballControllerParam& trackball_param = {};
+};
+
+struct InteractionSurfaceViewTransformResult {
+    bool reset_requested = false;
+};
+
+// Uses the interaction surface state (e.g. mouse position, region selection) to calculate a view transform based on the provided camera and trackball parameters.
+// Modifies the target view transform in place.
+// Returns interaction outcomes which the caller may use to apply domain-specific behavior such as view reset.
+InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args);
+
+enum class InteractionSurfaceEventKind {
+    None,
+    Hover,
+    Click,
+    ContextMenu,
+    RegionSelect,
+};
+
+enum class InteractionSurfaceEventPhase {
+    None,
+    Update,
+    Commit,
+};
+
+struct InteractionSurfaceEvent {
+    InteractionSurfaceID surface_id = 0;
+    ImGuiID item_id = 0;
+
+    InteractionSurfaceEventKind kind = InteractionSurfaceEventKind::Hover;
+    InteractionSelectionMode selection_mode = InteractionSelectionMode::None;
+    InteractionSurfaceEventPhase region_phase = InteractionSurfaceEventPhase::None;
+
+    vec2_t mouse_local = {};
+    vec2_t surface_size = {};
+    vec2_t region_min = {};
+    vec2_t region_max = {};
+
+    mat4_t clip_to_world = mat4_ident();
+    mat4_t world_to_clip = mat4_ident();
+
+    PickingHit hit = {};
+};
+
+void interaction_surface_event_extract(InteractionSurfaceEvent* out_event, const InteractionSurfaceState& state, const PickingHit& hit = {});
+
+// Helper function for projecting world coordinates to surface coordinates, used for interaction surfaces and picking.
+static inline vec2_t world_to_surface_project(
+    const vec3_t& world_coord,
+    const mat4_t& world_to_clip,
+    const vec2_t& surface_size
+) {
+    const vec4_t c = world_to_clip * vec4_set(world_coord.x, world_coord.y, world_coord.z, 1.0f);
+    vec2_t out_coord = {
+        ( c.x / c.w * 0.5f + 0.5f) * surface_size.x,
+        (-c.y / c.w * 0.5f + 0.5f) * surface_size.y,
+    };
+    return out_coord;
+}
+
+void point_set_region_mask_compute(
+    md_bitfield_t* mask,
+    const float x[],
+    const float y[],
+    const float z[],
+    size_t count,
+    const md_bitfield_t* candidate_mask,
+    const mat4_t& world_to_clip,
+    const vec2_t& region_min,
+    const vec2_t& region_max,
+    const vec2_t& surface_size
+);
+
+// File Queue
+bool file_queue_empty(const FileQueue* queue);
+bool file_queue_full(const FileQueue* queue);
+void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None);
+
+FileQueue::Entry file_queue_front(const FileQueue* queue);
+FileQueue::Entry file_queue_pop(FileQueue* queue);
+
+void file_queue_process(ApplicationState* state);
+
+// view
+void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfield_t* mask = nullptr);
+
+// Script visualization
+void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0);
+void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0);
+void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);

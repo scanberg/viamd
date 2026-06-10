@@ -8,14 +8,20 @@ layout (std140) uniform UniformData
     mat4 u_model_view_proj_mat;
 
     vec2  u_inv_res;
-    float u_density_scale;
-
     vec3  u_clip_plane_min;
-    vec3  u_clip_plane_max;
     float u_time;
+    vec3  u_clip_plane_max;
+    float u_tf_min;
 
-    vec3 u_gradient_spacing_world_space;
+    vec3  u_gradient_spacing_world_space;
+    float u_exposure;
+
     mat4 u_gradient_spacing_tex_space;
+
+    vec3  u_env_radiance;
+    float u_roughness;
+    vec3  u_dir_radiance;
+    float u_F0;
 };
 
 #ifdef SAMPLE_DEPTH
@@ -23,7 +29,6 @@ uniform sampler2D u_tex_depth;
 #endif
 
 in  vec3 model_pos;
-in  vec3 model_eye;
 
 layout(location = 0) out vec3 out_entry;
 layout(location = 1) out vec3 out_exit;
@@ -59,20 +64,30 @@ vec4 depth_to_view_coord(vec2 tc, float depth) {
     return view_coord / view_coord.w;
 }
 
+vec3 screen_to_model_coord(vec2 tc, float depth) {
+    return (u_view_to_model_mat * depth_to_view_coord(tc, depth)).xyz;
+}
+
 void main() {
 
-    // Do everything in model space
-    vec3 ori = model_eye;
-    vec3 dir = normalize(model_pos - model_eye);
+    vec2 tc = gl_FragCoord.xy * u_inv_res;
+
+    vec3 near_model = screen_to_model_coord(tc, 0.0);
+    vec3 far_model  = screen_to_model_coord(tc, 1.0);
+
+    vec3 ori = near_model;
+    vec3 dir = normalize(far_model - near_model);
 
     float t_entry, t_exit;
-    ray_vs_aabb(t_entry, t_exit, ori, dir, u_clip_plane_min.xyz, u_clip_plane_max.xyz);
+    if (!ray_vs_aabb(t_entry, t_exit, ori, dir, u_clip_plane_min.xyz, u_clip_plane_max.xyz)) {
+        discard;
+    }
     t_entry = max(0, t_entry);
 
 #ifdef SAMPLE_DEPTH
     float depth = texelFetch(u_tex_depth, ivec2(gl_FragCoord.xy), 0).x;
     if (depth < 1.0) {
-        vec3 stop_pos = (u_view_to_model_mat * depth_to_view_coord(gl_FragCoord.xy * u_inv_res, depth)).xyz;
+        vec3 stop_pos = screen_to_model_coord(tc, depth);
         t_exit = min(t_exit, dot(stop_pos - ori, dir));
     }
 #endif

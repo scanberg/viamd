@@ -136,6 +136,96 @@ inline vec3_t Lab_to_XYZ(vec3_t Lab) {
     return {X, Y, Z};
 }
 
+inline vec3_t linear_srgb_to_srgb(vec3_t rgb) {
+    const auto encode = [](float x) {
+        x = CLAMP(x, 0.0f, 1.0f);
+        return (x <= 0.0031308f) ? (12.92f * x) : (1.055f * powf(x, 1.0f / 2.4f) - 0.055f);
+    };
+    return {encode(rgb.x), encode(rgb.y), encode(rgb.z)};
+}
+
+inline vec3_t srgb_to_linear_srgb(vec3_t rgb) {
+    const auto decode = [](float x) {
+        x = CLAMP(x, 0.0f, 1.0f);
+        return (x <= 0.04045f) ? (x / 12.92f)
+                               : powf((x + 0.055f) / 1.055f, 2.4f);
+    };
+    return {decode(rgb.x), decode(rgb.y), decode(rgb.z)};
+}
+
+inline vec3_t oklab_to_linear_srgb(vec3_t lab) {
+    // OKLab to LMS cube
+    // Reference: Björn Ottosson (OKLab)
+    const float L = lab.x;
+    const float a = lab.y;
+    const float b = lab.z;
+
+    const float l_ = L + 0.3963377774f * a + 0.2158037573f * b;
+    const float m_ = L - 0.1055613458f * a - 0.0638541728f * b;
+    const float s_ = L - 0.0894841775f * a - 1.2914855480f * b;
+
+    const float l = l_ * l_ * l_;
+    const float m = m_ * m_ * m_;
+    const float s = s_ * s_ * s_;
+
+    // LMS to linear sRGB
+    const float r = +4.0767416621f * l - 3.3077115913f * m + 0.2309699292f * s;
+    const float g = -1.2684380046f * l + 2.6097574011f * m - 0.3413193965f * s;
+    const float bb = -0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s;
+
+    return {r, g, bb};
+}
+
+inline vec3_t linear_srgb_to_oklab(vec3_t rgb) {
+    // linear sRGB to LMS
+    const float l = 0.4122214708f * rgb.x + 0.5363325363f * rgb.y + 0.0514459929f * rgb.z;
+    const float m = 0.2119034982f * rgb.x + 0.6806995451f * rgb.y + 0.1073969566f * rgb.z;
+    const float s = 0.0883024619f * rgb.x + 0.2817188376f * rgb.y + 0.6299787005f * rgb.z;
+
+    // cube root
+    const float l_ = cbrtf(l);
+    const float m_ = cbrtf(m);
+    const float s_ = cbrtf(s);
+
+    // LMS to OKLab
+    const float L = 0.2104542553f * l_ + 0.7936177850f * m_ - 0.0040720468f * s_;
+    const float a = 1.9779984951f * l_ - 2.4285922050f * m_ + 0.4505937099f * s_;
+    const float b = 0.0259040371f * l_ + 0.7827717662f * m_ - 0.8086757660f * s_;
+
+    return {L, a, b};
+}
+
+inline vec3_t oklab_to_srgb(vec3_t lab) {
+    // Convert to linear sRGB then apply transfer function
+    vec3_t rgb = oklab_to_linear_srgb(lab);
+    return linear_srgb_to_srgb(rgb);
+}
+
+inline vec3_t srgb_to_oklab(vec3_t rgb) {
+    return linear_srgb_to_oklab(srgb_to_linear_srgb(rgb));
+}
+
+// oklch = {h, c, l} with h in [0,1), l in [0,1]
+// NOTE: The order of the arguments here are H C L, not L C H
+inline vec3_t oklch_to_srgb(vec3_t oklch) {
+    const float h = oklch.x;
+    const float c = oklch.y;
+    const float l = oklch.z;
+
+    const float ang = h * 2.0f * (float)PI;
+    const float a = c * cosf(ang);
+    const float b = c * sinf(ang);
+
+    const vec3_t lab = {l, a, b};
+
+    // Convert to linear sRGB then apply transfer function
+    vec3_t rgb = oklab_to_linear_srgb(lab);
+    rgb = linear_srgb_to_srgb(rgb);
+
+    // Clamp to displayable range (simple gamut handling)
+    return vec3_clamp_f(rgb, 0.0f, 1.0f);
+}
+
 inline vec3_t rgb_to_Lab(vec3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
 inline vec3_t Lab_to_rgb(vec3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 
@@ -176,18 +266,66 @@ constexpr inline uint32_t convert_color(vec4_t in) {
     return out;
 }
 
-void color_atoms_uniform        (uint32_t* colors, size_t count, vec4_t uniform_color, const md_bitfield_t* mask = NULL);
-void color_atoms_cpk            (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_type           (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_idx            (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_name      (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_seq_id    (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_comp_idx       (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_inst_id        (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_inst_idx       (uint32_t* colors, size_t count, const md_system_t& sys);
-void color_atoms_sec_str        (uint32_t* colors, size_t count, const md_system_t& sys);
+struct SecondaryStructurePalette {
+    uint32_t unknown = 0xFF555555;
+    uint32_t coil    = 0xFFDDDDDD;
+    uint32_t helix   = 0xFF22DD22;
+    uint32_t sheet   = 0xFF2222DD;
+};
+
+void color_atoms_uniform            (uint32_t* colors, size_t count, uint32_t color);
+void color_atoms_cpk                (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_type               (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_idx                (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_name          (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_seq_id        (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_comp_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_inst_id            (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_inst_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
+void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const SecondaryStructurePalette& palette = SecondaryStructurePalette());
+
+static inline vec4_t scale_saturation(vec4_t rgba, float scale) {
+    vec3_t lab = linear_srgb_to_oklab(vec3_from_vec4(rgba));
+    lab.y *= scale;
+    lab.z *= scale;
+    return vec4_from_vec3(oklab_to_linear_srgb(lab), rgba.w);
+}
+
+static inline uint32_t scale_saturation(uint32_t rgba_u32, float scale) {
+    return convert_color(scale_saturation(convert_color(rgba_u32), scale));
+}
+
+static inline vec4_t tint_color(vec4_t base_rgba, vec4_t tint_rgba, float tint_strength, float saturation) {
+    const float t = CLAMP(tint_strength, 0.0f, 1.0f);
+    const float s = CLAMP(saturation, 0.0f, 1.0f);
+
+    vec3_t base_lab = linear_srgb_to_oklab(vec3_from_vec4(base_rgba));
+    vec3_t tint_lab = linear_srgb_to_oklab(vec3_from_vec4(tint_rgba));
+
+    // Match the same perceptual idea as tint_colors():
+    // small lightness pull, stronger chroma pull.
+    const float L_coeff  = 0.1f * t;
+    const float ab_coeff = 1.0f * t;
+
+    vec3_t out_lab = {
+        base_lab.x * (1.0f - L_coeff)  + tint_lab.x * L_coeff,
+        base_lab.y * (1.0f - ab_coeff) + tint_lab.y * ab_coeff,
+        base_lab.z * (1.0f - ab_coeff) + tint_lab.z * ab_coeff,
+    };
+
+    // Then apply saturation independently by scaling chroma in OKLab.
+    out_lab.y *= s;
+    out_lab.z *= s;
+
+    return vec4_from_vec3(oklab_to_linear_srgb(out_lab), base_rgba.w);
+}
+
+static inline uint32_t tint_color(uint32_t base_rgba_u32, uint32_t tint_rgba_u32, float tint_strength, float saturation) {
+    return convert_color(tint_color(convert_color(base_rgba_u32), convert_color(tint_rgba_u32), tint_strength, saturation));
+}
 
 void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask);
 void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale);
 void scale_saturation(uint32_t* colors, size_t count, float scale);
 
+void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength, float saturation = 1.0f);

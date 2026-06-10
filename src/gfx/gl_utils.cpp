@@ -2,9 +2,11 @@
 #include <core/md_str.h>
 #include <core/md_log.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_str_builder.h>
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "gl_utils.h"
 
@@ -32,7 +34,7 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
     }
 }
 
-bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
+bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir, md_allocator_i* alloc) {
     str_t line;
     while (str_extract_line(&line, &src)) {
         if (str_eq_cstr_n(line, "#include ", 9)) {
@@ -42,13 +44,13 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
                 return false;
             }
             file = str_substr(file, 1, file.len - 2);
-            str_t path = str_printf(md_get_temp_allocator(), "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
+            str_t path = str_printf(alloc, "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
 
-            str_t inc_src = load_textfile(path, md_get_temp_allocator());
+            str_t inc_src = load_textfile(path, alloc);
             if (inc_src) {
                 str_t base = {};
                 extract_folder_path(&base, path);
-                build_shader_src(builder, inc_src, base);
+                build_shader_src(builder, inc_src, base, alloc);
             } else {
                 MD_LOG_ERROR("Failed to open include file '%.*s'", (int)path.len, path.ptr);
                 return false;
@@ -65,9 +67,12 @@ bool build_shader_src(md_strb_t* builder, str_t src, str_t base_include_dir) {
 GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str_t base_include_dir) {
     ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER ||
            type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    defer { md_temp_end(temp); };
 
     GLuint shader = glCreateShader(type);
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
+    md_strb_t sb = md_strb_create(alloc);
     
     if (defines) {
         str_t version_str = {};
@@ -87,7 +92,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
         }
     }
 
-    build_shader_src(&sb, src, base_include_dir);
+    build_shader_src(&sb, src, base_include_dir, alloc);
 
     str_t final_src = md_strb_to_str(sb);
     glShaderSource(shader, 1, &final_src.ptr, 0);
@@ -109,15 +114,18 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
 GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) {
     ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER ||
         type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    defer { md_temp_end(temp); };
 
-    str_t src = load_textfile(filename, md_get_temp_allocator());
+    str_t src = load_textfile(filename, alloc);
     if (!src) {
         MD_LOG_ERROR("Failed to open source file for shader '%.*s'", (int)src.len, src.ptr);
         return 0;
     }
 
     GLuint shader = glCreateShader(type);
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
+    md_strb_t sb = md_strb_create(alloc);
 
     if (defines) {
         str_t version_str = {};
@@ -139,7 +147,7 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
 
     str_t folder_path;
     extract_folder_path(&folder_path, filename);
-    build_shader_src(&sb, src, folder_path);
+    build_shader_src(&sb, src, folder_path, alloc);
 
     str_t final_src = md_strb_to_str(sb);
     glShaderSource(shader, 1, &final_src.ptr, 0);
@@ -264,7 +272,7 @@ bool gl::init_texture_2D(GLuint* texture, int width, int height, GLenum format) 
 
 bool gl::init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format) {
     ASSERT(texture);
-    ASSERT(format == GL_R32F || format == GL_R16F || format == GL_R8);
+    ASSERT(format == GL_R32F || format == GL_R16F || format == GL_R8 || format == GL_RGBA8);
 
     if (glIsTexture(*texture)) {
         int x, y, z;
@@ -324,78 +332,204 @@ bool gl::free_texture(GLuint* texture) {
     return true;
 }
 
-static inline void get_pixel_channel_type(GLenum& channel, GLenum& type, GLenum format) {
+static inline bool get_pixel_channel_type(GLenum& channel, GLenum& type, GLenum format) {
     switch (format) {
     case GL_RGBA8:
         channel = GL_RGBA;
         type = GL_UNSIGNED_BYTE;
-        break;
+        return true;
     case GL_RGBA32F:
         channel = GL_RGBA;
         type = GL_FLOAT;
-        break;
+        return true;
     case GL_R32F:
         channel = GL_RED;
         type = GL_FLOAT;
-        break;
+        return true;
     default:
         channel = 0;
         type = 0;
     }
+    return false;
 }
 
-bool gl::set_texture_1D_data(GLuint texture, const void* data, GLenum format) {
+static inline size_t get_bytes_per_pixel(GLenum format) {
+    switch (format) {
+    case GL_RGBA8:
+        return 4 * sizeof(uint8_t);
+    case GL_RGBA32F:
+        return 4 * sizeof(float);
+    case GL_R32F:
+        return sizeof(float);
+    default:
+        return 0;
+    }
+}
+
+bool gl::set_texture_1D_data(GLuint texture, int level, const void* data, GLenum format) {
     if (!glIsTexture(texture)) return false;
 
     GLenum pixel_channel = 0;
     GLenum pixel_type = 0;
 
-    get_pixel_channel_type(pixel_channel, pixel_type, format);
-    if (pixel_channel == 0 || pixel_type == 0) return false;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
 
     int w;
     glBindTexture(GL_TEXTURE_1D, texture);
     glGetTexLevelParameteriv(GL_TEXTURE_1D, 0, GL_TEXTURE_WIDTH, &w);
-    glTexSubImage1D(GL_TEXTURE_1D, 0, 0, w, pixel_channel, pixel_type, data);
+    glTexSubImage1D(GL_TEXTURE_1D, level, 0, w, pixel_channel, pixel_type, data);
     glBindTexture(GL_TEXTURE_1D, 0);
     
     return true;
 }
 
-bool gl::set_texture_2D_data(GLuint texture, const void* data, GLenum format) {
+bool gl::set_texture_2D_data(GLuint texture, int level, const void* data, GLenum format) {
     if (!glIsTexture(texture)) return false;
 
     GLenum pixel_channel = 0;
     GLenum pixel_type = 0;
 
-    get_pixel_channel_type(pixel_channel, pixel_type, format);
-    if (pixel_channel == 0 || pixel_type == 0) return false;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
 
     int w, h;
     glBindTexture(GL_TEXTURE_2D, texture);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, pixel_channel, pixel_type, data);
+    glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, w, h, pixel_channel, pixel_type, data);
 
     return true;
 }
 
-bool gl::set_texture_3D_data(GLuint texture, const void* data, GLenum format) {
+bool gl::set_texture_3D_data(GLuint texture, int level, const void* data, GLenum format) {
     if (!glIsTexture(texture)) return false;
 
     GLenum pixel_channel = 0;
     GLenum pixel_type = 0;
 
-    get_pixel_channel_type(pixel_channel, pixel_type, format);
-    if (pixel_channel == 0 || pixel_type == 0) return false;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
 
     int w, h, d;
     glBindTexture(GL_TEXTURE_3D, texture);
     glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &w);
     glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
     glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &d);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
+
+    glTexSubImage3D(GL_TEXTURE_3D, level, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
     glBindTexture(GL_TEXTURE_3D, 0);
 
     return true;
+}
+
+bool gl::clear_texture_1D(GLuint texture, int level) {
+    if (!glIsTexture(texture)) return false;
+
+    glBindTexture(GL_TEXTURE_1D, texture);
+
+    GLenum format = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_1D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
+
+    bool result = false;
+
+    if (glClearTexImage) {
+        float clear_value[4] = { 0 };
+        glClearTexImage(texture, level, pixel_channel, pixel_type, clear_value);
+        result = true;
+    }
+    else {
+        int w;
+        glGetTexLevelParameteriv(GL_TEXTURE_1D, 0, GL_TEXTURE_WIDTH,  &w);
+        size_t bytes = w * get_bytes_per_pixel(format);
+        if (bytes > 0) {
+            md_temp_scope_t temp_scope = md_temp_begin();
+            defer { md_temp_end(temp_scope); };
+            void* data = md_temp_alloc_zero(temp_scope, bytes);
+            glTexSubImage1D(GL_TEXTURE_1D, level, 0, w, pixel_channel, pixel_type, data);
+            result = true;
+        }
+    }
+
+    glBindTexture(GL_TEXTURE_1D, 0);
+    return result;
+}
+
+bool gl::clear_texture_2D(GLuint texture, int level) {
+    if (!glIsTexture(texture)) return false;
+    
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    GLenum format = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
+
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
+
+    bool result = false;
+
+    if (glClearTexImage) {
+        float clear_value[4] = { 0 };
+        glClearTexImage(texture, level, pixel_channel, pixel_type, clear_value);
+        result = true;
+    }
+    else {
+        int w, h;
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+
+        size_t bytes = w * h * get_bytes_per_pixel(format);
+        if (bytes > 0) {
+            md_temp_scope_t temp_scope = md_temp_begin();
+            defer { md_temp_end(temp_scope); };
+            void* data = md_temp_alloc_zero(temp_scope, bytes);
+            glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, w, h, pixel_channel, pixel_type, data);
+            result = true;
+        }
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return result;
+}
+
+bool gl::clear_texture_3D(GLuint texture, int level) {
+    if (!glIsTexture(texture)) return false;
+    
+    glBindTexture(GL_TEXTURE_3D, texture);
+
+    GLenum format = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+
+    GLenum pixel_channel = 0;
+    GLenum pixel_type = 0;
+    if (!get_pixel_channel_type(pixel_channel, pixel_type, format)) return false;
+
+    bool result = false;
+
+    if (glClearTexImage) {
+        float clear_value[4] = { 0 };
+        glClearTexImage(texture, level, pixel_channel, pixel_type, clear_value);
+        result = true;
+    }
+    else {
+        int w, h, d;
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &d);
+
+        size_t bytes = w * h * d * get_bytes_per_pixel(format);
+        if (bytes > 0) {
+            md_temp_scope_t temp_scope = md_temp_begin();
+            defer { md_temp_end(temp_scope); };
+            void* data = md_temp_alloc_zero(temp_scope, bytes);
+            glTexSubImage3D(GL_TEXTURE_3D, level, 0, 0, 0, w, h, d, pixel_channel, pixel_type, data);
+            result = true;
+        }
+    }
+
+    glBindTexture(GL_TEXTURE_3D, 0);
+    return result;
 }

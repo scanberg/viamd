@@ -163,16 +163,65 @@ IMPLOT_API bool ColormapQualitative(ImPlotColormap idx) {
     return ImPlot::GetCurrentContext()->ColormapData.IsQual(idx);
 }
 
-IMPLOT_API void SyncAxesY() {
+IMPLOT_API void SyncAxesY(double padding_fraction) {
     ImPlotPlot& plot = *GImPlot->CurrentPlot;
     for (int s = ImAxis_Y1; s < ImAxis_COUNT; ++s)
     {
         ImPlotAxis& axis = plot.Axes[s];
         double v = ImMax(fabs(axis.FitExtents.Min), fabs(axis.FitExtents.Max));
-        v *= 1.10; // Padding
+        v += v * ImMax(0.0, padding_fraction);
         axis.FitExtents.Min = -v;
         axis.FitExtents.Max = v;
     }
+}
+
+IMPLOT_API void SyncAxesWithPadding(int master_axis, int aux_axis, double aux_to_master, double padding_fraction) {
+    IM_ASSERT(GImPlot && GImPlot->CurrentPlot);
+    ImPlotContext& gp = *GImPlot;
+    ImPlotPlot& plot = *gp.CurrentPlot;
+
+    // Guard
+    if (aux_to_master == 0.0) return;
+    padding_fraction = ImMax(0.0, padding_fraction);
+
+    // Read current fit extents (ImPlot computed these while plotting)
+    double mmin = plot.Axes[master_axis].FitExtents.Min;
+    double mmax = plot.Axes[master_axis].FitExtents.Max;
+    double amin = plot.Axes[aux_axis].FitExtents.Min;
+    double amax = plot.Axes[aux_axis].FitExtents.Max;
+
+    double mspan = mmax - mmin;
+    double aspan = amax - amin;
+
+    // If spans are degenerate, fall back to small epsilon to avoid collapse
+    const double EPS = 1e-12;
+    if (mspan <= EPS && aspan <= EPS) return;
+
+    // Convert aux span into master units
+    double aspan_master = aspan * aux_to_master;
+
+    // Choose the larger span and apply padding
+    double target_span_master = ImMax(mspan, aspan_master);
+    target_span_master *= (1.0 + padding_fraction);
+
+    // Compute centers (preserve original centers rather than forcing symmetric about zero)
+    double mcenter = 0.5 * (mmax + mmin);
+    double acenter = 0.5 * (amax + amin);
+
+    // New master extents centered on original master center
+    double new_mmin = mcenter - 0.5 * target_span_master;
+    double new_mmax = mcenter + 0.5 * target_span_master;
+
+    // Convert target span back to aux units and center around original aux center
+    double target_span_aux = target_span_master / aux_to_master;
+    double new_amin = acenter - 0.5 * target_span_aux;
+    double new_amax = acenter + 0.5 * target_span_aux;
+
+    // Apply to plot (ImPlot reads FitExtents for layout)
+    plot.Axes[master_axis].FitExtents.Min = new_mmin;
+    plot.Axes[master_axis].FitExtents.Max = new_mmax;
+    plot.Axes[aux_axis].FitExtents.Min = new_amin;
+    plot.Axes[aux_axis].FitExtents.Max = new_amax;
 }
 
 }  // namespace ImGui

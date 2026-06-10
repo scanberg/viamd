@@ -1,6 +1,4 @@
-﻿#include <event.h>
-
-#include "density_gen.inl"
+﻿#include "density_gen.inl"
 #include "density_gly.inl"
 #include "density_pro.inl"
 #include "density_pre.inl"
@@ -12,8 +10,6 @@
 #include "angles_pre.inl"
 #endif
 
-#include <viamd.h>
-
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -23,10 +19,13 @@
 #include <core/md_bitfield.h>
 #include <md_system.h>
 
-#include "gfx/gl.h"
-#include "gfx/gl_utils.h"
-#include "image.h"
-#include "task_system.h"
+#include <viamd_event.h>
+#include <viamd.h>
+#include <event.h>
+#include <gfx/gl.h>
+#include <gfx/gl_utils.h>
+#include <image.h>
+#include <task_system.h>
 
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
@@ -347,9 +346,9 @@ static void boxes_for_gauss(int* box_w, int n, float sigma) {  // Number of boxe
 static void blur_density_box(vec4_t* data, int dim, int num_passes) {
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
 
-    const md_allocator_i* alloc = md_get_temp_allocator();    // Thread safe allocator!
-    vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
-    defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    vec4_t* tmp_data = (vec4_t*)md_temp_alloc(temp, dim * dim * sizeof(vec4_t));
 
     const int kernel_width = 4;
 
@@ -369,9 +368,9 @@ static void blur_density_box(vec4_t* data, int dim, int num_passes) {
 static void blur_density_gaussian(vec4_t* data, int dim, float sigma) {
     ASSERT(dim > 0 && (dim & (dim - 1)) == 0); // Ensure dimension is power of two
 
-    const md_allocator_i* alloc = md_get_temp_allocator();    // Thread safe allocator!
-    vec4_t* tmp_data = (vec4_t*)md_alloc(alloc, dim * dim * sizeof(vec4_t));
-    defer { md_free(alloc, tmp_data, dim * dim * sizeof(vec4_t)); };
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    vec4_t* tmp_data = (vec4_t*)md_temp_alloc(temp, dim * dim * sizeof(vec4_t));
 
     int box_w[3];
     boxes_for_gauss(box_w, 3, sigma);
@@ -533,7 +532,7 @@ struct Ramachandran : viamd::EventHandler {
                 draw(state);
                 break;
             }
-            case viamd::EventType_ViamdTopologyInit: {
+            case viamd::EventType_ViamdSystemInit: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 on_topology_init(state);
                 break;
@@ -651,7 +650,7 @@ struct Ramachandran : viamd::EventHandler {
 
     void update(ApplicationState& state) {
         if (show_window && state.mold.sys.protein_backbone.segment.count > 0) {
-            const size_t num_frames = md_trajectory_num_frames(state.mold.traj);
+            const size_t num_frames = md_trajectory_num_frames(state.mold.sys.trajectory);
             if (num_frames > 0) {
                 if (full_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
                     if (!task_system::task_is_running(compute_density_full)) {
@@ -902,8 +901,8 @@ struct Ramachandran : viamd::EventHandler {
 
                                 if (is_selecting[plot_idx]) {
                                     if (min_x <= coord.x && coord.x <= max_x && min_y <= coord.y && coord.y <= max_y) {
-                                        md_comp_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[idx];
-										md_urange_t range = md_comp_atom_range(&sys.comp, comp_idx);
+                                        md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[idx];
+										md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
                                         if (range.beg != range.end) {
                                             modify_field(highlight_mask, range, SelectionOperator::Or);
                                         }
@@ -924,14 +923,14 @@ struct Ramachandran : viamd::EventHandler {
 
                             if (mouse_hover_idx != -1) {
                                 if (mouse_hover_idx < (int64_t)sys.protein_backbone.segment.count) {
-                                    md_comp_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[mouse_hover_idx];
-									md_urange_t range = md_comp_atom_range(&sys.comp, comp_idx);
+                                    md_component_idx_t comp_idx = sys.protein_backbone.segment.comp_idx[mouse_hover_idx];
+									md_urange_t range = md_component_atom_range(&sys.component, comp_idx);
                                     if (range.beg != range.end) {
                                         modify_field(highlight_mask, range, SelectionOperator::Or);
                                         grow_mask_by_selection_granularity(highlight_mask, state.selection.granularity, sys);
 									}
-									str_t lbl = md_comp_name(&sys.comp, comp_idx);
-									md_seq_id_t seq_id = md_comp_seq_id(&sys.comp, comp_idx);
+									str_t lbl = md_component_name(&sys.component, comp_idx);
+									md_sequence_id_t seq_id = md_component_seq_id(&sys.component, comp_idx);
                                     ImGui::SetTooltip("res[%d]: %.*s %d", comp_idx + 1, (int)lbl.len, lbl.ptr, seq_id);
                                 }
                             }
@@ -1222,8 +1221,9 @@ struct Ramachandran : viamd::EventHandler {
         };
 
         const size_t mem_size = sizeof(float) * density_tex_dim * density_tex_dim * 4;
-        float* density_map = (float*)md_alloc(md_get_heap_allocator(), mem_size);
-        defer { md_free(md_get_heap_allocator(), density_map, mem_size); };
+        md_temp_scope_t temp_scope = md_temp_begin();
+        defer { md_temp_end(temp_scope); };
+        float* density_map = (float*)md_temp_alloc(temp_scope, mem_size);
         MEMSET(density_map, 0, mem_size);
 
         // Create reference densities since these never change
@@ -1358,7 +1358,7 @@ struct Ramachandran : viamd::EventHandler {
 
         task_system::ID main_task = task_system::create_main_task(STR_LIT("##Update rama texture"), [data = user_data]() {
             if (data->complete) {
-                gl::set_texture_2D_data(data->rep->den_tex, data->density_tex, GL_RGBA32F);
+                gl::set_texture_2D_data(data->rep->den_tex, 0, data->density_tex, GL_RGBA32F);
             }
             md_free(data->alloc, data, data->alloc_size);
         });

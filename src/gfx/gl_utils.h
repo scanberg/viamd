@@ -22,9 +22,12 @@ bool get_texture_format(GLenum* format, GLuint texture);
 bool free_texture(GLuint* texture);
 
 // Set the data for the entire texture
-bool set_texture_1D_data(GLuint texture, const void* data, GLenum format);
-bool set_texture_2D_data(GLuint texture, const void* data, GLenum format);
-bool set_texture_3D_data(GLuint texture, const void* data, GLenum format);
+bool set_texture_1D_data(GLuint texture, int level, const void* data, GLenum format);
+bool set_texture_2D_data(GLuint texture, int level, const void* data, GLenum format);
+bool set_texture_3D_data(GLuint texture, int level, const void* data, GLenum format);
 
+bool clear_texture_1D(GLuint texture, int level);
+bool clear_texture_2D(GLuint texture, int level);
+bool clear_texture_3D(GLuint texture, int level);
 
 }  // namespace gl

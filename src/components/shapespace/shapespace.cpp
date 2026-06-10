@@ -1,8 +1,7 @@
-﻿#define IMGUI_DEFINE_MATH_OPERATORS
-
-#include <event.h>
+#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <core/md_log.h>
+#include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
 #include <core/md_bitfield.h>
@@ -15,12 +14,13 @@
 #include <md_script.h>
 #include <md_filter.h>
 
+#include <viamd_event.h>
 #include <viamd.h>
+#include <event.h>
+
 #include <serialization_utils.h>
 #include <imgui_widgets.h>
-#include <implot_widgets.h>
 #include <implot_internal.h>
-#include <loader.h>
 
 /*
     @NOTE:
@@ -35,10 +35,12 @@ enum ColorMode {
     ColorMode_Count,
 };
 
+/*
 static const char* colormode_lbl[] = {
     "Uniform",
     "Colormap",
 };
+*/
 
 struct Shapespace : viamd::EventHandler {
     char input[256] = "all";
@@ -93,7 +95,7 @@ struct Shapespace : viamd::EventHandler {
                 draw_window();
                 break;
             case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("ShapeSpace", &show_window);
+                ImGui::Checkbox("Shapespace", &show_window);
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
@@ -322,7 +324,7 @@ struct Shapespace : viamd::EventHandler {
                     if (num_structures > 1) {
                         len += snprintf(buf, sizeof(buf), "Structure: %i, ", structure_idx + 1);
                     }
-                    len += snprintf(buf + len, sizeof(buf) - len, "Frame: %i, lin: %.2f, plan: %.2f, iso: %.2f", frame_idx, w.x, w.y, w.z);
+                    snprintf(buf + len, sizeof(buf) - len, "Frame: %i, lin: %.2f, plan: %.2f, iso: %.2f", frame_idx, w.x, w.y, w.z);
                     ImGui::SetTooltip("%s", buf);
 
                     if (structure_idx < (int)md_array_size(bitfields)) {
@@ -356,7 +358,7 @@ struct Shapespace : viamd::EventHandler {
                 joined_bitfield = {0};
                 md_bitfield_init(&joined_bitfield, arena);
 
-				md_trajectory_i* traj = load::traj::get_raw_trajectory(app_state->mold.traj);
+				md_trajectory_i* traj = app_state->mold.sys.trajectory;
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
@@ -387,16 +389,17 @@ struct Shapespace : viamd::EventHandler {
                         ApplicationState* app_state = shapespace->app_state;
                         const size_t stride = ALIGN_TO(app_state->mold.sys.atom.count, 8);
                         const size_t bytes = stride * 3 * sizeof(float);
-                        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-                        defer { md_arena_allocator_destroy(alloc); };
+                        md_temp_scope_t temp_scope = md_temp_begin();
+                        md_allocator_i* alloc = md_temp_allocator(temp_scope);
+                        defer { md_temp_end(temp_scope); };
 
-                        float* coords = (float*)md_arena_allocator_push(alloc, bytes);
+                        float* coords = (float*)md_temp_alloc(temp_scope, bytes);
                         float* x = coords + stride * 0;
                         float* y = coords + stride * 1;
                         float* z = coords + stride * 2;
                         float* w = 0;
                         if (shapespace->use_mass) {
-                            w = (float*)md_arena_allocator_push(alloc, stride * sizeof(float));
+                            w = (float*)md_temp_alloc(temp_scope, stride * sizeof(float));
                             md_atom_extract_masses(w, 0, app_state->mold.sys.atom.count, &app_state->mold.sys.atom);
                         }
 
@@ -445,11 +448,12 @@ struct Shapespace : viamd::EventHandler {
             md_array(str_t)  column_labels = 0;
             md_array(float*) column_values = 0;
 
-            md_allocator_i* temp_arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-            defer { md_arena_allocator_destroy(temp_arena); };
+            md_temp_scope_t temp_scope = md_temp_begin();
+            md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+            defer { md_temp_end(temp_scope); };
 
             // @TODO: add unit to time (if available)
-            md_unit_t time_unit = md_trajectory_time_unit(app_state->mold.traj);
+            md_unit_t time_unit = md_trajectory_time_unit(app_state->mold.sys.trajectory);
 
             str_t x_label = STR_LIT("Frame");
             if (!md_unit_empty(time_unit)) {
@@ -497,8 +501,11 @@ struct Shapespace : viamd::EventHandler {
                 str_t y_label = STR_LIT("Shape Weight Ratio");
                 str_t header = md_xvg_format_header(title, x_label, y_label, md_array_size(column_labels) - 1, column_labels + 1, temp_arena);
                 str_t xvg    = md_xvg_format(header, num_cols, num_rows, column_values, temp_arena);
-                md_file_o* file = md_file_open(path, MD_FILE_WRITE);
-                md_file_write(file, xvg.ptr, xvg.len);
+                md_file_t file = {0};
+                if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+                    md_file_write(file, xvg.ptr, xvg.len);
+                    md_file_close(&file);
+                }
             } else {
                 MD_LOG_DEBUG("Unrecognized export format");
                 ASSERT(false);

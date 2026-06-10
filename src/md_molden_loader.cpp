@@ -2,7 +2,7 @@
  * @file md_molden_loader.cpp
  * @brief Molden file system loader for VIAMD integration
  * 
- * This file implements the system loader interface for Molden files,
+ * This file implements direct system loader entry points for Molden files,
  * converting MoldenData structures to md_system_t for visualization.
  * 
  * Phase 3 Implementation:
@@ -58,7 +58,7 @@ static bool molden_to_system(md_system_t* sys, const molden::MoldenData* data, m
     md_array_ensure(sys->atom.flags, reserve_size, alloc);
     
     // Setup unknown atom type as fallback
-    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, 0, alloc);
+    md_atom_type_find_or_add(&sys->atom.type, STR_LIT("Unknown"), 0, 0.0f, 0.0f, 0, (md_flags_t)0, alloc);
     
     // Convert atoms
     for (size_t i = 0; i < num_atoms; ++i) {
@@ -91,7 +91,8 @@ static bool molden_to_system(md_system_t* sys, const molden::MoldenData* data, m
             atomic_number, 
             mass, 
             radius, 
-            0, 
+            0,
+            (md_flags_t)0,
             alloc
         );
         
@@ -100,13 +101,13 @@ static bool molden_to_system(md_system_t* sys, const molden::MoldenData* data, m
         md_array_push(sys->atom.x, x, alloc);
         md_array_push(sys->atom.y, y, alloc);
         md_array_push(sys->atom.z, z, alloc);
-        md_array_push(sys->atom.flags, 0, alloc);
+        md_array_push(sys->atom.flags, (md_flags_t)0, alloc);
         md_array_push(sys->atom.type_idx, atom_type_idx, alloc);
     }
     
     // Infer bonds using VDW radii
     // This uses the mdlib utility function to compute covalent bonds
-    md_util_system_infer_covalent_bonds(sys, alloc);
+    md_util_system_infer_covalent_bonds(sys);
     
     MD_LOG_INFO("Loaded Molden file: %zu atoms, %zu bonds", sys->atom.count, sys->bond.count);
     
@@ -116,9 +117,7 @@ static bool molden_to_system(md_system_t* sys, const molden::MoldenData* data, m
 /**
  * @brief Initialize md_system_t from Molden file content (string)
  */
-static bool molden_init_from_str(md_system_t* sys, str_t str, const void* arg, md_allocator_i* alloc) {
-    (void)arg;  // Unused for Molden
-    
+bool md_molden_system_init_from_str(md_system_t* sys, str_t str, md_allocator_i* alloc) {
     std::string content(str.ptr, str.len);
     std::string error;
     
@@ -135,9 +134,7 @@ static bool molden_init_from_str(md_system_t* sys, str_t str, const void* arg, m
 /**
  * @brief Initialize md_system_t from Molden file
  */
-static bool molden_init_from_file(md_system_t* sys, str_t filename, const void* arg, md_allocator_i* alloc) {
-    (void)arg;  // Unused for Molden
-    
+bool md_molden_system_init_from_file(md_system_t* sys, str_t filename, md_allocator_i* alloc) {
     std::string filepath(filename.ptr, filename.len);
     std::string error;
     
@@ -149,23 +146,6 @@ static bool molden_init_from_file(md_system_t* sys, str_t filename, const void* 
     }
     
     return molden_to_system(sys, &data, alloc);
-}
-
-/**
- * @brief Molden system loader interface
- */
-static md_system_loader_i molden_system_api = {
-    molden_init_from_str,
-    molden_init_from_file,
-};
-
-/**
- * @brief Get Molden system loader
- * 
- * This is the entry point for registering the Molden loader with VIAMD.
- */
-md_system_loader_i* md_molden_system_loader(void) {
-    return &molden_system_api;
 }
 
 } // extern "C"

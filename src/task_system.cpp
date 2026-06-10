@@ -25,7 +25,7 @@ namespace task_system {
 #define LABEL_SIZE 64
 
 static inline ID generate_id(uint32_t slot_idx) {
-    return (md_time_current() << 8) | (slot_idx & (MAX_TASKS - 1));
+    return (md_time_now() << 8) | (slot_idx & (MAX_TASKS - 1));
 }
 
 static inline uint32_t get_slot_idx(ID id) {
