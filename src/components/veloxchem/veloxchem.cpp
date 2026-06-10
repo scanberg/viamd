@@ -295,6 +295,8 @@ struct VeloxChem : viamd::EventHandler {
     AABB aabb = {};
     OABB oabb = {};
 
+    vec3_t center_of_charge = {};
+
     // Up to date packed atom xyz in BOHR ready to be supplied for evaluation
     // The w component is padding for now. 16-bytes are used for better alignment (gpu buffer 1:1)
     vec4_t* atom_xyzw = nullptr;
@@ -822,22 +824,24 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (vlx) {
                     // Update atom_xyz
-                    if (qm_to_atom_idx) {
-                        ASSERT(md_array_size(atom_xyzw) == md_vlx_number_of_atoms(vlx));
-                        for (size_t i = 0; i < md_array_size(atom_xyzw); ++i) {
-                            int sys_idx = qm_to_atom_idx[i];
-                            atom_xyzw[i].x = (float)(state.mold.sys.atom.x[sys_idx] * ANGSTROM_TO_BOHR);
-                            atom_xyzw[i].y = (float)(state.mold.sys.atom.y[sys_idx] * ANGSTROM_TO_BOHR);
-                            atom_xyzw[i].z = (float)(state.mold.sys.atom.z[sys_idx] * ANGSTROM_TO_BOHR);
-                        }
-                    } else {
-                        ASSERT(md_array_size(atom_xyzw) == state.mold.sys.atom.count);
-                        for (size_t i = 0; i < md_array_size(atom_xyzw); ++i) {
-                            atom_xyzw[i].x = (float)(state.mold.sys.atom.x[i] * ANGSTROM_TO_BOHR);
-                            atom_xyzw[i].y = (float)(state.mold.sys.atom.y[i] * ANGSTROM_TO_BOHR);
-                            atom_xyzw[i].z = (float)(state.mold.sys.atom.z[i] * ANGSTROM_TO_BOHR);
-                        }
+					// Calculate nuclei charge weighted center of charge for later use in orbital centering
+					vec3_t nucl_dipole = {};
+
+					size_t count = qm_to_atom_idx ? md_vlx_number_of_atoms(vlx) : state.mold.sys.atom.count;
+                    ASSERT(md_array_size(atom_xyzw) == count);
+                    for (size_t i = 0; i < count; ++i) {
+                        int idx = qm_to_atom_idx ? qm_to_atom_idx[i] : i;
+                        atom_xyzw[i].x = (float)(state.mold.sys.atom.x[idx] * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].y = (float)(state.mold.sys.atom.y[idx] * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].z = (float)(state.mold.sys.atom.z[idx] * ANGSTROM_TO_BOHR);
+
+						int z = md_atom_atomic_number(&state.mold.sys.atom, idx);
+						nucl_dipole += vec3_from_vec4(atom_xyzw[i]) * z;
                     }
+
+                    size_t num_electrons = md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA) + md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA);
+					center_of_charge = nucl_dipole / (float)num_electrons;
+                    
                     // Recalculate OABB and AABB
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
                     calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
@@ -3033,8 +3037,8 @@ struct VeloxChem : viamd::EventHandler {
             }
             if (ImGui::TreeNode("System Information")) {
                 ImGui::Text("Num Atoms:           %-6zu", md_vlx_number_of_atoms(vlx));
-                ImGui::Text("Num Alpha Electrons: %-6zu", md_vlx_number_of_alpha_electrons(vlx));
-                ImGui::Text("Num Beta Electrons:  %-6zu", md_vlx_number_of_beta_electrons(vlx));
+                ImGui::Text("Num Alpha Electrons: %-6zu", md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA));
+                ImGui::Text("Num Beta Electrons:  %-6zu", md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA));
                 ImGui::Text("Molecular Charge:    %-6f",  md_vlx_molecular_charge(vlx));
                 ImGui::Text("Spin Multiplicity:   %-6zu", md_vlx_spin_multiplicity(vlx));
                 ImGui::Spacing();
