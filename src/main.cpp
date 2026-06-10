@@ -464,7 +464,7 @@ int main(int argc, char** argv) {
     };
 
     VIAMD_LOG_DEBUG("Initializing framebuffer...");
-    init_gbuffer(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
+    gbuffer_init(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
     picking_surface_init(&state.picking_surface, interaction_surface_main);
 
     for (int i = 0; i < (int)ARRAY_SIZE(state.view.jitter.sequence); ++i) {
@@ -476,7 +476,7 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Initializing immediate draw...");
     immediate::initialize();
     VIAMD_LOG_DEBUG("Initializing post processing...");
-    postprocessing::initialize(state.gbuffer.width, state.gbuffer.height);
+    postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
     VIAMD_LOG_DEBUG("Initializing volume...");
     volume::initialize();
     VIAMD_LOG_DEBUG("Initializing task system...");
@@ -687,7 +687,7 @@ int main(int argc, char** argv) {
 
             if (ImGui::IsKeyPressed(KEY_RECOMPILE_SHADERS)) {
                 VIAMD_LOG_INFO("Recompiling shaders and re-initializing volume");
-                postprocessing::initialize(state.gbuffer.width, state.gbuffer.height);
+                postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
                 volume::initialize();
                 md_gl_shaders_destroy(state.gl.shaders);
                 state.gl.shaders = md_gl_shaders_create(shader_output_snippet);
@@ -1136,8 +1136,8 @@ int main(int argc, char** argv) {
         // Resize Framebuffer
         if ((state.gbuffer.width != gbuffer_target_width || state.gbuffer.height != gbuffer_target_height) &&
             (gbuffer_target_width != 0 && gbuffer_target_height != 0)) {
-            init_gbuffer(&state.gbuffer, gbuffer_target_width, gbuffer_target_height);
-            postprocessing::initialize(state.gbuffer.width, state.gbuffer.height);
+            gbuffer_init(&state.gbuffer, gbuffer_target_width, gbuffer_target_height);
+            postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
         }
 
         update_view_param(&state);
@@ -1187,7 +1187,7 @@ int main(int argc, char** argv) {
 
         update_md_buffers(&state);
         update_display_properties(&state);
-        clear_gbuffer(&state.gbuffer);
+        gbuffer_clear(&state.gbuffer);
         fill_gbuffer(&state);
 
         glDisable(GL_DEPTH_TEST);
@@ -1265,13 +1265,13 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Shutting down immediate draw...");
     immediate::shutdown();
     VIAMD_LOG_DEBUG("Shutting down post processing...");
-    postprocessing::shutdown();
+    postprocess_pipeline::shutdown();
     VIAMD_LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
-    destroy_gbuffer(&state.gbuffer);
+    gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU
     if (state.gpu_device) {
         md_gpu_device_destroy(state.gpu_device);
@@ -6800,22 +6800,22 @@ static void fill_gbuffer(ApplicationState* data) {
         immediate::draw_lines_v((immediate::Vertex*)vis.lines, md_array_size(vis.lines), data->script.line_color);
     }
     
-    md_array(mat4_t) model_matrices = 0;
-    defer { md_array_free(model_matrices, frame_alloc); };
+    md_temp_scope_t temp = md_temp_begin();
+	defer { md_temp_end(temp); };
 
-    if (vis.sdf.matrices) {
-        if (md_array_size(vis.sdf.matrices) > 0) {
-            model_matrices = md_array_create(mat4_t, md_array_size(vis.sdf.matrices), frame_alloc);
-            for (size_t i = 0; i < md_array_size(vis.sdf.matrices); ++i) {
-                model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
-            }
+    size_t num_matrices = md_array_size(vis.sdf.matrices);
+    mat4_t* model_matrices = nullptr;
+
+    if (num_matrices > 0) {
+		model_matrices = md_temp_alloc_array(temp, mat4_t, num_matrices);
+        for (size_t i = 0; i < num_matrices; ++i) {
+            model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
         }
-
         const vec4_t col_x = {1, 0, 0, 0.7f};
         const vec4_t col_y = {0, 1, 0, 0.7f};
         const vec4_t col_z = {0, 0, 1, 0.7f};
         const float ext = vis.sdf.extent * 0.25f;
-        for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
+        for (size_t i = 0; i < num_matrices; ++i) {
             immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
         }
     }
@@ -6830,7 +6830,7 @@ static void fill_gbuffer(ApplicationState* data) {
         glEnable(GL_DEPTH_TEST);
     
         const vec3_t box_ext = vec3_set1(vis.sdf.extent);
-        for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
+        for (size_t i = 0; i < num_matrices; ++i) {
             immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i]);
         }
 
@@ -6845,45 +6845,47 @@ static void fill_gbuffer(ApplicationState* data) {
 
 static void apply_postprocessing(const ApplicationState& data) {
     PUSH_GPU_SECTION("Postprocessing")
-    postprocessing::Descriptor desc;
+    postprocess_pipeline::Settings settings = {};
+    postprocess_pipeline::Inputs inputs = {};
 
-    desc.background.color = data.visuals.background.color * data.visuals.background.intensity;
+    settings.background_color = data.visuals.background.color * data.visuals.background.intensity;
 
-    desc.ambient_occlusion.enabled = data.visuals.ssao.enabled;
-    desc.ambient_occlusion.intensity = data.visuals.ssao.intensity;
-    desc.ambient_occlusion.radius = data.visuals.ssao.radius;
-    desc.ambient_occlusion.bias = data.visuals.ssao.bias;
+    settings.ssao.enabled = data.visuals.ssao.enabled;
+    settings.ssao.intensity = data.visuals.ssao.intensity;
+    settings.ssao.radius = data.visuals.ssao.radius;
+    settings.ssao.bias = data.visuals.ssao.bias;
 
-    desc.tonemapping.enabled = data.visuals.tonemapping.enabled;
-    desc.tonemapping.mode = data.visuals.tonemapping.tonemapper;
-    desc.tonemapping.exposure = data.visuals.tonemapping.exposure;
-    desc.tonemapping.gamma = data.visuals.tonemapping.gamma;
+    settings.tonemap.enabled = data.visuals.tonemapping.enabled;
+    settings.tonemap.mode = data.visuals.tonemapping.tonemapper;
+    settings.tonemap.exposure = data.visuals.tonemapping.exposure;
+    settings.tonemap.gamma = data.visuals.tonemapping.gamma;
 
-    desc.depth_of_field.enabled = data.visuals.dof.enabled;
-    desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth;
-    desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
+    settings.dof.enabled = data.visuals.dof.enabled;
+    settings.dof.focus_depth = data.visuals.dof.focus_depth;
+    settings.dof.focus_scale = data.visuals.dof.focus_scale;
 
-    desc.fxaa.enabled = data.visuals.fxaa.enabled;
+    settings.fxaa.enabled = data.visuals.fxaa.enabled;
 
     constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
     const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)data.app.timing.delta_s;
     const float motion_scale = data.visuals.temporal_aa.motion_blur.motion_scale * dt_compensation;
-    desc.temporal_aa.enabled = data.visuals.temporal_aa.enabled;
-    desc.temporal_aa.feedback_min = data.visuals.temporal_aa.feedback_min;
-    desc.temporal_aa.feedback_max = data.visuals.temporal_aa.feedback_max;
-    desc.temporal_aa.motion_blur.enabled = data.visuals.temporal_aa.motion_blur.enabled;
-    desc.temporal_aa.motion_blur.motion_scale = motion_scale;
+    settings.taa.enabled = data.visuals.temporal_aa.enabled;
+    settings.taa.feedback_min = data.visuals.temporal_aa.feedback_min;
+    settings.taa.feedback_max = data.visuals.temporal_aa.feedback_max;
+    settings.taa.motion_blur.enabled = data.visuals.temporal_aa.motion_blur.enabled;
+    settings.taa.motion_blur.motion_scale = motion_scale;
 
-    desc.sharpen.enabled = data.visuals.temporal_aa.enabled && data.visuals.sharpen.enabled;
-    desc.sharpen.weight = data.visuals.sharpen.weight;
+    settings.sharpen.enabled = data.visuals.temporal_aa.enabled && data.visuals.sharpen.enabled;
+    settings.sharpen.weight = data.visuals.sharpen.weight;
 
-    desc.input_textures.depth = data.gbuffer.tex.depth;
-    desc.input_textures.color = data.gbuffer.tex.color;
-    desc.input_textures.normal = data.gbuffer.tex.normal;
-    desc.input_textures.velocity = data.gbuffer.tex.velocity;
-    desc.input_textures.transparency = data.gbuffer.tex.transparency;
+    inputs.depth = data.gbuffer.tex.depth;
+    inputs.color = data.gbuffer.tex.color;
+    inputs.normal = data.gbuffer.tex.normal;
+    inputs.velocity = data.gbuffer.tex.velocity;
+    inputs.transparency = data.gbuffer.tex.transparency;
+    inputs.history = settings.taa.enabled ? data.gbuffer.tex.history : 0;
 
-    postprocessing::shade_and_postprocess(desc, data.view.param);
+    postprocess_pipeline::execute(inputs, settings, data.view.param);
     POP_GPU_SECTION()
 }
 

@@ -19,6 +19,7 @@
 #include <app/application.h>
 #include <gfx/camera.h>
 #include <gfx/camera_utils.h>
+#include <gfx/gbuffer.h>
 #include <gfx/view_param.h>
 #include <gfx/postprocessing_utils.h>
 
@@ -1234,7 +1235,7 @@ struct ApplicationState {
 
         struct {
             bool enabled = true;
-            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_ACES;
+            postprocess_pipeline::Tonemapper tonemapper = postprocess_pipeline::Tonemapper_ACES;
             float exposure = 1.0f;
             float gamma = 2.2f;
         } tonemapping;

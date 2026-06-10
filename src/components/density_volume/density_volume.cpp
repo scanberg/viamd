@@ -493,7 +493,7 @@ struct DensityVolume : viamd::EventHandler {
             int width  = (int)(canvas_sz.x * ImGui::GetIO().DisplayFramebufferScale.x);
             int height = (int)(canvas_sz.y * ImGui::GetIO().DisplayFramebufferScale.y);
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                init_gbuffer(&gbuf, width, height);
+                gbuffer_init(&gbuf, width, height);
             }
 
             const float aspect_ratio = canvas_sz.x / canvas_sz.y;
@@ -644,7 +644,7 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             PUSH_GPU_SECTION("RENDER DENSITY VOLUME");
-            clear_gbuffer(&gbuf);
+            gbuffer_clear(&gbuf);
 
             const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
                 GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
@@ -786,39 +786,25 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             PUSH_GPU_SECTION("Postprocessing")
-            postprocessing::Descriptor postprocess_desc = {
-                .background = {
-                    .color = state->visuals.background.color * state->visuals.background.intensity,
-                },
-                .tonemapping = {
-                    .enabled = state->visuals.tonemapping.enabled,
-                    .mode = state->visuals.tonemapping.tonemapper,
-                    .exposure = state->visuals.tonemapping.exposure,
-                    .gamma = state->visuals.tonemapping.gamma,
-                },
-                .ambient_occlusion = {
-                    .enabled = false,
-                },
-                .depth_of_field = {
-                    .enabled = false,
-                },
-                .fxaa = {
-                    .enabled = true,
-                },
-                .temporal_aa = {
-                    .enabled = false,
-                },
-                .sharpen = {
-                    .enabled = false,
-                },
-                .input_textures = {
-                    .depth = gbuf.tex.depth,
-                    .color = gbuf.tex.color,
-                    .normal = gbuf.tex.normal,
-                    .velocity = gbuf.tex.velocity,
-                    .transparency = gbuf.tex.transparency,
-                }
-            };
+            postprocess_pipeline::Settings postprocess_settings = {};
+            postprocess_pipeline::Inputs postprocess_inputs = {};
+
+            postprocess_settings.background_color = state->visuals.background.color * state->visuals.background.intensity;
+            postprocess_settings.tonemap.enabled = state->visuals.tonemapping.enabled;
+            postprocess_settings.tonemap.mode = state->visuals.tonemapping.tonemapper;
+            postprocess_settings.tonemap.exposure = state->visuals.tonemapping.exposure;
+            postprocess_settings.tonemap.gamma = state->visuals.tonemapping.gamma;
+            postprocess_settings.ssao.enabled = false;
+            postprocess_settings.dof.enabled = false;
+            postprocess_settings.fxaa.enabled = true;
+            postprocess_settings.taa.enabled = false;
+            postprocess_settings.sharpen.enabled = false;
+
+            postprocess_inputs.depth = gbuf.tex.depth;
+            postprocess_inputs.color = gbuf.tex.color;
+            postprocess_inputs.normal = gbuf.tex.normal;
+            postprocess_inputs.velocity = gbuf.tex.velocity;
+            postprocess_inputs.transparency = gbuf.tex.transparency;
 
             ViewParam view_param = {
                 .matrix = {
@@ -839,7 +825,7 @@ struct DensityVolume : viamd::EventHandler {
                 .fov_y = camera.fov_y,
             };
 
-            postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+            postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
             POP_GPU_SECTION()
 
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);

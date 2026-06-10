@@ -4548,7 +4548,7 @@ struct VeloxChem : viamd::EventHandler {
 
             auto& gbuf = orb.gbuf;
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                init_gbuffer(&gbuf, width, height);
+                gbuffer_init(&gbuf, width, height);
                 for (int i = 0; i < num_mos; ++i) {
                     gl::init_texture_2D(orb.iso_tex + i, width, height, GL_RGBA8);
                 }
@@ -4574,7 +4574,7 @@ struct VeloxChem : viamd::EventHandler {
                 mat4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
                 mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
 
-                clear_gbuffer(&gbuf);
+                gbuffer_clear(&gbuf);
 
                 const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
                     GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
@@ -4621,38 +4621,24 @@ struct VeloxChem : viamd::EventHandler {
                 glClear(GL_COLOR_BUFFER_BIT);
 
                 PUSH_GPU_SECTION("Postprocessing")
-                postprocessing::Descriptor postprocess_desc = {
-                    .background = {
-                        .color = {24.f, 24.f, 24.f},
-                    },
-                    .tonemapping = {
-                        .enabled    = state.visuals.tonemapping.enabled,
-                        .mode       = state.visuals.tonemapping.tonemapper,
-                        .exposure   = state.visuals.tonemapping.exposure,
-                        .gamma      = state.visuals.tonemapping.gamma,
-                    },
-                    .ambient_occlusion = {
-                        .enabled = false
-                    },
-                    .depth_of_field = {
-                        .enabled = false,
-                    },
-                    .fxaa = {
-                        .enabled = true,
-                    },
-                    .temporal_aa = {
-                        .enabled = false,
-                    },
-                    .sharpen = {
-                        .enabled = false,
-                    },
-                    .input_textures = {
-                        .depth          = orb.gbuf.tex.depth,
-                        .color          = orb.gbuf.tex.color,
-                        .normal         = orb.gbuf.tex.normal,
-                        .velocity       = orb.gbuf.tex.velocity,
-                    }
-                };
+                postprocess_pipeline::Settings postprocess_settings = {};
+                postprocess_pipeline::Inputs postprocess_inputs = {};
+
+                postprocess_settings.background_color = {24.f, 24.f, 24.f};
+                postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
+                postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
+                postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
+                postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
+                postprocess_settings.ssao.enabled = false;
+                postprocess_settings.dof.enabled = false;
+                postprocess_settings.fxaa.enabled = true;
+                postprocess_settings.taa.enabled = false;
+                postprocess_settings.sharpen.enabled = false;
+
+                postprocess_inputs.depth = orb.gbuf.tex.depth;
+                postprocess_inputs.color = orb.gbuf.tex.color;
+                postprocess_inputs.normal = orb.gbuf.tex.normal;
+                postprocess_inputs.velocity = orb.gbuf.tex.velocity;
 
                 ViewParam view_param = {
                     .matrix = {
@@ -4673,7 +4659,7 @@ struct VeloxChem : viamd::EventHandler {
                     .fov_y = orb.camera.fov_y,
                 };
 
-                postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+                postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
                 POP_GPU_SECTION()
 
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
@@ -5829,7 +5815,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 auto& gbuf = nto.gbuf;
                 if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                    init_gbuffer(&gbuf, width, height);
+                    gbuffer_init(&gbuf, width, height);
                     for (int i : nto_target_idx) {
                         gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
                     }
@@ -5861,7 +5847,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
 
-                clear_gbuffer(&gbuf);
+                gbuffer_clear(&gbuf);
 
                 const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
                     GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
@@ -6003,39 +5989,25 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 PUSH_GPU_SECTION("Postprocessing")
-                postprocessing::Descriptor postprocess_desc = {
-                    .background = {
-                        .color = state.visuals.background.color * state.visuals.background.intensity,
-                    },
-                    .tonemapping = {
-                        .enabled    = state.visuals.tonemapping.enabled,
-                        .mode       = state.visuals.tonemapping.tonemapper,
-                        .exposure   = state.visuals.tonemapping.exposure,
-                        .gamma      = state.visuals.tonemapping.gamma,
-                    },
-                    .ambient_occlusion = {
-                        .enabled = false
-                    },
-                    .depth_of_field = {
-                        .enabled = false,
-                    },
-                    .fxaa = {
-                        .enabled = true,
-                    },
-                    .temporal_aa = {
-                        .enabled = false,
-                    },
-                    .sharpen = {
-                        .enabled = false,
-                    },
-                    .input_textures = {
-                        .depth          = nto.gbuf.tex.depth,
-                        .color          = nto.gbuf.tex.color,
-                        .normal         = nto.gbuf.tex.normal,
-                        .velocity       = nto.gbuf.tex.velocity,
-                        .transparency   = nto.gbuf.tex.transparency,
-                    }
-                };
+                postprocess_pipeline::Settings postprocess_settings = {};
+                postprocess_pipeline::Inputs postprocess_inputs = {};
+
+                postprocess_settings.background_color = state.visuals.background.color * state.visuals.background.intensity;
+                postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
+                postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
+                postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
+                postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
+                postprocess_settings.ssao.enabled = false;
+                postprocess_settings.dof.enabled = false;
+                postprocess_settings.fxaa.enabled = true;
+                postprocess_settings.taa.enabled = false;
+                postprocess_settings.sharpen.enabled = false;
+
+                postprocess_inputs.depth = nto.gbuf.tex.depth;
+                postprocess_inputs.color = nto.gbuf.tex.color;
+                postprocess_inputs.normal = nto.gbuf.tex.normal;
+                postprocess_inputs.velocity = nto.gbuf.tex.velocity;
+                postprocess_inputs.transparency = nto.gbuf.tex.transparency;
 
                 ViewParam view_param = {
                     .matrix = {
@@ -6056,7 +6028,7 @@ struct VeloxChem : viamd::EventHandler {
                     .fov_y = nto.camera.fov_y,
                 };
 
-                postprocessing::shade_and_postprocess(postprocess_desc, view_param);
+                postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
                 POP_GPU_SECTION()
 
                 PUSH_GPU_SECTION("NTO RAYCAST")

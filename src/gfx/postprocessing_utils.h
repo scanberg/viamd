@@ -5,74 +5,58 @@
 
 #include <core/md_vec_math.h>
 
-#define GL_COLOR_ATTACHMENT_COLOR        GL_COLOR_ATTACHMENT0
-#define GL_COLOR_ATTACHMENT_NORMAL       GL_COLOR_ATTACHMENT1
-#define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
-#define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
-#define GL_COLOR_ATTACHMENT_TRANSPARENCY GL_COLOR_ATTACHMENT4
-#define GL_COLOR_ATTACHMENT_TEMPORAL     GL_COLOR_ATTACHMENT5
-
-// Poor fit perhaps
-struct GBuffer {
-    struct {
-        uint32_t depth = 0;
-        uint32_t color = 0;
-        uint32_t normal = 0;
-        uint32_t velocity = 0;
-        uint32_t picking = 0;
-        uint32_t transparency = 0;
-        uint32_t temporal_accumulation[2] = {};
-    } tex;
-
-    uint32_t fbo = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-};
-
 namespace postprocessing {
+// Legacy utility helpers used by callsites that manipulate the current bound target.
 
-void initialize(int width, int height);
-void shutdown();
+void blit_static_velocity(GLuint tex_depth, const ViewParam& view_param);
 
-typedef int Tonemapping;
-enum Tonemapping_ {
-    Tonemapping_Passthrough,
-    Tonemapping_ExposureGamma,
-    Tonemapping_Filmic,
-    Tonemapping_ACES,
+void scale_hsv(GLuint color_tex, vec3_t hsv_scale);
+
+void blit_texture(GLuint tex);
+void blit_color(vec4_t color);
+
+}  // namespace postprocessing
+
+namespace postprocess_pipeline {
+
+enum Tonemapper {
+    Tonemapper_Passthrough,
+    Tonemapper_ExposureGamma,
+    Tonemapper_Filmic,
+    Tonemapper_ACES,
 };
 
-struct Descriptor {
-    struct {
-        vec3_t color = {20.f, 20.f, 20.f};
-    } background;
+struct Inputs {
+    GLuint depth = 0;
+    GLuint color = 0;
+    GLuint normal = 0;
+    GLuint velocity = 0;
+    GLuint transparency = 0;
+    GLuint history = 0;
+};
 
-#if 0
+struct Settings {
+    vec3_t background_color = {20.f, 20.f, 20.f};
+
     struct {
         bool enabled = true;
-        float clip_point = 1.0f;
-    } bloom;
-#endif
-
-    struct {
-        bool enabled = true;
-        Tonemapping mode = Tonemapping_ACES;
+        Tonemapper mode = Tonemapper_ACES;
         float exposure = 1.0f;
         float gamma = 2.4f;
-    } tonemapping;
+    } tonemap;
 
     struct {
         bool enabled = true;
         float radius = 6.0f;
         float intensity = 3.0f;
         float bias = 0.1f;
-    } ambient_occlusion;
+    } ssao;
 
     struct {
         bool enabled = true;
         float focus_depth = 0.5f;
         float focus_scale = 10.f;
-    } depth_of_field;
+    } dof;
 
     struct {
         bool enabled = true;
@@ -86,39 +70,17 @@ struct Descriptor {
             bool enabled = true;
             float motion_scale = 0.5f;
         } motion_blur;
-    } temporal_aa;
+    } taa;
 
     struct {
         bool enabled = true;
         float weight = 1.0f;
     } sharpen;
-
-    struct {
-        GLuint depth = 0;
-        GLuint color = 0;
-        GLuint normal = 0;
-        GLuint velocity = 0;
-        GLuint transparency = 0;
-    } input_textures;
 };
 
-void apply_tonemapping(GLuint color_tex, Tonemapping tonemapping, float exposure = 1.0f, float gamma = 2.4f);
+void initialize(int width, int height);
+void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
+void shutdown();
 
-void shade_and_postprocess(const Descriptor& desc, const ViewParam& view_param);
+}  // namespace postprocess_pipeline
 
-void blit_static_velocity(GLuint tex_depth, const ViewParam& view_param);
-
-void scale_hsv(GLuint color_tex, vec3_t hsv_scale);
-
-void blit_texture(GLuint tex);
-void blit_color(vec4_t color);
-
-void blur_texture_gaussian(GLuint tex, int num_passes = 1);
-void blur_texture_box(GLuint tex, int num_passes = 1);
-
-}  // namespace postprocessing
-
-void clear_gbuffer(GBuffer* gbuf);
-void init_gbuffer(GBuffer* gbuf, int width, int height);
-void destroy_gbuffer(GBuffer* gbuf);
-void extract_gbuffer_picking_idx_and_depth(uint32_t* out_idx, float* out_depth, GBuffer* fbo, int x, int y);
