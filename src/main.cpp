@@ -464,8 +464,7 @@ int main(int argc, char** argv) {
     };
 
     VIAMD_LOG_DEBUG("Initializing framebuffer...");
-    gbuffer_init(&state.gbuffer_primary, state.app.framebuffer.width, state.app.framebuffer.height);
-    gbuffer_init(&state.gbuffer_overlay, state.app.framebuffer.width, state.app.framebuffer.height, GBUFFER_MASK_COLOR | GBUFFER_MASK_PICKING | GBUFFER_MASK_DEPTH);
+    gbuffer_init(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
     picking_surface_init(&state.picking_surface, interaction_surface_main);
 
     for (int i = 0; i < (int)ARRAY_SIZE(state.view.jitter.sequence); ++i) {
@@ -477,7 +476,8 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Initializing immediate draw...");
     immediate::initialize();
     VIAMD_LOG_DEBUG("Initializing post processing...");
-    postprocessing::initialize(state.gbuffer_primary.width, state.gbuffer_primary.height);
+
+    postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
     VIAMD_LOG_DEBUG("Initializing volume...");
     volume::initialize();
     VIAMD_LOG_DEBUG("Initializing task system...");
@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &state);
 
 #if EXPERIMENTAL_GFX_API
-    md_gfx_initialize(state.gbuffer_primary.width, state.gbuffer_primary.height, 0);
+    md_gfx_initialize(state.gbuffer.width, state.gbuffer.height, 0);
 #endif
 
     ImGui::init_theme();
@@ -600,9 +600,9 @@ int main(int argc, char** argv) {
             InteractionSurfaceHitArgs args = {
                 .picking_surface = &state.picking_surface,
                 .picking_handler = state.picking_handler,
-                .fbo = state.gbuffer_primary.fbo,
-                .width = state.gbuffer_primary.width,
-                .height = state.gbuffer_primary.height,
+                .fbo = state.gbuffer.fbo,
+                .width = state.gbuffer.width,
+                .height = state.gbuffer.height,
                 .clip_to_world = clip_to_world,
             };
 
@@ -688,7 +688,7 @@ int main(int argc, char** argv) {
 
             if (ImGui::IsKeyPressed(KEY_RECOMPILE_SHADERS)) {
                 VIAMD_LOG_INFO("Recompiling shaders and re-initializing volume");
-                postprocessing::initialize(state.gbuffer_primary.width, state.gbuffer_primary.height);
+                postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
                 volume::initialize();
                 md_gl_shaders_destroy(state.gl.shaders);
                 state.gl.shaders = md_gl_shaders_create(shader_output_snippet);
@@ -1135,11 +1135,10 @@ int main(int argc, char** argv) {
         }
 
         // Resize Framebuffer
-        if ((state.gbuffer_primary.width != gbuffer_target_width || state.gbuffer_primary.height != gbuffer_target_height) &&
+        if ((state.gbuffer.width != gbuffer_target_width || state.gbuffer.height != gbuffer_target_height) &&
             (gbuffer_target_width != 0 && gbuffer_target_height != 0)) {
-            gbuffer_init(&state.gbuffer_primary, gbuffer_target_width, gbuffer_target_height, GBUFFER_MASK_ALL);
-            gbuffer_init(&state.gbuffer_overlay, gbuffer_target_width, gbuffer_target_height, GBUFFER_MASK_COLOR | GBUFFER_MASK_PICKING | GBUFFER_MASK_DEPTH);
-            postprocessing::initialize(state.gbuffer_primary.width, state.gbuffer_primary.height);
+            gbuffer_init(&state.gbuffer, gbuffer_target_width, gbuffer_target_height);
+            postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
         }
 
         update_view_param(&state);
@@ -1189,18 +1188,15 @@ int main(int argc, char** argv) {
 
         update_md_buffers(&state);
         update_display_properties(&state);
-        
-        gbuffer_clear(state.gbuffer_overlay);
-        gbuffer_clear(state.gbuffer_primary);
-
+        gbuffer_clear(&state.gbuffer);
         fill_gbuffer(&state);
 
         glDisable(GL_DEPTH_TEST);
 
         if (do_screenshot && state.screenshot.hide_gui) {
             // Activate gbuffer to store screenshot
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state.gbuffer_primary.fbo);
-            glViewport(0, 0, state.gbuffer_primary.width, state.gbuffer_primary.height);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state.gbuffer.fbo);
+            glViewport(0, 0, state.gbuffer.width, state.gbuffer.height);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
         } else {
             // Activate backbuffer
@@ -1270,14 +1266,13 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Shutting down immediate draw...");
     immediate::shutdown();
     VIAMD_LOG_DEBUG("Shutting down post processing...");
-    postprocessing::shutdown();
+    postprocess_pipeline::shutdown();
     VIAMD_LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
-    gbuffer_free(&state.gbuffer_primary);
-    gbuffer_free(&state.gbuffer_overlay);
+    gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU
     if (state.gpu_device) {
         md_gpu_device_destroy(state.gpu_device);
@@ -1592,14 +1587,14 @@ static void update_view_param(ApplicationState* data) {
     param.clip_planes.near = data->view.camera.near_plane;
     param.clip_planes.far = data->view.camera.far_plane;
     param.fov_y = data->view.camera.fov_y;
-    param.resolution = {(float)data->gbuffer_primary.width, (float)data->gbuffer_primary.height};
+    param.resolution = {(float)data->gbuffer.width, (float)data->gbuffer.height};
 
     param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera) * data->mold.unitcell_transform;
     param.matrix.inv.view  = mat4_inverse(data->mold.unitcell_transform) * camera_view_to_world_matrix(data->view.camera);
 
     const float n = data->view.camera.near_plane;
     const float f = data->view.camera.far_plane;
-    const float aspect_ratio = (float)data->gbuffer_primary.width / (float)data->gbuffer_primary.height;
+    const float aspect_ratio = (float)data->gbuffer.width / (float)data->gbuffer.height;
 
     if (data->visuals.temporal_aa.enabled && data->visuals.temporal_aa.jitter) {
         static uint32_t i = 0;
@@ -1607,13 +1602,13 @@ static void update_view_param(ApplicationState* data) {
         param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
             const vec2_t j = param.jitter.curr;
-            param.matrix.curr.proj = camera_view_to_clip_matrix_persp(data->view.camera, data->gbuffer_primary.width, data->gbuffer_primary.height, j.x, j.y);
-            param.matrix.inv.proj  = camera_clip_to_view_matrix_persp(data->view.camera, data->gbuffer_primary.width, data->gbuffer_primary.height, j.x, j.y);
+            param.matrix.curr.proj = camera_view_to_clip_matrix_persp(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
+            param.matrix.inv.proj  = camera_clip_to_view_matrix_persp(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
             param.matrix.curr.proj_no_jitter = camera_view_to_clip_matrix_persp(data->view.camera, aspect_ratio);
         } else {
             const float h = data->view.camera.distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
-            const vec2_t scl = {w / data->gbuffer_primary.width * 2.0f, h / data->gbuffer_primary.height * 2.0f};
+            const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
             const vec2_t j = param.jitter.curr * scl;
             param.matrix.curr.proj = camera_view_to_clip_matrix_ortho(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
             param.matrix.inv.proj  = camera_clip_to_view_matrix_ortho(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
@@ -1624,7 +1619,7 @@ static void update_view_param(ApplicationState* data) {
         param.jitter.curr = {0,0};
         if (data->view.mode == CameraMode::Perspective) {
             param.matrix.curr.proj = camera_view_to_clip_matrix_persp(data->view.camera, aspect_ratio);
-            param.matrix.inv.proj = camera_clip_to_view_matrix_persp(data->view.camera, (float)data->gbuffer_primary.width / (float)data->gbuffer_primary.height);
+            param.matrix.inv.proj = camera_clip_to_view_matrix_persp(data->view.camera, (float)data->gbuffer.width / (float)data->gbuffer.height);
         } else {
             const float h = data->view.camera.distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
@@ -1907,8 +1902,8 @@ static void draw_main_menu(ApplicationState* data) {
 
                 switch (data->screenshot.resolution) {
                 case ScreenshotResolution::Window:
-                    data->screenshot.res_x = data->gbuffer_primary.width;
-                    data->screenshot.res_y = data->gbuffer_primary.height;
+                    data->screenshot.res_x = data->gbuffer.width;
+                    data->screenshot.res_y = data->gbuffer.height;
                     break;
                 case ScreenshotResolution::FHD:
                     data->screenshot.res_x = 1920;
@@ -1937,8 +1932,8 @@ static void draw_main_menu(ApplicationState* data) {
                     ASSERT(false);
                 }
             } else {
-                data->screenshot.res_x = data->gbuffer_primary.width;
-                data->screenshot.res_y = data->gbuffer_primary.height;
+                data->screenshot.res_x = data->gbuffer.width;
+                data->screenshot.res_y = data->gbuffer.height;
             }
             if (ImGui::MenuItem("Take Screenshot")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("jpg,png,bmp"))) {
@@ -6607,8 +6602,8 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
 }
 
 static void fill_gbuffer(ApplicationState* data) {
-    //const GLenum draw_buffers_opaque[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-    //    GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+    const GLenum draw_buffers_opaque[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+        GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -6617,10 +6612,8 @@ static void fill_gbuffer(ApplicationState* data) {
     glDepthFunc(GL_LESS);
 
     // Enable all draw buffers
-    //glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer_primary.fbo);
-    //glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
-
-    gbuffer_bind(data->gbuffer_primary);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.fbo);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
@@ -6668,7 +6661,7 @@ static void fill_gbuffer(ApplicationState* data) {
         PUSH_GPU_SECTION("Blit Static Velocity")
         glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
         glDepthMask(0);
-        postprocessing::blit_static_velocity(data->gbuffer_primary.tex.depth, data->view.param);
+        postprocessing::blit_static_velocity(data->gbuffer.tex.depth, data->view.param);
         glDepthMask(1);
         POP_GPU_SECTION()
     }
@@ -6677,8 +6670,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
     // DRAW REPRESENTATIONS
     PUSH_GPU_SECTION("Draw Opaque")
-    //glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
-    gbuffer_bind(data->gbuffer_primary);
+    glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
     draw_representations_opaque(data);
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, data);
     POP_GPU_SECTION()
@@ -6764,7 +6756,7 @@ static void fill_gbuffer(ApplicationState* data) {
             PUSH_GPU_SECTION("Desaturate")
             const float saturation = data->selection.color.saturation;
             glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-            postprocessing::scale_hsv(data->gbuffer_primary.tex.color, vec3_t{1, saturation, 1});
+            postprocessing::scale_hsv(data->gbuffer.tex.color, vec3_t{1, saturation, 1});
             POP_GPU_SECTION()
         }
 
@@ -6779,9 +6771,9 @@ static void fill_gbuffer(ApplicationState* data) {
     glDepthFunc(GL_LESS);
     glColorMask(1, 1, 1, 1);
 
-    gbuffer_bind(data->gbuffer_overlay);
+    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
-    postprocessing::blit_texture(data->gbuffer_primary.tex.transparency);
+    postprocessing::blit_texture(data->gbuffer.tex.transparency);
 
     PUSH_GPU_SECTION("Draw Transparent")
     immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
@@ -6816,22 +6808,22 @@ static void fill_gbuffer(ApplicationState* data) {
         immediate::draw_lines_v((immediate::Vertex*)vis.lines, md_array_size(vis.lines), data->script.line_color);
     }
     
-    md_array(mat4_t) model_matrices = 0;
-    defer { md_array_free(model_matrices, frame_alloc); };
+    md_temp_scope_t temp = md_temp_begin();
+	defer { md_temp_end(temp); };
 
-    if (vis.sdf.matrices) {
-        if (md_array_size(vis.sdf.matrices) > 0) {
-            model_matrices = md_array_create(mat4_t, md_array_size(vis.sdf.matrices), frame_alloc);
-            for (size_t i = 0; i < md_array_size(vis.sdf.matrices); ++i) {
-                model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
-            }
+    size_t num_matrices = md_array_size(vis.sdf.matrices);
+    mat4_t* model_matrices = nullptr;
+
+    if (num_matrices > 0) {
+		model_matrices = md_temp_alloc_array(temp, mat4_t, num_matrices);
+        for (size_t i = 0; i < num_matrices; ++i) {
+            model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
         }
-
         const vec4_t col_x = {1, 0, 0, 0.7f};
         const vec4_t col_y = {0, 1, 0, 0.7f};
         const vec4_t col_z = {0, 0, 1, 0.7f};
         const float ext = vis.sdf.extent * 0.25f;
-        for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
+        for (size_t i = 0; i < num_matrices; ++i) {
             immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
         }
     }
@@ -6846,7 +6838,7 @@ static void fill_gbuffer(ApplicationState* data) {
         glEnable(GL_DEPTH_TEST);
     
         const vec3_t box_ext = vec3_set1(vis.sdf.extent);
-        for (size_t i = 0; i < md_array_size(model_matrices); ++i) {
+        for (size_t i = 0; i < num_matrices; ++i) {
             immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i]);
         }
 
@@ -6861,45 +6853,47 @@ static void fill_gbuffer(ApplicationState* data) {
 
 static void apply_postprocessing(const ApplicationState& data) {
     PUSH_GPU_SECTION("Postprocessing")
-    postprocessing::Descriptor desc;
+    postprocess_pipeline::Settings settings = {};
+    postprocess_pipeline::Inputs inputs = {};
 
-    desc.background.color = data.visuals.background.color * data.visuals.background.intensity;
+    settings.background_color = data.visuals.background.color * data.visuals.background.intensity;
 
-    desc.ambient_occlusion.enabled = data.visuals.ssao.enabled;
-    desc.ambient_occlusion.intensity = data.visuals.ssao.intensity;
-    desc.ambient_occlusion.radius = data.visuals.ssao.radius;
-    desc.ambient_occlusion.bias = data.visuals.ssao.bias;
+    settings.ssao.enabled = data.visuals.ssao.enabled;
+    settings.ssao.intensity = data.visuals.ssao.intensity;
+    settings.ssao.radius = data.visuals.ssao.radius;
+    settings.ssao.bias = data.visuals.ssao.bias;
 
-    desc.tonemapping.enabled = data.visuals.tonemapping.enabled;
-    desc.tonemapping.mode = data.visuals.tonemapping.tonemapper;
-    desc.tonemapping.exposure = data.visuals.tonemapping.exposure;
-    desc.tonemapping.gamma = data.visuals.tonemapping.gamma;
+    settings.tonemap.enabled = data.visuals.tonemapping.enabled;
+    settings.tonemap.mode = data.visuals.tonemapping.tonemapper;
+    settings.tonemap.exposure = data.visuals.tonemapping.exposure;
+    settings.tonemap.gamma = data.visuals.tonemapping.gamma;
 
-    desc.depth_of_field.enabled = data.visuals.dof.enabled;
-    desc.depth_of_field.focus_depth = data.visuals.dof.focus_depth;
-    desc.depth_of_field.focus_scale = data.visuals.dof.focus_scale;
+    settings.dof.enabled = data.visuals.dof.enabled;
+    settings.dof.focus_depth = data.visuals.dof.focus_depth;
+    settings.dof.focus_scale = data.visuals.dof.focus_scale;
 
-    desc.fxaa.enabled = data.visuals.fxaa.enabled;
+    settings.fxaa.enabled = data.visuals.fxaa.enabled;
 
     constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
     const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)data.app.timing.delta_s;
     const float motion_scale = data.visuals.temporal_aa.motion_blur.motion_scale * dt_compensation;
-    desc.temporal_aa.enabled = data.visuals.temporal_aa.enabled;
-    desc.temporal_aa.feedback_min = data.visuals.temporal_aa.feedback_min;
-    desc.temporal_aa.feedback_max = data.visuals.temporal_aa.feedback_max;
-    desc.temporal_aa.motion_blur.enabled = data.visuals.temporal_aa.motion_blur.enabled;
-    desc.temporal_aa.motion_blur.motion_scale = motion_scale;
+    settings.taa.enabled = data.visuals.temporal_aa.enabled;
+    settings.taa.feedback_min = data.visuals.temporal_aa.feedback_min;
+    settings.taa.feedback_max = data.visuals.temporal_aa.feedback_max;
+    settings.taa.motion_blur.enabled = data.visuals.temporal_aa.motion_blur.enabled;
+    settings.taa.motion_blur.motion_scale = motion_scale;
 
-    desc.sharpen.enabled = data.visuals.temporal_aa.enabled && data.visuals.sharpen.enabled;
-    desc.sharpen.weight = data.visuals.sharpen.weight;
+    settings.sharpen.enabled = data.visuals.temporal_aa.enabled && data.visuals.sharpen.enabled;
+    settings.sharpen.weight = data.visuals.sharpen.weight;
 
-    desc.input_textures.depth = data.gbuffer_primary.tex.depth;
-    desc.input_textures.color = data.gbuffer_primary.tex.color;
-    desc.input_textures.normal = data.gbuffer_primary.tex.normal;
-    desc.input_textures.velocity = data.gbuffer_primary.tex.velocity;
-    desc.input_textures.transparency = data.gbuffer_overlay.tex.color;
+    inputs.depth = data.gbuffer.tex.depth;
+    inputs.color = data.gbuffer.tex.color;
+    inputs.normal = data.gbuffer.tex.normal;
+    inputs.velocity = data.gbuffer.tex.velocity;
+    inputs.transparency = data.gbuffer.tex.transparency;
+    inputs.history = settings.taa.enabled ? data.gbuffer.tex.history : 0;
 
-    postprocessing::shade_and_postprocess(desc, data.view.param);
+    postprocess_pipeline::execute(inputs, settings, data.view.param);
     POP_GPU_SECTION()
 }
 
@@ -7069,10 +7063,10 @@ static void draw_representations_transparent(ApplicationState* state) {
 
             volume::RenderDesc desc = {
                 .render_target = {
-                    .depth = state->gbuffer_primary.tex.depth,
-                    .color = state->gbuffer_overlay.tex.color,
-                    .width = state->gbuffer_primary.width,
-                    .height = state->gbuffer_primary.height,
+                    .depth = state->gbuffer.tex.depth,
+                    .color = state->gbuffer.tex.transparency,
+                    .width = state->gbuffer.width,
+                    .height = state->gbuffer.height,
                 },
                 .texture = {
                     .density_volume = rep.electronic_structure.density_vol.tex_id,

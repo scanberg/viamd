@@ -19,6 +19,7 @@
 #include <app/application.h>
 #include <gfx/camera.h>
 #include <gfx/camera_utils.h>
+#include <gfx/gbuffer.h>
 #include <gfx/view_param.h>
 #include <gfx/postprocessing_utils.h>
 
@@ -1156,10 +1157,7 @@ struct ApplicationState {
 
     // --- GBUFFER ---
     // Primary gbuffer
-    GBuffer gbuffer_primary {};
-
-    // Secondary gbuffer for GUI, transparent objects and graphics on top of the primary gbuffer.
-    GBuffer gbuffer_overlay{};
+    GBuffer gbuffer {};
 
     // --- PICKING ---
     PickingSurface picking_surface {};      // Surface for main viewport picking
@@ -1238,7 +1236,7 @@ struct ApplicationState {
 
         struct {
             bool enabled = true;
-            postprocessing::Tonemapping tonemapper = postprocessing::Tonemapping_ACES;
+            postprocess_pipeline::Tonemapper tonemapper = postprocess_pipeline::Tonemapper_ACES;
             float exposure = 1.0f;
             float gamma = 2.2f;
         } tonemapping;
