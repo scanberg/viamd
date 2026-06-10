@@ -1,0 +1,56 @@
+\providecommand{\latin}[1]{#1}
+\makeatletter
+\providecommand{\doi}
+  {\begingroup\let\do\@makeother\dospecials
+  \catcode`\{=1 \catcode`\}=2 \doi@aux}
+\providecommand{\doi@aux}[1]{\endgroup\texttt{#1}}
+\makeatother
+\providecommand*\mcitethebibliography{\thebibliography}
+\csname @ifundefined\endcsname{endmcitethebibliography}
+  {\let\endmcitethebibliography\endthebibliography}{}
+\begin{mcitethebibliography}{4}
+\providecommand*\natexlab[1]{#1}
+\providecommand*\mciteSetBstSublistMode[1]{}
+\providecommand*\mciteSetBstMaxWidthForm[2]{}
+\providecommand*\mciteBstWouldAddEndPuncttrue
+  {\def\EndOfBibitem{\unskip.}}
+\providecommand*\mciteBstWouldAddEndPunctfalse
+  {\let\EndOfBibitem\relax}
+\providecommand*\mciteSetBstMidEndSepPunct[3]{}
+\providecommand*\mciteSetBstSublistLabelBeginEnd[3]{}
+\providecommand*\EndOfBibitem{}
+\mciteSetBstSublistMode{f}
+\mciteSetBstMaxWidthForm{subitem}{(\alph{mcitesubitemcount})}
+\mciteSetBstSublistLabelBeginEnd
+  {\mcitemaxwidthsubitemform\space}
+  {\relax}
+  {\relax}
+
+\bibitem[Singh and Kollman(1984)Singh, and Kollman]{SinghKollman1984ESP}
+Singh,~U.~C.; Kollman,~P.~A. An approach to computing electrostatic charges for
+  molecules. \emph{Journal of Computational Chemistry} \textbf{1984}, \emph{5},
+  129--145\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Bayly \latin{et~al.}(1993)Bayly, Cieplak, Cornell, and
+  Kollman]{Bayly1993RESP}
+Bayly,~C.~I.; Cieplak,~P.; Cornell,~W.; Kollman,~P.~A. A well-behaved
+  electrostatic potential based method using charge restraints for deriving
+  atomic charges: the {RESP} model. \emph{The Journal of Physical Chemistry}
+  \textbf{1993}, \emph{97}, 10269--10280\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Gagliardi \latin{et~al.}(2004)Gagliardi, Lindh, and
+  Karlstr{\"o}m]{Gagliardi2004LoProp}
+Gagliardi,~L.; Lindh,~R.; Karlstr{\"o}m,~G. Local properties of quantum
+  chemical systems: The {LoProp} approach. \emph{The Journal of Chemical
+  Physics} \textbf{2004}, \emph{121}, 4494--4500\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\end{mcitethebibliography}

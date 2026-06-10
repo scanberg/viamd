@@ -1,0 +1,338 @@
+\providecommand{\latin}[1]{#1}
+\makeatletter
+\providecommand{\doi}
+  {\begingroup\let\do\@makeother\dospecials
+  \catcode`\{=1 \catcode`\}=2 \doi@aux}
+\providecommand{\doi@aux}[1]{\endgroup\texttt{#1}}
+\makeatother
+\providecommand*\mcitethebibliography{\thebibliography}
+\csname @ifundefined\endcsname{endmcitethebibliography}
+  {\let\endmcitethebibliography\endthebibliography}{}
+\begin{mcitethebibliography}{34}
+\providecommand*\natexlab[1]{#1}
+\providecommand*\mciteSetBstSublistMode[1]{}
+\providecommand*\mciteSetBstMaxWidthForm[2]{}
+\providecommand*\mciteBstWouldAddEndPuncttrue
+  {\def\EndOfBibitem{\unskip.}}
+\providecommand*\mciteBstWouldAddEndPunctfalse
+  {\let\EndOfBibitem\relax}
+\providecommand*\mciteSetBstMidEndSepPunct[3]{}
+\providecommand*\mciteSetBstSublistLabelBeginEnd[3]{}
+\providecommand*\EndOfBibitem{}
+\mciteSetBstSublistMode{f}
+\mciteSetBstMaxWidthForm{subitem}{(\alph{mcitesubitemcount})}
+\mciteSetBstSublistLabelBeginEnd
+  {\mcitemaxwidthsubitemform\space}
+  {\relax}
+  {\relax}
+
+\bibitem[Frisch \latin{et~al.}(2016)Frisch, Trucks, Schlegel, Scuseria, Robb,
+  Cheeseman, Scalmani, Barone, Petersson, Nakatsuji, Li, Caricato, Marenich,
+  Bloino, Janesko, Gomperts, Mennucci, Hratchian, Ortiz, Izmaylov, Sonnenberg,
+  Williams-Young, Ding, Lipparini, Egidi, Goings, Peng, Petrone, Henderson,
+  Ranasinghe, Zakrzewski, Gao, Rega, Zheng, Liang, Hada, Ehara, Toyota, Fukuda,
+  Hasegawa, Ishida, Nakajima, Honda, Kitao, Nakai, Vreven, Throssell,
+  Montgomery, Peralta, Ogliaro, Bearpark, Heyd, Brothers, Kudin, Staroverov,
+  Keith, Kobayashi, Normand, Raghavachari, Rendell, Burant, Iyengar, Tomasi,
+  Cossi, Millam, Klene, Adamo, Cammi, Ochterski, Martin, Morokuma, Farkas,
+  Foresman, and Fox]{g16}
+Frisch,~M.~J. \latin{et~al.}  Gaussian 16 {R}evision {C}.01. 2016; Gaussian
+  Inc. Wallingford CT\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Neese(2012)]{ORCA}
+Neese,~F. The ORCA program system. \emph{WIRES Comput. Molec. Sci.}
+  \textbf{2012}, \emph{2}, 73--78\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Yihan~Shao and Head-Gordon(2015)Yihan~Shao, and Head-Gordon]{Q-Chem}
+Yihan~Shao,~E. E. A. T. G. M. W. J. K. A. W. L. A. B. J. D. X. F. D. G. M. G.
+  P. R. H. L. D. J. I. K. R. Z. K. T. K. A. L. J. L. E. I. P. Y. M. R. R. M. R.
+  M. A. R. R. P. S. E. J. S. H. L. W. I. P. M. Z. D. Z. B. A. E. A. B. A. G. J.
+  O. B. Y. A. B. E. B. K. B. K. B. B. S. T. B. D. C. C.-M. C. Y. C. S. H. C. K.
+  D. C. D. L. C. M. D. R. A. D. J. H. D. A. D. D. R. G. E. S. F. L. F.-M. A. G.
+  A. G.-Z. J. G. M. W. H.-H. P. H. H. A. W. H. E. G. H. Z. C. H. T.-C. J. H. J.
+  B. K. K. K. J. K. J. K. R. A. K. P. K. D. K. T. K. C. M. K. K. U. L. A. D. L.
+  K. V. L. S. V. L. C. Y. L. F. L. E. L. R. C. L. A. L. P. M. S. F. M. S.-P. M.
+  N. M. A. V. M. S. A. M. N. J. M. E. N. C. M. O. R. O.-A. D. P. O. J. A. P. T.
+  M. P. R. P. A. P. D. R. R. E. R. N. J. R. S. M. S. S. S. D. W. S. A. S. T. S.
+  D. S. Y.-C. S. A. J. T. T. T. V. V. L. V. O. V. T. W. M. A. W. J. W. A. W. C.
+  F. W. J. Y. S. Y. S. R. Y. Z.-Q. Y. I. Y. Z. X. Z. Y. Z. B. R. B. G. K. C. D.
+  M. C. C. J. C. W. A. G. I. M. S. G. W. J. H. A. K. H. F. S. I. M. W. S. C. D.
+  S. D. G. T. A. W. X. X. A. A.-G. R. B. A. T. B. N. A. B. J.-D. C. A. D. B. D.
+  D. T. R. F. S. R. G. C.-P. H. Y. J. J. K. D. S. L. W. L. C. O. V. A. R. L. V.
+  S. J. E. S. T. V. V. J. M. H. A. I. K. P. M.~G.,~Zhengting~Gan;
+  Head-Gordon,~M. Advances in molecular quantum chemistry contained in the
+  Q-Chem 4 program package. \emph{Molecular Physics} \textbf{2015}, \emph{113},
+  184--215\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Balasubramani \latin{et~al.}(2020)Balasubramani, Chen, Coriani,
+  Diedenhofen, Frank, Franzke, Furche, Grotjahn, Harding, H\"{a}ttig, Hellweg,
+  Helmich-Paris, Holzer, Huniar, Kaupp, Marefat~Khah, Karbalaei~Khani,
+  M\"{u}ller, Mack, Nguyen, Parker, Perlt, Rappoport, Reiter, Roy, R\"{u}ckert,
+  Schmitz, Sierka, Tapavicza, Tew, van W\"{u}llen, Voora, Weigend, Wodyński,
+  and Yu]{Turbomole}
+Balasubramani,~S.~G. \latin{et~al.}  TURBOMOLE: Modular program suite for ab
+  initio quantum-chemical and condensed-matter simulations. \emph{The Journal
+  of Chemical Physics} \textbf{2020}, \emph{152}\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Humphrey \latin{et~al.}(1996)Humphrey, Dalke, and
+  Schulten]{humphrey1996vmd}
+Humphrey,~W.; Dalke,~A.; Schulten,~K. VMD: visual molecular dynamics.
+  \emph{Journal of molecular graphics} \textbf{1996}, \emph{14}, 33--38\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Schr{\"o}dinger and DeLano()Schr{\"o}dinger, and DeLano]{pymol}
+Schr{\"o}dinger,~L.; DeLano,~W. PyMOL. \url{http://www.pymol.org/pymol}\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[{Gijs Schaftenaar}()]{molden}
+{Gijs Schaftenaar}, Molden. \url{https://www3.cmbi.umcn.nl/molden/}\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Schaftenaar and Noordik(2000)Schaftenaar, and Noordik]{Molden2000}
+Schaftenaar,~G.; Noordik,~J.~H. Molden: a pre- and post-processing program for
+  molecular and electronic structures. \emph{Journal of Computer-Aided
+  Molecular Design} \textbf{2000}, \emph{14}, 123--134\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Pettersen \latin{et~al.}(2004)Pettersen, Goddard, Huang, Couch,
+  Greenblatt, Meng, and Ferrin]{pettersen2004ucsf}
+Pettersen,~E.~F.; Goddard,~T.~D.; Huang,~C.~C.; Couch,~G.~S.;
+  Greenblatt,~D.~M.; Meng,~E.~C.; Ferrin,~T.~E. UCSF Chimera---a visualization
+  system for exploratory research and analysis. \emph{Journal of computational
+  chemistry} \textbf{2004}, \emph{25}, 1605--1612\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Hanson \latin{et~al.}(2013)Hanson, Prilusky, Renjian, Nakane, and
+  Sussman]{hanson2013jsmol}
+Hanson,~R.~M.; Prilusky,~J.; Renjian,~Z.; Nakane,~T.; Sussman,~J.~L. JSmol and
+  the next-generation web-based representation of 3D molecular structure as
+  applied to proteopedia. \emph{Israel Journal of Chemistry} \textbf{2013},
+  \emph{53}, 207--216\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Sehnal \latin{et~al.}(2021)Sehnal, Bittrich, Deshpande, Svobodov{\'a},
+  Berka, Bazgier, Velankar, Burley, Ko{\v{c}}a, and Rose]{molstar}
+Sehnal,~D.; Bittrich,~S.; Deshpande,~M.; Svobodov{\'a},~R.; Berka,~K.;
+  Bazgier,~V.; Velankar,~S.; Burley,~S.~K.; Ko{\v{c}}a,~J.; Rose,~A.~S. {Mol*
+  Viewer: modern web app for 3D visualization and analysis of large
+  biomolecular structures}. \emph{Nucleic Acids Research} \textbf{2021},
+  \emph{49}, W431--W437\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Hanwell \latin{et~al.}(2012)Hanwell, Curtis, Lonie, Vandermeersch,
+  Zurek, and Hutchison]{Hanwell2012Avogadro}
+Hanwell,~M.~D.; Curtis,~D.~E.; Lonie,~D.~C.; Vandermeersch,~T.; Zurek,~E.;
+  Hutchison,~G.~R. Avogadro: an advanced semantic chemical editor,
+  visualization, and analysis platform. \emph{Journal of Cheminformatics}
+  \textbf{2012}, \emph{4}, 17\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Lu and Chen(2012)Lu, and Chen]{Lu2012Multiwfn}
+Lu,~T.; Chen,~F. Multiwfn: A multifunctional wavefunction analyzer.
+  \emph{Journal of Computational Chemistry} \textbf{2012}, \emph{33},
+  580--592\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Rego and Koes(2015)Rego, and Koes]{Rego2015_3Dmoljs}
+Rego,~N.; Koes,~D. 3Dmol.js: molecular visualization with WebGL.
+  \emph{Bioinformatics} \textbf{2015}, \emph{31}, 1322--1324\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Ito \latin{et~al.}(2026)Ito, Tsuji, Nakano, and Kasagi]{MOrbVis2026}
+Ito,~Y.; Tsuji,~S.; Nakano,~K.; Kasagi,~A. MOrbVis: Browser-Based Molecular
+  Orbital Visualization with WebGPU-Accelerated On-the-Fly Evaluation.
+  \emph{ACS Omega} \textbf{2026}, \relax
+\mciteBstWouldAddEndPunctfalse
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Kozl{\'\i}kov{\'a} \latin{et~al.}(2017)Kozl{\'\i}kov{\'a}, Krone,
+  Falk, Lindow, Baaden, Baum, Viola, Parulek, and
+  Hege]{kozlikova2017visualization}
+Kozl{\'\i}kov{\'a},~B.; Krone,~M.; Falk,~M.; Lindow,~N.; Baaden,~M.; Baum,~D.;
+  Viola,~I.; Parulek,~J.; Hege,~H.-C. Visualization of biomolecular structures:
+  State of the art revisited. Computer Graphics Forum. 2017; pp 178--204\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Sk{\aa}nberg \latin{et~al.}(2023)Sk{\aa}nberg, Hotz, Ynnerman, and
+  Linares]{VIAMD}
+Sk{\aa}nberg,~R.; Hotz,~I.; Ynnerman,~A.; Linares,~M. VIAMD: a Software for
+  Visual Interactive Analysis of Molecular Dynamics. \emph{Journal of Chemical
+  Information and Modeling} \textbf{2023}, \emph{63}, 7382--7391\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Rinkevicius \latin{et~al.}(2020)Rinkevicius, Li, Vahtras, Ahmadzadeh,
+  Brand, Ringholm, List, Scheurer, Scott, Dreuw, and Norman]{Rinkevicius2020}
+Rinkevicius,~Z.; Li,~X.; Vahtras,~O.; Ahmadzadeh,~K.; Brand,~M.; Ringholm,~M.;
+  List,~N.~H.; Scheurer,~M.; Scott,~M.; Dreuw,~A.; Norman,~P. {VeloxChem}: {A}
+  {Python}-driven density-functional theory program for spectroscopy
+  simulations in high-performance computing environments. \emph{WIREs Comput.
+  Mol. Sci.} \textbf{2020}, \emph{10}, e1457\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Li \latin{et~al.}(2024)Li, Linares, and Norman]{Velox-GPU}
+Li,~X.; Linares,~M.; Norman,~P. VeloxChem: GPU-Accelerated Fock Matrix
+  Construction Enabling Complex Polarization Propagator Simulations of Circular
+  Dichroism Spectra of G-Quadruplexes. \emph{The Journal of Physical Chemistry
+  A} \textbf{2024}, \relax
+\mciteBstWouldAddEndPunctfalse
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Bader(1990)]{Bader1990}
+Bader,~R. F.~W. \emph{Atoms in Molecules: A Quantum Theory}; Oxford University
+  Press: Oxford, 1990\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Bader(1991)]{Bader1991}
+Bader,~R. F.~W. A quantum theory of molecular structure and its applications.
+  \emph{Chemical Reviews} \textbf{1991}, \emph{91}, 893--928\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Martin(2003)]{Martin2003NTO}
+Martin,~R.~L. Natural transition orbitals. \emph{The Journal of Chemical
+  Physics} \textbf{2003}, \emph{118}, 4775--4777\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Head-Gordon \latin{et~al.}(1995)Head-Gordon, Grana, Maurice, and
+  White]{HeadGordon1995AttachDetach}
+Head-Gordon,~M.; Grana,~A.~M.; Maurice,~D.; White,~C.~A. Analysis of electronic
+  transitions as the difference of electron attachment and detachment
+  densities. \emph{The Journal of Physical Chemistry} \textbf{1995}, \emph{99},
+  14261--14270\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Singh and Kollman(1984)Singh, and Kollman]{SinghKollman1984ESP}
+Singh,~U.~C.; Kollman,~P.~A. An approach to computing electrostatic charges for
+  molecules. \emph{Journal of Computational Chemistry} \textbf{1984}, \emph{5},
+  129--145\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Bayly \latin{et~al.}(1993)Bayly, Cieplak, Cornell, and
+  Kollman]{Bayly1993RESP}
+Bayly,~C.~I.; Cieplak,~P.; Cornell,~W.; Kollman,~P.~A. A well-behaved
+  electrostatic potential based method using charge restraints for deriving
+  atomic charges: the {RESP} model. \emph{The Journal of Physical Chemistry}
+  \textbf{1993}, \emph{97}, 10269--10280\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Gagliardi \latin{et~al.}(2004)Gagliardi, Lindh, and
+  Karlstr{\"o}m]{Gagliardi2004LoProp}
+Gagliardi,~L.; Lindh,~R.; Karlstr{\"o}m,~G. Local properties of quantum
+  chemical systems: The {LoProp} approach. \emph{The Journal of Chemical
+  Physics} \textbf{2004}, \emph{121}, 4494--4500\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Runge and Gross(1984)Runge, and Gross]{RungeGross1984}
+Runge,~E.; Gross,~E. K.~U. Density-Functional Theory for Time-Dependent
+  Systems. \emph{Physical Review Letters} \textbf{1984}, \emph{52},
+  997--1000\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Casida(1995)]{Casida1995}
+Casida,~M.~E. In \emph{Recent Advances in Density Functional Methods};
+  Chong,~D.~P., Ed.; World Scientific: Singapore, 1995; Vol.~1; pp
+  155--192\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Masood \latin{et~al.}(2021)Masood, Thygesen, Linares, Abrikosov,
+  Natarajan, and Hotz]{MasoodCGF2021}
+Masood,~T.~B.; Thygesen,~S.~S.; Linares,~M.; Abrikosov,~A.~I.; Natarajan,~V.;
+  Hotz,~I. Visual Analysis of Electronic Densities and Transitions in
+  Molecules. \emph{Computer Graphics Forum} \textbf{2021}, \emph{40},
+  287--298\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Le~Bahers \latin{et~al.}(2011)Le~Bahers, Adamo, and
+  Ciofini]{LeBahers2011}
+Le~Bahers,~T.; Adamo,~C.; Ciofini,~I. A qualitative index of spatial extent in
+  charge-transfer excitations. \emph{Journal of Chemical Theory and
+  Computation} \textbf{2011}, \emph{7}, 2498--2506\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Plasser \latin{et~al.}(2014)Plasser, Wormit, and Dreuw]{Plasser2014}
+Plasser,~F.; Wormit,~M.; Dreuw,~A. New tools for the systematic analysis and
+  visualization of electronic excitations. I. Formalism. \emph{The Journal of
+  Chemical Physics} \textbf{2014}, \emph{141}, 024106\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[{The HDF Group}(1997--2024)]{HDF5}
+{The HDF Group}, Hierarchical Data Format, version 5. 1997--2024;
+  \url{https://www.hdfgroup.org/solutions/hdf5/}, Accessed 2026-06-09\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\bibitem[Posenitskiy \latin{et~al.}(2023)Posenitskiy, Chilkuri, Ammar, Hapka,
+  Pernal, Shinde, Landinez~Borda, Filippi, Nakano, Kohulák, Sorella,
+  de~Oliveira~Castro, Jalby, Ríos, Alavi, and Scemama]{Trexio}
+Posenitskiy,~E. \latin{et~al.}  TREXIO: A file format and library for quantum
+  chemistry. \emph{The Journal of Chemical Physics} \textbf{2023},
+  \emph{158}\relax
+\mciteBstWouldAddEndPuncttrue
+\mciteSetBstMidEndSepPunct{\mcitedefaultmidpunct}
+{\mcitedefaultendpunct}{\mcitedefaultseppunct}\relax
+\EndOfBibitem
+\end{mcitethebibliography}

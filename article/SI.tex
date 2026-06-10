@@ -1,0 +1,115 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Supporting Information for the VIAMD--VeloxChem article
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\documentclass[journal=jacsat,manuscript=suppinfo]{achemso}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{pdflscape}
+
+\newcommand*\rotcell[1]{\rotatebox{60}{\strut #1}}
+
+\author{Robin Skånberg}
+\affiliation[PDC]{PDC Center for High Performance Computing, KTH Royal Institute of Technology, SE-100 44 Stockholm, Sweden}
+\email{robsk@kth.se}
+
+\author{Gustav Eriksson}
+\affiliation[LIU]{Linköping University, SE-581 83 Linköping,
+Sweden}
+
+\author{Mohit Sharma}
+\affiliation[LIU]{Linköping University, SE-581 83 Linköping,
+Sweden}
+
+\author{Iulia Brumboiu}
+\affiliation[UMK]{Nicolaus Copernicus University (UMK), Torun, Poland}
+
+\author{Josefine Hvarregaard Andersen}
+\affiliation[UiT]{UiT The Arctic University of Norway}
+
+\author{Xin Li}
+\affiliation[PDC]{PDC Center for High Performance Computing, KTH Royal Institute of Technology, SE-100 44 Stockholm, Sweden}
+
+\author{Talha Bin Masood}
+\affiliation[LIU]{Linköping University, SE-581 83 Linköping,
+Sweden}
+
+\author{Patrick Norman}
+\affiliation[PDC]{PDC Center for High Performance Computing, KTH Royal Institute of Technology, SE-100 44 Stockholm, Sweden}
+\altaffiliation{Division of Theoretical Chemistry and Biology, School of Engineering Sciences in Chemistry,
+Biotechnology and Health, KTH Royal Institute of
+Technology, SE-100 44 Stockholm, Sweden}
+
+\author{Mathieu Linares}
+\affiliation[PDC]{PDC Center for High Performance Computing, KTH Royal Institute of Technology, SE-100 44 Stockholm, Sweden}
+\email{linares@kth.se}
+
+\title{Supporting Information for VIAMD--VeloxChem Integration for Interactive Quantum Chemical Visualization and Analysis}
+
+\begin{document}
+
+\section{Datasets and Feature Matrix}
+The examples used in this article are based on the VeloxChem input/output file collection available from the VeloxChem documentation at \href{https://veloxchem.org/docs/input-files/}{https://veloxchem.org/docs/input-files/}. This collection provides paired input scripts, text input files, log files, and HDF5 output files for representative VeloxChem calculations. The HDF5 files are regenerated regularly from the VeloxChem master branch, and the VIAMD developers use this collection as a practical test set for checking the VeloxChem interface and the visualization features described in the main article.
+
+Table~\ref{tab:veloxchem-datasets} follows the organization of the VeloxChem input/output page and summarizes the VIAMD windows and feature families associated with each example. In the table, the Common column denotes the shared VIAMD starting point for VeloxChem HDF5 files: direct file loading; molecular-structure inspection; atom selection and highlighting through interactive tables; calculation metadata and convergence review in the Summary window; standard molecular representations in the spatial view; molecular-orbital, density, and density-difference representations when the required electronic-structure data are present; Orbital Grid comparison when orbital data are present; molecular vectors or axes when available; density topology and critical-point inspection when the density can be reconstructed; and saving or restoring the analysis state through VIAMD workspaces. The remaining columns mark additional interactive workflows available for specific examples. Vibrational spectra are included under the same Response workflow as electronic and other response-property spectra. The final column is restricted to atom-centered property datasets, such as ESP, RESP, Boltzmann-weighted RESP, and LoProp quantities.~\cite{SinghKollman1984ESP,Bayly1993RESP,Gagliardi2004LoProp}
+
+\begin{landscape}
+{\footnotesize
+\begin{longtable}{p{0.25\linewidth}p{0.25\linewidth}ccccc}
+\caption{Feature matrix for VeloxChem input/output HDF5 files used to test and illustrate the VIAMD VeloxChem interface. The entries follow the order of the VeloxChem input/output documentation page. A bullet in the Common column denotes the shared VIAMD starting point: HDF5 loading, Summary-window metadata, molecular/electronic representations, Orbital Grid access when orbital data are present, molecular vectors or axes when present, density topology when density data allow it, and workspace saving. Optimisation marks geometry optimization, constrained-coordinate, scan, transition-state, and IRC workflows. Response covers electronic, vibrational, CPP, X-ray, and multiphoton response workflows. Transition marks attachment/detachment and charge-transfer analysis. Atomic props. marks atom-centered property datasets such as ESP, RESP, Boltzmann-weighted RESP, and LoProp. Feature availability should be verified against the monthly regenerated HDF5 files before final publication.}
+\label{tab:veloxchem-datasets}\\
+\hline
+Example & HDF5 file & \rotcell{Common} & \rotcell{Optimisation} & \rotcell{Response} & \rotcell{Transition} & \rotcell{Atomic props.} \\
+\hline
+\endfirsthead
+\hline
+Example & HDF5 file & \rotcell{Common} & \rotcell{Optimisation} & \rotcell{Response} & \rotcell{Transition} & \rotcell{Atomic props.} \\
+\hline
+\endhead
+SCF optimization & \texttt{biphenyl-scf.h5} & \(\bullet\) & -- & -- & -- & -- \\
+ROHF optimization & \texttt{tempo-roscf.h5} & \(\bullet\) & -- & -- & -- & -- \\
+UHF optimization & \texttt{trityl-uscf.h5} & \(\bullet\) & -- & -- & -- & -- \\
+Static electric field & \texttt{pna-field.h5} & \(\bullet\) & -- & -- & -- & -- \\
+CPCM environment & \texttt{eth-cpcm.h5} & \(\bullet\) & -- & -- & -- & -- \\
+SMD environment & \texttt{eth-smd.h5} & \(\bullet\) & -- & -- & -- & -- \\
+PE/NPE environment & \texttt{alpha-helix-acetone-water-pe.h5} & \(\bullet\) & -- & -- & -- & -- \\
+S0 optimization & \texttt{bithio-S0-opt.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
+Frozen coordinate & \texttt{bithio-freeze.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
+Coordinate scan & \texttt{bithio-scan.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
+TS optimization & \texttt{Sn2-ts.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
+IRC & \texttt{Sn2-irc.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
+S1 optimization & \texttt{bithio-S1-opt.h5} & \(\bullet\) & \(\bullet\) & \(\bullet\) & -- & -- \\
+TDDFT UV/Vis & \texttt{tq-uv-vis.h5} & \(\bullet\) & -- & \(\bullet\) & \(\bullet\) & -- \\
+CPP UV/Vis & \texttt{tq-cpp.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+Ground-state dipole & \texttt{pna-GS-dipole.h5} & \(\bullet\) & -- & -- & -- & -- \\
+Excited-state dipole & \texttt{pna-ES-dipole.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+Nonresonant polarizability & \texttt{meth-nonres.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+Resonant polarizability & \texttt{eth-res.out} & -- & -- & -- & -- & -- \\
+TDDFT optical activity & \texttt{alanine-ecd.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+CPP optical activity & \texttt{alanine-cpp.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+IR spectroscopy & \texttt{acro-ir.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+Raman spectroscopy & \texttt{acro-raman.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+Resonance Raman & \texttt{acro-rr.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+C6 weak interactions & \texttt{meth-c6.h5} & \(\bullet\) & -- & -- & -- & -- \\
+ESP & \texttt{h2o-esp.h5} & \(\bullet\) & -- & -- & -- & \(\bullet\) \\
+RESP & \texttt{h2o-resp.h5} & \(\bullet\) & -- & -- & -- & \(\bullet\) \\
+Boltzmann-weighted RESP & \texttt{pro-resp-bw.h5} & \(\bullet\) & -- & -- & -- & \(\bullet\) \\
+LoProp & \texttt{h2o-loprop.h5} & \(\bullet\) & -- & -- & -- & \(\bullet\) \\
+TPA & \texttt{pna-tpa.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+TPA cross section & \texttt{pna-tpacs.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+XPS & \texttt{esca-xps.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+XAS (CVS) & \texttt{xas-cvs.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+XAS (CPP) & \texttt{esca-nexafs.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+RIXS & \texttt{esca-rixs.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
+General response functions & \texttt{h2o2-lrf.out}, \texttt{h2o2-qrf.out}, \texttt{h2o2-crf.out} & -- & -- & -- & -- & -- \\
+\hline
+\end{longtable}
+}
+\end{landscape}
+
+Together, the documentation collection and the feature matrix define a reproducible route from VeloxChem calculations to VIAMD analysis: the main article highlights representative examples for the main workflows, while the full set remains available here as a practical regression and tutorial resource as the interface evolves.
+
+\bibliography{bibliography}
+\end{document}

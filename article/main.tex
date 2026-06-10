@@ -22,11 +22,20 @@
 \usepackage[export]{adjustbox}
 \usepackage{longtable}
 \usepackage{pdflscape}
+\usepackage{float}
+\usepackage[section]{placeins}
 \usepackage{graphicx}
 %\usepackage[margin=0.25in]{geometry}
 %\usepackage{pgfplots}
 % 
 \usepackage[colorinlistoftodos,prependcaption,textsize=tiny]{todonotes}
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{4}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.8}
 \newcommandx{\unsure}[2][1=]{\todo[linecolor=red,backgroundcolor=red!25,bordercolor=red,#1]{#2}}
 \newcommandx{\change}[2][1=]{\todo[linecolor=blue,backgroundcolor=blue!25,bordercolor=blue,#1]{#2}}
 \newcommandx{\info}[2][1=]{\todo[linecolor=OliveGreen,backgroundcolor=OliveGreen!25,bordercolor=OliveGreen,#1]{#2}}
@@ -127,10 +136,6 @@
 \affiliation[LIU]{Linköping University, SE-581 83 Linköping,
 Sweden}
 
-\author{Tobias Pettersson}
-\affiliation[LIU]{Linköping University, SE-581 83 Linköping,
-Sweden}
-
 \author{Mohit Sharma}
 \affiliation[LIU]{Linköping University, SE-581 83 Linköping,
 Sweden}
@@ -213,80 +218,99 @@ Although these workflows are well established, their reliance on intermediate fi
 
 VIAMD was originally developed as a C/C++ environment for visual interactive analysis of molecular dynamics data, with emphasis on the exploration of spatio-temporal molecular structures and derived properties.~\cite{VIAMD} Its interactive design makes it a natural platform for extending molecular visualization beyond classical trajectories toward quantum chemical analysis, where structure, electronic distributions, spectra, and state-specific properties should be inspected in a unified environment.
 
-In this work, we present the integration of VIAMD with VeloxChem 1.0. VeloxChem is a Python-driven quantum chemistry program designed for high-performance simulations of molecular response properties at the Hartree--Fock, density-functional theory, and time-dependent density-functional theory levels.~\cite{Rinkevicius2020} It has been developed for efficient execution in high-performance computing environments, including recent GPU-accelerated implementations for demanding response calculations.~\cite{Velox-GPU} The integration described here provides native support in VIAMD for VeloxChem HDF5 output files, allowing molecular structures, orbitals, densities, spectra, and transition-analysis data to be loaded directly without conversion to external grid formats.
+In this work, we present the integration of VIAMD with VeloxChem 1.0. VeloxChem is a Python-driven quantum chemistry program designed for high-performance simulations of molecular response properties at the Hartree--Fock, density-functional theory, and time-dependent density-functional theory levels.~\cite{Rinkevicius2020} It has been developed for efficient execution in high-performance computing environments, including recent GPU-accelerated implementations for demanding response calculations.~\cite{Velox-GPU} The integration described here provides native support in VIAMD for VeloxChem HDF5 output files, allowing molecular structures, orbitals, densities, spectra, and transition-analysis data to be loaded directly without conversion to external grid formats. Figure~\ref{fig:overview} provides an overview of this workflow in the VIAMD interface. The central spatial view shows a molecular electron-density isosurface directly associated with the loaded structure, while the surrounding panels expose complementary analysis tasks: the Response window for electronic spectroscopy, the Representations window for configuring orbital and density visualizations, the Transition Analysis window for attachment--detachment and fragment-based excited-state interpretation, and the Orbital Grid for side-by-side inspection of several orbitals. This overview captures the central idea of the integration: molecular structure, electronic representations, spectra, and state analysis remain connected within one interactive environment rather than being distributed across separate preprocessing and visualization tools.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figure/overview.png}
+\caption{Overview of the VIAMD--VeloxChem interface for interactive quantum-chemical analysis. The central spatial view displays the molecular structure together with an electron-density isosurface, while the surrounding panels show the Response window for spectral analysis, the Representations window for configuring electronic visualizations, the Transition Analysis window for attachment--detachment and fragment-based excited-state analysis, and the Orbital Grid for comparative inspection of multiple orbitals.}
+\label{fig:overview}
+\end{figure}
 
 The aim of this article is to describe how this VIAMD--VeloxChem integration enables an interactive workflow for quantum chemical analysis. We focus on the direct loading of VeloxChem \texttt{.h5} files, the inspection of calculation metadata and convergence information, the visualization of molecular orbitals and electron densities, the analysis of electronic and vibrational spectra, and the interpretation of excited states through transition-analysis tools. The examples discussed throughout the article are based on VeloxChem input/output documentation datasets, which provide reproducible working cases for exploring the functionality described below.
 
 
-\section{Initial Audit: Loading Data and the Summary Window}
+\section{Loading Data and the Summary Window}
 VeloxChem HDF5 files can be opened from the \texttt{File > Load Data} menu or by dragging and dropping the file directly into the spatial view. After loading, VIAMD initializes the molecular structure and provides an immediate starting point for inspection, including a Ball and Stick representation and, when molecular orbital data are available, a default visualization of the highest occupied molecular orbital.
 
-The Summary window, accessed through \texttt{Windows > VeloxChem > Summary}, provides the first audit of the loaded calculation. It reports the calculation level, including the method or functional and basis set, together with molecular metadata such as the number of atoms, charge, spin multiplicity, and number of electrons. The same window also exposes convergence information, including SCF convergence and, when present in the HDF5 file, geometry-convergence data for optimization-related calculations such as geometry optimizations, scan calculations, transition-state searches, and IRC paths.
+The Summary window, accessed through \texttt{Windows > VeloxChem > Summary}, provides the first overview of the loaded calculation. It reports the calculation level, including the method or functional and basis set, together with molecular metadata such as the number of atoms, charge, spin multiplicity, and number of electrons. The same window also exposes convergence information, including SCF convergence and, when present in the HDF5 file, geometry-convergence data for optimization-related calculations such as geometry optimizations, scan calculations, transition-state searches, and IRC paths. These views are summarized in Figure~\ref{fig:summary}.
 
-The Summary window also contains interactive tables linked to the three-dimensional molecular view. Selecting an entry in the geometry table highlights the corresponding atom in the spatial view, allowing numerical coordinates and molecular structure to be inspected together. In addition, VIAMD computes critical point information from the electron density reconstructed from the molecular orbitals, following the long-established use of electron-density topology in quantum-chemical interpretation.\cite{Bader1990,Bader1991} The resulting critical point table is likewise interactive with the 3D view. This makes the Summary window a compact entry point for checking both the calculation metadata and the spatial features derived from the electronic density before moving to more specialized visualization and analysis tools.
-\begin{figure}[!ht]
+\begin{figure}[H]
 \centering
-\includegraphics[width=0.9\textwidth]{figure/summary.png}
-\caption{Summary window shown after loading a VeloxChem HDF5 dataset in VIAMD. The panel reports calculation metadata, SCF and geometry-convergence information when available, and interactive geometry and critical point tables linked to the three-dimensional molecular view.}
+\begin{subfigure}[t]{0.9\textwidth}
+\centering
+\includegraphics[width=\textwidth]{figure/summary.png}
+\end{subfigure}
+
+\vspace{0.35em}
+
+\begin{subfigure}[t]{0.495\textwidth}
+\centering
+\includegraphics[width=\textwidth]{figure/scf-opt.png}
+\end{subfigure}
+\hfill
+\begin{subfigure}[t]{0.495\textwidth}
+\centering
+\includegraphics[width=\textwidth]{figure/critical-point.png}
+\end{subfigure}
+\caption{Overview views available after loading a VeloxChem HDF5 dataset in VIAMD. Top: the Summary window reports calculation metadata, geometry information, and interactive tables linked to the molecular view. Bottom left: the SCF and optimization panel exposes convergence histories for electronic and structural relaxation. Bottom right: the Critical Points panel summarizes density-topology analysis derived from the reconstructed electron density, including graph settings, counts by critical-point type, and an interactive table of extracted points.}
 \label{fig:summary}
 \end{figure}
+
+The Summary window also contains interactive tables linked to the three-dimensional molecular view. Selecting an entry in the geometry table highlights the corresponding atom in the spatial view, allowing numerical coordinates and molecular structure to be inspected together. In addition, VIAMD provides dedicated views for SCF and optimization convergence histories and computes critical point information from the electron density reconstructed from the molecular orbitals, following the long-established use of electron-density topology in quantum-chemical interpretation.\cite{Bader1990,Bader1991} The resulting critical-point table is likewise interactive with the 3D view. Together, these panels provide a compact entry point for checking calculation metadata, convergence behavior, and density-derived spatial features before moving to more specialized visualization and analysis tools.
 
 \section{Visualizing the Electronic Landscape}
 Electronic-structure data loaded from VeloxChem can be explored directly in the main VIAMD spatial view using the same representation workflow as for molecular structures. In addition to atomistic representations, users can add and configure volumetric electronic representations, choosing the underlying volume source according to the available data. These sources include molecular orbitals, orbital densities, total electron densities, Natural Transition Orbitals, attachment and detachment densities for TDDFT calculations, and density-related properties from complex polarization propagator calculations. The excited-state descriptors exposed here build on established analysis concepts such as Natural Transition Orbitals and attachment--detachment density analysis, which are widely used to reduce complex response data to chemically interpretable spatial patterns.\cite{Martin2003NTO,HeadGordon1995AttachDetach,Lu2012Multiwfn} VIAMD can also render differences between compatible volumetric sources, such as alpha--beta density differences, attachment--detachment density differences, or differences between selected NTO-related quantities. This makes it possible to inspect several electronic descriptors in the same interactive scene as the molecular geometry, while adjusting visual parameters such as isovalue, opacity, color, and phase convention.
 
-The main spatial view can combine several kinds of quantum-chemical information in a single molecular scene. Four representative examples are used here to illustrate this range. The first is the HOMO representation created automatically when a VeloxChem file with molecular-orbital data is loaded, which provides an immediate electronic-structure starting point. The second combines a green total-electron-density isosurface with a molecular dipole or PNA representation, showing how volumetric scalar fields can be interpreted together with directional molecular descriptors. The third combines an electron-density isosurface with RESP-based atom coloring, linking the continuous density distribution to atom-centered electrostatic information derived from electrostatic-potential fitting or localized-property analysis.\cite{SinghKollman1984ESP,Bayly1993RESP,Gagliardi2004LoProp} The fourth uses an unrestricted calculation to display an alpha--beta density difference, making the spin imbalance visible as a signed volumetric representation. Together, these examples show that the representation system is not limited to isolated orbital plots, but can combine orbitals, densities, charge-derived coloring, vector or axis annotations, and spin-density differences within the same interactive view.
-
-For comparative inspection, VIAMD also provides an Orbital Grid window, accessed through \texttt{Windows > VeloxChem > Orbital Grid}. The grid view is designed for rapid comparison of several orbitals or density-derived quantities side by side. Because this view contains many small electronic-structure panels together with energies, occupations, and selection controls, it is best presented as a large standalone figure rather than as one panel in the representation overview. Users can select the displayed orbital range, inspect energies and occupations, and compare changes in shape, phase, and localization across the electronic structure. The Orbital Grid also supports restricted open-shell and unrestricted calculations; for UHF data, alpha and beta orbital channels can be inspected separately. Together, the main-view representation controls and the Orbital Grid provide complementary workflows: detailed inspection of selected electronic features in the molecular scene and compact overview of multiple electronic states or orbitals.
-\begin{figure}[!ht]
+The main spatial view can combine several kinds of quantum-chemical information in a single molecular scene. Four representative examples are used here to illustrate this range. The first is the HOMO representation created automatically when a VeloxChem file with molecular-orbital data is loaded, which provides an immediate electronic-structure starting point. The second shows a green total-electron-density isosurface as a standalone volumetric representation of the molecular electron distribution. The third combines an electron-density isosurface with RESP-based atom coloring, linking the continuous density distribution to atom-centered electrostatic information derived from electrostatic-potential fitting or localized-property analysis.\cite{SinghKollman1984ESP,Bayly1993RESP,Gagliardi2004LoProp} The fourth uses an unrestricted calculation to display an alpha--beta density difference, making the spin imbalance visible as a signed volumetric representation. Together, these examples show that the representation system is not limited to isolated orbital plots, but can combine orbitals, densities, charge-derived coloring, and spin-density differences within the same interactive view.
+\begin{figure}[H]
 \centering
 \begin{subfigure}[t]{0.48\textwidth}
 \centering
-\IfFileExists{figure/representation-homo.png}{%
-\includegraphics[width=\textwidth]{figure/representation-homo.png}%
+\IfFileExists{figure/figure-3a.png}{%
+\includegraphics[width=\textwidth]{figure/figure-3a.png}%
 }{%
 \fbox{\parbox[c][0.28\textwidth][c]{0.92\textwidth}{\centering Placeholder for HOMO representation loaded by default.}}%
 }
-\caption{Default HOMO representation generated when loading a VeloxChem dataset.}
 \label{fig:representation-homo}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.48\textwidth}
 \centering
-\IfFileExists{figure/representation-density-dipole-pna.png}{%
-\includegraphics[width=\textwidth]{figure/representation-density-dipole-pna.png}%
+\IfFileExists{figure/figure-3b.png}{%
+\includegraphics[width=\textwidth]{figure/figure-3b.png}%
 }{%
 \fbox{\parbox[c][0.28\textwidth][c]{0.92\textwidth}{\centering Placeholder for green electron density with molecular dipole or PNA representation.}}%
 }
-\caption{Green total-electron-density isosurface shown together with a dipole or PNA representation.}
 \label{fig:representation-density-dipole-pna}
 \end{subfigure}
 
 \begin{subfigure}[t]{0.48\textwidth}
 \centering
-\IfFileExists{figure/representation-density-resp.png}{%
-\includegraphics[width=\textwidth]{figure/representation-density-resp.png}%
+\IfFileExists{figure/figure-3c.png}{%
+\includegraphics[width=\textwidth]{figure/figure-3c.png}%
 }{%
 \fbox{\parbox[c][0.28\textwidth][c]{0.92\textwidth}{\centering Placeholder for electron density with RESP-colored molecular structure.}}%
 }
-\caption{Electron density combined with RESP-based atom coloring.}
 \label{fig:representation-density-resp}
 \end{subfigure}
 \hfill
 \begin{subfigure}[t]{0.48\textwidth}
 \centering
-\IfFileExists{figure/representation-alpha-beta.png}{%
-\includegraphics[width=\textwidth]{figure/representation-alpha-beta.png}%
+\IfFileExists{figure/figure-3d.png}{%
+\includegraphics[width=\textwidth]{figure/figure-3d.png}%
 }{%
 \fbox{\parbox[c][0.28\textwidth][c]{0.92\textwidth}{\centering Placeholder for alpha--beta density difference from a UHF calculation.}}%
 }
-\caption{Alpha--beta density difference for UHF data.}
 \label{fig:representation-alpha-beta}
 \end{subfigure}
-\caption{Representative electronic-structure visualizations in VIAMD. The examples show the default HOMO generated upon loading a VeloxChem file, a green total-electron-density isosurface combined with a dipole or PNA representation, an electron-density representation with RESP-based atom coloring, and an alpha--beta density difference for an unrestricted calculation.}
+\caption{Representative electronic-structure visualizations in VIAMD. Top left: the default HOMO molecular-orbital representation generated upon loading a VeloxChem file. Top right: a green total-electron-density isosurface. Bottom left: an electron-density representation tinted by RESP charges. Bottom right: an alpha--beta density difference for an unrestricted calculation. Together, these examples show that the representation system can combine orbitals, densities, charge-derived coloring, and spin-density differences within the same interactive view.}
 \label{fig:electronic-landscape}
 \end{figure}
 
-\begin{figure}[!ht]
+For comparative inspection, VIAMD also provides an Orbital Grid window, accessed through \texttt{Windows > VeloxChem > Orbital Grid}. The grid view is designed for rapid comparison of several orbitals or density-derived quantities side by side. Because this view contains many small electronic-structure panels together with energies, occupations, and selection controls, it is best presented as a large standalone figure rather than as one panel in the representation overview. Users can select the displayed orbital range, inspect energies and occupations, and compare changes in shape, phase, and localization across the electronic structure. The Orbital Grid also supports restricted open-shell and unrestricted calculations; for UHF data, alpha and beta orbital channels can be inspected separately. Together, the main-view representation controls and the Orbital Grid provide complementary workflows: detailed inspection of selected electronic features in the molecular scene and compact overview of multiple electronic states or orbitals.
+
+\begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{figure/orbital-grid.png}
 \caption{Orbital Grid view for comparing multiple orbitals or density-derived quantities side by side. The window complements the main spatial representations by providing a compact overview of orbital shapes, phases, energies, occupations, and spin channels.}
@@ -300,7 +324,7 @@ Spectroscopic observables provide a natural continuation of the electronic-struc
 The electronic-spectroscopy workflow is centered on the Response window, accessed through \texttt{Windows > VeloxChem > Response}. For TDDFT calculations, this window displays the discrete excited-state information as an interactive spectrum. The user can apply Lorentzian or Gaussian broadening, adjust the broadening width, and export the resulting spectral data to formats such as \texttt{.xvg} or \texttt{.csv}. This makes it possible to treat the spectrum not only as a final plot, but also as an interactive index into the excited states available in the calculation.
 
 The connection between the spectral and spatial views is particularly useful for interpreting charge-transfer states. In the thiophene--quinoxaline example used here, the fourth excited state is selected from the TDDFT spectrum and visualized through the difference between attachment and detachment densities. This representation directly connects a peak in the electronic spectrum to the redistribution of electronic density during the excitation, and prepares the more detailed transition-analysis discussion in the next section.
-\begin{figure}[!ht]
+\begin{figure}[H]
 \centering
 \IfFileExists{figure/tddft.png}{%
 \includegraphics[width=0.9\textwidth]{figure/tddft.png}%
@@ -319,15 +343,16 @@ The transition-analysis tools in VIAMD follow the VALET approach for visual anal
 
 This workflow is complementary to the orbital and NTO visualizations described above, but the transition analysis itself is based on the attachment and detachment densities. In the TQ example, the charge-transfer character of the fourth excited state can therefore be inspected by comparing the regions of density depletion and accumulation in the molecular frame. The same view can be customized through settings controlling the attachment and detachment colors and the display of transition-related vectors.
 
-In addition to density-based information, VIAMD can display the electric and magnetic transition dipole moment vectors for the selected state, together with the angle between them. Showing these vectors in the molecular frame helps relate the orientation of the transition moments to the molecular geometry and to the spatial pattern of the attachment and detachment densities.
+In addition to density-based information, VIAMD can display the electric and magnetic transition dipole moment vectors for the selected state, together with the angle between them. Showing these vectors in the molecular frame helps relate the orientation of the transition moments to the molecular geometry and to the spatial pattern of the attachment and detachment densities. Figure~\ref{fig:transition-analysis} illustrates this workflow, including the fragment-based view used for charge-transfer interpretation.
 
-For a more quantitative interpretation, users can define molecular subgroups or fragments and analyze how the attachment and detachment densities are distributed over them. This enables the characterization of local excitation versus charge-transfer character, for example by distinguishing density rearrangements localized on one molecular fragment from transitions involving donor--acceptor density displacement between different fragments.
-\begin{figure}[!ht]
+\begin{figure}[H]
 \centering
 \includegraphics[width=0.9\textwidth]{figure/transition-analysis.png}
 \caption{Transition-analysis workflow in VIAMD following the VALET approach. Attachment and detachment densities are used to analyze charge redistribution for a selected excited state, with customizable density colors, electric and magnetic transition dipole moment vectors, and the angle between them. Fragment definitions support quantification of local-excitation and charge-transfer character.}
 \label{fig:transition-analysis}
 \end{figure}
+
+For a more quantitative interpretation, users can define molecular subgroups or fragments and analyze how the attachment and detachment densities are distributed over them. This enables the characterization of local excitation versus charge-transfer character, for example by distinguishing density rearrangements localized on one molecular fragment from transitions involving donor--acceptor density displacement between different fragments.
 
 \section{Implementation}
 The VeloxChem integration is implemented through the VIAMD loader system and the VeloxChem support layer in mdlib. When VeloxChem support is enabled, VIAMD registers HDF5 files with the \texttt{.h5} extension as VeloxChem datasets. HDF5 provides a portable hierarchical container for structured numerical data, which makes it well suited for storing molecular coordinates, basis information, orbital coefficients, response arrays, and derived properties in a single calculation file.\cite{HDF5} The generic loader initializes the molecular system from the file, while the VeloxChem component parses the complete quantum-chemical data into an \texttt{md\_vlx\_t} object. The parser reads the core molecular data and, when present, the \texttt{scf}, \texttt{rsp}, and \texttt{opt} HDF5 groups. These groups provide the data used throughout the interface: SCF orbital and density information, response data including excited-state and vibrational spectra, and optimization coordinates and energies. Atomic and density properties stored with the file are also exposed to the VIAMD property and representation systems.
@@ -353,7 +378,7 @@ The direct HDF5 workflow also improves the practical performance of exploratory 
 
 As a first benchmark, we measured representative CPU-side operations using the current Release build of VIAMD with VeloxChem/HDF5 support enabled, AVX/AVX2/FMA enabled, and the mdlib GPU path disabled. Each operation was repeated nine times and the median wall time was reported for a $64^3$ grid. For the small water dataset, HDF5 parsing took 1.3 ms and molecular-orbital volume generation took 3.9 ms. For the 26-atom molecule with 229 AOs, parsing took 3.2 ms and molecular-orbital volume generation took 31.7 ms. The TQ SCF dataset, with 23 atoms and 254 AOs, required 3.7 ms for parsing and 35.9 ms for molecular-orbital volume generation. For the acrolein response dataset, with 8 atoms, 76 AOs, and five excited states, parsing took 2.4 ms, molecular-orbital volume generation took 20.9 ms, and transition-density matrix extraction took 2.9 ms. These measurements should be interpreted as a first CPU baseline for the operations used by the visualization workflow; larger systems and GPU-enabled measurements will be added as additional datasets become available.
 
-\begin{figure}[!ht]
+\begin{figure}[H]
 \centering
 \IfFileExists{figure/performance-timings.png}{%
 \includegraphics[width=0.9\textwidth]{figure/performance-timings.png}%
@@ -377,80 +402,25 @@ We have presented the integration of VIAMD with VeloxChem 1.0 for interactive qu
 The implementation builds on a shared parsed VeloxChem data model, GTO-basis reconstruction, AO remapping, on-demand volume generation, and common access paths for the Summary, Response, Orbital Grid, and transition-analysis interfaces. First CPU benchmarks show that HDF5 parsing and molecular-orbital volume generation are fast for the representative datasets considered here, supporting interactive inspection on standard hardware. Future work will extend the benchmark set to larger molecular systems, include GPU-enabled measurements, and broaden the set of documented VeloxChem response and property workflows available through VIAMD.
 
 \section{Author Contributions}
-Robin Skånberg was the main developer of the code and contributed to the code design. Gustav Eriksson implemented the electronic-structure graphical interface, including interactive spectra, vibrational analysis, and transition analysis. Tobias Pettersson contributed to the transition-analysis functionality. Mohit Sharma provided the first implementation and guidelines for the critical point analysis. Iulia Brumboiu, Josefine Hvarregaard Andersen, and Xin Li contributed to the VeloxChem interface and provided user feedback on the graphical interface. Talha Bin Masood advised on electronic-structure computation, visualization, and topological analysis. Patrick Norman initiated the project, co-led the project, and contributed to the VeloxChem interface. Mathieu Linares led the project and contributed to the code design.
+Robin Skånberg was the main developer of the code and contributed to the code design. Gustav Eriksson implemented the electronic-structure graphical interface, including interactive spectra, vibrational analysis, and transition analysis. Mohit Sharma provided the first implementation and guidelines for the critical point analysis. Iulia Brumboiu, Josefine Hvarregaard Andersen, and Xin Li contributed to the VeloxChem interface and provided user feedback on the graphical interface. Talha Bin Masood advised on electronic-structure computation, visualization, and topological analysis. Patrick Norman initiated and co-led the project, and contributed to the VeloxChem interface. Mathieu Linares co-initiated and led the project and contributed to the code design.
 
 \begin{acknowledgement}
 
 %Please use ``The authors thank \ldots'' rather than ``The authors would like to thank \ldots''.
-The authors thank the Swedish e-Science Research Center (SeRC) and InfraVis.
+The authors gratefully acknowledge InfraVis, the Swedish national research infrastructure for scientific visualization, for supporting the development of VIAMD for interactive analysis workflows. VIAMD is developed at the KTH Center for Scientific Computing (KCSC) in close collaboration with the VeloxChem developers. The authors are also grateful to the broader computational chemistry community for the feedback, testing, encouragement, and discussions that helped shape the development of VIAMD.
 
 \end{acknowledgement}
 
 \section{Availability and Documentation}
-The source code is freely available on \href{https://github.com/scanberg/viamd}{https://github.com/scanberg/viamd} under MIT license.
+The source code is freely available under the MIT license on the \href{https://github.com/scanberg/viamd}{VIAMD GitHub repository}.
+As an open-source project, VIAMD warmly welcomes contributions, bug reports, feature requests, and documentation improvements.
 Precompiled VIAMD binaries are provided for Windows and macOS on both Intel and Apple Silicon architectures, while Linux build instructions are available through the VIAMD documentation.
-VIAMD is under active development; therefore, design and implementation aspects may be subject to change. Documentation is available on the wiki page of VIAMD \href{https://github.com/scanberg/viamd/wiki}{https://github.com/scanberg/viamd/wiki} with pages dedicated to the software's visual, analysis, and language components. A series of tutorials is also proposed to encourage users to use VIAMD. In addition to VeloxChem HDF5 files, VIAMD supports TREXIO,~\cite{Trexio} a universal file format designed for interoperability across quantum chemistry software.
+VIAMD is under active development; therefore, design and implementation aspects may be subject to change. Documentation is available on the \href{https://github.com/scanberg/viamd/wiki}{VIAMD wiki}, with pages dedicated to the software's visual, analysis, and language components. A series of tutorials is also proposed to encourage users to use VIAMD. In addition to VeloxChem HDF5 files, VIAMD supports TREXIO,~\cite{Trexio} a universal file format designed for interoperability across quantum chemistry software.
 
 \subsection{Datasets}
 The examples used in this article are based on the VeloxChem input/output file collection available from the VeloxChem documentation at \href{https://veloxchem.org/docs/input-files/}{https://veloxchem.org/docs/input-files/}. This collection provides paired input scripts, text input files, log files, and HDF5 output files for representative VeloxChem calculations. The HDF5 files are regenerated regularly from the VeloxChem master branch, and the VIAMD developers use this collection as a practical test set for checking the VeloxChem interface and the visualization features described in this article.
 
-Table~\ref{tab:veloxchem-datasets} follows the organization of the VeloxChem input/output page and summarizes the VIAMD windows and feature families associated with each example. In the table, the Common column denotes the shared VIAMD starting point for VeloxChem HDF5 files: direct file loading; molecular-structure inspection; atom selection and highlighting through interactive tables; calculation metadata and convergence review in the Summary window; standard molecular representations in the spatial view; molecular-orbital, density, and density-difference representations when the required electronic-structure data are present; Orbital Grid comparison when orbital data are present; molecular vectors or axes when available; density topology and critical-point inspection when the density can be reconstructed; and saving or restoring the analysis state through VIAMD workspaces. The remaining columns mark additional interactive workflows available for specific examples. Vibrational spectra are included under the same Response workflow as electronic and other response-property spectra. The final column is restricted to atom-centered property datasets, such as ESP, RESP, Boltzmann-weighted RESP, and LoProp quantities.\cite{SinghKollman1984ESP,Bayly1993RESP,Gagliardi2004LoProp}
-
-\begin{landscape}
-{\footnotesize
-\begin{longtable}{p{0.25\linewidth}p{0.25\linewidth}ccccc}
-\caption{Draft feature matrix for VeloxChem input/output HDF5 files used to test and illustrate the VIAMD VeloxChem interface. The entries follow the order of the VeloxChem input/output documentation page. A bullet in the Common column denotes the shared VIAMD starting point: HDF5 loading, Summary-window metadata, molecular/electronic representations, Orbital Grid access when orbital data are present, molecular vectors or axes when present, density topology when density data allow it, and workspace saving. Optimisation marks geometry optimization, constrained-coordinate, scan, transition-state, and IRC workflows. Response covers electronic, vibrational, CPP, X-ray, and multiphoton response workflows. Transition marks attachment/detachment and charge-transfer analysis. Atomic props. marks atom-centered property datasets such as ESP, RESP, Boltzmann-weighted RESP, and LoProp. Feature availability should be verified against the monthly regenerated HDF5 files before final publication.}
-\label{tab:veloxchem-datasets}\\
-\hline
-Example & HDF5 file & \rotcell{Common} & \rotcell{Optimisation} & \rotcell{Response} & \rotcell{Transition} & \rotcell{Atomic props.} \\
-\hline
-\endfirsthead
-\hline
-Example & HDF5 file & \rotcell{Common} & \rotcell{Optimisation} & \rotcell{Response} & \rotcell{Transition} & \rotcell{Atomic props.} \\
-\hline
-\endhead
-SCF optimization & \texttt{biphenyl-scf.h5} & \(\bullet\) & -- & -- & -- & -- \\
-ROHF optimization & \texttt{tempo-roscf.h5} & \(\bullet\) & -- & -- & -- & -- \\
-UHF optimization & \texttt{trityl-uscf.h5} & \(\bullet\) & -- & -- & -- & -- \\
-Static electric field & \texttt{pna-field.h5} & \(\bullet\) & -- & -- & -- & -- \\
-CPCM environment & \texttt{eth-cpcm.h5} & \(\bullet\) & -- & -- & -- & -- \\
-SMD environment & \texttt{eth-smd.h5} & \(\bullet\) & -- & -- & -- & -- \\
-PE/NPE environment & \texttt{alpha-helix-acetone-water-pe.h5} & \(\bullet\) & -- & -- & -- & -- \\
-S0 optimization & \texttt{bithio-S0-opt.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
-Frozen coordinate & \texttt{bithio-freeze.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
-Coordinate scan & \texttt{bithio-scan.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
-TS optimization & \texttt{Sn2-ts.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
-IRC & \texttt{Sn2-irc.h5} & \(\bullet\) & \(\bullet\) & -- & -- & -- \\
-S1 optimization & \texttt{bithio-S1-opt.h5} & \(\bullet\) & \(\bullet\) & \(\bullet\) & -- & -- \\
-TDDFT UV/Vis & \texttt{tq-uv-vis.h5} & \(\bullet\) & -- & \(\bullet\) & \(\bullet\) & -- \\
-CPP UV/Vis & \texttt{tq-cpp.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-Ground-state dipole & \texttt{pna-GS-dipole.h5} & \(\bullet\) & -- & -- & -- & -- \\
-Excited-state dipole & \texttt{pna-ES-dipole.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-Nonresonant polarizability & \texttt{meth-nonres.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-Resonant polarizability & \texttt{eth-res.out} & -- & -- & -- & -- & -- \\
-TDDFT optical activity & \texttt{alanine-ecd.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-CPP optical activity & \texttt{alanine-cpp.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-IR spectroscopy & \texttt{acro-ir.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-Raman spectroscopy & \texttt{acro-raman.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-Resonance Raman & \texttt{acro-rr.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-C6 weak interactions & \texttt{meth-c6.h5} & \(\bullet\) & -- & -- & -- & -- \\
-ESP & \texttt{h2o-esp.h5} & \(\bullet\) & -- & -- & -- & \(\bullet\) \\
-RESP & \texttt{h2o-resp.h5} & \(\bullet\) & -- & -- & -- & \(\bullet\) \\
-Boltzmann-weighted RESP & \texttt{pro-resp-bw.h5} & \(\bullet\) & -- & -- & -- & \(\bullet\) \\
-LoProp & \texttt{h2o-loprop.h5} & \(\bullet\) & -- & -- & -- & \(\bullet\) \\
-TPA & \texttt{pna-tpa.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-TPA cross section & \texttt{pna-tpacs.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-XPS & \texttt{esca-xps.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-XAS (CVS) & \texttt{xas-cvs.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-XAS (CPP) & \texttt{esca-nexafs.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-RIXS & \texttt{esca-rixs.h5} & \(\bullet\) & -- & \(\bullet\) & -- & -- \\
-General response functions & \texttt{h2o2-lrf.out}, \texttt{h2o2-qrf.out}, \texttt{h2o2-crf.out} & -- & -- & -- & -- & -- \\
-\hline
-\end{longtable}
-}
-\end{landscape}
-
-Together, the documentation collection and the feature matrix define a reproducible route from VeloxChem calculations to VIAMD analysis: the article highlights representative examples for the main workflows, while the full set remains available as a practical regression and tutorial resource as the interface evolves.
+The full dataset feature matrix has been moved to the Supporting Information, where it is provided as a standalone reference together with the mapping between VeloxChem documentation examples and the VIAMD workflows discussed in this article. Together, the documentation collection and the Supporting Information matrix define a reproducible route from VeloxChem calculations to VIAMD analysis: the article highlights representative examples for the main workflows, while the full set remains available as a practical regression and tutorial resource as the interface evolves.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -478,11 +448,7 @@ Together, the documentation collection and the feature matrix define a reproduci
 \begin{suppinfo}
 The supporting information contains information deemed outside of the scope of the article but may be of interest to the reader. It contains the following information:
 \begin{itemize}
-\item Representation Types
-\item Script Types
-\item Script Function Glossary
-\item Limitations
-\item Example workspace
+\item Dataset feature matrix for the VeloxChem documentation collection
 \end{itemize}
 
 There are also online resources providing documentation, tutorials, and the datasets used in the article. \href{https://github.com/scanberg/viamd/wiki}{https://github.com/scanberg/viamd/wiki}
