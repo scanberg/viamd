@@ -441,9 +441,12 @@ void test_parse_from_file() {
     
     if (!error.empty()) {
         std::cerr << "File parse error: " << error << std::endl;
-        // This test may fail if file doesn't exist - that's OK
-        std::cout << "SKIP (file not found)" << std::endl;
-        return;
+        // Only skip when the file truly isn't available.
+        if (error.rfind("Failed to open file:", 0) == 0) {
+            std::cout << "SKIP (file not found)" << std::endl;
+            return;
+        }
+        assert(false && "Unexpected parse failure for datasets/molden_examples/h2_sto3g.molden");
     }
     
     assert(data.atoms.size() == 2);
