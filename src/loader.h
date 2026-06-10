@@ -32,6 +32,9 @@ enum LoaderType_ {
     LoaderType_LAMMPSTRJ,
     LoaderType_MOLDEN,
     LoaderType_MOLD,
+#if VIAMD_TREXIO
+    LoaderType_TREXIO,
+#endif
     LoaderType_XTC,
     LoaderType_TRR,
     LoaderType_DCD,

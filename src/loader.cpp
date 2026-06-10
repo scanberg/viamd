@@ -15,6 +15,10 @@
 
 #include "md_molden_loader.h"
 
+#if VIAMD_TREXIO
+#include "md_trexio_loader.h"
+#endif
+
 #if MD_VLX
 #include <md_vlx.h>
 #endif
@@ -33,6 +37,9 @@ static const str_t loader_name[LoaderType_COUNT] = {
         STR_LIT("LAMMPS Trajectory (lammpstrj)"),
         STR_LIT("Molden (molden)"),
         STR_LIT("Molden (mold)"),
+    #if VIAMD_TREXIO
+        STR_LIT("TREXIO (trexio/h5)"),
+    #endif
         STR_LIT("Gromacs Compressed Trajectory (xtc)"),
         STR_LIT("Gromacs Lossless Trajectory (trr)"),
         STR_LIT("DCD Trajectory (dcd)"),
@@ -53,6 +60,9 @@ static const str_t loader_ext[LoaderType_COUNT] = {
         STR_LIT("lammpstrj"),
         STR_LIT("molden"),
         STR_LIT("mold"),
+    #if VIAMD_TREXIO
+        STR_LIT("trexio"),
+    #endif
         STR_LIT("xtc"),
         STR_LIT("trr"),
         STR_LIT("dcd"),
@@ -73,6 +83,9 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
         LoaderFlag_Trajectory | LoaderFlag_MM,                      // LAMMPS Trajectory
         LoaderFlag_System | LoaderFlag_QM,                          // MOLDEN
         LoaderFlag_System | LoaderFlag_QM,                          // MOLD
+    #if VIAMD_TREXIO
+        LoaderFlag_System | LoaderFlag_QM,                          // TREXIO
+    #endif
         LoaderFlag_Trajectory | LoaderFlag_MM,                      // XTC
         LoaderFlag_Trajectory | LoaderFlag_MM,                      // TRR
         LoaderFlag_Trajectory | LoaderFlag_MM,                      // DCD
@@ -87,6 +100,16 @@ void init(State* state, str_t filepath, const md_system_t* sys) {
 
     str_t ext = {0};
     if (extract_ext(&ext, filepath)) {
+#if VIAMD_TREXIO
+        if ((str_eq_ignore_case(ext, STR_LIT("trexio")) ||
+             str_eq_ignore_case(ext, STR_LIT("h5")) ||
+             str_eq_ignore_case(ext, STR_LIT("hdf5"))) &&
+            md_trexio_path_is_trexio(filepath)) {
+            state->type = LoaderType_TREXIO;
+            state->flags = loader_flags[state->type];
+            return;
+        }
+#endif
         state->type = type_from_ext(ext);
         if (state->type != LoaderType_Undefined) {
             state->flags = loader_flags[state->type];
@@ -154,6 +177,10 @@ bool load(md_system_t* sys, str_t filepath, const State& state, md_allocator_i* 
         case LoaderType_MOLDEN:
         case LoaderType_MOLD:
             return alloc ? md_molden_system_init_from_file(sys, filepath, alloc) : false;
+#if VIAMD_TREXIO
+        case LoaderType_TREXIO:
+            return alloc ? md_trexio_system_init_from_file(sys, filepath, alloc) : false;
+#endif
         case LoaderType_XTC:
             return md_xtc_attach_from_file(sys, filepath, traj_flags);
         case LoaderType_TRR:

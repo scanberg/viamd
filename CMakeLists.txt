@@ -59,6 +59,7 @@ option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
+option(VIAMD_ENABLE_TREXIO "Enable TREXIO file support" ON)
 set(VIAMD_MACOS_BUNDLE_ID "org.scanberg.viamd" CACHE STRING "macOS bundle identifier")
 set(VIAMD_NUM_WORKER_THREADS "0" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation), 0 = Use available cores")
 
@@ -71,6 +72,28 @@ if (VIAMD_ENABLE_VELOXCHEM)
 endif ()
 
 find_package(OpenGL REQUIRED)
+
+if (VIAMD_ENABLE_TREXIO)
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(TREXIO QUIET trexio)
+    endif()
+    if (NOT TREXIO_FOUND)
+        find_path(TREXIO_INCLUDE_DIR trexio.h)
+        find_library(TREXIO_LIBRARY trexio)
+        if (TREXIO_INCLUDE_DIR AND TREXIO_LIBRARY)
+            set(TREXIO_FOUND ON)
+            set(TREXIO_INCLUDE_DIRS ${TREXIO_INCLUDE_DIR})
+            set(TREXIO_LIBRARIES ${TREXIO_LIBRARY})
+        endif()
+    endif()
+    if (TREXIO_FOUND)
+        message(STATUS "TREXIO support enabled")
+    else()
+        message(WARNING "TREXIO support requested but trexio was not found; disabling TREXIO support")
+        set(VIAMD_ENABLE_TREXIO OFF)
+    endif()
+endif()
 
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
@@ -123,6 +146,10 @@ set(COMP_FILES
 
 if (VIAMD_ENABLE_VELOXCHEM)
     set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp)
+endif()
+
+if (VIAMD_ENABLE_TREXIO)
+    set(COMP_FILES ${COMP_FILES} src/components/trexio/trexio.cpp)
 endif()
 
 set(SHADER_FILES 
@@ -199,6 +226,12 @@ if (WIN32)
     endif()
 endif()
 
+if (VIAMD_ENABLE_TREXIO)
+    list(APPEND VIAMD_DEFINES VIAMD_TREXIO=1)
+else()
+    list(APPEND VIAMD_DEFINES VIAMD_TREXIO=0)
+endif()
+
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if (_is_multi_config)
@@ -253,7 +286,12 @@ target_include_directories(viamd
         ext/gl3w
         ext/imgui
         ext/enkiTS/src
+    ${TREXIO_INCLUDE_DIRS}
 )
+
+if (VIAMD_ENABLE_TREXIO)
+    target_link_directories(viamd PRIVATE ${TREXIO_LIBRARY_DIRS})
+endif()
 
 set_target_properties(viamd PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${VIAMD_BIN_DIR}")
@@ -276,6 +314,7 @@ target_link_libraries(viamd
     implot
     atomic_queue
     imgui_notify
+    ${TREXIO_LIBRARIES}
     ${VIAMD_EXTRA_LIBS}
 )
 

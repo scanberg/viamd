@@ -47,8 +47,9 @@ void print_system_info(const md_system_t* sys) {
     std::cout << "\n--- Bonds (first 10) ---" << std::endl;
     size_t max_bonds = std::min((size_t)10, sys->bond.count);
     for (size_t i = 0; i < max_bonds; ++i) {
-        md_atom_idx_t atom1 = sys->bond.atom_idx[2*i];
-        md_atom_idx_t atom2 = sys->bond.atom_idx[2*i + 1];
+        md_atom_pair_t pair = md_bond_pair(&sys->bond, (md_bond_idx_t)i);
+        md_atom_idx_t atom1 = pair.idx[0];
+        md_atom_idx_t atom2 = pair.idx[1];
         
         md_atom_type_idx_t type1 = sys->atom.type_idx[atom1];
         md_atom_type_idx_t type2 = sys->atom.type_idx[atom2];
@@ -69,13 +70,6 @@ bool test_molden_file(const char* filepath) {
     std::cout << "Testing: " << filepath << std::endl;
     std::cout << "========================================" << std::endl;
     
-    // Get the loader
-    md_system_loader_i* loader = md_molden_system_loader();
-    if (!loader) {
-        std::cerr << "ERROR: Failed to get Molden loader" << std::endl;
-        return false;
-    }
-    
     // Create system structure
     md_system_t sys = {0};
     
@@ -84,7 +78,7 @@ bool test_molden_file(const char* filepath) {
     
     // Load the file
     str_t filename = str_from_cstr(filepath);
-    bool success = loader->init_from_file(&sys, filename, nullptr, alloc);
+    bool success = md_molden_system_init_from_file(&sys, filename, alloc);
     
     if (!success) {
         std::cerr << "ERROR: Failed to load Molden file: " << filepath << std::endl;
@@ -95,7 +89,7 @@ bool test_molden_file(const char* filepath) {
     print_system_info(&sys);
     
     // Cleanup
-    md_system_free(&sys, alloc);
+    md_system_free(&sys);
     
     std::cout << "SUCCESS: Loaded and verified " << filepath << std::endl;
     return true;
@@ -113,6 +107,10 @@ int main(int argc, char** argv) {
     
     // Test H2
     all_passed &= test_molden_file("datasets/molden_examples/h2_sto3g.molden");
+
+    // Test GANSU-generated examples
+    all_passed &= test_molden_file("datasets/molden_examples/Ammonia_NH3.molden");
+    all_passed &= test_molden_file("datasets/molden_examples/Anthracene_C14H10.molden");
     
     if (all_passed) {
         std::cout << "\n=== ALL TESTS PASSED ===" << std::endl;

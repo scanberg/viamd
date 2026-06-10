@@ -5,6 +5,7 @@
 #include <viamd.h>
 #include <task_system.h>
 #include <color_utils.h>
+#include <qm_ui.h>
 
 #include <gfx/volumerender_utils.h>
 #include <gfx/gl_utils.h>
@@ -606,9 +607,9 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdWindowDrawMenu:
                 if (vlx) {
                     if (ImGui::BeginMenu("VeloxChem")) {
-                        ImGui::Checkbox("Summary", &summary.show_window);
+                        ImGui::Checkbox(qm_ui::summary_label, &summary.show_window);
                         ImGui::Checkbox("Response", &rsp.show_window);
-                        ImGui::Checkbox("Orbital Grid", &orb.show_window);
+                        ImGui::Checkbox(qm_ui::orbital_grid_label, &orb.show_window);
                         if (md_vlx_rsp_has_nto(vlx)) {
                             ImGui::Checkbox("Transition Analysis", &nto.show_window);
                         }
@@ -3023,7 +3024,8 @@ struct VeloxChem : viamd::EventHandler {
 
         // The actual plot
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (qm_ui::begin_summary_window("VeloxChem", "VeloxChemQMSummary", &summary.show_window)) {
+            qm_ui::draw_source_label("VeloxChem");
             if (ImGui::TreeNode("Level of Calculation")) {
                 str_t basis_set = md_vlx_basis_set_ident(vlx);
                 str_t dft_func  = md_vlx_dft_func_label(vlx);
@@ -4140,7 +4142,7 @@ struct VeloxChem : viamd::EventHandler {
         if (!orb.show_window) return;
         if (num_molecular_orbitals() == 0) return;
         ImGui::SetNextWindowSize({600, 300}, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (qm_ui::begin_orbital_grid_window("VeloxChem", "VeloxChemQMOrbitalGrid", &orb.show_window)) {
 
             const double* occ_alpha = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_ALPHA);
             const double* occ_beta = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA);

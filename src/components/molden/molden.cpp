@@ -19,6 +19,7 @@
 #include <imgui_widgets.h>
 #include <loader.h>
 #include <molden.h>
+#include <qm_ui.h>
 
 #include <algorithm>
 #include <app/IconsFontAwesome6.h>
@@ -371,6 +372,7 @@ struct MoldenComponent : viamd::EventHandler {
         destroy_gbuffer(&orb.gbuf);
         picking_surface_free(&orb.picking_surface);
         md_gl_rep_destroy(orb.gl_rep);
+        settings = {};
         orb = {};
         data = {};
         basis = {};
@@ -737,36 +739,44 @@ struct MoldenComponent : viamd::EventHandler {
         if (!summary.show_window || !loaded) return;
 
         ImGui::SetNextWindowSize({380, 420}, ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (!qm_ui::begin_summary_window("Molden", "MoldenQMSummary", &summary.show_window)) {
             ImGui::End();
             return;
         }
 
         if (ImGui::TreeNode("File Information")) {
+            qm_ui::draw_source_label("Molden");
             ImGui::Text("Title:                 %s", data.title.empty() ? "<none>" : data.title.c_str());
-            ImGui::Text("Coordinate Units:      %s", coordinate_unit_str(data.coord_unit));
-            ImGui::Text("Basis Format:          %s", basis_format_str(data.basis_format));
-            MoldenAoOrderingMode ao_mode = settings.ao_ordering_mode;
-            if (ImGui::BeginCombo("AO Ordering", ao_ordering_mode_str(ao_mode))) {
-                const MoldenAoOrderingMode modes[] = {
-                    MoldenAoOrderingMode::Auto,
-                    MoldenAoOrderingMode::Identity,
-                    MoldenAoOrderingMode::PStandard,
-                    MoldenAoOrderingMode::PSpSwapped,
-                };
-                for (MoldenAoOrderingMode mode : modes) {
-                    const bool selected = mode == ao_mode;
-                    if (ImGui::Selectable(ao_ordering_mode_str(mode), selected)) {
-                        settings.ao_ordering_mode = mode;
-                        on_ao_ordering_mode_changed(state);
-                    }
-                    if (selected) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
+            const MoldenAoOrderingMode resolved_ordering_mode = resolved_ao_ordering_mode();
+            if (settings.ao_ordering_mode == MoldenAoOrderingMode::Auto) {
+                ImGui::Text("AO Ordering:           Auto (%s)", ao_ordering_mode_str(resolved_ordering_mode));
+            } else {
+                ImGui::Text("AO Ordering:           %s", ao_ordering_mode_str(settings.ao_ordering_mode));
             }
-            ImGui::SetItemTooltip("Select how Molden p-shell AO coefficients are mapped into mdlib's internal shell order.");
-            ImGui::Text("Resolved Ordering:     %s", ao_ordering_mode_str(resolved_ao_ordering_mode()));
-            ImGui::TextWrapped("Auto resolves from file metadata and shell makeup. GANSU-generated files default to Standard P Order, while files with only SP-derived p functions default to SP-Derived P Order.");
+            if (ImGui::TreeNode("Source Details / Advanced")) {
+                ImGui::Text("Coordinate Units:      %s", coordinate_unit_str(data.coord_unit));
+                ImGui::Text("Basis Format:          %s", basis_format_str(data.basis_format));
+                MoldenAoOrderingMode ao_mode = settings.ao_ordering_mode;
+                if (ImGui::BeginCombo("AO Ordering", ao_ordering_mode_str(ao_mode))) {
+                    const MoldenAoOrderingMode modes[] = {
+                        MoldenAoOrderingMode::Auto,
+                        MoldenAoOrderingMode::Identity,
+                        MoldenAoOrderingMode::PStandard,
+                        MoldenAoOrderingMode::PSpSwapped,
+                    };
+                    for (MoldenAoOrderingMode mode : modes) {
+                        const bool selected = mode == ao_mode;
+                        if (ImGui::Selectable(ao_ordering_mode_str(mode), selected)) {
+                            settings.ao_ordering_mode = mode;
+                            on_ao_ordering_mode_changed(state);
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip("Manual debug override for unusual Molden producers. Leave this on Auto for normal files.");
+                ImGui::TreePop();
+            }
             ImGui::TreePop();
         }
 
@@ -880,7 +890,7 @@ struct MoldenComponent : viamd::EventHandler {
         if (num_list_orbitals <= 0) return;
 
         ImGui::SetNextWindowSize({600, 300}, ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (!qm_ui::begin_orbital_grid_window("Molden", "MoldenQMOrbitalGrid", &orb.show_window)) {
             ImGui::End();
             return;
         }
@@ -1382,8 +1392,8 @@ struct MoldenComponent : viamd::EventHandler {
 
             case viamd::EventType_ViamdWindowDrawMenu:
                 if (loaded && ImGui::BeginMenu("Molden")) {
-                    ImGui::Checkbox("Summary", &summary.show_window);
-                    ImGui::Checkbox("Orbital Grid", &orb.show_window);
+                    ImGui::Checkbox(qm_ui::summary_label, &summary.show_window);
+                    ImGui::Checkbox(qm_ui::orbital_grid_label, &orb.show_window);
                     ImGui::EndMenu();
                 }
                 break;
