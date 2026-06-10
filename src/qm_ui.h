@@ -11,7 +11,8 @@ static constexpr const char* orbital_grid_label = "Orbital Grid";
 
 static inline bool begin_summary_window(const char* source, const char* unique_id, bool* show_window, ImGuiWindowFlags flags = ImGuiWindowFlags_NoFocusOnAppearing) {
     char label[128];
-    std::snprintf(label, sizeof(label), "%s Summary###%s", source ? source : "QM", unique_id);
+    const char* id = unique_id ? unique_id : (source ? source : "QM");
+    std::snprintf(label, sizeof(label), "%s Summary###%s", source ? source : "QM", id);
     return ImGui::Begin(label, show_window, flags);
 }
 
