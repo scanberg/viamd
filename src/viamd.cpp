@@ -678,7 +678,11 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             state->files.coarse_grained = load_state.flags & LoaderFlag_CoarseGrained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
             md_postprocess_flags_t flags = state->files.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
-            md_util_system_postprocess(&state->mold.sys, flags);
+            if (!md_util_system_postprocess(&state->mold.sys, flags)) {
+                VIAMD_LOG_ERROR("Failed to postprocess molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
+                free_system_data(state);
+                return false;
+            }
             init_system_data(state);
 
             init_trajectory_data(state);

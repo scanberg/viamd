@@ -118,6 +118,7 @@ set(COMP_FILES
     src/components/shapespace/shapespace.cpp
     src/components/dataset/dataset.cpp
     src/components/density_volume/density_volume.cpp
+    src/components/molden/molden.cpp
 )
 
 if (VIAMD_ENABLE_VELOXCHEM)

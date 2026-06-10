@@ -46,6 +46,7 @@ static bool molden_to_system(md_system_t* sys, const molden::MoldenData* data, m
     }
     
     MEMSET(sys, 0, sizeof(md_system_t));
+    sys->alloc = alloc;
     
     const size_t num_atoms = data->atoms.size();
     const size_t reserve_size = ALIGN_TO(num_atoms, 16);
@@ -104,6 +105,15 @@ static bool molden_to_system(md_system_t* sys, const molden::MoldenData* data, m
         md_array_push(sys->atom.flags, (md_flags_t)0, alloc);
         md_array_push(sys->atom.type_idx, atom_type_idx, alloc);
     }
+
+    // Seed a single component spanning the full molecule so mdlib can infer
+    // entity/instance data during postprocess.
+    md_array_push(sys->component.name, make_label(STR_LIT("MOL")), alloc);
+    md_array_push(sys->component.seq_id, 1, alloc);
+    md_array_push(sys->component.atom_offset, 0, alloc);
+    md_array_push(sys->component.atom_offset, (uint32_t)num_atoms, alloc);
+    md_array_push(sys->component.flags, (md_flags_t)0, alloc);
+    sys->component.count = 1;
     
     // Infer bonds using VDW radii
     // This uses the mdlib utility function to compute covalent bonds

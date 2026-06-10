@@ -749,6 +749,32 @@ bool parse_mo_section(
     MoldenData& data,
     std::string& error_msg
 ) {
+    auto is_mo_metadata_line = [](const std::string& line) {
+        return istarts_with(line, "Sym=")  || istarts_with(line, "sym=") ||
+               istarts_with(line, "Ene=")  || istarts_with(line, "ene=") ||
+               istarts_with(line, "Spin=") || istarts_with(line, "spin=") ||
+               istarts_with(line, "Occup=") || istarts_with(line, "occup=");
+    };
+
+    auto is_integer_token = [](const std::string& token) {
+        if (token.empty()) {
+            return false;
+        }
+        size_t idx = 0;
+        if (token[idx] == '+' || token[idx] == '-') {
+            idx++;
+        }
+        if (idx >= token.size()) {
+            return false;
+        }
+        for (; idx < token.size(); ++idx) {
+            if (!std::isdigit(static_cast<unsigned char>(token[idx]))) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     line_idx++; // Skip [MO] header
     
     while (line_idx < lines.size()) {
@@ -765,89 +791,70 @@ bool parse_mo_section(
             continue;
         }
         
-        // Start of a new MO - expect Ene= line
-        if (!istarts_with(line, "Ene=") && !istarts_with(line, "ene=")) {
+        // Skip lines until we hit MO metadata.
+        if (!is_mo_metadata_line(line)) {
             line_idx++;
             continue;
         }
         
-        MolecularOrbital mo;
-        
-        // Parse Ene= line
-        size_t eq_pos = line.find('=');
-        if (eq_pos == std::string::npos) {
-            error_msg = "Invalid MO energy line: " + line;
-            return false;
-        }
-        
-        try {
-            mo.energy = parse_double(trim(line.substr(eq_pos + 1)));
-        } catch (const std::exception& e) {
-            error_msg = "Error parsing MO energy: " + line;
-            return false;
-        }
-        
-        line_idx++;
-        
-        // Parse Spin= line
-        if (line_idx >= lines.size()) {
-            error_msg = "Unexpected end of file after Ene= line";
-            return false;
-        }
-        
-        line = trim(lines[line_idx]);
-        if (!istarts_with(line, "Spin=") && !istarts_with(line, "spin=")) {
-            error_msg = "Expected Spin= line, got: " + line;
-            return false;
-        }
-        
-        eq_pos = line.find('=');
-        if (eq_pos != std::string::npos) {
-            std::string spin_str = trim(line.substr(eq_pos + 1));
-            mo.spin = util::parse_spin_type(spin_str);
-            
-            if (mo.spin == SpinType::Unknown) {
-                error_msg = "Unknown spin type: " + spin_str;
-                return false;
-            }
-        }
-        
-        line_idx++;
-        
-        // Parse Occup= line
-        if (line_idx >= lines.size()) {
-            error_msg = "Unexpected end of file after Spin= line";
-            return false;
-        }
-        
-        line = trim(lines[line_idx]);
-        if (!istarts_with(line, "Occup=") && !istarts_with(line, "occup=")) {
-            error_msg = "Expected Occup= line, got: " + line;
-            return false;
-        }
-        
-        eq_pos = line.find('=');
-        if (eq_pos != std::string::npos) {
-            try {
-                mo.occupation = parse_double(trim(line.substr(eq_pos + 1)));
-            } catch (const std::exception& e) {
-                error_msg = "Error parsing occupation: " + line;
-                return false;
-            }
-        }
-        
-        line_idx++;
-        
-        // Parse optional Sym= line
-        if (line_idx < lines.size()) {
+        MolecularOrbital mo = {};
+        bool have_energy = false;
+        bool have_spin = false;
+        bool have_occupation = false;
+
+        while (line_idx < lines.size()) {
             line = trim(lines[line_idx]);
-            if (istarts_with(line, "Sym=") || istarts_with(line, "sym=")) {
-                eq_pos = line.find('=');
-                if (eq_pos != std::string::npos) {
-                    mo.symmetry = trim(line.substr(eq_pos + 1));
-                }
+
+            if (line.empty()) {
                 line_idx++;
+                continue;
             }
+
+            if (line[0] == '[' || !is_mo_metadata_line(line)) {
+                break;
+            }
+
+            size_t eq_pos = line.find('=');
+            if (eq_pos == std::string::npos) {
+                error_msg = "Invalid MO metadata line: " + line;
+                return false;
+            }
+
+            std::string value = trim(line.substr(eq_pos + 1));
+
+            if (istarts_with(line, "Sym=") || istarts_with(line, "sym=")) {
+                mo.symmetry = value;
+            } else if (istarts_with(line, "Ene=") || istarts_with(line, "ene=")) {
+                try {
+                    mo.energy = parse_double(value);
+                } catch (const std::exception&) {
+                    error_msg = "Error parsing MO energy: " + line;
+                    return false;
+                }
+                have_energy = true;
+            } else if (istarts_with(line, "Spin=") || istarts_with(line, "spin=")) {
+                mo.spin = util::parse_spin_type(value);
+                if (mo.spin == SpinType::Unknown) {
+                    error_msg = "Unknown spin type: " + value;
+                    return false;
+                }
+                have_spin = true;
+            } else if (istarts_with(line, "Occup=") || istarts_with(line, "occup=")) {
+                try {
+                    mo.occupation = parse_double(value);
+                } catch (const std::exception&) {
+                    error_msg = "Error parsing occupation: " + line;
+                    return false;
+                }
+                have_occupation = true;
+            }
+
+            line_idx++;
+        }
+
+        if (!(have_energy && have_spin && have_occupation)) {
+            error_msg = "Incomplete MO entry before coefficients";
+            return false;
         }
         
         // Parse coefficients (continue until we hit empty line, new MO, or new section)
@@ -857,35 +864,29 @@ bool parse_mo_section(
             // Check for end of this MO
             if (line.empty() || 
                 line[0] == '[' || 
-                istarts_with(line, "Ene=") || 
-                istarts_with(line, "ene=")) {
+                is_mo_metadata_line(line)) {
                 break;
             }
             
             // Line can contain multiple coefficients
             auto tokens = split_whitespace(line);
-            
-            // Skip lines that are just a single integer (orbital index)
-            // This is a common variation where the MO index is printed
-            if (tokens.size() == 1) {
-                try {
-                    int idx = std::stoi(tokens[0]);
-                    // If it's a small positive integer, it's probably an index
-                    if (idx > 0 && idx < MAX_ORBITAL_INDEX && tokens[0].find('.') == std::string::npos) {
-                        line_idx++;
-                        continue;
-                    }
-                } catch (...) {
-                    // Not an integer, continue parsing as coefficient
-                }
+
+            size_t coeff_beg = 0;
+            if (!tokens.empty() && is_integer_token(tokens[0])) {
+                coeff_beg = 1;
+            }
+
+            if (coeff_beg >= tokens.size()) {
+                line_idx++;
+                continue;
             }
             
-            for (const auto& token : tokens) {
+            for (size_t i = coeff_beg; i < tokens.size(); ++i) {
                 try {
-                    double coeff = parse_double(token);
+                    double coeff = parse_double(tokens[i]);
                     mo.coefficients.push_back(coeff);
-                } catch (const std::exception& e) {
-                    error_msg = "Error parsing MO coefficient: " + token;
+                } catch (const std::exception&) {
+                    error_msg = "Error parsing MO coefficient: " + tokens[i];
                     return false;
                 }
             }

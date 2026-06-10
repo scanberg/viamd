@@ -858,6 +858,7 @@ struct VeloxChem : viamd::EventHandler {
             }
             case viamd::EventType_ViamdRepresentationInfoFill: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
+                if (!vlx) break;
                 RepresentationInfo& info = *(RepresentationInfo*)e.payload;
 
                 info.alpha.homo_idx = homo_idx[0];
@@ -1004,6 +1005,7 @@ struct VeloxChem : viamd::EventHandler {
             }
             case viamd::EventType_ViamdRepresentationEvalElectronicStructure: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_EvalElectronicStructure);
+                if (!vlx) break;
                 EvalElectronicStructure& data = *(EvalElectronicStructure*)e.payload;
 
                 Representation* rep = data.rep;

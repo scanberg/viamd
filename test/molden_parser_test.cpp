@@ -283,6 +283,53 @@ Occup= 1.0
 }
 
 /**
+ * @brief Test MO parsing with Sym first and indexed coefficients.
+ */
+void test_parse_indexed_coefficients_and_sym_first() {
+    std::cout << "Testing indexed MO coefficients with Sym first... ";
+
+    std::string molden = R"(
+[Atoms] Angs
+H   1   1   0.0   0.0   0.0
+
+[GTO]
+1 0
+s 1 1.0
+1.0 1.0
+
+[MO]
+Sym= A
+Ene= -1.0
+Spin= Alpha
+Occup= 2.0
+ 1 0.5
+Sym= B
+Ene= -0.5
+Spin= Beta
+Occup= 1.0
+ 1 -0.7
+)";
+
+    std::string error;
+    MoldenData data = parse_molden_string(molden, &error);
+
+    if (!error.empty()) {
+        std::cerr << "Parse error: " << error << std::endl;
+        assert(false);
+    }
+
+    assert(data.orbitals.size() == 2);
+    assert(data.orbitals[0].symmetry == "A");
+    assert(data.orbitals[1].symmetry == "B");
+    assert(data.orbitals[0].coefficients.size() == 1);
+    assert(data.orbitals[1].coefficients.size() == 1);
+    assert(std::abs(data.orbitals[0].coefficients[0] - 0.5) < 1e-6);
+    assert(std::abs(data.orbitals[1].coefficients[0] - (-0.7)) < 1e-6);
+
+    std::cout << "PASS" << std::endl;
+}
+
+/**
  * @brief Test parsing without symmetry labels
  */
 void test_parse_no_symmetry() {
@@ -497,6 +544,7 @@ int main() {
         test_parse_au_coordinates();
         test_parse_missing_atomic_numbers();
         test_parse_multiple_orbitals();
+        test_parse_indexed_coefficients_and_sym_first();
         test_parse_no_symmetry();
         test_parse_spherical_basis();
         test_parse_fortran_notation();
