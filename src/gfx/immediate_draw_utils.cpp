@@ -22,7 +22,21 @@ struct DrawCommand {
     GLenum primitive_type;
 };
 
-struct ContextImpl {
+struct PassParams {
+    mat4_t view = mat4_ident();
+    mat4_t proj = mat4_ident();
+    uint32_t picking_base_idx = 0;
+};
+
+struct Scope::Encoder {
+    void* impl = nullptr;
+};
+
+using Encoder = Scope::Encoder;
+
+struct Queue {
+    const char* label = nullptr;
+
     md_allocator_i* arena = nullptr;
     md_array(mat4_t) model_matrices = nullptr;
     md_array(DrawCommand) commands = nullptr;
@@ -32,71 +46,21 @@ struct ContextImpl {
     int32_t curr_model_matrix_idx = -1;
     uint32_t curr_picking_base_idx = 0;
     bool recording = false;
+    bool transient_owner = true;
 };
 
-struct PassParams {
-    mat4_t view = mat4_ident();
-    mat4_t proj = mat4_ident();
-    uint32_t picking_base_idx = 0;
-};
-
-struct GfxContext;
-
-struct Queue {
-    GfxContext* owner = nullptr;
-    const char* label = nullptr;
-    md_array(Encoder) submitted = nullptr;
-};
-
-struct GfxContext {
-    md_array(Queue*) queues = nullptr;
-};
-
-static ContextImpl* get_context_impl(Encoder& ctx) {
-    return (ContextImpl*)ctx.impl;
-}
-
-static const ContextImpl* get_context_impl(const Encoder& ctx) {
-    return (const ContextImpl*)ctx.impl;
-}
-
-#define IM_CTX(ctx)                            \
-    ContextImpl& _ctx = *get_context_impl(ctx); \
-    [[maybe_unused]] auto* arena = _ctx.arena;  \
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;    \
-    [[maybe_unused]] auto& commands = _ctx.commands;            \
-    [[maybe_unused]] auto& vertices = _ctx.vertices;            \
-    [[maybe_unused]] auto& indices = _ctx.indices;              \
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx; \
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx
-
-static GLuint vbo = 0;
 static GLuint ibo = 0;
 static GLuint vao = 0;
 static GLuint default_tex = 0;
 
-static GLuint program = 0;
-
 static GLint uniform_loc_mvp_matrix = -1;
 static GLint uniform_loc_normal_matrix = -1;
 static GLint uniform_loc_uv_scale = -1;
-static GLint uniform_loc_point_size = -1;
-static GLint uniform_loc_picking_base_idx = -1;
 
 static GLuint program_shaded = 0;
 
 struct {
     GLint mv_matrix       = -1;
-    GLint mvp_matrix      = -1;
-    GLint normal_mat_vs   = -1;
-    GLint point_size      = -1;
-    GLint picking_base_idx= -1;
-    GLint light_dir_vs    = -1;
-    GLint dir_radiance    = -1;
-    GLint env_radiance    = -1;
-    GLint roughness       = -1;
-    GLint F0              = -1;
-} uniform_loc_shaded;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -332,6 +296,21 @@ static inline void append_draw_command(ContextImpl& _ctx, size_t count, GLenum p
     md_array_push(commands, cmd, _ctx.arena);
 }
 
+static void init_context_storage(ContextImpl& impl, md_allocator_i* arena, bool transient_owner) {
+    MEMSET(&impl, 0, sizeof(ContextImpl));
+    impl.arena = arena;
+    impl.transient_owner = transient_owner;
+
+    md_array_ensure(impl.vertices, 100000, impl.arena);
+    md_array_ensure(impl.indices,  100000, impl.arena);
+    md_array_ensure(impl.model_matrices, 10, impl.arena);
+    md_array_ensure(impl.commands, 32, impl.arena);
+
+    impl.curr_model_matrix_idx = -1;
+    impl.curr_picking_base_idx = 0;
+    impl.recording = false;
+}
+
 static ContextImpl& ensure_context_impl(Encoder& ctx) {
     if (ctx.impl) {
         return *(ContextImpl*)ctx.impl;
@@ -340,27 +319,24 @@ static ContextImpl& ensure_context_impl(Encoder& ctx) {
     md_allocator_i* heap = md_get_heap_allocator();
     md_allocator_i* arena = md_arena_allocator_create(heap, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
     ContextImpl* impl = (ContextImpl*)md_alloc(arena, sizeof(ContextImpl));
-    MEMSET(impl, 0, sizeof(ContextImpl));
-    impl->arena = arena;
-
-    md_array_ensure(impl->vertices, 100000, impl->arena);
-    md_array_ensure(impl->indices,  100000, impl->arena);
-    md_array_ensure(impl->model_matrices, 10, impl->arena);
-    md_array_ensure(impl->commands, 32, impl->arena);
-
-    impl->curr_model_matrix_idx = -1;
-    impl->curr_picking_base_idx = 0;
-    impl->recording = false;
+    init_context_storage(*impl, arena, true);
 
     ctx.impl = impl;
     return *impl;
 }
 
+static inline void reset_array_len_only(void* arr) {
+    if (arr) {
+        md_array_header(arr)->size = 0;
+    }
+}
+
 static void reset_context(ContextImpl& impl) {
-    md_array_shrink(impl.vertices, 0);
-    md_array_shrink(impl.indices, 0);
-    md_array_shrink(impl.commands, 0);
-    md_array_shrink(impl.model_matrices, 0);
+    // Queue policy: keep capacity and only rewind write cursors.
+    reset_array_len_only(impl.vertices);
+    reset_array_len_only(impl.indices);
+    reset_array_len_only(impl.commands);
+    reset_array_len_only(impl.model_matrices);
     impl.curr_model_matrix_idx = -1;
     impl.curr_picking_base_idx = 0;
 }
@@ -386,6 +362,32 @@ static void release_context(Encoder& ctx) {
 
     if (impl->arena) {
         md_arena_allocator_destroy(arena);
+    }
+}
+
+static void append_scope_to_queue(ContextImpl& queue, const ContextImpl& scope) {
+    if (md_array_size(scope.commands) == 0) {
+        return;
+    }
+
+    const uint32_t vertex_base = (uint32_t)md_array_size(queue.vertices);
+    const uint32_t index_base = (uint32_t)md_array_size(queue.indices);
+    const int32_t matrix_base = (int32_t)md_array_size(queue.model_matrices);
+
+    md_array_push_array(queue.vertices, scope.vertices, md_array_size(scope.vertices), queue.arena);
+    md_array_push_array(queue.model_matrices, scope.model_matrices, md_array_size(scope.model_matrices), queue.arena);
+
+    const size_t src_idx_count = md_array_size(scope.indices);
+    for (size_t i = 0; i < src_idx_count; ++i) {
+        md_array_push(queue.indices, scope.indices[i] + vertex_base, queue.arena);
+    }
+
+    const size_t src_cmd_count = md_array_size(scope.commands);
+    for (size_t i = 0; i < src_cmd_count; ++i) {
+        DrawCommand cmd = scope.commands[i];
+        cmd.offset += index_base;
+        cmd.model_matrix_idx += matrix_base;
+        md_array_push(queue.commands, cmd, queue.arena);
     }
 }
 
@@ -536,13 +538,17 @@ void encoder_set_picking_base_idx(Encoder& ctx, uint32_t base_idx) {
 }
 
 void encoder_submit(Encoder& ctx, const mat4_t& view, const mat4_t& proj, uint32_t picking_base_idx) {
-    const PassParams pass = {.view = view, .proj = proj, .picking_base_idx = picking_base_idx};
+    PassParams pass = {};
+    pass.view = view;
+    pass.proj = proj;
+    pass.picking_base_idx = picking_base_idx;
 	IM_CTX(ctx);
 	ASSERT(!_ctx.recording);
 	size_t num_commands = md_array_size(commands);
 	if (num_commands == 0) {
-		// No draw commands, no need to render or update GPU buffers.
-        release_context(ctx);
+        if (_ctx.transient_owner) {
+            release_context(ctx);
+        }
 		return;
 	}
 
@@ -598,7 +604,9 @@ void encoder_submit(Encoder& ctx, const mat4_t& view, const mat4_t& proj, uint32
     md_array_shrink(model_matrices, 0);
     curr_model_matrix_idx = -1;
 
-    release_context(ctx);
+    if (_ctx.transient_owner) {
+        release_context(ctx);
+    }
 }
 
 // PRIMITIVES
@@ -1233,12 +1241,17 @@ void draw_box(Encoder& ctx, vec3_t mn, vec3_t mx, uint32_t color, uint32_t picki
 }
 
 void encoder_submit_shaded(Encoder& ctx, const mat4_t& view, const mat4_t& proj, const LightingDesc& lighting, uint32_t picking_base_idx) {
-    const PassParams pass = {.view = view, .proj = proj, .picking_base_idx = picking_base_idx};
+    PassParams pass = {};
+    pass.view = view;
+    pass.proj = proj;
+    pass.picking_base_idx = picking_base_idx;
     IM_CTX(ctx);
     ASSERT(!_ctx.recording);
     size_t num_commands = md_array_size(commands);
     if (num_commands == 0) {
-        release_context(ctx);
+        if (_ctx.transient_owner) {
+            release_context(ctx);
+        }
         return;
     }
 
@@ -1297,134 +1310,217 @@ void encoder_submit_shaded(Encoder& ctx, const mat4_t& view, const mat4_t& proj,
     md_array_shrink(model_matrices, 0);
     curr_model_matrix_idx = -1;
 
-    release_context(ctx);
+    if (_ctx.transient_owner) {
+        release_context(ctx);
+    }
 }
 
-void point(Encoder& e, vec3_t pos, uint32_t color, uint32_t picking_idx) {
+static void point(Encoder& e, vec3_t pos, uint32_t color, uint32_t picking_idx) {
     draw_point(e, pos, color, picking_idx);
 }
 
-void line(Encoder& e, vec3_t from, vec3_t to, uint32_t color) {
+static void line(Encoder& e, vec3_t from, vec3_t to, uint32_t color) {
     draw_line(e, from, to, color);
 }
 
-void triangle(Encoder& e, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color, uint32_t picking_idx) {
+static void triangle(Encoder& e, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color, uint32_t picking_idx) {
     draw_triangle(e, v0, v1, v2, color, picking_idx);
 }
 
 void point(Scope& s, vec3_t pos, uint32_t color, uint32_t picking_idx) {
-    point(s.encoder(), pos, color, picking_idx);
+    if (s.encoder) point(*s.encoder, pos, color, picking_idx);
 }
 
 void line(Scope& s, vec3_t from, vec3_t to, uint32_t color) {
-    line(s.encoder(), from, to, color);
+    if (s.encoder) line(*s.encoder, from, to, color);
 }
 
 void triangle(Scope& s, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color, uint32_t picking_idx) {
-    triangle(s.encoder(), v0, v1, v2, color, picking_idx);
+    if (s.encoder) triangle(*s.encoder, v0, v1, v2, color, picking_idx);
+}
+
+void triangle_wireframe(Scope& s, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color) {
+    if (!s.encoder) return;
+    line(*s.encoder, v0, v1, color);
+    line(*s.encoder, v1, v2, color);
+    line(*s.encoder, v2, v0, color);
+}
+
+void sphere(Scope& s, vec3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
+    if (s.encoder) draw_sphere(*s.encoder, center, radius, color, picking_idx, stacks, slices);
+}
+
+void sphere_wireframe(Scope& s, vec3_t center, float radius, uint32_t color, int stacks, int slices) {
+    if (s.encoder) draw_sphere_wireframe(*s.encoder, center, radius, color, stacks, slices);
+}
+
+void cylinder(Scope& s, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+    if (s.encoder) draw_cylinder(*s.encoder, from, to, radius, color, picking_idx, segments);
+}
+
+void cylinder_wireframe(Scope& s, vec3_t from, vec3_t to, float radius, uint32_t color, int segments) {
+    if (s.encoder) draw_cylinder_wireframe(*s.encoder, from, to, radius, color, segments);
+}
+
+void cone(Scope& s, vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+    if (s.encoder) draw_cone(*s.encoder, base, tip, radius, color, picking_idx, segments);
+}
+
+void cone_wireframe(Scope& s, vec3_t base, vec3_t tip, float radius, uint32_t color, int segments) {
+    if (s.encoder) draw_cone_wireframe(*s.encoder, base, tip, radius, color, segments);
+}
+
+void capsule(Scope& s, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+    if (!s.encoder) return;
+    draw_cylinder(*s.encoder, from, to, radius, color, picking_idx, segments);
+    draw_sphere(*s.encoder, from, radius, color, picking_idx, segments, segments * 2);
+    draw_sphere(*s.encoder, to,   radius, color, picking_idx, segments, segments * 2);
+}
+
+void capsule_wireframe(Scope& s, vec3_t from, vec3_t to, float radius, uint32_t color, int segments) {
+    if (!s.encoder) return;
+    draw_cylinder_wireframe(*s.encoder, from, to, radius, color, segments);
+    draw_sphere_wireframe(*s.encoder, from, radius, color, segments, segments * 2);
+    draw_sphere_wireframe(*s.encoder, to,   radius, color, segments, segments * 2);
+}
+
+void box(Scope& s, vec3_t min_box, vec3_t max_box, uint32_t color, uint32_t picking_idx) {
+    if (s.encoder) draw_box(*s.encoder, min_box, max_box, color, picking_idx);
+}
+
+void points(Scope& s, const Vertex verts[], size_t count, vec4_t color_mult) {
+    if (s.encoder) draw_points_v(*s.encoder, verts, count, color_mult);
+}
+
+void lines(Scope& s, const Vertex verts[], size_t count, vec4_t color_mult) {
+    if (s.encoder) draw_lines_v(*s.encoder, verts, count, color_mult);
+}
+
+void triangles(Scope& s, const Vertex verts[], size_t count, vec4_t color_mult) {
+    if (s.encoder) draw_triangles_v(*s.encoder, verts, count, color_mult);
+}
+
+void triangles_wireframe(Scope& s, const Vertex verts[], size_t count, vec4_t color_mult) {
+    if (!s.encoder || !verts) return;
+    for (size_t i = 0; i + 2 < count; i += 3) {
+        const uint32_t c0 = u32_from_vec4(vec4_mul(vec4_from_u32(verts[i + 0].color), color_mult));
+        const uint32_t c1 = u32_from_vec4(vec4_mul(vec4_from_u32(verts[i + 1].color), color_mult));
+        const uint32_t c2 = u32_from_vec4(vec4_mul(vec4_from_u32(verts[i + 2].color), color_mult));
+        line(*s.encoder, verts[i + 0].coord, verts[i + 1].coord, c0);
+        line(*s.encoder, verts[i + 1].coord, verts[i + 2].coord, c1);
+        line(*s.encoder, verts[i + 2].coord, verts[i + 0].coord, c2);
+    }
+}
+
+void plane(Scope& s, vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color, uint32_t picking_idx) {
+    if (s.encoder) draw_plane(*s.encoder, center, plane_u, plane_v, color, picking_idx);
+}
+
+void plane_wireframe(Scope& s, vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color, int segments_u, int segments_v) {
+    if (s.encoder) draw_plane_wireframe(*s.encoder, center, plane_u, plane_v, color, segments_u, segments_v);
+}
+
+void box_wireframe(Scope& s, vec3_t min_box, vec3_t max_box, uint32_t color) {
+    if (s.encoder) draw_box_wireframe(*s.encoder, min_box, max_box, color);
+}
+
+void box_wireframe(Scope& s, vec3_t min_box, vec3_t max_box, vec4_t color) {
+    if (s.encoder) draw_box_wireframe(*s.encoder, min_box, max_box, color);
+}
+
+void box_wireframe(Scope& s, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color) {
+    if (s.encoder) draw_box_wireframe(*s.encoder, min_box, max_box, model_matrix, color);
+}
+
+void box_wireframe(Scope& s, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec4_t color) {
+    if (s.encoder) draw_box_wireframe(*s.encoder, min_box, max_box, model_matrix, color);
+}
+
+void basis(Scope& s, mat4_t basis_mat, float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
+    if (s.encoder) draw_basis(*s.encoder, basis_mat, scale, x_color, y_color, z_color);
+}
+
+void basis(Scope& s, mat4_t basis_mat, float scale, vec4_t x_color, vec4_t y_color, vec4_t z_color) {
+    if (s.encoder) draw_basis(*s.encoder, basis_mat, scale, x_color, y_color, z_color);
 }
 
 Scope::Scope(const char* label) {
-    enc = encoder_begin(label);
-    active = true;
+    md_allocator_i* heap = md_get_heap_allocator();
+    encoder = (Encoder*)md_alloc(heap, sizeof(Encoder));
+    *encoder = encoder_begin(label);
 }
 
 Scope::~Scope() {
-    if (active) {
-        encoder_discard(enc);
-        active = false;
+    if (encoder) {
+        encoder_discard(*encoder);
+        md_free(md_get_heap_allocator(), encoder, sizeof(Encoder));
+        encoder = nullptr;
     }
 }
 
 Scope::Scope(Scope&& other) noexcept {
-    enc = other.enc;
-    active = other.active;
-    other.enc = {};
-    other.active = false;
+    encoder = other.encoder;
+    other.encoder = nullptr;
 }
 
 Scope& Scope::operator=(Scope&& other) noexcept {
     if (this != &other) {
-        if (active) {
-            encoder_discard(enc);
+        if (encoder) {
+            encoder_discard(*encoder);
+            md_free(md_get_heap_allocator(), encoder, sizeof(Encoder));
         }
-        enc = other.enc;
-        active = other.active;
-        other.enc = {};
-        other.active = false;
+        encoder = other.encoder;
+        other.encoder = nullptr;
     }
     return *this;
 }
 
-Encoder& Scope::encoder() {
-    return enc;
+void set_model(Scope& s, const mat4_t& model_mat) {
+    if (s.encoder) encoder_set_model(*s.encoder, model_mat);
 }
 
-GfxContext* context_create() {
-    md_allocator_i* heap = md_get_heap_allocator();
-    GfxContext* ctx = (GfxContext*)md_alloc(heap, sizeof(GfxContext));
-    MEMSET(ctx, 0, sizeof(GfxContext));
-    return ctx;
+void set_picking_base_idx(Scope& s, uint32_t base_idx) {
+    if (s.encoder) encoder_set_picking_base_idx(*s.encoder, base_idx);
 }
 
-void context_destroy(GfxContext* ctx) {
-    if (!ctx) return;
-    while (md_array_size(ctx->queues) > 0) {
-        Queue* q = ctx->queues[md_array_size(ctx->queues) - 1];
-        md_array_shrink(ctx->queues, md_array_size(ctx->queues) - 1);
-        queue_destroy(q);
-    }
-    md_array_free(ctx->queues, md_get_heap_allocator());
-    md_free(md_get_heap_allocator(), ctx, sizeof(GfxContext));
-}
-
-Queue* queue_create(GfxContext* ctx, const char* label) {
-    if (!ctx) return nullptr;
+Queue* queue_create(const char* label) {
     md_allocator_i* heap = md_get_heap_allocator();
     Queue* queue = (Queue*)md_alloc(heap, sizeof(Queue));
     MEMSET(queue, 0, sizeof(Queue));
-    queue->owner = ctx;
     queue->label = label;
-    md_array_push(ctx->queues, queue, heap);
+
+    md_allocator_i* arena = md_arena_allocator_create(heap, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    init_context_storage(queue->storage, arena, false);
     return queue;
 }
 
 void queue_destroy(Queue* queue) {
     if (!queue) return;
-    if (queue->owner) {
-        size_t n = md_array_size(queue->owner->queues);
-        for (size_t i = 0; i < n; ++i) {
-            if (queue->owner->queues[i] == queue) {
-                queue->owner->queues[i] = queue->owner->queues[n - 1];
-                md_array_shrink(queue->owner->queues, n - 1);
-                break;
-            }
-        }
+    if (queue->storage.arena) {
+        md_arena_allocator_destroy(queue->storage.arena);
+        MEMSET(&queue->storage, 0, sizeof(queue->storage));
     }
-    while (md_array_size(queue->submitted) > 0) {
-        Encoder e = queue->submitted[md_array_size(queue->submitted) - 1];
-        md_array_shrink(queue->submitted, md_array_size(queue->submitted) - 1);
-        encoder_discard(e);
-    }
-    md_array_free(queue->submitted, md_get_heap_allocator());
     md_free(md_get_heap_allocator(), queue, sizeof(Queue));
 }
 
 void queue_reset(Queue* queue) {
     if (!queue) return;
-    while (md_array_size(queue->submitted) > 0) {
-        Encoder e = queue->submitted[md_array_size(queue->submitted) - 1];
-        md_array_shrink(queue->submitted, md_array_size(queue->submitted) - 1);
-        encoder_discard(e);
-    }
+    reset_context(queue->storage);
 }
 
 void queue_submit(Queue* queue, Scope& scope) {
-    if (!queue || !scope.active) return;
-    encoder_end(scope.enc);
-    md_array_push(queue->submitted, scope.enc, md_get_heap_allocator());
-    scope.enc = {};
-    scope.active = false;
+    if (!queue || !scope.encoder) return;
+    encoder_end(*scope.encoder);
+    const ContextImpl* scope_impl = get_context_impl(*scope.encoder);
+    ASSERT(scope_impl);
+    append_scope_to_queue(queue->storage, *scope_impl);
+    encoder_discard(*scope.encoder);
+    md_free(md_get_heap_allocator(), scope.encoder, sizeof(Encoder));
+    scope.encoder = nullptr;
+}
+
+void submit(Queue* queue, Scope& scope) {
+    queue_submit(queue, scope);
 }
 
 void render(Queue* queue, const RenderParams& params) {
@@ -1433,15 +1529,18 @@ void render(Queue* queue, const RenderParams& params) {
     const LightingDesc default_lighting = {};
     const LightingDesc& lighting = params.lighting ? *params.lighting : default_lighting;
 
-    for (size_t i = 0; i < md_array_size(queue->submitted); ++i) {
-        Encoder& e = queue->submitted[i];
-        if (params.shaded) {
-            encoder_submit_shaded(e, params.view, params.proj, lighting, params.picking_base_idx);
-        } else {
-            encoder_submit(e, params.view, params.proj, params.picking_base_idx);
-        }
+    if (md_array_size(queue->storage.commands) == 0) {
+        return;
     }
-    md_array_shrink(queue->submitted, 0);
+
+    Encoder e = {};
+    e.impl = &queue->storage;
+
+    if (params.shaded) {
+        encoder_submit_shaded(e, params.view, params.proj, lighting, params.picking_base_idx);
+    } else {
+        encoder_submit(e, params.view, params.proj, params.picking_base_idx);
+    }
 }
 
 }  // namespace immediate

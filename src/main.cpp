@@ -321,7 +321,7 @@ static void fill_gbuffer(ApplicationState* state);
 static void apply_postprocessing(const ApplicationState& state);
 static void draw_representations_opaque(ApplicationState* state);
 static void draw_representations_opaque_lean_and_mean(ApplicationState* state, uint32_t mask = 0xFFFFFFFFU);
-static void draw_representations_transparent(ApplicationState* state, immediate::Encoder& imm_ctx);
+static void draw_representations_transparent(ApplicationState* state);
 
 static void draw_load_dataset_window(ApplicationState* state);
 static void draw_main_menu(ApplicationState* state);
@@ -472,9 +472,14 @@ int main(int argc, char** argv) {
         state.view.jitter.sequence[i].y = md_halton(i + 1, 3);
     }
 
+
+
     // Init subsystems
     VIAMD_LOG_DEBUG("Initializing immediate draw...");
-    immediate::initialize();
+    immediate::Context* imm_ctx = immediate::context_create();
+    state.gfx.world   = immediate::queue_create(imm_ctx, "world");
+	state.gfx.overlay = immediate::queue_create(imm_ctx, "overlay");
+
     VIAMD_LOG_DEBUG("Initializing post processing...");
 
     postprocess_pipeline::initialize(state.gbuffer.width, state.gbuffer.height);
@@ -1191,6 +1196,13 @@ int main(int argc, char** argv) {
         gbuffer_clear(&state.gbuffer);
         fill_gbuffer(&state);
 
+		immediate::RenderParams params = {};
+		params.view = state.view.param.matrix.curr.view;
+		params.proj = state.view.param.matrix.curr.proj;
+
+		immediate::render(state.gfx.world, params);
+		immediate::render(state.gfx.overlay, params);
+
         glDisable(GL_DEPTH_TEST);
 
         if (do_screenshot && state.screenshot.hide_gui) {
@@ -1264,7 +1276,14 @@ int main(int argc, char** argv) {
 
     // shutdown subsystems
     VIAMD_LOG_DEBUG("Shutting down immediate draw...");
-    immediate::shutdown();
+    immediate::queue_destroy(state.gfx.world);
+    immediate::queue_destroy(state.gfx.overlay);
+    immediate::context_destroy(imm_ctx);
+
+    state.gfx.world = nullptr;
+    state.gfx.overlay = nullptr;
+    imm_ctx = nullptr;
+
     VIAMD_LOG_DEBUG("Shutting down post processing...");
     postprocess_pipeline::shutdown();
     VIAMD_LOG_DEBUG("Shutting down volume...");
@@ -6601,7 +6620,7 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
     ImGui::End();
 }
 
-static void fill_gbuffer(ApplicationState* data) {
+static void fill_gbuffer(ApplicationState* state) {
     const GLenum draw_buffers_opaque[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
         GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
 
@@ -6612,23 +6631,20 @@ static void fill_gbuffer(ApplicationState* data) {
     glDepthFunc(GL_LESS);
 
     // Enable all draw buffers
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, data->gbuffer.fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
     glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
     // Immediate mode graphics
-    const mat4_t model_view_mat = data->view.param.matrix.curr.view;
+    const mat4_t model_view_mat = state->view.param.matrix.curr.view;
 
-    if (data->simulation_box.enabled && data->mold.sys.unitcell.flags != 0) {
-        PUSH_GPU_SECTION("Draw Simulation Box")
+    if (state->simulation_box.enabled && state->mold.sys.unitcell.flags != 0) {
         mat3_t A = { 0 };
-		md_unitcell_A_extract_float(A.elem, &data->mold.sys.unitcell);
-        immediate::Encoder imm_ctx = immediate::encoder_begin();
-        immediate::encoder_set_model(imm_ctx, mat4_ident());
-        immediate::draw_box_wireframe(imm_ctx, {0,0,0}, {1,1,1}, mat4_from_mat3(A), convert_color(data->simulation_box.color));
-        immediate::encoder_end(imm_ctx);
-        immediate::encoder_submit(imm_ctx, model_view_mat, data->view.param.matrix.curr.proj);
+		md_unitcell_A_extract_float(A.elem, &state->mold.sys.unitcell);
+        immediate::Scope scope("simulation_box");
+        immediate::box_wireframe(scope, {0,0,0}, {1,1,1}, mat4_from_mat3(A), convert_color(state->simulation_box.color));
+        immediate::submit(state->gfx.world, scope);
         POP_GPU_SECTION()
     }
 
@@ -6658,7 +6674,7 @@ static void fill_gbuffer(ApplicationState* data) {
         PUSH_GPU_SECTION("Blit Static Velocity")
         glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
         glDepthMask(0);
-        postprocessing::blit_static_velocity(data->gbuffer.tex.depth, data->view.param);
+        postprocessing::blit_static_velocity(state->gbuffer.tex.depth, state->view.param);
         glDepthMask(1);
         POP_GPU_SECTION()
     }
@@ -6668,16 +6684,16 @@ static void fill_gbuffer(ApplicationState* data) {
     // DRAW REPRESENTATIONS
     PUSH_GPU_SECTION("Draw Opaque")
     glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
-    draw_representations_opaque(data);
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, data);
+    draw_representations_opaque(state);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, state);
     POP_GPU_SECTION()
 
     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
     if (!use_gfx) {
         PUSH_GPU_SECTION("Selection")
-        const bool atom_selection_empty = md_bitfield_empty(&data->selection.selection_mask);
-        const bool atom_highlight_empty = md_bitfield_empty(&data->selection.highlight_mask);
+        const bool atom_selection_empty = md_bitfield_empty(&state->selection.selection_mask);
+        const bool atom_highlight_empty = md_bitfield_empty(&state->selection.highlight_mask);
 
         glDepthMask(0);
 
@@ -6700,7 +6716,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
             glStencilFunc(GL_GREATER, 0x02, 0xFF);
             glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-            draw_representations_opaque_lean_and_mean(data, AtomBit_Selected | AtomBit_Visible);
+            draw_representations_opaque_lean_and_mean(state, AtomBit_Selected | AtomBit_Visible);
 
             glDisable(GL_DEPTH_TEST);
 
@@ -6709,10 +6725,10 @@ static void fill_gbuffer(ApplicationState* data) {
             glColorMask(1, 1, 1, 1);
 
             glStencilFunc(GL_EQUAL, 2, 0xFF);
-            postprocessing::blit_color(data->selection.color.selection.visible);
+            postprocessing::blit_color(state->selection.color.selection.visible);
 
             glStencilFunc(GL_EQUAL, 0, 0xFF);
-            postprocessing::blit_color(data->selection.color.selection.hidden);
+            postprocessing::blit_color(state->selection.color.selection.hidden);
         }
 
         if (!atom_highlight_empty) {
@@ -6729,7 +6745,7 @@ static void fill_gbuffer(ApplicationState* data) {
 
             glStencilFunc(GL_GREATER, 0x02, 0xFF);
             glStencilOp(GL_KEEP, GL_ZERO, GL_REPLACE);
-            draw_representations_opaque_lean_and_mean(data, AtomBit_Highlighted | AtomBit_Visible);
+            draw_representations_opaque_lean_and_mean(state, AtomBit_Highlighted | AtomBit_Visible);
 
             glDisable(GL_DEPTH_TEST);
 
@@ -6738,22 +6754,22 @@ static void fill_gbuffer(ApplicationState* data) {
             glColorMask(1, 1, 1, 1);
 
             glStencilFunc(GL_EQUAL, 2, 0xFF);
-            vec4_t col_vis = data->selection.color.highlight.visible;
+            vec4_t col_vis = state->selection.color.highlight.visible;
             col_vis.w += sin(ImGui::GetTime() * HIGHLIGHT_PULSE_TIME_SCALE) * HIGHLIGHT_PULSE_ALPHA_SCALE;
             //col_vis = hcla_to_rgba(col_vis);
             postprocessing::blit_color(col_vis);
 
             glStencilFunc(GL_EQUAL, 0, 0xFF);
-            postprocessing::blit_color(data->selection.color.highlight.hidden);
+            postprocessing::blit_color(state->selection.color.highlight.hidden);
         }
 
         glDisable(GL_STENCIL_TEST);
 
         if (!atom_selection_empty) {
             PUSH_GPU_SECTION("Desaturate")
-            const float saturation = data->selection.color.saturation;
+            const float saturation = state->selection.color.saturation;
             glDrawBuffer(GL_COLOR_ATTACHMENT_COLOR);
-            postprocessing::scale_hsv(data->gbuffer.tex.color, vec3_t{1, saturation, 1});
+            postprocessing::scale_hsv(state->gbuffer.tex.color, vec3_t{1, saturation, 1});
             POP_GPU_SECTION()
         }
 
@@ -6770,83 +6786,63 @@ static void fill_gbuffer(ApplicationState* data) {
 
     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
-    postprocessing::blit_texture(data->gbuffer.tex.transparency);
+    postprocessing::blit_texture(state->gbuffer.tex.transparency);
 
     PUSH_GPU_SECTION("Draw Transparent")
-    immediate::Encoder transparent_ctx = immediate::encoder_begin();
-    immediate::encoder_set_model(transparent_ctx, mat4_ident());
-    draw_representations_transparent(data, transparent_ctx);
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, data);
+    draw_representations_transparent(state);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
 
     glEnable(GL_DEPTH_TEST);
     glDepthMask(1);
-    immediate::encoder_end(transparent_ctx);
-    immediate::encoder_submit_shaded(transparent_ctx, data->view.param.matrix.curr.view, data->view.param.matrix.curr.proj, {});
+    immediate::RenderParams transparent_params = {};
+    transparent_params.view = state->view.param.matrix.curr.view;
+    transparent_params.proj = state->view.param.matrix.curr.proj;
+    transparent_params.shaded = true;
+    immediate::render(state->gfx.overlay, transparent_params);
 
     POP_GPU_SECTION()
 
-    PUSH_GPU_SECTION("Draw Visualization Geometry")
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
+    immediate::Scope vis_scope("visualization");
+    immediate::Scope vis_scope_depth("visualization width depth");
 
-    immediate::Encoder vis_ctx = immediate::encoder_begin();
-    immediate::encoder_set_model(vis_ctx, mat4_ident());
-
-    const md_script_vis_t& vis = data->script.vis;
+    const md_script_vis_t& vis = state->script.vis;
 
     if (vis.points) {
-        immediate::draw_points_v(vis_ctx, (immediate::Vertex*)vis.points, md_array_size(vis.points), data->script.point_color);
+        immediate::points(vis_scope, (immediate::Vertex*)vis.points, md_array_size(vis.points), state->script.point_color);
     }
 
     if (vis.triangles) {
-        immediate::draw_triangles_v(vis_ctx, (immediate::Vertex*)vis.triangles, md_array_size(vis.triangles), data->script.triangle_color);
+        immediate::triangles(vis_scope, (immediate::Vertex*)vis.triangles, md_array_size(vis.triangles), state->script.triangle_color);
     }
 
     if (vis.lines) {
-        immediate::draw_lines_v(vis_ctx, (immediate::Vertex*)vis.lines, md_array_size(vis.lines), data->script.line_color);
+        immediate::lines(vis_scope, (immediate::Vertex*)vis.lines, md_array_size(vis.lines), state->script.line_color);
     }
-    
-    md_temp_scope_t temp = md_temp_begin();
-	defer { md_temp_end(temp); };
 
     size_t num_matrices = md_array_size(vis.sdf.matrices);
     mat4_t* model_matrices = nullptr;
 
     if (num_matrices > 0) {
+        md_temp_scope_t temp = md_temp_begin();
+	    defer { md_temp_end(temp); };
 		model_matrices = md_temp_alloc_array(temp, mat4_t, num_matrices);
         for (size_t i = 0; i < num_matrices; ++i) {
             model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
         }
+
         const vec4_t col_x = {1, 0, 0, 0.7f};
         const vec4_t col_y = {0, 1, 0, 0.7f};
         const vec4_t col_z = {0, 0, 1, 0.7f};
         const float ext = vis.sdf.extent * 0.25f;
-        for (size_t i = 0; i < num_matrices; ++i) {
-            immediate::draw_basis(vis_ctx, model_matrices[i], ext, col_x, col_y, col_z);
-        }
-    }
-
-    immediate::encoder_end(vis_ctx);
-    immediate::encoder_submit(vis_ctx, model_view_mat, data->view.param.matrix.curr.proj);
-
-    // This operation is split in two as this portion requires DEPTH TEST
-    if (model_matrices) {
-        immediate::Encoder vis_depth_ctx = immediate::encoder_begin();
-        immediate::encoder_set_model(vis_depth_ctx, mat4_ident());
-    
-        glEnable(GL_DEPTH_TEST);
-    
         const vec3_t box_ext = vec3_set1(vis.sdf.extent);
         for (size_t i = 0; i < num_matrices; ++i) {
-            immediate::draw_box_wireframe(vis_depth_ctx, -box_ext, box_ext, model_matrices[i]);
+            immediate::basis(vis_scope, model_matrices[i], ext, col_x, col_y, col_z);
+            immediate::box_wireframe(vis_scope_depth, -box_ext, box_ext, model_matrices[i]);
         }
-
-        immediate::encoder_end(vis_depth_ctx);
-        immediate::encoder_submit(vis_depth_ctx, model_view_mat, data->view.param.matrix.curr.proj);
     }
 
-    glEnable(GL_CULL_FACE);
-    POP_GPU_SECTION()
+	immediate::submit(state->gfx.world,   vis_scope);
+    immediate::submit(state->gfx.overlay, vis_scope);
 
     POP_GPU_SECTION()  // G-buffer
 }
@@ -7043,7 +7039,7 @@ static void draw_representations_opaque(ApplicationState* data) {
 #endif
 }
 
-static void draw_representations_transparent(ApplicationState* state, immediate::Encoder& imm_ctx) {
+static void draw_representations_transparent(ApplicationState* state) {
     ASSERT(state);
     if (state->mold.sys.atom.count == 0) return;
 
@@ -7113,13 +7109,17 @@ static void draw_representations_transparent(ApplicationState* state, immediate:
             volume::render_volume(desc);
 
 #if DEBUG
-
-            immediate::draw_box_wireframe(imm_ctx, { 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
+            {
+				immediate::Scope scope("debug_electronic_structure");
+                immediate::box_wireframe(scope, { 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
+                immediate::submit(state->gfx.world, scope);
+            }
 #endif
         } else if (rep.type == RepresentationType::DipoleMoment) {
             // immediate draw of dipole moment as arrow
             size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
             if (rep.dipole.dipole_idx < num_dipoles) {
+                immediate::Scope scope("debug_dipole_moment");
                 const DipoleMoment& dipole = state->representation.info.dipole_moments[rep.dipole.dipole_idx];
 
                 const vec3_t vec = dipole.vec * rep.dipole.scale;
@@ -7136,8 +7136,9 @@ static void draw_representations_transparent(ApplicationState* state, immediate:
 
                 uint32_t color_u32 = convert_color(rep.dipole.color);
 
-                immediate::draw_cylinder(imm_ctx, cyl_beg, cyl_end, body_radius, color_u32);
-                immediate::draw_cone(imm_ctx, cyl_end, arrow_end, head_radius, color_u32);
+                immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32);
+                immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32);
+				immediate::submit(state->gfx.overlay, scope);
             }
         }
     }

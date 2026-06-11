@@ -22,6 +22,7 @@
 #include <gfx/gbuffer.h>
 #include <gfx/view_param.h>
 #include <gfx/postprocessing_utils.h>
+#include <gfx/immediate_draw_utils.h>
 
 #include <task_system.h>
 #include <loader.h>
@@ -1158,6 +1159,11 @@ struct ApplicationState {
     // --- GBUFFER ---
     // Primary gbuffer
     GBuffer gbuffer {};
+
+    struct {
+		immediate::Queue* world = nullptr;
+		immediate::Queue* overlay = nullptr;
+    } gfx;
 
     // --- PICKING ---
     PickingSurface picking_surface {};      // Surface for main viewport picking
