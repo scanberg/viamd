@@ -332,6 +332,7 @@ static void draw_animation_window(ApplicationState* state);
 static void draw_representations_window(ApplicationState* state);
 static void draw_timeline_window(ApplicationState* state);
 static void draw_distribution_window(ApplicationState* state);
+static void draw_correlator_window(ApplicationState* state);
 static void draw_async_task_window(ApplicationState* state);
 static void draw_script_editor_window(ApplicationState* state);
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
@@ -570,6 +571,7 @@ int main(int argc, char** argv) {
         if (state.representation.show_window) draw_representations_window(&state);
         if (state.distributions.show_window) draw_distribution_window(&state);
         if (state.timeline.show_window) draw_timeline_window(&state);
+        if (state.correlator.show_window) draw_correlator_window(&state);
         if (state.selection.query.show_window) draw_selection_query_window(&state);
         if (state.selection.grow.show_window) draw_selection_grow_window(&state);
         if (state.show_property_export_window) draw_property_export_window(&state);
@@ -1799,6 +1801,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Script Editor", &data->show_script_window);
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
+            ImGui::Checkbox("Correlator", &data->correlator.show_window);
             ImGui::Checkbox("Structure Export", &data->structure_export.show_window);
 
             viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowDrawMenu);
@@ -4235,6 +4238,265 @@ struct DisplayPropertyDragDropPayload {
     int src_plot_idx = -1;
 };
 
+struct CorrelatorSeriesPayload {
+    const DisplayProperty* x_prop = nullptr;
+    const DisplayProperty* y_prop = nullptr;
+    int x_dim_idx = 0;
+    int y_dim_idx = 0;
+};
+
+static int correlator_find_temporal_property_index(const ApplicationState* data, const char* label) {
+    ASSERT(data);
+    if (!label || !label[0]) return -1;
+
+    for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
+        const DisplayProperty& dp = data->display_properties[i];
+        if (dp.type == DisplayProperty::Type_Temporal && strcmp(dp.label, label) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static bool correlator_extract_value(const DisplayProperty& prop, int sample_idx, int dim_idx, double* value) {
+    ASSERT(value);
+
+    if (sample_idx < 0 || sample_idx >= prop.num_samples) {
+        return false;
+    }
+
+    if (prop.y_values && dim_idx >= 0 && dim_idx < prop.dim) {
+        const double v = prop.y_values[sample_idx * prop.dim + dim_idx];
+        if (isfinite(v)) {
+            *value = v;
+            return true;
+        }
+    }
+
+    if (prop.getter[0]) {
+        DisplayProperty::Payload plot_payload = {
+            .display_prop = const_cast<DisplayProperty*>(&prop),
+            .dim_idx = dim_idx,
+        };
+        const ImPlotPoint p = prop.getter[0](sample_idx, &plot_payload);
+        if (isfinite(p.y)) {
+            *value = p.y;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static ImPlotPoint correlator_getter(int sample_idx, void* user_data) {
+    const CorrelatorSeriesPayload* payload = (const CorrelatorSeriesPayload*)user_data;
+    ASSERT(payload);
+    ASSERT(payload->x_prop);
+    ASSERT(payload->y_prop);
+
+    const DisplayProperty& x_prop = *payload->x_prop;
+    const DisplayProperty& y_prop = *payload->y_prop;
+
+    double x = NAN;
+    double y = NAN;
+    if (!correlator_extract_value(x_prop, sample_idx, payload->x_dim_idx, &x) || !correlator_extract_value(y_prop, sample_idx, payload->y_dim_idx, &y)) {
+        return ImPlotPoint(NAN, NAN);
+    }
+
+    return ImPlotPoint(x, y);
+}
+
+static inline void correlator_blur_rows_acc(float* out, const float* in, int dim, int kernel_width) {
+    const int mod = dim - 1;
+    const float scl = 1.0f / (2 * kernel_width + 1);
+
+    for (int row = 0; row < dim; ++row) {
+        const float* src_row = in + dim * row;
+        float* dst_row = out + dim * row;
+
+        float acc = 0.0f;
+        for (int x = -(kernel_width+1); x < kernel_width; ++x) {
+            acc += src_row[x & mod];
+        }
+
+        int x = 0;
+        for (; x < kernel_width + 1; ++x) {
+            acc = MAX(0.0f, acc - src_row[(x -(kernel_width+1)) & mod] + src_row[x + kernel_width]);
+            dst_row[x] = acc * scl;
+        }
+
+        for (; x < dim - kernel_width; ++x) {
+            acc = MAX(0.0f, acc - src_row[x -(kernel_width+1)] + src_row[x + kernel_width]);
+            dst_row[x] = acc * scl;
+        }
+
+        for (; x < dim; ++x) {
+            acc = MAX(0.0f, acc - src_row[x -(kernel_width+1)] + src_row[(x + kernel_width) & mod]);
+            dst_row[x] = acc * scl;
+        }
+    }
+}
+
+static inline void correlator_transpose(float* dst, const float* src, int dim) {
+    const int block = 8;
+    ASSERT(dim % block == 0);
+    for (int i = 0; i < dim; i += block) {
+        for (int j = 0; j < dim; j += block) {
+            for (int k = i; k < i + block; ++k) {
+                for (int l = j; l < j + block; ++l) {
+                    dst[k + l * dim] = src[l + k * dim];
+                }
+            }
+        }
+    }
+}
+
+static inline void correlator_boxes_for_gauss(int* box_w, int n, float sigma) {
+    ASSERT(box_w);
+    float wIdeal = sqrtf((12 * sigma * sigma / n) + 1);
+    int wl = (int)wIdeal;
+    if (wl % 2 == 0) wl--;
+    int wu = wl + 2;
+
+    float mIdeal = (12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4);
+    int m = (int)(mIdeal + 0.5f);
+
+    for (int i = 0; i < n; ++i) box_w[i] = (i < m ? wl : wu);
+}
+
+static void correlator_blur_density_gaussian(float* data, int dim, float sigma) {
+    ASSERT(data);
+    ASSERT(dim > 0 && (dim & (dim - 1)) == 0);
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    float* tmp_data = (float*)md_temp_alloc(temp, dim * dim * sizeof(float));
+
+    int box_w[3];
+    correlator_boxes_for_gauss(box_w, 3, sigma);
+
+    correlator_blur_rows_acc(tmp_data, data, dim, box_w[0]);
+    correlator_blur_rows_acc(data, tmp_data, dim, box_w[1]);
+    correlator_blur_rows_acc(tmp_data, data, dim, box_w[2]);
+    correlator_transpose(data, tmp_data, dim);
+
+    correlator_blur_rows_acc(tmp_data, data, dim, box_w[0]);
+    correlator_blur_rows_acc(data, tmp_data, dim, box_w[1]);
+    correlator_blur_rows_acc(tmp_data, data, dim, box_w[2]);
+    correlator_transpose(data, tmp_data, dim);
+}
+
+static int correlator_build_density_grid(float* grid, int dim, const CorrelatorSeriesPayload& payload, int num_samples, double min_x, double max_x, double min_y, double max_y) {
+    ASSERT(grid);
+    MEMSET(grid, 0, sizeof(float) * dim * dim);
+
+    const double span_x = max_x - min_x;
+    const double span_y = max_y - min_y;
+    if (span_x <= 0.0 || span_y <= 0.0) return 0;
+
+    int num_pairs = 0;
+    for (int sample_idx = 0; sample_idx < num_samples; ++sample_idx) {
+        const ImPlotPoint pt = correlator_getter(sample_idx, (void*)&payload);
+        if (!isfinite(pt.x) || !isfinite(pt.y)) continue;
+
+        const double tx = CLAMP((pt.x - min_x) / span_x, 0.0, 1.0);
+        const double ty = CLAMP((pt.y - min_y) / span_y, 0.0, 1.0);
+        const double gx = tx * (dim - 1);
+        const double gy = ty * (dim - 1);
+        const int ix = CLAMP((int)gx, 0, dim - 1);
+        const int iy = CLAMP((int)gy, 0, dim - 1);
+        const int ix1 = MIN(ix + 1, dim - 1);
+        const int iy1 = MIN(iy + 1, dim - 1);
+        const float fx = (float)(gx - ix);
+        const float fy = (float)(gy - iy);
+
+        grid[iy * dim + ix]   += (1.0f - fx) * (1.0f - fy);
+        grid[iy * dim + ix1]  += fx * (1.0f - fy);
+        grid[iy1 * dim + ix]  += (1.0f - fx) * fy;
+        grid[iy1 * dim + ix1] += fx * fy;
+        num_pairs += 1;
+    }
+
+    return num_pairs;
+}
+
+static void correlator_draw_isolines(const float* grid, int dim, double min_x, double max_x, double min_y, double max_y, int num_levels, ImU32 color, float thickness) {
+    ASSERT(grid);
+    if (num_levels <= 0) return;
+
+    float max_val = 0.0f;
+    for (int i = 0; i < dim * dim; ++i) {
+        max_val = MAX(max_val, grid[i]);
+    }
+    if (max_val <= 0.0f) return;
+
+    auto interp = [](double x0, double y0, double x1, double y1, float v0, float v1, float level) -> ImPlotPoint {
+        const float dv = v1 - v0;
+        const double t = fabsf(dv) > 1.0e-8f ? (double)((level - v0) / dv) : 0.5;
+        return ImPlotPoint(lerp(x0, x1, t), lerp(y0, y1, t));
+    };
+
+    ImDrawList* draw_list = ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+
+    for (int li = 0; li < num_levels; ++li) {
+        const float level = max_val * ((float)(li + 1) / (float)(num_levels + 1));
+
+        for (int y = 0; y < dim - 1; ++y) {
+            const double y0 = lerp(min_y, max_y, (double)y / (double)(dim - 1));
+            const double y1 = lerp(min_y, max_y, (double)(y + 1) / (double)(dim - 1));
+
+            for (int x = 0; x < dim - 1; ++x) {
+                const double x0 = lerp(min_x, max_x, (double)x / (double)(dim - 1));
+                const double x1 = lerp(min_x, max_x, (double)(x + 1) / (double)(dim - 1));
+
+                const float v0 = grid[y * dim + x];
+                const float v1 = grid[y * dim + (x + 1)];
+                const float v2 = grid[(y + 1) * dim + (x + 1)];
+                const float v3 = grid[(y + 1) * dim + x];
+
+                const int mask = ((v0 >= level) ? 1 : 0) |
+                                 ((v1 >= level) ? 2 : 0) |
+                                 ((v2 >= level) ? 4 : 0) |
+                                 ((v3 >= level) ? 8 : 0);
+
+                if (mask == 0 || mask == 15) continue;
+
+                const ImPlotPoint e0 = interp(x0, y0, x1, y0, v0, v1, level);
+                const ImPlotPoint e1 = interp(x1, y0, x1, y1, v1, v2, level);
+                const ImPlotPoint e2 = interp(x1, y1, x0, y1, v2, v3, level);
+                const ImPlotPoint e3 = interp(x0, y1, x0, y0, v3, v0, level);
+
+                auto draw_segment = [&](ImPlotPoint a, ImPlotPoint b) {
+                    draw_list->AddLine(ImPlot::PlotToPixels(a), ImPlot::PlotToPixels(b), color, thickness);
+                };
+
+                switch (mask) {
+                case 1:  case 14: draw_segment(e0, e3); break;
+                case 2:  case 13: draw_segment(e0, e1); break;
+                case 3:  case 12: draw_segment(e1, e3); break;
+                case 4:  case 11: draw_segment(e1, e2); break;
+                case 6:  case 9:  draw_segment(e0, e2); break;
+                case 7:  case 8:  draw_segment(e2, e3); break;
+                case 5:
+                    draw_segment(e0, e1);
+                    draw_segment(e2, e3);
+                    break;
+                case 10:
+                    draw_segment(e0, e3);
+                    draw_segment(e1, e2);
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+    }
+
+    ImPlot::PopPlotClipRect();
+}
+
 static double distance_to_linesegment(ImPlotPoint p0, ImPlotPoint p1, ImPlotPoint p) {
     double vx = p1.x - p0.x;
     double vy = p1.y - p0.y;
@@ -5462,6 +5724,359 @@ static void draw_distribution_window(ApplicationState* data) {
                     data->display_properties[dnd->prop_idx].distribution_subplot_mask &= ~(1 << dnd->src_plot_idx);
                 }
             }
+        }
+    }
+    ImGui::End();
+}
+
+static void draw_correlator_window(ApplicationState* data) {
+    ASSERT(data);
+
+    struct CorrelatorSeries {
+        CorrelatorSeriesPayload payload;
+        ImVec4 color;
+        char label[96];
+    };
+
+    ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Correlator", &data->correlator.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
+        const int num_props = (int)md_array_size(data->display_properties);
+
+        auto set_axis_label = [](char dst[32], const DisplayProperty& prop) {
+            snprintf(dst, 32, "%s", prop.label);
+        };
+
+        auto draw_property_drag_source = [&](const DisplayProperty& dp, int prop_idx) {
+            ImPlot::ItemIcon(dp.color);
+            ImGui::SameLine();
+            ImGui::Selectable(dp.label);
+
+            if (ImGui::IsItemHovered()) {
+                if (dp.dim > DISPLAY_PROPERTY_MAX_POPULATION_SIZE) {
+                    ImGui::SetTooltip("The property has a large population, only the first %i items can be correlated", DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
+                }
+                script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                script_set_hovered_property(data, str_from_cstr(dp.label));
+            }
+
+            if (ImGui::BeginDragDropSource()) {
+                DisplayPropertyDragDropPayload payload = {prop_idx};
+                ImGui::SetDragDropPayload("TEMPORAL_DND", &payload, sizeof(payload));
+                ImPlot::ItemIcon(dp.color);
+                ImGui::SameLine();
+                ImGui::TextUnformatted(dp.label);
+                ImGui::EndDragDropSource();
+            }
+        };
+
+        if (ImGui::BeginMenuBar()) {
+            if (ImGui::BeginMenu("Properties")) {
+                bool has_temporal_prop = false;
+                for (int i = 0; i < num_props; ++i) {
+                    const DisplayProperty& dp = data->display_properties[i];
+                    if (dp.type != DisplayProperty::Type_Temporal) continue;
+                    has_temporal_prop = true;
+                    draw_property_drag_source(dp, i);
+                }
+                if (!has_temporal_prop) {
+                    ImGui::Text("No temporal properties available, define and evaluate properties in the script editor");
+                }
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("Axes")) {
+                if (ImGui::MenuItem("Fit View", nullptr, false, data->correlator.x_label[0] && data->correlator.y_label[0])) {
+                    data->correlator.axis_fingerprint = 0;
+                }
+                if (ImGui::MenuItem("Swap Axes", nullptr, false, data->correlator.x_label[0] && data->correlator.y_label[0])) {
+                    char tmp[32] = "";
+                    MEMCPY(tmp, data->correlator.x_label, sizeof(tmp));
+                    MEMCPY(data->correlator.x_label, data->correlator.y_label, sizeof(data->correlator.x_label));
+                    MEMCPY(data->correlator.y_label, tmp, sizeof(data->correlator.y_label));
+                    data->correlator.axis_fingerprint = 0;
+                }
+                if (ImGui::MenuItem("Clear X", nullptr, false, data->correlator.x_label[0])) {
+                    data->correlator.x_label[0] = '\0';
+                    data->correlator.axis_fingerprint = 0;
+                }
+                if (ImGui::MenuItem("Clear Y", nullptr, false, data->correlator.y_label[0])) {
+                    data->correlator.y_label[0] = '\0';
+                    data->correlator.axis_fingerprint = 0;
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::EndMenuBar();
+        }
+
+        ImGui::TextUnformatted("Drag a temporal property onto the bottom X axis or the left Y axis.");
+        const char* render_mode_labels[] = {"Scatter", "IsoLines", "Scatter + IsoLines"};
+        STATIC_ASSERT(ARRAY_SIZE(render_mode_labels) == 3);
+        ImGui::Combo("Render Mode", (int*)&data->correlator.render_mode, render_mode_labels, (int)ARRAY_SIZE(render_mode_labels));
+        ImGui::Combo("Marker", (int*)&data->correlator.marker_type, [](void*, int idx, const char** out_text) {
+            *out_text = ImPlot::GetMarkerName(idx);
+            return true;
+        }, nullptr, ImPlotMarker_COUNT);
+        ImGui::SliderFloat("Marker Size", &data->correlator.marker_size, 1.0f, 10.0f, "%.1f");
+        ImGui::SliderInt("Density Grid", &data->correlator.density_grid_dim, 32, 128);
+        data->correlator.density_grid_dim = next_power_of_two32((uint32_t)data->correlator.density_grid_dim);
+        data->correlator.density_grid_dim = CLAMP(data->correlator.density_grid_dim, 32, 128);
+        ImGui::SliderFloat("Density Blur Sigma", &data->correlator.density_blur_sigma, 0.1f, 8.0f, "%.2f");
+        ImGui::SliderInt("Contour Levels", &data->correlator.contour_levels, 1, 6);
+        ImGui::SliderFloat("Contour Width", &data->correlator.contour_line_width, 0.5f, 4.0f, "%.1f");
+
+        const int x_prop_idx = correlator_find_temporal_property_index(data, data->correlator.x_label);
+        const int y_prop_idx = correlator_find_temporal_property_index(data, data->correlator.y_label);
+
+        DisplayProperty* x_prop = x_prop_idx != -1 ? &data->display_properties[x_prop_idx] : nullptr;
+        DisplayProperty* y_prop = y_prop_idx != -1 ? &data->display_properties[y_prop_idx] : nullptr;
+
+        CorrelatorSeries series[DISPLAY_PROPERTY_MAX_POPULATION_SIZE] = {};
+        int num_series = 0;
+        int num_samples = 0;
+        double min_x = DBL_MAX;
+        double max_x = -DBL_MAX;
+        double min_y = DBL_MAX;
+        double max_y = -DBL_MAX;
+        int num_valid_pairs = 0;
+        bool compatible_dims = true;
+        const char* status_msg = "Drop one temporal property on each axis to show the frame-wise correlation.";
+
+        char x_axis_label[96] = "Drop X property here";
+        char y_axis_label[96] = "Drop Y property here";
+
+        if (x_prop) {
+            if (!md_unit_empty(x_prop->unit[1])) {
+                snprintf(x_axis_label, sizeof(x_axis_label), "%s (%s)", x_prop->label, x_prop->unit_str[1]);
+            } else {
+                snprintf(x_axis_label, sizeof(x_axis_label), "%s", x_prop->label);
+            }
+        }
+        if (y_prop) {
+            if (!md_unit_empty(y_prop->unit[1])) {
+                snprintf(y_axis_label, sizeof(y_axis_label), "%s (%s)", y_prop->label, y_prop->unit_str[1]);
+            } else {
+                snprintf(y_axis_label, sizeof(y_axis_label), "%s", y_prop->label);
+            }
+        }
+
+        if (x_prop && y_prop) {
+            const int x_dim = CLAMP(x_prop->dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
+            const int y_dim = CLAMP(y_prop->dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
+            num_samples = MIN(x_prop->num_samples, y_prop->num_samples);
+            compatible_dims = (x_dim == y_dim) || (x_dim == 1) || (y_dim == 1);
+
+            if (!compatible_dims) {
+                status_msg = "Component mismatch: only equal dimensions or scalar-to-vector broadcasting are supported right now.";
+            } else {
+                const int series_count = x_dim == y_dim ? x_dim : MAX(x_dim, y_dim);
+                for (int i = 0; i < series_count && num_series < DISPLAY_PROPERTY_MAX_POPULATION_SIZE; ++i) {
+                    const int x_dim_idx = x_dim == 1 ? 0 : i;
+                    const int y_dim_idx = y_dim == 1 ? 0 : i;
+                    const bool x_enabled = x_dim == 1 || x_prop->population_mask.test(x_dim_idx);
+                    const bool y_enabled = y_dim == 1 || y_prop->population_mask.test(y_dim_idx);
+                    if (!x_enabled || !y_enabled) {
+                        continue;
+                    }
+
+                    CorrelatorSeries& s = series[num_series++];
+                    s.payload.x_prop = x_prop;
+                    s.payload.y_prop = y_prop;
+                    s.payload.x_dim_idx = x_dim_idx;
+                    s.payload.y_dim_idx = y_dim_idx;
+
+                    if (series_count > 1) {
+                        snprintf(s.label, sizeof(s.label), "%s[%i] vs %s[%i]", x_prop->label, x_dim_idx + 1, y_prop->label, y_dim_idx + 1);
+                        s.color = ImPlot::GetColormapColor(i);
+                    } else {
+                        snprintf(s.label, sizeof(s.label), "%s vs %s", x_prop->label, y_prop->label);
+                        s.color = y_prop->color;
+                    }
+                }
+
+                if (num_samples <= 0 || num_series <= 0) {
+                    status_msg = "No visible correlation series to draw for the current axis selection.";
+                } else {
+                    status_msg = nullptr;
+                    for (int i = 0; i < num_series; ++i) {
+                        for (int frame_idx = 0; frame_idx < num_samples; ++frame_idx) {
+                            const ImPlotPoint pt = correlator_getter(frame_idx, &series[i].payload);
+                            if (!isfinite(pt.x) || !isfinite(pt.y)) {
+                                continue;
+                            }
+                            min_x = MIN(min_x, pt.x);
+                            max_x = MAX(max_x, pt.x);
+                            min_y = MIN(min_y, pt.y);
+                            max_y = MAX(max_y, pt.y);
+                            num_valid_pairs += 1;
+                        }
+                    }
+
+                    if (num_valid_pairs == 0) {
+                        status_msg = "No finite sample pairs were found for the selected properties.";
+                    }
+                }
+            }
+        }
+
+        if (x_prop && y_prop && x_prop->num_samples != y_prop->num_samples) {
+            ImGui::Text("Series lengths differ; plotting the first %d shared samples.", num_samples);
+        }
+
+        if (ImPlot::BeginPlot("##correlator_plot", ImVec2(-1, -1), ImPlotFlags_NoFrame)) {
+            ImPlot::SetupAxes(x_axis_label, y_axis_label, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
+
+            const uint64_t axis_fingerprint = md_hash64(data->correlator.x_label, strnlen(data->correlator.x_label, sizeof(data->correlator.x_label)),
+                md_hash64(data->correlator.y_label, strnlen(data->correlator.y_label, sizeof(data->correlator.y_label)), 0));
+
+            ImPlot::SetupAxisLinks(ImAxis_X1, &data->correlator.view_range.beg_x, &data->correlator.view_range.end_x);
+            ImPlot::SetupAxisLinks(ImAxis_Y1, &data->correlator.view_range.beg_y, &data->correlator.view_range.end_y);
+
+            if (num_valid_pairs > 0) {
+                if (min_x == max_x) {
+                    min_x -= 0.5;
+                    max_x += 0.5;
+                }
+                if (min_y == max_y) {
+                    min_y -= 0.5;
+                    max_y += 0.5;
+                }
+                const double pad_x = (max_x - min_x) * 0.05;
+                const double pad_y = (max_y - min_y) * 0.05;
+                if (data->correlator.axis_fingerprint != axis_fingerprint) {
+                    data->correlator.axis_fingerprint = axis_fingerprint;
+                    data->correlator.view_range.beg_x = min_x - pad_x;
+                    data->correlator.view_range.end_x = max_x + pad_x;
+                    data->correlator.view_range.beg_y = min_y - pad_y;
+                    data->correlator.view_range.end_y = max_y + pad_y;
+                    ImPlot::SetupAxisLimits(ImAxis_X1, data->correlator.view_range.beg_x, data->correlator.view_range.end_x, ImGuiCond_Always);
+                    ImPlot::SetupAxisLimits(ImAxis_Y1, data->correlator.view_range.beg_y, data->correlator.view_range.end_y, ImGuiCond_Always);
+                }
+            }
+
+            ImPlot::SetupFinish();
+
+            if (ImPlot::BeginDragDropTargetAxis(ImAxis_X1)) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEMPORAL_DND")) {
+                    ASSERT(payload->DataSize == sizeof(DisplayPropertyDragDropPayload));
+                    const DisplayPropertyDragDropPayload* dnd = (const DisplayPropertyDragDropPayload*)payload->Data;
+                    if (dnd->prop_idx >= 0 && dnd->prop_idx < num_props) {
+                        const DisplayProperty& dp = data->display_properties[dnd->prop_idx];
+                        if (dp.type == DisplayProperty::Type_Temporal) {
+                            set_axis_label(data->correlator.x_label, dp);
+                            data->correlator.axis_fingerprint = 0;
+                        }
+                    }
+                }
+                ImPlot::EndDragDropTarget();
+            }
+
+            if (ImPlot::BeginDragDropTargetAxis(ImAxis_Y1)) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEMPORAL_DND")) {
+                    ASSERT(payload->DataSize == sizeof(DisplayPropertyDragDropPayload));
+                    const DisplayPropertyDragDropPayload* dnd = (const DisplayPropertyDragDropPayload*)payload->Data;
+                    if (dnd->prop_idx >= 0 && dnd->prop_idx < num_props) {
+                        const DisplayProperty& dp = data->display_properties[dnd->prop_idx];
+                        if (dp.type == DisplayProperty::Type_Temporal) {
+                            set_axis_label(data->correlator.y_label, dp);
+                            data->correlator.axis_fingerprint = 0;
+                        }
+                    }
+                }
+                ImPlot::EndDragDropTarget();
+            }
+
+            if (ImPlot::BeginDragDropTargetPlot()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEMPORAL_DND")) {
+                    ASSERT(payload->DataSize == sizeof(DisplayPropertyDragDropPayload));
+                    const DisplayPropertyDragDropPayload* dnd = (const DisplayPropertyDragDropPayload*)payload->Data;
+                    if (dnd->prop_idx >= 0 && dnd->prop_idx < num_props) {
+                        const DisplayProperty& dp = data->display_properties[dnd->prop_idx];
+                        if (dp.type == DisplayProperty::Type_Temporal) {
+                            if (!data->correlator.x_label[0]) {
+                                set_axis_label(data->correlator.x_label, dp);
+                            } else {
+                                set_axis_label(data->correlator.y_label, dp);
+                            }
+                            data->correlator.axis_fingerprint = 0;
+                        }
+                    }
+                }
+                ImPlot::EndDragDropTarget();
+            }
+
+            int hovered_series_idx = -1;
+            int hovered_frame_idx = -1;
+            double hovered_dist = 12.0;
+
+            if (num_valid_pairs > 0) {
+                const bool draw_scatter = data->correlator.render_mode != decltype(data->correlator)::RenderMode_IsoLines;
+                const bool draw_isolines = data->correlator.render_mode != decltype(data->correlator)::RenderMode_Scatter;
+
+                md_temp_scope_t temp = md_temp_begin();
+                defer { md_temp_end(temp); };
+
+                if (draw_isolines) {
+                    const int grid_dim = data->correlator.density_grid_dim;
+                    for (int i = 0; i < num_series; ++i) {
+                        float* density = (float*)md_temp_alloc(temp, sizeof(float) * grid_dim * grid_dim);
+                        const int pair_count = correlator_build_density_grid(density, grid_dim, series[i].payload, num_samples, min_x, max_x, min_y, max_y);
+                        if (pair_count > 0) {
+                            correlator_blur_density_gaussian(density, grid_dim, data->correlator.density_blur_sigma);
+                            ImVec4 col = series[i].color;
+                            col.w *= 0.9f;
+                            correlator_draw_isolines(density, grid_dim, min_x, max_x, min_y, max_y, data->correlator.contour_levels, ImGui::ColorConvertFloat4ToU32(col), data->correlator.contour_line_width);
+                        }
+                    }
+                }
+
+                for (int i = 0; i < num_series; ++i) {
+                    if (draw_scatter) {
+                        ImPlot::SetNextMarkerStyle(data->correlator.marker_type, data->correlator.marker_size, series[i].color, 0, series[i].color);
+                        ImPlot::PlotScatterG(series[i].label, correlator_getter, &series[i].payload, num_samples);
+                    } else {
+                        ImPlot::SetNextLineStyle(series[i].color, 0.0f);
+                        ImPlot::PlotDummy(series[i].label);
+                    }
+
+                    if (ImPlot::IsPlotHovered()) {
+                        for (int frame_idx = 0; frame_idx < num_samples; ++frame_idx) {
+                            const ImPlotPoint pt = correlator_getter(frame_idx, &series[i].payload);
+                            if (!isfinite(pt.x) || !isfinite(pt.y)) {
+                                continue;
+                            }
+                            const ImVec2 px = ImPlot::PlotToPixels(pt);
+                            const double d = sqrt(ImLengthSqr(ImGui::GetMousePos() - px));
+                            if (d < hovered_dist) {
+                                hovered_dist = d;
+                                hovered_series_idx = i;
+                                hovered_frame_idx = frame_idx;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (hovered_series_idx != -1 && hovered_frame_idx != -1) {
+                const CorrelatorSeriesPayload& payload = series[hovered_series_idx].payload;
+                const DisplayProperty& hovered_y = *payload.y_prop;
+
+                const ImPlotPoint pt = correlator_getter(hovered_frame_idx, (void*)&payload);
+                if (isfinite(pt.x) && isfinite(pt.y)) {
+                    const float time_val = (hovered_frame_idx < (int)md_array_size(data->timeline.x_values)) ? data->timeline.x_values[hovered_frame_idx] : (float)hovered_frame_idx;
+
+                    script_set_hovered_property(data, str_from_cstr(hovered_y.label), hovered_y.dim > 1 ? payload.y_dim_idx : -1);
+                    script_visualize_payload(data, hovered_y.vis_payload, hovered_y.dim > 1 ? payload.y_dim_idx : -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+
+                    ImGui::SetTooltip("%s\nFrame: %d\nTime: %.3f\nX: %.5g\nY: %.5g", series[hovered_series_idx].label, hovered_frame_idx, time_val, pt.x, pt.y);
+                }
+            }
+
+            ImPlot::EndPlot();
+        }
+
+        if (status_msg) {
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", status_msg);
         }
     }
     ImGui::End();

@@ -1211,6 +1211,32 @@ struct ApplicationState {
         bool show_window = false;
     } distributions;
 
+    // --- CORRELATOR ---
+    struct {
+        enum RenderMode {
+            RenderMode_Scatter,
+            RenderMode_IsoLines,
+            RenderMode_ScatterAndIsoLines,
+        } render_mode = RenderMode_ScatterAndIsoLines;
+
+        char x_label[32] = "";
+        char y_label[32] = "";
+        uint64_t axis_fingerprint = 0;
+        struct {
+            double beg_x = 0;
+            double end_x = 1;
+            double beg_y = 0;
+            double end_y = 1;
+        } view_range;
+        int density_grid_dim = 64;
+        int contour_levels = 3;
+        float density_blur_sigma = 1.5f;
+        float contour_line_width = 1.5f;
+        ImPlotMarker marker_type = ImPlotMarker_Circle;
+        float marker_size = 3.0f;
+        bool show_window = false;
+    } correlator;
+
     // --- VISUALS ---
     struct {
         struct {
