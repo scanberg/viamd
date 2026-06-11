@@ -627,10 +627,10 @@ struct VeloxChem : viamd::EventHandler {
                 defer { md_temp_end(temp); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
+                    immediate::Encoder imm_ctx = immediate::encoder_begin();
+                    immediate::encoder_set_model(imm_ctx, mat4_ident());
                     // Render topology as points if available
-				    immediate::set_model_view_matrix(state.view.param.matrix.curr.view);
-				    immediate::set_proj_matrix(state.view.param.matrix.curr.proj);
-                    immediate::set_picking_base_idx(critical_points.picking_range.beg);
+                    immediate::encoder_set_picking_base_idx(imm_ctx, critical_points.picking_range.beg);
 
                     glDisable(GL_DEPTH_TEST);
 
@@ -645,7 +645,7 @@ struct VeloxChem : viamd::EventHandler {
                                       critical_points.simp_graph.vertices[i1].z };
 						p0 *= BOHR_TO_ANGSTROM;
 						p1 *= BOHR_TO_ANGSTROM;
-						immediate::draw_line(p0, p1, immediate::COLOR_BLACK);
+                        immediate::draw_line(imm_ctx, p0, p1, immediate::COLOR_BLACK);
                     }
 
                     /*
@@ -697,9 +697,10 @@ struct VeloxChem : viamd::EventHandler {
                         return za < zb;
                     });
 
-                    immediate::draw_points_v(vertices, num_verts);
+                    immediate::draw_points_v(imm_ctx, vertices, num_verts);
 
-                    immediate::render();
+                    immediate::encoder_end(imm_ctx);
+                    immediate::encoder_submit(imm_ctx, state.view.param.matrix.curr.view, state.view.param.matrix.curr.proj);
                 }
 
                 //ApplicationState& state = *(ApplicationState*)e.payload;

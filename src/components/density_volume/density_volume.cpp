@@ -772,15 +772,16 @@ struct DensityVolume : viamd::EventHandler {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-                immediate::set_model_view_matrix(mat4_mul(world_to_view, model_mat));
-                immediate::set_proj_matrix(view_to_clip);
+                immediate::Encoder imm_ctx = immediate::encoder_begin();
+                immediate::encoder_set_model(imm_ctx, model_mat);
 
                 uint32_t box_color = convert_color(bounding_box_color);
                 uint32_t clip_color = convert_color(clip_volume_color);
-                immediate::draw_box_wireframe({0,0,0}, {1,1,1}, box_color);
-                immediate::draw_box_wireframe(clip_volume.min, clip_volume.max, clip_color);
+                immediate::draw_box_wireframe(imm_ctx, {0,0,0}, {1,1,1}, box_color);
+                immediate::draw_box_wireframe(imm_ctx, clip_volume.min, clip_volume.max, clip_color);
 
-                immediate::render();
+                immediate::encoder_end(imm_ctx);
+                immediate::encoder_submit(imm_ctx, world_to_view, view_to_clip);
 
                 glDisable(GL_BLEND);
             }

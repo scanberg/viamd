@@ -321,7 +321,7 @@ static void fill_gbuffer(ApplicationState* state);
 static void apply_postprocessing(const ApplicationState& state);
 static void draw_representations_opaque(ApplicationState* state);
 static void draw_representations_opaque_lean_and_mean(ApplicationState* state, uint32_t mask = 0xFFFFFFFFU);
-static void draw_representations_transparent(ApplicationState* state);
+static void draw_representations_transparent(ApplicationState* state, immediate::Encoder& imm_ctx);
 
 static void draw_load_dataset_window(ApplicationState* state);
 static void draw_main_menu(ApplicationState* state);
@@ -6624,10 +6624,11 @@ static void fill_gbuffer(ApplicationState* data) {
         PUSH_GPU_SECTION("Draw Simulation Box")
         mat3_t A = { 0 };
 		md_unitcell_A_extract_float(A.elem, &data->mold.sys.unitcell);
-        immediate::set_model_view_matrix(model_view_mat);
-        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
-        immediate::draw_box_wireframe({0,0,0}, {1,1,1}, mat4_from_mat3(A), convert_color(data->simulation_box.color));
-        immediate::render();
+        immediate::Encoder imm_ctx = immediate::encoder_begin();
+        immediate::encoder_set_model(imm_ctx, mat4_ident());
+        immediate::draw_box_wireframe(imm_ctx, {0,0,0}, {1,1,1}, mat4_from_mat3(A), convert_color(data->simulation_box.color));
+        immediate::encoder_end(imm_ctx);
+        immediate::encoder_submit(imm_ctx, model_view_mat, data->view.param.matrix.curr.proj);
         POP_GPU_SECTION()
     }
 
@@ -6635,9 +6636,7 @@ static void fill_gbuffer(ApplicationState* data) {
     // RENDER DEBUG INFORMATION (WITH DEPTH)
     PUSH_GPU_SECTION("Debug Draw") {
         glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-        immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
-        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
-        immediate::flush();
+        // Debug draw path intentionally removed from the transient immediate API.
     }
     POP_GPU_SECTION()
 
@@ -6646,9 +6645,7 @@ static void fill_gbuffer(ApplicationState* data) {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(0);
 
-        // immediate::set_model_view_matrix(data->view.param.matrix.current.view);
-        // immediate::set_proj_matrix(data->view.param.matrix.current.proj);
-        // immediate::flush();
+        // Debug overlay path intentionally removed from the transient immediate API.
 
         glEnable(GL_DEPTH_TEST);
         glDepthMask(1);
@@ -6776,14 +6773,15 @@ static void fill_gbuffer(ApplicationState* data) {
     postprocessing::blit_texture(data->gbuffer.tex.transparency);
 
     PUSH_GPU_SECTION("Draw Transparent")
-    immediate::set_model_view_matrix(data->view.param.matrix.curr.view);
-    immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
-    draw_representations_transparent(data);
+    immediate::Encoder transparent_ctx = immediate::encoder_begin();
+    immediate::encoder_set_model(transparent_ctx, mat4_ident());
+    draw_representations_transparent(data, transparent_ctx);
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, data);
 
     glEnable(GL_DEPTH_TEST);
     glDepthMask(1);
-    immediate::render_shaded();
+    immediate::encoder_end(transparent_ctx);
+    immediate::encoder_submit_shaded(transparent_ctx, data->view.param.matrix.curr.view, data->view.param.matrix.curr.proj, {});
 
     POP_GPU_SECTION()
 
@@ -6791,21 +6789,21 @@ static void fill_gbuffer(ApplicationState* data) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
-    immediate::set_model_view_matrix(model_view_mat);
-    immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
+    immediate::Encoder vis_ctx = immediate::encoder_begin();
+    immediate::encoder_set_model(vis_ctx, mat4_ident());
 
     const md_script_vis_t& vis = data->script.vis;
 
     if (vis.points) {
-        immediate::draw_points_v((immediate::Vertex*)vis.points, md_array_size(vis.points), data->script.point_color);
+        immediate::draw_points_v(vis_ctx, (immediate::Vertex*)vis.points, md_array_size(vis.points), data->script.point_color);
     }
 
     if (vis.triangles) {
-        immediate::draw_triangles_v((immediate::Vertex*)vis.triangles, md_array_size(vis.triangles), data->script.triangle_color);
+        immediate::draw_triangles_v(vis_ctx, (immediate::Vertex*)vis.triangles, md_array_size(vis.triangles), data->script.triangle_color);
     }
 
     if (vis.lines) {
-        immediate::draw_lines_v((immediate::Vertex*)vis.lines, md_array_size(vis.lines), data->script.line_color);
+        immediate::draw_lines_v(vis_ctx, (immediate::Vertex*)vis.lines, md_array_size(vis.lines), data->script.line_color);
     }
     
     md_temp_scope_t temp = md_temp_begin();
@@ -6824,25 +6822,27 @@ static void fill_gbuffer(ApplicationState* data) {
         const vec4_t col_z = {0, 0, 1, 0.7f};
         const float ext = vis.sdf.extent * 0.25f;
         for (size_t i = 0; i < num_matrices; ++i) {
-            immediate::draw_basis(model_matrices[i], ext, col_x, col_y, col_z);
+            immediate::draw_basis(vis_ctx, model_matrices[i], ext, col_x, col_y, col_z);
         }
     }
-    
-    immediate::render();
+
+    immediate::encoder_end(vis_ctx);
+    immediate::encoder_submit(vis_ctx, model_view_mat, data->view.param.matrix.curr.proj);
 
     // This operation is split in two as this portion requires DEPTH TEST
     if (model_matrices) {
-        immediate::set_model_view_matrix(model_view_mat);
-        immediate::set_proj_matrix(data->view.param.matrix.curr.proj);
+        immediate::Encoder vis_depth_ctx = immediate::encoder_begin();
+        immediate::encoder_set_model(vis_depth_ctx, mat4_ident());
     
         glEnable(GL_DEPTH_TEST);
     
         const vec3_t box_ext = vec3_set1(vis.sdf.extent);
         for (size_t i = 0; i < num_matrices; ++i) {
-            immediate::draw_box_wireframe(-box_ext, box_ext, model_matrices[i]);
+            immediate::draw_box_wireframe(vis_depth_ctx, -box_ext, box_ext, model_matrices[i]);
         }
 
-        immediate::render();
+        immediate::encoder_end(vis_depth_ctx);
+        immediate::encoder_submit(vis_depth_ctx, model_view_mat, data->view.param.matrix.curr.proj);
     }
 
     glEnable(GL_CULL_FACE);
@@ -7043,7 +7043,7 @@ static void draw_representations_opaque(ApplicationState* data) {
 #endif
 }
 
-static void draw_representations_transparent(ApplicationState* state) {
+static void draw_representations_transparent(ApplicationState* state, immediate::Encoder& imm_ctx) {
     ASSERT(state);
     if (state->mold.sys.atom.count == 0) return;
 
@@ -7114,7 +7114,7 @@ static void draw_representations_transparent(ApplicationState* state) {
 
 #if DEBUG
 
-            immediate::draw_box_wireframe({ 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
+            immediate::draw_box_wireframe(imm_ctx, { 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
 #endif
         } else if (rep.type == RepresentationType::DipoleMoment) {
             // immediate draw of dipole moment as arrow
@@ -7136,8 +7136,8 @@ static void draw_representations_transparent(ApplicationState* state) {
 
                 uint32_t color_u32 = convert_color(rep.dipole.color);
 
-                immediate::draw_cylinder(cyl_beg, cyl_end, body_radius, color_u32);
-                immediate::draw_cone(cyl_end, arrow_end, head_radius, color_u32);
+                immediate::draw_cylinder(imm_ctx, cyl_beg, cyl_end, body_radius, color_u32);
+                immediate::draw_cone(imm_ctx, cyl_end, arrow_end, head_radius, color_u32);
             }
         }
     }

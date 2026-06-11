@@ -835,9 +835,9 @@ for (int32 x = 1; x < dim.x; x++) {
 
 
 void draw_voxelized_scene(const GPUVolume& vol, const mat4_t& view_mat, const mat4_t& proj_mat) {
-    immediate::set_model_view_matrix(view_mat);
-    immediate::set_proj_matrix(proj_mat);
-    immediate::set_material(immediate::MATERIAL_ROUGH_BLACK);
+    // Legacy immediate path removed.
+    (void)view_mat;
+    (void)proj_mat;
 
     for (int32 z = 0; z < vol.res_z; z++) {
         for (int32 y = 0; y < vol.res_y; y++) {
@@ -852,7 +852,6 @@ void draw_voxelized_scene(const GPUVolume& vol, const mat4_t& view_mat, const ma
         }
     }
 
-    immediate::flush();
 }
 */
 

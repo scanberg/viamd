@@ -17,19 +17,58 @@ using Index = uint32_t;
 struct DrawCommand {
     uint32_t offset = 0;
     uint32_t count = 0;
-    int32_t view_matrix_idx = -1;
-    int32_t proj_matrix_idx = -1;
+    int32_t model_matrix_idx = -1;
     uint32_t picking_base_idx = 0;
     GLenum primitive_type;
 };
 
-static md_array(mat4_t) matrix_stack;
+struct ContextImpl {
+    md_allocator_i* arena = nullptr;
+    md_array(mat4_t) model_matrices = nullptr;
+    md_array(DrawCommand) commands = nullptr;
+    md_array(Vertex) vertices = nullptr;
+    md_array(Index) indices = nullptr;
 
-static md_array(DrawCommand) commands;
-static md_array(Vertex) vertices;
-static md_array(Index) indices;
+    int32_t curr_model_matrix_idx = -1;
+    uint32_t curr_picking_base_idx = 0;
+    bool recording = false;
+};
 
-static md_allocator_i* arena;
+struct PassParams {
+    mat4_t view = mat4_ident();
+    mat4_t proj = mat4_ident();
+    uint32_t picking_base_idx = 0;
+};
+
+struct GfxContext;
+
+struct Queue {
+    GfxContext* owner = nullptr;
+    const char* label = nullptr;
+    md_array(Encoder) submitted = nullptr;
+};
+
+struct GfxContext {
+    md_array(Queue*) queues = nullptr;
+};
+
+static ContextImpl* get_context_impl(Encoder& ctx) {
+    return (ContextImpl*)ctx.impl;
+}
+
+static const ContextImpl* get_context_impl(const Encoder& ctx) {
+    return (const ContextImpl*)ctx.impl;
+}
+
+#define IM_CTX(ctx)                            \
+    ContextImpl& _ctx = *get_context_impl(ctx); \
+    [[maybe_unused]] auto* arena = _ctx.arena;  \
+    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;    \
+    [[maybe_unused]] auto& commands = _ctx.commands;            \
+    [[maybe_unused]] auto& vertices = _ctx.vertices;            \
+    [[maybe_unused]] auto& indices = _ctx.indices;              \
+    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx; \
+    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx
 
 static GLuint vbo = 0;
 static GLuint ibo = 0;
@@ -58,10 +97,6 @@ struct {
     GLint roughness       = -1;
     GLint F0              = -1;
 } uniform_loc_shaded;
-
-static int32_t curr_view_matrix_idx = -1;
-static int32_t curr_proj_matrix_idx = -1;
-static uint32_t curr_picking_base_idx = 0;
 
 static const char* v_shader_src = R"(
 #version 150 core
@@ -264,15 +299,19 @@ void main() {
 }
 )";
 
-static inline void append_draw_command(size_t count, GLenum primitive_type) {
+static inline void append_draw_command(ContextImpl& _ctx, size_t count, GLenum primitive_type) {
+    auto& commands = _ctx.commands;
+    auto& indices = _ctx.indices;
+    auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
+    auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
+
     const uint32_t max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
     ASSERT(md_array_size(indices) + count < max_size);
     // Can we append data to previous draw command?
     DrawCommand* last_cmd = md_array_last(commands);
     if (last_cmd &&
         last_cmd->primitive_type == primitive_type &&
-        last_cmd->view_matrix_idx == curr_view_matrix_idx &&
-        last_cmd->proj_matrix_idx == curr_proj_matrix_idx &&
+        last_cmd->model_matrix_idx == curr_model_matrix_idx &&
         last_cmd->picking_base_idx == curr_picking_base_idx) {
         size_t capacity = max_size - last_cmd->count;
 
@@ -285,13 +324,86 @@ static inline void append_draw_command(size_t count, GLenum primitive_type) {
             count -= capacity;
         }
     }
-    ASSERT(curr_view_matrix_idx > -1 && "Immediate Mode View Matrix not set!");
-    ASSERT(curr_proj_matrix_idx > -1 && "Immediate Mode Proj Matrix not set!");
+    ASSERT(curr_model_matrix_idx > -1 && "Immediate Mode Model Matrix not set!");
 
     const size_t offset = md_array_size(indices) - count;
-    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, curr_view_matrix_idx, curr_proj_matrix_idx, curr_picking_base_idx, primitive_type};
+    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, curr_model_matrix_idx, curr_picking_base_idx, primitive_type};
     
-    md_array_push(commands, cmd, arena);
+    md_array_push(commands, cmd, _ctx.arena);
+}
+
+static ContextImpl& ensure_context_impl(Encoder& ctx) {
+    if (ctx.impl) {
+        return *(ContextImpl*)ctx.impl;
+    }
+
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_allocator_i* arena = md_arena_allocator_create(heap, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    ContextImpl* impl = (ContextImpl*)md_alloc(arena, sizeof(ContextImpl));
+    MEMSET(impl, 0, sizeof(ContextImpl));
+    impl->arena = arena;
+
+    md_array_ensure(impl->vertices, 100000, impl->arena);
+    md_array_ensure(impl->indices,  100000, impl->arena);
+    md_array_ensure(impl->model_matrices, 10, impl->arena);
+    md_array_ensure(impl->commands, 32, impl->arena);
+
+    impl->curr_model_matrix_idx = -1;
+    impl->curr_picking_base_idx = 0;
+    impl->recording = false;
+
+    ctx.impl = impl;
+    return *impl;
+}
+
+static void reset_context(ContextImpl& impl) {
+    md_array_shrink(impl.vertices, 0);
+    md_array_shrink(impl.indices, 0);
+    md_array_shrink(impl.commands, 0);
+    md_array_shrink(impl.model_matrices, 0);
+    impl.curr_model_matrix_idx = -1;
+    impl.curr_picking_base_idx = 0;
+}
+
+static void release_context(Encoder& ctx);
+
+void encoder_discard(Encoder& ctx) {
+    ContextImpl* impl = get_context_impl(ctx);
+    if (!impl) return;
+
+    impl->recording = false;
+    release_context(ctx);
+}
+
+static void release_context(Encoder& ctx) {
+    ContextImpl* impl = get_context_impl(ctx);
+    if (!impl) {
+        return;
+    }
+
+    md_allocator_i* arena = impl->arena;
+    ctx.impl = nullptr;
+
+    if (impl->arena) {
+        md_arena_allocator_destroy(arena);
+    }
+}
+
+Encoder encoder_begin(const char* label) {
+    (void)label;
+    Encoder ctx = {};
+    ensure_context_impl(ctx);
+    IM_CTX(ctx);
+    _ctx.recording = true;
+    reset_context(_ctx);
+    md_array_push(model_matrices, mat4_ident(), _ctx.arena);
+    curr_model_matrix_idx = 0;
+    return ctx;
+}
+
+void encoder_end(Encoder& ctx) {
+    ASSERT(get_context_impl(ctx));
+    get_context_impl(ctx)->recording = false;
 }
 
 void initialize() {
@@ -400,13 +512,6 @@ void initialize() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    if (!arena) {
-        arena = md_vm_arena_create(GIGABYTES(1));
-    }
-
-    md_array_ensure(vertices, 100000, arena);
-    md_array_ensure(indices,  100000, arena);
-    md_array_ensure(matrix_stack, 10, arena);
 }
 
 void shutdown() {
@@ -415,27 +520,29 @@ void shutdown() {
     if (vao) glDeleteVertexArrays(1, &vao);
     if (program) glDeleteProgram(program);
     if (program_shaded) glDeleteProgram(program_shaded);
-    md_vm_arena_destroy(arena);
 }
 
-void set_model_view_matrix(const mat4_t& model_view_matrix) {
-    curr_view_matrix_idx = (int)md_array_size(matrix_stack);
-    md_array_push(matrix_stack, model_view_matrix, arena);
+void encoder_set_model(Encoder& ctx, const mat4_t& model_matrix) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
+    curr_model_matrix_idx = (int)md_array_size(model_matrices);
+    md_array_push(model_matrices, model_matrix, _ctx.arena);
 }
 
-void set_proj_matrix(const mat4_t& proj_matrix) {
-    curr_proj_matrix_idx = (int)md_array_size(matrix_stack);
-    md_array_push(matrix_stack, proj_matrix, arena);
-}
-
-void set_picking_base_idx(uint32_t base_idx) {
+void encoder_set_picking_base_idx(Encoder& ctx, uint32_t base_idx) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     curr_picking_base_idx = base_idx;
 }
 
-void render() {
+void encoder_submit(Encoder& ctx, const mat4_t& view, const mat4_t& proj, uint32_t picking_base_idx) {
+    const PassParams pass = {.view = view, .proj = proj, .picking_base_idx = picking_base_idx};
+	IM_CTX(ctx);
+	ASSERT(!_ctx.recording);
 	size_t num_commands = md_array_size(commands);
 	if (num_commands == 0) {
 		// No draw commands, no need to render or update GPU buffers.
+        release_context(ctx);
 		return;
 	}
 
@@ -453,38 +560,26 @@ void render() {
 
     glUniform1f(uniform_loc_point_size, 1.f);
 
-    int current_view_matrix_idx = -1;
-    int current_proj_matrix_idx = -1;
-
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, default_tex);
 
     const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+    const mat4_t vp_matrix = mat4_mul(pass.proj, pass.view);
 
+    int current_model_matrix_idx = -1;
     for (size_t i = 0; i < num_commands; ++i) {
         const auto& cmd = commands[i];
-        bool update_view = false;
-        bool update_mvp = false;
-        if (cmd.view_matrix_idx != current_view_matrix_idx) {
-            current_view_matrix_idx = cmd.view_matrix_idx;
-            update_view = true;
-            update_mvp = true;
-        }
-        if (cmd.proj_matrix_idx != current_proj_matrix_idx) {
-            current_proj_matrix_idx = cmd.proj_matrix_idx;
-            update_mvp = true;
-        }
-
-        if (update_view) {
-            mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(matrix_stack[cmd.view_matrix_idx])));
+        if (cmd.model_matrix_idx != current_model_matrix_idx) {
+            current_model_matrix_idx = cmd.model_matrix_idx;
+            const mat4_t mv_matrix = mat4_mul(pass.view, model_matrices[cmd.model_matrix_idx]);
+            mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(mv_matrix)));
             glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix.elem[0][0]);
-        }
-        if (update_mvp) {
-            mat4_t mvp_matrix = mat4_mul(matrix_stack[cmd.proj_matrix_idx], matrix_stack[cmd.view_matrix_idx]);
+
+            mat4_t mvp_matrix = mat4_mul(vp_matrix, model_matrices[cmd.model_matrix_idx]);
             glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
         }
 
-        glUniform1ui(uniform_loc_picking_base_idx, cmd.picking_base_idx);
+        glUniform1ui(uniform_loc_picking_base_idx, pass.picking_base_idx + cmd.picking_base_idx);
 
         glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
     }
@@ -500,23 +595,28 @@ void render() {
     md_array_shrink(vertices, 0);
     md_array_shrink(indices,  0);
     md_array_shrink(commands, 0);
-    md_array_shrink(matrix_stack, 0);
-    curr_view_matrix_idx = -1;
-    curr_proj_matrix_idx = -1;
+    md_array_shrink(model_matrices, 0);
+    curr_model_matrix_idx = -1;
+
+    release_context(ctx);
 }
 
 // PRIMITIVES
-void draw_point(vec3_t pos, uint32_t color, uint32_t picking_idx) {
+void draw_point(Encoder& ctx, vec3_t pos, uint32_t color, uint32_t picking_idx) {
+	IM_CTX(ctx);
+	ASSERT(_ctx.recording);
     const Index idx = (Index)md_array_size(vertices);
 
     Vertex v = {pos, color, {0,0,1}, picking_idx};
     md_array_push(vertices, v,  arena);
     md_array_push(indices, idx, arena);
 
-    append_draw_command(1, GL_POINTS);
+    append_draw_command(_ctx, 1, GL_POINTS);
 }
 
-void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult) {
+void draw_points_v(Encoder& ctx, const Vertex verts[], size_t count, vec4_t color_mult) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     const Index idx = (Index)md_array_size(vertices);
     md_array_resize(vertices, md_array_size(vertices) + count, arena);
     Vertex* v = md_array_end(vertices) - count;
@@ -535,10 +635,12 @@ void draw_points_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         md_array_push(indices, i, arena);
     }
 
-    append_draw_command(count, GL_POINTS);
+    append_draw_command(_ctx, count, GL_POINTS);
 }
 
-void draw_line(vec3_t from, vec3_t to, uint32_t color) {
+void draw_line(Encoder& ctx, vec3_t from, vec3_t to, uint32_t color) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     const Index idx = (Index)md_array_size(vertices);
 
     Vertex v[2] = {
@@ -550,10 +652,12 @@ void draw_line(vec3_t from, vec3_t to, uint32_t color) {
     md_array_push(indices, idx + 0, arena);
     md_array_push(indices, idx + 1, arena);
 
-    append_draw_command(2, GL_LINES);
+    append_draw_command(_ctx, 2, GL_LINES);
 }
 
-void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult) {
+void draw_lines_v(Encoder& ctx, const Vertex verts[], size_t count, vec4_t color_mult) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     if ((count & 1) == 1) {
         MD_LOG_DEBUG("Expected even number of vertices as in function %s", __FUNCTION__);
     }
@@ -580,10 +684,12 @@ void draw_lines_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         md_array_push(indices, i + 1, arena);
     }
 
-    append_draw_command(count, GL_LINES);
+    append_draw_command(_ctx, count, GL_LINES);
 }
 
-void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color, uint32_t picking_idx) {
+void draw_triangle(Encoder& ctx, vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color, uint32_t picking_idx) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     const Index idx = (Index)md_array_size(vertices);
     const vec3_t normal = vec3_normalize(vec3_cross(vec3_sub(p1, p0), vec3_sub(p2, p0)));
 
@@ -598,10 +704,12 @@ void draw_triangle(vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color, uint32_t pic
     md_array_push(indices, idx + 1, arena);
     md_array_push(indices, idx + 2, arena);
 
-    append_draw_command(3, GL_TRIANGLES);
+    append_draw_command(_ctx, 3, GL_TRIANGLES);
 }
 
-void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult) {
+void draw_triangles_v(Encoder& ctx, const Vertex verts[], size_t count, vec4_t color_mult) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     if ((count % 3) != 0) {
         MD_LOG_DEBUG("Expected number of vertices to be divisible by 3 in function %s", __FUNCTION__);
     }
@@ -629,10 +737,12 @@ void draw_triangles_v(const Vertex verts[], size_t count, vec4_t color_mult) {
         md_array_push(indices, i + 2, arena);
     }
 
-    append_draw_command(count, GL_TRIANGLES);
+    append_draw_command(_ctx, count, GL_TRIANGLES);
 }
 
-void draw_plane(vec3_t center, vec3_t u, vec3_t v, uint32_t color, uint32_t picking_idx) {
+void draw_plane(Encoder& ctx, vec3_t center, vec3_t u, vec3_t v, uint32_t color, uint32_t picking_idx) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     const Index idx = (Index)md_array_size(vertices);
     const vec3_t normal = vec3_normalize(vec3_cross(u, v));
 
@@ -651,10 +761,12 @@ void draw_plane(vec3_t center, vec3_t u, vec3_t v, uint32_t color, uint32_t pick
     md_array_push(indices, idx + 1, arena);
     md_array_push(indices, idx + 3, arena);
 
-    append_draw_command(6, GL_TRIANGLES);
+    append_draw_command(_ctx, 6, GL_TRIANGLES);
 }
 
-void draw_plane_wireframe(vec3_t center, vec3_t vec_u, vec3_t vec_v, uint32_t color, int segments_u, int segments_v) {
+void draw_plane_wireframe(Encoder& ctx, vec3_t center, vec3_t vec_u, vec3_t vec_v, uint32_t color, int segments_u, int segments_v) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     ASSERT(segments_u > 0);
     ASSERT(segments_v > 0);
 
@@ -663,13 +775,13 @@ void draw_plane_wireframe(vec3_t center, vec3_t vec_u, vec3_t vec_v, uint32_t co
     for (int i = 0; i <= segments_u; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_u);
         const vec3_t u = vec3_mul1(vec_u, t);
-        draw_line(vec3_sub(center, vec3_add(vec_v, u)), vec3_add(center, vec3_add(vec_v, u)), color);
+        draw_line(ctx, vec3_sub(center, vec3_add(vec_v, u)), vec3_add(center, vec3_add(vec_v, u)), color);
     }
 
     for (int i = 0; i <= segments_v; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_v);
         const vec3_t v = vec3_mul1(vec_v, t);
-        draw_line(vec3_sub(center, vec3_add(vec_u, v)), vec3_add(center, vec3_add(vec_u, v)), color);
+        draw_line(ctx, vec3_sub(center, vec3_add(vec_u, v)), vec3_add(center, vec3_add(vec_u, v)), color);
     }
 }
 
@@ -709,73 +821,85 @@ void draw_aabb(vec3_t min_box, vec3_t max_box) {
     indices.push_back(idx + 2 - 1);
     indices.push_back(idx + 1 - 1);
 
-    append_draw_command(idx, 14, GL_TRIANGLE_STRIP);
+    append_draw_command(_ctx, idx, 14, GL_TRIANGLE_STRIP);
 }
 */
 
-void draw_box_wireframe(vec3_t min_box, vec3_t max_box, uint32_t color) {
+void draw_box_wireframe(Encoder& ctx, vec3_t min_box, vec3_t max_box, uint32_t color) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     // Z = min
-    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, color);
-    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
-    draw_line(vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
-    draw_line(vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
 
     // Z = max
-    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
-    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
-    draw_line(vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
-    draw_line(vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
 
     // Z min max
-    draw_line(vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
-    draw_line(vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
-    draw_line(vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
-    draw_line(vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
 }
 
-void draw_box_wireframe(vec3_t min_box, vec3_t max_box, vec4_t color) {
-    draw_box_wireframe(min_box, max_box, convert_color(color));
+void draw_box_wireframe(Encoder& ctx, vec3_t min_box, vec3_t max_box, vec4_t color) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
+    draw_box_wireframe(ctx, min_box, max_box, convert_color(color));
 }
 
-void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color) {
+void draw_box_wireframe(Encoder& ctx, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     const mat3_t R = mat3_from_mat4(model_matrix);
     const vec3_t trans = vec3_from_vec4(model_matrix.col[3]);
     // Z = min
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
                                                                                                                                                                     
     // Z = max                                                                                                                                                      
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
                                                                                                                                                                      
     // Z min to max                                                                                                                                                 
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
-    draw_line(vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), vec3_add(trans, mat3_mul_vec3(R, vec3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
 }
 
-void draw_box_wireframe(vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec4_t color) {
-    draw_box_wireframe(min_box, max_box, model_matrix, convert_color(color));
+void draw_box_wireframe(Encoder& ctx, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec4_t color) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
+    draw_box_wireframe(ctx, min_box, max_box, model_matrix, convert_color(color));
 }
 
-void draw_basis(mat4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
+void draw_basis(Encoder& ctx, mat4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     const vec3_t o = vec3_from_vec4(basis.col[3]);
     const vec3_t x = vec3_add(o, vec3_mul1(vec3_from_vec4(basis.col[0]), scale));
     const vec3_t y = vec3_add(o, vec3_mul1(vec3_from_vec4(basis.col[1]), scale));
     const vec3_t z = vec3_add(o, vec3_mul1(vec3_from_vec4(basis.col[2]), scale));
 
-    draw_line(o, x, x_color);
-    draw_line(o, y, y_color);
-    draw_line(o, z, z_color);
+    draw_line(ctx, o, x, x_color);
+    draw_line(ctx, o, y, y_color);
+    draw_line(ctx, o, z, z_color);
 }
 
-void draw_basis(mat4_t basis, const float scale, vec4_t x_color, vec4_t y_color, vec4_t z_color) {
-    draw_basis(basis, scale, convert_color(x_color), convert_color(y_color), convert_color(z_color));
+void draw_basis(Encoder& ctx, mat4_t basis, const float scale, vec4_t x_color, vec4_t y_color, vec4_t z_color) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
+    draw_basis(ctx, basis, scale, convert_color(x_color), convert_color(y_color), convert_color(z_color));
 }
 
 // Build an orthonormal tangent frame given a normalized axis direction.
@@ -786,7 +910,9 @@ static void build_tangent_frame(vec3_t axis, vec3_t& out_u, vec3_t& out_v) {
     out_v = vec3_cross(axis, out_u);
 }
 
-void draw_sphere(vec3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
+void draw_sphere(Encoder& ctx, vec3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     ASSERT(stacks >= 2 && slices >= 3);
     const float pi  = 3.14159265358979323846f;
     const float tau = 2.0f * pi;
@@ -814,7 +940,7 @@ void draw_sphere(vec3_t center, float radius, uint32_t color, uint32_t picking_i
         md_array_push(indices, base + 0, arena);
         md_array_push(indices, base + 2, arena);
         md_array_push(indices, base + 3, arena);
-        append_draw_command(6, GL_TRIANGLES);
+        append_draw_command(_ctx, 6, GL_TRIANGLES);
     };
 
     for (int i = 0; i < stacks; ++i) {
@@ -842,7 +968,9 @@ void draw_sphere(vec3_t center, float radius, uint32_t color, uint32_t picking_i
     }
 }
 
-void draw_sphere_wireframe(vec3_t center, float radius, uint32_t color, int stacks, int slices) {
+void draw_sphere_wireframe(Encoder& ctx, vec3_t center, float radius, uint32_t color, int stacks, int slices) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     ASSERT(stacks >= 2 && slices >= 3);
     const float pi  = 3.14159265358979323846f;
     const float tau = 2.0f * pi;
@@ -856,7 +984,7 @@ void draw_sphere_wireframe(vec3_t center, float radius, uint32_t color, int stac
             const float th1 = tau * ((float)(j + 1) / (float)slices);
             vec3_t a = vec3_add(center, vec3_mul1({cp*cosf(th0), cp*sinf(th0), sp}, radius));
             vec3_t b = vec3_add(center, vec3_mul1({cp*cosf(th1), cp*sinf(th1), sp}, radius));
-            draw_line(a, b, color);
+            draw_line(ctx, a, b, color);
         }
     }
 
@@ -869,12 +997,14 @@ void draw_sphere_wireframe(vec3_t center, float radius, uint32_t color, int stac
             const float phi1 = pi * ((float)(i + 1) / (float)stacks) - pi * 0.5f;
             vec3_t a = vec3_add(center, vec3_mul1({cosf(phi0)*ct, cosf(phi0)*st, sinf(phi0)}, radius));
             vec3_t b = vec3_add(center, vec3_mul1({cosf(phi1)*ct, cosf(phi1)*st, sinf(phi1)}, radius));
-            draw_line(a, b, color);
+            draw_line(ctx, a, b, color);
         }
     }
 }
 
-void draw_cylinder(vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+void draw_cylinder(Encoder& ctx, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
@@ -914,7 +1044,7 @@ void draw_cylinder(vec3_t from, vec3_t to, float radius, uint32_t color, uint32_
             md_array_push(indices, base + 0, arena);
             md_array_push(indices, base + 1, arena);
             md_array_push(indices, base + 3, arena);
-            append_draw_command(6, GL_TRIANGLES);
+            append_draw_command(_ctx, 6, GL_TRIANGLES);
         }
 
         // Bottom cap – flat normal pointing away from 'to'
@@ -930,7 +1060,7 @@ void draw_cylinder(vec3_t from, vec3_t to, float radius, uint32_t color, uint32_
             md_array_push(indices, base + 0, arena);
             md_array_push(indices, base + 1, arena);
             md_array_push(indices, base + 2, arena);
-            append_draw_command(3, GL_TRIANGLES);
+            append_draw_command(_ctx, 3, GL_TRIANGLES);
         }
 
         // Top cap – flat normal pointing away from 'from'
@@ -945,12 +1075,14 @@ void draw_cylinder(vec3_t from, vec3_t to, float radius, uint32_t color, uint32_
             md_array_push(indices, base + 0, arena);
             md_array_push(indices, base + 1, arena);
             md_array_push(indices, base + 2, arena);
-            append_draw_command(3, GL_TRIANGLES);
+            append_draw_command(_ctx, 3, GL_TRIANGLES);
         }
     }
 }
 
-void draw_cylinder_wireframe(vec3_t from, vec3_t to, float radius, uint32_t color, int segments) {
+void draw_cylinder_wireframe(Encoder& ctx, vec3_t from, vec3_t to, float radius, uint32_t color, int segments) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
@@ -966,15 +1098,17 @@ void draw_cylinder_wireframe(vec3_t from, vec3_t to, float radius, uint32_t colo
         vec3_t r1 = vec3_add(vec3_mul1(u, radius * cosf(th1)), vec3_mul1(v, radius * sinf(th1)));
 
         // Bottom ring
-        draw_line(vec3_add(from, r0), vec3_add(from, r1), color);
+        draw_line(ctx, vec3_add(from, r0), vec3_add(from, r1), color);
         // Top ring
-        draw_line(vec3_add(to, r0), vec3_add(to, r1), color);
+        draw_line(ctx, vec3_add(to, r0), vec3_add(to, r1), color);
         // Side edge
-        draw_line(vec3_add(from, r0), vec3_add(to, r0), color);
+        draw_line(ctx, vec3_add(from, r0), vec3_add(to, r0), color);
     }
 }
 
-void draw_cone(vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+void draw_cone(Encoder& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
@@ -1022,7 +1156,7 @@ void draw_cone(vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t p
             md_array_push(indices, base_idx + 0, arena);
             md_array_push(indices, base_idx + 2, arena);
             md_array_push(indices, base_idx + 1, arena);
-            append_draw_command(3, GL_TRIANGLES);
+            append_draw_command(_ctx, 3, GL_TRIANGLES);
         }
 
         // Base cap – flat normal pointing away from tip
@@ -1037,12 +1171,14 @@ void draw_cone(vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t p
             md_array_push(indices, base_idx + 0, arena);
             md_array_push(indices, base_idx + 2, arena);
             md_array_push(indices, base_idx + 1, arena);
-            append_draw_command(3, GL_TRIANGLES);
+            append_draw_command(_ctx, 3, GL_TRIANGLES);
         }
     }
 }
 
-void draw_cone_wireframe(vec3_t base, vec3_t tip, float radius, uint32_t color, int segments) {
+void draw_cone_wireframe(Encoder& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, int segments) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
@@ -1058,13 +1194,15 @@ void draw_cone_wireframe(vec3_t base, vec3_t tip, float radius, uint32_t color, 
         vec3_t r1 = vec3_add(vec3_mul1(u, radius * cosf(th1)), vec3_mul1(v, radius * sinf(th1)));
 
         // Base ring
-        draw_line(vec3_add(base, r0), vec3_add(base, r1), color);
+        draw_line(ctx, vec3_add(base, r0), vec3_add(base, r1), color);
         // Lateral edge
-        draw_line(vec3_add(base, r0), tip, color);
+        draw_line(ctx, vec3_add(base, r0), tip, color);
     }
 }
 
-void draw_box(vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking_idx) {
+void draw_box(Encoder& ctx, vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking_idx) {
+    IM_CTX(ctx);
+    ASSERT(_ctx.recording);
     const vec3_t p000 = {mn.x, mn.y, mn.z};
     const vec3_t p100 = {mx.x, mn.y, mn.z};
     const vec3_t p010 = {mn.x, mx.y, mn.z};
@@ -1075,28 +1213,32 @@ void draw_box(vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking_idx) {
     const vec3_t p111 = {mx.x, mx.y, mx.z};
 
     // -Z face
-    draw_triangle(p000, p110, p100, color, picking_idx);
-    draw_triangle(p000, p010, p110, color, picking_idx);
+    draw_triangle(ctx, p000, p110, p100, color, picking_idx);
+    draw_triangle(ctx, p000, p010, p110, color, picking_idx);
     // +Z face
-    draw_triangle(p001, p101, p111, color, picking_idx);
-    draw_triangle(p001, p111, p011, color, picking_idx);
+    draw_triangle(ctx, p001, p101, p111, color, picking_idx);
+    draw_triangle(ctx, p001, p111, p011, color, picking_idx);
     // -Y face
-    draw_triangle(p000, p100, p101, color, picking_idx);
-    draw_triangle(p000, p101, p001, color, picking_idx);
+    draw_triangle(ctx, p000, p100, p101, color, picking_idx);
+    draw_triangle(ctx, p000, p101, p001, color, picking_idx);
     // +Y face
-    draw_triangle(p010, p111, p110, color, picking_idx);
-    draw_triangle(p010, p011, p111, color, picking_idx);
+    draw_triangle(ctx, p010, p111, p110, color, picking_idx);
+    draw_triangle(ctx, p010, p011, p111, color, picking_idx);
     // -X face
-    draw_triangle(p000, p001, p011, color, picking_idx);
-    draw_triangle(p000, p011, p010, color, picking_idx);
+    draw_triangle(ctx, p000, p001, p011, color, picking_idx);
+    draw_triangle(ctx, p000, p011, p010, color, picking_idx);
     // +X face
-    draw_triangle(p100, p110, p111, color, picking_idx);
-    draw_triangle(p100, p111, p101, color, picking_idx);
+    draw_triangle(ctx, p100, p110, p111, color, picking_idx);
+    draw_triangle(ctx, p100, p111, p101, color, picking_idx);
 }
 
-void render_shaded(const LightingDesc& lighting) {
+void encoder_submit_shaded(Encoder& ctx, const mat4_t& view, const mat4_t& proj, const LightingDesc& lighting, uint32_t picking_base_idx) {
+    const PassParams pass = {.view = view, .proj = proj, .picking_base_idx = picking_base_idx};
+    IM_CTX(ctx);
+    ASSERT(!_ctx.recording);
     size_t num_commands = md_array_size(commands);
     if (num_commands == 0) {
+        release_context(ctx);
         return;
     }
 
@@ -1112,9 +1254,8 @@ void render_shaded(const LightingDesc& lighting) {
     glLineWidth(1.f);
 
     const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
-
-    int current_view_matrix_idx = -1;
-    int current_proj_matrix_idx = -1;
+    const mat4_t vp_matrix = mat4_mul(pass.proj, pass.view);
+    int current_model_matrix_idx = -1;
 
     // Shaded program state that stays constant for the whole call
     glUseProgram(program_shaded);
@@ -1128,30 +1269,18 @@ void render_shaded(const LightingDesc& lighting) {
     for (size_t i = 0; i < num_commands; ++i) {
         const auto& cmd = commands[i];
 
-        bool update_view = false;
-        bool update_mvp  = false;
-        if (cmd.view_matrix_idx != current_view_matrix_idx) {
-            current_view_matrix_idx = cmd.view_matrix_idx;
-            update_view = true;
-            update_mvp  = true;
-        }
-        if (cmd.proj_matrix_idx != current_proj_matrix_idx) {
-            current_proj_matrix_idx = cmd.proj_matrix_idx;
-            update_mvp = true;
-        }
-
-        if (update_view) {
-            const mat4_t& mv = matrix_stack[cmd.view_matrix_idx];
+        if (cmd.model_matrix_idx != current_model_matrix_idx) {
+            current_model_matrix_idx = cmd.model_matrix_idx;
+            const mat4_t mv = mat4_mul(pass.view, model_matrices[cmd.model_matrix_idx]);
             glUniformMatrix4fv(uniform_loc_shaded.mv_matrix, 1, GL_FALSE, &mv.elem[0][0]);
 
             mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(mv)));
             glUniformMatrix3fv(uniform_loc_shaded.normal_mat_vs, 1, GL_FALSE, &normal_matrix.elem[0][0]);
-        }
-        if (update_mvp) {
-            mat4_t mvp = mat4_mul(matrix_stack[cmd.proj_matrix_idx], matrix_stack[cmd.view_matrix_idx]);
+
+            mat4_t mvp = mat4_mul(vp_matrix, model_matrices[cmd.model_matrix_idx]);
             glUniformMatrix4fv(uniform_loc_shaded.mvp_matrix, 1, GL_FALSE, &mvp.elem[0][0]);
         }
-        glUniform1ui(uniform_loc_shaded.picking_base_idx, cmd.picking_base_idx);
+        glUniform1ui(uniform_loc_shaded.picking_base_idx, pass.picking_base_idx + cmd.picking_base_idx);
 
         glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
     }
@@ -1165,9 +1294,154 @@ void render_shaded(const LightingDesc& lighting) {
     md_array_shrink(vertices, 0);
     md_array_shrink(indices,  0);
     md_array_shrink(commands, 0);
-    md_array_shrink(matrix_stack, 0);
-    curr_view_matrix_idx = -1;
-    curr_proj_matrix_idx = -1;
+    md_array_shrink(model_matrices, 0);
+    curr_model_matrix_idx = -1;
+
+    release_context(ctx);
+}
+
+void point(Encoder& e, vec3_t pos, uint32_t color, uint32_t picking_idx) {
+    draw_point(e, pos, color, picking_idx);
+}
+
+void line(Encoder& e, vec3_t from, vec3_t to, uint32_t color) {
+    draw_line(e, from, to, color);
+}
+
+void triangle(Encoder& e, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color, uint32_t picking_idx) {
+    draw_triangle(e, v0, v1, v2, color, picking_idx);
+}
+
+void point(Scope& s, vec3_t pos, uint32_t color, uint32_t picking_idx) {
+    point(s.encoder(), pos, color, picking_idx);
+}
+
+void line(Scope& s, vec3_t from, vec3_t to, uint32_t color) {
+    line(s.encoder(), from, to, color);
+}
+
+void triangle(Scope& s, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color, uint32_t picking_idx) {
+    triangle(s.encoder(), v0, v1, v2, color, picking_idx);
+}
+
+Scope::Scope(const char* label) {
+    enc = encoder_begin(label);
+    active = true;
+}
+
+Scope::~Scope() {
+    if (active) {
+        encoder_discard(enc);
+        active = false;
+    }
+}
+
+Scope::Scope(Scope&& other) noexcept {
+    enc = other.enc;
+    active = other.active;
+    other.enc = {};
+    other.active = false;
+}
+
+Scope& Scope::operator=(Scope&& other) noexcept {
+    if (this != &other) {
+        if (active) {
+            encoder_discard(enc);
+        }
+        enc = other.enc;
+        active = other.active;
+        other.enc = {};
+        other.active = false;
+    }
+    return *this;
+}
+
+Encoder& Scope::encoder() {
+    return enc;
+}
+
+GfxContext* context_create() {
+    md_allocator_i* heap = md_get_heap_allocator();
+    GfxContext* ctx = (GfxContext*)md_alloc(heap, sizeof(GfxContext));
+    MEMSET(ctx, 0, sizeof(GfxContext));
+    return ctx;
+}
+
+void context_destroy(GfxContext* ctx) {
+    if (!ctx) return;
+    while (md_array_size(ctx->queues) > 0) {
+        Queue* q = ctx->queues[md_array_size(ctx->queues) - 1];
+        md_array_shrink(ctx->queues, md_array_size(ctx->queues) - 1);
+        queue_destroy(q);
+    }
+    md_array_free(ctx->queues, md_get_heap_allocator());
+    md_free(md_get_heap_allocator(), ctx, sizeof(GfxContext));
+}
+
+Queue* queue_create(GfxContext* ctx, const char* label) {
+    if (!ctx) return nullptr;
+    md_allocator_i* heap = md_get_heap_allocator();
+    Queue* queue = (Queue*)md_alloc(heap, sizeof(Queue));
+    MEMSET(queue, 0, sizeof(Queue));
+    queue->owner = ctx;
+    queue->label = label;
+    md_array_push(ctx->queues, queue, heap);
+    return queue;
+}
+
+void queue_destroy(Queue* queue) {
+    if (!queue) return;
+    if (queue->owner) {
+        size_t n = md_array_size(queue->owner->queues);
+        for (size_t i = 0; i < n; ++i) {
+            if (queue->owner->queues[i] == queue) {
+                queue->owner->queues[i] = queue->owner->queues[n - 1];
+                md_array_shrink(queue->owner->queues, n - 1);
+                break;
+            }
+        }
+    }
+    while (md_array_size(queue->submitted) > 0) {
+        Encoder e = queue->submitted[md_array_size(queue->submitted) - 1];
+        md_array_shrink(queue->submitted, md_array_size(queue->submitted) - 1);
+        encoder_discard(e);
+    }
+    md_array_free(queue->submitted, md_get_heap_allocator());
+    md_free(md_get_heap_allocator(), queue, sizeof(Queue));
+}
+
+void queue_reset(Queue* queue) {
+    if (!queue) return;
+    while (md_array_size(queue->submitted) > 0) {
+        Encoder e = queue->submitted[md_array_size(queue->submitted) - 1];
+        md_array_shrink(queue->submitted, md_array_size(queue->submitted) - 1);
+        encoder_discard(e);
+    }
+}
+
+void queue_submit(Queue* queue, Scope& scope) {
+    if (!queue || !scope.active) return;
+    encoder_end(scope.enc);
+    md_array_push(queue->submitted, scope.enc, md_get_heap_allocator());
+    scope.enc = {};
+    scope.active = false;
+}
+
+void render(Queue* queue, const RenderParams& params) {
+    if (!queue) return;
+
+    const LightingDesc default_lighting = {};
+    const LightingDesc& lighting = params.lighting ? *params.lighting : default_lighting;
+
+    for (size_t i = 0; i < md_array_size(queue->submitted); ++i) {
+        Encoder& e = queue->submitted[i];
+        if (params.shaded) {
+            encoder_submit_shaded(e, params.view, params.proj, lighting, params.picking_base_idx);
+        } else {
+            encoder_submit(e, params.view, params.proj, params.picking_base_idx);
+        }
+    }
+    md_array_shrink(queue->submitted, 0);
 }
 
 }  // namespace immediate
