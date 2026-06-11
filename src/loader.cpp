@@ -116,6 +116,13 @@ void init(State* state, str_t filepath, const md_system_t* sys) {
             return;
         }
 #endif
+#if MD_VLX
+        if (str_eq_ignore_case(ext, STR_LIT("hdf5"))) {
+            state->type = LoaderType_VLX_H5;
+            state->flags = loader_flags[state->type];
+            return;
+        }
+#endif
         state->type = type_from_ext(ext);
         if (state->type != LoaderType_Undefined) {
             state->flags = loader_flags[state->type];
