@@ -66,6 +66,7 @@
 #define DISPLAY_PROPERTY_MAX_POPULATION_SIZE 256
 #define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
 #define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
+#define CORRELATOR_MAX_AXIS_PROPERTIES 8
 
 #define HIGHLIGHT_PULSE_TIME_SCALE  5.0
 #define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
@@ -1213,14 +1214,10 @@ struct ApplicationState {
 
     // --- CORRELATOR ---
     struct {
-        enum RenderMode {
-            RenderMode_Scatter,
-            RenderMode_IsoLines,
-            RenderMode_ScatterAndIsoLines,
-        } render_mode = RenderMode_ScatterAndIsoLines;
-
-        char x_label[32] = "";
-        char y_label[32] = "";
+        char x_labels[CORRELATOR_MAX_AXIS_PROPERTIES][32] = {};
+        char y_labels[CORRELATOR_MAX_AXIS_PROPERTIES][32] = {};
+        int x_label_count = 0;
+        int y_label_count = 0;
         uint64_t axis_fingerprint = 0;
         struct {
             double beg_x = 0;
@@ -1231,9 +1228,15 @@ struct ApplicationState {
         int density_grid_dim = 64;
         int contour_levels = 3;
         float density_blur_sigma = 1.5f;
+        float density_alpha = 0.45f;
+        float density_gamma = 0.75f;
+        float density_cutoff = 0.02f;
         float contour_line_width = 1.5f;
         ImPlotMarker marker_type = ImPlotMarker_Circle;
         float marker_size = 3.0f;
+        bool show_scatter = true;
+        bool show_isolines = true;
+        bool show_density = true;
         bool show_window = false;
     } correlator;
 
