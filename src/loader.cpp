@@ -109,6 +109,12 @@ void init(State* state, str_t filepath, const md_system_t* sys) {
             state->flags = loader_flags[state->type];
             return;
         }
+#else
+        if (str_eq_ignore_case(ext, STR_LIT("trexio"))) {
+            MD_LOG_ERROR("Cannot open TREXIO file '" STR_FMT "': VIAMD was built without TREXIO support. Install TREXIO, rerun CMake configure, and rebuild VIAMD.", STR_ARG(filepath));
+            state->flags |= LoaderFlag_RequiresDialogue;
+            return;
+        }
 #endif
         state->type = type_from_ext(ext);
         if (state->type != LoaderType_Undefined) {
