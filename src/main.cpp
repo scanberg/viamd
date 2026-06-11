@@ -1196,15 +1196,6 @@ int main(int argc, char** argv) {
         gbuffer_clear(&state.gbuffer);
         fill_gbuffer(&state);
 
-		immediate::RenderParams params = {};
-		params.view = state.view.param.matrix.curr.view;
-		params.proj = state.view.param.matrix.curr.proj;
-
-		immediate::render(state.gfx.world, params);
-		immediate::render(state.gfx.overlay, params);
-
-        glDisable(GL_DEPTH_TEST);
-
         if (do_screenshot && state.screenshot.hide_gui) {
             // Activate gbuffer to store screenshot
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state.gbuffer.fbo);
@@ -1219,6 +1210,39 @@ int main(int argc, char** argv) {
         }
 
         apply_postprocessing(state);
+
+		gbuffer_clear(&state.gbuffer);
+
+        if (do_screenshot && state.screenshot.hide_gui) {
+            // Activate gbuffer to store screenshot
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state.gbuffer.fbo);
+            glViewport(0, 0, state.gbuffer.width, state.gbuffer.height);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        } else {
+            // Activate backbuffer
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glViewport(0, 0, state.app.framebuffer.width, state.app.framebuffer.height);
+            glDrawBuffer(GL_BACK);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+
+        immediate::RenderParams params = {};
+        params.view = state.view.param.matrix.curr.view;
+        params.proj = state.view.param.matrix.curr.proj_no_jitter;
+
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_BLEND);
+        // standard alpha blending
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        immediate::render(state.gfx.world, params);
+
+        glDisable(GL_DEPTH_TEST);
+        immediate::render(state.gfx.overlay, params);
+
+        glDisable(GL_BLEND);
+        glEnable(GL_CULL_FACE);
 
         if (do_screenshot && state.screenshot.hide_gui) {
             state.screenshot.sample_count += 1;
@@ -6641,10 +6665,8 @@ static void fill_gbuffer(ApplicationState* state) {
     if (state->simulation_box.enabled && state->mold.sys.unitcell.flags != 0) {
         mat3_t A = { 0 };
 		md_unitcell_A_extract_float(A.elem, &state->mold.sys.unitcell);
-        immediate::Scope scope("simulation_box");
+        immediate::Scope scope(state->gfx.world, "simulation_box");
         immediate::box_wireframe(scope, {0,0,0}, {1,1,1}, mat4_from_mat3(A), convert_color(state->simulation_box.color));
-        immediate::submit(state->gfx.world, scope);
-        POP_GPU_SECTION()
     }
 
 #if 0
@@ -6783,26 +6805,15 @@ static void fill_gbuffer(ApplicationState* state) {
     glDepthFunc(GL_LESS);
     glColorMask(1, 1, 1, 1);
 
+    // Blit selection and highlight result into transparency buffer
     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-
     postprocessing::blit_texture(state->gbuffer.tex.transparency);
 
-    PUSH_GPU_SECTION("Draw Transparent")
     draw_representations_transparent(state);
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
 
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(1);
-    immediate::RenderParams transparent_params = {};
-    transparent_params.view = state->view.param.matrix.curr.view;
-    transparent_params.proj = state->view.param.matrix.curr.proj;
-    transparent_params.shaded = true;
-    immediate::render(state->gfx.overlay, transparent_params);
-
-    POP_GPU_SECTION()
-
-    immediate::Scope vis_scope("visualization");
-    immediate::Scope vis_scope_depth("visualization width depth");
+    immediate::Scope vis_scope(state->gfx.overlay, "visualization");
+    immediate::Scope vis_scope_depth(state->gfx.world, "visualization with depth");
 
     const md_script_vis_t& vis = state->script.vis;
 
@@ -6839,9 +6850,6 @@ static void fill_gbuffer(ApplicationState* state) {
             immediate::box_wireframe(vis_scope_depth, -box_ext, box_ext, model_matrices[i]);
         }
     }
-
-	immediate::submit(state->gfx.world,   vis_scope);
-    immediate::submit(state->gfx.overlay, vis_scope);
 
     POP_GPU_SECTION()  // G-buffer
 }
@@ -7109,16 +7117,15 @@ static void draw_representations_transparent(ApplicationState* state) {
 
 #if DEBUG
             {
-				immediate::Scope scope("debug_electronic_structure");
+				immediate::Scope scope(state->gfx.world, "debug_electronic_structure");
                 immediate::box_wireframe(scope, { 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
-                immediate::submit(state->gfx.world, scope);
             }
 #endif
         } else if (rep.type == RepresentationType::DipoleMoment) {
             // immediate draw of dipole moment as arrow
             size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
             if (rep.dipole.dipole_idx < num_dipoles) {
-                immediate::Scope scope("debug_dipole_moment");
+                immediate::Scope scope(state->gfx.overlay, "debug_dipole_moment");
                 const DipoleMoment& dipole = state->representation.info.dipole_moments[rep.dipole.dipole_idx];
 
                 const vec3_t vec = dipole.vec * rep.dipole.scale;
@@ -7135,9 +7142,9 @@ static void draw_representations_transparent(ApplicationState* state) {
 
                 uint32_t color_u32 = convert_color(rep.dipole.color);
 
+                immediate::set_shading(scope, true);
                 immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32);
                 immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32);
-				immediate::submit(state->gfx.overlay, scope);
             }
         }
     }

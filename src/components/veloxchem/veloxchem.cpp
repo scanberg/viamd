@@ -627,7 +627,7 @@ struct VeloxChem : viamd::EventHandler {
                 defer { md_temp_end(temp); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
-                    immediate::Scope scope("veloxchem_critical_points");
+                    immediate::Scope scope(state.gfx.overlay, "veloxchem_critical_points");
                     // Render topology as points if available
                     immediate::set_picking_base_idx(scope, critical_points.picking_range.beg);
 
@@ -697,7 +697,6 @@ struct VeloxChem : viamd::EventHandler {
                     });
 
                     immediate::points(scope, vertices, num_verts);
-                    immediate::submit(state.gfx.world, scope);
                 }
 
                 //ApplicationState& state = *(ApplicationState*)e.payload;

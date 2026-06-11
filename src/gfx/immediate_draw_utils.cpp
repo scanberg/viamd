@@ -10,17 +10,14 @@
 
 #include <stddef.h>
 
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-variable"
-#elif defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-variable"
-#endif
-
 namespace immediate {
 
 using Index = uint32_t;
+
+enum class ProgramType : uint32_t {
+	Unshaded = 0,
+	Shaded = 1,
+};
 
 struct DrawCommand {
     uint32_t offset = 0;
@@ -28,6 +25,7 @@ struct DrawCommand {
     int32_t model_matrix_idx = -1;
     uint32_t picking_base_idx = 0;
     GLenum primitive_type;
+    ProgramType program_type = ProgramType::Unshaded;
 };
 
 struct PassParams {
@@ -47,6 +45,7 @@ struct Queue {
 
     int32_t curr_model_matrix_idx = -1;
     uint32_t curr_picking_base_idx = 0;
+    ProgramType curr_program_type = ProgramType::Unshaded;
 };
 
 static GLuint vbo = 0;
@@ -208,19 +207,15 @@ void main() {
 }
 )";
 
-static inline void append_draw_command(Queue& _ctx, size_t count, GLenum primitive_type) {
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-
+static inline void append_draw_command(Queue& ctx, size_t count, GLenum primitive_type) {
     const uint32_t max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
-    ASSERT(md_array_size(indices) + count < max_size);
-    DrawCommand* last_cmd = md_array_last(commands);
+    ASSERT(md_array_size(ctx.indices) + count < max_size);
+    DrawCommand* last_cmd = md_array_last(ctx.commands);
     if (last_cmd &&
         last_cmd->primitive_type == primitive_type &&
-        last_cmd->model_matrix_idx == curr_model_matrix_idx &&
-        last_cmd->picking_base_idx == curr_picking_base_idx) {
+        last_cmd->model_matrix_idx == ctx.curr_model_matrix_idx &&
+        last_cmd->picking_base_idx == ctx.curr_picking_base_idx &&
+        last_cmd->program_type == ctx.curr_program_type) {
         size_t capacity = max_size - last_cmd->count;
         if (count < capacity) {
             last_cmd->count += (uint32_t)count;
@@ -230,10 +225,10 @@ static inline void append_draw_command(Queue& _ctx, size_t count, GLenum primiti
         count -= capacity;
     }
 
-    ASSERT(curr_model_matrix_idx > -1 && "Immediate draw model matrix not set");
-    const size_t offset = md_array_size(indices) - count;
-    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, curr_model_matrix_idx, curr_picking_base_idx, primitive_type};
-    md_array_push(commands, cmd, _ctx.arena);
+    ASSERT(ctx.curr_model_matrix_idx > -1 && "Immediate draw model matrix not set");
+    const size_t offset = md_array_size(ctx.indices) - count;
+    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, ctx.curr_model_matrix_idx, ctx.curr_picking_base_idx, primitive_type, ctx.curr_program_type};
+    md_array_push(ctx.commands, cmd, ctx.arena);
 }
 
 static void init_queue_storage(Queue& q, md_allocator_i* arena) {
@@ -245,47 +240,12 @@ static void init_queue_storage(Queue& q, md_allocator_i* arena) {
     md_array_ensure(q.commands, 32, q.arena);
     q.curr_model_matrix_idx = -1;
     q.curr_picking_base_idx = 0;
-}
-
-static void reset_context(Queue& q) {
-    md_array_shrink(q.vertices, 0);
-    md_array_shrink(q.indices, 0);
-    md_array_shrink(q.commands, 0);
-    md_array_shrink(q.model_matrices, 0);
-    q.curr_model_matrix_idx = -1;
-    q.curr_picking_base_idx = 0;
-}
-
-static void append_scope_to_queue(Queue& queue, const Queue& scope) {
-    if (md_array_size(scope.commands) == 0) {
-        return;
-    }
-
-    const uint32_t vertex_base = (uint32_t)md_array_size(queue.vertices);
-    const uint32_t index_base = (uint32_t)md_array_size(queue.indices);
-    const int32_t matrix_base = (int32_t)md_array_size(queue.model_matrices);
-
-    md_array_push_array(queue.vertices, scope.vertices, md_array_size(scope.vertices), queue.arena);
-    md_array_push_array(queue.model_matrices, scope.model_matrices, md_array_size(scope.model_matrices), queue.arena);
-
-    const size_t src_idx_count = md_array_size(scope.indices);
-    for (size_t i = 0; i < src_idx_count; ++i) {
-        md_array_push(queue.indices, scope.indices[i] + vertex_base, queue.arena);
-    }
-
-    const size_t src_cmd_count = md_array_size(scope.commands);
-    for (size_t i = 0; i < src_cmd_count; ++i) {
-        DrawCommand cmd = scope.commands[i];
-        cmd.offset += index_base;
-        cmd.model_matrix_idx += matrix_base;
-        md_array_push(queue.commands, cmd, queue.arena);
-    }
+    q.curr_program_type = ProgramType::Unshaded;
 }
 
 void encoder_set_model(Queue& ctx, const mat4_t& model_matrix);
 void encoder_set_picking_base_idx(Queue& ctx, uint32_t base_idx);
-void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj, uint32_t picking_base_idx);
-void encoder_submit_shaded(Queue& ctx, const mat4_t& view, const mat4_t& proj, const LightingDesc& lighting, uint32_t picking_base_idx);
+void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj, const LightingDesc& lighting);
 void draw_point(Queue& ctx, vec3_t pos, uint32_t color, uint32_t picking_idx);
 void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_mult);
 void draw_line(Queue& ctx, vec3_t from, vec3_t to, uint32_t color);
@@ -327,6 +287,11 @@ void set_model(Queue* queue, const mat4_t& model_mat) {
 void set_picking_base_idx(Queue* queue, uint32_t base_idx) {
     Queue& q = require_queue(queue);
     encoder_set_picking_base_idx(q, base_idx);
+}
+
+void set_shading(Queue* queue, bool shaded) {
+	Queue& q = require_queue(queue);
+	q.curr_program_type = shaded ? ProgramType::Shaded : ProgramType::Unshaded;
 }
 
 void point(Queue* queue, vec3_t pos, uint32_t color, uint32_t picking_idx) {
@@ -468,37 +433,6 @@ void basis(Queue* queue, mat4_t basis_mat, float scale, vec4_t x_color, vec4_t y
     draw_basis(q, basis_mat, scale, x_color, y_color, z_color);
 }
 
-void point(Scope& s, vec3_t pos, uint32_t color, uint32_t picking_idx) { point(s.queue, pos, color, picking_idx); }
-void line(Scope& s, vec3_t from, vec3_t to, uint32_t color) { line(s.queue, from, to, color); }
-void triangle(Scope& s, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color, uint32_t picking_idx) { triangle(s.queue, v0, v1, v2, color, picking_idx); }
-void triangle_wireframe(Scope& s, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color) { triangle_wireframe(s.queue, v0, v1, v2, color); }
-void sphere(Scope& s, vec3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) { sphere(s.queue, center, radius, color, picking_idx, stacks, slices); }
-void sphere_wireframe(Scope& s, vec3_t center, float radius, uint32_t color, int stacks, int slices) { sphere_wireframe(s.queue, center, radius, color, stacks, slices); }
-void cylinder(Scope& s, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) { cylinder(s.queue, from, to, radius, color, picking_idx, segments); }
-void cylinder_wireframe(Scope& s, vec3_t from, vec3_t to, float radius, uint32_t color, int segments) { cylinder_wireframe(s.queue, from, to, radius, color, segments); }
-void cone(Scope& s, vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) { cone(s.queue, base, tip, radius, color, picking_idx, segments); }
-void cone_wireframe(Scope& s, vec3_t base, vec3_t tip, float radius, uint32_t color, int segments) { cone_wireframe(s.queue, base, tip, radius, color, segments); }
-void capsule(Scope& s, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) { capsule(s.queue, from, to, radius, color, picking_idx, segments); }
-void capsule_wireframe(Scope& s, vec3_t from, vec3_t to, float radius, uint32_t color, int segments) { capsule_wireframe(s.queue, from, to, radius, color, segments); }
-void box(Scope& s, vec3_t min_box, vec3_t max_box, uint32_t color, uint32_t picking_idx) { box(s.queue, min_box, max_box, color, picking_idx); }
-void points(Scope& s, const Vertex verts[], size_t count, vec4_t color_mult) { points(s.queue, verts, count, color_mult); }
-void lines(Scope& s, const Vertex verts[], size_t count, vec4_t color_mult) { lines(s.queue, verts, count, color_mult); }
-void triangles(Scope& s, const Vertex verts[], size_t count, vec4_t color_mult) { triangles(s.queue, verts, count, color_mult); }
-void triangles_wireframe(Scope& s, const Vertex verts[], size_t count, vec4_t color_mult) { triangles_wireframe(s.queue, verts, count, color_mult); }
-void plane(Scope& s, vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color, uint32_t picking_idx) { plane(s.queue, center, plane_u, plane_v, color, picking_idx); }
-void plane_wireframe(Scope& s, vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color, int segments_u, int segments_v) { plane_wireframe(s.queue, center, plane_u, plane_v, color, segments_u, segments_v); }
-void box_wireframe(Scope& s, vec3_t min_box, vec3_t max_box, uint32_t color) { box_wireframe(s.queue, min_box, max_box, color); }
-void box_wireframe(Scope& s, vec3_t min_box, vec3_t max_box, vec4_t color) { box_wireframe(s.queue, min_box, max_box, color); }
-void box_wireframe(Scope& s, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color) { box_wireframe(s.queue, min_box, max_box, model_matrix, color); }
-void box_wireframe(Scope& s, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec4_t color) { box_wireframe(s.queue, min_box, max_box, model_matrix, color); }
-void basis(Scope& s, mat4_t basis_mat, float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) { basis(s.queue, basis_mat, scale, x_color, y_color, z_color); }
-void basis(Scope& s, mat4_t basis_mat, float scale, vec4_t x_color, vec4_t y_color, vec4_t z_color) { basis(s.queue, basis_mat, scale, x_color, y_color, z_color); }
-
-Scope::Scope(const char* label) {
-    (void)label;
-    queue = nullptr;
-}
-
 Scope::Scope(Queue* supplied_queue, const char* label) {
     (void)label;
     ASSERT(supplied_queue);
@@ -512,6 +446,7 @@ Scope::~Scope() {
     if (queue) {
         // End scope: reset back to identity for the following commands.
         set_model(queue, mat4_ident());
+        set_picking_base_idx(queue, 0);
     }
     queue = nullptr;
 }
@@ -551,37 +486,23 @@ void queue_destroy(Queue* queue) {
 
 void queue_reset(Queue* queue) {
     if (!queue) return;
-    reset_context(*queue);
-}
-
-void queue_submit(Queue* queue, Scope& scope) {
-    ASSERT(queue);
-    ASSERT(scope.queue);
-    ASSERT(scope.queue == queue);
-    // Scope is sugar only: commands were already written directly into queue.
-    set_model(queue, mat4_ident());
-    scope.queue = nullptr;
-}
-
-void submit(Queue* queue, Scope& scope) {
-    queue_submit(queue, scope);
+    md_array_shrink(queue->vertices, 0);
+    md_array_shrink(queue->indices, 0);
+    md_array_shrink(queue->commands, 0);
+    md_array_shrink(queue->model_matrices, 0);
+    queue->curr_model_matrix_idx = -1;
+    queue->curr_picking_base_idx = 0;
+    queue->curr_program_type = ProgramType::Unshaded;
 }
 
 void render(Queue* queue, const RenderParams& params) {
     if (!queue) return;
 
-    const LightingDesc default_lighting = {};
-    const LightingDesc& lighting = params.lighting ? *params.lighting : default_lighting;
-
     if (md_array_size(queue->commands) == 0) {
         return;
     }
 
-    if (params.shaded) {
-        encoder_submit_shaded(*queue, params.view, params.proj, lighting, params.picking_base_idx);
-    } else {
-        encoder_submit(*queue, params.view, params.proj, params.picking_base_idx);
-    }
+    encoder_submit(*queue, params.view, params.proj, params.lighting);
 }
 
 void initialize() {
@@ -699,133 +620,118 @@ void shutdown() {
 }
 
 void encoder_set_model(Queue& ctx, const mat4_t& model_matrix) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-    curr_model_matrix_idx = (int)md_array_size(model_matrices);
-    md_array_push(model_matrices, model_matrix, _ctx.arena);
+    ctx.curr_model_matrix_idx = (int)md_array_size(ctx.model_matrices);
+    md_array_push(ctx.model_matrices, model_matrix, ctx.arena);
 }
 
 void encoder_set_picking_base_idx(Queue& ctx, uint32_t base_idx) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-    curr_picking_base_idx = base_idx;
+    ctx.curr_picking_base_idx = base_idx;
 }
 
-void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj, uint32_t picking_base_idx) {
-    PassParams pass = {};
-    pass.view = view;
-    pass.proj = proj;
-    pass.picking_base_idx = picking_base_idx;
-	Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-	size_t num_commands = md_array_size(commands);
+void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj, const LightingDesc& lighting) {
+	size_t num_commands = md_array_size(ctx.commands);
 	if (num_commands == 0) {
 		return;
 	}
 
-    glBindVertexArray(vao);
+	glBindVertexArray(vao);
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, md_array_bytes(vertices), vertices, GL_STREAM_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBufferData(GL_ARRAY_BUFFER, md_array_bytes(ctx.vertices), ctx.vertices, GL_STREAM_DRAW);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, md_array_bytes(indices), indices, GL_STREAM_DRAW);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, md_array_bytes(ctx.indices), ctx.indices, GL_STREAM_DRAW);
 
-    glEnable(GL_PROGRAM_POINT_SIZE);
-    glUseProgram(program);
-    glLineWidth(1.f);
+	glEnable(GL_PROGRAM_POINT_SIZE);
+	glLineWidth(1.f);
 
-    glUniform1f(uniform_loc_point_size, 1.f);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, default_tex);
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, default_tex);
+	const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+	const mat4_t vp_matrix = mat4_mul(proj, view);
 
-    const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
-    const mat4_t vp_matrix = mat4_mul(pass.proj, pass.view);
+	ProgramType current_program_type = ProgramType::Unshaded;
+	bool has_program = false;
+	int current_model_matrix_idx = -1;
 
-    int current_model_matrix_idx = -1;
-    for (size_t i = 0; i < num_commands; ++i) {
-        const auto& cmd = commands[i];
-        if (cmd.model_matrix_idx != current_model_matrix_idx) {
-            current_model_matrix_idx = cmd.model_matrix_idx;
-            const mat4_t mv_matrix = mat4_mul(pass.view, model_matrices[cmd.model_matrix_idx]);
-            mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(mv_matrix)));
-            glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix.elem[0][0]);
+	for (size_t i = 0; i < num_commands; ++i) {
+		const auto& cmd = ctx.commands[i];
 
-            mat4_t mvp_matrix = mat4_mul(vp_matrix, model_matrices[cmd.model_matrix_idx]);
-            glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
-        }
+		if (!has_program || cmd.program_type != current_program_type) {
+			has_program = true;
+			current_program_type = cmd.program_type;
+			current_model_matrix_idx = -1;
 
-        glUniform1ui(uniform_loc_picking_base_idx, pass.picking_base_idx + cmd.picking_base_idx);
+			if (current_program_type == ProgramType::Shaded) {
+				glUseProgram(program_shaded);
+				glUniform3fv(uniform_loc_shaded.light_dir_vs, 1, &lighting.light_dir.x);
+				glUniform3fv(uniform_loc_shaded.dir_radiance, 1, &lighting.dir_radiance.x);
+				glUniform3fv(uniform_loc_shaded.env_radiance, 1, &lighting.env_radiance.x);
+				glUniform1f(uniform_loc_shaded.roughness, lighting.roughness);
+				glUniform1f(uniform_loc_shaded.F0, lighting.F0);
+				glUniform1f(uniform_loc_shaded.point_size, 1.f);
+			} else {
+				glUseProgram(program);
+				glUniform1f(uniform_loc_point_size, 1.f);
+			}
+		}
 
-        glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
-    }
+		if (cmd.model_matrix_idx != current_model_matrix_idx) {
+			current_model_matrix_idx = cmd.model_matrix_idx;
+			const mat4_t mv_matrix = mat4_mul(view, ctx.model_matrices[cmd.model_matrix_idx]);
+			mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(mv_matrix)));
+			mat4_t mvp_matrix = mat4_mul(vp_matrix, ctx.model_matrices[cmd.model_matrix_idx]);
 
-    glBindVertexArray(0);
-    glUseProgram(0);
+			if (current_program_type == ProgramType::Shaded) {
+				glUniformMatrix4fv(uniform_loc_shaded.mv_matrix, 1, GL_FALSE, &mv_matrix.elem[0][0]);
+				glUniformMatrix3fv(uniform_loc_shaded.normal_mat_vs, 1, GL_FALSE, &normal_matrix.elem[0][0]);
+				glUniformMatrix4fv(uniform_loc_shaded.mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
+			} else {
+				glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix.elem[0][0]);
+				glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
+			}
+		}
 
-    glDisable(GL_PROGRAM_POINT_SIZE);
+		if (current_program_type == ProgramType::Shaded) {
+			glUniform1ui(uniform_loc_shaded.picking_base_idx, cmd.picking_base_idx);
+		} else {
+			glUniform1ui(uniform_loc_picking_base_idx, cmd.picking_base_idx);
+		}
 
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+		glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
+	}
 
-    md_array_shrink(vertices, 0);
-    md_array_shrink(indices,  0);
-    md_array_shrink(commands, 0);
-    md_array_shrink(model_matrices, 0);
-    curr_model_matrix_idx = -1;
+	glBindVertexArray(0);
+	glUseProgram(0);
 
+	glDisable(GL_PROGRAM_POINT_SIZE);
+
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+	md_array_shrink(ctx.vertices, 0);
+	md_array_shrink(ctx.indices,  0);
+	md_array_shrink(ctx.commands, 0);
+	md_array_shrink(ctx.model_matrices, 0);
+	ctx.curr_model_matrix_idx = -1;
 }
 
 // PRIMITIVES
 void draw_point(Queue& ctx, vec3_t pos, uint32_t color, uint32_t picking_idx) {
-	Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-    const Index idx = (Index)md_array_size(vertices);
+    const Index idx = (Index)md_array_size(ctx.vertices);
 
     Vertex v = {pos, color, {0,0,1}, picking_idx};
-    md_array_push(vertices, v,  arena);
-    md_array_push(indices, idx, arena);
+    md_array_push(ctx.vertices, v,  ctx.arena);
+    md_array_push(ctx.indices, idx, ctx.arena);
 
-    append_draw_command(_ctx, 1, GL_POINTS);
+    append_draw_command(ctx, 1, GL_POINTS);
 }
 
 void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_mult) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-    const Index idx = (Index)md_array_size(vertices);
-    md_array_resize(vertices, md_array_size(vertices) + count, arena);
-    Vertex* v = md_array_end(vertices) - count;
+    const Index idx = (Index)md_array_size(ctx.vertices);
+    md_array_resize(ctx.vertices, md_array_size(ctx.vertices) + count, ctx.arena);
+    Vertex* v = md_array_end(ctx.vertices) - count;
 
     ASSERT(v);
 
@@ -838,44 +744,28 @@ void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_
     }
 
     for (Index i = idx; i < idx + count; i += 1) {
-        md_array_push(indices, i, arena);
+        md_array_push(ctx.indices, i, ctx.arena);
     }
 
-    append_draw_command(_ctx, count, GL_POINTS);
+    append_draw_command(ctx, count, GL_POINTS);
 }
 
 void draw_line(Queue& ctx, vec3_t from, vec3_t to, uint32_t color) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-    const Index idx = (Index)md_array_size(vertices);
+    const Index idx = (Index)md_array_size(ctx.vertices);
 
     Vertex v[2] = {
         {from, color, {0,0,1}, 0xFFFFFFFF},
         {to,   color, {0,0,1}, 0xFFFFFFFF}
     };
-    md_array_push_array(vertices, v, 2, arena);
+    md_array_push_array(ctx.vertices, v, 2, ctx.arena);
 
-    md_array_push(indices, idx + 0, arena);
-    md_array_push(indices, idx + 1, arena);
+    md_array_push(ctx.indices, idx + 0, ctx.arena);
+    md_array_push(ctx.indices, idx + 1, ctx.arena);
 
-    append_draw_command(_ctx, 2, GL_LINES);
+    append_draw_command(ctx, 2, GL_LINES);
 }
 
 void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_mult) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     if ((count & 1) == 1) {
         MD_LOG_DEBUG("Expected even number of vertices as in function %s", __FUNCTION__);
     }
@@ -883,9 +773,9 @@ void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_m
     // Make sure count is an even number
     count = count - (count & 1);
 
-    const Index idx = (Index)md_array_size(vertices);
-    md_array_resize(vertices, md_array_size(vertices) + count, arena);
-    Vertex* v = md_array_end(vertices) - count;
+    const Index idx = (Index)md_array_size(ctx.vertices);
+    md_array_resize(ctx.vertices, md_array_size(ctx.vertices) + count, ctx.arena);
+    Vertex* v = md_array_end(ctx.vertices) - count;
 
     ASSERT(v);
 
@@ -898,23 +788,15 @@ void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_m
     }
 
     for (Index i = idx; i < idx + count; i += 2) {
-        md_array_push(indices, i + 0, arena);
-        md_array_push(indices, i + 1, arena);
+        md_array_push(ctx.indices, i + 0, ctx.arena);
+        md_array_push(ctx.indices, i + 1, ctx.arena);
     }
 
-    append_draw_command(_ctx, count, GL_LINES);
+    append_draw_command(ctx, count, GL_LINES);
 }
 
 void draw_triangle(Queue& ctx, vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color, uint32_t picking_idx) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-    const Index idx = (Index)md_array_size(vertices);
+    const Index idx = (Index)md_array_size(ctx.vertices);
     const vec3_t normal = vec3_normalize(vec3_cross(vec3_sub(p1, p0), vec3_sub(p2, p0)));
 
     Vertex v[3] = {
@@ -922,24 +804,16 @@ void draw_triangle(Queue& ctx, vec3_t p0, vec3_t p1, vec3_t p2, uint32_t color, 
         {p1, color, normal, picking_idx},
         {p2, color, normal, picking_idx},
     };
-    md_array_push_array(vertices, v, 3, arena);
+    md_array_push_array(ctx.vertices, v, 3, ctx.arena);
 
-    md_array_push(indices, idx + 0, arena);
-    md_array_push(indices, idx + 1, arena);
-    md_array_push(indices, idx + 2, arena);
+    md_array_push(ctx.indices, idx + 0, ctx.arena);
+    md_array_push(ctx.indices, idx + 1, ctx.arena);
+    md_array_push(ctx.indices, idx + 2, ctx.arena);
 
-    append_draw_command(_ctx, 3, GL_TRIANGLES);
+    append_draw_command(ctx, 3, GL_TRIANGLES);
 }
 
 void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_mult) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     if ((count % 3) != 0) {
         MD_LOG_DEBUG("Expected number of vertices to be divisible by 3 in function %s", __FUNCTION__);
     }
@@ -947,9 +821,9 @@ void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t col
     // Make sure count is a correct number here
     count = count - (count % 3);
 
-    const Index idx = (Index)md_array_size(vertices);
-    md_array_resize(vertices, md_array_size(vertices) + count, arena);
-    Vertex* v = md_array_end(vertices) - count;
+    const Index idx = (Index)md_array_size(ctx.vertices);
+    md_array_resize(ctx.vertices, md_array_size(ctx.vertices) + count, ctx.arena);
+    Vertex* v = md_array_end(ctx.vertices) - count;
 
     ASSERT(v);
 
@@ -962,24 +836,16 @@ void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t col
     }
 
     for (Index i = idx; i < idx + count; i += 3) {
-        md_array_push(indices, i + 0, arena);
-        md_array_push(indices, i + 1, arena);
-        md_array_push(indices, i + 2, arena);
+        md_array_push(ctx.indices, i + 0, ctx.arena);
+        md_array_push(ctx.indices, i + 1, ctx.arena);
+        md_array_push(ctx.indices, i + 2, ctx.arena);
     }
 
-    append_draw_command(_ctx, count, GL_TRIANGLES);
+    append_draw_command(ctx, count, GL_TRIANGLES);
 }
 
 void draw_plane(Queue& ctx, vec3_t center, vec3_t u, vec3_t v, uint32_t color, uint32_t picking_idx) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-    const Index idx = (Index)md_array_size(vertices);
+    const Index idx = (Index)md_array_size(ctx.vertices);
     const vec3_t normal = vec3_normalize(vec3_cross(u, v));
 
     Vertex vert[4] = {
@@ -988,27 +854,19 @@ void draw_plane(Queue& ctx, vec3_t center, vec3_t u, vec3_t v, uint32_t color, u
         {vec3_add(center, vec3_add(u, v)), color, normal, picking_idx},
         {vec3_add(center, vec3_sub(u, v)), color, normal, picking_idx},
     };
-    md_array_push_array(vertices, vert, 4, arena);
+    md_array_push_array(ctx.vertices, vert, 4, ctx.arena);
 
-    md_array_push(indices, idx + 0, arena);
-    md_array_push(indices, idx + 1, arena);
-    md_array_push(indices, idx + 2, arena);
-    md_array_push(indices, idx + 2, arena);
-    md_array_push(indices, idx + 1, arena);
-    md_array_push(indices, idx + 3, arena);
+    md_array_push(ctx.indices, idx + 0, ctx.arena);
+    md_array_push(ctx.indices, idx + 1, ctx.arena);
+    md_array_push(ctx.indices, idx + 2, ctx.arena);
+    md_array_push(ctx.indices, idx + 2, ctx.arena);
+    md_array_push(ctx.indices, idx + 1, ctx.arena);
+    md_array_push(ctx.indices, idx + 3, ctx.arena);
 
-    append_draw_command(_ctx, 6, GL_TRIANGLES);
+    append_draw_command(ctx, 6, GL_TRIANGLES);
 }
 
 void draw_plane_wireframe(Queue& ctx, vec3_t center, vec3_t vec_u, vec3_t vec_v, uint32_t color, int segments_u, int segments_v) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     ASSERT(segments_u > 0);
     ASSERT(segments_v > 0);
 
@@ -1063,19 +921,11 @@ void draw_aabb(vec3_t min_box, vec3_t max_box) {
     indices.push_back(idx + 2 - 1);
     indices.push_back(idx + 1 - 1);
 
-    append_draw_command(_ctx, idx, 14, GL_TRIANGLE_STRIP);
+    append_draw_command(ctx, idx, 14, GL_TRIANGLE_STRIP);
 }
 */
 
 void draw_box_wireframe(Queue& ctx, vec3_t min_box, vec3_t max_box, uint32_t color) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     // Z = min
     draw_line(ctx, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, color);
     draw_line(ctx, vec3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, vec3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
@@ -1096,26 +946,10 @@ void draw_box_wireframe(Queue& ctx, vec3_t min_box, vec3_t max_box, uint32_t col
 }
 
 void draw_box_wireframe(Queue& ctx, vec3_t min_box, vec3_t max_box, vec4_t color) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     draw_box_wireframe(ctx, min_box, max_box, convert_color(color));
 }
 
 void draw_box_wireframe(Queue& ctx, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     const mat3_t R = mat3_from_mat4(model_matrix);
     const vec3_t trans = vec3_from_vec4(model_matrix.col[3]);
     // Z = min
@@ -1138,26 +972,10 @@ void draw_box_wireframe(Queue& ctx, vec3_t min_box, vec3_t max_box, mat4_t model
 }
 
 void draw_box_wireframe(Queue& ctx, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec4_t color) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     draw_box_wireframe(ctx, min_box, max_box, model_matrix, convert_color(color));
 }
 
 void draw_basis(Queue& ctx, mat4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     const vec3_t o = vec3_from_vec4(basis.col[3]);
     const vec3_t x = vec3_add(o, vec3_mul1(vec3_from_vec4(basis.col[0]), scale));
     const vec3_t y = vec3_add(o, vec3_mul1(vec3_from_vec4(basis.col[1]), scale));
@@ -1169,14 +987,6 @@ void draw_basis(Queue& ctx, mat4_t basis, const float scale, uint32_t x_color, u
 }
 
 void draw_basis(Queue& ctx, mat4_t basis, const float scale, vec4_t x_color, vec4_t y_color, vec4_t z_color) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     draw_basis(ctx, basis, scale, convert_color(x_color), convert_color(y_color), convert_color(z_color));
 }
 
@@ -1189,14 +999,6 @@ static void build_tangent_frame(vec3_t axis, vec3_t& out_u, vec3_t& out_v) {
 }
 
 void draw_sphere(Queue& ctx, vec3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     ASSERT(stacks >= 2 && slices >= 3);
     const float pi  = 3.14159265358979323846f;
     const float tau = 2.0f * pi;
@@ -1208,23 +1010,23 @@ void draw_sphere(Queue& ctx, vec3_t center, float radius, uint32_t color, uint32
         vec3_t p10 = vec3_add(center, vec3_mul1(n10, radius));
         vec3_t p01 = vec3_add(center, vec3_mul1(n01, radius));
         vec3_t p11 = vec3_add(center, vec3_mul1(n11, radius));
-        const Index base = (Index)md_array_size(vertices);
+        const Index base = (Index)md_array_size(ctx.vertices);
         Vertex v[4] = {
             {p00, color, n00, picking_idx},
             {p10, color, n10, picking_idx},
             {p01, color, n01, picking_idx},
             {p11, color, n11, picking_idx},
         };
-        md_array_push_array(vertices, v, 4, arena);
+        md_array_push_array(ctx.vertices, v, 4, ctx.arena);
         // tri 0: p00, p11, p10
-        md_array_push(indices, base + 0, arena);
-        md_array_push(indices, base + 3, arena);
-        md_array_push(indices, base + 1, arena);
+        md_array_push(ctx.indices, base + 0, ctx.arena);
+        md_array_push(ctx.indices, base + 3, ctx.arena);
+        md_array_push(ctx.indices, base + 1, ctx.arena);
         // tri 1: p00, p01, p11
-        md_array_push(indices, base + 0, arena);
-        md_array_push(indices, base + 2, arena);
-        md_array_push(indices, base + 3, arena);
-        append_draw_command(_ctx, 6, GL_TRIANGLES);
+        md_array_push(ctx.indices, base + 0, ctx.arena);
+        md_array_push(ctx.indices, base + 2, ctx.arena);
+        md_array_push(ctx.indices, base + 3, ctx.arena);
+        append_draw_command(ctx, 6, GL_TRIANGLES);
     };
 
     for (int i = 0; i < stacks; ++i) {
@@ -1253,14 +1055,6 @@ void draw_sphere(Queue& ctx, vec3_t center, float radius, uint32_t color, uint32
 }
 
 void draw_sphere_wireframe(Queue& ctx, vec3_t center, float radius, uint32_t color, int stacks, int slices) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     ASSERT(stacks >= 2 && slices >= 3);
     const float pi  = 3.14159265358979323846f;
     const float tau = 2.0f * pi;
@@ -1293,14 +1087,6 @@ void draw_sphere_wireframe(Queue& ctx, vec3_t center, float radius, uint32_t col
 }
 
 void draw_cylinder(Queue& ctx, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
@@ -1326,65 +1112,57 @@ void draw_cylinder(Queue& ctx, vec3_t from, vec3_t to, float radius, uint32_t co
 
         // Side quad – smooth normals interpolated across the quad
         {
-            const Index base = (Index)md_array_size(vertices);
+            const Index base = (Index)md_array_size(ctx.vertices);
             Vertex sv[4] = {
                 {a0, color, sn0, picking_idx},
                 {a1, color, sn1, picking_idx},
                 {b0, color, sn0, picking_idx},
                 {b1, color, sn1, picking_idx},
             };
-            md_array_push_array(vertices, sv, 4, arena);
-            md_array_push(indices, base + 0, arena);
-            md_array_push(indices, base + 3, arena);
-            md_array_push(indices, base + 2, arena);
-            md_array_push(indices, base + 0, arena);
-            md_array_push(indices, base + 1, arena);
-            md_array_push(indices, base + 3, arena);
-            append_draw_command(_ctx, 6, GL_TRIANGLES);
+            md_array_push_array(ctx.vertices, sv, 4, ctx.arena);
+            md_array_push(ctx.indices, base + 0, ctx.arena);
+            md_array_push(ctx.indices, base + 3, ctx.arena);
+            md_array_push(ctx.indices, base + 2, ctx.arena);
+            md_array_push(ctx.indices, base + 0, ctx.arena);
+            md_array_push(ctx.indices, base + 1, ctx.arena);
+            md_array_push(ctx.indices, base + 3, ctx.arena);
+            append_draw_command(ctx, 6, GL_TRIANGLES);
         }
 
         // Bottom cap – flat normal pointing away from 'to'
         {
             vec3_t cap_n = vec3_mul1(axis, -1.f);
-            const Index base = (Index)md_array_size(vertices);
+            const Index base = (Index)md_array_size(ctx.vertices);
             Vertex cv[3] = {
                 {from, color, cap_n, picking_idx},
                 {a1,   color, cap_n, picking_idx},
                 {a0,   color, cap_n, picking_idx},
             };
-            md_array_push_array(vertices, cv, 3, arena);
-            md_array_push(indices, base + 0, arena);
-            md_array_push(indices, base + 1, arena);
-            md_array_push(indices, base + 2, arena);
-            append_draw_command(_ctx, 3, GL_TRIANGLES);
+            md_array_push_array(ctx.vertices, cv, 3, ctx.arena);
+            md_array_push(ctx.indices, base + 0, ctx.arena);
+            md_array_push(ctx.indices, base + 1, ctx.arena);
+            md_array_push(ctx.indices, base + 2, ctx.arena);
+            append_draw_command(ctx, 3, GL_TRIANGLES);
         }
 
         // Top cap – flat normal pointing away from 'from'
         {
-            const Index base = (Index)md_array_size(vertices);
+            const Index base = (Index)md_array_size(ctx.vertices);
             Vertex cv[3] = {
                 {to, color, axis, picking_idx},
                 {b0, color, axis, picking_idx},
                 {b1, color, axis, picking_idx},
             };
-            md_array_push_array(vertices, cv, 3, arena);
-            md_array_push(indices, base + 0, arena);
-            md_array_push(indices, base + 1, arena);
-            md_array_push(indices, base + 2, arena);
-            append_draw_command(_ctx, 3, GL_TRIANGLES);
+            md_array_push_array(ctx.vertices, cv, 3, ctx.arena);
+            md_array_push(ctx.indices, base + 0, ctx.arena);
+            md_array_push(ctx.indices, base + 1, ctx.arena);
+            md_array_push(ctx.indices, base + 2, ctx.arena);
+            append_draw_command(ctx, 3, GL_TRIANGLES);
         }
     }
 }
 
 void draw_cylinder_wireframe(Queue& ctx, vec3_t from, vec3_t to, float radius, uint32_t color, int segments) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
@@ -1409,14 +1187,6 @@ void draw_cylinder_wireframe(Queue& ctx, vec3_t from, vec3_t to, float radius, u
 }
 
 void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
@@ -1454,45 +1224,37 @@ void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color
         // Lateral face – smooth normals at base ring; use average at apex for continuity
         vec3_t apex_n = vec3_normalize(vec3_add(ln0, ln1));
         {
-            const Index base_idx = (Index)md_array_size(vertices);
+            const Index base_idx = (Index)md_array_size(ctx.vertices);
             Vertex sv[3] = {
                 {a0,  color, ln0,    picking_idx},
                 {tip, color, apex_n, picking_idx},
                 {a1,  color, ln1,    picking_idx},
             };
-            md_array_push_array(vertices, sv, 3, arena);
-            md_array_push(indices, base_idx + 0, arena);
-            md_array_push(indices, base_idx + 2, arena);
-            md_array_push(indices, base_idx + 1, arena);
-            append_draw_command(_ctx, 3, GL_TRIANGLES);
+            md_array_push_array(ctx.vertices, sv, 3, ctx.arena);
+            md_array_push(ctx.indices, base_idx + 0, ctx.arena);
+            md_array_push(ctx.indices, base_idx + 2, ctx.arena);
+            md_array_push(ctx.indices, base_idx + 1, ctx.arena);
+            append_draw_command(ctx, 3, GL_TRIANGLES);
         }
 
         // Base cap – flat normal pointing away from tip
         {
-            const Index base_idx = (Index)md_array_size(vertices);
+            const Index base_idx = (Index)md_array_size(ctx.vertices);
             Vertex cv[3] = {
                 {base, color, base_cap_n, picking_idx},
                 {a0,   color, base_cap_n, picking_idx},
                 {a1,   color, base_cap_n, picking_idx},
             };
-            md_array_push_array(vertices, cv, 3, arena);
-            md_array_push(indices, base_idx + 0, arena);
-            md_array_push(indices, base_idx + 2, arena);
-            md_array_push(indices, base_idx + 1, arena);
-            append_draw_command(_ctx, 3, GL_TRIANGLES);
+            md_array_push_array(ctx.vertices, cv, 3, ctx.arena);
+            md_array_push(ctx.indices, base_idx + 0, ctx.arena);
+            md_array_push(ctx.indices, base_idx + 2, ctx.arena);
+            md_array_push(ctx.indices, base_idx + 1, ctx.arena);
+            append_draw_command(ctx, 3, GL_TRIANGLES);
         }
     }
 }
 
 void draw_cone_wireframe(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, int segments) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
@@ -1515,14 +1277,6 @@ void draw_cone_wireframe(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint
 }
 
 void draw_box(Queue& ctx, vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking_idx) {
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
     const vec3_t p000 = {mn.x, mn.y, mn.z};
     const vec3_t p100 = {mx.x, mn.y, mn.z};
     const vec3_t p010 = {mn.x, mx.y, mn.z};
@@ -1550,81 +1304,6 @@ void draw_box(Queue& ctx, vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking
     // +X face
     draw_triangle(ctx, p100, p110, p111, color, picking_idx);
     draw_triangle(ctx, p100, p111, p101, color, picking_idx);
-}
-
-void encoder_submit_shaded(Queue& ctx, const mat4_t& view, const mat4_t& proj, const LightingDesc& lighting, uint32_t picking_base_idx) {
-    PassParams pass = {};
-    pass.view = view;
-    pass.proj = proj;
-    pass.picking_base_idx = picking_base_idx;
-    Queue& _ctx = ctx;
-    [[maybe_unused]] md_allocator_i* arena = _ctx.arena;
-    [[maybe_unused]] auto& model_matrices = _ctx.model_matrices;
-    [[maybe_unused]] auto& commands = _ctx.commands;
-    [[maybe_unused]] auto& vertices = _ctx.vertices;
-    [[maybe_unused]] auto& indices = _ctx.indices;
-    [[maybe_unused]] auto& curr_model_matrix_idx = _ctx.curr_model_matrix_idx;
-    [[maybe_unused]] auto& curr_picking_base_idx = _ctx.curr_picking_base_idx;
-    size_t num_commands = md_array_size(commands);
-    if (num_commands == 0) {
-        return;
-    }
-
-    glBindVertexArray(vao);
-
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, md_array_bytes(vertices), vertices, GL_STREAM_DRAW);
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, md_array_bytes(indices), indices, GL_STREAM_DRAW);
-
-    glEnable(GL_PROGRAM_POINT_SIZE);
-    glLineWidth(1.f);
-
-    const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
-    const mat4_t vp_matrix = mat4_mul(pass.proj, pass.view);
-    int current_model_matrix_idx = -1;
-
-    // Shaded program state that stays constant for the whole call
-    glUseProgram(program_shaded);
-    glUniform3fv(uniform_loc_shaded.light_dir_vs, 1, &lighting.light_dir.x);
-    glUniform3fv(uniform_loc_shaded.dir_radiance, 1, &lighting.dir_radiance.x);
-    glUniform3fv(uniform_loc_shaded.env_radiance, 1, &lighting.env_radiance.x);
-    glUniform1f (uniform_loc_shaded.roughness,    lighting.roughness);
-    glUniform1f (uniform_loc_shaded.F0,           lighting.F0);
-    glUniform1f (uniform_loc_shaded.point_size,   1.f);
-
-    for (size_t i = 0; i < num_commands; ++i) {
-        const auto& cmd = commands[i];
-
-        if (cmd.model_matrix_idx != current_model_matrix_idx) {
-            current_model_matrix_idx = cmd.model_matrix_idx;
-            const mat4_t mv = mat4_mul(pass.view, model_matrices[cmd.model_matrix_idx]);
-            glUniformMatrix4fv(uniform_loc_shaded.mv_matrix, 1, GL_FALSE, &mv.elem[0][0]);
-
-            mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(mv)));
-            glUniformMatrix3fv(uniform_loc_shaded.normal_mat_vs, 1, GL_FALSE, &normal_matrix.elem[0][0]);
-
-            mat4_t mvp = mat4_mul(vp_matrix, model_matrices[cmd.model_matrix_idx]);
-            glUniformMatrix4fv(uniform_loc_shaded.mvp_matrix, 1, GL_FALSE, &mvp.elem[0][0]);
-        }
-        glUniform1ui(uniform_loc_shaded.picking_base_idx, pass.picking_base_idx + cmd.picking_base_idx);
-
-        glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
-    }
-
-    glBindVertexArray(0);
-    glUseProgram(0);
-    glDisable(GL_PROGRAM_POINT_SIZE);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-
-    md_array_shrink(vertices, 0);
-    md_array_shrink(indices,  0);
-    md_array_shrink(commands, 0);
-    md_array_shrink(model_matrices, 0);
-    curr_model_matrix_idx = -1;
-
 }
 
 

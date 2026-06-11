@@ -772,21 +772,21 @@ struct DensityVolume : viamd::EventHandler {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-                immediate::Queue* immediate_queue = state->gfx.overlay;
+				immediate::Queue* queue = immediate::queue_create("Density Volume Bounds");
 
-                immediate::Scope scope("density_volume_bounds");
-                immediate::set_model(scope, model_mat);
+                immediate::set_model(queue, model_mat);
 
                 uint32_t box_color = convert_color(bounding_box_color);
                 uint32_t clip_color = convert_color(clip_volume_color);
-                immediate::box_wireframe(scope, {0,0,0}, {1,1,1}, box_color);
-                immediate::box_wireframe(scope, clip_volume.min, clip_volume.max, clip_color);
+                immediate::box_wireframe(queue, {0,0,0}, {1,1,1}, box_color);
+                immediate::box_wireframe(queue, clip_volume.min, clip_volume.max, clip_color);
 
-                immediate::submit(immediate_queue, scope);
                 immediate::RenderParams params = {};
                 params.view = world_to_view;
                 params.proj = view_to_clip;
-                immediate::render(immediate_queue, params);
+                immediate::render(queue, params);
+
+				immediate::queue_destroy(queue);
 
                 glDisable(GL_BLEND);
             }
