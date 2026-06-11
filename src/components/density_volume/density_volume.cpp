@@ -772,8 +772,7 @@ struct DensityVolume : viamd::EventHandler {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-                static immediate::Context* immediate_ctx = immediate::context_create();
-                static immediate::Queue* immediate_queue = immediate::queue_create(immediate_ctx, "density_volume");
+                immediate::Queue* immediate_queue = state->gfx.overlay;
 
                 immediate::Scope scope("density_volume_bounds");
                 immediate::set_model(scope, model_mat);

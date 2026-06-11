@@ -476,9 +476,9 @@ int main(int argc, char** argv) {
 
     // Init subsystems
     VIAMD_LOG_DEBUG("Initializing immediate draw...");
-    immediate::Context* imm_ctx = immediate::context_create();
-    state.gfx.world   = immediate::queue_create(imm_ctx, "world");
-	state.gfx.overlay = immediate::queue_create(imm_ctx, "overlay");
+    immediate::initialize();
+    state.gfx.world   = immediate::queue_create("world");
+	state.gfx.overlay = immediate::queue_create("overlay");
 
     VIAMD_LOG_DEBUG("Initializing post processing...");
 
@@ -1278,11 +1278,10 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Shutting down immediate draw...");
     immediate::queue_destroy(state.gfx.world);
     immediate::queue_destroy(state.gfx.overlay);
-    immediate::context_destroy(imm_ctx);
+    immediate::shutdown();
 
     state.gfx.world = nullptr;
     state.gfx.overlay = nullptr;
-    imm_ctx = nullptr;
 
     VIAMD_LOG_DEBUG("Shutting down post processing...");
     postprocess_pipeline::shutdown();
