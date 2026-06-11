@@ -10,9 +10,12 @@ jobs:
         - name: prepare
           run: |
             git submodule update --init --recursive
+        - name: install dependencies
+          run: |
+            brew install hdf5
         - name: cmake
           run: |
-            cmake .
+            cmake . -DHDF5_ROOT=$(brew --prefix hdf5)
         - name: build
           run: |
             make -j 4
