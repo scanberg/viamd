@@ -1193,6 +1193,7 @@ int main(int argc, char** argv) {
 
         update_md_buffers(&state);
         update_display_properties(&state);
+
         gbuffer_clear(&state.gbuffer);
         fill_gbuffer(&state);
 
@@ -1210,39 +1211,6 @@ int main(int argc, char** argv) {
         }
 
         apply_postprocessing(state);
-
-		gbuffer_clear(&state.gbuffer);
-
-        if (do_screenshot && state.screenshot.hide_gui) {
-            // Activate gbuffer to store screenshot
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state.gbuffer.fbo);
-            glViewport(0, 0, state.gbuffer.width, state.gbuffer.height);
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        } else {
-            // Activate backbuffer
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glViewport(0, 0, state.app.framebuffer.width, state.app.framebuffer.height);
-            glDrawBuffer(GL_BACK);
-            glClear(GL_COLOR_BUFFER_BIT);
-        }
-
-        immediate::RenderParams params = {};
-        params.view = state.view.param.matrix.curr.view;
-        params.proj = state.view.param.matrix.curr.proj_no_jitter;
-
-        glDisable(GL_CULL_FACE);
-        glEnable(GL_BLEND);
-        // standard alpha blending
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LEQUAL);
-        immediate::render(state.gfx.world, params);
-
-        glDisable(GL_DEPTH_TEST);
-        immediate::render(state.gfx.overlay, params);
-
-        glDisable(GL_BLEND);
-        glEnable(GL_CULL_FACE);
 
         if (do_screenshot && state.screenshot.hide_gui) {
             state.screenshot.sample_count += 1;
@@ -1284,8 +1252,6 @@ int main(int argc, char** argv) {
 
         viamd::event_system_process_event_queue();
         task_system::execute_main_task_queue();
-
-        //md_script_vis_free(&state.script.vis);
 
         // Reset frame allocator
         md_vm_arena_reset(frame_alloc);
@@ -6850,6 +6816,24 @@ static void fill_gbuffer(ApplicationState* state) {
             immediate::box_wireframe(vis_scope_depth, -box_ext, box_ext, model_matrices[i]);
         }
     }
+
+    immediate::RenderParams params = {};
+    params.view = state->view.param.matrix.curr.view;
+    params.proj = state->view.param.matrix.curr.proj;
+
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    // standard alpha blending
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    immediate::render(state->gfx.world, params);
+
+    glDisable(GL_DEPTH_TEST);
+    immediate::render(state->gfx.overlay, params);
+
+    glDisable(GL_BLEND);
+    glEnable(GL_CULL_FACE);
 
     POP_GPU_SECTION()  // G-buffer
 }

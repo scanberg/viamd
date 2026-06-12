@@ -1306,11 +1306,4 @@ void draw_box(Queue& ctx, vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking
     draw_triangle(ctx, p100, p111, p101, color, picking_idx);
 }
 
-
 }  // namespace immediate
-
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#elif defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif

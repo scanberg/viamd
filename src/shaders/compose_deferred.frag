@@ -1,7 +1,7 @@
 #version 150 core
 
 layout (std140) uniform UniformData {
-    mat4  u_inv_proj_mat;
+    vec4  u_proj_info;
     vec3  u_bg_color;
     float u_time;
     vec3  u_env_radiance;
@@ -18,11 +18,21 @@ uniform sampler2D u_texture_normal;
 in vec2 tc;
 out vec4 out_frag;
 
-// TODO: Use linear depth instead and use uniform vec4 for unpacking to view coords.
-vec4 depth_to_view_coord(vec2 tex_coord, float depth) {
-    vec4 clip_coord = vec4(vec3(tex_coord, depth) * 2.0 - 1.0, 1.0);
-    vec4 view_coord = u_inv_proj_mat * clip_coord;
-    return view_coord / view_coord.w;
+#ifndef COMPOSE_PROJECTION_PERSPECTIVE
+#define COMPOSE_PROJECTION_PERSPECTIVE 1
+#endif
+
+vec3 linear_depth_to_view_coord(vec2 tex_coord, float linear_depth) {
+    // proj_info uses tex_coord in [0,1]. For perspective, XY should be scaled
+    // by positive eye-space distance while view-space Z stays negative in front
+    // of the camera (OpenGL view convention).
+    float eye_z = linear_depth;
+    float view_z = -eye_z;
+#if COMPOSE_PROJECTION_PERSPECTIVE
+    return vec3((tex_coord * u_proj_info.xy + u_proj_info.zw) * eye_z, view_z);
+#else
+    return vec3((tex_coord * u_proj_info.xy + u_proj_info.zw), view_z);
+#endif
 }
 
 // https://aras-p.info/texts/CompactNormalStorage.html
@@ -123,17 +133,17 @@ void main() {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     vec4 color = texelFetch(u_texture_color, pixel, 0);
     if (color.a > 0) {
-        float depth = texelFetch(u_texture_depth, pixel, 0).x;
+        float linear_depth = texelFetch(u_texture_depth, pixel, 0).x;
         vec3 normal = decode_normal(texelFetch(u_texture_normal, pixel, 0).xy);
 
         vec2 tex_coord = (gl_FragCoord.xy + vec2(0.5)) / vec2(textureSize(u_texture_depth, 0));
-        vec4 view_coord = depth_to_view_coord(tex_coord, depth);
+        vec3 view_coord = linear_depth_to_view_coord(tex_coord, linear_depth);
 
         // Add noise to reduce banding
         color.rgb = clamp(color.rgb + color.rgb * srand4(tex_coord + u_time).rgb * 0.15, 0.0, 1.0);
 
         vec3 N = normal;
-        vec3 V = -normalize(view_coord.xyz);
+        vec3 V = -normalize(view_coord);
         color.rgb = shade(color.rgb, V, N);
         result = color.rgb;
     }

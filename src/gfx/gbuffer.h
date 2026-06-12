@@ -10,6 +10,17 @@
 #define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
 #define GL_COLOR_ATTACHMENT_TRANSPARENCY GL_COLOR_ATTACHMENT4
 
+enum class GBufferFlags : uint32_t {
+    None = 0,
+    Depth = 1 << 0,
+    Color = 1 << 1,
+    Normal = 1 << 2,
+    Velocity = 1 << 3,
+    Picking = 1 << 4,
+    Transparency = 1 << 5,
+    History = 1 << 6,
+};
+
 struct GBuffer {
     struct {
         uint32_t depth = 0;
