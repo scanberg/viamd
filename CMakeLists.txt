@@ -60,6 +60,7 @@ option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" ON)
+option(VIAMD_ENABLE_TREXIO "Enable TREXIO Module" ON)
 set(VIAMD_TREXIO_ROOT "" CACHE PATH "Optional prefix of a local TREXIO installation")
 set(VIAMD_TREXIO_TAG "v2.6.1" CACHE STRING "TREXIO version used when auto-fetching TREXIO")
 string(REGEX REPLACE "^v" "" VIAMD_TREXIO_VERSION "${VIAMD_TREXIO_TAG}")
@@ -77,56 +78,60 @@ endif ()
 find_package(OpenGL REQUIRED)
 
 set(TREXIO_FOUND OFF)
-find_package(PkgConfig QUIET)
-if (PkgConfig_FOUND)
-    pkg_check_modules(TREXIO QUIET trexio)
-endif()
-
-if (NOT TREXIO_FOUND)
-    set(_TREXIO_HINTS)
-    if (VIAMD_TREXIO_ROOT)
-        list(APPEND _TREXIO_HINTS "${VIAMD_TREXIO_ROOT}" "${VIAMD_TREXIO_ROOT}/include" "${VIAMD_TREXIO_ROOT}/lib")
+if (VIAMD_ENABLE_TREXIO)
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(TREXIO QUIET trexio)
     endif()
-    find_path(TREXIO_INCLUDE_DIR trexio.h HINTS ${_TREXIO_HINTS} PATH_SUFFIXES include)
-    find_library(TREXIO_LIBRARY trexio HINTS ${_TREXIO_HINTS} PATH_SUFFIXES lib lib64)
-    if (TREXIO_INCLUDE_DIR AND TREXIO_LIBRARY)
+
+    if (NOT TREXIO_FOUND)
+        set(_TREXIO_HINTS)
+        if (VIAMD_TREXIO_ROOT)
+            list(APPEND _TREXIO_HINTS "${VIAMD_TREXIO_ROOT}" "${VIAMD_TREXIO_ROOT}/include" "${VIAMD_TREXIO_ROOT}/lib")
+        endif()
+        find_path(TREXIO_INCLUDE_DIR trexio.h HINTS ${_TREXIO_HINTS} PATH_SUFFIXES include)
+        find_library(TREXIO_LIBRARY trexio HINTS ${_TREXIO_HINTS} PATH_SUFFIXES lib lib64)
+        if (TREXIO_INCLUDE_DIR AND TREXIO_LIBRARY)
+            set(TREXIO_FOUND ON)
+            set(TREXIO_INCLUDE_DIRS ${TREXIO_INCLUDE_DIR})
+            set(TREXIO_LIBRARIES ${TREXIO_LIBRARY})
+            get_filename_component(TREXIO_LIBRARY_DIR "${TREXIO_LIBRARY}" DIRECTORY)
+            set(TREXIO_LIBRARY_DIRS ${TREXIO_LIBRARY_DIR})
+        endif()
+    endif()
+
+    if (TREXIO_FOUND)
+        message(STATUS "TREXIO support enabled")
+    else()
+        set(_TREXIO_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/_deps/trexio-install")
+        set(_TREXIO_IMPORTED_LIBRARY "${_TREXIO_INSTALL_PREFIX}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}trexio${CMAKE_SHARED_LIBRARY_SUFFIX}")
+        file(MAKE_DIRECTORY "${_TREXIO_INSTALL_PREFIX}/include" "${_TREXIO_INSTALL_PREFIX}/lib")
+
+        message(STATUS "TREXIO was not found on the system; fetching and building ${VIAMD_TREXIO_TAG}")
+        ExternalProject_Add(trexio_external
+            URL https://github.com/TREX-CoE/trexio/releases/download/${VIAMD_TREXIO_TAG}/trexio-${VIAMD_TREXIO_VERSION}.tar.gz
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            CMAKE_ARGS
+                -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+                -DCMAKE_INSTALL_PREFIX=${_TREXIO_INSTALL_PREFIX}
+            BUILD_BYPRODUCTS ${_TREXIO_IMPORTED_LIBRARY}
+            INSTALL_DIR ${_TREXIO_INSTALL_PREFIX}
+        )
+
+        add_library(trexio_external_lib SHARED IMPORTED GLOBAL)
+        set_target_properties(trexio_external_lib PROPERTIES
+            IMPORTED_LOCATION ${_TREXIO_IMPORTED_LIBRARY}
+            INTERFACE_INCLUDE_DIRECTORIES "${_TREXIO_INSTALL_PREFIX}/include"
+        )
+        add_dependencies(trexio_external_lib trexio_external)
+
         set(TREXIO_FOUND ON)
-        set(TREXIO_INCLUDE_DIRS ${TREXIO_INCLUDE_DIR})
-        set(TREXIO_LIBRARIES ${TREXIO_LIBRARY})
-        get_filename_component(TREXIO_LIBRARY_DIR "${TREXIO_LIBRARY}" DIRECTORY)
-        set(TREXIO_LIBRARY_DIRS ${TREXIO_LIBRARY_DIR})
+        set(TREXIO_INCLUDE_DIRS "${_TREXIO_INSTALL_PREFIX}/include")
+        set(TREXIO_LIBRARY_DIRS "${_TREXIO_INSTALL_PREFIX}/lib")
+        set(TREXIO_LIBRARIES trexio_external_lib)
     endif()
-endif()
-
-if (TREXIO_FOUND)
-    message(STATUS "TREXIO support enabled")
 else()
-    set(_TREXIO_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/_deps/trexio-install")
-    set(_TREXIO_IMPORTED_LIBRARY "${_TREXIO_INSTALL_PREFIX}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}trexio${CMAKE_SHARED_LIBRARY_SUFFIX}")
-    file(MAKE_DIRECTORY "${_TREXIO_INSTALL_PREFIX}/include" "${_TREXIO_INSTALL_PREFIX}/lib")
-
-    message(STATUS "TREXIO was not found on the system; fetching and building ${VIAMD_TREXIO_TAG}")
-    ExternalProject_Add(trexio_external
-        URL https://github.com/TREX-CoE/trexio/releases/download/${VIAMD_TREXIO_TAG}/trexio-${VIAMD_TREXIO_VERSION}.tar.gz
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        CMAKE_ARGS
-            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-            -DCMAKE_INSTALL_PREFIX=${_TREXIO_INSTALL_PREFIX}
-        BUILD_BYPRODUCTS ${_TREXIO_IMPORTED_LIBRARY}
-        INSTALL_DIR ${_TREXIO_INSTALL_PREFIX}
-    )
-
-    add_library(trexio_external_lib SHARED IMPORTED GLOBAL)
-    set_target_properties(trexio_external_lib PROPERTIES
-        IMPORTED_LOCATION ${_TREXIO_IMPORTED_LIBRARY}
-        INTERFACE_INCLUDE_DIRECTORIES "${_TREXIO_INSTALL_PREFIX}/include"
-    )
-    add_dependencies(trexio_external_lib trexio_external)
-
-    set(TREXIO_FOUND ON)
-    set(TREXIO_INCLUDE_DIRS "${_TREXIO_INSTALL_PREFIX}/include")
-    set(TREXIO_LIBRARY_DIRS "${_TREXIO_INSTALL_PREFIX}/lib")
-    set(TREXIO_LIBRARIES trexio_external_lib)
+    message(STATUS "TREXIO support disabled")
 endif()
 
 add_subdirectory(ext/mdlib)
