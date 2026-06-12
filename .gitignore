@@ -45,3 +45,6 @@ ext/imgui/docs/
 ext/imgui/examples/
 ext/imgui/misc/
 ext/imgui/.*
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/

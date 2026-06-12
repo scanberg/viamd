@@ -6,13 +6,15 @@ jobs:
     ci:
         runs-on: macos-latest
         steps:
-        - uses: actions/checkout@v2
-        - name: prepare
+        - uses: actions/checkout@v4
+          with:
+            submodules: recursive
+        - name: install dependencies
           run: |
-            git submodule update --init --recursive
+            brew install hdf5
         - name: cmake
           run: |
-            cmake .
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DHDF5_ROOT=$(brew --prefix hdf5) -DVIAMD_ENABLE_TREXIO=OFF
         - name: build
           run: |
-            make -j 4
+            cmake --build build -j 4
