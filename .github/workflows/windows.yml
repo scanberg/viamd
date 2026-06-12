@@ -12,7 +12,7 @@ jobs:
             git submodule update --init --recursive
         - name: cmake
           run: |
-            cmake .
+            cmake -S . -B build
         - name: build
           run: |
-            cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+            cmake --build build --config Release -- /nologo /verbosity:minimal /maxcpucount:4

@@ -12,7 +12,7 @@ jobs:
             git submodule update --init --recursive
         - name: cmake
           run: |
-            cmake .
+            cmake -S . -B build
         - name: build
           run: |
-            make -j 4
+            cmake --build build --parallel 4
