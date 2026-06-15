@@ -152,7 +152,6 @@ static struct {
         GLuint tex_half_rgba8 = 0;
         GLuint tex_color[2] = {0, 0};
         GLuint tex_history_prev = 0;
-        GLuint tex_taa_frag = 0;  // location-1 output of temporal.frag (motion-blur composited result)
     } rt;
 
     struct {
@@ -1045,6 +1044,11 @@ void initialize(int32_t width, int32_t height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
+    ensure_framebuffer(&gl.velocity.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, gl.velocity.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.velocity.tex_tilemax, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.velocity.tex_neighbormax, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void shutdown() {
@@ -1165,7 +1169,6 @@ void initialize(int width, int height) {
     ensure_framebuffer(&gl.rt.fbo);
     ensure_framebuffer(&gl.rt.scratch_fbo);
     ensure_framebuffer(&gl.linear_depth.fbo);
-    ensure_framebuffer(&gl.velocity.fbo);
     ensure_framebuffer(&gl.ssao.fbo);
     ensure_framebuffer(&gl.bokeh_dof.fbo);
 
@@ -1183,7 +1186,6 @@ void initialize(int width, int height) {
     ensure_texture_2d(&gl.rt.tex_color[0], GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
     ensure_texture_2d(&gl.rt.tex_color[1], GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
     ensure_texture_2d(&gl.rt.tex_history_prev, GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
-    ensure_texture_2d(&gl.rt.tex_taa_frag, GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
 
     ensure_texture_2d(&gl.rt.tex_rgba8, GL_RGBA8, width, height, GL_RGBA, GL_UNSIGNED_BYTE);
     ensure_texture_2d(&gl.rt.tex_half_rgba8, GL_RGBA8, MAX(width / 2, 1), MAX(height / 2, 1), GL_RGBA, GL_UNSIGNED_BYTE);
@@ -1191,7 +1193,6 @@ void initialize(int width, int height) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_color[0], 0);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.rt.tex_color[1], 0);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gl.rt.tex_taa_frag, 0);
 
     GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
@@ -1245,7 +1246,6 @@ void shutdown() {
     if (gl.bokeh_dof.fbo) glDeleteFramebuffers(1, &gl.bokeh_dof.fbo);
     if (gl.rt.tex_color[0]) glDeleteTextures(2, gl.rt.tex_color);
     if (gl.rt.tex_history_prev) glDeleteTextures(1, &gl.rt.tex_history_prev);
-    if (gl.rt.tex_taa_frag) glDeleteTextures(1, &gl.rt.tex_taa_frag);
     if (gl.rt.tex_rgba8) glDeleteTextures(1, &gl.rt.tex_rgba8);
     if (gl.rt.tex_half_rgba8) glDeleteTextures(1, &gl.rt.tex_half_rgba8);
 }
@@ -1959,7 +1959,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     const bool do_dof = settings.dof.enabled && do_linear_depth;
     const bool do_transparency = in.transparency != 0;
     const bool do_fxaa = settings.fxaa.enabled;
-    const bool do_taa = settings.taa.enabled && do_velocity;
+    const bool do_taa = settings.taa.enabled && do_velocity && in.history;
     const bool do_sharpen = settings.sharpen.enabled;
     const bool do_present = true;
 
@@ -1988,25 +1988,11 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         initialize(width, height);
     }
 
-    GLuint prev_history_tex = 0;
-    if (do_taa && in.history) {
-        int hist_w = 0;
-        int hist_h = 0;
-        glBindTexture(GL_TEXTURE_2D, in.history);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &hist_w);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &hist_h);
-        if (hist_w == width && hist_h == height) {
-            copy_texture_2d(gl.rt.tex_history_prev, in.history, width, height);
-            prev_history_tex = gl.rt.tex_history_prev;
-        }
-    }
-
     // Postprocessing targets have no depth attachment – disable depth test so no
     // driver discards fragments silently when the G-buffer pass leaves it enabled.
     GLboolean last_depth_test = glIsEnabled(GL_DEPTH_TEST);
     glDisable(GL_DEPTH_TEST);
 
-    //glViewport(0, 0, gl.tex_width, gl.tex_height);
     glEnable(GL_SCISSOR_TEST);
     glScissor(0, 0, width, height);
     glViewport(0, 0, width, height);
@@ -2048,13 +2034,8 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
 
     if (do_velocity) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.velocity.fbo);
-        glDrawBuffers(2, draw_buffers);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.velocity.tex_tilemax, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.velocity.tex_neighbormax, 0);
         glViewport(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
         glScissor(0, 0, gl.velocity.tex_width, gl.velocity.tex_height);
-        glClearColor(0,0,0,0);
-        glClear(GL_COLOR_BUFFER_BIT);
 
         PUSH_GPU_SECTION("Velocity: Tilemax") {
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
@@ -2072,7 +2053,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_color[0], 0);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.rt.tex_color[1], 0);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gl.rt.tex_taa_frag, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, in.history, 0);
     glViewport(0, 0, width, height);
     glScissor(0, 0, width, height);
     glDrawBuffers(2, draw_buffers);
@@ -2104,7 +2085,6 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     }
 
     // HDR effects -----------------------------------------------------------
-
     if (do_dof) {
         swap_target();
         glDrawBuffer(dst_buffer);
@@ -2113,50 +2093,11 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         POP_GPU_SECTION()
     }
 
-    if (do_taa) {
-        swap_target();
-        const float feedback_min = settings.taa.feedback_min;
-        const float feedback_max = settings.taa.feedback_max;
-        const float motion_scale = settings.taa.motion_blur.enabled ? settings.taa.motion_blur.motion_scale : 0.f;
-
-        // The temporal shader writes two outputs:
-        //   location 0 (out_buff) = temporal resolve, used as history next frame
-        //   location 1 (out_frag) = motion-blur composited result, used for display
-        // When motion blur is active we must enable both draw buffers so location 1
-        // reaches tex_taa_frag; otherwise a single buffer suffices (out_buff == out_frag).
-        if (motion_scale != 0.f) {
-            const GLenum taa_buffers[2] = { dst_buffer, GL_COLOR_ATTACHMENT2 };
-            glDrawBuffers(2, taa_buffers);
-            PUSH_GPU_SECTION("Temporal AA + Motion Blur")
-        } else {
-            glDrawBuffer(dst_buffer);
-            PUSH_GPU_SECTION("Temporal AA")
-        }
-
-        apply_temporal_aa(gl.linear_depth.texture, src_texture, prev_history_tex, in.velocity, gl.velocity.tex_neighbormax, view_param.jitter.curr, view_param.jitter.prev,
-                          feedback_min, feedback_max, motion_scale, time);
-
-        if (in.history) {
-            // out_buff (location 0) landed in dst_buffer's texture – save as history.
-            GLuint dst_texture = dst_buffer == GL_COLOR_ATTACHMENT0 ? gl.rt.tex_color[0] : gl.rt.tex_color[1];
-            copy_texture_2d(in.history, dst_texture, width, height);
-        }
-
-        if (motion_scale != 0.f) {
-            // Blit the motion-blurred display output (tex_taa_frag, location 1) back into
-            // the dst_buffer slot so the ping-pong remains consistent for subsequent passes.
-            glDrawBuffer(dst_buffer);
-            blit_texture(gl.rt.tex_taa_frag);
-        }
-
-        POP_GPU_SECTION()
-    }
-
     // HDR -> LDR boundary ---------------------------------------------------
 
     if (do_tonemap) {
         PUSH_GPU_SECTION("Tonemapping")
-            swap_target();
+        swap_target();
         glDrawBuffer(dst_buffer);
         Tonemapping tonemapper = settings.tonemap.enabled ? to_legacy_tonemapper(settings.tonemap.mode) : Tonemapping_Passthrough;
         apply_tonemapping(src_texture, tonemapper, settings.tonemap.exposure, settings.tonemap.gamma);
@@ -2186,6 +2127,29 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         glDrawBuffer(dst_buffer);
         PUSH_GPU_SECTION("FXAA")
         compute_fxaa(gl.rt.tex_rgba8, width, height);
+        POP_GPU_SECTION()
+    }
+
+    if (do_taa) {
+        copy_texture_2d(gl.rt.tex_history_prev, in.history, width, height);
+
+        swap_target();
+        const float feedback_min = settings.taa.feedback_min;
+        const float feedback_max = settings.taa.feedback_max;
+        const float motion_scale = settings.taa.motion_blur.enabled ? settings.taa.motion_blur.motion_scale : 0.f;
+
+        // The temporal shader writes two outputs:
+        //   location 0 (out_buff) = temporal resolve, used as history next frame
+        //   location 1 (out_frag) = motion-blur composited result, used for display
+        // When motion blur is active we must enable both draw buffers so location 1
+        // reaches tex_taa_frag; otherwise a single buffer suffices (out_buff == out_frag).
+        PUSH_GPU_SECTION("Temporal AA")
+        const GLenum taa_buffers[2] = { GL_COLOR_ATTACHMENT2, dst_buffer };
+        glDrawBuffers(2, taa_buffers);
+
+        apply_temporal_aa(gl.linear_depth.texture, src_texture, gl.rt.tex_history_prev, in.velocity, gl.velocity.tex_neighbormax, view_param.jitter.curr, view_param.jitter.prev,
+                          feedback_min, feedback_max, motion_scale, time);
+
         POP_GPU_SECTION()
     }
 
