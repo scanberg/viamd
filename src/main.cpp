@@ -20,6 +20,7 @@
 #include <md_xvg.h>
 #include <md_csv.h>
 #include <md_lammps.h>
+#include <md_pdb.h>
 
 #include <core/md_log.h>
 #include <core/md_str.h>
@@ -6049,76 +6050,6 @@ static void xyz_write_frame(md_file_t file, const int* atomic_nr, const float* x
     }
 }
 
-static void pdb_write_frame(md_file_t file, const md_system_t* sys, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms, int model_num) {
-    if (model_num > 0) {
-        md_file_printf(file, "MODEL     %4d\n", model_num);
-    }
-
-	md_instance_idx_t prev_inst_idx = INT_MIN;
-	md_sequence_id_t  prev_res_seq  = INT_MIN;
-    for (size_t i = 0; i < num_atoms; ++i) {
-        int idx = atom_indices ? atom_indices[i] : (int)i;
-        
-        // Get element symbol
-		md_atomic_number_t atomic_nr = md_atom_atomic_number(&sys->atom, idx);
-
-		char element[3] = "";
-        str_copy_to_char_buf(element, sizeof(element), md_atomic_number_symbol(atomic_nr));
-        
-        // Get atom name (use element symbol if not available)
-		char name[5] = "";
-		str_copy_to_char_buf(name, sizeof(name), md_atom_name(&sys->atom, idx));
-        
-        // Get residue name
-		md_component_idx_t res_idx = md_component_find_by_atom_idx(&sys->component, idx);
-		char resname[5] = "";
-		str_copy_to_char_buf(resname, sizeof(resname), md_component_name(&sys->component, res_idx));
-
-		md_sequence_id_t res_seq = md_component_seq_id(&sys->component, res_idx);
-        
-        // Get chain ID from instance
-        char chain_id[4] = " ";
-        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(sys, idx);
-        str_copy_to_char_buf(chain_id, sizeof(chain_id), md_instance_auth_id(&sys->instance, inst_idx));
-
-        // PDB format:
-        // ATOM serial name altLoc resName chainID resSeq iCode x y z occupancy tempFactor element charge
-        md_file_printf(file,
-            "%-6s%5zu %-4s%1c%3s %1c%4d%1c   "
-            "%8.3f%8.3f%8.3f"
-            "%6.2f%6.2f          "
-            "%2s%2s\n",
-            "ATOM",
-            i + 1,              // serial number
-            name,               // atom name
-            ' ',                // altLoc
-            resname,            // residue name
-            chain_id[0],        // chain ID
-            res_seq,            // residue sequence number
-            ' ',                // iCode
-            x[idx],             // x coordinate
-            y[idx],             // y coordinate
-            z[idx],             // z coordinate
-            1.0,                // occupancy
-            0.0,                // bfactor
-            element,            // element symbol
-            ""                 // charge
-        );
-
-		if (prev_inst_idx != INT_MIN && inst_idx != prev_inst_idx) {
-			md_file_printf(file, "TER\n");
-		}
-        prev_inst_idx = inst_idx;
-        prev_res_seq = res_seq;
-    }
-    
-    if (model_num > 0) {
-        md_file_printf(file, "ENDMDL\n");
-    } else {
-        md_file_printf(file, "END\n");
-    }
-}
-
 void draw_structure_export_window(ApplicationState* data) {
     ASSERT(data);
 
@@ -6341,7 +6272,7 @@ void draw_structure_export_window(ApplicationState* data) {
                                 xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
                             } else if (struct_exp.selected_file_format == 1) { // PDB
                                 int model_num = (num_frames > 1) ? (int)(f + 1) : 0;
-                                pdb_write_frame(file, sys, x, y, z, atom_indices, num_atoms, model_num);
+                                md_pdb_system_write_state_to_file(file, sys, x, y, z, atom_indices, num_atoms, model_num);
                             }
                         }
                     }
@@ -6355,7 +6286,7 @@ void draw_structure_export_window(ApplicationState* data) {
                         if (struct_exp.selected_file_format == 0) { // XYZ
                             xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
                         } else if (struct_exp.selected_file_format == 1) { // PDB
-                            pdb_write_frame(file, sys, x, y, z, atom_indices, num_atoms, 0);
+                            md_pdb_system_write_state_to_file(file, sys, x, y, z, atom_indices, num_atoms, 0);
                         }
                     }
 
