@@ -190,6 +190,14 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             md_strb_fmt(sb, "flags: %.*s\n", len, bond_flags_buf);
             md_strb_fmt(sb, "length: %.3f\n", d);
         }
+    } else if (hit.domain == PickingDomain_Dipole) {
+        int dipole_idx = hit.local_idx;
+        size_t num_dipoles = md_array_size(state.representation.info.dipole_moments);
+        if (0 <= dipole_idx && dipole_idx < (int)num_dipoles) {
+			md_strb_fmt(sb, "%.*s\n", STR_ARG(state.representation.info.dipole_moments[dipole_idx].label));
+            dvec3_t dipole = state.representation.info.dipole_moments[dipole_idx].vec;
+			md_strb_fmt(sb, "(%.3f %.3f %.3f)\n", dipole.x, dipole.y, dipole.z);
+        }
     }
 }
 
@@ -1644,6 +1652,16 @@ done:
         Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
         rep->enabled = true;
+
+		size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
+		// Create a default representation for ground state dipole moment if present
+        if (num_dipoles > 0) {
+			//if (str_eq(state->representation.info.dipole_moments[0].label, "Ground State")) {
+				Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
+				snprintf(dipole_rep->name, sizeof(dipole_rep->name), "dipole moment");
+				dipole_rep->enabled = true;
+			//}
+        }
     }
 
     recompute_atom_visibility_mask(state);
@@ -3030,8 +3048,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 			PickingSpace* space = (PickingSpace*)event.payload;
             size_t num_atoms = state->mold.sys.atom.count;
             size_t num_bonds = state->mold.sys.bond.count;
+            size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
             picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
+            picking_range_reserve(&state->picking_range_dipole, space, PickingDomain_Dipole, num_dipoles);
             break;
         }
         case viamd::EventType_ViamdInteractionSurface:
@@ -3094,7 +3114,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
         case viamd::EventType_ViamdPickingTooltipTextRequest: {
             ASSERT(event.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
             PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)event.payload;
-            if (req->hit.domain == PickingDomain_Atom || req->hit.domain == PickingDomain_Bond) {
+            if (req->hit.domain == PickingDomain_Atom || req->hit.domain == PickingDomain_Bond || req->hit.domain == PickingDomain_Dipole) {
                 fill_picking_tooltip_text(&req->sb, *state, req->hit);
             }
             break;

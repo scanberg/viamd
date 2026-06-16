@@ -14,18 +14,12 @@ namespace immediate {
 
 using Index = uint32_t;
 
-enum class ProgramType : uint32_t {
-	Unshaded = 0,
-	Shaded = 1,
-};
-
 struct DrawCommand {
     uint32_t offset = 0;
     uint32_t count = 0;
     int32_t model_matrix_idx = -1;
     uint32_t picking_base_idx = 0;
     GLenum primitive_type;
-    ProgramType program_type = ProgramType::Unshaded;
 };
 
 struct PassParams {
@@ -45,7 +39,6 @@ struct Queue {
 
     int32_t curr_model_matrix_idx = -1;
     uint32_t curr_picking_base_idx = 0;
-    ProgramType curr_program_type = ProgramType::Unshaded;
 };
 
 static GLuint vbo = 0;
@@ -62,38 +55,29 @@ static GLint uniform_loc_uv_scale = -1;
 static GLint uniform_loc_point_size = -1;
 static GLint uniform_loc_picking_base_idx = -1;
 
-struct {
-    GLint mv_matrix        = -1;
-    GLint mvp_matrix       = -1;
-    GLint normal_mat_vs    = -1;
-    GLint point_size       = -1;
-    GLint picking_base_idx = -1;
-    GLint light_dir_vs     = -1;
-    GLint dir_radiance     = -1;
-    GLint env_radiance     = -1;
-    GLint roughness        = -1;
-    GLint F0               = -1;
-} uniform_loc_shaded;
-
 static const char* v_shader_src = R"(
 #version 150 core
 #extension GL_ARB_explicit_attrib_location : enable
 
 uniform mat4 u_mvp_matrix;
+uniform mat3 u_normal_matrix;
 uniform float u_point_size = 1.f;
 uniform uint u_picking_base_idx = 0u;
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec4 in_color;
+layout(location = 2) in vec3 in_normal;
 layout(location = 3) in uint in_picking_idx;
 
 out vec4 color;
+out vec3 normal;
 flat out uint picking_idx;
 
 void main() {
     gl_Position = u_mvp_matrix * vec4(in_position, 1.0);
     gl_PointSize = max(u_point_size, 200.0 / gl_Position.w);
     color = in_color;
+    normal = u_normal_matrix * in_normal;
     picking_idx = (in_picking_idx == 0xFFFFFFFFu) ? 0xFFFFFFFFu : in_picking_idx + u_picking_base_idx;
 }
 )";
@@ -103,6 +87,7 @@ static const char* f_shader_src = R"(
 #extension GL_ARB_explicit_attrib_location : enable
 
 in vec4 color;
+in vec3 normal;
 flat in uint picking_idx;
 
 layout(location = 0) out vec4 out_color_alpha;
@@ -125,83 +110,7 @@ vec4 encode_u32(uint index) {
 
 void main() {
     out_color_alpha = color;
-    out_normal = encode_normal(vec3(0,0,1));
-    out_velocity = vec2(0,0);
-    out_picking_idx = encode_u32(picking_idx);
-}
-)";
-
-static const char* v_shader_shaded_src = R"(
-#version 150 core
-#extension GL_ARB_explicit_attrib_location : enable
-
-uniform mat4 u_mv_matrix;
-uniform mat4 u_mvp_matrix;
-uniform mat3 u_normal_mat_vs;
-uniform float u_point_size = 1.f;
-uniform uint u_picking_base_idx = 0u;
-
-layout(location = 0) in vec3 in_position;
-layout(location = 1) in vec4 in_color;
-layout(location = 2) in vec3 in_normal;
-layout(location = 3) in uint in_picking_idx;
-
-out vec4 color;
-out vec3 view_pos;
-out vec3 view_normal;
-flat out uint picking_idx;
-
-void main() {
-    vec4 vp = u_mv_matrix * vec4(in_position, 1.0);
-    view_pos = vp.xyz;
-    view_normal = normalize(u_normal_mat_vs * in_normal);
-    gl_Position = u_mvp_matrix * vec4(in_position, 1.0);
-    gl_PointSize = max(u_point_size, 200.0 / gl_Position.w);
-    color = in_color;
-    picking_idx = (in_picking_idx == 0xFFFFFFFFu) ? 0xFFFFFFFFu : in_picking_idx + u_picking_base_idx;
-}
-)";
-
-static const char* f_shader_shaded_src = R"(
-#version 150 core
-#extension GL_ARB_explicit_attrib_location : enable
-
-uniform vec3 u_light_dir_vs;
-uniform vec3 u_dir_radiance;
-uniform vec3 u_env_radiance;
-uniform float u_roughness;
-uniform float u_F0;
-
-in vec4 color;
-in vec3 view_pos;
-in vec3 view_normal;
-flat in uint picking_idx;
-
-layout(location = 0) out vec4 out_color_alpha;
-layout(location = 1) out vec4 out_normal;
-layout(location = 2) out vec2 out_velocity;
-layout(location = 3) out vec4 out_picking_idx;
-
-vec4 encode_normal(vec3 n) {
-    float p = sqrt(n.z * 8.0 + 8.0);
-    return vec4(n.xy / p + 0.5, 0.0, 0.0);
-}
-
-vec4 encode_u32(uint index) {
-    return vec4(
-        (index & 0x000000FFU) >> 0U,
-        (index & 0x0000FF00U) >> 8U,
-        (index & 0x00FF0000U) >> 16U,
-        (index & 0xFF000000U) >> 24U) / 255.0;
-}
-
-void main() {
-    vec3 N = normalize(view_normal);
-    if (dot(N, -view_pos) < 0.0) N = -N;
-    float ndotl = max(dot(N, normalize(u_light_dir_vs)), 0.0);
-    vec3 lit = color.rgb * (u_env_radiance + u_dir_radiance * ndotl);
-    out_color_alpha = vec4(lit, color.a);
-    out_normal = encode_normal(N);
+    out_normal = encode_normal(normal);
     out_velocity = vec2(0,0);
     out_picking_idx = encode_u32(picking_idx);
 }
@@ -214,8 +123,7 @@ static inline void append_draw_command(Queue& ctx, size_t count, GLenum primitiv
     if (last_cmd &&
         last_cmd->primitive_type == primitive_type &&
         last_cmd->model_matrix_idx == ctx.curr_model_matrix_idx &&
-        last_cmd->picking_base_idx == ctx.curr_picking_base_idx &&
-        last_cmd->program_type == ctx.curr_program_type) {
+        last_cmd->picking_base_idx == ctx.curr_picking_base_idx) {
         size_t capacity = max_size - last_cmd->count;
         if (count < capacity) {
             last_cmd->count += (uint32_t)count;
@@ -227,7 +135,7 @@ static inline void append_draw_command(Queue& ctx, size_t count, GLenum primitiv
 
     ASSERT(ctx.curr_model_matrix_idx > -1 && "Immediate draw model matrix not set");
     const size_t offset = md_array_size(ctx.indices) - count;
-    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, ctx.curr_model_matrix_idx, ctx.curr_picking_base_idx, primitive_type, ctx.curr_program_type};
+    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, ctx.curr_model_matrix_idx, ctx.curr_picking_base_idx, primitive_type};
     md_array_push(ctx.commands, cmd, ctx.arena);
 }
 
@@ -240,12 +148,11 @@ static void init_queue_storage(Queue& q, md_allocator_i* arena) {
     md_array_ensure(q.commands, 32, q.arena);
     q.curr_model_matrix_idx = -1;
     q.curr_picking_base_idx = 0;
-    q.curr_program_type = ProgramType::Unshaded;
 }
 
 void encoder_set_model(Queue& ctx, const mat4_t& model_matrix);
 void encoder_set_picking_base_idx(Queue& ctx, uint32_t base_idx);
-void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj, const LightingDesc& lighting);
+void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj);
 void draw_point(Queue& ctx, vec3_t pos, uint32_t color, uint32_t picking_idx);
 void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_mult);
 void draw_line(Queue& ctx, vec3_t from, vec3_t to, uint32_t color);
@@ -287,11 +194,6 @@ void set_model(Queue* queue, const mat4_t& model_mat) {
 void set_picking_base_idx(Queue* queue, uint32_t base_idx) {
     Queue& q = require_queue(queue);
     encoder_set_picking_base_idx(q, base_idx);
-}
-
-void set_shading(Queue* queue, bool shaded) {
-	Queue& q = require_queue(queue);
-	q.curr_program_type = shaded ? ProgramType::Shaded : ProgramType::Unshaded;
 }
 
 void point(Queue* queue, vec3_t pos, uint32_t color, uint32_t picking_idx) {
@@ -492,7 +394,6 @@ void queue_reset(Queue* queue) {
     md_array_shrink(queue->model_matrices, 0);
     queue->curr_model_matrix_idx = -1;
     queue->curr_picking_base_idx = 0;
-    queue->curr_program_type = ProgramType::Unshaded;
 }
 
 void render(Queue* queue, const RenderParams& params) {
@@ -502,7 +403,7 @@ void render(Queue* queue, const RenderParams& params) {
         return;
     }
 
-    encoder_submit(*queue, params.view, params.proj, params.lighting);
+    encoder_submit(*queue, params.view, params.proj);
 }
 
 void initialize() {
@@ -541,43 +442,6 @@ void initialize() {
     uniform_loc_uv_scale = glGetUniformLocation(program, "u_uv_scale");
     uniform_loc_point_size = glGetUniformLocation(program, "u_point_size");
     uniform_loc_picking_base_idx = glGetUniformLocation(program, "u_picking_base_idx");
-
-    {
-        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(vs, 1, &v_shader_shaded_src, 0);
-        glShaderSource(fs, 1, &f_shader_shaded_src, 0);
-        glCompileShader(vs);
-        if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, vs)) {
-            MD_LOG_ERROR("Error while compiling immediate shaded vertex shader:\n%s\n", buffer);
-        }
-        glCompileShader(fs);
-        if (gl::get_shader_compile_error(buffer, BUFFER_SIZE, fs)) {
-            MD_LOG_ERROR("Error while compiling immediate shaded fragment shader:\n%s\n", buffer);
-        }
-        program_shaded = glCreateProgram();
-        glAttachShader(program_shaded, vs);
-        glAttachShader(program_shaded, fs);
-        glLinkProgram(program_shaded);
-        if (gl::get_program_link_error(buffer, BUFFER_SIZE, program_shaded)) {
-            MD_LOG_ERROR("Error while linking immediate shaded program:\n%s\n", buffer);
-        }
-        glDetachShader(program_shaded, vs);
-        glDetachShader(program_shaded, fs);
-        glDeleteShader(vs);
-        glDeleteShader(fs);
-
-        uniform_loc_shaded.mv_matrix = glGetUniformLocation(program_shaded, "u_mv_matrix");
-        uniform_loc_shaded.mvp_matrix = glGetUniformLocation(program_shaded, "u_mvp_matrix");
-        uniform_loc_shaded.normal_mat_vs = glGetUniformLocation(program_shaded, "u_normal_mat_vs");
-        uniform_loc_shaded.point_size = glGetUniformLocation(program_shaded, "u_point_size");
-        uniform_loc_shaded.picking_base_idx = glGetUniformLocation(program_shaded, "u_picking_base_idx");
-        uniform_loc_shaded.light_dir_vs = glGetUniformLocation(program_shaded, "u_light_dir_vs");
-        uniform_loc_shaded.dir_radiance = glGetUniformLocation(program_shaded, "u_dir_radiance");
-        uniform_loc_shaded.env_radiance = glGetUniformLocation(program_shaded, "u_env_radiance");
-        uniform_loc_shaded.roughness = glGetUniformLocation(program_shaded, "u_roughness");
-        uniform_loc_shaded.F0 = glGetUniformLocation(program_shaded, "u_F0");
-    }
 
     glGenBuffers(1, &vbo);
     glGenBuffers(1, &ibo);
@@ -628,7 +492,7 @@ void encoder_set_picking_base_idx(Queue& ctx, uint32_t base_idx) {
     ctx.curr_picking_base_idx = base_idx;
 }
 
-void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj, const LightingDesc& lighting) {
+void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj) {
 	size_t num_commands = md_array_size(ctx.commands);
 	if (num_commands == 0) {
 		return;
@@ -651,31 +515,12 @@ void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj, const Li
 	const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
 	const mat4_t vp_matrix = mat4_mul(proj, view);
 
-	ProgramType current_program_type = ProgramType::Unshaded;
-	bool has_program = false;
 	int current_model_matrix_idx = -1;
+
+    glUseProgram(program);
 
 	for (size_t i = 0; i < num_commands; ++i) {
 		const auto& cmd = ctx.commands[i];
-
-		if (!has_program || cmd.program_type != current_program_type) {
-			has_program = true;
-			current_program_type = cmd.program_type;
-			current_model_matrix_idx = -1;
-
-			if (current_program_type == ProgramType::Shaded) {
-				glUseProgram(program_shaded);
-				glUniform3fv(uniform_loc_shaded.light_dir_vs, 1, &lighting.light_dir.x);
-				glUniform3fv(uniform_loc_shaded.dir_radiance, 1, &lighting.dir_radiance.x);
-				glUniform3fv(uniform_loc_shaded.env_radiance, 1, &lighting.env_radiance.x);
-				glUniform1f(uniform_loc_shaded.roughness, lighting.roughness);
-				glUniform1f(uniform_loc_shaded.F0, lighting.F0);
-				glUniform1f(uniform_loc_shaded.point_size, 1.f);
-			} else {
-				glUseProgram(program);
-				glUniform1f(uniform_loc_point_size, 1.f);
-			}
-		}
 
 		if (cmd.model_matrix_idx != current_model_matrix_idx) {
 			current_model_matrix_idx = cmd.model_matrix_idx;
@@ -683,21 +528,11 @@ void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj, const Li
 			mat3_t normal_matrix = mat3_from_mat4(mat4_transpose(mat4_inverse(mv_matrix)));
 			mat4_t mvp_matrix = mat4_mul(vp_matrix, ctx.model_matrices[cmd.model_matrix_idx]);
 
-			if (current_program_type == ProgramType::Shaded) {
-				glUniformMatrix4fv(uniform_loc_shaded.mv_matrix, 1, GL_FALSE, &mv_matrix.elem[0][0]);
-				glUniformMatrix3fv(uniform_loc_shaded.normal_mat_vs, 1, GL_FALSE, &normal_matrix.elem[0][0]);
-				glUniformMatrix4fv(uniform_loc_shaded.mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
-			} else {
-				glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix.elem[0][0]);
-				glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
-			}
+		    glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix.elem[0][0]);
+			glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
 		}
 
-		if (current_program_type == ProgramType::Shaded) {
-			glUniform1ui(uniform_loc_shaded.picking_base_idx, cmd.picking_base_idx);
-		} else {
-			glUniform1ui(uniform_loc_picking_base_idx, cmd.picking_base_idx);
-		}
+		glUniform1ui(uniform_loc_picking_base_idx, cmd.picking_base_idx);
 
 		glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
 	}
@@ -1222,7 +1057,7 @@ void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color
         vec3_t a1 = vec3_add(base, vec3_mul1(rad1, radius));
 
         // Lateral face – smooth normals at base ring; use average at apex for continuity
-        vec3_t apex_n = vec3_normalize(vec3_add(ln0, ln1));
+        vec3_t apex_n = vec3_normalize(vec3_add(ln1, ln0));
         {
             const Index base_idx = (Index)md_array_size(ctx.vertices);
             Vertex sv[3] = {

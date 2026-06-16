@@ -89,8 +89,9 @@ typedef uint64_t PickingDomainID;
 typedef uint64_t PickingSourceID;
 typedef uint64_t InteractionSurfaceID;
 
-constexpr PickingDomainID PickingDomain_Atom = HASH_STR_LIT64("picking domain atom");
-constexpr PickingDomainID PickingDomain_Bond = HASH_STR_LIT64("picking domain bond");
+constexpr PickingDomainID PickingDomain_Atom   = HASH_STR_LIT64("picking domain atom");
+constexpr PickingDomainID PickingDomain_Bond   = HASH_STR_LIT64("picking domain bond");
+constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain dipole");
 
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
@@ -466,7 +467,7 @@ struct Selection {
 struct DipoleMoment {
 	uint64_t key = 0;
 	str_t label = { 0 };
-    vec3_t vec = { 0, 0, 0 };
+    dvec3_t vec = { 0, 0, 0 };
 };
 
 struct NaturalTransitionOrbitalLambda {
@@ -891,7 +892,7 @@ struct DipoleRepresentation {
     int dipole_idx = 0;
     vec4_t color = { 0, 0, 0, 1 };
     vec3_t origin = { 0, 0, 0 };
-    float scale = 1.0f;
+    double scale = 1.0;
 	float radius = 0.05f;
 };
 
@@ -1170,6 +1171,7 @@ struct ApplicationState {
 
     PickingRange   picking_range_atom {};   // Reserved picking range for atoms
     PickingRange   picking_range_bond {};   // Reserved picking range for bonds
+    PickingRange   picking_range_dipole {}; // Reserved picking range for dipoles
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 

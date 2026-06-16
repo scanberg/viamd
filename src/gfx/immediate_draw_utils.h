@@ -23,20 +23,9 @@ struct Vertex {
     uint32_t picking_idx = 0xFFFFFFFF;
 };
 
-// All radiance values are in linear light units.
-// light_dir is a world-space direction pointing *towards* the light source.
-struct LightingDesc {
-    vec3_t light_dir    = {0.57735026f, 0.57735026f, 0.57735026f};  // normalized world-space direction towards light
-    vec3_t dir_radiance = {10.f, 10.f, 10.f};                       // directional light colour * intensity
-    vec3_t env_radiance = {1.f,  1.f,  1.f};                        // ambient/environment radiance
-    float  roughness    = 0.4f;
-    float  F0           = 0.04f;                                    // Fresnel reflectance at normal incidence
-};
-
 struct RenderParams {
     mat4_t view = mat4_ident();
     mat4_t proj = mat4_ident();
-    const LightingDesc lighting = {};
 };
 
 struct Queue;
@@ -71,7 +60,6 @@ void render(Queue* queue, const RenderParams& params);
 // Direct queue API: emit commands straight into queue storage without creating a Scope.
 void set_model(Queue* queue, const mat4_t& model_mat);
 void set_picking_base_idx(Queue* queue, uint32_t base_idx);
-void set_shading(Queue* queue, bool shaded);
 
 void point(Queue* queue, vec3_t pos, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
 void line(Queue* queue, vec3_t from, vec3_t to, uint32_t color = DEFAULT_COLOR);
