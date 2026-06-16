@@ -142,14 +142,14 @@ static inline bool is_orthographic_proj_matrix(const float P[4][4]) { return P[2
 static struct {
     GLuint vao = 0;
     GLuint v_shader_fs_quad = 0;
-    GLuint tex_width = 0;
-    GLuint tex_height = 0;
+    uint32_t tex_width = 0;
+    uint32_t tex_height = 0;
 
     struct {
         GLuint fbo = 0;
         GLuint scratch_fbo = 0;
         GLuint tex_rgba8 = 0;
-        GLuint tex_half_rgba8 = 0;
+        GLuint tex_half_dof = 0;
         GLuint tex_color[2] = {0, 0};
         GLuint tex_history_prev = 0;
     } rt;
@@ -158,8 +158,8 @@ static struct {
         GLuint fbo = 0;
         GLuint tex_tilemax = 0;
         GLuint tex_neighbormax = 0;
-        int32_t tex_width = 0;
-        int32_t tex_height = 0;
+        uint32_t tex_width = 0;
+        uint32_t tex_height = 0;
     } velocity;
 
     struct {
@@ -1188,7 +1188,7 @@ void initialize(int width, int height) {
     ensure_texture_2d(&gl.rt.tex_history_prev, GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
 
     ensure_texture_2d(&gl.rt.tex_rgba8, GL_RGBA8, width, height, GL_RGBA, GL_UNSIGNED_BYTE);
-    ensure_texture_2d(&gl.rt.tex_half_rgba8, GL_RGBA8, MAX(width / 2, 1), MAX(height / 2, 1), GL_RGBA, GL_UNSIGNED_BYTE);
+    ensure_texture_2d(&gl.rt.tex_half_dof, GL_RGBA16F, MAX(width / 2, 1), MAX(height / 2, 1), GL_RGBA, GL_FLOAT);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.rt.fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_color[0], 0);
@@ -1247,7 +1247,7 @@ void shutdown() {
     if (gl.rt.tex_color[0]) glDeleteTextures(2, gl.rt.tex_color);
     if (gl.rt.tex_history_prev) glDeleteTextures(1, &gl.rt.tex_history_prev);
     if (gl.rt.tex_rgba8) glDeleteTextures(1, &gl.rt.tex_rgba8);
-    if (gl.rt.tex_half_rgba8) glDeleteTextures(1, &gl.rt.tex_half_rgba8);
+    if (gl.rt.tex_half_dof) glDeleteTextures(1, &gl.rt.tex_half_dof);
 }
 
 void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, bool orthographic = false) {
@@ -1285,12 +1285,12 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const float proj_m
 
     GLint last_fbo;
     GLint last_viewport[4];
-    GLint last_draw_buffer;
+    GLint last_draw_buffers[8];
     GLint last_scissor_box[4];
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
     glGetIntegerv(GL_VIEWPORT, last_viewport);
     glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
-    glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
+    for (int i = 0; i < 8; ++i) glGetIntegerv(GL_DRAW_BUFFER0 + i, &last_draw_buffers[i]);
 
     int width  = last_viewport[2];
     int height = last_viewport[3];
@@ -1363,7 +1363,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, const float proj_m
     // BLUR SECOND AND BLEND RESULT
     PUSH_GPU_SECTION("2nd")
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
-    glDrawBuffer(last_draw_buffer);
+    glDrawBuffers(8, (const GLenum*)last_draw_buffers);
     glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
     glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
     glBindTexture(GL_TEXTURE_2D, gl.ssao.tex[1]);
@@ -1475,7 +1475,7 @@ void half_res_color_coc(GLuint linear_depth_tex, GLuint color_tex, float focus_p
     glViewport(0, 0, gl.tex_width / 2, gl.tex_height / 2);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.bokeh_dof.fbo);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_half_rgba8, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_half_dof, 0);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
     glActiveTexture(GL_TEXTURE0);
@@ -1513,7 +1513,7 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_point, flo
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, gl.rt.tex_half_rgba8);
+    glBindTexture(GL_TEXTURE_2D, gl.rt.tex_half_dof);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
     glActiveTexture(GL_TEXTURE2);
@@ -1604,7 +1604,6 @@ void apply_inverse_aa_tonemapping(GLuint color_tex) {
 }
 
 void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
-
     //mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj * view_param.matrix.inverse.view_proj;
     mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.prev.proj * view_param.matrix.prev.view * view_param.matrix.inv.view * view_param.matrix.inv.proj;
 
@@ -1952,11 +1951,10 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     }
 
     const bool do_compose = true;
-    const bool do_linear_depth = do_compose || settings.ssao.enabled || settings.taa.enabled || settings.dof.enabled;
-    const bool do_velocity = settings.taa.enabled && do_linear_depth;
-    const bool do_ssao = settings.ssao.enabled && do_linear_depth;
+    const bool do_velocity = settings.taa.enabled;
+    const bool do_ssao = settings.ssao.enabled;
     const bool do_tonemap = settings.tonemap.enabled;
-    const bool do_dof = settings.dof.enabled && do_linear_depth;
+    const bool do_dof = settings.dof.enabled;
     const bool do_transparency = in.transparency != 0;
     const bool do_fxaa = settings.fxaa.enabled;
     const bool do_taa = settings.taa.enabled && do_velocity && in.history;
@@ -1968,18 +1966,16 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     time = time + 0.01f;
     if (time > 100.f) time -= 100.f;
 
-    const auto near_dist = view_param.clip_planes.near;
-    const auto far_dist = view_param.clip_planes.far;
     const auto ortho = is_orthographic_proj_matrix(view_param.matrix.curr.proj.elem);
 
     GLint last_fbo;
     GLint last_viewport[4];
-    GLint last_draw_buffer;
+    GLint last_draw_buffers[8];
     GLint last_scissor_box[4];
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
     glGetIntegerv(GL_VIEWPORT, last_viewport);
     glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
-    glGetIntegerv(GL_DRAW_BUFFER, &last_draw_buffer);
+    for (int i = 0; i < 8; ++i) glGetIntegerv(GL_DRAW_BUFFER0 + i, &last_draw_buffers[i]);
 
     int width = last_viewport[2];
     int height = last_viewport[3];
@@ -1994,7 +1990,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     glDisable(GL_DEPTH_TEST);
 
     glEnable(GL_SCISSOR_TEST);
-    glScissor(0, 0, width, height);
+    glScissor (0, 0, width, height);
     glViewport(0, 0, width, height);
     glBindVertexArray(gl.vao);
 
@@ -2002,18 +1998,6 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         GL_COLOR_ATTACHMENT0,
         GL_COLOR_ATTACHMENT1,
     };
-
-    if (do_linear_depth) {
-        PUSH_GPU_SECTION("Linearize Depth") {
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo);
-            glDrawBuffer(GL_COLOR_ATTACHMENT0);
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 0);
-            glClearColor(far_dist,0,0,0);
-            glClear(GL_COLOR_BUFFER_BIT);
-            compute_linear_depth(in.depth, near_dist, far_dist, ortho);
-        }
-        POP_GPU_SECTION()
-    }
 
     if (do_ssao) {
         PUSH_GPU_SECTION("Generate Linear Depth Mipmaps") {
@@ -2163,7 +2147,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
 
     // Activate backbuffer or whatever was bound before
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
-    glDrawBuffer(last_draw_buffer);
+    glDrawBuffers(8, (const GLenum*)last_draw_buffers);
     glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
     glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
     glDisable(GL_SCISSOR_TEST);
@@ -2179,6 +2163,34 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     glColorMask(1, 1, 1, 1);
 }
 
+void record_depth(GLuint depth_tex, const ViewParam& view_param) {
+    ASSERT(glIsTexture(depth_tex));
+    const auto near_dist = view_param.clip_planes.near;
+    const auto far_dist = view_param.clip_planes.far;
+    const auto ortho = is_orthographic_proj_matrix(view_param.matrix.curr.proj.elem);
+
+    GLint last_fbo;
+    GLint last_viewport[4];
+    GLint last_draw_buffers[8];
+    GLint last_scissor_box[4];
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
+    glGetIntegerv(GL_VIEWPORT, last_viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box);
+    for (int i = 0; i < 8; ++i) glGetIntegerv(GL_DRAW_BUFFER0 + i, &last_draw_buffers[i]);
+
+    PUSH_GPU_SECTION("Linearize Depth")
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 0);
+    compute_linear_depth(depth_tex, near_dist, far_dist, ortho);
+    POP_GPU_SECTION()
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fbo);
+    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
+    glScissor(last_scissor_box[0], last_scissor_box[1], last_scissor_box[2], last_scissor_box[3]);
+    glDrawBuffers(8, (const GLenum*)last_draw_buffers);
+}
+
 }  // namespace postprocessing
 
 namespace postprocess_pipeline {
@@ -2189,6 +2201,11 @@ void initialize(int width, int height) {
 
 void shutdown() {
     postprocessing::shutdown();
+}
+
+void record_depth(GLuint depth_tex, const ViewParam& view) {
+    ASSERT(glIsTexture(depth_tex));
+    postprocessing::record_depth(depth_tex, view);
 }
 
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view) {

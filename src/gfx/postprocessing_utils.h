@@ -79,6 +79,9 @@ struct Settings {
 };
 
 void initialize(int width, int height);
+// Depth is recorded separately to allow for depth buffer reuse.
+// This will internally store a linear depth representation that is required later in execute.
+void record_depth(GLuint in_depth, const ViewParam& view);
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
 void shutdown();
 

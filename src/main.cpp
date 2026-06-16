@@ -6771,12 +6771,8 @@ static void fill_gbuffer(ApplicationState* state) {
     glDepthFunc(GL_LESS);
     glColorMask(1, 1, 1, 1);
 
-    // Blit selection and highlight result into transparency buffer
-    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-    postprocessing::blit_texture(state->gbuffer.tex.transparency);
-
-    draw_representations_transparent(state);
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
+    // Record depth for postprocessing. This allows us to reuse depth buffer for overlays
+    postprocess_pipeline::record_depth(state->gbuffer.tex.depth, state->view.param);
 
     immediate::Scope vis_scope(state->gfx.overlay, "visualization");
     immediate::Scope vis_scope_depth(state->gfx.world, "visualization with depth");
@@ -6826,14 +6822,23 @@ static void fill_gbuffer(ApplicationState* state) {
     // standard alpha blending
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
+    glDepthFunc(GL_LESS);
     immediate::render(state->gfx.world, params);
 
-    glDisable(GL_DEPTH_TEST);
+    //glDisable(GL_DEPTH_TEST);
+    glDepthMask(1);
+    glClear(GL_DEPTH_BUFFER_BIT);
     immediate::render(state->gfx.overlay, params);
 
     glDisable(GL_BLEND);
     glEnable(GL_CULL_FACE);
+
+    // Blit selection and highlight result into transparency buffer
+    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+    postprocessing::blit_texture(state->gbuffer.tex.transparency);
+
+    draw_representations_transparent(state);
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
 
     POP_GPU_SECTION()  // G-buffer
 }
@@ -6884,10 +6889,10 @@ static void apply_postprocessing(const ApplicationState& data) {
     POP_GPU_SECTION()
 }
 
-static void draw_representations_opaque(ApplicationState* data) {
-    ASSERT(data);
+static void draw_representations_opaque(ApplicationState* state) {
+    ASSERT(state);
 
-    if (data->mold.sys.atom.count == 0) {
+    if (state->mold.sys.atom.count == 0) {
         return;
     }
 
@@ -6906,24 +6911,24 @@ static void draw_representations_opaque(ApplicationState* data) {
                 mat4_t R = mat4_from_quat(ori);
                 mat4_t T = mat4_translate(rnd() * 4000, rnd() * 4000, rnd() * 4000);
                 mat4_t M = T * R;
-                md_urange_t range = {0, (int32_t)data->mold.sys.atom.count};
+                md_urange_t range = {0, (int32_t)state->mold.sys.atom.count};
                 md_array_push(transforms, M, persistent_alloc);
             }
         }
 
         md_gfx_draw_op_t* draw_ops = 0;
-        for (int64_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-            if (data->representation.reps[i].enabled) {
+        for (int64_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+            if (state->representation.reps[i].enabled) {
                 md_gfx_draw_op_t op;
-                op.structure = data->mold.gfx_structure;
-                op.representation = data->representation.reps[i].gfx_rep;
+                op.structure = state->mold.gfx_structure;
+                op.representation = state->representation.reps[i].gfx_rep;
                 op.model_mat = NULL;
                 md_array_push(draw_ops, op, frame_alloc);
                 
                 for (uint32_t j = 0; j < instance_count; ++j) {
                     md_gfx_draw_op_t op;
-                    op.structure = data->mold.gfx_structure;
-                    op.representation = data->representation.reps[i].gfx_rep;
+                    op.structure = state->mold.gfx_structure;
+                    op.representation = state->representation.reps[i].gfx_rep;
                     op.model_mat = &transforms[j];
                     md_array_push(draw_ops, op, frame_alloc);
                 }
@@ -6931,24 +6936,24 @@ static void draw_representations_opaque(ApplicationState* data) {
             }
         }
 
-        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &data->view.param.matrix.curr.proj, &data->view.param.matrix.curr.view, &data->view.param.matrix.inv.proj, &data->view.param.matrix.inv.view);
+        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &state->view.param.matrix.curr.proj, &state->view.param.matrix.curr.view, &state->view.param.matrix.inv.proj, &state->view.param.matrix.inv.view);
     } else {
 #endif
-        const size_t num_representations = md_array_size(data->representation.reps);
+        const size_t num_representations = md_array_size(state->representation.reps);
         if (num_representations == 0) return;
 
 		glEnable(GL_DEPTH_TEST);
 
         md_array(md_gl_draw_op_t) draw_ops = 0;
         for (size_t i = 0; i < num_representations; ++i) {
-            const Representation& rep = data->representation.reps[i];
+            const Representation& rep = state->representation.reps[i];
 
             if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
                 if (rep.enabled && rep.type_is_valid) {
                     md_gl_draw_op_t op = {
                         .type = (md_gl_rep_type_t)rep.type,
                         .args = {},
-                        .rep = data->representation.reps[i].md_rep,
+                        .rep = state->representation.reps[i].md_rep,
                         .model_matrix = NULL,
                     };
                     switch (rep.type) {
@@ -6988,38 +6993,63 @@ static void draw_representations_opaque(ApplicationState* data) {
                     }
                     md_array_push(draw_ops, op, frame_alloc);
                 }
+            } else if (rep.type == RepresentationType::DipoleMoment) {
+                // immediate draw of dipole moment as arrow
+                size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
+                if (rep.dipole.dipole_idx < num_dipoles) {
+                    immediate::Scope scope(state->gfx.overlay, "debug_dipole_moment");
+                    const DipoleMoment& dipole = state->representation.info.dipole_moments[rep.dipole.dipole_idx];
+
+                    const vec3_t vec = dipole.vec * rep.dipole.scale;
+
+                    // cylinder body
+                    const float body_scale = 0.8f;
+
+                    const float body_radius = rep.dipole.radius;
+                    const float head_radius = body_radius * 1.5f;
+
+                    vec3_t cyl_beg = rep.dipole.origin;
+                    vec3_t cyl_end = rep.dipole.origin + vec * body_scale;
+                    vec3_t arrow_end = rep.dipole.origin + vec;
+
+                    uint32_t color_u32 = convert_color(rep.dipole.color);
+
+                    immediate::set_shading(scope, true);
+                    immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32);
+                    immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32);
+                }
             }
         }
 
 		// MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
         float max_bond_length = 10.0f;
-        if (md_unitcell_flags(&data->mold.sys.unitcell) == 0) {
-            vec3_t aabb_ext = vec3_sub(data->mold.sys_aabb_max, data->mold.sys_aabb_min);
+        if (md_unitcell_flags(&state->mold.sys.unitcell) == 0) {
+            vec3_t aabb_ext = vec3_sub(state->mold.sys_aabb_max, state->mold.sys_aabb_min);
             max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
         }
         else {
             vec3_t ext = { 0 };
-            md_unitcell_diag_extract_float(ext.elem, &data->mold.sys.unitcell);
+            md_unitcell_diag_extract_float(ext.elem, &state->mold.sys.unitcell);
             float min_half_box_ext = vec3_reduce_min(vec3_mul1(ext, 0.5f));
             max_bond_length = MAX(3.0, min_half_box_ext);
         }
 
         md_gl_draw_args_t args = {
-            .shaders = data->gl.shaders,
+            .shaders = state->gl.shaders,
             .draw_operations = {
                 .count = (uint32_t)md_array_size(draw_ops),
                 .ops = draw_ops,
             },
             .view_transform = {
-                .view_matrix = &data->view.param.matrix.curr.view.elem[0][0],
-                .proj_matrix = &data->view.param.matrix.curr.proj.elem[0][0],
+                .view_matrix = &state->view.param.matrix.curr.view.elem[0][0],
+                .proj_matrix = &state->view.param.matrix.curr.proj.elem[0][0],
                 // These two are for temporal anti-aliasing reprojection (optional)
-                .prev_view_matrix = &data->view.param.matrix.prev.view.elem[0][0],
-                .prev_proj_matrix = &data->view.param.matrix.prev.proj.elem[0][0],
+                .prev_view_matrix = &state->view.param.matrix.prev.view.elem[0][0],
+                .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
             },
             .picking_offset = {
-                .atom_base = data->picking_range_atom.beg,
-                .bond_base = data->picking_range_bond.beg,
+                .atom_base = state->picking_range_atom.beg,
+                .bond_base = state->picking_range_bond.beg,
             },
             .max_bond_length = max_bond_length,
         };
@@ -7105,31 +7135,6 @@ static void draw_representations_transparent(ApplicationState* state) {
                 immediate::box_wireframe(scope, { 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
             }
 #endif
-        } else if (rep.type == RepresentationType::DipoleMoment) {
-            // immediate draw of dipole moment as arrow
-            size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
-            if (rep.dipole.dipole_idx < num_dipoles) {
-                immediate::Scope scope(state->gfx.overlay, "debug_dipole_moment");
-                const DipoleMoment& dipole = state->representation.info.dipole_moments[rep.dipole.dipole_idx];
-
-                const vec3_t vec = dipole.vec * rep.dipole.scale;
-
-                // cylinder body
-                const float body_scale = 0.8f;
-
-                const float body_radius = rep.dipole.radius;
-                const float head_radius = body_radius * 1.5f;
-
-                vec3_t cyl_beg = rep.dipole.origin;
-                vec3_t cyl_end = rep.dipole.origin + vec * body_scale;
-                vec3_t arrow_end = rep.dipole.origin + vec;
-
-                uint32_t color_u32 = convert_color(rep.dipole.color);
-
-                immediate::set_shading(scope, true);
-                immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32);
-                immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32);
-            }
         }
     }
 }
