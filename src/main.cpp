@@ -6054,7 +6054,8 @@ static void pdb_write_frame(md_file_t file, const md_system_t* sys, const float*
         md_file_printf(file, "MODEL     %4d\n", model_num);
     }
 
-	md_instance_idx_t prev_inst_idx = -1;
+	md_instance_idx_t prev_inst_idx = INT_MIN;
+	md_sequence_id_t  prev_res_seq  = INT_MIN;
     for (size_t i = 0; i < num_atoms; ++i) {
         int idx = atom_indices ? atom_indices[i] : (int)i;
         
@@ -6104,10 +6105,11 @@ static void pdb_write_frame(md_file_t file, const md_system_t* sys, const float*
             ""                 // charge
         );
 
-		if (prev_inst_idx != -1 && inst_idx != prev_inst_idx) {
+		if (prev_inst_idx != INT_MIN && inst_idx != prev_inst_idx) {
 			md_file_printf(file, "TER\n");
 		}
         prev_inst_idx = inst_idx;
+        prev_res_seq = res_seq;
     }
     
     if (model_num > 0) {
