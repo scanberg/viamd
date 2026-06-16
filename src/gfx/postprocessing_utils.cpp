@@ -1959,8 +1959,6 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     time = time + 0.01f;
     if (time > 100.f) time -= 100.f;
 
-    const auto ortho = is_orthographic_proj_matrix(view_param.matrix.curr.proj.elem);
-
     GLResetState reset_state = {};
     record_gl_reset_state(&reset_state);
 
@@ -1980,6 +1978,17 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     glScissor (0, 0, width, height);
     glViewport(0, 0, width, height);
     glBindVertexArray(gl.vao);
+
+    const auto near_dist = view_param.clip_planes.near;
+    const auto far_dist = view_param.clip_planes.far;
+    const auto ortho = is_orthographic_proj_matrix(view_param.matrix.curr.proj.elem);
+
+    PUSH_GPU_SECTION("Linearize Depth")
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 0);
+    compute_linear_depth(in.depth, near_dist, far_dist, ortho);
+    POP_GPU_SECTION()
 
     const GLenum draw_buffers[2] = {
         GL_COLOR_ATTACHMENT0,
@@ -2147,25 +2156,6 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     glColorMask(1, 1, 1, 1);
 }
 
-void record_depth(GLuint depth_tex, const ViewParam& view_param) {
-    ASSERT(glIsTexture(depth_tex));
-    const auto near_dist = view_param.clip_planes.near;
-    const auto far_dist = view_param.clip_planes.far;
-    const auto ortho = is_orthographic_proj_matrix(view_param.matrix.curr.proj.elem);
-
-    GLResetState reset_state = {};
-    record_gl_reset_state(&reset_state);
-
-    PUSH_GPU_SECTION("Linearize Depth")
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.linear_depth.fbo);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.linear_depth.texture, 0);
-    compute_linear_depth(depth_tex, near_dist, far_dist, ortho);
-    POP_GPU_SECTION()
-
-    reset_gl_state(reset_state);
-}
-
 }  // namespace postprocessing
 
 namespace postprocess_pipeline {
@@ -2176,11 +2166,6 @@ void initialize(int width, int height) {
 
 void shutdown() {
     postprocessing::shutdown();
-}
-
-void record_depth(GLuint depth_tex, const ViewParam& view) {
-    ASSERT(glIsTexture(depth_tex));
-    postprocessing::record_depth(depth_tex, view);
 }
 
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view) {

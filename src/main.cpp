@@ -6654,7 +6654,6 @@ static void render(ApplicationState* state) {
     // standard alpha blending
     PUSH_GPU_SECTION("Immediate world")
     //glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     immediate::render(state->gfx.world, params);
@@ -6762,23 +6761,19 @@ static void render(ApplicationState* state) {
     draw_representations_transparent(state);
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
 
-    // Record depth for postprocessing. This allows us to reuse depth buffer for overlays
-    postprocess_pipeline::record_depth(state->gbuffer.tex.depth, state->view.param);
-
     const GLenum draw_buffers_transparent[] = { GL_COLOR_ATTACHMENT_TRANSPARENCY, 0, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING };
 	glDrawBuffers(ARRAY_SIZE(draw_buffers_transparent), draw_buffers_transparent);
 
     glDisable(GL_CULL_FACE);
-    //glEnable(GL_BLEND);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     PUSH_GPU_SECTION("Immediate overlay")
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(1);
-    glClear(GL_DEPTH_BUFFER_BIT);
+    glDisable(GL_DEPTH_TEST);
     immediate::render(state->gfx.overlay, params);
     POP_GPU_SECTION()
 
-    //glDisable(GL_BLEND);
+    glDisable(GL_BLEND);
     glEnable(GL_CULL_FACE);
 
     POP_GPU_SECTION()  // G-buffer
@@ -6796,7 +6791,49 @@ static void render(ApplicationState* state) {
         glClear(GL_COLOR_BUFFER_BIT);
     }
 
-    apply_postprocessing(*state);
+    PUSH_GPU_SECTION("Postprocessing")
+    postprocess_pipeline::Settings settings = {};
+    postprocess_pipeline::Inputs inputs = {};
+
+    settings.background_color = state->visuals.background.color * state->visuals.background.intensity;
+
+    settings.ssao.enabled = state->visuals.ssao.enabled;
+    settings.ssao.intensity = state->visuals.ssao.intensity;
+    settings.ssao.radius = state->visuals.ssao.radius;
+    settings.ssao.bias = state->visuals.ssao.bias;
+
+    settings.tonemap.enabled = state->visuals.tonemapping.enabled;
+    settings.tonemap.mode = state->visuals.tonemapping.tonemapper;
+    settings.tonemap.exposure = state->visuals.tonemapping.exposure;
+    settings.tonemap.gamma = state->visuals.tonemapping.gamma;
+
+    settings.dof.enabled = state->visuals.dof.enabled;
+    settings.dof.focus_depth = state->visuals.dof.focus_depth;
+    settings.dof.focus_scale = state->visuals.dof.focus_scale;
+
+    settings.fxaa.enabled = state->visuals.fxaa.enabled;
+
+    constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
+    const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)state->app.timing.delta_s;
+    const float motion_scale = state->visuals.temporal_aa.motion_blur.motion_scale * dt_compensation;
+    settings.taa.enabled = state->visuals.temporal_aa.enabled;
+    settings.taa.feedback_min = state->visuals.temporal_aa.feedback_min;
+    settings.taa.feedback_max = state->visuals.temporal_aa.feedback_max;
+    settings.taa.motion_blur.enabled = state->visuals.temporal_aa.motion_blur.enabled;
+    settings.taa.motion_blur.motion_scale = motion_scale;
+
+    settings.sharpen.enabled = state->visuals.temporal_aa.enabled && state->visuals.sharpen.enabled;
+    settings.sharpen.weight = state->visuals.sharpen.weight;
+
+    inputs.depth = state->gbuffer.tex.depth;
+    inputs.color = state->gbuffer.tex.color;
+    inputs.normal = state->gbuffer.tex.normal;
+    inputs.velocity = state->gbuffer.tex.velocity;
+    inputs.transparency = state->gbuffer.tex.transparency;
+    inputs.history = settings.taa.enabled ? state->gbuffer.tex.history : 0;
+
+    postprocess_pipeline::execute(inputs, settings, state->view.param);
+    POP_GPU_SECTION()
 
     if (do_screenshot && state->screenshot.hide_gui) {
         state->screenshot.sample_count += 1;
@@ -6835,52 +6872,6 @@ static void render(ApplicationState* state) {
         str_free(state->screenshot.path_to_file, state->allocator.persistent);
         state->screenshot.path_to_file = {};
     }
-}
-
-static void apply_postprocessing(const ApplicationState& data) {
-    PUSH_GPU_SECTION("Postprocessing")
-    postprocess_pipeline::Settings settings = {};
-    postprocess_pipeline::Inputs inputs = {};
-
-    settings.background_color = data.visuals.background.color * data.visuals.background.intensity;
-
-    settings.ssao.enabled = data.visuals.ssao.enabled;
-    settings.ssao.intensity = data.visuals.ssao.intensity;
-    settings.ssao.radius = data.visuals.ssao.radius;
-    settings.ssao.bias = data.visuals.ssao.bias;
-
-    settings.tonemap.enabled = data.visuals.tonemapping.enabled;
-    settings.tonemap.mode = data.visuals.tonemapping.tonemapper;
-    settings.tonemap.exposure = data.visuals.tonemapping.exposure;
-    settings.tonemap.gamma = data.visuals.tonemapping.gamma;
-
-    settings.dof.enabled = data.visuals.dof.enabled;
-    settings.dof.focus_depth = data.visuals.dof.focus_depth;
-    settings.dof.focus_scale = data.visuals.dof.focus_scale;
-
-    settings.fxaa.enabled = data.visuals.fxaa.enabled;
-
-    constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
-    const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)data.app.timing.delta_s;
-    const float motion_scale = data.visuals.temporal_aa.motion_blur.motion_scale * dt_compensation;
-    settings.taa.enabled = data.visuals.temporal_aa.enabled;
-    settings.taa.feedback_min = data.visuals.temporal_aa.feedback_min;
-    settings.taa.feedback_max = data.visuals.temporal_aa.feedback_max;
-    settings.taa.motion_blur.enabled = data.visuals.temporal_aa.motion_blur.enabled;
-    settings.taa.motion_blur.motion_scale = motion_scale;
-
-    settings.sharpen.enabled = data.visuals.temporal_aa.enabled && data.visuals.sharpen.enabled;
-    settings.sharpen.weight = data.visuals.sharpen.weight;
-
-    inputs.depth = data.gbuffer.tex.depth;
-    inputs.color = data.gbuffer.tex.color;
-    inputs.normal = data.gbuffer.tex.normal;
-    inputs.velocity = data.gbuffer.tex.velocity;
-    inputs.transparency = data.gbuffer.tex.transparency;
-    inputs.history = settings.taa.enabled ? data.gbuffer.tex.history : 0;
-
-    postprocess_pipeline::execute(inputs, settings, data.view.param);
-    POP_GPU_SECTION()
 }
 
 static void draw_representations_opaque(ApplicationState* state) {
@@ -6995,6 +6986,7 @@ static void draw_representations_opaque(ApplicationState* state) {
 					immediate::set_picking_base_idx(scope, state->picking_range_dipole.beg + rep.dipole.dipole_idx);
                     const DipoleMoment& dipole = state->representation.info.dipole_moments[rep.dipole.dipole_idx];
 
+                    const vec3_t org = vec3_set(dipole.origin.x, dipole.origin.y, dipole.origin.z);
                     const vec3_t vec = vec3_set(dipole.vec.x, dipole.vec.y, dipole.vec.z) * rep.dipole.scale;
 
                     // cylinder body
@@ -7003,9 +6995,9 @@ static void draw_representations_opaque(ApplicationState* state) {
                     const float body_radius = rep.dipole.radius;
                     const float head_radius = body_radius * 1.5f;
 
-                    vec3_t cyl_beg = rep.dipole.origin;
-                    vec3_t cyl_end = rep.dipole.origin + vec * body_scale;
-                    vec3_t arrow_end = rep.dipole.origin + vec;
+                    vec3_t cyl_beg = rep.dipole.offset + org;
+                    vec3_t cyl_end = rep.dipole.offset + org + vec * body_scale;
+                    vec3_t arrow_end = rep.dipole.offset + org + vec;
 
                     uint32_t color_u32 = convert_color(rep.dipole.color);
 

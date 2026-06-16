@@ -468,6 +468,8 @@ struct DipoleMoment {
 	uint64_t key = 0;
 	str_t label = { 0 };
     dvec3_t vec = { 0, 0, 0 };
+	dvec3_t origin = { 0, 0, 0 };
+	md_unit_t unit = md_unit_none();
 };
 
 struct NaturalTransitionOrbitalLambda {
@@ -891,7 +893,7 @@ struct AtomicPropertyRepresentation {
 struct DipoleRepresentation {
     int dipole_idx = 0;
     vec4_t color = { 0, 0, 0, 1 };
-    vec3_t origin = { 0, 0, 0 };
+    vec3_t offset = { 0, 0, 0 };
     double scale = 1.0;
 	float radius = 0.05f;
 };

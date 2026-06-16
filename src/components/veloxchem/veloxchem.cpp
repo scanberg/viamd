@@ -38,6 +38,8 @@
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
+#define DEBYE_TO_ELECTRON_CHARGE_BOHR 0.11094945
+#define ELECTRON_CHARGE_BOHR_TO_DEBYE (1.0 / DEBYE_TO_ELECTRON_CHARGE_BOHR)
 
 #define HARTREE_TO_KJ_PER_MOL 2625.4996394799
 
@@ -295,7 +297,7 @@ struct VeloxChem : viamd::EventHandler {
     AABB aabb = {};
     OABB oabb = {};
 
-    vec3_t center_of_charge = {};
+    dvec3_t center_of_charge = {};
 
     // Up to date packed atom xyz in BOHR ready to be supplied for evaluation
     // The w component is padding for now. 16-bytes are used for better alignment (gpu buffer 1:1)
@@ -821,7 +823,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (vlx) {
                     // Update atom_xyz
 					// Calculate nuclei charge weighted center of charge for later use in orbital centering
-					vec3_t nucl_dipole = {};
+					dvec3_t nucl_dipole = {0};
 
 					size_t count = qm_to_atom_idx ? md_vlx_number_of_atoms(vlx) : state.mold.sys.atom.count;
                     ASSERT(md_array_size(atom_xyzw) == count);
@@ -832,11 +834,14 @@ struct VeloxChem : viamd::EventHandler {
                         atom_xyzw[i].z = (float)(state.mold.sys.atom.z[idx] * ANGSTROM_TO_BOHR);
 
 						int z = md_atom_atomic_number(&state.mold.sys.atom, idx);
-						nucl_dipole += vec3_from_vec4(atom_xyzw[i]) * z;
+						nucl_dipole.x += atom_xyzw[i].x * z;
+						nucl_dipole.y += atom_xyzw[i].y * z;
+						nucl_dipole.z += atom_xyzw[i].z * z;
                     }
 
                     size_t num_electrons = md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA) + md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA);
-					center_of_charge = nucl_dipole / (float)num_electrons;
+                    nucl_dipole /= num_electrons > 0 ? (double)num_electrons : 1.0;
+                    center_of_charge = nucl_dipole - md_vlx_scf_ground_state_dipole_moment(vlx);
                     
                     // Recalculate OABB and AABB
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
@@ -991,10 +996,11 @@ struct VeloxChem : viamd::EventHandler {
 				}
 
                 dvec3_t ground_state_dipole = md_vlx_scf_ground_state_dipole_moment(vlx);
-				DipoleMoment ground_state_dipole_info = {
-					.key = HASH_STR_LIT64("ground_state_dipole"),
-					.label = str_copy(STR_LIT("Ground State Dipole Moment"), info.alloc),
-					.vec = { (float)ground_state_dipole.x, (float)ground_state_dipole.y, (float)ground_state_dipole.z },
+                DipoleMoment ground_state_dipole_info = {
+                    .key = HASH_STR_LIT64("ground_state_dipole"),
+                    .label = str_copy(STR_LIT("Ground State Dipole Moment"), info.alloc),
+					.vec = ground_state_dipole,
+                    .origin = center_of_charge * BOHR_TO_ANGSTROM,
 				};
 
 				md_array_push(info.dipole_moments, ground_state_dipole_info, info.alloc);
@@ -1365,12 +1371,21 @@ struct VeloxChem : viamd::EventHandler {
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);
                     md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
 
+					const md_element_t* atom_z = md_vlx_atomic_numbers(vlx);
+					dvec3_t nucl_dipole = { 0, 0, 0 };
+
                     md_array_resize(atom_xyzw, num_vlx_atoms, arena);
                     const dvec3_t* atom_vlx = md_vlx_atom_coordinates(vlx);
                     for (size_t i = 0; i < num_vlx_atoms; ++i) {
                         dvec3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
                         atom_xyzw[i] = vec4_set((float)xyz.x, (float)xyz.y, (float)xyz.z, 1.0f);
+						nucl_dipole += xyz * atom_z[i];
                     }
+
+                    size_t num_electrons = md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA) + md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA);
+                    nucl_dipole /= num_electrons > 0 ? (double)num_electrons : 1.0;
+                    center_of_charge = nucl_dipole - md_vlx_scf_ground_state_dipole_moment(vlx);
+
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
                     calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
                     calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));

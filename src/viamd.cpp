@@ -196,7 +196,10 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
         if (0 <= dipole_idx && dipole_idx < (int)num_dipoles) {
 			md_strb_fmt(sb, "%.*s\n", STR_ARG(state.representation.info.dipole_moments[dipole_idx].label));
             dvec3_t dipole = state.representation.info.dipole_moments[dipole_idx].vec;
-			md_strb_fmt(sb, "(%.3f %.3f %.3f)\n", dipole.x, dipole.y, dipole.z);
+			// Dipoles are given in atomic units (e * bohr), we can convert to Debye for more intuitive values (1 e * bohr ≈ 2.541746 Debye)
+			const double au_to_debye = 2.541746;
+			dipole *= au_to_debye;
+			md_strb_fmt(sb, "(%.3f %.3f %.3f) Debye\n", dipole.x, dipole.y, dipole.z);
         }
     }
 }

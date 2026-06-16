@@ -1057,7 +1057,7 @@ void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color
         vec3_t a1 = vec3_add(base, vec3_mul1(rad1, radius));
 
         // Lateral face – smooth normals at base ring; use average at apex for continuity
-        vec3_t apex_n = vec3_normalize(vec3_add(ln1, ln0));
+        vec3_t apex_n = vec3_normalize(vec3_add(ln0, ln1));
         {
             const Index base_idx = (Index)md_array_size(ctx.vertices);
             Vertex sv[3] = {
