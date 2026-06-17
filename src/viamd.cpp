@@ -1895,89 +1895,6 @@ void interpolate_system_state(ApplicationState* state) {
             break;
     }
 
-    if (state->operations.recalc_bonds) {
-        // We cannot recalculate bonds while the full or filtered evaluation is running
-        // because it would overwrite the bond data while we are reading it
-        if (!task_system::task_is_running(state->tasks.evaluate_full) && !task_system::task_is_running(state->tasks.evaluate_filt)) {
-            static int64_t cur_nearest_frame = -1;
-            if (cur_nearest_frame != payload.nearest_frame) {
-                cur_nearest_frame = payload.nearest_frame;
-                task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [data = &payload]() {
-                    const auto& sys = data->state->mold.sys;
-                    const md_system_state_t* src_state = data->src_states[0];
-                    int offset = data->t < 0.5 ? 0 : 1;
-
-                    switch (data->mode) {
-                    case InterpolationMode::Nearest: break;
-                    case InterpolationMode::Linear:
-                        src_state = data->src_states[0 + offset];
-                        break;
-                    case InterpolationMode::CubicSpline:
-                        src_state = data->src_states[1 + offset];
-                        break;
-                    default:
-                        break;
-                    };
-
-                    md_util_infer_covalent_bonds(&data->state->mold.sys.bond, src_state->atom_x, src_state->atom_y, src_state->atom_z, &src_state->unitcell, &sys, sys.alloc);
-                    md_bond_build_connectivity(&data->state->mold.sys.bond, sys.atom.count, sys.alloc);
-
-                    data->state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                });
-                tasks[num_tasks++] = recalc_bond_task;
-            }
-        }
-    }
-
-    if (state->operations.recenter) {
-        const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
-        size_t num_idx = md_bitfield_popcount(&target_mask);
-        if (num_idx > 0) {
-            // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
-            task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [data = &payload]() {
-                recenter_calculate_transform(data->recenter_transform.elem, data->state);
-            });
-            
-            // Batch transform all atoms
-            task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                (void)thread_num;
-                size_t count = range_end - range_beg;
-                float* x = data->dst_x + range_beg;
-                float* y = data->dst_y + range_beg;
-                float* z = data->dst_z + range_beg;
-                mat4_batch_transform_inplace(x, y, z, 1.0f, count, data->recenter_transform);
-            }, grain_size);
-
-            tasks[num_tasks++] = calc_transform_task;
-            tasks[num_tasks++] = apply_transform_task;
-        }
-    }
-
-    if (state->operations.apply_pbc) {
-        task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
-            size_t count = range_end - range_beg;
-            float* x = data->dst_x + range_beg;
-            float* y = data->dst_y + range_beg;
-            float* z = data->dst_z + range_beg;
-            md_util_pbc(x, y, z, NULL, count, &data->unitcell);
-        });
-        tasks[num_tasks++] = pbc_task;
-    } 
-
-    if (state->operations.unwrap_structures) {
-        size_t num_structures = md_structure_count(&sys.structure);
-        task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
-            for (uint32_t i = range_beg; i < range_end; ++i) {
-                md_structure_t structure = {};
-                md_structure_extract(&structure, &data->state->mold.sys.structure, i);
-                md_util_unwrap_structure(data->dst_x, data->dst_y, data->dst_z, &structure, &data->unitcell);
-            }
-        });
-        tasks[num_tasks++] = unwrap_task;
-    }
-
     {
         // Calculate a global AABB for the molecule
         task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
@@ -2224,7 +2141,7 @@ void interpolate_system_state(ApplicationState* state) {
     }
     state->mold.sys_aabb_min = aabb_min;
     state->mold.sys_aabb_max = aabb_max;
-    sys.unitcell = payload.unitcell;
+    state->mold.sys.unitcell = payload.unitcell;
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
     mat3_t A;
@@ -3150,6 +3067,118 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     }
                 }
             }
+            break;
+        }
+        case viamd::EventType_ViamdSystemStateChanged: {
+			// Apply operators if toggled on system change
+
+            // EXTRACT STATE HERE FROM PAYLOAD
+            ASSERT(event.payload_type == viamd::EventPayloadType_ApplicationState);
+            ApplicationState* state = (ApplicationState*)event.payload;
+
+            int num_tasks = 0;
+            task_system::ID tasks[16];
+
+            md_system_t& sys = state->mold.sys;
+            mat4_t recenter_transform = { 0 };
+
+            if (state->operations.recalc_bonds) {
+                int64_t nearest_frame = (int64_t)(state->animation.frame + 0.5);
+
+                // We cannot recalculate bonds while the full or filtered evaluation is running
+                // because it would overwrite the bond data while we are reading it
+                if (!task_system::task_is_running(state->tasks.evaluate_full) && !task_system::task_is_running(state->tasks.evaluate_filt)) {
+                    static int64_t cur_nearest_frame = -1;
+                    if (cur_nearest_frame != nearest_frame) {
+                        cur_nearest_frame = nearest_frame;
+                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [state, &sys, nearest_frame]() {
+                            float* x = NULL;
+                            float* y = NULL;
+                            float* z = NULL;
+
+                            if (sys.trajectory) {
+                                // Closest frame to the current animation time
+                                md_temp_scope_t temp = md_temp_begin();
+                                defer { md_temp_end(temp); };
+
+								size_t cap = ALIGN_TO(sys.atom.count, 16);
+                                x = md_temp_alloc_array(temp, float, cap);
+                                y = md_temp_alloc_array(temp, float, cap);
+                                z = md_temp_alloc_array(temp, float, cap);
+                                md_trajectory_frame_header_t frame_header;
+
+                                if (!md_trajectory_load_frame(sys.trajectory, nearest_frame, &frame_header, x, y, z)) {
+                                    MD_LOG_ERROR("Failed to extract frame data");
+                                } 
+                            } else {
+                                // No trajectory, use current positions
+                                x = sys.atom.x;
+                                y = sys.atom.y;
+                                z = sys.atom.z;
+                            }
+
+                            if (x && y && z) {
+                                MD_LOG_DEBUG("RECALCULATING BONDS");
+                                md_util_infer_covalent_bonds(&sys.bond, x, y, z, &sys.unitcell, &sys, sys.alloc);
+                                md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
+                            }
+
+                            state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                        });
+                        tasks[num_tasks++] = recalc_bond_task;
+                    }
+                }
+            }
+
+            if (state->operations.recenter) {
+                const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+                size_t num_idx = md_bitfield_popcount(&target_mask);
+                if (num_idx > 0) {
+                    // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
+                    task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [state, &recenter_transform]() {
+                        recenter_calculate_transform(recenter_transform.elem, state);
+                    });
+
+                    // Batch transform all atoms
+                    task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [&sys, &recenter_transform](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                        (void)thread_num;
+                        size_t count = range_end - range_beg;
+                        float* x = sys.atom.x + range_beg;
+                        float* y = sys.atom.y + range_beg;
+                        float* z = sys.atom.z + range_beg;
+                        mat4_batch_transform_inplace(x, y, z, 1.0f, count, recenter_transform);
+                    }, 1024);
+
+                    tasks[num_tasks++] = calc_transform_task;
+                    tasks[num_tasks++] = apply_transform_task;
+                }
+            }
+
+            if (state->operations.apply_pbc) {
+                task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [&sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    (void)thread_num;
+                    size_t count = range_end - range_beg;
+                    float* x = sys.atom.x + range_beg;
+                    float* y = sys.atom.y + range_beg;
+                    float* z = sys.atom.z + range_beg;
+                    md_util_pbc(x, y, z, NULL, count, &sys.unitcell);
+                });
+                tasks[num_tasks++] = pbc_task;
+            } 
+
+            if (state->operations.unwrap_structures) {
+                size_t num_structures = md_structure_count(&sys.structure);
+                task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [&sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    (void)thread_num;
+                    for (uint32_t i = range_beg; i < range_end; ++i) {
+                        md_structure_t structure = {};
+                        md_structure_extract(&structure, &sys.structure, i);
+                        md_util_unwrap_structure(sys.atom.x, sys.atom.y, sys.atom.z, &structure, &sys.unitcell);
+                    }
+                });
+                tasks[num_tasks++] = unwrap_task;
+            }
+
             break;
         }
         default:

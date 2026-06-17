@@ -1317,6 +1317,7 @@ struct ApplicationState {
             md_bitfield_t mask = { 0 };
         } recenter_query;
 
+        // External state which user controls
         bool apply_pbc = false;
         bool unwrap_structures = false;
         bool recalc_bonds = false;

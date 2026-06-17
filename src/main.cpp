@@ -796,7 +796,7 @@ int main(int argc, char** argv) {
                 PUSH_CPU_SECTION("Interpolate System State")
                 interpolate_system_state(&state);
                 POP_CPU_SECTION()
-                viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state, 0);
+                viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
             }
         }
 
@@ -2040,24 +2040,36 @@ static void draw_main_menu(ApplicationState* data) {
             if (do_bonds) {
                 if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
                     const auto& mol = data->mold.sys;
-                    // Closest frame to the current animation time
-                    uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
-                    md_temp_scope_t temp_pos = md_temp_begin_in(frame_alloc);
-                    defer { md_temp_end(temp_pos); };
 
-                    float* x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                    float* y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                    float* z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                    md_trajectory_frame_header_t frame_header;
+                    float* x = NULL;
+					float* y = NULL;
+					float* z = NULL;
 
-                    if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
-                        MD_LOG_ERROR("Failed to extract frame data");
+                    if (data->mold.sys.trajectory) {
+                        // Closest frame to the current animation time
+                        uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
+                        md_temp_scope_t temp_pos = md_temp_begin_in(frame_alloc);
+                        defer { md_temp_end(temp_pos); };
+
+                        x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                        y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                        z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
+                        md_trajectory_frame_header_t frame_header;
+
+                        if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
+                            MD_LOG_ERROR("Failed to extract frame data");
+                        } 
                     } else {
-                        MD_LOG_DEBUG("RECALCULATING BONDS");
+						// No trajectory, use current positions
+						x = data->mold.sys.atom.x;
+						y = data->mold.sys.atom.y;
+						z = data->mold.sys.atom.z;
+                    }
 
+                    if (x && y && z) {
+                        MD_LOG_DEBUG("RECALCULATING BONDS");
                         md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, data->mold.sys.alloc);
                         md_bond_build_connectivity(&data->mold.sys.bond, data->mold.sys.atom.count, data->mold.sys.alloc);
-
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     }
                 } else {

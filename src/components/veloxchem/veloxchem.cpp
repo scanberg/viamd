@@ -427,9 +427,9 @@ struct VeloxChem : viamd::EventHandler {
         int hovered = -1;
         int selected = -1;
 
-        double x_ev_samples[NUM_SAMPLES] = {};
-        double x_unit_samples[NUM_SAMPLES] = {};
-        double* x_unit_peaks = nullptr;
+        double* x_spectra_ev = NULL; // linear space of samples in ev units for converting from
+        double* x_spectra = NULL;    // linear space of samples in converted x_units
+        double* x_peaks = nullptr;   // peaks in converted units
 
         //Spectra y values, calculated from osc
         double eps[NUM_SAMPLES] = {};
@@ -444,8 +444,8 @@ struct VeloxChem : viamd::EventHandler {
         broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
         x_unit_t x_unit = X_UNIT_EV;
 
-        bool first_plot_rot_ecd = true;
-
+        bool first_plot_abs = true;
+        bool first_plot_ecd = true;
     } rsp;
 
     struct Vib {
@@ -1500,23 +1500,30 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     // RSP
-                    if (num_excited_states > 0) {
-                        //rsp.show_window = true;
-                        rsp.hovered = -1;
-                        rsp.selected = -1;
+					md_vlx_rsp_type_t rsp_type = md_vlx_rsp_type(vlx);
+                    if (rsp_type != MD_VLX_RSP_TYPE_UNKNOWN) {
+						size_t num_freq = md_vlx_rsp_number_of_frequencies(vlx);
+                        if (rsp_type == MD_VLX_RSP_TYPE_LINEAR) {
+                            md_array_resize(rsp.x_peaks, num_freq, arena);
+							md_array_resize(rsp.x_spectra, NUM_SAMPLES, arena);
+							md_array_resize(rsp.x_spectra_ev, NUM_SAMPLES, arena);
 
-                        md_array_resize(rsp.x_unit_peaks, num_excited_states, arena);
+                            rsp.hovered = -1;
+                            rsp.selected = 0;
 
-                        // Populate x values
-                        const double* abs_ev = md_vlx_rsp_absorption_ev(vlx);
-                        if (abs_ev) {
-                            const double x_min = abs_ev[0] - 1.0;
-                            const double x_max = abs_ev[num_excited_states - 1] + 1.0;
-                            for (int i = 0; i < NUM_SAMPLES; ++i) {
-                                double t = (double)i / (double)(NUM_SAMPLES - 1);
-                                double value = lerp(x_min, x_max, t);
-                                rsp.x_ev_samples[i] = value;
+                            // Populate x values
+                            const double* abs_ev = md_vlx_rsp_frequencies(vlx);
+                            if (abs_ev) {
+                                const double x_min = abs_ev[0];
+                                const double x_max = abs_ev[num_freq - 1];
+                                for (int i = 0; i < NUM_SAMPLES; ++i) {
+                                    double t = (double)i / (double)(NUM_SAMPLES - 1);
+                                    double value = lerp(x_min, x_max, t);
+                                    rsp.x_spectra_ev[i] = value;
+                                }
                             }
+						} else if (rsp_type == MD_VLX_RSP_TYPE_CPP) {
+                            md_array_resize(rsp.x_spectra, num_freq, arena);
                         }
                     }
 
@@ -3590,8 +3597,8 @@ struct VeloxChem : viamd::EventHandler {
         };
 
         ExportProperty properties[]{
-            {rsp.x_unit_samples, rsp.eps,   STR_LIT("Absorption"), STR_LIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
-            {rsp.x_unit_samples, rsp.ecd,   STR_LIT("ECD"),        STR_LIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_samples, rsp.eps,   STR_LIT("Absorption"), STR_LIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_samples, rsp.ecd,   STR_LIT("ECD"),        STR_LIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
 #if 0
             {rsp.vib_x,          rsp.vib_y, STR_LIT("Vibration"),  STR_LIT("IR Intensity (km/mol)")}
 #endif
@@ -3698,8 +3705,10 @@ struct VeloxChem : viamd::EventHandler {
         defer { md_temp_end(temp); };
 
         if (!rsp.show_window) return;
+		md_vlx_rsp_type_t rsp_type = md_vlx_rsp_type(vlx);
         size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
-        size_t num_normal_modes = md_vlx_vib_number_of_normal_modes(vlx);
+        size_t num_normal_modes   = md_vlx_vib_number_of_normal_modes(vlx);
+
         if (num_excited_states == 0 && num_normal_modes == 0) return;
 
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
@@ -3720,10 +3729,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::EndMenuBar();
             }
             
-            if (num_excited_states > 0 && ImGui::TreeNode("Absorption Analysis")) {
-                if (rsp.first_plot_rot_ecd) {
-                    ImGui::SetNextItemOpen(true);
-                }
+            if (num_excited_states > 0 && ImGui::TreeNode("Electronic Spectroscopy")) {
                 bool refit = false;
                 bool recalc = false;
 
@@ -3731,18 +3737,47 @@ struct VeloxChem : viamd::EventHandler {
 
                 const float avail_width = ImGui::GetContentRegionAvail().x;
                 ImGui::PushItemWidth(MIN(avail_width, 200));
-                recalc |= ImGui::SliderScalar((const char*)u8"Broadening γ HWHM (eV)", ImGuiDataType_Double, &rsp.broadening_gamma, &gamma_min, &gamma_max);
-                recalc |= ImGui::Combo("Broadening mode", (int*)(&rsp.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
-                refit  |= ImGui::Combo("X unit", (int*)(&rsp.x_unit), x_unit_full_str, X_UNIT_COUNT);
+                if (rsp_type == MD_VLX_RSP_TYPE_LINEAR) {
+                    recalc |= ImGui::SliderScalar((const char*)u8"Broadening γ HWHM (eV)", ImGuiDataType_Double, &rsp.broadening_gamma, &gamma_min, &gamma_max);
+                    recalc |= ImGui::Combo("Broadening mode", (int*)(&rsp.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
+                }
+                refit |= ImGui::Combo("X unit", (int*)(&rsp.x_unit), x_unit_full_str, X_UNIT_COUNT);
                 ImGui::PopItemWidth();
 
-                refit  |= recalc;
+                refit |= recalc;
+
+                size_t num_samples = 0;
+				const double* x_spectra = NULL;
+                const double* y_spectra = NULL;
+
+				size_t num_peaks = 0;
+				const double* x_peaks = NULL;
+				const double* y_peaks = NULL;
 
                 const int num_peaks = (int)num_excited_states;
 
                 const double* y_osc_peaks = md_vlx_rsp_oscillator_strengths(vlx);
                 const double* y_cgs_peaks = md_vlx_rsp_rotatory_strengths(vlx);
-                const double* x_abs_ev = md_vlx_rsp_absorption_ev(vlx);
+                const double* x_freq_ev   = md_vlx_rsp_frequencies(vlx);
+
+				if (rsp_type == MD_VLX_RSP_TYPE_LINEAR) {
+					num_samples = NUM_SAMPLES;
+					x_spectra = rsp.x_samples;
+					y_spectra = rsp.eps;
+
+					num_peaks = num_excited_states;
+					x_peaks   = rsp.x_peaks;
+					y_peaks   = y_osc_peaks;
+                    if (refit) {
+                        // Do unit conversions (X axis)
+                        convert_values(rsp.x_peaks, x_freq_ev, num_peaks, rsp.x_unit);
+                        convert_values(rsp.x_samples, rsp.x_samples_ev, num_samples, rsp.x_unit);
+                    }
+				} else if (rsp_type == MD_VLX_RSP_TYPE_CPP) {
+					num_samples = md_vlx_rsp_number_of_frequencies(vlx);
+					x_spectra = x_freq_ev;
+                    y_spectra = md_vlx_rsp_sigma(vlx);
+				}
 
                 double (*distr_func)(double x, double x_o, double gamma) = 0;
                 // @NOTE: Do broadening in eV
@@ -3758,19 +3793,6 @@ struct VeloxChem : viamd::EventHandler {
                         break;
                 }
 
-                if (recalc || rsp.first_plot_rot_ecd) {
-                    osc_to_eps(rsp.eps, rsp.x_ev_samples, NUM_SAMPLES, y_osc_peaks, x_abs_ev, num_peaks, distr_func, rsp.broadening_gamma * 2);
-                    rot_to_eps_delta(rsp.ecd, rsp.x_ev_samples, NUM_SAMPLES, y_cgs_peaks, x_abs_ev, num_peaks, distr_func, rsp.broadening_gamma * 2);
-                    rsp.y_axis_sync_factor_eps = compute_display_multiplier_from_peaks(rsp.eps, NUM_SAMPLES, y_osc_peaks, num_peaks);
-                    rsp.y_axis_sync_factor_ecd = compute_display_multiplier_from_peaks(rsp.ecd, NUM_SAMPLES, y_cgs_peaks, num_peaks);
-                }
-
-                if (refit || rsp.first_plot_rot_ecd) {
-                    // Do unit conversions (X axis)
-                    convert_values(rsp.x_unit_peaks, x_abs_ev, num_peaks, rsp.x_unit);
-                    convert_values(rsp.x_unit_samples, rsp.x_ev_samples, NUM_SAMPLES, rsp.x_unit);
-                }
-
                 // Explicit x axis limits for linking
                 static double x_min = 0.0;
                 static double x_max = 10.0;
@@ -3780,47 +3802,60 @@ struct VeloxChem : viamd::EventHandler {
                 if (ImGui::TreeNodeEx("Absorption Plot", tree_flags)) {
                     ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
 
-                    if (refit || rsp.first_plot_rot_ecd) {
+                    if (refit || rsp.first_plot_abs) {
                         ImPlot::SetNextAxesToFit();
                     }
 
                     if (ImPlot::BeginPlot("Absorption")) {
                         ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                         ImPlot::SetupAxis(ImAxis_X1, x_unit_full_str[rsp.x_unit]);
-                        ImPlot::SetupAxis(ImAxis_Y1, "f", ImPlotAxisFlags_AuxDefault);
-                        ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"ε (L mol⁻¹ cm⁻¹)");
+                        ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"Δε (L mol⁻¹ cm⁻¹)");
+                        if (num_peaks > 0) {
+                            ImPlot::SetupAxis(ImAxis_Y2, "f", ImPlotAxisFlags_AuxDefault);
+                        }
                         ImPlot::SetupFinish();
 
-                        ImPlot::SetAxis(ImAxis_Y2);
-                        ImPlot::PlotLine("Spectrum", rsp.x_unit_samples, rsp.eps, NUM_SAMPLES);
-
-                        ImPlot::SetAxis(ImAxis_Y1);
-                        plot_peaks("Oscillator Strength", rsp.x_unit_peaks, y_osc_peaks, num_peaks, rsp.selected, rsp.hovered);
-
-                        if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
-                            double x_val = rsp.x_unit_peaks[rsp.hovered];
-                            double y_val = y_osc_peaks[rsp.hovered];
-                            int state_idx = rsp.hovered + 1;
-                            const char* x_label = x_unit_label_str[rsp.x_unit];
-                            const char* x_unit = x_unit_short_str[rsp.x_unit];
-                            if (ImGui::BeginTooltip()) {
-                                ImGui::Text("State %i: %s = %.2f (%s), f = %.3f", state_idx, x_label, x_val, x_unit, y_val);
-                                ImGui::EndTooltip();
-                            }
+                        if (num_samples > 0) {
+                            ImPlot::SetAxis(ImAxis_Y1);
+                            ImPlot::PlotLine("Spectrum", x_samples, rsp.eps, num_samples);
                         }
 
-                        // adjust plot axes before endplot, to keep y-axes in sync
-                        ImPlot::SyncAxesWithPadding(ImAxis_Y2, ImAxis_Y1, rsp.y_axis_sync_factor_eps);
+                        if (num_peaks > 0) {
+                            ImPlot::SetAxis(ImAxis_Y2);
+                            plot_peaks("Oscillator Strength", x_peaks, y_peaks, num_peaks, rsp.selected, rsp.hovered);
+                            if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                                double x_val = x_peaks[rsp.hovered];
+                                double y_val = y_peaks[rsp.hovered];
+                                int state_idx = rsp.hovered + 1;
+                                const char* x_label = x_unit_label_str[rsp.x_unit];
+                                const char* x_unit = x_unit_short_str[rsp.x_unit];
+                                if (ImGui::BeginTooltip()) {
+                                    ImGui::Text("State %i: %s = %.2f (%s), f = %.3f", state_idx, x_label, x_val, x_unit, y_val);
+                                    ImGui::EndTooltip();
+                                }
+                            }
+                            // adjust plot axes before endplot, to keep y-axes in sync
+                            ImPlot::SyncAxesWithPadding(ImAxis_Y2, ImAxis_Y1, rsp.y_axis_sync_factor_eps);
+                        }
+
                         ImPlot::EndPlot();
                     }
+					rsp.first_plot_abs = false;
                 }
                 
                 ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
                 if (ImGui::TreeNodeEx("ECD Plot", tree_flags)) {
                     ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
 
-                    if (refit || rsp.first_plot_rot_ecd) {
+                    if (refit || rsp.first_plot_ecd) {
                         ImPlot::SetNextAxesToFit();
+                    }
+
+                    if (recalc || rsp.first_plot_ecd) {
+                        osc_to_eps(rsp.eps, rsp.x_samples_ev, NUM_SAMPLES, y_osc_peaks, x_freq_ev, num_peaks, distr_func, rsp.broadening_gamma * 2);
+                        rot_to_eps_delta(rsp.ecd, rsp.x_samples_ev, NUM_SAMPLES, y_cgs_peaks, x_freq_ev, num_peaks, distr_func, rsp.broadening_gamma * 2);
+                        rsp.y_axis_sync_factor_eps = compute_display_multiplier_from_peaks(rsp.eps, NUM_SAMPLES, y_osc_peaks, num_peaks);
+                        rsp.y_axis_sync_factor_ecd = compute_display_multiplier_from_peaks(rsp.ecd, NUM_SAMPLES, y_cgs_peaks, num_peaks);
                     }
 
                     if (ImPlot::BeginPlot("ECD")) {
@@ -3853,8 +3888,8 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::SyncAxesY();
                         ImPlot::EndPlot();
                     }
+                    rsp.first_plot_ecd = false;
                 }
-                rsp.first_plot_rot_ecd = false;
 
                 // Table
                 static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
@@ -3927,7 +3962,7 @@ struct VeloxChem : viamd::EventHandler {
                 if (vib.first_plot) {
                     ImGui::SetNextItemOpen(true);
                 }
-                if (ImGui::TreeNode("Vibrational Analysis")) {
+                if (ImGui::TreeNode("Vibrational Spectroscopy")) {
                     size_t num_atoms = md_vlx_number_of_atoms(vlx);
 
                     // Frequency scaling factor limits
