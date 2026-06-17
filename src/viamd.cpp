@@ -1659,11 +1659,15 @@ done:
 		size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
 		// Create a default representation for ground state dipole moment if present
         if (num_dipoles > 0) {
-			//if (str_eq(state->representation.info.dipole_moments[0].label, "Ground State")) {
-				Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
-				snprintf(dipole_rep->name, sizeof(dipole_rep->name), "dipole moment");
-				dipole_rep->enabled = true;
-			//}
+            for (size_t i = 0; i < num_dipoles; ++i) {
+				double magnitude = dvec3_length(state->representation.info.dipole_moments[i].vec);
+                if (magnitude > 1e-3) {
+                    Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
+					const char* label = str_empty(state->representation.info.dipole_moments[i].label) ? "dipole moment" : str_ptr(state->representation.info.dipole_moments[i].label);
+                    snprintf(dipole_rep->name, sizeof(dipole_rep->name), "%s", label);
+                    dipole_rep->enabled = true;
+                }
+            }
         }
     }
 

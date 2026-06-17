@@ -1383,8 +1383,8 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     size_t num_electrons = md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA) + md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA);
-                    nucl_dipole /= num_electrons > 0 ? (double)num_electrons : 1.0;
-                    center_of_charge = nucl_dipole - md_vlx_scf_ground_state_dipole_moment(vlx);
+                    const double inv_ne = num_electrons > 0 ? 1.0 / (double)num_electrons : 1.0;
+                    center_of_charge = (nucl_dipole - md_vlx_scf_ground_state_dipole_moment(vlx)) * inv_ne;
 
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
                     calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
@@ -3136,7 +3136,7 @@ struct VeloxChem : viamd::EventHandler {
 
                             plot_peaks("##opt_peaks", nullptr, energy_offsets, num_steps, opt.selected, opt.hovered);
 
-                            if (opt.hovered != -1) {
+                            if (ImPlot::IsPlotHovered() && opt.hovered != -1) {
                                 ImGui::SetTooltip("Step %d\nEnergy: %.8f kJ/mol", opt.hovered + 1, energy_offsets[opt.hovered]);
                             }
 

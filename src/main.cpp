@@ -3702,7 +3702,7 @@ static void draw_representations_window(ApplicationState* state) {
             if (!rep.type_is_valid) ImGui::PopInvalid();
 
 			const double dipole_min = 0.01;
-			const double dipole_max = 1000.0;
+			const double dipole_max = 100.0;
 
             switch (rep.type) {
             case RepresentationType::ElectronicStructure:
@@ -3710,8 +3710,9 @@ static void draw_representations_window(ApplicationState* state) {
                 break;
             case RepresentationType::DipoleMoment:
 				ImGui::ColorEdit4("color", rep.dipole.color.elem);
-				ImGui::SliderScalar("scale", ImGuiDataType_Double, &rep.dipole.scale, &dipole_min, &dipole_max, "%.3f", ImGuiSliderFlags_Logarithmic);
+				ImGui::SliderScalar("scale", ImGuiDataType_Double, &rep.dipole.scale, &dipole_min, &dipole_max, "%.3f");
 				ImGui::SliderFloat("radius", &rep.dipole.radius, 0.01f, 0.5f);
+				ImGui::DragFloat3("offset", rep.dipole.offset.elem, 0.01f, -100.0f, 100.0f);
                 break;
 			default:
                 if (ImGui::InputQuery("filter", rep.filt, sizeof(rep.filt), rep.filt_is_valid, rep.filt_error)) {
