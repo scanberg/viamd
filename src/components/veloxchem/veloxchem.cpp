@@ -3181,6 +3181,9 @@ struct VeloxChem : viamd::EventHandler {
                 size_t num_steps = md_vlx_opt_number_of_steps(vlx);
                 if (num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
+                        ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.1f, 0.1f));
+                        defer { ImPlot::PopStyleVar(); };
+
                         const double* energies = md_vlx_opt_energies(vlx);
                         // Find minima as the reference energy
                         double ref_energy = energies[0];
@@ -3240,7 +3243,7 @@ struct VeloxChem : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx);
+                    const dvec3_t* atom_coord = md_vlx_opt_coordinates(vlx, opt.selected) ? md_vlx_opt_coordinates(vlx, opt.selected) : md_vlx_atom_coordinates(vlx);
                     const uint8_t* atom_nr    = md_vlx_atomic_numbers(vlx);
 
                     ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
