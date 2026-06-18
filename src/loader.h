@@ -3,6 +3,7 @@
 #include <core/md_str.h>
 #include <stdint.h>
 
+struct md_allocator_i;
 struct md_system_t;
 
 // This is a stupid dispatch wrapper to select the appropriate loaders for system and trajectories
@@ -29,6 +30,11 @@ enum LoaderType_ {
     LoaderType_CIF,
     LoaderType_LAMMPSDATA,
     LoaderType_LAMMPSTRJ,
+    LoaderType_MOLDEN,
+    LoaderType_MOLD,
+#if VIAMD_TREXIO
+    LoaderType_TREXIO,
+#endif
     LoaderType_XTC,
     LoaderType_TRR,
     LoaderType_DCD,
@@ -54,7 +60,7 @@ namespace loader {
     // And perhaps there is also some arguments or options that need to be supplied for the loader.
     void init(State* state, str_t filepath, const md_system_t* sys = nullptr);
 
-    bool load(md_system_t* sys, str_t filepath, const State& state);
+    bool load(md_system_t* sys, str_t filepath, const State& state, md_allocator_i* alloc = nullptr);
 
     // To help enlist supported loader type
     str_t       type_name(LoaderType type);

@@ -3407,12 +3407,16 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     const bool show_lambdas = electronic_structure_uses_nto_lambda_idx(es);
 
     if (show_molecular_orbitals) {
-        if (state->representation.info.alpha.label) {
-            es.orbital_idx = CLAMP(es.orbital_idx, 0, (int)state->representation.info.alpha.num_orbitals - 1);
-            if (ImGui::BeginCombo("orbital idx", state->representation.info.alpha.label[es.orbital_idx].ptr)) {
-                for (int n = 0; n < (int)state->representation.info.alpha.num_orbitals; n++) {
+        const MolecularOrbital& mo_info =
+            es.spin == ElectronicStructureSpin::Beta && state->representation.info.beta.num_orbitals > 0 ?
+            state->representation.info.beta : state->representation.info.alpha;
+
+        if (mo_info.label && mo_info.num_orbitals > 0) {
+            es.orbital_idx = CLAMP(es.orbital_idx, 0, (int)mo_info.num_orbitals - 1);
+            if (ImGui::BeginCombo("orbital idx", mo_info.label[es.orbital_idx].ptr)) {
+                for (int n = 0; n < (int)mo_info.num_orbitals; n++) {
                     bool is_selected = (es.orbital_idx == n);
-                    if (ImGui::Selectable(state->representation.info.alpha.label[n].ptr, is_selected)) {
+                    if (ImGui::Selectable(mo_info.label[n].ptr, is_selected)) {
                         if (es.orbital_idx != n) {
                             update_rep = true;
                         }

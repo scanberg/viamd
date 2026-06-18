@@ -2,17 +2,29 @@ name: Windows (MSVC)
 
 on: [push]
 
+env:
+    VCPKG_GIT_REVISION: 216bb6975d5cccd35c27a14fb39acec3ae0e8285
+    MDLIB_VCPKG_MANIFEST_DIR: ${{ github.workspace }}/ext/mdlib
+
 jobs:
     ci:
         runs-on: windows-2022
         steps:
-        - uses: actions/checkout@v2
-        - name: prepare
-          run: |
-            git submodule update --init --recursive
+        - uses: actions/checkout@v4
+          with:
+            submodules: recursive
+        - name: vcpkg build
+          uses: johnwason/vcpkg-action@v6
+          id: vcpkg
+          with:
+            manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
+            triplet: x64-windows-static-release
+            revision: ${{ env.VCPKG_GIT_REVISION }}
+            token: ${{ github.token }}
+            github-binarycache: true
         - name: cmake
           run: |
-            cmake .
+            cmake -S . -B build ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF -DVIAMD_ENABLE_TREXIO=OFF
         - name: build
           run: |
-            cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+            cmake --build build --config Release -- /nologo /verbosity:minimal /maxcpucount:4

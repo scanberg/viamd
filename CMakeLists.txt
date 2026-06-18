@@ -14,6 +14,7 @@ if (APPLE)
 endif()
 
 include(ext/mdlib/cmake/Common.cmake)
+include(ExternalProject)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -58,7 +59,11 @@ option(VIAMD_IMGUI_ENABLE_VIEWPORTS "Enable ImGui Viewports" OFF)
 option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
-option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
+option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" ON)
+option(VIAMD_ENABLE_TREXIO "Enable TREXIO Module" ON)
+set(VIAMD_TREXIO_ROOT "" CACHE PATH "Optional prefix of a local TREXIO installation")
+set(VIAMD_TREXIO_TAG "v2.6.1" CACHE STRING "TREXIO version used when auto-fetching TREXIO")
+string(REGEX REPLACE "^v" "" VIAMD_TREXIO_VERSION "${VIAMD_TREXIO_TAG}")
 set(VIAMD_MACOS_BUNDLE_ID "org.scanberg.viamd" CACHE STRING "macOS bundle identifier")
 set(VIAMD_NUM_WORKER_THREADS "0" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation), 0 = Use available cores")
 
@@ -71,6 +76,63 @@ if (VIAMD_ENABLE_VELOXCHEM)
 endif ()
 
 find_package(OpenGL REQUIRED)
+
+set(TREXIO_FOUND OFF)
+if (VIAMD_ENABLE_TREXIO)
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(TREXIO QUIET trexio)
+    endif()
+
+    if (NOT TREXIO_FOUND)
+        set(_TREXIO_HINTS)
+        if (VIAMD_TREXIO_ROOT)
+            list(APPEND _TREXIO_HINTS "${VIAMD_TREXIO_ROOT}" "${VIAMD_TREXIO_ROOT}/include" "${VIAMD_TREXIO_ROOT}/lib")
+        endif()
+        find_path(TREXIO_INCLUDE_DIR trexio.h HINTS ${_TREXIO_HINTS} PATH_SUFFIXES include)
+        find_library(TREXIO_LIBRARY trexio HINTS ${_TREXIO_HINTS} PATH_SUFFIXES lib lib64)
+        if (TREXIO_INCLUDE_DIR AND TREXIO_LIBRARY)
+            set(TREXIO_FOUND ON)
+            set(TREXIO_INCLUDE_DIRS ${TREXIO_INCLUDE_DIR})
+            set(TREXIO_LIBRARIES ${TREXIO_LIBRARY})
+            get_filename_component(TREXIO_LIBRARY_DIR "${TREXIO_LIBRARY}" DIRECTORY)
+            set(TREXIO_LIBRARY_DIRS ${TREXIO_LIBRARY_DIR})
+        endif()
+    endif()
+
+    if (TREXIO_FOUND)
+        message(STATUS "TREXIO support enabled")
+    else()
+        set(_TREXIO_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/_deps/trexio-install")
+        set(_TREXIO_IMPORTED_LIBRARY "${_TREXIO_INSTALL_PREFIX}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}trexio${CMAKE_SHARED_LIBRARY_SUFFIX}")
+        file(MAKE_DIRECTORY "${_TREXIO_INSTALL_PREFIX}/include" "${_TREXIO_INSTALL_PREFIX}/lib")
+
+        message(STATUS "TREXIO was not found on the system; fetching and building ${VIAMD_TREXIO_TAG}")
+        ExternalProject_Add(trexio_external
+            URL https://github.com/TREX-CoE/trexio/releases/download/${VIAMD_TREXIO_TAG}/trexio-${VIAMD_TREXIO_VERSION}.tar.gz
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            CMAKE_ARGS
+                -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+                -DCMAKE_INSTALL_PREFIX=${_TREXIO_INSTALL_PREFIX}
+            BUILD_BYPRODUCTS ${_TREXIO_IMPORTED_LIBRARY}
+            INSTALL_DIR ${_TREXIO_INSTALL_PREFIX}
+        )
+
+        add_library(trexio_external_lib SHARED IMPORTED GLOBAL)
+        set_target_properties(trexio_external_lib PROPERTIES
+            IMPORTED_LOCATION ${_TREXIO_IMPORTED_LIBRARY}
+            INTERFACE_INCLUDE_DIRECTORIES "${_TREXIO_INSTALL_PREFIX}/include"
+        )
+        add_dependencies(trexio_external_lib trexio_external)
+
+        set(TREXIO_FOUND ON)
+        set(TREXIO_INCLUDE_DIRS "${_TREXIO_INSTALL_PREFIX}/include")
+        set(TREXIO_LIBRARY_DIRS "${_TREXIO_INSTALL_PREFIX}/lib")
+        set(TREXIO_LIBRARIES trexio_external_lib)
+    endif()
+else()
+    message(STATUS "TREXIO support disabled")
+endif()
 
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
@@ -118,10 +180,15 @@ set(COMP_FILES
     src/components/shapespace/shapespace.cpp
     src/components/dataset/dataset.cpp
     src/components/density_volume/density_volume.cpp
+    src/components/molden/molden.cpp
 )
 
 if (VIAMD_ENABLE_VELOXCHEM)
     set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp)
+endif()
+
+if (TREXIO_FOUND)
+    set(COMP_FILES ${COMP_FILES} src/components/trexio/trexio.cpp)
 endif()
 
 set(SHADER_FILES 
@@ -198,6 +265,12 @@ if (WIN32)
     endif()
 endif()
 
+if (TREXIO_FOUND)
+    list(APPEND VIAMD_DEFINES VIAMD_TREXIO=1)
+else()
+    list(APPEND VIAMD_DEFINES VIAMD_TREXIO=0)
+endif()
+
 set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if (_is_multi_config)
@@ -252,7 +325,16 @@ target_include_directories(viamd
         ext/gl3w
         ext/imgui
         ext/enkiTS/src
+    ${TREXIO_INCLUDE_DIRS}
 )
+
+if (TREXIO_FOUND)
+    target_link_directories(viamd PRIVATE ${TREXIO_LIBRARY_DIRS})
+    if (UNIX AND TREXIO_LIBRARY_DIRS)
+        set_property(TARGET viamd APPEND PROPERTY BUILD_RPATH "${TREXIO_LIBRARY_DIRS}")
+        set_property(TARGET viamd APPEND PROPERTY INSTALL_RPATH "${TREXIO_LIBRARY_DIRS}")
+    endif()
+endif()
 
 set_target_properties(viamd PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${VIAMD_BIN_DIR}")
@@ -275,6 +357,7 @@ target_link_libraries(viamd
     implot
     atomic_queue
     imgui_notify
+    ${TREXIO_LIBRARIES}
     ${VIAMD_EXTRA_LIBS}
 )
 
