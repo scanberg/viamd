@@ -467,8 +467,9 @@ struct VeloxChem : viamd::EventHandler {
         bool invert_y = false;
         bool displace_aos = false;
 
-        double x_samples[NUM_SAMPLES] = {}; // in cm^-1
-        double y_samples[NUM_SAMPLES] = {};
+        double* x_samples    = nullptr; // in cm^-1, NUM_SAMPLES entries allocated from arena
+        double* y_samples_ir = nullptr; // broadened IR intensities, NUM_SAMPLES entries
+        double** y_samples_raman = nullptr; // [num_external_frequencies][NUM_SAMPLES], broadened Raman activities
 
         // Time accumulation for vibrational mode visualization (pertubation of atoms)
         double t = 0;
@@ -1601,6 +1602,34 @@ struct VeloxChem : viamd::EventHandler {
                     orb.camera = orb.target;
                     orb.mo_idx = homo_idx[0];
                     orb.scroll_to_idx = homo_idx[0];
+
+                    // VIB
+                    {
+                        size_t num_nm = md_vlx_vib_number_of_normal_modes(vlx);
+                        if (num_nm > 0) {
+                            const double* x_raw = md_vlx_vib_frequencies(vlx);
+                            md_array_resize(vib.x_samples,    NUM_SAMPLES, arena);
+                            md_array_resize(vib.y_samples_ir, NUM_SAMPLES, arena);
+                            MEMSET(vib.y_samples_ir, 0, NUM_SAMPLES * sizeof(double));
+
+                            const double x_range_min = x_raw[0] - 100.0;
+                            const double x_range_max = x_raw[num_nm - 1] + 100.0;
+                            for (int i = 0; i < NUM_SAMPLES; ++i) {
+                                double t = (double)i / (double)(NUM_SAMPLES - 1);
+                                vib.x_samples[i] = lerp(x_range_min, x_range_max, t);
+                            }
+
+                            size_t num_ext = md_vlx_vib_number_of_external_frequencies(vlx);
+                            if (num_ext > 0) {
+                                vib.y_samples_raman = (double**)md_alloc(arena, sizeof(double*) * num_ext);
+                                double* flat = (double*)md_alloc(arena, sizeof(double) * num_ext * NUM_SAMPLES);
+                                MEMSET(flat, 0, sizeof(double) * num_ext * NUM_SAMPLES);
+                                for (size_t i = 0; i < num_ext; ++i) {
+                                    vib.y_samples_raman[i] = flat + i * NUM_SAMPLES;
+                                }
+                            }
+                        }
+                    }
 
                     // Export
                     export_state.mo.idx = homo_idx[0];
@@ -2842,6 +2871,35 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    static inline void lorentzian_broadening(double* y_out, const double* x, size_t num_samples, const double* y_peaks, const double* x_peaks, size_t num_peaks, double gamma) {
+        // Eq. 3.455 in Norman, Ruud, and Saue
+
+        MEMSET(y_out, 0, num_samples * sizeof(double));
+        for (size_t i = 0; i < num_samples; i++) {
+            for (size_t k = 0; k < num_peaks; k++) {
+                double dx = x[i] - x_peaks[k];
+                y_out[i] += y_peaks[k] * gamma / (dx * dx + gamma * gamma) / PI;
+            }
+        }
+    }
+
+    static inline void gaussian_broadening(double* y_out, const double* x, size_t num_samples, const double* y_peaks, const double* x_peaks, size_t num_peaks, double gamma) {
+        // Eq. 8.164 in Norman, Ruud, and Saue
+        // sigma = gamma / sqrt(4.0 * 2.0 * log(2))
+        // calculate sigma from HWHM
+
+        const double sigma = gamma / 2.35482004503094938202;
+        const double factor_a = -1.0 / (2.0 * sigma * sigma);
+        const double factor_b = 1.0 / (sigma * sqrt(2.0 * PI));
+        MEMSET(y_out, 0, num_samples * sizeof(double));
+        for (size_t i = 0; i < num_samples; i++) {
+            for (size_t k = 0; k < num_peaks; k++) {
+                double dx = x[i] - x_peaks[k];
+                y_out[i] += y_peaks[k] * exp(factor_a * dx * dx) * factor_b;
+            }
+        }
+    }
+
     //Constructs plot limits from peaks
     static inline ImPlotRect get_plot_limits(const double* x_samples, const double* y_peaks, size_t num_peaks, size_t num_samples, double ext_fac = 0.1) {
         ImPlotRect lim = { MIN(x_samples[0],x_samples[num_samples - 1]), MAX(x_samples[0],x_samples[num_samples - 1]),0,0};
@@ -4004,6 +4062,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 if (y_spectra_ord) {
                     ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+
                     if (ImGui::TreeNodeEx("ORD Plot", tree_flags)) {
                         ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
 
@@ -4120,6 +4179,10 @@ struct VeloxChem : viamd::EventHandler {
                     static const double scale_min = 0.85;
                     static const double scale_max = 1.05;
 
+                    // Explicit x axis limits for linking
+                    static double x_min = 0.0;
+                    static double x_max = 10.0;
+
                     bool recalc = false;
 
                     const float avail_width = ImGui::GetContentRegionAvail().x;
@@ -4134,37 +4197,42 @@ struct VeloxChem : viamd::EventHandler {
 
                     const double* y_values = md_vlx_vib_ir_intensities(vlx);
                     const double* x_values_raw = md_vlx_vib_frequencies(vlx);
+                        
+                    size_t num_external_frequencies = md_vlx_vib_number_of_external_frequencies(vlx);
+                    const double* external_frequencies = md_vlx_vib_external_frequencies(vlx);
+                    const double** y_raman_activities = NULL;
+                    if (num_external_frequencies > 0) {
+                        y_raman_activities = md_temp_alloc_array(temp, const double*, num_external_frequencies);
+                        for (size_t i = 0; i < num_external_frequencies; ++i) {
+                            y_raman_activities[i] = md_vlx_vib_raman_activities(vlx, i);
+                        }
+                    }
+
                     double* x_values = md_temp_alloc_array(temp, double, num_normal_modes);
                     for (size_t i = 0; i < num_normal_modes; ++i) {
                         x_values[i] = x_values_raw[i] * vib.freq_scaling_factor;
                     }
 
-                    double (*distr_func)(double x, double x_o, double gamma, double intensity) = 0;
-                    switch (vib.broadening_mode) {
-                        case BROADENING_MODE_GAUSSIAN:
-                            distr_func = &phys_gaussian;
-                            break;
-                        case BROADENING_MODE_LORENTZIAN:
-                            distr_func = &phys_lorentzian;
-                            break;
-                        default:
-                            ASSERT(false);  // Should not happen
-                            break;
-                    }
-
                     if (vib.first_plot) {
-                        // Populate x_values
-                        const double x_min = x_values[0] - 100.0;
-                        const double x_max = x_values[num_normal_modes - 1] + 100.0;
-                        for (int i = 0; i < NUM_SAMPLES; ++i) {
-                            double t = (double)i / (double)(ARRAY_SIZE(vib.x_samples) - 1);
-                            double value = lerp(x_min, x_max, t);
-                            vib.x_samples[i] = value;
-                        }
+                        recalc = true;
                     }
 
-                    if (vib.first_plot || recalc) {
-                        general_broadening(vib.y_samples, vib.x_samples, NUM_SAMPLES, y_values, x_values, num_normal_modes, distr_func, vib.gamma * 2);
+                    if (recalc && vib.x_samples && vib.y_samples_ir) {
+                        if (vib.broadening_mode == BROADENING_MODE_LORENTZIAN) {
+                            lorentzian_broadening(vib.y_samples_ir, vib.x_samples, NUM_SAMPLES, y_values, x_values, num_normal_modes, vib.gamma);
+                            if (vib.y_samples_raman && y_raman_activities) {
+                                for (size_t ri = 0; ri < num_external_frequencies; ++ri) {
+                                    if (y_raman_activities[ri]) lorentzian_broadening(vib.y_samples_raman[ri], vib.x_samples, NUM_SAMPLES, y_raman_activities[ri], x_values, num_normal_modes, vib.gamma);
+                                }
+                            }
+                        } else if (vib.broadening_mode == BROADENING_MODE_GAUSSIAN) {
+                            gaussian_broadening(vib.y_samples_ir, vib.x_samples, NUM_SAMPLES, y_values, x_values, num_normal_modes, vib.gamma);
+                            if (vib.y_samples_raman && y_raman_activities) {
+                                for (size_t ri = 0; ri < num_external_frequencies; ++ri) {
+                                    if (y_raman_activities[ri]) gaussian_broadening(vib.y_samples_raman[ri], vib.x_samples, NUM_SAMPLES, y_raman_activities[ri], x_values, num_normal_modes, vib.gamma);
+                                }
+                            }
+                        }
                     }
 
                     ImGui::Checkbox("Invert X", &vib.invert_x);
@@ -4174,17 +4242,41 @@ struct VeloxChem : viamd::EventHandler {
                     ImPlotAxisFlags x_flag = vib.invert_x ? ImPlotAxisFlags_Invert : 0;
                     ImPlotAxisFlags y_flag = vib.invert_y ? ImPlotAxisFlags_Invert : 0;
 
-                    if (ImPlot::BeginPlot("Vibrational analysis")) {
+                    ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+
+                    ImPlot::SetNextAxesToFit();
+                    if (ImPlot::BeginPlot("Vibrational Plot")) {
                         ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                         ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flag);
-                        ImPlot::SetupAxis(ImAxis_Y1, "IR Intensity (km/mol)", y_flag);
+                        ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"IR Intensity (km/mol)", y_flag);
                         ImPlot::SetupFinish();
 
-                        ImPlot::PlotLine("Spectrum", vib.x_samples, vib.y_samples, NUM_SAMPLES);
+                        ImPlot::PlotLine("Spectrum", vib.x_samples, vib.y_samples_ir, NUM_SAMPLES);
                         plot_peaks("IR Intensity", x_values, y_values, num_normal_modes, vib.selected, vib.hovered);
 
                         vib.first_plot = false;
                         ImPlot::EndPlot();
+                    }
+
+                    if (num_external_frequencies > 0) {
+                        ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+                        if (ImPlot::BeginPlot("Raman Activity")) {
+                            ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                            ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flag);
+                            ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"Raman Activity (Å⁴/amu)", y_flag);
+                            ImPlot::SetupFinish();
+
+                            for (size_t i = 0; i < num_external_frequencies; ++i) {
+                                char label[32];
+                                double freq = external_frequencies[i];
+                                snprintf(label, sizeof(label), "%.4f", freq);
+                                if (vib.y_samples_raman && vib.x_samples) {
+                                    ImPlot::PlotLine(label, vib.x_samples, vib.y_samples_raman[i], NUM_SAMPLES);
+                                }
+                                plot_peaks(label, x_values, y_raman_activities[i], num_normal_modes, vib.selected, vib.hovered);
+                            }
+                            ImPlot::EndPlot();
+                        }
                     }
 
                     ImGui::PushItemWidth(MIN(avail_width, 200));
@@ -4206,10 +4298,17 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImVec2 table_size = {0, 0};
 
-                    if (ImGui::BeginTable("vib mode table", 3, flags, table_size, 0)) {
+                    int num_cols = 3 + (int)num_external_frequencies;
+                    if (ImGui::BeginTable("vib mode table", num_cols, flags, table_size, 0)) {
                         ImGui::TableSetupColumn("Vibration mode", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("Harmonic Frequency", columns_base_flags, 0.0f);
                         ImGui::TableSetupColumn("IR Intensity", columns_base_flags, 0.0f);
+                        for (size_t i = 0; i < num_external_frequencies; ++i) {
+                            char label[32];
+                            double freq = external_frequencies[i];
+                            snprintf(label, sizeof(label), "Raman Activity (%.4f)", freq);
+                            ImGui::TableSetupColumn(label, columns_base_flags, 0.0f);
+                        }
                         ImGui::TableSetupScrollFreeze(0, 1);
                         ImGui::TableHeadersRow();
 
@@ -4242,6 +4341,10 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::Text("%12.6f", x_values[row_n]);
                             ImGui::TableNextColumn();
                             ImGui::Text("%12.6f", y_values[row_n]);
+                            for (size_t i = 0; i < num_external_frequencies; ++i) {
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%12.6f", y_raman_activities[i][row_n]);
+                            }
 
                             ImGui::PopStyleColor(1);
                         }
