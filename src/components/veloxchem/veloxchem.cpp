@@ -1604,29 +1604,28 @@ struct VeloxChem : viamd::EventHandler {
                     orb.scroll_to_idx = homo_idx[0];
 
                     // VIB
-                    {
-                        size_t num_nm = md_vlx_vib_number_of_normal_modes(vlx);
-                        if (num_nm > 0) {
-                            const double* x_raw = md_vlx_vib_frequencies(vlx);
-                            md_array_resize(vib.x_samples,    NUM_SAMPLES, arena);
-                            md_array_resize(vib.y_samples_ir, NUM_SAMPLES, arena);
-                            MEMSET(vib.y_samples_ir, 0, NUM_SAMPLES * sizeof(double));
+                    size_t num_nm = md_vlx_vib_number_of_normal_modes(vlx);
+                    if (num_nm > 0) {
+                        const double* x_raw = md_vlx_vib_frequencies(vlx);
+                        md_array_resize(vib.x_samples,    NUM_SAMPLES, arena);
+                        md_array_resize(vib.y_samples_ir, NUM_SAMPLES, arena);
+                        MEMSET(vib.y_samples_ir, 0, NUM_SAMPLES * sizeof(double));
 
-                            const double x_range_min = x_raw[0] - 100.0;
-                            const double x_range_max = x_raw[num_nm - 1] + 100.0;
-                            for (int i = 0; i < NUM_SAMPLES; ++i) {
-                                double t = (double)i / (double)(NUM_SAMPLES - 1);
-                                vib.x_samples[i] = lerp(x_range_min, x_range_max, t);
-                            }
+                        const double pad = 100.0;
+                        const double x_range_min = x_raw[0] - pad;
+                        const double x_range_max = x_raw[num_nm - 1] + pad;
+                        for (int i = 0; i < NUM_SAMPLES; ++i) {
+                            double t = (double)i / (double)(NUM_SAMPLES - 1);
+                            vib.x_samples[i] = lerp(x_range_min, x_range_max, t);
+                        }
 
-                            size_t num_ext = md_vlx_vib_number_of_external_frequencies(vlx);
-                            if (num_ext > 0) {
-                                vib.y_samples_raman = (double**)md_alloc(arena, sizeof(double*) * num_ext);
-                                double* flat = (double*)md_alloc(arena, sizeof(double) * num_ext * NUM_SAMPLES);
-                                MEMSET(flat, 0, sizeof(double) * num_ext * NUM_SAMPLES);
-                                for (size_t i = 0; i < num_ext; ++i) {
-                                    vib.y_samples_raman[i] = flat + i * NUM_SAMPLES;
-                                }
+                        size_t num_ext = md_vlx_vib_number_of_external_frequencies(vlx);
+                        if (num_ext > 0) {
+                            md_array_resize(vib.y_samples_raman, num_ext, arena);
+                            double* flat = (double*)md_alloc(arena, sizeof(double) * num_ext * NUM_SAMPLES);
+                            MEMSET(flat, 0, sizeof(double) * num_ext * NUM_SAMPLES);
+                            for (size_t i = 0; i < num_ext; ++i) {
+                                vib.y_samples_raman[i] = flat + i * NUM_SAMPLES;
                             }
                         }
                     }
@@ -2874,12 +2873,17 @@ struct VeloxChem : viamd::EventHandler {
     static inline void lorentzian_broadening(double* y_out, const double* x, size_t num_samples, const double* y_peaks, const double* x_peaks, size_t num_peaks, double gamma) {
         // Eq. 3.455 in Norman, Ruud, and Saue
 
-        MEMSET(y_out, 0, num_samples * sizeof(double));
+        const double gamma2 = gamma * gamma;
+        const double gamma_over_pi = gamma / PI;
+
         for (size_t i = 0; i < num_samples; i++) {
+            double sum = 0;
             for (size_t k = 0; k < num_peaks; k++) {
                 double dx = x[i] - x_peaks[k];
-                y_out[i] += y_peaks[k] * gamma / (dx * dx + gamma * gamma) / PI;
+                double denom = fma(dx, dx, gamma2); // Avoid division by zero
+                sum += y_peaks[k] * gamma_over_pi / denom;
             }
+            y_out[i] = sum;
         }
     }
 
@@ -2891,12 +2895,14 @@ struct VeloxChem : viamd::EventHandler {
         const double sigma = gamma / 2.35482004503094938202;
         const double factor_a = -1.0 / (2.0 * sigma * sigma);
         const double factor_b = 1.0 / (sigma * sqrt(2.0 * PI));
-        MEMSET(y_out, 0, num_samples * sizeof(double));
+
         for (size_t i = 0; i < num_samples; i++) {
+            double sum = 0;
             for (size_t k = 0; k < num_peaks; k++) {
                 double dx = x[i] - x_peaks[k];
-                y_out[i] += y_peaks[k] * exp(factor_a * dx * dx) * factor_b;
+                sum += y_peaks[k] * exp(factor_a * dx * dx) * factor_b;
             }
+            y_out[i] = sum;
         }
     }
 
