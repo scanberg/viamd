@@ -3083,13 +3083,13 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             mat4_t recenter_transform = { 0 };
 
             if (state->operations.recalc_bonds) {
-                int64_t nearest_frame = (int64_t)(state->animation.frame + 0.5);
+                static int64_t cur_nearest_frame = -1;
 
                 // We cannot recalculate bonds while the full or filtered evaluation is running
                 // because it would overwrite the bond data while we are reading it
+                int64_t nearest_frame = (int64_t)(state->animation.frame + 0.5);
                 if (!task_system::task_is_running(state->tasks.evaluate_full) && !task_system::task_is_running(state->tasks.evaluate_filt)) {
-                    static int64_t cur_nearest_frame = -1;
-                    if (cur_nearest_frame != nearest_frame) {
+                    if (state->mold.sys.trajectory == NULL || (cur_nearest_frame != nearest_frame)) {
                         cur_nearest_frame = nearest_frame;
                         task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [state, &sys, nearest_frame]() {
                             float* x = NULL;
@@ -3179,6 +3179,13 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 tasks[num_tasks++] = unwrap_task;
             }
 
+            if (num_tasks > 0) {
+                for (int i = 1; i < num_tasks; ++i) {
+                    task_system::set_task_dependency(tasks[i], tasks[i-1]);
+                }
+                task_system::enqueue_task(tasks[0]);
+                task_system::task_wait_for(tasks[num_tasks - 1]);
+            }
             break;
         }
         default:
