@@ -340,6 +340,8 @@ struct VeloxChem : viamd::EventHandler {
         int selected = -1;
 
         bool coord_modified = false;
+
+        uint64_t energy_hash = 0;
     } opt;
 
     struct Orb {
@@ -496,7 +498,7 @@ struct VeloxChem : viamd::EventHandler {
         } mo;
 
         struct {
-            md_vlx_nto_type_t type = MD_VLX_NTO_TYPE_PARTICLE;
+            md_vlx_nto_type_t type = MD_VLX_NTO_PARTICLE;
             int lambda_idx = 0;
             int idx = 1;
         } nto;
@@ -1125,7 +1127,7 @@ struct VeloxChem : viamd::EventHandler {
                         }
                         case ElectronicStructureSource::NaturalTransitionOrbital:
                         {
-                            md_vlx_nto_type_t nto_type = es.nto_component == ElectronicStructureNtoComponent::Particle ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
+                            md_vlx_nto_type_t nto_type = es.nto_component == ElectronicStructureNtoComponent::Particle ? MD_VLX_NTO_PARTICLE : MD_VLX_NTO_HOLE;
                             md_gto_op_t op = gto_op_from_use_magnitude(es.use_magnitude);
                             evaluate_nto(tex_id, grid, es.excited_state_idx, es.nto_lambda_idx, nto_type, op, DEFAULT_GTO_CUTOFF_VALUE);
                             break;
@@ -1508,10 +1510,10 @@ struct VeloxChem : viamd::EventHandler {
 
                     // RSP
 					md_vlx_rsp_type_t rsp_type = md_vlx_rsp_type(vlx);
-                    if (rsp_type != MD_VLX_RSP_TYPE_UNKNOWN) {
+                    if (rsp_type != MD_VLX_RSP_UNKNOWN) {
 						size_t num_freq = md_vlx_rsp_number_of_frequencies(vlx);
 
-                        if (rsp_type == MD_VLX_RSP_TYPE_LINEAR) {
+                        if (rsp_type == MD_VLX_RSP_LINEAR) {
                             rsp.num_samples = NUM_SAMPLES;
                             md_array_resize(rsp.x_peaks, num_freq, arena);
                             md_array_resize(rsp.x_peaks_ev, num_freq, arena);
@@ -1555,7 +1557,7 @@ struct VeloxChem : viamd::EventHandler {
                                     rsp.x_spectra_ev[i] = value;
                                 }
                             }
-						} else if (rsp_type == MD_VLX_RSP_TYPE_CPP) {
+						} else if (rsp_type == MD_VLX_RSP_CPP) {
                             rsp.num_samples = num_freq;
                             md_array_resize(rsp.x_spectra, num_freq, arena);
 					        md_array_resize(rsp.x_spectra_ev, num_freq, arena);
@@ -1920,16 +1922,16 @@ struct VeloxChem : viamd::EventHandler {
     // Compute transition density from VeloxChem response eigenvectors.
     bool evaluate_transition_density(uint32_t vol_tex, const md_grid_t& grid, size_t state_idx, ElectronicStructureTransitionDensityComponent component, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         (void)cutoff_value;
-        md_vlx_transition_density_type_t type = MD_VLX_TRANSITION_DENSITY_ATTACHMENT;
+        md_vlx_transition_type_t type = MD_VLX_TRANSITION_ATTACHMENT;
         switch (component) {
         case ElectronicStructureTransitionDensityComponent::Attachment:
-            type = MD_VLX_TRANSITION_DENSITY_ATTACHMENT;
+            type = MD_VLX_TRANSITION_ATTACHMENT;
             break;
         case ElectronicStructureTransitionDensityComponent::Detachment:
-            type = MD_VLX_TRANSITION_DENSITY_DETACHMENT;
+            type = MD_VLX_TRANSITION_DETACHMENT;
             break;
         case ElectronicStructureTransitionDensityComponent::Difference:
-            type = MD_VLX_TRANSITION_DENSITY_DIFFERENCE;
+            type = MD_VLX_TRANSITION_DIFFERENCE;
             break;
         default:
             break;
@@ -3284,44 +3286,76 @@ struct VeloxChem : viamd::EventHandler {
                 size_t num_steps = md_vlx_opt_number_of_steps(vlx);
                 if (num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
-                        ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.1f, 0.1f));
+                        ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.05f, 0.1f));
                         defer { ImPlot::PopStyleVar(); };
 
+                        md_vlx_opt_type_t opt_type = md_vlx_opt_type(vlx);
+                        size_t ts_index = md_vlx_opt_irc_ts_index(vlx);
                         const double* energies = md_vlx_opt_energies(vlx);
+                        const char* y_axis_label = "Relative Energy [kJ/mol]";
+
+                        uint64_t energy_hash = md_hash64((const uint8_t*)energies, sizeof(double) * num_steps, 0);
+
+                        if (energy_hash != opt.energy_hash) {
+                            opt.energy_hash = energy_hash;
+                            ImPlot::SetNextAxesToFit();
+                        }
+
                         // Find minima as the reference energy
                         double ref_energy = energies[0];
-                        for (size_t i = 1; i < num_steps; ++i) {
-                            ref_energy = MIN(ref_energy, energies[i]);
+                        if (opt_type == MD_VLX_OPT_IRC) {
+                            if (ts_index < num_steps) {
+                                ref_energy = energies[ts_index];
+                            }
+                        } else {
+                            for (size_t i = 1; i < num_steps; i++) {
+                                ref_energy = MIN(ref_energy, energies[i]);
+                            }
                         }
-                        double* energy_offsets = md_temp_alloc_array(temp, double, num_steps);
+
+                        double* x_vals = md_temp_alloc_array(temp, double, num_steps);
+                        double* y_vals = md_temp_alloc_array(temp, double, num_steps);
 
                         for (size_t i = 0; i < num_steps; ++i) {
-                            energy_offsets[i] = fabs(energies[i] - ref_energy) * HARTREE_TO_KJ_PER_MOL;
+                            y_vals[i] = (energies[i] - ref_energy) * HARTREE_TO_KJ_PER_MOL;
+                            x_vals[i] = (double)(i + 1);
                         }
 
                         const ImPlotFlags plot_flags = ImPlotFlags_NoMouseText;
                         if (ImPlot::BeginPlot("OPT", ImVec2(-1, 0), plot_flags)) {
-                            const double x_pad = 0.5;
-                            const double y_pad = 0.3;
                             
-                            ImPlot::SetupAxes("Step", "Energy (kJ/mol)");
-                            ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_SymLog);
-                            ImPlot::SetupAxisLimits(ImAxis_X1, 1.0 - x_pad, (double)num_steps + x_pad);
-                            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0 - y_pad, energy_offsets[0] * 1.1);
+                            ImPlot::SetupAxes("Step", y_axis_label);
                             ImPlot::SetupLegend(ImPlotLocation_NorthEast);
-                            ImPlot::PlotLine("Energy", energy_offsets, (int)num_steps, 1.0, 1.0);
 
-                            plot_peaks("##opt_peaks", nullptr, energy_offsets, num_steps, opt.selected, opt.hovered, PlotPeaksFlags_Points);
+                            if (opt_type == MD_VLX_OPT_CONSTRAINED) {
+                                ImPlot::PlotLineSpline("Energy", x_vals, y_vals, (int)num_steps);
+                            } else {
+                                ImPlot::PlotLine("Energy", x_vals, y_vals, (int)num_steps);
+                            }
+
+                            plot_peaks("##opt_peaks", x_vals, y_vals, num_steps, opt.selected, opt.hovered, PlotPeaksFlags_Points);
+
+                            if (opt_type == MD_VLX_OPT_IRC) {
+                                // Plot a scatter point for the ts_index
+                                const double x = x_vals[ts_index];
+                                const double y = y_vals[ts_index];
+
+                                ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 6.0f, ImVec4(0,0,0,-1), 2.0f);
+                                ImPlot::SetNextFillStyle(ImVec4(0, 0, 0, -1), 0.5f);
+
+                                ImPlot::PlotScatter("Transition State", &x, &y, 1);
+                            }
 
                             if (ImPlot::IsPlotHovered() && opt.hovered != -1) {
-                                ImGui::SetTooltip("Step %d\nEnergy: %.8f kJ/mol", opt.hovered + 1, energy_offsets[opt.hovered]);
+                                ImGui::SetTooltip("Step %d\nEnergy: %.8f kJ/mol", opt.hovered + 1, y_vals[opt.hovered]);
                             }
 
                             ImPlot::EndPlot();
                         }
                         ImGui::Spacing();
                         int value = opt.selected + 1;
-                        ImGui::SliderInt("Step", &value, 1, (int)num_steps);
+                        ImGui::SetNextItemWidth(-FLT_MIN);
+                        ImGui::SliderInt("Step", &value, 0, (int)num_steps);
                         opt.selected = value - 1;
 
                         ImGui::TreePop();
@@ -3907,7 +3941,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 const float avail_width = ImGui::GetContentRegionAvail().x;
                 ImGui::PushItemWidth(MIN(avail_width, 200));
-                if (rsp_type == MD_VLX_RSP_TYPE_LINEAR) {
+                if (rsp_type == MD_VLX_RSP_LINEAR) {
                     ImGui::SliderScalar((const char*)u8"Broadening γ HWHM (eV)", ImGuiDataType_Double, &rsp.broadening_gamma, &gamma_min, &gamma_max);
                     ImGui::Combo("Broadening mode", (int*)(&rsp.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
                 }
@@ -3936,7 +3970,7 @@ struct VeloxChem : viamd::EventHandler {
                 uint64_t x_hash = md_hash64(&rsp.x_unit, sizeof(rsp.x_unit), seed);
                 uint64_t b_hash = md_hash64_combine(md_hash64(&rsp.broadening_gamma, sizeof(rsp.broadening_gamma), (uint64_t)rsp.broadening_mode), seed);
 
-				if (rsp_type == MD_VLX_RSP_TYPE_LINEAR) {
+				if (rsp_type == MD_VLX_RSP_LINEAR) {
 					num_peaks = num_frequencies;
                     x_peaks = rsp.x_peaks;
                     x_peaks_ev = rsp.x_peaks_ev;
@@ -3998,7 +4032,7 @@ struct VeloxChem : viamd::EventHandler {
                                 ImPlot::SetAxis(ImAxis_Y1);
                                 ImPlot::PlotLine("Spectrum", x_spectra, y_spectra_abs, num_samples);
 
-                                if (rsp_type == MD_VLX_RSP_TYPE_CPP) {
+                                if (rsp_type == MD_VLX_RSP_CPP) {
                                     int selected = -1;
                                     int hovered = -1;
                                     plot_peaks("Samples", x_spectra, y_spectra_abs, num_samples, selected, hovered, PlotPeaksFlags_Points);
@@ -4069,7 +4103,7 @@ struct VeloxChem : viamd::EventHandler {
 
                                 ImPlot::SetAxis(ImAxis_Y1);
 
-                                if (rsp_type == MD_VLX_RSP_TYPE_CPP) {
+                                if (rsp_type == MD_VLX_RSP_CPP) {
                                     ImPlot::PlotLineSpline("Spectrum", x_spectra, y_spectra_ecd, num_samples);
 
                                     int selected = -1;
@@ -4507,19 +4541,19 @@ struct VeloxChem : viamd::EventHandler {
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
             md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
 
-            int num_x = (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ? 2 : orb.num_x;
+            int num_x = (type == MD_VLX_SCF_UNRESTRICTED) ? 2 : orb.num_x;
             int num_y = orb.num_y;
 
             int orb_homo_idx = MAX(homo_idx[0], homo_idx[1]);
             int orb_lumo_idx = MIN(lumo_idx[0], lumo_idx[1]);
-            if (type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+            if (type == MD_VLX_SCF_RESTRICTED_OPENSHELL) {
                 orb_lumo_idx = MAX(lumo_idx[0], lumo_idx[1]);
             }
 
             int num_mos = num_x * num_y;
             int beg_mo_idx = orb.mo_idx - num_mos / 2 + (num_mos % 2 == 0 ? 1 : 0);
             int window_size = num_mos;
-            if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+            if (type == MD_VLX_SCF_UNRESTRICTED) {
                 beg_mo_idx = orb.mo_idx - num_y / 2 + (num_y % 2 == 0 ? 1 : 0);
                 window_size = num_y;
             }
@@ -4533,9 +4567,9 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::BeginGroup();
 
                 ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
-                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ImGui::PushDisabled();
+                if (type == MD_VLX_SCF_UNRESTRICTED) ImGui::PushDisabled();
                 ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
-                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ImGui::PopDisabled();
+                if (type == MD_VLX_SCF_UNRESTRICTED) ImGui::PopDisabled();
 
                 const double iso_min = 1.0e-4;
                 const double iso_max = 5.0;
@@ -4562,7 +4596,7 @@ struct VeloxChem : viamd::EventHandler {
                 };
 
                 const char* btn_text = "Goto HOMO";
-                if (type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL && (homo_idx[0] != homo_idx[1])) {
+                if (type == MD_VLX_SCF_RESTRICTED_OPENSHELL && (homo_idx[0] != homo_idx[1])) {
                     btn_text = "Goto SOMO";
                 }
 
@@ -4573,7 +4607,7 @@ struct VeloxChem : viamd::EventHandler {
                     orb.scroll_to_idx = homo_idx[0];
                 }
 
-                int num_cols = (type == MD_VLX_SCF_TYPE_UNRESTRICTED) ? 5 : 3;
+                int num_cols = (type == MD_VLX_SCF_UNRESTRICTED) ? 5 : 3;
 
                 const ImGuiTableFlags flags =
                     ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
@@ -4587,7 +4621,7 @@ struct VeloxChem : viamd::EventHandler {
                     // - ImGuiTableColumnFlags_DefaultSort
                     // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
                     // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
-                    if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                    if (type == MD_VLX_SCF_UNRESTRICTED) {
                         ImGui::TableSetupColumn("MO", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Idx);
                         ImGui::TableSetupColumn((const char*)u8"Occ. α", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Occ_Alpha);
                         ImGui::TableSetupColumn((const char*)u8"Occ. β", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Occ_Beta);
@@ -4625,7 +4659,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (occ_alpha) {
                             const char* lbl = "";
                             double occ = occ_alpha[n];
-                            if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                            if (type == MD_VLX_SCF_UNRESTRICTED) {
                                 if (n == homo_idx[0] && n == orb_homo_idx) {
                                     lbl = "HOMO";
                                 }
@@ -4649,7 +4683,7 @@ struct VeloxChem : viamd::EventHandler {
                         else {
                             ImGui::Text("-");
                         }
-                        if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                        if (type == MD_VLX_SCF_UNRESTRICTED) {
                             ImGui::TableNextColumn();
                             if (occ_beta) {
                                 const char* lbl = "";
@@ -4672,7 +4706,7 @@ struct VeloxChem : viamd::EventHandler {
                         else {
                             ImGui::Text("-");
                         }
-                        if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                        if (type == MD_VLX_SCF_UNRESTRICTED) {
                             ImGui::TableNextColumn();
                             if (ene_beta) {
                                 ImGui::Text("%.4f", ene_beta[n]);
@@ -4698,7 +4732,7 @@ struct VeloxChem : viamd::EventHandler {
             int vol_mo_idx[16] = { -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1 };
             md_vlx_spin_t vol_mo_type[16] = {};
             for (int i = 0; i < num_mos; ++i) {
-                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                if (type == MD_VLX_SCF_UNRESTRICTED) {
                     vol_mo_idx[i] = beg_mo_idx + i / 2;
                     vol_mo_type[i] = (i & 1) ? MD_VLX_SPIN_ALPHA : MD_VLX_SPIN_BETA;
                 }
@@ -4794,7 +4828,7 @@ struct VeloxChem : viamd::EventHandler {
                 defer { ImGui::PopID(); };
 
                 int mo_idx = beg_mo_idx + i;
-                if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                if (type == MD_VLX_SCF_UNRESTRICTED) {
                     mo_idx = beg_mo_idx + i / 2;
                 }
                 int x = num_x - i % num_x - 1;
@@ -4847,7 +4881,7 @@ struct VeloxChem : viamd::EventHandler {
 
 
                     const char* lbl = "";
-                    if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                    if (type == MD_VLX_SCF_UNRESTRICTED) {
                         int j = (i & 1) ? 0 : 1;
                         if (mo_idx == orb_homo_idx && orb_homo_idx == homo_idx[j]) {
                             lbl = "(HOMO)";
@@ -4871,7 +4905,7 @@ struct VeloxChem : viamd::EventHandler {
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
-                    if (type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+                    if (type == MD_VLX_SCF_UNRESTRICTED) {
                         draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (i & 1) ? (const char*)u8"α" : (const char*)u8"β");
                         snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
                     }
@@ -5162,7 +5196,7 @@ struct VeloxChem : viamd::EventHandler {
 
             if (show_mo_combo) {
                 md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
-                if (type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+                if (type == MD_VLX_SCF_RESTRICTED_OPENSHELL) {
                     const char* options[2] = {"Alpha", "Beta"};
                     if (ImGui::BeginCombo("##MO_TYPE", options[export_state.mo.type])) {
                         for (size_t i = 0; i < ARRAY_SIZE(options); ++i) {
@@ -5342,7 +5376,7 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     case ElectronicStructureSource::NaturalTransitionOrbital:
                     {
-                        md_vlx_nto_type_t type = export_state.nto_component == ElectronicStructureNtoComponent::Particle ? MD_VLX_NTO_TYPE_PARTICLE : MD_VLX_NTO_TYPE_HOLE;
+                        md_vlx_nto_type_t type = export_state.nto_component == ElectronicStructureNtoComponent::Particle ? MD_VLX_NTO_PARTICLE : MD_VLX_NTO_HOLE;
                         md_gto_op_t op = gto_op_from_use_magnitude(export_state.use_magnitude);
                         
                         evaluate_nto(vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, op);
@@ -6552,8 +6586,8 @@ struct VeloxChem : viamd::EventHandler {
                         double* D_attach = md_temp_alloc_array(temp, double, num_aos * num_aos);
                         double* D_detach = md_temp_alloc_array(temp, double, num_aos * num_aos);
 
-						const size_t a_dim = md_vlx_rsp_transition_density_matrix_extract(D_attach, vlx, nto_idx, MD_VLX_TRANSITION_DENSITY_ATTACHMENT);
-						const size_t d_dim = md_vlx_rsp_transition_density_matrix_extract(D_detach, vlx, nto_idx, MD_VLX_TRANSITION_DENSITY_DETACHMENT);
+						const size_t a_dim = md_vlx_rsp_transition_density_matrix_extract(D_attach, vlx, nto_idx, MD_VLX_TRANSITION_ATTACHMENT);
+						const size_t d_dim = md_vlx_rsp_transition_density_matrix_extract(D_detach, vlx, nto_idx, MD_VLX_TRANSITION_DETACHMENT);
 
 						if (a_dim == num_aos && d_dim == num_aos) {
 							double group_density_part[MAX_NTO_GROUPS] = {0};
@@ -6599,7 +6633,7 @@ struct VeloxChem : viamd::EventHandler {
                     task_system::ID seg_detach  = 0;
 
                     if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_unit_length) &&
-                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_unit_length))
+                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_unit_length))
                     {
                         task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);

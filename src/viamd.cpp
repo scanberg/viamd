@@ -1460,7 +1460,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         }
     }
 
-    if (rep->tint_scale > 0.0f || rep->saturation < 1.0f) {
+    if (colors && rep->tint_scale > 0.0f || rep->saturation < 1.0f) {
         uint32_t tint_color = convert_color(rep->tint_color);
         tint_colors(colors, num_atoms, tint_color, rep->tint_scale, rep->saturation);
     }
