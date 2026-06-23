@@ -3073,9 +3073,18 @@ struct VeloxChem : viamd::EventHandler {
         return eps_max / peak_max;
     }
 
+    enum PlotPeaksFlags_ {
+        PlotPeaksFlags_None = 0,
+        PlotPeaksFlags_Bars = 1 << 0,
+        PlotPeaksFlags_Points = 1 << 1,
+        PlotPeaksFlags_All = PlotPeaksFlags_Bars | PlotPeaksFlags_Points
+    };
+
+    typedef uint32_t PlotPeaksFlags;
+
     // This is a helper function to plot peaks and handle hovering
     // Only valid to call within a plot context
-    void plot_peaks(const char* title, const double x_values[], const double y_values[], size_t num_peaks, int& selected, int& hovered) {
+    void plot_peaks(const char* title, const double x_values[], const double y_values[], size_t num_peaks, int& selected, int& hovered, PlotPeaksFlags flags = PlotPeaksFlags_All) {
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
@@ -3110,17 +3119,24 @@ struct VeloxChem : viamd::EventHandler {
                 ImVec2 min = ImMin(min_raw, max_raw);
                 ImVec2 max = ImMax(min_raw, max_raw);
 
-                // Calculate distance to the line which forms the bar (1D clamp trick)
-                ImVec2 line_dx = mouse_pos - ImClamp(mouse_pos, min, max);
-                double line_d2 = line_dx.x * line_dx.x + line_dx.y * line_dx.y;
+                if (flags & PlotPeaksFlags_Bars) {
+                    // Calculate distance to the line which forms the bar (1D clamp trick)
+                    ImVec2 line_dx = mouse_pos - ImClamp(mouse_pos, min, max);
+                    double line_d2 = line_dx.x * line_dx.x + line_dx.y * line_dx.y;
+                    if (line_d2 < min_line_d2 && line_d2 < min_dist) {
+                        hovered = (int)i;
+                        min_dist = line_d2;
+                    }
+                }
 
-                ImVec2 point_dx = mouse_pos - max_raw;
-                double point_d2 = point_dx.x * point_dx.x + point_dx.y * point_dx.y;
-
-                if ((line_d2 < min_line_d2  && line_d2 < min_dist) ||
-                    (point_d2 < min_point_d2 && point_d2 < min_dist)) {
-                    hovered = (int)i;
-                    min_dist = MIN(line_d2, point_d2);
+                if (flags & PlotPeaksFlags_Points) {
+                    // Calculate distance to the point at the top of the bar
+                    ImVec2 point_dx = mouse_pos - max_raw;
+                    double point_d2 = point_dx.x * point_dx.x + point_dx.y * point_dx.y;
+                    if (point_d2 < min_point_d2 && point_d2 < min_dist) {
+                        hovered = (int)i;
+                        min_dist = point_d2;
+                    }
                 }
             }
         }
@@ -3132,16 +3148,39 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         if (ImPlot::BeginItem(title)) {
+            ImPlot::PushPlotClipRect();
+            ImDrawList& DrawList = *ImPlot::GetPlotDrawList();
+            const float rad = (float)point_radius_in_pixels;
+
             for (int i = 0; i < (int)num_peaks; i++) {
                 const ImPlotNextItemData& s = ImPlot::GetItemData();
                 ImVec4 color = (i == hovered) ? COLOR_PEAK_HOVER : (i == selected) ? COLOR_PEAK_SELECTED : s.Colors[ImPlotCol_Fill];
-                draw_bar(x_values[i], y_values[i], bar_width_in_pixels, point_radius_in_pixels, color);
+
+                const double x = x_values[i];
+                const double y = y_values[i];
+
+                ImVec2 rect_min = ImPlot::PlotToPixels(x, 0, IMPLOT_AUTO, IMPLOT_AUTO);
+                ImVec2 rect_max = ImPlot::PlotToPixels(x, y, IMPLOT_AUTO, IMPLOT_AUTO);
+
+                rect_min = ImVec2{rect_min.x - (float)bar_width_in_pixels * 0.5f, rect_min.y};
+                rect_max = ImVec2{rect_max.x + (float)bar_width_in_pixels * 0.5f, rect_max.y};
+                ImVec2 pos = ImPlot::PlotToPixels(x, y, IMPLOT_AUTO, IMPLOT_AUTO);
+
+                ImU32 col32 = ImGui::ColorConvertFloat4ToU32(color);
+                if (flags & PlotPeaksFlags_Bars) {
+                    DrawList.AddRectFilled(rect_min, rect_max, col32);
+                }
+
+                if (flags & PlotPeaksFlags_Points) {
+                    DrawList.AddCircleFilled(pos, rad, col32);
+                }
 
                 if (ImPlot::FitThisFrame()) {
-                    ImPlot::FitPoint(ImPlotPoint(x_values[i], 0.0));
-                    ImPlot::FitPoint(ImPlotPoint(x_values[i], y_values[i]));
+                    ImPlot::FitPoint(ImPlotPoint(x, 0.0));
+                    ImPlot::FitPoint(ImPlotPoint(x, y));
                 }
             }
+            ImPlot::PopPlotClipRect();
 
             ImPlot::EndItem();
         }
@@ -3272,7 +3311,7 @@ struct VeloxChem : viamd::EventHandler {
                             ImPlot::SetupLegend(ImPlotLocation_NorthEast);
                             ImPlot::PlotLine("Energy", energy_offsets, (int)num_steps, 1.0, 1.0);
 
-                            plot_peaks("##opt_peaks", nullptr, energy_offsets, num_steps, opt.selected, opt.hovered);
+                            plot_peaks("##opt_peaks", nullptr, energy_offsets, num_steps, opt.selected, opt.hovered, PlotPeaksFlags_Points);
 
                             if (ImPlot::IsPlotHovered() && opt.hovered != -1) {
                                 ImGui::SetTooltip("Step %d\nEnergy: %.8f kJ/mol", opt.hovered + 1, energy_offsets[opt.hovered]);
@@ -3962,7 +4001,7 @@ struct VeloxChem : viamd::EventHandler {
                                 if (rsp_type == MD_VLX_RSP_TYPE_CPP) {
                                     int selected = -1;
                                     int hovered = -1;
-                                    plot_peaks("Samples", x_spectra, y_spectra_abs, num_samples, selected, hovered);
+                                    plot_peaks("Samples", x_spectra, y_spectra_abs, num_samples, selected, hovered, PlotPeaksFlags_Points);
 
                                     if (ImPlot::IsPlotHovered() && hovered != -1) {
                                         double x_val = x_spectra[hovered];
@@ -4021,13 +4060,21 @@ struct VeloxChem : viamd::EventHandler {
                             ImPlot::SetupFinish();
 
                             if (num_samples > 0 && x_spectra && y_spectra_ecd) {
+                                // Spline (catmull-rom) getter for interpolating lines 
+                                auto getter = [](int idx, void* data) -> ImPlotPoint {
+                                    const double* x = ((const double**)data)[0];
+                                    const double* y = ((const double**)data)[1];
+                                    return ImPlotPoint(x[idx], y[idx]);
+                                };
+
                                 ImPlot::SetAxis(ImAxis_Y1);
-                                ImPlot::PlotLine("Spectrum", x_spectra, y_spectra_ecd, num_samples);
 
                                 if (rsp_type == MD_VLX_RSP_TYPE_CPP) {
+                                    ImPlot::PlotLineSpline("Spectrum", x_spectra, y_spectra_ecd, num_samples);
+
                                     int selected = -1;
                                     int hovered = -1;
-                                    plot_peaks("Samples", x_spectra, y_spectra_ecd, num_samples, selected, hovered);
+                                    plot_peaks("Samples", x_spectra, y_spectra_ecd, num_samples, selected, hovered, PlotPeaksFlags_Points);
 
                                     if (ImPlot::IsPlotHovered() && hovered != -1) {
                                         double x_val = x_spectra[hovered];
@@ -4039,6 +4086,8 @@ struct VeloxChem : viamd::EventHandler {
                                             ImGui::EndTooltip();
                                         }
                                     }
+                                } else {
+                                    ImPlot::PlotLine("Spectrum", x_spectra, y_spectra_ecd, num_samples);
                                 }
                             }
 

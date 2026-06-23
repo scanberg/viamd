@@ -224,4 +224,76 @@ IMPLOT_API void SyncAxesWithPadding(int master_axis, int aux_axis, double aux_to
     plot.Axes[aux_axis].FitExtents.Max = new_amax;
 }
 
+// Plot an implot line spline using a centripetal Catmull-Rom spline through the control points.
+IMPLOT_API void PlotLineSpline(const char* label_id, const double* xs, const double* ys, int count) {
+    if (ImPlot::BeginItem(label_id)) {
+        ImPlot::PushPlotClipRect();
+        ImDrawList& DrawList = *ImPlot::GetPlotDrawList();
+        const ImPlotNextItemData& s = ImPlot::GetItemData();
+        ImVec4 color = s.Colors[ImPlotCol_Line];
+
+        for (int i = 0; i < count; i++) {
+            if (ImPlot::FitThisFrame()) {
+                ImPlot::FitPoint(ImPlotPoint(xs[i], 0.0));
+                ImPlot::FitPoint(ImPlotPoint(xs[i], ys[i]));
+            }
+        }
+
+        if (count >= 2) {
+            const int   segs_per_span = 20;
+            const float line_weight   = s.LineWeight;
+            const ImU32 col32         = ImGui::ColorConvertFloat4ToU32(color);
+
+            // Uniform-X natural cubic spline (C2, interpolates all points).
+            // M[i] = second derivative at each knot; natural BCs fix M[0]=M[n-1]=0.
+            // Uniform spacing reduces the tridiagonal to diagonals {1,4,1}.
+            // M[] doubles as the RHS during the forward sweep, then is overwritten
+            // in-place during back substitution — no separate rhs vector needed.
+            const int    n = count;
+            const double h = (xs[n-1] - xs[0]) / (double)(n - 1);
+
+            ImVector<double> M, diag;
+            M.resize(n, 0.0);
+
+            if (n > 2) {
+                diag.resize(n, 0.0);
+                const double r_scale = 6.0 / (h * h);
+
+                // Forward sweep: eliminate sub-diagonal, accumulate RHS into M[]
+                diag[1] = 4.0;
+                M[1]    = r_scale * (ys[2] - 2.0*ys[1] + ys[0]);
+                for (int i = 2; i <= n - 2; ++i) {
+                    double f = 1.0 / diag[i-1];
+                    diag[i] = 4.0 - f;
+                    M[i]    = r_scale * (ys[i+1] - 2.0*ys[i] + ys[i-1]) - f * M[i-1];
+                }
+
+                // Back substitution: M[] becomes the final second derivatives
+                M[n-2] /= diag[n-2];
+                for (int i = n - 3; i >= 1; --i)
+                    M[i] = (M[i] - M[i+1]) / diag[i];
+            }
+
+            // Evaluate each segment: S(t) = y0 + b*t + c*t² + d*t³,  t ∈ [0, h]
+            for (int seg = 0; seg < n - 1; ++seg) {
+                double m0 = M[seg], m1 = M[seg+1];
+                double x0 = xs[seg], y0 = ys[seg], y1 = ys[seg+1];
+                double b  = (y1 - y0)/h - h/6.0 * (2.0*m0 + m1);
+                double c  = m0 / 2.0;
+                double d  = (m1 - m0) / (6.0 * h);
+
+                const int step_start = (seg == 0) ? 0 : 1;
+                for (int step = step_start; step <= segs_per_span; ++step) {
+                    double t = (double)step / (double)segs_per_span * h;
+                    DrawList.PathLineTo(ImPlot::PlotToPixels(x0 + t, y0 + t*(b + t*(c + t*d))));
+                }
+            }
+            DrawList.PathStroke(col32, 0, line_weight);
+        }
+
+        ImPlot::PopPlotClipRect();
+        ImPlot::EndItem();
+    }
+}
+
 }  // namespace ImGui

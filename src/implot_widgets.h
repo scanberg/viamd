@@ -28,4 +28,6 @@ IMPLOT_API void SyncAxesY(double padding_fraction = 0.1);
 
 IMPLOT_API void SyncAxesWithPadding(int master_axis, int aux_axis, double aux_to_master, double padding_fraction = 0.1);
 
+IMPLOT_API void PlotLineSpline(const char* label_id, const double* xs, const double* ys, int count);
+
 }  // namespace ImPlot
