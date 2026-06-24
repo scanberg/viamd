@@ -224,7 +224,7 @@ IMPLOT_API void SyncAxesWithPadding(int master_axis, int aux_axis, double aux_to
     plot.Axes[aux_axis].FitExtents.Max = new_amax;
 }
 
-// Plot an implot line spline using a centripetal Catmull-Rom spline through the control points.
+// Plot an implot line spline using cubic spline.
 IMPLOT_API void PlotLineSpline(const char* label_id, const double* xs, const double* ys, int count) {
     if (ImPlot::BeginItem(label_id)) {
         ImPlot::PushPlotClipRect();
@@ -239,55 +239,102 @@ IMPLOT_API void PlotLineSpline(const char* label_id, const double* xs, const dou
             }
         }
 
+        // Get explicit rect to test points against for skipping some work
+        ImRect rect = ImPlot::GetCurrentPlot()->PlotRect;
+
         if (count >= 2) {
-            const int   segs_per_span = 20;
+            const float target_pixel_spacing = 4.0;
             const float line_weight   = s.LineWeight;
             const ImU32 col32         = ImGui::ColorConvertFloat4ToU32(color);
 
-            // Uniform-X natural cubic spline (C2, interpolates all points).
-            // M[i] = second derivative at each knot; natural BCs fix M[0]=M[n-1]=0.
-            // Uniform spacing reduces the tridiagonal to diagonals {1,4,1}.
-            // M[] doubles as the RHS during the forward sweep, then is overwritten
-            // in-place during back substitution — no separate rhs vector needed.
-            const int    n = count;
-            const double h = (xs[n-1] - xs[0]) / (double)(n - 1);
+            const int n = count;
 
-            ImVector<double> M, diag;
-            M.resize(n, 0.0);
+            // Record the visible segment span in x
+            int seg_min = INT_MAX;
+            int seg_max = INT_MIN;
 
-            if (n > 2) {
-                diag.resize(n, 0.0);
-                const double r_scale = 6.0 / (h * h);
-
-                // Forward sweep: eliminate sub-diagonal, accumulate RHS into M[]
-                diag[1] = 4.0;
-                M[1]    = r_scale * (ys[2] - 2.0*ys[1] + ys[0]);
-                for (int i = 2; i <= n - 2; ++i) {
-                    double f = 1.0 / diag[i-1];
-                    diag[i] = 4.0 - f;
-                    M[i]    = r_scale * (ys[i+1] - 2.0*ys[i] + ys[i-1]) - f * M[i-1];
+            // Points in pixel space
+            ImVector<ImVec2> p;
+            p.resize(n);
+            for (int i = 0; i < n; ++i) {
+                p[i] = ImPlot::PlotToPixels(xs[i], ys[i]);
+                if (p[i].x > rect.Min.x) {
+                    seg_min = ImMin(seg_min, i);
                 }
-
-                // Back substitution: M[] becomes the final second derivatives
-                M[n-2] /= diag[n-2];
-                for (int i = n - 3; i >= 1; --i)
-                    M[i] = (M[i] - M[i+1]) / diag[i];
+                if (p[i].x < rect.Max.x) {
+                    seg_max = ImMax(seg_max, i);
+                }
             }
 
-            // Evaluate each segment: S(t) = y0 + b*t + c*t² + d*t³,  t ∈ [0, h]
-            for (int seg = 0; seg < n - 1; ++seg) {
-                double m0 = M[seg], m1 = M[seg+1];
-                double x0 = xs[seg], y0 = ys[seg], y1 = ys[seg+1];
-                double b  = (y1 - y0)/h - h/6.0 * (2.0*m0 + m1);
-                double c  = m0 / 2.0;
-                double d  = (m1 - m0) / (6.0 * h);
+            ImVector<float> M, diag;
+            M.resize(n, 0.0f);
+            diag.resize(n, 0.0f);
+
+            // Natural cubic spline:
+            // M[0] = M[n-1] = 0
+            // Solve for interior second derivatives
+            if (n > 2) {
+                ImVector<float> lower, upper;
+                lower.resize(n, 0.0f);
+                upper.resize(n, 0.0f);
+
+                for (int i = 1; i < n - 1; ++i) {
+                    const float h0 = p[i].x - p[i-1].x;
+                    const float h1 = p[i+1].x - p[i].x;
+
+                    lower[i] = h0;
+                    diag[i]  = 2.0f * (h0 + h1);
+                    upper[i] = h1;
+
+                    M[i] = 6.0f * ((p[i+1].y - p[i].y) / h1 -
+                                   (p[i].y   - p[i-1].y) / h0);
+                }
+
+                // Thomas algorithm forward elimination
+                for (int i = 2; i < n - 1; ++i) {
+                    const float w = lower[i] / diag[i-1];
+                    diag[i] -= w * upper[i-1];
+                    M[i]    -= w * M[i-1];
+                }
+
+                // Back substitution
+                M[n-2] /= diag[n-2];
+                for (int i = n - 3; i > 0; --i)
+                    M[i] = (M[i] - upper[i] * M[i+1]) / diag[i];
+            }
+
+            // Evaluate spline segments
+            // We need to pad the min and max with 1 extra segment to ensure we draw the entire visible region
+            int seg_beg = ImMax(seg_min - 1, 0);
+            int seg_end = ImMin(seg_max + 1, n - 1);
+
+            for (int seg = seg_beg; seg < seg_end; ++seg) {
+                const float x0 = p[seg].x;
+                const float x1 = p[seg+1].x;
+                const float y0 = p[seg].y;
+                const float y1 = p[seg+1].y;
+
+                const float h = x1 - x0;
+
+                const float m0 = M[seg];
+                const float m1 = M[seg+1];
+
+                // Cubic coefficients:
+                // S(t)=y0 + b*t + c*t² + d*t³, t=[0,h]
+                const float b = (y1-y0)/h - h*(2.0f*m0+m1)/6.0f;
+                const float c = m0/2.0f;
+                const float d = (m1-m0)/(6.0f*h);
 
                 const int step_start = (seg == 0) ? 0 : 1;
-                for (int step = step_start; step <= segs_per_span; ++step) {
-                    double t = (double)step / (double)segs_per_span * h;
-                    DrawList.PathLineTo(ImPlot::PlotToPixels(x0 + t, y0 + t*(b + t*(c + t*d))));
+
+                const int num_steps = ImClamp(int(h / target_pixel_spacing), 4, 128);
+
+                for (int step = step_start; step <= num_steps; ++step) {
+                    const float t = (float)step / num_steps * h;
+                    DrawList.PathLineTo(ImVec2(x0 + t, y0 + t*(b + t*(c + t*d))));
                 }
             }
+
             DrawList.PathStroke(col32, 0, line_weight);
         }
 

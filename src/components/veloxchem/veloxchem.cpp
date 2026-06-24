@@ -3915,8 +3915,8 @@ struct VeloxChem : viamd::EventHandler {
 
         if (!rsp.show_window) return;
 		md_vlx_rsp_type_t rsp_type = md_vlx_rsp_type(vlx);
-        size_t num_frequencies  = md_vlx_rsp_number_of_frequencies(vlx);
-        size_t num_normal_modes = md_vlx_vib_number_of_normal_modes(vlx);
+        const size_t num_frequencies  = md_vlx_rsp_number_of_frequencies(vlx);
+        const size_t num_normal_modes = md_vlx_vib_number_of_normal_modes(vlx);
 
         if (num_frequencies == 0 && num_normal_modes == 0) return;
 
@@ -3940,8 +3940,11 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 ImGui::EndMenuBar();
             }
+
+            const ImGuiTreeNodeFlags tree_flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
             
-            if (num_frequencies > 0 && ImGui::TreeNode("Electronic Spectroscopy")) {
+            // Hide the ECD plot if the RSP is a VIB calculation, since ECD is not relevant for VIB, but can be involved as an intermediate result holder.
+            if (num_normal_modes == 0 && num_frequencies > 0 && ImGui::TreeNode("Electronic Spectroscopy")) {
                 rsp.hovered = -1;
 
                 const float avail_width = ImGui::GetContentRegionAvail().x;
@@ -4013,8 +4016,6 @@ struct VeloxChem : viamd::EventHandler {
                 static double x_min = 0.0;
                 static double x_max = 10.0;
 
-                const ImGuiTreeNodeFlags tree_flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-
                 if (y_spectra_abs) {
                     ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
                     if (ImGui::TreeNodeEx("Absorption Plot", tree_flags)) {
@@ -4035,9 +4036,9 @@ struct VeloxChem : viamd::EventHandler {
 
                             if (num_samples > 0) {
                                 ImPlot::SetAxis(ImAxis_Y1);
-                                ImPlot::PlotLine("Spectrum", x_spectra, y_spectra_abs, num_samples);
 
                                 if (rsp_type == MD_VLX_RSP_CPP) {
+                                    ImPlot::PlotLineSpline("Spectrum", x_spectra, y_spectra_abs, num_samples);
                                     int selected = -1;
                                     int hovered = -1;
                                     plot_peaks("Samples", x_spectra, y_spectra_abs, num_samples, selected, hovered, PlotPeaksFlags_Points);
@@ -4052,6 +4053,8 @@ struct VeloxChem : viamd::EventHandler {
                                             ImGui::EndTooltip();
                                         }
                                     }
+                                } else {
+                                    ImPlot::PlotLine("Spectrum", x_spectra, y_spectra_abs, num_samples);
                                 }
                             }
 
@@ -4329,47 +4332,51 @@ struct VeloxChem : viamd::EventHandler {
                         }
                     }
 
+                    /*
+                    // These do not need to be exposed as the user can right click the plot and invert the axes
                     ImGui::Checkbox("Invert X", &vib.invert_x);
                     ImGui::SameLine();
                     ImGui::Checkbox("Invert Y", &vib.invert_y);
-
+                    */
                     ImPlotAxisFlags x_flag = vib.invert_x ? ImPlotAxisFlags_Invert : 0;
                     ImPlotAxisFlags y_flag = vib.invert_y ? ImPlotAxisFlags_Invert : 0;
 
-                    ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+                    if (ImGui::TreeNodeEx("IR", tree_flags)) {
+                        ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+                        if (ImPlot::BeginPlot("IR Spectrum")) {
+                            ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                            ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flag);
+                            ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"IR Intensity (km/mol)", y_flag);
+                            ImPlot::SetupFinish();
 
-                    ImPlot::SetNextAxesToFit();
-                    if (ImPlot::BeginPlot("Vibrational Plot")) {
-                        ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                        ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flag);
-                        ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"IR Intensity (km/mol)", y_flag);
-                        ImPlot::SetupFinish();
+                            ImPlot::PlotLine("Spectrum", vib.x_samples, vib.y_samples_ir, NUM_SAMPLES);
+                            plot_peaks("IR Intensity", x_values, y_values, num_normal_modes, vib.selected, vib.hovered);
 
-                        ImPlot::PlotLine("Spectrum", vib.x_samples, vib.y_samples_ir, NUM_SAMPLES);
-                        plot_peaks("IR Intensity", x_values, y_values, num_normal_modes, vib.selected, vib.hovered);
-
-                        vib.first_plot = false;
-                        ImPlot::EndPlot();
+                            vib.first_plot = false;
+                            ImPlot::EndPlot();
+                        }
                     }
 
                     if (num_external_frequencies > 0) {
-                        ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
-                        if (ImPlot::BeginPlot("Raman Activity")) {
-                            ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-                            ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flag);
-                            ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"Raman Activity (Å⁴/amu)", y_flag);
-                            ImPlot::SetupFinish();
+                        if (ImGui::TreeNodeEx("Raman", tree_flags)) {
+                            ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+                            if (ImPlot::BeginPlot("Raman Spectrum")) {
+                                ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+                                ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flag);
+                                ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"Raman Activity (Å⁴/amu)", y_flag);
+                                ImPlot::SetupFinish();
 
-                            for (size_t i = 0; i < num_external_frequencies; ++i) {
-                                char label[32];
-                                double freq = external_frequencies[i];
-                                snprintf(label, sizeof(label), "%.4f", freq);
-                                if (vib.y_samples_raman && vib.x_samples) {
-                                    ImPlot::PlotLine(label, vib.x_samples, vib.y_samples_raman[i], NUM_SAMPLES);
+                                for (size_t i = 0; i < num_external_frequencies; ++i) {
+                                    char label[32];
+                                    double freq = external_frequencies[i];
+                                    snprintf(label, sizeof(label), "%.4f", freq);
+                                    if (vib.y_samples_raman && vib.x_samples) {
+                                        ImPlot::PlotLine(label, vib.x_samples, vib.y_samples_raman[i], NUM_SAMPLES);
+                                    }
+                                    plot_peaks(label, x_values, y_raman_activities[i], num_normal_modes, vib.selected, vib.hovered);
                                 }
-                                plot_peaks(label, x_values, y_raman_activities[i], num_normal_modes, vib.selected, vib.hovered);
+                                ImPlot::EndPlot();
                             }
-                            ImPlot::EndPlot();
                         }
                     }
 
