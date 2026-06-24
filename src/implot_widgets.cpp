@@ -234,7 +234,6 @@ IMPLOT_API void PlotLineSpline(const char* label_id, const double* xs, const dou
 
         for (int i = 0; i < count; i++) {
             if (ImPlot::FitThisFrame()) {
-                ImPlot::FitPoint(ImPlotPoint(xs[i], 0.0));
                 ImPlot::FitPoint(ImPlotPoint(xs[i], ys[i]));
             }
         }
