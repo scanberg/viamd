@@ -3210,6 +3210,8 @@ struct VeloxChem : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
+        md_vlx_rsp_type_t rsp_type = md_vlx_rsp_type(vlx);
+
         // The actual plot
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
@@ -3228,6 +3230,9 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::Text("Num Beta Electrons:  %-6zu", md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA));
                 ImGui::Text("Molecular Charge:    %-6f",  md_vlx_molecular_charge(vlx));
                 ImGui::Text("Spin Multiplicity:   %-6zu", md_vlx_spin_multiplicity(vlx));
+                if (rsp_type == MD_VLX_RSP_C6) {
+                    ImGui::Text("C6 Value:            %-12.6f (au)", md_vlx_c6_value(vlx));
+                }
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
