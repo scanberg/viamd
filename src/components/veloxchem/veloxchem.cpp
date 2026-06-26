@@ -2694,6 +2694,21 @@ struct VeloxChem : viamd::EventHandler {
         return fwhm * 0.21233045007200476068;
     }
 
+    // Evaluates lorentzian broadening around a point x, given a set of peaks and their strengths.
+    // This is a NON normalized version.
+    // To normalize this, just multiply with the normalization factor
+	static inline double lorentzian_base(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
+		const double gamma = fwhm * 0.5;
+		const double gamma2 = gamma * gamma;
+
+		double y = 0;
+		for (size_t k = 0; k < num_peaks; k++) {
+			double dx = x - peaks_x[k];
+			y += peaks_y[k] * gamma / fma(dx, dx, gamma2);
+		}
+		return y;
+	}
+
     static inline double lorentzian_abs(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
         const double gamma = fwhm * 0.5;
 		const double gamma2 = gamma * gamma;
@@ -2706,114 +2721,64 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     static inline double lorentzian_ecd(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
-        const double gamma = fwhm * 0.5;
-		const double gamma2 = gamma * gamma;
-        double y = 0;
-		for (size_t k = 0; k < num_peaks; k++) {
-			double dx = x - peaks_x[k];
-			y += peaks_y[k] * gamma / fma(dx, dx, gamma2);
-		}
-        return y;
+        return lorentzian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
     }
 
     static inline double lorentzian_vib(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
-        const double gamma = fwhm * 0.5;
-		const double gamma2 = gamma * gamma;
-        double y = 0;
-		for (size_t k = 0; k < num_peaks; k++) {
-			double dx = x - peaks_x[k];
-			y += peaks_y[k] * gamma / fma(dx, dx, gamma2);
-		}
-        return y / PI;
+        return (1.0 / PI) * lorentzian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
     }
 
     static inline double lorentzian_tpa(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
-        const double gamma = fwhm * 0.5;
-		const double gamma2 = gamma * gamma;
-        const double x2 = x * x;
-        double y = 0;
-		for (size_t k = 0; k < num_peaks; k++) {
-			double dx = x - peaks_x[k];
-			y += peaks_y[k] * x2 * gamma / fma(dx, dx, gamma2);
-		}
-        return y;
+        return x * x * lorentzian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
     }
 
-    static inline double gaussian_abs(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
-        const double sigma = sigma_from_fwhm(fwhm);
-        const double scl = -1.0 / (2.0 * sigma * sigma);
-        double y = 0.0;
-        for (size_t k = 0; k < num_peaks; k++) {
-            double dx = x - peaks_x[k];
-            y += peaks_y[k] / peaks_x[k] * exp(dx * dx * scl);
-        }
-		return y / (sigma * sqrt(2.0 * PI));
-    }
-
-    static inline double gaussian_ecd(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double sigma) {
-        const double scl = 1.0 / (2.0 * sigma * sigma);
-		double y = 0;
-        for (size_t k = 0; k < num_peaks; k++) {
-            double dx = x - peaks_x[k];
-            y += peaks_y[k] * exp(-(dx * dx) * scl);
-        }
-		return y * PI / (sigma * sqrt(2.0 * PI));
-    }
-
-    static inline double gaussian_vib(double x, const double* peaks_x, const double* peaks_osc, size_t num_peaks, double sigma) {
-        const double scl = 1.0 / (2.0 * sigma * sigma);
-		double y = 0;
-        for (size_t k = 0; k < num_peaks; k++) {
-            double dx = x - peaks_x[k];
-            double osc = peaks_osc[k];
-            y += osc * exp(-(dx * dx) * scl);
-        }
-		return y * sqrt(2.0) / (sigma * sqrt(PI));
-    }
-
-    // Evaluates lorentzian broadening around a point x, given a set of peaks and their strengths.
-    // This is a NON normalized version.
-    // To normalize this, just multiply with the normalization factor
-	static inline double lorentzian_broadening(double x, const double* x_peaks, const double* y_peaks, size_t num_peaks, double fwhm) {
-		const double gamma = fwhm * 0.5;
-		const double gamma2 = gamma * gamma;
-
-		double sum = 0;
-		for (size_t k = 0; k < num_peaks; k++) {
-			double dx = x - x_peaks[k];
-			sum += y_peaks[k] * gamma / fma(dx, dx, gamma2);
-		}
-		return sum;
-	}
-
-    static inline double lorentzian_broadening_absorption(double x, const double* x_peaks, const double* y_peaks, size_t num_peaks, double fwhm) {
-		const double gamma = fwhm * 0.5;
-		const double gamma2 = gamma * gamma;
-
-		double sum = 0;
-		for (size_t k = 0; k < num_peaks; k++) {
-			double dx = x - x_peaks[k];
-			sum += y_peaks[k] / x_peaks[k] * gamma / fma(dx, dx, gamma2);
-		}
-
-		return sum / PI;
+    static inline double lorentzian_xps(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
+        return (1.0 / PI) * lorentzian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
     }
 
     // Evaluates gaussian broadening around a point x, given a set of peaks and their strengths.
     // This is a NON normalized version.
     // To normalize this, just multiply with the normalization factor
-	static inline double gaussian_broadening(double x, const double* x_peaks, const double* y_peaks, size_t num_peaks, double fwhm) {
+	static inline double gaussian_base(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
 		const double sigma = sigma_from_fwhm(fwhm);
 		const double factor = -0.5 / (sigma * sigma);
 
-        double sum = 0.0;
-
+        double y = 0.0;
         for (size_t k = 0; k < num_peaks; k++) {
-            double dx = x - x_peaks[k];
-            sum += y_peaks[k] * exp(factor * dx * dx);
+            double dx = x - peaks_x[k];
+            y += peaks_y[k] * exp(factor * dx * dx);
         }
-		return sum;
+		return y;
 	}
+
+    static inline double gaussian_abs(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
+        const double sigma = sigma_from_fwhm(fwhm);
+		const double factor = -0.5 / (sigma * sigma);
+        double y = 0.0;
+        for (size_t k = 0; k < num_peaks; k++) {
+            double dx = x - peaks_x[k];
+            y += peaks_y[k] / peaks_x[k] * exp(factor * dx * dx);
+        }
+		return y / (sigma * sqrt(2.0 * PI));
+    }
+
+    static inline double gaussian_ecd(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
+        const double sigma = sigma_from_fwhm(fwhm);
+		const double y = gaussian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
+		return y * PI / (sigma * sqrt(2.0 * PI));
+    }
+
+    static inline double gaussian_vib(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
+        const double sigma = sigma_from_fwhm(fwhm);
+		const double y = gaussian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
+		return y * sqrt(2.0) / (sigma * sqrt(PI));
+    }
+
+    static inline double gaussian_xps(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
+        const double sigma = sigma_from_fwhm(fwhm);
+		const double y = gaussian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
+		return y / (sigma * sqrt(2.0 * PI));
+    }
 
 
     //Constructs plot limits from peaks
@@ -4288,7 +4253,7 @@ struct VeloxChem : viamd::EventHandler {
                             // Perform broadening in a.u.
                             // Lorentzian broadening
                             const double factor = AU_TO_GM * x_au * x_au;
-                            double y = factor * lorentzian_broadening(x_au, data->x_peaks, data->y_peaks, data->num_peaks, data->broadening_fwhm);
+                            double y = factor * lorentzian_tpa(x_au, data->x_peaks, data->y_peaks, data->num_peaks, data->broadening_fwhm);
 
                             return ImPlotPoint{x, y};
                         };
