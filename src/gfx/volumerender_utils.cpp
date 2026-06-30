@@ -95,6 +95,12 @@ struct UniformData {
 };
 
 void initialize() {
+    int gl_major, gl_minor;
+    glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
+    glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
+
+    bool has_compute_shader = (gl_major > 4 || (gl_major == 4 && gl_minor >= 3));
+
     GLuint v_shader_entry_exit          = gl::compile_shader_from_source({(const char*)entryexit_vert, entryexit_vert_size}, GL_VERTEX_SHADER);
     GLuint f_shader_entry_exit          = gl::compile_shader_from_source({(const char*)entryexit_frag, entryexit_frag_size}, GL_FRAGMENT_SHADER);
     GLuint f_shader_entry_exit_depth    = gl::compile_shader_from_source({(const char*)entryexit_frag, entryexit_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define SAMPLE_DEPTH"));
@@ -105,7 +111,10 @@ void initialize() {
     GLuint f_shader_iso_only_col_vol    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
     GLuint f_shader_dvr_and_iso         = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
     GLuint f_shader_dvr_and_iso_col_vol = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
-    GLuint c_shader_splat_color         = gl::compile_shader_from_source({ (const char*)splat_color_comp, splat_color_comp_size }, GL_COMPUTE_SHADER);
+    GLuint c_shader_splat_color         = 0;
+    if (has_compute_shader) {
+        c_shader_splat_color = gl::compile_shader_from_source({ (const char*)splat_color_comp, splat_color_comp_size }, GL_COMPUTE_SHADER);
+    }
 
     defer {
         glDeleteShader(v_shader_vol);
@@ -115,7 +124,9 @@ void initialize() {
         glDeleteShader(f_shader_iso_only_col_vol);
         glDeleteShader(f_shader_dvr_and_iso);
         glDeleteShader(f_shader_dvr_and_iso_col_vol);
-        glDeleteShader(c_shader_splat_color);
+        if (has_compute_shader) {
+            glDeleteShader(c_shader_splat_color);
+        }
     };
 
     if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_iso_only_col_vol == 0 || f_shader_dvr_and_iso == 0 || f_shader_dvr_and_iso_col_vol == 0) {
@@ -123,7 +134,7 @@ void initialize() {
         return;
     }
 
-    if (c_shader_splat_color == 0) {
+    if (has_compute_shader && c_shader_splat_color == 0) {
         MD_LOG_ERROR("shader compilation failed, shader program for splat color computation will not be updated");
         return;
     }
@@ -136,7 +147,7 @@ void initialize() {
     if (!gl.program.dvr_and_iso) gl.program.dvr_and_iso = glCreateProgram();
     if (!gl.program.dvr_and_iso_col_vol) gl.program.dvr_and_iso_col_vol = glCreateProgram();
 
-    if (!gl.program.splat_color) gl.program.splat_color = glCreateProgram();
+    if (has_compute_shader && !gl.program.splat_color) gl.program.splat_color = glCreateProgram();
 
     {
         const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit};
@@ -167,7 +178,9 @@ void initialize() {
         gl::attach_link_detach(gl.program.dvr_and_iso_col_vol, shaders, (int)ARRAY_SIZE(shaders));
     }
 
-    gl::attach_link_detach(gl.program.splat_color, &c_shader_splat_color, 1);
+    if (has_compute_shader) {
+        gl::attach_link_detach(gl.program.splat_color, &c_shader_splat_color, 1);
+    }
 
     if (!gl.vbo) {
         // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
