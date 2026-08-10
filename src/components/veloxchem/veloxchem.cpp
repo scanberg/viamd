@@ -441,6 +441,64 @@ struct VeloxChem : viamd::EventHandler {
         uint64_t hash = 0; // Hash for tracking the unit of the x-axis, if it changes we need to recalculate the spectra (and shown peaks)
     } rsp;
 
+    // Settings + cached results for the RIXS map.
+    // The cached arrays are allocated from the heap allocator and released in free_rixs_cache(),
+    // which must be called before this struct is value-initialized (see reset_data()).
+    struct Rixs {
+        // --- Settings (mirrors the keyword arguments of spectrumplot.plot_rixs_map) ---
+
+        // true  -> x axis is energy loss      (RIXS,    axis is inverted per convention)
+        // false -> x axis is emission energy  (res-XES, axis is not inverted)
+        bool energy_loss = true;
+
+        // Include the elastic (Rayleigh) line as an additional stick per photon energy.
+        bool plot_elastic_line = false;
+
+        // Normalize the map by its global maximum ('global_max' in the python version).
+        bool normalize = true;
+
+        broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
+        double broadening_fwhm_ev = 0.24;   // FWHM in eV applied along the loss/emission axis
+        double x_step_ev = 0.01;            // Grid spacing along the loss/emission axis, in eV
+        ImPlotColormap colormap = ImPlotColormap_Viridis;
+
+        // --- Cached results, rebuilt whenever 'hash' changes ---
+        uint64_t hash  = 0;
+        bool     valid = false;
+
+        // The map, row-major [num_rows][num_cols].
+        // NOTE: row 0 holds the HIGHEST photon energy. ImPlot::PlotHeatmap renders the first row at
+        // bounds_max.y (top), so reversing the row order here reproduces matplotlib's origin='lower'.
+        double* map = nullptr;
+
+        double* grid      = nullptr;  // [num_cols] loss / emission energy in eV
+        double* photon_ev = nullptr;  // [num_rows] incoming photon energies in eV, ascending
+        double* xas_x     = nullptr;  // [num_xas]  broadened XAS energies in eV
+        double* xas_y     = nullptr;  // [num_xas]  broadened XAS intensities
+        double* core_ev   = nullptr;  // [num_core] core excitation energies in eV, ascending
+        double* core_f    = nullptr;  // [num_core] core oscillator strengths, sorted with core_ev
+
+        size_t num_rows = 0;  // == number of incoming photon energies (P)
+        size_t num_cols = 0;  // == number of grid samples along the loss/emission axis (N)
+        size_t num_xas  = 0;
+        size_t num_core = 0;
+
+        double map_min = 0.0, map_max = 0.0;
+        double x_min_ev = 0.0, x_max_ev = 0.0;  // extent of the loss / emission axis
+        double y_min_ev = 0.0, y_max_ev = 0.0;  // extent of the photon energy axis (pixel edges)
+        double xas_max  = 0.0;
+
+        // Linked photon-energy axis, shared between the map and the XAS panel
+        double y_link_min = 0.0, y_link_max = 1.0;
+
+        int hovered_core  = -1;
+        int selected_core = -1;
+
+        // Set once the non-uniform photon spacing has been reported, to avoid spamming the log while
+        // a settings slider is being dragged.
+        bool warned_non_uniform = false;
+    } rixs;
+
     struct Vib {
         int hovered = -1;
         int selected = -1;
@@ -1276,9 +1334,11 @@ struct VeloxChem : viamd::EventHandler {
         basis = {};  // arena reset above invalidates allocations; zero the struct
         vlx = nullptr;
         atom_xyzw = nullptr;
+        free_rixs_cache();
         orb = VeloxChem::Orb{};
         nto = VeloxChem::Nto{};
         rsp = VeloxChem::Rsp{};
+        rixs = VeloxChem::Rixs{};
         vib = VeloxChem::Vib{};
         opt = VeloxChem::Opt{};
     }
@@ -3067,6 +3127,466 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
+    // =================================================================================================
+    // RIXS map
+    //
+    // ImGui/ImPlot port of VeloxChem's spectrumplot.plot_rixs_map().
+    // The implementation is split into a pure data pass (compute_rixs_map) and a drawing pass
+    // (draw_rixs_map) so that the map can be rebuilt only when the settings or the input actually
+    // change. Both take the input data through RixsMapInput and are therefore independent of the
+    // md_vlx object; rixs_map_input_from_vlx() provides the glue.
+    // =================================================================================================
+
+    // Raw inputs, mirroring the 'rixs_results' dict consumed by plot_rixs_map().
+    // Dimensions:
+    //   P = num_photon_energies (incoming photons)
+    //   F = num_final_states    (valence / final states)
+    //   C = num_core_states     (core-excited states, only used for the XAS panel)
+    // The 2D arrays are row-major [F][P], i.e. element (f, p) is at [f * P + p].
+    struct RixsMapInput {
+        const double* photon_energies_au     = nullptr;  // [P], a.u.
+        const double* elastic_cross_sections = nullptr;  // [P], a.u.    (optional)
+        const double* cross_sections         = nullptr;  // [F][P], a.u.
+        const double* energy_losses_au       = nullptr;  // [F][P], a.u.
+        const double* emission_energies_au   = nullptr;  // [F][P], a.u.
+        const double* core_eigenvalues_au    = nullptr;  // [C], a.u.    (optional)
+        const double* core_osc_strengths     = nullptr;  // [C]          (optional)
+        double gamma_fwhm_ev = 0.0;                      // core-hole lifetime broadening, eV
+        size_t num_photon_energies = 0;
+        size_t num_final_states    = 0;
+        size_t num_core_states     = 0;
+    };
+
+    // Collects the RIXS input from the currently loaded vlx object.
+    // Returns false if the loaded data is not a RIXS calculation or is incomplete.
+    bool rixs_map_input_from_vlx(RixsMapInput& out) {
+        if (!vlx || md_vlx_rsp_type(vlx) != MD_VLX_RSP_RIXS) return false;
+
+        out.photon_energies_au     = md_vlx_rsp_rixs_photon_energies(vlx);
+        out.elastic_cross_sections = md_vlx_rsp_rixs_elastic_cross_sections(vlx);
+        out.cross_sections         = md_vlx_rsp_rixs_cross_sections(vlx);
+        out.energy_losses_au       = md_vlx_rsp_rixs_energy_losses(vlx);
+        out.emission_energies_au   = md_vlx_rsp_rixs_emission_energies(vlx);
+        out.core_eigenvalues_au    = md_vlx_rsp_rixs_core_eigenvalues(vlx);
+        out.core_osc_strengths     = md_vlx_rsp_rixs_core_osc_strengths(vlx);
+        out.gamma_fwhm_ev          = md_vlx_rsp_rixs_gamma_fwhm_ev(vlx);
+        out.num_photon_energies    = md_vlx_rsp_rixs_number_of_photon_energies(vlx);
+        out.num_final_states       = md_vlx_rsp_rixs_number_of_final_states(vlx);
+        out.num_core_states        = md_vlx_rsp_rixs_number_of_core_states(vlx);
+
+        // The map itself needs at least the photon energies, the cross-sections and one of the two
+        // abscissa arrays. The XAS panel is optional and is skipped if the core data is missing.
+        if (out.num_photon_energies == 0 || out.num_final_states == 0) return false;
+        if (!out.photon_energies_au || !out.cross_sections) return false;
+        if (!out.energy_losses_au && !out.emission_energies_au) return false;
+
+        return true;
+    }
+
+    void free_rixs_cache() {
+        md_allocator_i* alloc = md_get_heap_allocator();
+        md_array_free(rixs.map,       alloc);
+        md_array_free(rixs.grid,      alloc);
+        md_array_free(rixs.photon_ev, alloc);
+        md_array_free(rixs.xas_x,     alloc);
+        md_array_free(rixs.xas_y,     alloc);
+        md_array_free(rixs.core_ev,   alloc);
+        md_array_free(rixs.core_f,    alloc);
+        rixs.map = rixs.grid = rixs.photon_ev = nullptr;
+        rixs.xas_x = rixs.xas_y = rixs.core_ev = rixs.core_f = nullptr;
+        rixs.num_rows = rixs.num_cols = rixs.num_xas = rixs.num_core = 0;
+        rixs.valid = false;
+    }
+
+    // Evaluates the configured broadening kernel at x for a set of sticks.
+    // Both kernels use exactly the same normalization as lorentzian_xps / gaussian_xps in
+    // VeloxChem's spectrumplot.py, so the resulting intensities are directly comparable.
+    static inline double rixs_broaden(broadening_mode_t mode, double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
+        return (mode == BROADENING_MODE_LORENTZIAN)
+            ? lorentzian_xps(x, peaks_x, peaks_y, num_peaks, fwhm)
+            : gaussian_xps  (x, peaks_x, peaks_y, num_peaks, fwhm);
+    }
+
+    // Rebuilds the cached RIXS map, XAS curve and axis extents from 'in' using the settings in 'r'.
+    // This is the expensive part; it is O(P * N * F) and is therefore guarded by a hash in draw_rixs_map().
+    void compute_rixs_map(Rixs& r, const RixsMapInput& in) {
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        md_allocator_i* alloc = md_get_heap_allocator();
+
+        r.valid    = false;
+        r.num_rows = 0;
+        r.num_cols = 0;
+        r.num_xas  = 0;
+        r.num_core = 0;
+
+        const size_t P = in.num_photon_energies;
+        const size_t F = in.num_final_states;
+
+        const double* x_src = r.energy_loss ? in.energy_losses_au : in.emission_energies_au;
+        if (P == 0 || F == 0 || !in.photon_energies_au || !in.cross_sections || !x_src) return;
+
+        // Include the elastic line as one extra stick per photon energy, if requested and available.
+        const bool use_elastic = r.plot_elastic_line && in.elastic_cross_sections != nullptr;
+        const size_t num_sticks = F + (use_elastic ? 1 : 0);
+
+        // ---- Sort the incoming photon energies ascending (np.argsort) -------------------------------
+        int* sort_idx = md_temp_alloc_array(temp, int, P);
+        for (size_t i = 0; i < P; ++i) sort_idx[i] = (int)i;
+        std::sort(sort_idx, sort_idx + P, [&](int a, int b) {
+            return in.photon_energies_au[a] < in.photon_energies_au[b];
+        });
+
+        md_array_resize(r.photon_ev, P, alloc);
+        for (size_t i = 0; i < P; ++i) {
+            r.photon_ev[i] = in.photon_energies_au[sort_idx[i]] * HARTREE_TO_EV;
+        }
+
+        // ---- Gather the sticks per photon energy, column-contiguous ---------------------------------
+        // stick_x[i * num_sticks + s], stick_y[i * num_sticks + s]
+        double* stick_x = md_temp_alloc_array(temp, double, P * num_sticks);
+        double* stick_y = md_temp_alloc_array(temp, double, P * num_sticks);
+
+        double x_lo =  DBL_MAX;
+        double x_hi = -DBL_MAX;
+
+        for (size_t i = 0; i < P; ++i) {
+            const size_t p = (size_t)sort_idx[i];
+            double* sx = stick_x + i * num_sticks;
+            double* sy = stick_y + i * num_sticks;
+
+            for (size_t f = 0; f < F; ++f) {
+                const double x = x_src[f * P + p] * HARTREE_TO_EV;
+                sx[f] = x;
+                sy[f] = in.cross_sections[f * P + p];
+                x_lo = MIN(x_lo, x);
+                x_hi = MAX(x_hi, x);
+            }
+
+            if (use_elastic) {
+                // Elastic scattering: zero energy loss, or emission at the incoming photon energy.
+                const double x = r.energy_loss ? 0.0 : r.photon_ev[i];
+                sx[F] = x;
+                sy[F] = in.elastic_cross_sections[p];
+                x_lo = MIN(x_lo, x);
+                x_hi = MAX(x_hi, x);
+            }
+        }
+
+        if (!(x_lo <= x_hi)) return;  // catches NaN / empty input
+
+        // ---- Build the grid along the loss / emission axis -------------------------------------------
+        // The python version uses np.arange(val_min, val_max, xstep). Here the sample count is derived
+        // from the same step but clamped, so that a small step cannot blow up the allocation.
+        const double pad = 0.5;
+        const double val_min = x_lo - pad;
+        const double val_max = x_hi + pad;
+
+        const double step = (r.x_step_ev > 0.0) ? r.x_step_ev : 0.01;
+        size_t N = (size_t)((val_max - val_min) / step + 0.5);
+        N = CLAMP(N, (size_t)2, (size_t)4096);
+
+        md_array_resize(r.grid, N, alloc);
+        for (size_t j = 0; j < N; ++j) {
+            r.grid[j] = val_min + (val_max - val_min) * (double)j / (double)(N - 1);
+        }
+
+        // ---- Broaden each photon-energy column into a row of the map ---------------------------------
+        md_array_resize(r.map, P * N, alloc);
+
+        double map_lo =  DBL_MAX;
+        double map_hi = -DBL_MAX;
+
+        for (size_t i = 0; i < P; ++i) {
+            const double* sx = stick_x + i * num_sticks;
+            const double* sy = stick_y + i * num_sticks;
+
+            // Reverse the row order so that the lowest photon energy ends up at the bottom of the
+            // heatmap, matching matplotlib's origin='lower'.
+            double* row = r.map + (P - 1 - i) * N;
+
+            for (size_t j = 0; j < N; ++j) {
+                const double y = rixs_broaden(r.broadening_mode, r.grid[j], sx, sy, num_sticks, r.broadening_fwhm_ev);
+                row[j] = y;
+                map_lo = MIN(map_lo, y);
+                map_hi = MAX(map_hi, y);
+            }
+        }
+
+        // ---- Normalize to the global maximum ---------------------------------------------------------
+        if (r.normalize && map_hi > 0.0) {
+            const double scl = 1.0 / map_hi;
+            for (size_t k = 0; k < P * N; ++k) {
+                r.map[k] *= scl;
+            }
+            map_lo *= scl;
+            map_hi  = 1.0;
+        }
+
+        r.num_rows = P;
+        r.num_cols = N;
+        r.map_min  = map_lo;
+        r.map_max  = map_hi;
+        r.x_min_ev = val_min;
+        r.x_max_ev = val_max;
+
+        // ---- Photon energy axis extent (pixel edges, half a step beyond the outermost centers) -------
+        double photon_step = 1.0;
+        if (P > 1) {
+            photon_step = (r.photon_ev[P - 1] - r.photon_ev[0]) / (double)(P - 1);
+
+            // The heatmap assumes a uniform spacing; warn instead of asserting like the python version.
+            for (size_t i = 1; i < P; ++i) {
+                const double d = r.photon_ev[i] - r.photon_ev[i - 1];
+                if (fabs(d - photon_step) > 1.0e-5 * MAX(1.0, fabs(photon_step))) {
+                    if (!r.warned_non_uniform) {
+                        r.warned_non_uniform = true;
+                        MD_LOG_INFO("RIXS map: incoming photon energies are not uniformly spaced, the map will be distorted.");
+                    }
+                    break;
+                }
+            }
+        }
+        r.y_min_ev = r.photon_ev[0]     - 0.5 * photon_step;
+        r.y_max_ev = r.photon_ev[P - 1] + 0.5 * photon_step;
+
+        // ---- XAS side panel --------------------------------------------------------------------------
+        const size_t C = in.num_core_states;
+        if (C > 0 && in.core_eigenvalues_au && in.core_osc_strengths) {
+            int* xas_sort = md_temp_alloc_array(temp, int, C);
+            for (size_t i = 0; i < C; ++i) xas_sort[i] = (int)i;
+            std::sort(xas_sort, xas_sort + C, [&](int a, int b) {
+                return in.core_eigenvalues_au[a] < in.core_eigenvalues_au[b];
+            });
+
+            md_array_resize(r.core_ev, C, alloc);
+            md_array_resize(r.core_f,  C, alloc);
+            for (size_t i = 0; i < C; ++i) {
+                r.core_ev[i] = in.core_eigenvalues_au[xas_sort[i]] * HARTREE_TO_EV;
+                r.core_f[i]  = in.core_osc_strengths[xas_sort[i]];
+            }
+            r.num_core = C;
+
+            const double xas_min = r.core_ev[0]     - 1.0;
+            const double xas_max_e = r.core_ev[C - 1] + 1.0;
+
+            size_t M = (size_t)((xas_max_e - xas_min) / 0.01 + 0.5);
+            M = CLAMP(M, (size_t)2, (size_t)4096);
+
+            md_array_resize(r.xas_x, M, alloc);
+            md_array_resize(r.xas_y, M, alloc);
+
+            // The XAS is broadened with the core-hole lifetime (gamma), not with the map broadening.
+            const double xas_fwhm = (in.gamma_fwhm_ev > 0.0) ? in.gamma_fwhm_ev : r.broadening_fwhm_ev;
+
+            double y_hi = 0.0;
+            for (size_t j = 0; j < M; ++j) {
+                const double x = xas_min + (xas_max_e - xas_min) * (double)j / (double)(M - 1);
+                const double y = rixs_broaden(r.broadening_mode, x, r.core_ev, r.core_f, C, xas_fwhm);
+                r.xas_x[j] = x;
+                r.xas_y[j] = y;
+                y_hi = MAX(y_hi, y);
+            }
+
+            // The sticks are drawn on the same axis, so make sure they are not clipped either.
+            for (size_t i = 0; i < C; ++i) {
+                y_hi = MAX(y_hi, r.core_f[i]);
+            }
+            r.num_xas = M;
+            r.xas_max = y_hi;
+        }
+
+        r.valid = true;
+    }
+
+    // Draws the XAS side panel content: a filled broadened curve plotted as x = f(y), plus the
+    // core-excitation sticks as horizontal bars. Only valid inside a plot context.
+    void plot_xas_sidebar(const Rixs& r, int& hovered) {
+        ImDrawList& draw_list = *ImPlot::GetPlotDrawList();
+        ImPlot::PushPlotClipRect();
+        defer { ImPlot::PopPlotClipRect(); };
+
+        // Fill between x = 0 and the curve. ImPlot::PlotShaded only shades along y, so the horizontal
+        // equivalent of matplotlib's fill_betweenx is drawn manually, one quad per segment.
+        if (r.num_xas > 1) {
+            const ImU32 fill_col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.0f, 0.0f, 0.0f, 0.2f));
+            for (size_t j = 0; j + 1 < r.num_xas; ++j) {
+                const ImVec2 a = ImPlot::PlotToPixels(0.0,          r.xas_x[j],     IMPLOT_AUTO, IMPLOT_AUTO);
+                const ImVec2 b = ImPlot::PlotToPixels(r.xas_y[j],   r.xas_x[j],     IMPLOT_AUTO, IMPLOT_AUTO);
+                const ImVec2 c = ImPlot::PlotToPixels(r.xas_y[j+1], r.xas_x[j + 1], IMPLOT_AUTO, IMPLOT_AUTO);
+                const ImVec2 d = ImPlot::PlotToPixels(0.0,          r.xas_x[j + 1], IMPLOT_AUTO, IMPLOT_AUTO);
+                draw_list.AddQuadFilled(a, b, c, d, fill_col);
+            }
+        }
+
+        // Sticks (matplotlib barh), drawn as horizontal bars of a fixed pixel thickness.
+        const float bar_thickness_in_pixels = 2.0f;
+        hovered = -1;
+
+        if (ImPlot::IsPlotHovered() && r.num_core > 0) {
+            const ImVec2 mouse_pos = ImGui::GetMousePos();
+            const float  tolerance = 7.0f;
+            double min_dist = DBL_MAX;
+
+            for (size_t i = 0; i < r.num_core; ++i) {
+                const ImVec2 p0 = ImPlot::PlotToPixels(0.0,          r.core_ev[i], IMPLOT_AUTO, IMPLOT_AUTO);
+                const ImVec2 p1 = ImPlot::PlotToPixels(r.core_f[i],  r.core_ev[i], IMPLOT_AUTO, IMPLOT_AUTO);
+                const ImVec2 lo = ImMin(p0, p1);
+                const ImVec2 hi = ImMax(p0, p1);
+
+                const ImVec2 dx = mouse_pos - ImClamp(mouse_pos, lo, hi);
+                const double d2 = dx.x * dx.x + dx.y * dx.y;
+                if (d2 < (tolerance * tolerance) && d2 < min_dist) {
+                    hovered = (int)i;
+                    min_dist = d2;
+                }
+            }
+        }
+
+        for (size_t i = 0; i < r.num_core; ++i) {
+            const ImVec4 col = ((int)i == hovered) ? COLOR_PEAK_HOVER : ImVec4(0.0f, 0.545f, 0.545f, 0.7f); // darkcyan
+            ImVec2 p0 = ImPlot::PlotToPixels(0.0,         r.core_ev[i], IMPLOT_AUTO, IMPLOT_AUTO);
+            ImVec2 p1 = ImPlot::PlotToPixels(r.core_f[i], r.core_ev[i], IMPLOT_AUTO, IMPLOT_AUTO);
+            p0.y -= bar_thickness_in_pixels * 0.5f;
+            p1.y += bar_thickness_in_pixels * 0.5f;
+            draw_list.AddRectFilled(ImMin(p0, p1), ImMax(p0, p1), ImGui::ColorConvertFloat4ToU32(col));
+        }
+    }
+
+    // Standalone RIXS map widget: settings, 2D map, XAS side panel and colorbar.
+    // Call from inside an ImGui window. 'size' is the total size of the plot row; pass -1 for the
+    // width to use the available content region.
+    void draw_rixs_map(const RixsMapInput& in, Rixs& r, ImVec2 size = ImVec2(-1.0f, 350.0f)) {
+        // ---- Settings --------------------------------------------------------------------------------
+        const float avail_width = ImGui::GetContentRegionAvail().x;
+        ImGui::PushItemWidth(MIN(avail_width, 200.0f));
+
+        int mode = r.energy_loss ? 0 : 1;
+        static const char* mode_str[] = { "Energy loss (RIXS)", "Emission energy (res-XES)" };
+        if (ImGui::Combo("X axis", &mode, mode_str, IM_ARRAYSIZE(mode_str))) {
+            r.energy_loss = (mode == 0);
+        }
+
+        static const double broadening_min = 0.01;
+        static const double broadening_max = 2.0;
+        ImGui::SliderScalar((const char*)u8"Broadening FWHM (eV)", ImGuiDataType_Double, &r.broadening_fwhm_ev, &broadening_min, &broadening_max);
+        ImGui::Combo("Broadening mode", (int*)(&r.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
+        ImGui::PopItemWidth();
+
+        ImGui::Checkbox("Normalize", &r.normalize);
+        if (in.elastic_cross_sections) {
+            ImGui::SameLine();
+            ImGui::Checkbox("Elastic line", &r.plot_elastic_line);
+        }
+
+        // ---- Rebuild the cache only when something actually changed -----------------------------------
+        uint64_t hash = md_hash64(&r.energy_loss,        sizeof(r.energy_loss),        0);
+        hash = md_hash64(&r.plot_elastic_line,  sizeof(r.plot_elastic_line),  hash);
+        hash = md_hash64(&r.normalize,          sizeof(r.normalize),          hash);
+        hash = md_hash64(&r.broadening_mode,    sizeof(r.broadening_mode),    hash);
+        hash = md_hash64(&r.broadening_fwhm_ev, sizeof(r.broadening_fwhm_ev), hash);
+        hash = md_hash64(&r.x_step_ev,          sizeof(r.x_step_ev),          hash);
+        hash = md_hash64(&in,                   sizeof(in),                   hash);
+
+        const bool refit = (hash != r.hash);
+        if (refit) {
+            r.hash = hash;
+            compute_rixs_map(r, in);
+        }
+
+        if (!r.valid) {
+            ImGui::TextUnformatted("No RIXS map could be computed from the loaded data.");
+            return;
+        }
+
+        // ---- Layout: map | XAS | colorbar --------------------------------------------------------------
+        const float spacing       = ImGui::GetStyle().ItemSpacing.x;
+        const float colorbar_w    = 90.0f;
+        const float height        = (size.y > 0.0f) ? size.y : 350.0f;
+        const float total_w       = ((size.x > 0.0f) ? size.x : ImGui::GetContentRegionAvail().x) - colorbar_w - 2.0f * spacing;
+        const bool  has_xas       = r.num_xas > 1;
+        // Same 4 : 1.25 width ratio as the matplotlib gridspec.
+        const float map_w         = has_xas ? total_w * (4.0f / 5.25f) : total_w;
+        const float xas_w         = total_w - map_w;
+
+        char x_label[64];
+        snprintf(x_label, sizeof(x_label), "%s [eV]", r.energy_loss ? "Energy loss" : "Emission energy");
+
+        ImPlot::PushColormap(r.colormap);
+        defer { ImPlot::PopColormap(); };
+
+        // The energy-loss convention draws the axis reversed (high loss on the left).
+        const ImPlotAxisFlags x_flags = r.energy_loss ? ImPlotAxisFlags_Invert : ImPlotAxisFlags_None;
+
+        ImPlot::SetNextAxisLinks(ImAxis_Y1, &r.y_link_min, &r.y_link_max);
+        if (ImPlot::BeginPlot("RIXS map", ImVec2(map_w, height), ImPlotFlags_NoLegend)) {
+            ImPlot::SetupAxis(ImAxis_X1, x_label, x_flags);
+            ImPlot::SetupAxis(ImAxis_Y1, "Photon energy [eV]");
+            ImPlot::SetupAxesLimits(r.x_min_ev, r.x_max_ev, r.y_min_ev, r.y_max_ev, refit ? ImPlotCond_Always : ImPlotCond_Once);
+            ImPlot::SetupFinish();
+
+            ImPlot::PlotHeatmap("##rixs_map", r.map, (int)r.num_rows, (int)r.num_cols,
+                                r.map_min, r.map_max, nullptr,
+                                ImPlotPoint(r.x_min_ev, r.y_min_ev),
+                                ImPlotPoint(r.x_max_ev, r.y_max_ev));
+
+            if (ImPlot::IsPlotHovered()) {
+                const ImPlotPoint p = ImPlot::GetPlotMousePos();
+
+                // Map the cursor back onto a cell to read out the intensity.
+                const double u = (p.x - r.x_min_ev) / (r.x_max_ev - r.x_min_ev);
+                const double v = (p.y - r.y_min_ev) / (r.y_max_ev - r.y_min_ev);
+                if (u >= 0.0 && u < 1.0 && v >= 0.0 && v < 1.0) {
+                    const size_t col = (size_t)(u * (double)r.num_cols);
+                    const size_t row = r.num_rows - 1 - (size_t)(v * (double)r.num_rows);
+                    ImGui::BeginTooltip();
+                    ImGui::Text("%s: %.3f eV", r.energy_loss ? "Energy loss" : "Emission energy", p.x);
+                    ImGui::Text("Photon energy: %.3f eV", p.y);
+                    ImGui::Text("Intensity: %.4g", r.map[row * r.num_cols + col]);
+                    ImGui::EndTooltip();
+                }
+            }
+            ImPlot::EndPlot();
+        }
+
+        if (has_xas) {
+            ImGui::SameLine();
+            ImPlot::SetNextAxisLinks(ImAxis_Y1, &r.y_link_min, &r.y_link_max);
+            const ImPlotFlags xas_flags = ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
+            if (ImPlot::BeginPlot("XAS", ImVec2(xas_w, height), xas_flags)) {
+                ImPlot::SetupAxis(ImAxis_X1, "Intensity", ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoGridLines);
+                // The photon energy axis is shared with the map, so it is not labelled again here.
+                ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoLabel);
+                ImPlot::SetupAxesLimits(0.0, MAX(r.xas_max, 1.0e-12) * 1.1, r.y_min_ev, r.y_max_ev, refit ? ImPlotCond_Always : ImPlotCond_Once);
+                ImPlot::SetupFinish();
+
+                plot_xas_sidebar(r, r.hovered_core);
+
+                ImPlot::SetNextLineStyle(ImVec4(0.0f, 0.0f, 0.0f, 1.0f), 2.5f);
+                ImPlot::PlotLine("##xas", r.xas_y, r.xas_x, (int)r.num_xas);
+
+                if (r.hovered_core != -1) {
+                    ImGui::BeginTooltip();
+                    ImGui::Text("Core state %i", r.hovered_core + 1);
+                    ImGui::Text("Energy: %.3f eV", r.core_ev[r.hovered_core]);
+                    ImGui::Text("Osc. strength: %.4g", r.core_f[r.hovered_core]);
+                    ImGui::EndTooltip();
+                }
+
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
+                    r.selected_core = (r.hovered_core == r.selected_core) ? -1 : r.hovered_core;
+                }
+
+                ImPlot::EndPlot();
+            }
+        }
+
+        ImGui::SameLine();
+        ImPlot::ColormapScale("Intensity [arb. u.]", r.map_min, r.map_max, ImVec2(colorbar_w, height),
+                              r.normalize ? "%.2f" : "%.1e");
+    }
+
     void set_atom_coordinates(ApplicationState& state, const dvec3_t* atom_coords) {
         const dvec3_t* coords = atom_coords ? atom_coords : md_vlx_atom_coordinates(vlx);
         size_t num_atoms = md_vlx_number_of_atoms(vlx);
@@ -3863,7 +4383,19 @@ struct VeloxChem : viamd::EventHandler {
             };
 
             const ImGuiTreeNodeFlags tree_flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-            
+
+            // RIXS is its own thing: the 2D map has no meaningful representation in the shared
+            // 1D spectrum plots below, so it gets its own section.
+            if (rsp_type == MD_VLX_RSP_RIXS) {
+                RixsMapInput rixs_input = {};
+                if (rixs_map_input_from_vlx(rixs_input)) {
+                    ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+                    if (ImGui::TreeNodeEx("RIXS Map", tree_flags)) {
+                        draw_rixs_map(rixs_input, rixs);
+                    }
+                }
+            }
+
             // Hide the ECD plot if the RSP is a VIB calculation, since ECD is not relevant for VIB, but can be involved as an intermediate result holder.
             if (num_normal_modes == 0 && num_frequencies > 0 && ImGui::TreeNode("Electronic Spectroscopy")) {
                 // Explicit x axis limits for linking
