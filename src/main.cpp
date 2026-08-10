@@ -3206,7 +3206,7 @@ static void draw_animation_window(ApplicationState* data) {
         double min = data->timeline.x_values[0];
         double max = data->timeline.x_values[num_frames - 1];
         char time_label[64];
-        if (md_unit_empty(time_unit) || md_unit_unitless(time_unit)) {
+        if (md_unit_is_none(time_unit)) {
             snprintf(time_label, sizeof(time_label), "Time");
         } else {
             char unit_buf[32];
@@ -4152,7 +4152,7 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
             len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "time: %.2f", time);
 
             md_unit_t time_unit = md_trajectory_time_unit(data.mold.sys.trajectory);
-            if (!md_unit_empty(time_unit)) {
+            if (!md_unit_is_none(time_unit)) {
                 char unit_buf[32];
                 md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
                 len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), " (%s)", unit_buf);
@@ -4363,7 +4363,7 @@ static void draw_timeline_window(ApplicationState* data) {
             char x_label[64] = "Frame";
             char x_unit_str[32] = "";
             md_unit_t x_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
-            if (!md_unit_empty(x_unit)) {
+            if (!md_unit_is_none(x_unit)) {
                 md_unit_print(x_unit_str, sizeof(x_unit_str), x_unit);
                 snprintf(x_label, sizeof(x_label), "Time (%s)", x_unit_str);
             }
@@ -4384,7 +4384,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     for (int j = 0; j < num_props; ++j) {
                         DisplayProperty& prop = data->display_properties[j];
                         if (prop.temporal_subplot_mask & (1 << i)) {
-                            if (md_unit_equal(y_unit, md_unit_none())) {
+                            if (md_unit_is_none(y_unit)) {
                                 y_unit = prop.unit[1];
                             } else if (!md_unit_equal(y_unit, prop.unit[1])) {
                                 // unit conflict, drop it
@@ -4396,7 +4396,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     char y_label[64] = "";
                     char y_unit_str[32] = "";
-                    if (!md_unit_equal(y_unit, md_unit_none())) {
+                    if (!md_unit_is_none(y_unit)) {
                         md_unit_print(y_unit_str, sizeof(y_unit_str), y_unit);
                         snprintf(y_label, sizeof(y_label), "(%s)", y_unit_str);
                     }
@@ -4827,7 +4827,7 @@ static void draw_timeline_window(ApplicationState* data) {
                         ImPlot::PopPlotClipRect();
 
                         double t = plot_pos.x;
-                        if (md_unit_empty(x_unit)) {
+                        if (md_unit_is_none(x_unit)) {
                             int32_t frame_idx = CLAMP((int)(time_to_frame(t, x_values) + 0.5), 0, num_x_values-1);
                             ImGui::SetTooltip("Frame: %i\n%s", frame_idx, hovered_label);
                         } else {
@@ -4936,20 +4936,20 @@ static void draw_distribution_window(ApplicationState* data) {
             for (int i = 0; i < num_subplots; ++i) {
                 if (ImPlot::BeginPlot("", ImVec2(-1,0), plot_flags)) {
 
-                    md_unit_t x_unit = {0};
-                    md_unit_t y_unit = {0};
+                    md_unit_t x_unit = md_unit_none();
+                    md_unit_t y_unit = md_unit_none();
                     for (int j = 0; j < num_props; ++j) {
                         DisplayProperty& prop = data->display_properties[j];
                         if (prop.type != DisplayProperty::Type_Distribution) continue;
                         if (!(prop.distribution_subplot_mask & (1 << i))) continue;
 
-                        if (md_unit_empty(x_unit)) {
+                        if (md_unit_is_none(x_unit)) {
                             x_unit = prop.unit[0];
                         } else if (!md_unit_equal(x_unit, prop.unit[0])) {
                             // Set to unitless
                             x_unit = md_unit_none();
                         }
-                        if (md_unit_empty(y_unit)) {
+                        if (md_unit_is_none(y_unit)) {
                             y_unit = prop.unit[1];
                         } else if (!md_unit_equal(y_unit, prop.unit[1])) {
                             // Set to unitless
@@ -4958,11 +4958,11 @@ static void draw_distribution_window(ApplicationState* data) {
                     }
 
                     char x_label[64] = "";
-                    if (!md_unit_unitless(x_unit)) {
+                    if (!md_unit_is_none(x_unit)) {
                         md_unit_print(x_label, sizeof(x_label), x_unit);
                     }
                     char y_label[64] = "";
-                    if (!md_unit_unitless(y_unit)) {
+                    if (!md_unit_is_none(y_unit)) {
                         md_unit_print(y_label, sizeof(y_label), y_unit);
                     }
 
@@ -5964,12 +5964,12 @@ static void draw_property_export_window(ApplicationState* data) {
                             str_t x_label = STR_LIT("Frame");
                             str_t y_label = str_from_cstr(dp.label);
 
-                            if (!md_unit_unitless(dp.unit[1])) {
+                            if (!md_unit_is_none(dp.unit[1])) {
                                 y_label = str_printf(alloc, "%s (%s)", dp.label, dp.unit_str);
                             }
 
                             md_unit_t time_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
-                            if (!md_unit_empty(time_unit)) {
+                            if (!md_unit_is_none(time_unit)) {
                                 char time_buf[64];
                                 size_t len = md_unit_print(time_buf, sizeof(time_buf), time_unit);
                                 x_label = str_printf(alloc, "Time (" STR_FMT ")", len, time_buf);

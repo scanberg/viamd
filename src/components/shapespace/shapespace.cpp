@@ -456,7 +456,7 @@ struct Shapespace : viamd::EventHandler {
             md_unit_t time_unit = md_trajectory_time_unit(app_state->mold.sys.trajectory);
 
             str_t x_label = STR_LIT("Frame");
-            if (!md_unit_empty(time_unit)) {
+            if (!md_unit_is_none(time_unit)) {
                 char unit_buf[64];
                 md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
                 x_label = str_printf(temp_arena, "Time (%s)", unit_buf);
