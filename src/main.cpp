@@ -447,9 +447,10 @@ int main(int argc, char** argv) {
 
 #if MD_ENABLE_GPU
     VIAMD_LOG_DEBUG("Initializing GPU device...");
-    state.gpu_device = md_gpu_device_create();
+    state.gpu_device = md_gpu_device_create(nullptr);
     if (!state.gpu_device) {
-        VIAMD_LOG_ERROR("Failed to create GPU device");
+        const char* reason = md_gpu_last_error();
+        VIAMD_LOG_ERROR("Failed to create GPU device: %s", reason ? reason : "unknown");
     }
 #endif
 

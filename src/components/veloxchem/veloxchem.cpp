@@ -23,7 +23,7 @@
 #include <core/md_arena_allocator.h>
 
 #if MD_ENABLE_GPU
-#include <core/md_gpu_util.h>
+#include <core/md_gpu.h>
 #endif
 
 #include <imgui_widgets.h>
@@ -251,27 +251,23 @@ static void attribute_charge_density(double out_charge[], const int* ao_to_idx, 
 
 #if MD_ENABLE_GPU
 
-// Call once per cmd before any GTO evaluate that needs atom positions.
-// Clears *dirty on success. Safe to call when !(*dirty) — returns immediately.
-static void gpu_upload_atoms(
-	md_gpu_cmd_t             cmd,
-	md_gpu_buffer_t          gpu_atoms,
-	const float*             atom_xyzw,   // packed xyzw, stride = sizeof(vec4_t)
-	size_t                   num_atoms)
+// Stream-ordered upload of the packed atom positions. md_gpu_upload_begin
+// writes straight into the destination when that is safe and stages through a
+// transient arena otherwise, so there is one path regardless of whether the
+// device is discrete.
+static bool gpu_upload_atoms(
+	md_gpu_stream_t stream,
+	md_gpu_ptr_t    gpu_atoms,
+	const float*    atom_xyzw,   // packed xyzw, stride = sizeof(vec4_t)
+	size_t          num_atoms)
 {
-	if (md_gpu_buffer_flags(gpu_atoms) & MD_GPU_BUFFER_CPU_VISIBLE) {
-		md_gto_gpu_atom_pack((float*)md_gpu_buffer_cpu_ptr(gpu_atoms), atom_xyzw, sizeof(vec4_t), num_atoms);
-	} else {
-		size_t sz = md_gto_gpu_atom_buffer_size(num_atoms);
-		md_gpu_transient_t mem = md_gpu_cmd_temp_alloc(cmd, sz);
-		md_gto_gpu_atom_pack((float*)mem.cpu_ptr, atom_xyzw, sizeof(vec4_t), num_atoms);
-		md_gpu_cmd_copy_buffer(cmd, mem.buffer, gpu_atoms, sz, mem.offset, 0);
-		md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_TRANSFER, MD_GPU_BARRIER_STAGE_COMPUTE);
+	const size_t sz = md_gto_gpu_atom_buffer_size(num_atoms);
+	float* dst = (float*)md_gpu_upload_begin(stream, gpu_atoms, sz);
+	if (!dst) {
+		return false;
 	}
-}
-
-static md_gpu_event_t gpu_submit_with_optional_dependency(md_gpu_queue_t queue, md_gpu_cmd_t cmd, md_gpu_event_t dependency) {
-    return md_gpu_event_is_valid(dependency) ? md_gpu_queue_submit_one_after(queue, cmd, dependency) : md_gpu_queue_submit_one(queue, cmd);
+	md_gto_gpu_atom_pack(dst, atom_xyzw, sizeof(vec4_t), num_atoms);
+	return md_gpu_upload_end(stream);
 }
 #endif
 
@@ -282,14 +278,18 @@ struct VeloxChem : viamd::EventHandler {
     bool use_gpu_path = false;
 #if MD_ENABLE_GPU
     md_gpu_device_t         gpu_device  = nullptr;
+    // All VeloxChem GPU work is issued on this one stream. Program order within
+    // it is the entire dependency model, so no events or barriers are needed.
+    md_gpu_stream_t         gpu_stream  = nullptr;
+    md_gpu_pool_t           gpu_pool    = nullptr;  // Device-local: basis, atoms, coefficients
+    md_gpu_pool_t           gpu_rb_pool = nullptr;  // Host-readable: volume readback staging
 
     md_gto_gpu_basis_t      gpu_basis   = nullptr;  // CGTO basis buffer, contains a gpu representation of the current basis set for vlx object
-    md_gpu_buffer_t         gpu_atoms   = nullptr;  // Packed float4 atom positions (xyz in Bohr, w unused), length = number of atoms in system
-    md_gpu_buffer_t         gpu_coeff   = nullptr;  // Buffer for storing AO coefficients for evaluation.
-    md_gpu_image_t          gpu_volume  = nullptr;  // 3d R32F texture for storing evaluated orbital / density values.
+    md_gpu_ptr_t            gpu_atoms   = nullptr;  // Packed float4 atom positions (xyz in Bohr, w unused), length = number of atoms in system
+    md_gpu_ptr_t            gpu_coeff   = nullptr;  // Buffer for storing AO coefficients for evaluation.
+    md_gpu_tex_t            gpu_volume  = 0;        // 3d R32F texture for storing evaluated orbital / density values.
 
     bool gpu_atoms_dirty = true;
-    md_gpu_event_t gpu_atoms_upload_event = {};
 #endif
 
     // GL representations
@@ -604,48 +604,54 @@ struct VeloxChem : viamd::EventHandler {
     }
 
 #if MD_ENABLE_GPU
-    md_gpu_event_t ensure_gpu_atoms_uploaded(void) {
-        if (!gpu_device || !gpu_basis || !gpu_atoms || !atom_xyzw) {
-            return {};
+    // Queues the atom upload on gpu_stream if it is dirty. Any evaluation
+    // launched afterwards on the same stream observes it.
+    bool ensure_gpu_atoms_uploaded(void) {
+        if (!gpu_stream || !gpu_basis || !gpu_atoms || !atom_xyzw) {
+            return false;
         }
-
         if (!gpu_atoms_dirty) {
-            return gpu_atoms_upload_event;
+            return true;
         }
 
         const size_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
-        if (md_gpu_buffer_flags(gpu_atoms) & MD_GPU_BUFFER_CPU_VISIBLE) {
-            md_gto_gpu_atom_pack((float*)md_gpu_buffer_cpu_ptr(gpu_atoms), (const float*)atom_xyzw, sizeof(vec4_t), num_atoms);
-            gpu_atoms_dirty = false;
-            gpu_atoms_upload_event = {};
-            return {};
-        }
-
-        md_gpu_queue_t transfer_queue = md_gpu_queue_transfer(gpu_device);
-        md_gpu_cmd_t cmd = md_gpu_cmd_begin(transfer_queue, "VeloxChem Atom Upload");
-        if (!cmd) {
-            MD_LOG_ERROR("Failed to begin VeloxChem atom upload cmd");
-            return gpu_atoms_upload_event;
-        }
-
-        gpu_upload_atoms(cmd, gpu_atoms, (const float*)atom_xyzw, num_atoms);
-
-        if (!md_gpu_cmd_end(cmd)) {
-            md_gpu_cmd_discard(cmd);
-            MD_LOG_ERROR("Failed to end VeloxChem atom upload cmd");
-            return gpu_atoms_upload_event;
-        }
-
-        md_gpu_event_t event = md_gpu_queue_submit_one(transfer_queue, cmd);
-        if (!md_gpu_event_is_valid(event)) {
-            md_gpu_cmd_discard(cmd);
-            MD_LOG_ERROR("Failed to submit VeloxChem atom upload cmd");
-            return gpu_atoms_upload_event;
+        if (!gpu_upload_atoms(gpu_stream, gpu_atoms, (const float*)atom_xyzw, num_atoms)) {
+            MD_LOG_ERROR("Failed to upload VeloxChem atom positions");
+            return false;
         }
 
         gpu_atoms_dirty = false;
-        gpu_atoms_upload_event = event;
-        return event;
+        return true;
+    }
+
+    // Reads the evaluated region of gpu_volume back and hands it to GL. This
+    // stalls the calling thread, matching the previous readback_wait behaviour;
+    // md_gpu_launch_host_fn + md_gpu_device_poll would make it asynchronous.
+    bool gpu_volume_to_gl_texture(uint32_t vol_tex, const md_grid_t& grid) {
+        if (!gpu_stream || !gpu_rb_pool || !gpu_volume) {
+            return false;
+        }
+        const md_gpu_tex_region_t region = {
+            .offset = {0, 0, 0},
+            .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+        };
+        const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
+
+        md_gpu_ptr_t rb = md_gpu_malloc(gpu_rb_pool, size, gpu_stream);
+        if (!rb) {
+            MD_LOG_ERROR("Failed to allocate VeloxChem volume readback staging (%zu bytes)", size);
+            return false;
+        }
+
+        bool ok = md_gpu_memcpy_from_tex_async(rb, gpu_volume, &region, size, gpu_stream);
+        md_gpu_stream_sync(gpu_stream);
+        if (ok) {
+            gl::set_texture_3D_data(vol_tex, 0, md_gpu_host_ptr(rb), GL_R32F);
+        } else {
+            MD_LOG_ERROR("Failed to read back VeloxChem volume");
+        }
+        md_gpu_free(rb, gpu_stream);
+        return ok;
     }
 #endif
 
@@ -671,6 +677,18 @@ struct VeloxChem : viamd::EventHandler {
                 use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
 #if MD_ENABLE_GPU
                 gpu_device = state.gpu_device;
+                if (gpu_device) {
+                    gpu_stream = md_gpu_stream_default(gpu_device, MD_GPU_STREAM_COMPUTE);
+
+                    md_gpu_pool_desc_t pool_desc = {};
+                    pool_desc.flags = MD_GPU_MEM_DEVICE;
+                    pool_desc.label = "VeloxChem";
+                    gpu_pool = md_gpu_pool_create(gpu_device, &pool_desc);
+
+                    pool_desc.flags = MD_GPU_MEM_HOST_READ;
+                    pool_desc.label = "VeloxChem readback";
+                    gpu_rb_pool = md_gpu_pool_create(gpu_device, &pool_desc);
+                }
                 md_gto_gpu_initialize(gpu_device);
                 md_topo_gpu_initialize(gpu_device);
 #endif
@@ -681,9 +699,16 @@ struct VeloxChem : viamd::EventHandler {
                 md_gto_gpu_shutdown();
                 md_topo_gpu_shutdown();
                 md_gto_gpu_basis_destroy(gpu_basis);
-                md_gpu_buffer_destroy(gpu_atoms);
-                md_gpu_buffer_destroy(gpu_coeff);
-                md_gpu_image_destroy(gpu_volume);
+                md_gpu_free(gpu_atoms, gpu_stream);
+                md_gpu_free(gpu_coeff, gpu_stream);
+                md_gpu_tex_destroy(gpu_volume, gpu_stream);
+                md_gpu_pool_destroy(gpu_rb_pool);
+                md_gpu_pool_destroy(gpu_pool);
+                gpu_atoms = nullptr;
+                gpu_coeff = nullptr;
+                gpu_volume = 0;
+                gpu_rb_pool = nullptr;
+                gpu_pool = nullptr;
 #endif
                 md_arena_allocator_destroy(arena);
                 if (rixs.alloc) {
@@ -948,7 +973,6 @@ struct VeloxChem : viamd::EventHandler {
                     calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));
 #if MD_ENABLE_GPU
                     gpu_atoms_dirty = true;
-                    gpu_atoms_upload_event = {};
 #endif
                 }
 
@@ -1156,33 +1180,21 @@ struct VeloxChem : viamd::EventHandler {
                                 return;
                             }
 #if MD_ENABLE_GPU
-                            if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
-                                size_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
-                                md_gpu_event_t atom_upload_event = ensure_gpu_atoms_uploaded();
-
-                                // Pre-size the bump before any pushes so no reallocation occurs mid-session.
-                                // A reallocation would destroy the old mapping and invalidate rb_mem.cpu.
-                                size_t coeff_sz = md_gto_gpu_coeff_size_mo(1, num_cgtos);
+                            if (gpu_stream && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+                                size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+                                ensure_gpu_atoms_uploaded();
 
                                 const double* coeff_ptrs[1] = { ao_coeffs };
-
-                                md_gpu_queue_t gpu_queue = md_gpu_queue_compute(gpu_device);
-                                md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem MO");
-                                if (cmd) {
-                                    if (md_gpu_buffer_flags(gpu_coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
-                                        md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
-                                    }
-                                    else {
-                                        md_gpu_transient_t coeff_mem = md_gpu_cmd_temp_alloc(cmd, coeff_sz);
-                                        md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu_ptr, coeff_ptrs, nullptr, 1, num_cgtos);
-                                        md_gto_gpu_coeff_upload_mo(cmd, gpu_coeff, coeff_mem.buffer, coeff_mem.offset, 1, num_cgtos);
-                                    }
+                                float* dst = (float*)md_gpu_upload_begin(gpu_stream, gpu_coeff, md_gto_gpu_coeff_size_mo(1, num_cgtos));
+                                if (dst) {
+                                    md_gto_gpu_coeff_pack_mo(dst, coeff_ptrs, nullptr, 1, num_cgtos);
+                                    md_gpu_upload_end(gpu_stream);
 
                                     md_gto_gpu_orbital_desc_t desc = {
                                         .basis = gpu_basis,
                                         .atom_xyz = gpu_atoms,
                                         .coeff = gpu_coeff,
-                                        .out_image = gpu_volume,
+                                        .out_tex = gpu_volume,
 
                                         .grid = &grid,
                                         .sample_offset = {0.5f, 0.5f, 0.5f},
@@ -1192,22 +1204,8 @@ struct VeloxChem : viamd::EventHandler {
                                         .op = op,
                                     };
 
-                                    md_gto_gpu_orbital_record(cmd, &desc);
-                                    md_gpu_cmd_end(cmd);
-
-                                    md_gpu_event_t event = gpu_submit_with_optional_dependency(gpu_queue, cmd, atom_upload_event);
-                                    if (!md_gpu_event_is_valid(event)) {
-                                        md_gpu_cmd_discard(cmd);
-                                    } else {
-                                        md_gpu_image_region_t region = {
-                                            .offset = {0},
-                                            .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-                                        };
-                                        md_gpu_readback_t rb = md_gpu_readback_image(gpu_volume, region, event);
-										md_gpu_readback_wait(rb);
-										const void* rb_ptr = md_gpu_readback_cpu_ptr(rb);
-                                        gl::set_texture_3D_data(tex_id, 0, rb_ptr, GL_R32F);
-                                    }
+                                    md_gto_gpu_orbital_launch(gpu_stream, &desc);
+                                    gpu_volume_to_gl_texture(tex_id, grid);
                                 }
                             }
 #else
@@ -1365,9 +1363,13 @@ struct VeloxChem : viamd::EventHandler {
     void reset_data() {
 #if MD_ENABLE_GPU
         md_gto_gpu_basis_destroy(gpu_basis);
-        md_gpu_buffer_destroy(gpu_atoms);
-        md_gpu_buffer_destroy(gpu_coeff);
-        md_gpu_image_destroy(gpu_volume);
+        md_gpu_free(gpu_atoms, gpu_stream);
+        md_gpu_free(gpu_coeff, gpu_stream);
+        md_gpu_tex_destroy(gpu_volume, gpu_stream);
+        gpu_basis  = nullptr;
+        gpu_atoms  = nullptr;
+        gpu_coeff  = nullptr;
+        gpu_volume = 0;
         md_topo_gpu_context_destroy(critical_points.topo_ctx);
 #endif
         //md_gl_mol_destroy(gl_mol);
@@ -1496,41 +1498,33 @@ struct VeloxChem : viamd::EventHandler {
                     calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));
 
 #if MD_ENABLE_GPU
-                    md_gpu_device_info_t gpu_info = {};
-                    md_gpu_device_info(gpu_device, &gpu_info);
+                    if (gpu_pool) {
+                        // The pool serves device-local memory; md_gpu_upload_begin
+                        // stages through the stream arena when needed, so there is
+                        // no separate host-visible variant to pick here.
+                        md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
+                        gpu_basis = md_gto_gpu_basis_create(gpu_pool, gpu_stream, &basis_desc);
 
-                    // Default buffer flags for buffers used for orbital evaluation.
-                    // If we have a unified memory architecture, we can make the buffers CPU visible and avoid staging + copy.
+                        size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+                        size_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
 
-                    md_gpu_buffer_flags_t buffer_flags = gpu_info.is_discrete ? MD_GPU_BUFFER_NONE : MD_GPU_BUFFER_CPU_VISIBLE;
+                        gpu_atoms = md_gpu_malloc(gpu_pool, md_gto_gpu_atom_buffer_size(num_atoms), gpu_stream);
+                        gpu_atoms_dirty = true;
 
-                    md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
-                    gpu_basis = md_gto_gpu_basis_create(gpu_device, &basis_desc);
+                        // Density coefficients are the larger of the two packings, so one
+                        // allocation covers both the density and the MO evaluation paths.
+                        gpu_coeff = md_gpu_malloc(gpu_pool, md_gto_gpu_coeff_size_density(num_cgtos), gpu_stream);
 
-                    size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-                    size_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
-
-                    md_gpu_buffer_desc_t gpu_atom_desc = {
-                        .size  = md_gto_gpu_atom_buffer_size(num_atoms),
-                        .flags = buffer_flags,
-                    };
-                    gpu_atoms = md_gpu_buffer_create(gpu_device, &gpu_atom_desc);
-                    gpu_atoms_dirty = true;
-
-                    md_gpu_buffer_desc_t gpu_coeff_desc = {
-                        .size  = md_gto_gpu_coeff_size_density(num_cgtos),
-                        .flags = buffer_flags,
-                    };
-                    gpu_coeff = md_gpu_buffer_create(gpu_device, &gpu_coeff_desc);
-
-                    md_gpu_image_desc_t gpu_img_desc = {
-                        .width  = 512,
-                        .height = 512,
-                        .depth  = 512,
-                        .format = MD_GPU_IMAGE_FORMAT_R32_FLOAT,
-                        .flags  = MD_GPU_IMAGE_STORAGE,
-                    };
-                    gpu_volume = md_gpu_image_create(gpu_device, &gpu_img_desc);
+                        md_gpu_tex_desc_t gpu_vol_desc = {
+                            .width  = 512,
+                            .height = 512,
+                            .depth  = 512,
+                            .format = MD_GPU_FORMAT_R32_FLOAT,
+                            .flags  = MD_GPU_TEX_STORAGE,
+                            .label  = "VeloxChem volume",
+                        };
+                        gpu_volume = md_gpu_tex_create(gpu_device, &gpu_vol_desc);
+                    }
 #endif
 
                     // NTO
@@ -1681,66 +1675,31 @@ struct VeloxChem : viamd::EventHandler {
 
 #if MD_ENABLE_GPU
         bool success = false;
-        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+        if (gpu_stream && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
             size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-            md_gpu_event_t atom_upload_event = ensure_gpu_atoms_uploaded();
-
-            md_gpu_device_info_t gpu_info = {};
-            md_gpu_device_info(gpu_device, &gpu_info);
-
-            size_t coeff_sz = md_gto_gpu_coeff_size_mo(1, num_cgtos);
+            ensure_gpu_atoms_uploaded();
 
             const double* coeff_ptrs[1] = { nto_coeffs };
-
-            if (!gpu_info.is_discrete) {
-                md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
-            }
-
-            md_gpu_queue_t gpu_queue = md_gpu_queue_compute(gpu_device);
-            md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem NTO");
-            if (!cmd) {
+            float* dst = (float*)md_gpu_upload_begin(gpu_stream, gpu_coeff, md_gto_gpu_coeff_size_mo(1, num_cgtos));
+            if (!dst) {
                 return false;
             }
-
-            if (gpu_info.is_discrete) {
-                md_gpu_transient_t coeff_mem = md_gpu_cmd_temp_alloc(cmd, coeff_sz);
-                md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu_ptr, coeff_ptrs, nullptr, 1, num_cgtos);
-                md_gto_gpu_coeff_upload_mo(cmd, gpu_coeff, coeff_mem.buffer, coeff_mem.offset, 1, num_cgtos);
-            }
+            md_gto_gpu_coeff_pack_mo(dst, coeff_ptrs, nullptr, 1, num_cgtos);
+            md_gpu_upload_end(gpu_stream);
 
             md_gto_gpu_orbital_desc_t desc = {
                 .basis = gpu_basis,
                 .atom_xyz = gpu_atoms,
                 .coeff = gpu_coeff,
-                .out_image = gpu_volume,
+                .out_tex = gpu_volume,
                 .grid = &grid,
                 .sample_offset = {0.5f, 0.5f, 0.5f},
                 .num_orbitals = 1,
                 .eval_mode = MD_GTO_EVAL_MODE_PSI,
                 .op = op,
             };
-            md_gto_gpu_orbital_record(cmd, &desc);
-
-            if (!md_gpu_cmd_end(cmd)) {
-                md_gpu_cmd_discard(cmd);
-                return false;
-            }
-
-            md_gpu_event_t event = gpu_submit_with_optional_dependency(gpu_queue, cmd, atom_upload_event);
-            if (!md_gpu_event_is_valid(event)) {
-                md_gpu_cmd_discard(cmd);
-            } else {
-                md_gpu_image_region_t region = {
-                    .offset = {0},
-                    .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-                };
-                md_gpu_readback_t rb = md_gpu_readback_image(gpu_volume, region, event);
-                md_gpu_readback_wait(rb);
-                const void* rb_ptr = md_gpu_readback_cpu_ptr(rb);
-                gl::set_texture_3D_data(vol_tex, 0, rb_ptr, GL_R32F);
-                md_gpu_readback_destroy(rb);
-                success = true;
-            }
+            md_gto_gpu_orbital_launch(gpu_stream, &desc);
+            success = gpu_volume_to_gl_texture(vol_tex, grid);
         }
         return success;
 #else
@@ -1759,41 +1718,23 @@ struct VeloxChem : viamd::EventHandler {
 
 #if MD_ENABLE_GPU
         bool success = false;
-        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
-            size_t num_cgtos  = md_gto_gpu_basis_num_cgtos(gpu_basis);
-            size_t num_atoms  = md_gto_gpu_basis_num_atoms(gpu_basis);
-
-            md_gpu_device_info_t gpu_info = {};
-            md_gpu_device_info(gpu_device, &gpu_info);
-
-            size_t coeff_sz = md_gto_gpu_coeff_size_mo(1, num_cgtos);
+        if (gpu_stream && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+            size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
+            ensure_gpu_atoms_uploaded();
 
             const double* coeff_ptrs[1] = { ao_coeffs };
-
-            md_gpu_queue_t gpu_queue = md_gpu_queue_compute(gpu_device);
-            md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem MO");
-            if (!cmd) {
+            float* dst = (float*)md_gpu_upload_begin(gpu_stream, gpu_coeff, md_gto_gpu_coeff_size_mo(1, num_cgtos));
+            if (!dst) {
                 return false;
             }
-
-            if (!gpu_info.is_discrete) {
-                md_gto_gpu_coeff_pack_mo((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), coeff_ptrs, nullptr, 1, num_cgtos);
-            } else {
-                md_gpu_transient_t coeff_mem = md_gpu_cmd_temp_alloc(cmd, coeff_sz);
-                md_gto_gpu_coeff_pack_mo((float*)coeff_mem.cpu_ptr, coeff_ptrs, nullptr, 1, num_cgtos);
-                md_gto_gpu_coeff_upload_mo(cmd, gpu_coeff, coeff_mem.buffer, coeff_mem.offset, 1, num_cgtos);
-            }
-
-            if (gpu_atoms_dirty) {
-                gpu_upload_atoms(cmd, gpu_atoms, (const float*)atom_xyzw, num_atoms);
-                gpu_atoms_dirty = false;
-            }
+            md_gto_gpu_coeff_pack_mo(dst, coeff_ptrs, nullptr, 1, num_cgtos);
+            md_gpu_upload_end(gpu_stream);
 
             md_gto_gpu_orbital_desc_t desc = {
                 .basis = gpu_basis,
                 .atom_xyz = gpu_atoms,
                 .coeff = gpu_coeff,
-                .out_image = gpu_volume,
+                .out_tex = gpu_volume,
                 .grid = &grid,
                 .sample_offset = {0.5f, 0.5f, 0.5f},
                 .num_orbitals = 1,
@@ -1801,28 +1742,8 @@ struct VeloxChem : viamd::EventHandler {
                 .op = op,
             };
 
-            md_gto_gpu_orbital_record(cmd, &desc);
-
-            if (!md_gpu_cmd_end(cmd)) {
-                md_gpu_cmd_discard(cmd);
-                return false;
-            }
-
-            md_gpu_event_t event = md_gpu_queue_submit_one(gpu_queue, cmd);
-            if (!md_gpu_event_is_valid(event)) {
-                md_gpu_cmd_discard(cmd);
-            } else {
-                md_gpu_image_region_t region = {
-                    .offset = {0},
-                    .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-                };
-                md_gpu_readback_t rb = md_gpu_readback_image(gpu_volume, region, event);
-                md_gpu_readback_wait(rb);
-                const void* rb_ptr = md_gpu_readback_cpu_ptr(rb);
-                gl::set_texture_3D_data(vol_tex, 0, rb_ptr, GL_R32F);
-                md_gpu_readback_destroy(rb);
-                success = true;
-            }
+            md_gto_gpu_orbital_launch(gpu_stream, &desc);
+            success = gpu_volume_to_gl_texture(vol_tex, grid);
         }
         return success;
 #else
@@ -1839,67 +1760,34 @@ struct VeloxChem : viamd::EventHandler {
 
 #if MD_ENABLE_GPU
         bool success = false;
-        if (gpu_device && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
+        if (gpu_stream && gpu_basis && gpu_atoms && gpu_coeff && gpu_volume) {
             size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
             if (density_matrix_dim != num_cgtos) {
-                MD_LOG_ERROR("Density matrix dimension (%zu) does not match basis dimension (%u)", density_matrix_dim, num_cgtos);
+                MD_LOG_ERROR("Density matrix dimension (%zu) does not match basis dimension (%zu)", density_matrix_dim, num_cgtos);
                 return false;
             }
 
-            md_gpu_event_t atom_upload_event = ensure_gpu_atoms_uploaded();
+            ensure_gpu_atoms_uploaded();
 
-            md_gpu_device_info_t gpu_info = {};
-            md_gpu_device_info(gpu_device, &gpu_info);
-
-            size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
-            if (!gpu_info.is_discrete) {
-                md_gto_gpu_coeff_pack_density((float*)md_gpu_buffer_cpu_ptr(gpu_coeff), density_matrix, num_cgtos);
-            }
-
-            md_gpu_queue_t gpu_queue = md_gpu_queue_compute(gpu_device);
-            md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem Density");
-            if (!cmd) {
+            float* dst = (float*)md_gpu_upload_begin(gpu_stream, gpu_coeff, md_gto_gpu_coeff_size_density(num_cgtos));
+            if (!dst) {
                 return false;
             }
-
-            if (gpu_info.is_discrete) {
-                md_gpu_transient_t coeff_mem = md_gpu_cmd_temp_alloc(cmd, coeff_sz);
-                md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu_ptr, density_matrix, num_cgtos);
-                md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, coeff_mem.buffer, coeff_mem.offset, num_cgtos);
-            }
+            md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
+            md_gpu_upload_end(gpu_stream);
 
             md_gto_gpu_density_desc_t desc = {
                 .basis = gpu_basis,
                 .atom_xyz = gpu_atoms,
                 .coeff = gpu_coeff,
-                .out_image = gpu_volume,
+                .out_tex = gpu_volume,
                 .grid = &grid,
                 .sample_offset = {0.5f, 0.5f, 0.5f},
                 .op = op,
             };
 
-            md_gto_gpu_density_record(cmd, &desc);
-
-            if (!md_gpu_cmd_end(cmd)) {
-                md_gpu_cmd_discard(cmd);
-                return false;
-            }
-
-            md_gpu_event_t event = gpu_submit_with_optional_dependency(gpu_queue, cmd, atom_upload_event);
-            if (!md_gpu_event_is_valid(event)) {
-                md_gpu_cmd_discard(cmd);
-            } else {
-                md_gpu_image_region_t region = {
-                    .offset = {0},
-                    .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-                };
-                md_gpu_readback_t rb = md_gpu_readback_image(gpu_volume, region, event);
-                md_gpu_readback_wait(rb);
-                const void* rb_ptr = md_gpu_readback_cpu_ptr(rb);
-                gl::set_texture_3D_data(vol_tex, 0, rb_ptr, GL_R32F);
-                md_gpu_readback_destroy(rb);
-                success = true;
-            }
+            md_gto_gpu_density_launch(gpu_stream, &desc);
+            success = gpu_volume_to_gl_texture(vol_tex, grid);
         } 
         return success;
 #else
@@ -4207,9 +4095,8 @@ struct VeloxChem : viamd::EventHandler {
                         const double* density_matrix = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_ALPHA);
                         if (density_matrix) {
 #if MD_ENABLE_GPU
-                            if (gpu_volume && gpu_basis && gpu_atoms && gpu_coeff) {
+                            if (gpu_stream && gpu_volume && gpu_basis && gpu_atoms && gpu_coeff) {
                                 size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-                                size_t coeff_sz = md_gto_gpu_coeff_size_density(num_cgtos);
 
                                 // Ensure topo context exists with the correct volume dimensions
                                 uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
@@ -4226,51 +4113,32 @@ struct VeloxChem : viamd::EventHandler {
                                 }
 
                                 if (critical_points.topo_ctx) {
-                                    md_gpu_event_t atom_upload_event = ensure_gpu_atoms_uploaded();
-                                    md_gpu_queue_t gpu_queue = md_gpu_queue_compute(state.gpu_device);
-                                    md_gpu_cmd_t cmd = md_gpu_cmd_begin(gpu_queue, "VeloxChem Critical Points Density+Topology");
-                                    if (cmd) {
-                                        if (md_gpu_buffer_flags(gpu_coeff) & MD_GPU_BUFFER_CPU_VISIBLE) {
-                                            float* cpu_coeff = (float*)md_gpu_buffer_cpu_ptr(gpu_coeff);
-                                            md_gto_gpu_coeff_pack_density(cpu_coeff, density_matrix, num_cgtos);
-                                        } else {
-                                            md_gpu_transient_t coeff_mem = md_gpu_cmd_temp_alloc(cmd, coeff_sz);
-                                            md_gto_gpu_coeff_pack_density((float*)coeff_mem.cpu_ptr, density_matrix, num_cgtos);
-                                            md_gto_gpu_coeff_upload_density(cmd, gpu_coeff, coeff_mem.buffer, coeff_mem.offset, num_cgtos);
-                                        }
+                                    ensure_gpu_atoms_uploaded();
+
+                                    float* dst = (float*)md_gpu_upload_begin(gpu_stream, gpu_coeff, md_gto_gpu_coeff_size_density(num_cgtos));
+                                    if (dst) {
+                                        md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
+                                        md_gpu_upload_end(gpu_stream);
 
                                         md_gto_gpu_density_desc_t desc = {
                                             .basis = gpu_basis,
                                             .atom_xyz = gpu_atoms,
                                             .coeff = gpu_coeff,
-                                            .out_image = gpu_volume,
+                                            .out_tex = gpu_volume,
                                             .grid = &grid,
                                             .sample_offset = {0.5f, 0.5f, 0.5f},
                                             .op = MD_GTO_OP_SET
                                         };
 
-                                        md_gto_gpu_density_record(cmd, &desc);
-                                        md_gpu_cmd_barrier(cmd, MD_GPU_BARRIER_STAGE_COMPUTE, MD_GPU_BARRIER_STAGE_COMPUTE);
-                                        md_topo_gpu_record(cmd, critical_points.topo_ctx, gpu_volume, &grid, 0.0f);
+                                        // The topology pass reads what the density pass wrote; program
+                                        // order on the stream is the only dependency needed.
+                                        md_gto_gpu_density_launch(gpu_stream, &desc);
+                                        md_topo_gpu_record(gpu_stream, critical_points.topo_ctx, gpu_volume, &grid, 0.0f);
+                                        md_gpu_stream_sync(gpu_stream);
 
-                                        if (!md_gpu_cmd_end(cmd)) {
-                                            md_gpu_cmd_discard(cmd);
-                                            MD_LOG_ERROR("Failed to end VeloxChem critical-points density/topology cmd");
-                                        } else {
-                                            md_gpu_event_t event = gpu_submit_with_optional_dependency(gpu_queue, cmd, atom_upload_event);
-                                            if (!event.value) {
-                                                md_gpu_cmd_discard(cmd);
-                                            }
-                                            if (event.value) {
-                                                md_gpu_event_wait(event);
-                                                md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
-                                            } else {
-                                                MD_LOG_ERROR("Failed to submit VeloxChem critical-points density/topology cmd");
-                                            }
-                                        }
+                                        md_topo_gpu_context_extract(&critical_points.raw_graph, critical_points.topo_ctx);
                                     } else {
-                                        md_gpu_cmd_discard(cmd);
-                                        MD_LOG_ERROR("Failed to begin VeloxChem critical-points density/topology cmd");
+                                        MD_LOG_ERROR("Failed to stage VeloxChem critical-points density coefficients");
                                     }
                                 } else {
                                     MD_LOG_ERROR("Failed to create topo GPU context for electron density");
