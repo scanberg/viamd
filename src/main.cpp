@@ -6712,8 +6712,17 @@ static void render(ApplicationState* state) {
 	glDrawBuffers(ARRAY_SIZE(draw_buffers_transparent), draw_buffers_transparent);
 
     glDisable(GL_CULL_FACE);
-    glEnable(GL_BLEND);
+
+    // Blend colour only. glEnable(GL_BLEND) applies to every attachment, and
+    // this pass also writes velocity and picking: alpha-blending those means a
+    // translucent overlay fragment scales the velocity underneath it by
+    // (1 - alpha) and mixes the picking index with whatever was already there,
+    // neither of which is a meaningful operation on that data.
+    glEnablei(GL_BLEND, 0);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisablei(GL_BLEND, 1);
+    glDisablei(GL_BLEND, 2);
+    glDisablei(GL_BLEND, 3);
 
     PUSH_GPU_SECTION("Immediate overlay")
     glDisable(GL_DEPTH_TEST);

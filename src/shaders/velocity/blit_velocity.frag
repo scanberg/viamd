@@ -15,7 +15,17 @@ void main() {
         return;
     }
 
-    vec2 p_uv = (gl_FragCoord.xy + vec2(0.5)) / vec2(textureSize(u_tex_depth, 0));
+    // gl_FragCoord.xy is already at the pixel centre -- the fragment covering
+    // texel (i,j) reports (i+0.5, j+0.5) -- so dividing by the resolution gives
+    // that texel's centre in UV directly. Adding another half pixel first put
+    // the sample on the corner between texels instead.
+    //
+    // The offset propagates into p_cs and therefore into the reprojected q_uv,
+    // so the velocity was not merely biased, it was evaluated half a texel away
+    // from the fragment it was written for. Small, uniform, and permanent:
+    // every TAA resolve fetched history half a texel off and blended it in,
+    // which reads as the image never quite converging to sharp.
+    vec2 p_uv = gl_FragCoord.xy / vec2(textureSize(u_tex_depth, 0));
     vec3 p_vs = vec3(p_uv, d);
     vec4 p_cs = vec4(p_vs * 2.0 - 1.0, 1.0); // [0, 1] -> [-1, 1]
     
