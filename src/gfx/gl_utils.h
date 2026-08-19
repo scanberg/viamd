@@ -30,4 +30,41 @@ bool clear_texture_1D(GLuint texture, int level);
 bool clear_texture_2D(GLuint texture, int level);
 bool clear_texture_3D(GLuint texture, int level);
 
+// Streaming uploads through a pixel unpack buffer.
+//
+// set_texture_3D_data() hands a client pointer to glTexSubImage3D, which makes
+// the driver copy into its own pinned staging before it can start the DMA, and
+// does not return until it has. Going through a persistently mapped PBO writes
+// once into memory the GPU can already see and lets the transfer overlap.
+//
+// Intended shape:
+//
+//     void* dst = gl::pbo_upload_begin(size);       // NULL => no PBO available
+//     if (dst) {
+//         memcpy(dst, src, size);
+//         gl::pbo_upload_end_texture_3D(texture, 0, GL_R32F);
+//     } else {
+//         gl::set_texture_3D_data(texture, 0, src, GL_R32F);   // fallback
+//     }
+//
+// Buffers are cached by power-of-two size class and recycled once the driver
+// signals it has consumed them, so a repeated upload of the same volume size
+// reuses the same allocation. Everything here must run on the GL thread.
+
+// Reserves a buffer of at least `size` bytes and returns its mapped range.
+// Returns NULL if persistent mapping is unavailable or allocation failed, in
+// which case the caller should use the plain client-pointer path.
+void* pbo_upload_begin(size_t size);
+
+// Uploads what was written into the pointer from pbo_upload_begin() into the
+// whole of `texture`, then releases the buffer back to the cache. Must follow a
+// successful pbo_upload_begin(); `size` must have covered the whole texture.
+bool pbo_upload_end_texture_3D(GLuint texture, int level, GLenum format);
+
+// Abandons an upload started with pbo_upload_begin() without touching a texture.
+void pbo_upload_abort(void);
+
+// Releases every cached buffer. Call before tearing down the GL context.
+void pbo_upload_shutdown(void);
+
 }  // namespace gl

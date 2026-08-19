@@ -570,6 +570,17 @@ int main(int argc, char** argv) {
 
         picking_handler_new_frame(&state.picking_handler);
         viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, picking_handler_current_space(&state.picking_handler));
+
+#if MD_ENABLE_GPU
+        // Retires stream-ordered frees and fires completion callbacks for work
+        // that finished since the last frame. Callbacks run on the calling
+        // thread, so this must stay on the GL thread: they issue GL calls.
+        // Not optional -- without it, freed device memory is never reclaimed.
+        if (state.gpu_device) {
+            md_gpu_device_poll(state.gpu_device);
+        }
+#endif
+
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
         // GUI

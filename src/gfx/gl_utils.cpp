@@ -420,6 +420,192 @@ bool gl::set_texture_3D_data(GLuint texture, int level, const void* data, GLenum
     return true;
 }
 
+// --- Streaming uploads through a pixel unpack buffer -------------------------
+//
+// A small cache of persistently mapped buffers, keyed by power-of-two size
+// class. A buffer goes back into the cache carrying the fence from its last
+// upload; it is only handed out again once the driver has signalled that fence,
+// so we never overwrite bytes the GPU is still reading.
+
+namespace {
+
+struct PboSlot {
+    GLuint  id      = 0;
+    void*   mapped  = nullptr;
+    size_t  size    = 0;
+    GLsync  fence   = nullptr;
+    bool    in_use  = false;
+};
+
+// Two per size class is enough to keep one upload in flight while the next is
+// being filled; volumes here are large, so a deeper ring mostly wastes address
+// space. Eight slots covers several size classes at once.
+constexpr int    PBO_SLOT_COUNT = 8;
+constexpr size_t PBO_MIN_SIZE   = 1u << 20;    // don't bother below 1 MB
+// These are persistently mapped, so they are resident for as long as they are
+// cached. A volume can be hundreds of MB, and eight unbounded slots would be
+// several GB of address space and driver allocation; cap the total instead.
+constexpr size_t PBO_TOTAL_BUDGET = 384u << 20;
+
+PboSlot g_pbo[PBO_SLOT_COUNT];
+int     g_pbo_active = -1;      // slot handed out by pbo_upload_begin()
+size_t  g_pbo_bytes  = 0;       // total currently allocated
+
+size_t pbo_size_class(size_t size) {
+    size_t c = PBO_MIN_SIZE;
+    while (c < size) c <<= 1;
+    return c;
+}
+
+// True once the driver is done reading the slot's last upload.
+bool pbo_slot_ready(PboSlot& s) {
+    if (!s.fence) return true;
+    GLenum r = glClientWaitSync(s.fence, 0, 0);
+    if (r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED) {
+        glDeleteSync(s.fence);
+        s.fence = nullptr;
+        return true;
+    }
+    return false;
+}
+
+void pbo_slot_release(PboSlot& s) {
+    if (s.fence)  { glDeleteSync(s.fence); s.fence = nullptr; }
+    if (s.mapped) {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, s.id);
+        glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        s.mapped = nullptr;
+    }
+    if (s.id) { glDeleteBuffers(1, &s.id); s.id = 0; }
+    g_pbo_bytes -= s.size;
+    s.size   = 0;
+    s.in_use = false;
+}
+
+bool pbo_slot_create(PboSlot& s, size_t size) {
+    // glBufferStorage is GL 4.4; viamd's GPU path already requires 4.3+, so
+    // check rather than assume and let the caller fall back if it is absent.
+    if (!glBufferStorage || !glMapBufferRange || !glFenceSync) return false;
+
+    while (glGetError() != GL_NO_ERROR) {}   // so the check below is about us
+
+    glGenBuffers(1, &s.id);
+    if (!s.id) return false;
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, s.id);
+
+    const GLbitfield storage = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+    glBufferStorage(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)size, nullptr, storage);
+    if (glGetError() != GL_NO_ERROR) {
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        glDeleteBuffers(1, &s.id);
+        s.id = 0;
+        return false;
+    }
+
+    s.mapped = glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr)size, storage);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    if (!s.mapped) {
+        glDeleteBuffers(1, &s.id);
+        s.id = 0;
+        return false;
+    }
+    s.size = size;
+    g_pbo_bytes += size;
+    return true;
+}
+
+// Frees idle buffers, largest first, until `want` more bytes fit in the budget.
+// Returns false if it cannot be made to fit, in which case the caller falls
+// back to a plain client-pointer upload rather than forcing an eviction of
+// something still in use.
+bool pbo_make_room(size_t want) {
+    if (want > PBO_TOTAL_BUDGET) return false;
+    while (g_pbo_bytes + want > PBO_TOTAL_BUDGET) {
+        int victim = -1;
+        for (int i = 0; i < PBO_SLOT_COUNT; ++i) {
+            PboSlot& s = g_pbo[i];
+            if (!s.id || s.in_use || !pbo_slot_ready(s)) continue;
+            if (victim < 0 || s.size > g_pbo[victim].size) victim = i;
+        }
+        if (victim < 0) return false;
+        pbo_slot_release(g_pbo[victim]);
+    }
+    return true;
+}
+
+}  // namespace
+
+void* gl::pbo_upload_begin(size_t size) {
+    if (size == 0 || g_pbo_active >= 0) return nullptr;   // one at a time
+
+    const size_t want = pbo_size_class(size);
+
+    // Reuse an idle slot of the right class.
+    for (int i = 0; i < PBO_SLOT_COUNT; ++i) {
+        PboSlot& s = g_pbo[i];
+        if (s.id && !s.in_use && s.size == want && pbo_slot_ready(s)) {
+            s.in_use = true;
+            g_pbo_active = i;
+            return s.mapped;
+        }
+    }
+    // Otherwise take a free slot, evicting an idle one of the wrong size if need be.
+    int idx = -1;
+    for (int i = 0; i < PBO_SLOT_COUNT && idx < 0; ++i) if (!g_pbo[i].id) idx = i;
+    for (int i = 0; i < PBO_SLOT_COUNT && idx < 0; ++i) {
+        if (!g_pbo[i].in_use && pbo_slot_ready(g_pbo[i])) { pbo_slot_release(g_pbo[i]); idx = i; }
+    }
+    if (idx < 0) return nullptr;   // everything busy; caller falls back
+
+    if (!pbo_make_room(want))             return nullptr;
+    if (!pbo_slot_create(g_pbo[idx], want)) return nullptr;
+    g_pbo[idx].in_use = true;
+    g_pbo_active = idx;
+    return g_pbo[idx].mapped;
+}
+
+bool gl::pbo_upload_end_texture_3D(GLuint texture, int level, GLenum format) {
+    if (g_pbo_active < 0) return false;
+    PboSlot& s = g_pbo[g_pbo_active];
+    g_pbo_active = -1;
+    s.in_use = false;
+
+    GLenum pixel_channel = 0, pixel_type = 0;
+    if (!glIsTexture(texture) || !get_pixel_channel_type(pixel_channel, pixel_type, format)) {
+        return false;
+    }
+
+    int w, h, d;
+    glBindTexture(GL_TEXTURE_3D, texture);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH,  &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_HEIGHT, &h);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_DEPTH,  &d);
+
+    // With a buffer bound to GL_PIXEL_UNPACK_BUFFER the last argument is an
+    // offset into it, not a pointer.
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, s.id);
+    glTexSubImage3D(GL_TEXTURE_3D, level, 0, 0, 0, w, h, d, pixel_channel, pixel_type, (const void*)0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glBindTexture(GL_TEXTURE_3D, 0);
+
+    // Tells us when the buffer may be refilled.
+    if (s.fence) glDeleteSync(s.fence);
+    s.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    return true;
+}
+
+void gl::pbo_upload_abort(void) {
+    if (g_pbo_active < 0) return;
+    g_pbo[g_pbo_active].in_use = false;
+    g_pbo_active = -1;
+}
+
+void gl::pbo_upload_shutdown(void) {
+    g_pbo_active = -1;
+    for (int i = 0; i < PBO_SLOT_COUNT; ++i) pbo_slot_release(g_pbo[i]);
+}
+
 bool gl::clear_texture_1D(GLuint texture, int level) {
     if (!glIsTexture(texture)) return false;
 

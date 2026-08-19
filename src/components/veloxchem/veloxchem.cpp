@@ -290,6 +290,21 @@ struct VeloxChem : viamd::EventHandler {
     md_gpu_tex_t            gpu_volume  = 0;        // 3d R32F texture for storing evaluated orbital / density values.
 
     bool gpu_atoms_dirty = true;
+
+    // An in-flight readback. The slot must outlive the call that queued it, so
+    // these live on the component rather than in the frame arena.
+    struct VolumeJob {
+        bool         in_flight = false;
+        VeloxChem*   owner     = nullptr;
+        uint32_t     tex_id    = 0;      // GL texture to receive the data
+        md_gpu_ptr_t rb        = nullptr; // HOST_READ staging block
+        size_t       size      = 0;
+    };
+    // Readbacks are issued at most one per representation per change, and a
+    // change cannot be requested again until the previous frame has been drawn,
+    // so a handful of slots is ample. Running out falls back to blocking.
+    static constexpr int VOLUME_JOB_SLOTS = 8;
+    VolumeJob volume_jobs[VOLUME_JOB_SLOTS] = {};
 #endif
 
     // GL representations
@@ -624,34 +639,157 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    // Reads the evaluated region of gpu_volume back and hands it to GL. This
-    // stalls the calling thread, matching the previous readback_wait behaviour;
-    // md_gpu_launch_host_fn + md_gpu_device_poll would make it asynchronous.
+    // Queues a readback of the evaluated region of gpu_volume. Returns once the
+    // copy is recorded; the GL texture is filled later, from
+    // volume_job_complete(), which md_gpu_device_poll() calls on the GL thread.
+    //
+    // Returns true when the work was queued -- NOT that the texture holds data.
     bool gpu_volume_to_gl_texture(uint32_t vol_tex, const md_grid_t& grid) {
         if (!gpu_stream || !gpu_rb_pool || !gpu_volume) {
             return false;
         }
-        const md_gpu_tex_region_t region = {
-            .offset = {0, 0, 0},
-            .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-        };
         const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
+
+        // Never allow two outstanding readbacks for the same texture. Two
+        // reasons, both of which produce a wrong image rather than a slow one:
+        //
+        //  - a staging block can be most of a gigabyte, so N in flight is N
+        //    times that;
+        //  - md_gpu_stream_sync does not fire user callbacks, only
+        //    md_gpu_device_poll does. So a blocking fallback taken while an
+        //    older job is still pending would upload new data now and let the
+        //    older callback overwrite it with stale data next frame.
+        //
+        // Draining costs the stall we are trying to avoid, but only when the
+        // user outruns the GPU, and it keeps uploads strictly ordered.
+        if (volume_job_in_flight_for(vol_tex)) {
+            drain_volume_jobs();
+        }
+
+        VolumeJob* job = volume_job_acquire();
+        if (!job) {
+            drain_volume_jobs();
+            job = volume_job_acquire();
+        }
+        if (!job) {
+            return gpu_volume_to_gl_texture_blocking(vol_tex, grid, size);
+        }
 
         md_gpu_ptr_t rb = md_gpu_malloc(gpu_rb_pool, size, gpu_stream);
         if (!rb) {
             MD_LOG_ERROR("Failed to allocate VeloxChem volume readback staging (%zu bytes)", size);
+            job->in_flight = false;
             return false;
         }
 
+        const md_gpu_tex_region_t region = {
+            .offset = {0, 0, 0},
+            .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+        };
+        if (!md_gpu_memcpy_from_tex_async(rb, gpu_volume, &region, size, gpu_stream)) {
+            MD_LOG_ERROR("Failed to record VeloxChem volume readback");
+            md_gpu_free(rb, gpu_stream);
+            job->in_flight = false;
+            return false;
+        }
+
+        job->owner  = this;
+        job->tex_id = vol_tex;
+        job->rb     = rb;
+        job->size   = size;
+
+        if (!md_gpu_launch_host_fn(gpu_stream, volume_job_complete, job)) {
+            // No callback means nothing would ever free rb or fill the texture,
+            // so finish this one synchronously instead of leaking it.
+            MD_LOG_ERROR("Failed to queue VeloxChem volume completion; falling back to a blocking readback");
+            md_gpu_stream_sync(gpu_stream);
+            gl::set_texture_3D_data(vol_tex, 0, md_gpu_host_ptr(rb), GL_R32F);
+            md_gpu_free(rb, gpu_stream);
+            job->in_flight = false;
+            return true;
+        }
+        return true;
+    }
+
+    // Used when no job slot is free, and when a caller genuinely needs the data
+    // before it returns.
+    bool gpu_volume_to_gl_texture_blocking(uint32_t vol_tex, const md_grid_t& grid, size_t size) {
+        md_gpu_ptr_t rb = md_gpu_malloc(gpu_rb_pool, size, gpu_stream);
+        if (!rb) return false;
+        const md_gpu_tex_region_t region = {
+            .offset = {0, 0, 0},
+            .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+        };
         bool ok = md_gpu_memcpy_from_tex_async(rb, gpu_volume, &region, size, gpu_stream);
         md_gpu_stream_sync(gpu_stream);
-        if (ok) {
-            gl::set_texture_3D_data(vol_tex, 0, md_gpu_host_ptr(rb), GL_R32F);
-        } else {
-            MD_LOG_ERROR("Failed to read back VeloxChem volume");
-        }
+        if (ok) upload_to_gl_texture(vol_tex, md_gpu_host_ptr(rb), size);
         md_gpu_free(rb, gpu_stream);
         return ok;
+    }
+
+    VolumeJob* volume_job_acquire(void) {
+        for (int i = 0; i < VOLUME_JOB_SLOTS; ++i) {
+            if (!volume_jobs[i].in_flight) {
+                volume_jobs[i] = VolumeJob{};
+                volume_jobs[i].in_flight = true;
+                return &volume_jobs[i];
+            }
+        }
+        return nullptr;
+    }
+
+    bool any_volume_job_in_flight(void) const {
+        for (int i = 0; i < VOLUME_JOB_SLOTS; ++i) if (volume_jobs[i].in_flight) return true;
+        return false;
+    }
+
+    bool volume_job_in_flight_for(uint32_t tex_id) const {
+        for (int i = 0; i < VOLUME_JOB_SLOTS; ++i) {
+            if (volume_jobs[i].in_flight && volume_jobs[i].tex_id == tex_id) return true;
+        }
+        return false;
+    }
+
+    // Runs on the GL thread, from md_gpu_device_poll() in the frame loop.
+    static void volume_job_complete(void* user) {
+        VolumeJob* job = (VolumeJob*)user;
+        VeloxChem*  self = job->owner;
+        if (self && job->tex_id) {
+            self->upload_to_gl_texture(job->tex_id, md_gpu_host_ptr(job->rb), job->size);
+        }
+        if (self && job->rb) md_gpu_free(job->rb, self->gpu_stream);
+        job->rb        = nullptr;
+        job->in_flight = false;
+    }
+
+    // Prefers a pixel unpack buffer: one write into memory the GPU already sees,
+    // and the transfer overlaps instead of blocking. Falls back to the plain
+    // client-pointer upload when no buffer is available.
+    void upload_to_gl_texture(uint32_t vol_tex, const void* src, size_t size) {
+        if (!src) return;
+        if (void* dst = gl::pbo_upload_begin(size)) {
+            MEMCPY(dst, src, size);
+            if (gl::pbo_upload_end_texture_3D(vol_tex, 0, GL_R32F)) return;
+        }
+        gl::set_texture_3D_data(vol_tex, 0, src, GL_R32F);
+    }
+
+    // Blocks until every queued readback has landed in its GL texture. Call
+    // before destroying gpu_volume, the pools or the GL textures.
+    void drain_volume_jobs(void) {
+        if (!gpu_stream || !any_volume_job_in_flight()) return;
+        md_gpu_stream_sync(gpu_stream);
+        md_gpu_device_poll(gpu_device);   // this is what actually runs the callbacks
+        // Backstop: if a callback somehow did not fire, release the staging
+        // block here rather than leaking it, since the pool is about to go.
+        for (int i = 0; i < VOLUME_JOB_SLOTS; ++i) {
+            VolumeJob& j = volume_jobs[i];
+            if (j.in_flight) {
+                if (j.rb) md_gpu_free(j.rb, gpu_stream);
+                j.rb = nullptr;
+                j.in_flight = false;
+            }
+        }
     }
 #endif
 
@@ -696,6 +834,8 @@ struct VeloxChem : viamd::EventHandler {
             }
             case viamd::EventType_ViamdShutdown:
 #if MD_ENABLE_GPU
+                drain_volume_jobs();
+                gl::pbo_upload_shutdown();
                 md_gto_gpu_shutdown();
                 md_topo_gpu_shutdown();
                 md_gto_gpu_basis_destroy(gpu_basis);
@@ -1362,6 +1502,9 @@ struct VeloxChem : viamd::EventHandler {
 
     void reset_data() {
 #if MD_ENABLE_GPU
+        // Callbacks reference gpu_volume, the readback pool and the GL
+        // textures, all of which are about to go away.
+        drain_volume_jobs();
         md_gto_gpu_basis_destroy(gpu_basis);
         md_gpu_free(gpu_atoms, gpu_stream);
         md_gpu_free(gpu_coeff, gpu_stream);
@@ -6394,6 +6537,14 @@ struct VeloxChem : viamd::EventHandler {
                     vec3_t step_x = grid.orientation[0] * grid.spacing[0];
                     vec3_t step_y = grid.orientation[1] * grid.spacing[1];
                     vec3_t step_z = grid.orientation[2] * grid.spacing[2];
+
+#if MD_ENABLE_GPU
+                    // Readbacks are queued, not completed, by the evaluate_*
+                    // calls above. Exporting reads the texture directly, so it
+                    // is one of the few places that genuinely needs the data
+                    // now rather than next frame.
+                    drain_volume_jobs();
+#endif
 
                     // Extract data from OpenGL Texture
                     glBindTexture(GL_TEXTURE_3D, vol.tex_id);
