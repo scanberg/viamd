@@ -35,11 +35,12 @@ static void init_all_representations(ApplicationState* state);
 static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& state, const PickingHit& hit) {
     ASSERT(sb);
     const md_system_t& sys = state.mold.sys;
+	const md_system_state_t& sys_state = state.mold.state;
 
     if (hit.domain == PickingDomain_Atom && hit.local_idx < sys.atom.count) {
         int atom_idx = hit.local_idx;
         int local_idx = atom_idx;
-        const vec3_t pos = md_atom_coord(&sys.atom, atom_idx);
+        const vec3_t pos = md_state_coord(&sys_state, atom_idx);
         str_t type = md_atom_name(&sys.atom, atom_idx);
         md_atomic_number_t z = md_atom_atomic_number(&sys.atom, atom_idx);
         str_t elem = z ? md_util_element_name(z)   : str_t{};
@@ -179,8 +180,8 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             if (flags & MD_BOND_FLAG_QUADRUPLE) bond_type = '$';
             if (flags & MD_BOND_FLAG_AROMATIC) bond_type = ':';
 
-            vec3_t p0 = md_atom_coord(&sys.atom, pair.idx[0]);
-            vec3_t p1 = md_atom_coord(&sys.atom, pair.idx[1]);
+            vec3_t p0 = md_state_coord(&sys_state, pair.idx[0]);
+            vec3_t p1 = md_state_coord(&sys_state, pair.idx[1]);
             float d = vec3_distance(p0, p1);
 
             str_t type0 = md_atom_name(&sys.atom, pair.idx[0]);
@@ -254,17 +255,17 @@ static inline void init_frame_cache(FrameCache* cache, size_t num_atoms, md_allo
     clear_frame_cache(cache);
     size_t capacity = ALIGN_TO(num_atoms, 16);
     for (size_t i = 0; i < FRAME_CACHE_SIZE; ++i) {
-        md_array_resize(cache->states[i].atom_x, capacity, alloc);
-        md_array_resize(cache->states[i].atom_y, capacity, alloc);
-        md_array_resize(cache->states[i].atom_z, capacity, alloc);
+        md_array_resize(cache->states[i].x, capacity, alloc);
+        md_array_resize(cache->states[i].y, capacity, alloc);
+        md_array_resize(cache->states[i].z, capacity, alloc);
     }
 }
 
 static inline void free_frame_cache(FrameCache* cache, md_allocator_i* alloc) {
     for (size_t i = 0; i < FRAME_CACHE_SIZE; ++i) {
-        md_array_free(cache->states[i].atom_x, alloc);
-        md_array_free(cache->states[i].atom_y, alloc);
-        md_array_free(cache->states[i].atom_z, alloc);
+        md_array_free(cache->states[i].x, alloc);
+        md_array_free(cache->states[i].y, alloc);
+        md_array_free(cache->states[i].z, alloc);
     }
     clear_frame_cache(cache);
 }
@@ -462,9 +463,7 @@ void init_trajectory_data(ApplicationState* data) {
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
-        md_trajectory_frame_header_t frame_header = {};
-        md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z);
-        data->mold.sys.unitcell = frame_header.unitcell;
+        md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, NULL, &data->mold.state);
 
         if (data->mold.sys.protein_backbone.segment.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.sys.protein_backbone.segment.count;
@@ -491,13 +490,11 @@ void init_trajectory_data(ApplicationState* data) {
                 md_system_t sys = data->mold.sys;
                 md_trajectory_i* traj = data->mold.sys.trajectory;
 
-                md_temp_scope_t temp_scope = md_temp_begin();
-                defer { md_temp_end(temp_scope); };
+                md_temp_scope_t temp = md_temp_begin();
+                defer { md_temp_end(temp); };
 
-                const size_t capacity = ALIGN_TO(sys.atom.count, 16);
-                float* x = md_temp_alloc_array(temp_scope, float, capacity);
-                float* y = md_temp_alloc_array(temp_scope, float, capacity);
-                float* z = md_temp_alloc_array(temp_scope, float, capacity);
+                md_system_state_t frame_state = { .alloc = temp.arena };
+				md_system_state_init(&frame_state, sys.atom.count);
 
                 md_trajectory_reader_i reader;
                 if (md_trajectory_reader_init(&reader, traj)) {
@@ -505,10 +502,9 @@ void init_trajectory_data(ApplicationState* data) {
                         md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
                         md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
                         
-                        md_trajectory_frame_header_t frame_header = {0};
-                        md_trajectory_reader_load_frame(reader, frame_idx, &frame_header, x, y, z);
-                        md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
-                        md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                        md_trajectory_reader_load_frame(reader, frame_idx, NULL, &frame_state);
+                        md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
+                        md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
                     }
 					md_trajectory_reader_free(&reader);
                 } else {
@@ -516,10 +512,9 @@ void init_trajectory_data(ApplicationState* data) {
                         md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
                         md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
                         
-                        md_trajectory_frame_header_t frame_header = {0};
-                        md_trajectory_load_frame(traj, frame_idx, &frame_header, x, y, z);
-                        md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
-                        md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, x, y, z, &frame_header.unitcell, &sys.protein_backbone);
+                        md_trajectory_load_frame(traj, frame_idx, NULL, &frame_state);
+                        md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
+                        md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
                     }
                 }
             });
@@ -574,13 +569,13 @@ void init_system_data(ApplicationState* data) {
         }
 
         mat3_t A;
-		md_unitcell_A_extract_float(A.elem, &data->mold.sys.unitcell);
+		md_unitcell_A_extract_float(A.elem, &data->mold.state.unitcell);
 		vec3_t c = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
         data->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
 
         vec3_t aabb_min = {};
         vec3_t aabb_max = {};
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z, nullptr, nullptr, data->mold.sys.atom.count);
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, data->mold.state.x, data->mold.state.y, data->mold.state.z, nullptr, nullptr, data->mold.state.num_atoms);
 
         const vec3_t cell_ext = mat3_mul_vec3(A, vec3_set1(1.0f));
         const float max_cell_ext = vec3_reduce_max(cell_ext);
@@ -664,7 +659,8 @@ void free_system_data(ApplicationState* data) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
-bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::State& load_state) {
+md_system_state_t load_state = {0};
+bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
     ASSERT(state);
 
     bool success = false;
@@ -678,7 +674,10 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             free_system_data(state);
 
             state->mold.sys.alloc = state->mold.sys_alloc;
-            if (!loader::load(&state->mold.sys, path_to_file, load_state)) {
+            // The loaded coordinates are the initial current state; inference copies them into
+            // sys.reference, so the two stay independent.
+            state->mold.state.alloc = state->mold.sys_alloc;
+            if (!loader::load(&state->mold.sys, &state->mold.state, path_to_file, load_state)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return false;
             }
@@ -688,8 +687,8 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             str_copy_to_char_buf(state->files.molecule, sizeof(state->files.molecule), path_to_file);
             state->files.coarse_grained = load_state.flags & LoaderFlag_CoarseGrained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
-            md_postprocess_flags_t flags = state->files.coarse_grained ? MD_UTIL_POSTPROCESS_NONE : MD_UTIL_POSTPROCESS_ALL;
-            md_util_system_postprocess(&state->mold.sys, flags);
+            md_infer_flags_t flags = state->files.coarse_grained ? MD_UTIL_INFER_NONE : MD_UTIL_INFER_ALL;
+            md_util_system_infer(&state->mold.sys, &state->mold.state, flags);
             init_system_data(state);
 
             init_trajectory_data(state);
@@ -702,7 +701,7 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             free_trajectory_data(state);
             state->animation.frame = 0;
 
-            success = loader::load(&state->mold.sys, path_to_file, load_state);
+            success = loader::load(&state->mold.sys, &state->mold.state, path_to_file, load_state);
             if (success) {
                 init_trajectory_data(state);
                 str_copy_to_char_buf(state->files.trajectory, sizeof(state->files.trajectory), path_to_file);
@@ -1001,7 +1000,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
     
     data->files.coarse_grained  = new_coarse_grained;
 
-    loader::State loader_state = {};
+    loader::LoaderState loader_state = {};
     loader::init(&loader_state, new_molecule_file);
 
     if (new_coarse_grained) {
@@ -1039,6 +1038,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
     //apply_atom_elem_mappings(data);
 }
 
+md_system_state_t app_state = {0};
 void save_workspace(ApplicationState* app_state, str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -1485,6 +1485,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         if (backend_supported && rep->type_is_valid && rep->enabled) {
             EvalElectronicStructure data = {
                 .sys = &state->mold.sys,
+                .state = &state->mold.state,
                 .frame = state->animation.frame,
                 .rep = rep,
                 .atom_colors = colors,
@@ -1507,7 +1508,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         }
 
         if (rep->filt_is_dirty) {
-			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, &state->mold.state, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
             rep->filt_is_dirty = false;
         }
 
@@ -1674,27 +1675,27 @@ done:
     recompute_atom_visibility_mask(state);
 }
 
-void interpolate_system_state(ApplicationState* state) {
-    ASSERT(state);
-    auto& sys = state->mold.sys;
-    const auto& traj = state->mold.sys.trajectory;
+void interpolate_system_state(ApplicationState* app) {
+    ASSERT(app);
+	const auto& sys  = app->mold.sys;
 
-    if (!sys.atom.count || !md_trajectory_num_frames(traj)) return;
+	size_t num_atoms = app->mold.state.num_atoms;
+    if (num_atoms == 0 || !md_trajectory_num_frames(sys.trajectory)) return;
 
-    const int64_t last_frame = MAX(0LL, (int64_t)md_trajectory_num_frames(traj) - 1);
+    const int64_t last_frame = MAX(0LL, (int64_t)md_trajectory_num_frames(sys.trajectory) - 1);
     // This is not actually time, but the fractional frame representation
-    const double time = CLAMP(state->animation.frame, 0.0, double(last_frame));
+    const double time = CLAMP(app->animation.frame, 0.0, double(last_frame));
 
     // Scaling factor for cubic spline
     const int64_t frame = (int64_t)time;
     const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
 
     static int64_t curr_nearest_frame = -1;
-    if (state->animation.interpolation == InterpolationMode::Nearest) {
+    if (app->animation.interpolation == InterpolationMode::Nearest) {
         if (curr_nearest_frame == nearest_frame) {
             return;
         }
-        state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        app->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
     }
     curr_nearest_frame = nearest_frame;
 
@@ -1711,27 +1712,21 @@ void interpolate_system_state(ApplicationState* state) {
     // The number of atoms to be processed per thread when divided into chunks
     const uint32_t grain_size = 1024;
 
-    md_allocator_i* temp_arena = state->allocator.frame;
+    md_allocator_i* temp_arena = app->allocator.frame;
     md_temp_scope_t temp = md_temp_begin_in(temp_arena);
     defer { md_temp_end(temp); };
 
     struct Payload {
-        ApplicationState* state;
+        ApplicationState* app;
         float s;
         float t;
         InterpolationMode mode;
 
         int64_t nearest_frame;
         int64_t frames[4];
-        md_unitcell_t unitcell;
-
-        size_t count;
 
         md_system_state_t* src_states[4];
-
-        float* dst_x;
-        float* dst_y;
-        float* dst_z;
+		md_system_state_t* dst_state;
 
         vec3_t* aabb_min;
         vec3_t* aabb_max;
@@ -1739,19 +1734,16 @@ void interpolate_system_state(ApplicationState* state) {
         mat4_t recenter_transform;
     };
 
-    const InterpolationMode mode = (frames[1] == frames[2]) ? InterpolationMode::Nearest : state->animation.interpolation;
+    const InterpolationMode mode = (frames[1] == frames[2]) ? InterpolationMode::Nearest : app->animation.interpolation;
 
     Payload payload = {
-        .state = state,
-        .s = 1.0f - CLAMP(state->animation.tension, 0.0f, 1.0f),
+        .app = app,
+        .s = 1.0f - CLAMP(app->animation.tension, 0.0f, 1.0f),
         .t = (float)fract(time),
         .mode = mode,
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
-        .count = sys.atom.count,
-        .dst_x = sys.atom.x,
-        .dst_y = sys.atom.y,
-        .dst_z = sys.atom.z,
+        .dst_state = &app->mold.state,
         .aabb_min = md_temp_alloc_array(temp, vec3_t, num_threads),
         .aabb_max = md_temp_alloc_array(temp, vec3_t, num_threads),
     };
@@ -1787,18 +1779,18 @@ void interpolate_system_state(ApplicationState* state) {
 
     for (int i = 0; i < num_requested_frames; ++i) {
         int slot_idx = -1;
-        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &state->mold.frame_cache)) {
-            slot_idx = find_lru_cache_slot(&state->mold.frame_cache);
+        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &app->mold.frame_cache)) {
+            slot_idx = find_lru_cache_slot(&app->mold.frame_cache);
             frame_cache_load_slot[num_frames_to_load++] = slot_idx;
         }
-        set_mru_cache_slot(&state->mold.frame_cache, slot_idx);
-        state->mold.frame_cache.frame_idx[slot_idx] = requested_frames[i];
+        set_mru_cache_slot(&app->mold.frame_cache, slot_idx);
+        app->mold.frame_cache.frame_idx[slot_idx] = requested_frames[i];
         frame_cache_slot_idx[i] = slot_idx;
     }
 
     for (int i = 0; i < num_requested_frames; ++i) {
         int slot_idx = frame_cache_slot_idx[i];
-        payload.src_states[i] = &state->mold.frame_cache.states[slot_idx];
+        payload.src_states[i] = &app->mold.frame_cache.states[slot_idx];
     }
 
     // This holds the chain of tasks we are about to submit
@@ -1810,11 +1802,10 @@ void interpolate_system_state(ApplicationState* state) {
             (void)thread_num;
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int slot_idx = frame_cache_load_slot[i];
-                int frame_idx = data->state->mold.frame_cache.frame_idx[slot_idx];
-                md_system_state_t* state = &data->state->mold.frame_cache.states[slot_idx];
+                int frame_idx = data->app->mold.frame_cache.frame_idx[slot_idx];
+                md_system_state_t* state = &data->app->mold.frame_cache.states[slot_idx];
                 md_trajectory_frame_header_t header = {0};
-                md_trajectory_load_frame(data->state->mold.sys.trajectory, frame_idx, &header, state->atom_x, state->atom_y, state->atom_z);
-                state->unitcell = header.unitcell;
+                md_trajectory_load_frame(data->app->mold.sys.trajectory, frame_idx, &header, state);
             }
         }
     );
@@ -1824,10 +1815,10 @@ void interpolate_system_state(ApplicationState* state) {
     switch (mode) {
         case InterpolationMode::Nearest: {
             task_system::ID interp_task = task_system::create_pool_task(STR_LIT("## Interpolate"), [data = &payload]() {
-                data->unitcell = data->src_states[0]->unitcell;
-                MEMCPY(data->dst_x, data->src_states[0]->atom_x, sizeof(float) * data->count);
-                MEMCPY(data->dst_y, data->src_states[0]->atom_y, sizeof(float) * data->count);
-                MEMCPY(data->dst_z, data->src_states[0]->atom_z, sizeof(float) * data->count);
+                data->dst_state->unitcell = data->src_states[0]->unitcell;
+                MEMCPY(data->dst_state->x, data->src_states[0]->x, sizeof(float) * data->dst_state->num_atoms);
+                MEMCPY(data->dst_state->y, data->src_states[0]->y, sizeof(float) * data->dst_state->num_atoms);
+                MEMCPY(data->dst_state->z, data->src_states[0]->z, sizeof(float) * data->dst_state->num_atoms);
             });
             tasks[num_tasks++] = interp_task;
             break;
@@ -1840,20 +1831,20 @@ void interpolate_system_state(ApplicationState* state) {
                 double xy = lerp(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->t);
                 double xz = lerp(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->t);
                 double yz = lerp(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->t);
-                data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+                data->dst_state->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
 			});
 
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 size_t count = range_end - range_beg;
-                float* dst_x = data->dst_x + range_beg;
-                float* dst_y = data->dst_y + range_beg;
-                float* dst_z = data->dst_z + range_beg;
-                const float* src_x[2] = { data->src_states[0]->atom_x + range_beg, data->src_states[1]->atom_x + range_beg};
-                const float* src_y[2] = { data->src_states[0]->atom_y + range_beg, data->src_states[1]->atom_y + range_beg};
-                const float* src_z[2] = { data->src_states[0]->atom_z + range_beg, data->src_states[1]->atom_z + range_beg};
+                float* dst_x = data->dst_state->x + range_beg;
+                float* dst_y = data->dst_state->y + range_beg;
+                float* dst_z = data->dst_state->z + range_beg;
+                const float* src_x[2] = { data->src_states[0]->x + range_beg, data->src_states[1]->x + range_beg};
+                const float* src_y[2] = { data->src_states[0]->y + range_beg, data->src_states[1]->y + range_beg};
+                const float* src_z[2] = { data->src_states[0]->z + range_beg, data->src_states[1]->z + range_beg};
 
-                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t);
+                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->dst_state->unitcell, data->t);
             }, grain_size);
 
 			tasks[num_tasks++] = iterp_cell_task;
@@ -1869,20 +1860,20 @@ void interpolate_system_state(ApplicationState* state) {
                 double xy = cubic_spline(data->src_states[0]->unitcell.xy, data->src_states[1]->unitcell.xy, data->src_states[2]->unitcell.xy, data->src_states[3]->unitcell.xy, data->t, data->s);
                 double xz = cubic_spline(data->src_states[0]->unitcell.xz, data->src_states[1]->unitcell.xz, data->src_states[2]->unitcell.xz, data->src_states[3]->unitcell.xz, data->t, data->s);
                 double yz = cubic_spline(data->src_states[0]->unitcell.yz, data->src_states[1]->unitcell.yz, data->src_states[2]->unitcell.yz, data->src_states[3]->unitcell.yz, data->t, data->s);
-                data->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
+                data->dst_state->unitcell = md_unitcell_from_basis_parameters(x, y, z, xy, xz, yz);
             });
 
-            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+            task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 size_t count = range_end - range_beg;
-                float* dst_x = data->dst_x + range_beg;
-                float* dst_y = data->dst_y + range_beg;
-                float* dst_z = data->dst_z + range_beg;
-                const float* src_x[4] = { data->src_states[0]->atom_x + range_beg, data->src_states[1]->atom_x + range_beg, data->src_states[2]->atom_x + range_beg, data->src_states[3]->atom_x + range_beg};
-                const float* src_y[4] = { data->src_states[0]->atom_y + range_beg, data->src_states[1]->atom_y + range_beg, data->src_states[2]->atom_y + range_beg, data->src_states[3]->atom_y + range_beg};
-                const float* src_z[4] = { data->src_states[0]->atom_z + range_beg, data->src_states[1]->atom_z + range_beg, data->src_states[2]->atom_z + range_beg, data->src_states[3]->atom_z + range_beg};
+                float* dst_x = data->dst_state->x + range_beg;
+                float* dst_y = data->dst_state->y + range_beg;
+                float* dst_z = data->dst_state->z + range_beg;
+                const float* src_x[4] = { data->src_states[0]->x + range_beg, data->src_states[1]->x + range_beg, data->src_states[2]->x + range_beg, data->src_states[3]->x + range_beg};
+                const float* src_y[4] = { data->src_states[0]->y + range_beg, data->src_states[1]->y + range_beg, data->src_states[2]->y + range_beg, data->src_states[3]->y + range_beg};
+                const float* src_z[4] = { data->src_states[0]->z + range_beg, data->src_states[1]->z + range_beg, data->src_states[2]->z + range_beg, data->src_states[3]->z + range_beg};
 
-                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->unitcell, data->t, data->s);
+                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->dst_state->unitcell, data->t, data->s);
             }, grain_size);
 
             tasks[num_tasks++] = iterp_cell_task;
@@ -1897,16 +1888,16 @@ void interpolate_system_state(ApplicationState* state) {
 
     {
         // Calculate a global AABB for the molecule
-        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)sys.atom.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+        task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             size_t range_len = range_end - range_beg;
-            const float* x = data->state->mold.sys.atom.x + range_beg;
-            const float* y = data->state->mold.sys.atom.y + range_beg;
-            const float* z = data->state->mold.sys.atom.z + range_beg;
+            const float* x = data->dst_state->x + range_beg;
+            const float* y = data->dst_state->y + range_beg;
+            const float* z = data->dst_state->z + range_beg;
 
             md_temp_scope_t temp = md_temp_begin();
             defer { md_temp_end(temp); };
             float* r = md_temp_alloc_array(temp, float, range_len);
-            md_atom_extract_radii(r, range_beg, range_len, &data->state->mold.sys.atom);
+            md_atom_extract_radii(r, range_beg, range_len, &data->app->mold.sys.atom);
 
             vec3_t aabb_min = vec3_set1(FLT_MAX);
             vec3_t aabb_max = vec3_set1(-FLT_MAX);
@@ -1923,11 +1914,11 @@ void interpolate_system_state(ApplicationState* state) {
             case InterpolationMode::Nearest: {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [data = &payload]() {
                     const md_backbone_angles_t* src_angles[2] = {
-                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
-                    MEMCPY(data->state->mold.sys.protein_backbone.segment.angle, src_angle, data->state->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
+                    MEMCPY(data->app->mold.sys.protein_backbone.segment.angle, src_angle, data->app->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
                 });
 
                 tasks[num_tasks++] = angle_task;
@@ -1937,10 +1928,10 @@ void interpolate_system_state(ApplicationState* state) {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     const md_backbone_angles_t* src_angles[2] = {
-                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
-                    md_system_t& mol = data->state->mold.sys;
+                    md_system_t& sys = data->app->mold.sys;
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
                         float psi[2] = {src_angles[0][i].psi, src_angles[1][i].psi};
@@ -1950,7 +1941,7 @@ void interpolate_system_state(ApplicationState* state) {
 
                         float final_phi = lerp(phi[0], phi[1], data->t);
                         float final_psi = lerp(psi[0], psi[1], data->t);
-                        mol.protein_backbone.segment.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
+                        sys.protein_backbone.segment.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
                     }
                 });
 
@@ -1961,12 +1952,12 @@ void interpolate_system_state(ApplicationState* state) {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Interpolate Backbone Angles"), (uint32_t)sys.protein_backbone.segment.count, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     const md_backbone_angles_t* src_angles[4] = {
-                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[0],
-                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[2],
-                        data->state->trajectory_data.backbone_angles.data + data->state->trajectory_data.backbone_angles.stride * data->frames[3],
+                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[0],
+                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[3],
                     };
-                    md_system_t& sys = data->state->mold.sys;
+                    md_system_t& sys = data->app->mold.sys;
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
                         float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
@@ -1995,18 +1986,18 @@ void interpolate_system_state(ApplicationState* state) {
     }
 
     if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.secondary_structure) {
-        if (md_array_size(state->interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
+        if (md_array_size(app->interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
 			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
         }
         size_t num_backbone_segments = sys.protein_backbone.segment.count;
         task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
-            const md_secondary_structure_t* ss_data = data->state->trajectory_data.secondary_structure_render.data ?
-                data->state->trajectory_data.secondary_structure_render.data :
-                data->state->trajectory_data.secondary_structure.data;
-            const size_t ss_stride = data->state->trajectory_data.secondary_structure_render.data ?
-                data->state->trajectory_data.secondary_structure_render.stride :
-                data->state->trajectory_data.secondary_structure.stride;
+            const md_secondary_structure_t* ss_data = data->app->trajectory_data.secondary_structure_render.data ?
+                data->app->trajectory_data.secondary_structure_render.data :
+                data->app->trajectory_data.secondary_structure.data;
+            const size_t ss_stride = data->app->trajectory_data.secondary_structure_render.data ?
+                data->app->trajectory_data.secondary_structure_render.stride :
+                data->app->trajectory_data.secondary_structure.stride;
             const md_secondary_structure_t* src_ss[4] = {
                 ss_data + ss_stride * data->frames[0],
                 ss_data + ss_stride * data->frames[1],
@@ -2046,8 +2037,8 @@ void interpolate_system_state(ApplicationState* state) {
                 for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss = src_ss_nearest[i];
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = ss;
-                    data->state->interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
+                    data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = ss;
+                    data->app->interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
                 }
                 break;
             }
@@ -2057,8 +2048,8 @@ void interpolate_system_state(ApplicationState* state) {
                     md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
                     md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[0], ss_gl[1], data->t);
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
+                    data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
+                    data->app->interpolated_properties.secondary_structure[i] = ss_gl_i;
                 }
                 break;
             }
@@ -2084,8 +2075,8 @@ void interpolate_system_state(ApplicationState* state) {
 
                     md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[1], ss_gl[2], smoothstep5(data->t));
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    data->state->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    data->state->interpolated_properties.secondary_structure[i] = ss_gl_i;
+                    data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
+                    data->app->interpolated_properties.secondary_structure[i] = ss_gl_i;
                 }
                 break;
             }
@@ -2104,10 +2095,10 @@ void interpolate_system_state(ApplicationState* state) {
             const md_gl_secondary_structure_t ss_helix = { .helix = 1.0f };
             const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
 
-            md_gl_secondary_structure_t* ss_gl = data->state->interpolated_properties.secondary_structure;
-            for (size_t i = 0; i < data->state->mold.sys.protein_backbone.range.count; ++i) {
-                size_t range_beg = data->state->mold.sys.protein_backbone.range.offset[i];
-                size_t range_end = data->state->mold.sys.protein_backbone.range.offset[i + 1];
+            md_gl_secondary_structure_t* ss_gl = data->app->interpolated_properties.secondary_structure;
+            for (size_t i = 0; i < data->app->mold.sys.protein_backbone.range.count; ++i) {
+                size_t range_beg = data->app->mold.sys.protein_backbone.range.offset[i];
+                size_t range_end = data->app->mold.sys.protein_backbone.range.offset[i + 1];
                 for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
                     // Set isolated coils between matching structured segments to reduce noise during transitions.
                     if (is_eq(ss_gl[j - 1], ss_helix) && is_eq(ss_gl[j + 1], ss_helix) && is_eq(ss_gl[j], ss_coil)) {
@@ -2122,7 +2113,7 @@ void interpolate_system_state(ApplicationState* state) {
         tasks[num_tasks++] = ss_cleanup_task;
 #endif
 
-        state->mold.dirty_gpu_buffers |= MolBit_DirtySecondaryStructure;
+        app->mold.dirty_gpu_buffers |= MolBit_DirtySecondaryStructure;
     }
 
     if (num_tasks > 0) {
@@ -2139,24 +2130,23 @@ void interpolate_system_state(ApplicationState* state) {
         aabb_min = vec3_min(aabb_min, payload.aabb_min[i]);
         aabb_max = vec3_max(aabb_max, payload.aabb_max[i]);
     }
-    state->mold.sys_aabb_min = aabb_min;
-    state->mold.sys_aabb_max = aabb_max;
-    state->mold.sys.unitcell = payload.unitcell;
+    app->mold.sys_aabb_min = aabb_min;
+    app->mold.sys_aabb_max = aabb_max;
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
     mat3_t A;
-    md_unitcell_A_extract_float(A.elem, &state->mold.sys.unitcell);
+    md_unitcell_A_extract_float(A.elem, &app->mold.state.unitcell);
     vec3_t c = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
-    state->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
+    app->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
 
 #if 0
-    if (mol.unitcell.flags) {
-        vec3_t c = mol.unitcell.basis * vec3_set1(0.5f);
-        state->mold.model_mat = mat4_translate_vec3(-c);
+    if (sys.unitcell.flags) {
+        vec3_t c = sys.unitcell.basis * vec3_set1(0.5f);
+        app->mold.model_mat = mat4_translate_vec3(-c);
     }
 #endif
 
-    state->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+    app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
 }
 
 void recenter_mark_query_dirty(ApplicationState* state) {
@@ -2211,7 +2201,7 @@ bool recenter_update_query_mask(ApplicationState* state) {
 
     md_bitfield_clear(&query.mask);
     query.dynamic = false;
-    query.valid = md_filter(&query.mask, str_from_cstr(query.query), &state->mold.sys, state->mold.sys.atom.x, state->mold.sys.atom.y, state->mold.sys.atom.z, state->script.ir, &query.dynamic, query.error, sizeof(query.error));
+    query.valid = md_filter(&query.mask, str_from_cstr(query.query), &state->mold.sys, &state->mold.state, state->script.ir, &query.dynamic, query.error, sizeof(query.error));
     query.evaluated_version = query.version;
     return true;
 }
@@ -2244,7 +2234,8 @@ void recenter_update_target_data(ApplicationState* state) {
             float* temp_y = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
             float* temp_z = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
 
-            md_trajectory_load_frame(state->mold.sys.trajectory, 0, NULL, temp_x, temp_y, temp_z);
+            md_system_state_t temp_state = { (size_t)num_atoms, temp_x, temp_y, temp_z, {} };
+            md_trajectory_load_frame(state->mold.sys.trajectory, 0, NULL, &temp_state);
 
             md_bitfield_iter_t it = md_bitfield_iter_create(&target_mask);
             int dst_idx = 0;
@@ -2254,36 +2245,36 @@ void recenter_update_target_data(ApplicationState* state) {
                 state->operations.initial_frame.xyzw[dst_idx++] = vec4_set(temp_x[src_idx], temp_y[src_idx], temp_z[src_idx], mass);
             }
 
-            md_util_unwrap_vec4(state->operations.initial_frame.xyzw, NULL, count, &state->mold.sys.bond, &state->mold.sys.unitcell);
+            md_util_unwrap_vec4(state->operations.initial_frame.xyzw, NULL, count, &state->mold.sys.bond, &state->mold.state.unitcell);
             state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.xyzw, NULL, count, NULL);
         }
     }
 }
 
-void recenter_calculate_transform(float M[4][4], const ApplicationState* state) {
+void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
     ASSERT(M);
-    ASSERT(state);
+    ASSERT(app);
 
-    const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+    const md_bitfield_t& target_mask = recenter_get_active_target_mask(app);
     size_t count = md_bitfield_popcount(&target_mask);
     mat4_t transform = mat4_ident();
 
     if (count > 0) {
-        md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
+        md_temp_scope_t temp = md_temp_begin_in(app->allocator.frame);
         defer { md_temp_end(temp); };
 
         // Extract xyzw subset of target
         vec4_t* target_xyzw = md_temp_alloc_array(temp, vec4_t, count);
-        md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &state->mold.sys);
+        md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
 
         // Unwrap target structure (required for rotation)
-        md_util_unwrap_vec4(target_xyzw, NULL, count, &state->mold.sys.bond, &state->mold.sys.unitcell);
+        md_util_unwrap_vec4(target_xyzw, NULL, count, &app->mold.sys.bond, &app->mold.state.unitcell);
 
         // Calculate target
         vec3_t target = {0};
-        if (md_unitcell_flags(&state->mold.sys.unitcell) != 0) {
+        if (md_unitcell_flags(&app->mold.state.unitcell) != 0) {
             mat3_t A = {0};
-            md_unitcell_A_extract_float(A.elem, &state->mold.sys.unitcell);
+            md_unitcell_A_extract_float(A.elem, &app->mold.state.unitcell);
             target = mat3_mul_vec3(A, vec3_set1(0.5f));
         } 
 
@@ -2293,20 +2284,20 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* state) 
 
         // Calculate Rotation
         mat3_t R = mat3_ident();
-        if (state->operations.fixate_orientation && state->operations.initial_frame.xyzw) {
-            ASSERT(md_array_size(state->operations.initial_frame.xyzw) == count);
+        if (app->operations.fixate_orientation && app->operations.initial_frame.xyzw) {
+            ASSERT(md_array_size(app->operations.initial_frame.xyzw) == count);
             const vec4_t* xyzw[2] = {
-                state->operations.initial_frame.xyzw,
+                app->operations.initial_frame.xyzw,
                 target_xyzw,
             };
             const vec3_t com[2] = {
-                state->operations.initial_frame.com,
+                app->operations.initial_frame.com,
                 target_com,
             };
             R = mat3_optimal_rotation_vec4(xyzw, NULL, count, com);
             R = mat3_orthonormalize(R);
         }
-        const mat4_t A = state->operations.initial_frame.alignment_mat;
+        const mat4_t A = app->operations.initial_frame.alignment_mat;
         mat4_t T = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
         transform = T;
     }
@@ -2856,7 +2847,7 @@ void file_queue_process(ApplicationState* state) {
                 state->editor.SetCursorPosition(pos);
             }
         } else {
-            loader::State loader_state = {};
+            loader::LoaderState loader_state = {};
             loader::init(&loader_state, e.path, &state->mold.sys);
                 
             if ((e.flags & FileFlags_ShowDialogue) || (loader_state.flags & LoaderFlag_RequiresDialogue)) {
@@ -2880,6 +2871,7 @@ void file_queue_process(ApplicationState* state) {
                             create_default_representations(state);
                         }
                         recompute_atom_visibility_mask(state);
+                        md_system_state_t interpolate_system_state = {0};
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                         reset_view(&state->view.camera, state->mold.sys, &state->representation.visibility_mask);
@@ -2890,9 +2882,9 @@ void file_queue_process(ApplicationState* state) {
     }
 }
 
-void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfield_t* mask) {
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitfield_t* mask) {
     ASSERT(transform);
-    if (!sys.atom.count) return;
+    if (!state.num_atoms) return;
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
@@ -2903,21 +2895,21 @@ void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfi
     }
 
     int32_t* indices = nullptr;
-    if (0 < popcount && popcount < sys.atom.count) {
+    if (0 < popcount && popcount < state.num_atoms) {
         indices = md_temp_alloc_array(temp, int32_t, popcount);
         size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(mask));
-        if (len > popcount || len > sys.atom.count) {
+        if (len > popcount || len > state.num_atoms) {
             MD_LOG_DEBUG("Error: Invalid number of indices");
-            len = MIN(popcount, sys.atom.count);
+            len = MIN(popcount, state.num_atoms);
         }
     }
 
-    size_t count = popcount ? popcount : sys.atom.count;
-    vec3_t com = md_util_com_compute(sys.atom.x, sys.atom.y, sys.atom.z, nullptr, indices, count, &sys.unitcell);
+    size_t count = popcount ? popcount : state.num_atoms;
+    vec3_t com = md_util_com_compute(state.x, state.y, state.z, nullptr, indices, count, &state.unitcell);
 
     mat3_t PCA = mat3_ident();
     if (count > 4) {
-        mat3_t C = mat3_covariance_matrix(sys.atom.x, sys.atom.y, sys.atom.z, nullptr, indices, count, com);
+        mat3_t C = mat3_covariance_matrix(state.x, state.y, state.z, nullptr, indices, count, com);
         mat3_eigen_t eigen = mat3_eigen(C);
         PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
     }
@@ -2930,7 +2922,7 @@ void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfi
     // Transform the atom (x,y,z,radius) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < count; ++i) {
         int32_t idx = indices ? indices[i] : (int32_t)i;
-        vec4_t xyz1 = { sys.atom.x[idx], sys.atom.y[idx], sys.atom.z[idx], 1.0f };
+        vec4_t xyz1 = { state.x[idx], state.y[idx], state.z[idx], 1.0f };
 
         vec4_t p = mat4_mul_vec4(Ri, xyz1);
         min_ext = vec4_min(min_ext, p);
@@ -2945,7 +2937,7 @@ void reset_view(ViewTransform* transform, const md_system_t& sys, const md_bitfi
     vec3_t half_ext = (vec3_from_vec4(max_ext) - vec3_from_vec4(min_ext)) * 0.5f;
 
     mat3_t A = {};
-    md_unitcell_A_extract(A.elem, &sys.unitcell);
+    md_unitcell_A_extract(A.elem, &state.unitcell);
     mat4_t unitcell_transform = mat4_translate_vec3(-mat3_mul_vec3(A, vec3_set1(0.5f)));
     com = mat4_mul_vec3(unitcell_transform, com, 1.0f);
 
@@ -3063,7 +3055,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 if (popcount > 0) {
                     vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
                     if (dst_xyzw) {
-                        md_util_system_extract_xyzw_from_mask(dst_xyzw, bf, &state->mold.sys);
+                        md_util_system_extract_xyzw_from_mask(dst_xyzw, bf, &state->mold.sys, &state->mold.state);
                     }
                 }
             }
@@ -3074,56 +3066,44 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
             // EXTRACT STATE HERE FROM PAYLOAD
             ASSERT(event.payload_type == viamd::EventPayloadType_ApplicationState);
-            ApplicationState* state = (ApplicationState*)event.payload;
+            ApplicationState* app = (ApplicationState*)event.payload;
 
             int num_tasks = 0;
             task_system::ID tasks[16];
-
-            md_system_t& sys = state->mold.sys;
+            
+            md_system_t& sys = app->mold.sys;
+			md_system_state_t& sys_state = app->mold.state;
             mat4_t recenter_transform = { 0 };
 
-            if (state->operations.recalc_bonds) {
+            if (app->operations.recalc_bonds) {
                 static int64_t cur_nearest_frame = -1;
 
                 // We cannot recalculate bonds while the full or filtered evaluation is running
                 // because it would overwrite the bond data while we are reading it
-                int64_t nearest_frame = (int64_t)(state->animation.frame + 0.5);
-                if (!task_system::task_is_running(state->tasks.evaluate_full) && !task_system::task_is_running(state->tasks.evaluate_filt)) {
-                    if (state->mold.sys.trajectory == NULL || (cur_nearest_frame != nearest_frame)) {
+                int64_t nearest_frame = (int64_t)(app->animation.frame + 0.5);
+                if (!task_system::task_is_running(app->tasks.evaluate_full) && !task_system::task_is_running(app->tasks.evaluate_filt)) {
+                    if (app->mold.sys.trajectory == NULL || (cur_nearest_frame != nearest_frame)) {
                         cur_nearest_frame = nearest_frame;
-                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [state, &sys, nearest_frame]() {
-                            float* x = NULL;
-                            float* y = NULL;
-                            float* z = NULL;
+                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [&sys, app, &nearest_frame]() {
+                            md_temp_scope_t temp = md_temp_begin();
+                            defer { md_temp_end(temp); };
+
+							md_system_state_t ref_state = sys.reference;
 
                             if (sys.trajectory) {
-                                // Closest frame to the current animation time
-                                md_temp_scope_t temp = md_temp_begin();
-                                defer { md_temp_end(temp); };
-
-								size_t cap = ALIGN_TO(sys.atom.count, 16);
-                                x = md_temp_alloc_array(temp, float, cap);
-                                y = md_temp_alloc_array(temp, float, cap);
-                                z = md_temp_alloc_array(temp, float, cap);
-                                md_trajectory_frame_header_t frame_header;
-
-                                if (!md_trajectory_load_frame(sys.trajectory, nearest_frame, &frame_header, x, y, z)) {
+                                // Use state from frame closest to the current animation time
+                                md_system_state_t frame_state = { .alloc = temp.arena };
+								md_system_state_init(&frame_state, sys.atom.count);
+                                if (!md_trajectory_load_frame(sys.trajectory, nearest_frame, NULL, &frame_state)) {
                                     MD_LOG_ERROR("Failed to extract frame data");
-                                } 
-                            } else {
-                                // No trajectory, use current positions
-                                x = sys.atom.x;
-                                y = sys.atom.y;
-                                z = sys.atom.z;
+                                }
                             }
 
-                            if (x && y && z) {
-                                MD_LOG_DEBUG("RECALCULATING BONDS");
-                                md_util_infer_covalent_bonds(&sys.bond, x, y, z, &sys.unitcell, &sys, sys.alloc);
-                                md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
-                            }
+                            MD_LOG_DEBUG("RECALCULATING BONDS");
+                            md_util_infer_covalent_bonds(&sys.bond, &ref_state, &sys, sys.alloc);
+                            md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
 
-                            state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                            app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                         });
                         tasks[num_tasks++] = recalc_bond_task;
                     }
@@ -3135,17 +3115,17 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 size_t num_idx = md_bitfield_popcount(&target_mask);
                 if (num_idx > 0) {
                     // Create async task to calculate transformation matrix (Its only expressed as a task to ensure that it runs after some of the previous tasks in the workflow)
-                    task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [state, &recenter_transform]() {
-                        recenter_calculate_transform(recenter_transform.elem, state);
+                    task_system::ID calc_transform_task = task_system::create_pool_task(STR_LIT("## Calculate Recenter Transform"), [&recenter_transform, app]() {
+                        recenter_calculate_transform(recenter_transform.elem, app);
                     });
 
                     // Batch transform all atoms
-                    task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [&sys, &recenter_transform](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                    task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [&sys_state, &recenter_transform](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                         (void)thread_num;
                         size_t count = range_end - range_beg;
-                        float* x = sys.atom.x + range_beg;
-                        float* y = sys.atom.y + range_beg;
-                        float* z = sys.atom.z + range_beg;
+                        float* x = sys_state.x + range_beg;
+                        float* y = sys_state.y + range_beg;
+                        float* z = sys_state.z + range_beg;
                         mat4_batch_transform_inplace(x, y, z, 1.0f, count, recenter_transform);
                     }, 1024);
 
@@ -3155,25 +3135,25 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             }
 
             if (state->operations.apply_pbc) {
-                task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [&sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [&sys_state](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     size_t count = range_end - range_beg;
-                    float* x = sys.atom.x + range_beg;
-                    float* y = sys.atom.y + range_beg;
-                    float* z = sys.atom.z + range_beg;
-                    md_util_pbc(x, y, z, NULL, count, &sys.unitcell);
+                    float* x = sys_state.x + range_beg;
+                    float* y = sys_state.y + range_beg;
+                    float* z = sys_state.z + range_beg;
+                    md_util_pbc(x, y, z, NULL, count, &sys_state.unitcell);
                 });
                 tasks[num_tasks++] = pbc_task;
             } 
 
             if (state->operations.unwrap_structures) {
                 size_t num_structures = md_structure_count(&sys.structure);
-                task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [&sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                task_system::ID unwrap_task = task_system::create_pool_task(STR_LIT("## Unwrap Structures"), (uint32_t)num_structures, [&sys_state, &sys](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     for (uint32_t i = range_beg; i < range_end; ++i) {
                         md_structure_t structure = {};
                         md_structure_extract(&structure, &sys.structure, i);
-                        md_util_unwrap_structure(sys.atom.x, sys.atom.y, sys.atom.z, &structure, &sys.unitcell);
+						md_util_unwrap_structure(&sys_state, &structure);
                     }
                 });
                 tasks[num_tasks++] = unwrap_task;

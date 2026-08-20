@@ -949,6 +949,7 @@ struct Representation {
 // Event Payload when an electronic structure is to be evaluated
 struct EvalElectronicStructure {
     const md_system_t* sys = 0;
+    const md_system_state_t* state = 0;
     double frame = 0.0;
     Representation* rep = 0;
     uint32_t* atom_colors = 0;
@@ -1435,7 +1436,7 @@ struct ViamdEventHandler : viamd::EventHandler {
 
 struct LoadDataPayload {
     ApplicationState* app_state;
-    loader::State loader_state;
+    loader::LoaderState loader_state;
     str_t path_to_file;
 };
 
@@ -1639,53 +1640,53 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
 void interrupt_async_tasks(ApplicationState* state);
 
 // Dataset loading
-bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::State& load_state);
-void init_system_data(ApplicationState* state);
-void init_trajectory_data(ApplicationState* state);
+bool load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
+void init_system_data(ApplicationState* app);
+void init_trajectory_data(ApplicationState* app);
 
 // Frame cache operations
-void clear_system_frame_cache(ApplicationState* state);
+void clear_system_frame_cache(ApplicationState* app);
 
 // Interpolate state
-void interpolate_system_state(ApplicationState* state);
+void interpolate_system_state(ApplicationState* app);
 
 // Workspace
-void load_workspace(ApplicationState* state, str_t file);
-void save_workspace(ApplicationState* state, str_t file);
+void load_workspace(ApplicationState* app, str_t file);
+void save_workspace(ApplicationState* app, str_t file);
 
 // Selections
-Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* bf = 0);
-void remove_selection(ApplicationState* state, size_t idx);
-void remove_all_selections(ApplicationState* state);
+Selection* create_selection(ApplicationState* app, str_t name, md_bitfield_t* bf = 0);
+void remove_selection(ApplicationState* app, size_t idx);
+void remove_all_selections(ApplicationState* app);
 
 // Representations
-Representation* create_representation(ApplicationState* state, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
-Representation* clone_representation(ApplicationState* state, const Representation& rep);
-void remove_representation(ApplicationState* state, size_t idx);
-void update_representation(ApplicationState* state, Representation* rep);
-void update_representation_info(ApplicationState* state);
-void update_all_representations(ApplicationState* state);
+Representation* create_representation(ApplicationState* app, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = STR_LIT("all"));
+Representation* clone_representation(ApplicationState* app, const Representation& rep);
+void remove_representation(ApplicationState* app, size_t idx);
+void update_representation(ApplicationState* app, Representation* rep);
+void update_representation_info(ApplicationState* app);
+void update_all_representations(ApplicationState* app);
 bool representation_uses_atom_colors(const Representation& rep);
 
 void flag_representation_as_dirty(Representation* rep);
-void flag_all_representations_as_dirty(ApplicationState* state);
+void flag_all_representations_as_dirty(ApplicationState* app);
 
-void remove_all_representations(ApplicationState* state);
-void create_default_representations(ApplicationState* state);
-void recompute_atom_visibility_mask(ApplicationState* state);
+void remove_all_representations(ApplicationState* app);
+void create_default_representations(ApplicationState* app);
+void recompute_atom_visibility_mask(ApplicationState* app);
 
 // Recentering operations (low level)
 
-void recenter_mark_query_dirty(ApplicationState* state);
-void recenter_mark_selection_dirty(ApplicationState* state);
-const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* state);
-uint64_t recenter_get_active_target_version(const ApplicationState* state);
-bool recenter_update_query_mask(ApplicationState* state);
-void recenter_update(ApplicationState* state);
+void recenter_mark_query_dirty(ApplicationState* app);
+void recenter_mark_selection_dirty(ApplicationState* app);
+const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* app);
+uint64_t recenter_get_active_target_version(const ApplicationState* app);
+bool recenter_update_query_mask(ApplicationState* app);
+void recenter_update(ApplicationState* app);
 
 // Update the required initial frame data for the recentering target (if needed)
-void recenter_update_target_data(ApplicationState* state);
-void recenter_calculate_transform(float M[4][4], const ApplicationState* state);
+void recenter_update_target_data(ApplicationState* app);
+void recenter_calculate_transform(float M[4][4], const ApplicationState* app);
 
 // Picking
 

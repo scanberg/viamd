@@ -438,25 +438,25 @@ struct Dataset : viamd::EventHandler {
 
             ImGui::Separator();
 
-            if (data.mold.sys.unitcell.flags) {
-                md_unitcell_flags_t flags = data.mold.sys.unitcell.flags;
+            if (data.mold.state.unitcell.flags) {
+                md_unitcell_flags_t flags = data.mold.state.unitcell.flags;
                 bool ortho = flags & MD_UNITCELL_ORTHO;
                 bool tricl = flags & MD_UNITCELL_TRICLINIC;
                 ImGui::Text("Unitcell %s", ortho ? "Orthorhombic" : tricl ? "Triclinic" : "");
                 if (flags & MD_UNITCELL_ORTHO) {
                     ImGui::Indent();
-                    ImGui::Text("X: %f %s", data.mold.sys.unitcell.x, flags & MD_UNITCELL_PBC_X ? "(pbc)" : "");
-                    ImGui::Text("Y: %f %s", data.mold.sys.unitcell.y, flags & MD_UNITCELL_PBC_Y ? "(pbc)" : "");
-                    ImGui::Text("Z: %f %s", data.mold.sys.unitcell.z, flags & MD_UNITCELL_PBC_Z ? "(pbc)" : "");
+                    ImGui::Text("X: %f %s", data.mold.state.unitcell.x, flags & MD_UNITCELL_PBC_X ? "(pbc)" : "");
+                    ImGui::Text("Y: %f %s", data.mold.state.unitcell.y, flags & MD_UNITCELL_PBC_Y ? "(pbc)" : "");
+                    ImGui::Text("Z: %f %s", data.mold.state.unitcell.z, flags & MD_UNITCELL_PBC_Z ? "(pbc)" : "");
                     ImGui::Unindent();
                 } else if (flags & MD_UNITCELL_TRICLINIC) {
                     ImGui::Indent();
-                    ImGui::Text("X:  %f", data.mold.sys.unitcell.x);
-                    ImGui::Text("XY: %f", data.mold.sys.unitcell.xy);
-                    ImGui::Text("XZ: %f", data.mold.sys.unitcell.xz);
-                    ImGui::Text("Y:  %f", data.mold.sys.unitcell.y);
-                    ImGui::Text("YZ: %f", data.mold.sys.unitcell.yz);
-                    ImGui::Text("Z:  %f", data.mold.sys.unitcell.z);
+                    ImGui::Text("X:  %f", data.mold.state.unitcell.x);
+                    ImGui::Text("XY: %f", data.mold.state.unitcell.xy);
+                    ImGui::Text("XZ: %f", data.mold.state.unitcell.xz);
+                    ImGui::Text("Y:  %f", data.mold.state.unitcell.y);
+                    ImGui::Text("YZ: %f", data.mold.state.unitcell.yz);
+                    ImGui::Text("Z:  %f", data.mold.state.unitcell.z);
                     ImGui::Unindent();
                 } 
                 ImGui::Separator();

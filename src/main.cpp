@@ -627,7 +627,7 @@ int main(int argc, char** argv) {
                     candidate_mask = &state.selection.selection_mask;
                 }
                 point_set_region_mask_compute(&state.selection.highlight_mask,
-                    state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, state.mold.sys.atom.count,
+                    state.mold.state.x, state.mold.state.y, state.mold.state.z, state.mold.state.num_atoms,
                     candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
 
                 grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
@@ -772,6 +772,7 @@ int main(int argc, char** argv) {
         }
 
         if (time_changed) {
+            md_system_state_t interpolate_system_state = {0};
             state.mold.interpolate_system_state = true;
             time_stopped = false;
 
@@ -2014,12 +2015,12 @@ static void draw_main_menu(ApplicationState* data) {
 
                 // Batch transform all atoms
                 const uint32_t grain_size = 1024;
-                task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)data->mold.sys.atom.count, [T, data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+                task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)data->mold.state.num_atoms, [T, data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     size_t count = range_end - range_beg;
-                    float* x = data->mold.sys.atom.x + range_beg;
-                    float* y = data->mold.sys.atom.y + range_beg;
-                    float* z = data->mold.sys.atom.z + range_beg;
+                    float* x = data->mold.state.x + range_beg;
+                    float* y = data->mold.state.y + range_beg;
+                    float* z = data->mold.state.z + range_beg;
                     mat4_batch_transform_inplace(x, y, z, 1.0f, count, T);
                 }, grain_size);
                 task_system::enqueue_task(apply_transform_task);
@@ -2028,12 +2029,12 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             if (do_pbc) {
-                md_util_system_pbc(&data->mold.sys);
+                md_util_system_pbc(&data->mold.state);
                 data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
             }
 
             if (do_unwrap) {
-                md_util_system_unwrap_structures(&data->mold.sys);
+                md_util_unwrap_system(&data->mold.state, &data->mold.sys);
                 data->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
             }
 
@@ -2056,19 +2057,20 @@ static void draw_main_menu(ApplicationState* data) {
                         z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
                         md_trajectory_frame_header_t frame_header;
 
-                        if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, x, y, z)) {
+                        md_system_state_t frame_state = { mol.atom.count, x, y, z, {} };
+                        if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, &frame_state)) {
                             MD_LOG_ERROR("Failed to extract frame data");
                         } 
                     } else {
 						// No trajectory, use current positions
-						x = data->mold.sys.atom.x;
-						y = data->mold.sys.atom.y;
-						z = data->mold.sys.atom.z;
+						x = data->mold.state.x;
+						y = data->mold.state.y;
+						z = data->mold.state.z;
                     }
 
                     if (x && y && z) {
                         MD_LOG_DEBUG("RECALCULATING BONDS");
-                        md_util_infer_covalent_bonds(&data->mold.sys.bond, x, y, z, &mol.unitcell, &mol, data->mold.sys.alloc);
+                        md_util_infer_covalent_bonds(&data->mold.sys.bond, &data->mold.state, &data->mold.sys, data->mold.sys.alloc);
                         md_bond_build_connectivity(&data->mold.sys.bond, data->mold.sys.atom.count, data->mold.sys.alloc);
                         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     }
@@ -2323,9 +2325,8 @@ void draw_load_dataset_window(ApplicationState* data) {
         }
 
         switch (action) {
-        case Action_Load:
-        {
-            loader::State load_state = {};
+        case Action_Load: {
+            loader::LoaderState load_state = {};
             load_state.type = type;
             load_state.flags = flags;
             load_state.flags |= state.coarse_grained ? LoaderFlag_CoarseGrained : 0;
@@ -2341,8 +2342,8 @@ void draw_load_dataset_window(ApplicationState* data) {
                 data->animation = {};
                 reset_view(&data->view.target, data->mold.sys, &data->representation.visibility_mask);
             }
-        }
             [[fallthrough]];
+        }
         case Action_Cancel:
             // Reset state
             // @NOTE(Robin): Don't change this to {}, it won't work on GCC 9
@@ -2414,7 +2415,8 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_index_data_free(&mol->structure);
     md_index_data_free(&mol->ring);
     
-    md_util_system_postprocess(mol, data->mold.sys_alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_STRUCTURE_BIT);
+    md_system_state_t mol_state = {0};
+    md_util_system_infer(mol, &mol_state, data->mold.sys_alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     flag_all_representations_as_dirty(data);
@@ -3111,7 +3113,7 @@ static void draw_selection_grow_window(ApplicationState* data) {
                 md_util_mask_grow_by_bonds(&data->selection.grow.mask, &data->mold.sys, (int)data->selection.grow.extent, &data->representation.visibility_mask);
                 break;
             case SelectionGrowthMode::Radial: {
-                md_util_mask_grow_by_radius(&data->selection.grow.mask, &data->mold.sys, data->selection.grow.extent, &data->representation.visibility_mask);
+                md_util_mask_grow_by_radius(&data->selection.grow.mask, &data->mold.state, data->selection.grow.extent, &data->representation.visibility_mask);
                 break;
             }
             default:
@@ -3168,7 +3170,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
         if (data->selection.query.query_invalid) {
             data->selection.query.query_invalid = false;
-            data->selection.query.query_ok = md_filter(&data->selection.query.mask, str_from_cstr(data->selection.query.buf), &data->mold.sys, data->mold.sys.atom.x, data->mold.sys.atom.y, data->mold.sys.atom.z, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error));
+            data->selection.query.query_ok = md_filter(&data->selection.query.mask, str_from_cstr(data->selection.query.buf), &data->mold.sys, &data->mold.state, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error));
             query_frame = data->animation.frame;
 
             if (data->selection.query.query_ok) {
@@ -3220,6 +3222,7 @@ static void draw_animation_window(ApplicationState* data) {
             for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
                 if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
                     data->animation.interpolation = (InterpolationMode)i;
+					md_system_state_t interpolate_system_state = {0};
 					data->mold.interpolate_system_state = true;
                     data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
@@ -5717,23 +5720,18 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
         return false;
     }
 
-    // Copy mol and replace with initial coords
-    md_system_t mol = data.mold.sys;
+	md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
+	defer { md_temp_end(temp); };
 
-    size_t stride = ALIGN_TO(data.mold.sys.atom.count, 8);
-    float* coords = (float*)md_alloc(frame_alloc, stride * sizeof(float) * 3);
-    mol.atom.x = coords + stride * 0;
-    mol.atom.y = coords + stride * 1;
-    mol.atom.z = coords + stride * 2;
-    
-    if (!md_trajectory_load_frame(data.mold.sys.trajectory, 0, NULL, mol.atom.x, mol.atom.y, mol.atom.z)) {
+    const md_system_t& sys = data.mold.sys;
+    md_system_state_t state = { .alloc = temp.arena };
+    if (!md_trajectory_load_frame(data.mold.sys.trajectory, 0, NULL, &state)) {
         return false;
     }
 
     bool result = false;
     md_script_vis_t vis = { 0 };
-    md_script_vis_init(&vis, frame_alloc);
-    defer { md_script_vis_free(&vis); };
+    md_script_vis_init(&vis, temp.arena);
         
     if (md_script_ir_valid(data.script.eval_ir)) {
         md_script_vis_ctx_t ctx = {
@@ -5745,7 +5743,7 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
     }
 
     if (result == true) {
-        md_file_t file = {0};
+        md_file_t file = { 0 };
         if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
             VIAMD_LOG_ERROR("Failed to open file '%.*s' in order to write to it.", (int)filename.len, filename.ptr);
             return false;
@@ -5784,9 +5782,9 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
             size_t end_bit = bf->end_bit;
             while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
                 size_t i = beg_bit - 1;
-                vec3_t coord = md_atom_coord(&mol.atom, i);
+                vec3_t coord = md_state_coord(&state, i);
                 coord = mat4_mul_vec3(M, coord, 1.0f);
-                int anum     = md_atom_atomic_number(&mol.atom, i);
+                int anum     = md_atom_atomic_number(&sys.atom, i);
                 float charge = (float)anum;
                 md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", anum, charge, coord.x, coord.y, coord.z);
             }
@@ -6054,12 +6052,12 @@ md_array(int) extract_bitfield_indices(const md_bitfield_t* bf, md_allocator_i* 
     return indices;
 }
 
-static void xyz_write_frame(md_file_t file, const int* atomic_nr, const float* x, const float* y, const float* z, const int32_t* atom_indices, size_t num_atoms) {
+static void xyz_write_frame(md_file_t file, const int* atomic_nr, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms) {
     md_file_printf(file, "%zu\n", num_atoms);
     md_file_printf(file, "XYZ format exported from VIAMD\n");
     for (size_t i = 0; i < num_atoms; ++i) {
         int idx = atom_indices ? atom_indices[i] : (int)i;
-        md_file_printf(file, "%-2d %12.6f %12.6f %12.6f\n", atomic_nr[idx], x[idx], y[idx], z[idx]);
+        md_file_printf(file, "%-2d %12.6f %12.6f %12.6f\n", atomic_nr[idx], state->x[idx], state->y[idx], state->z[idx]);
     }
 }
 
@@ -6071,6 +6069,7 @@ void draw_structure_export_window(ApplicationState* data) {
         defer { md_temp_end(temp); };
 
         const md_system_t* sys = &data->mold.sys;
+        const md_system_state_t* state = &data->mold.state;
         const md_trajectory_i* traj = data->mold.sys.trajectory;
         auto& struct_exp = data->structure_export;
 
@@ -6118,9 +6117,7 @@ void draw_structure_export_window(ApplicationState* data) {
                     &query.mask,
                     str_from_cstr(query.buf),
                     &data->mold.sys,
-                    data->mold.sys.atom.x,
-                    data->mold.sys.atom.y,
-                    data->mold.sys.atom.z,
+                    &data->mold.state,
                     data->script.ir,
                     &query.is_dynamic,
                     query.error,
@@ -6149,7 +6146,7 @@ void draw_structure_export_window(ApplicationState* data) {
 
         //ImGui::PopItemWidth();
 
-        auto extract_atom_indices = [data](int* out_atom_indices, size_t atom_index_cap, const float* x, const float* y, const float* z) -> size_t {
+        auto extract_atom_indices = [data](int* out_atom_indices, size_t atom_index_cap, const md_system_state_t* state) -> size_t {
             switch (data->structure_export.selected_atom_filter) {
                 case 0: { // Active Selection
                     return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->selection.selection_mask));
@@ -6166,7 +6163,7 @@ void draw_structure_export_window(ApplicationState* data) {
                             &data->structure_export.query.mask,
                             str_from_cstr(data->structure_export.query.buf),
                             &data->mold.sys,
-                            x, y, z,
+                            state,
                             data->script.ir,
                             &data->structure_export.query.is_dynamic,
                             data->structure_export.query.error,
@@ -6239,16 +6236,16 @@ void draw_structure_export_window(ApplicationState* data) {
                             if (traj) {
                                 md_trajectory_frame_header_t frame_header;
                                 int first_frame = md_array_size(frame_indices) > 0 ? frame_indices[0] : 0;
-                                if (md_trajectory_load_frame(traj, first_frame, &frame_header, NULL, NULL, NULL)) {
+                                if (md_trajectory_load_frame(traj, first_frame, &frame_header, NULL)) {
                                     if (frame_header.unitcell.flags != 0) {
                                         double a, b, c, alpha, beta, gamma;
                                         md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &frame_header.unitcell);
                                         md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
                                     }
                                 }
-                            } else if (sys->unitcell.flags != 0) {
+                            } else if (state->unitcell.flags != 0) {
                                 double a, b, c, alpha, beta, gamma;
-                                md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &sys->unitcell);
+                                md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &state->unitcell);
                                 md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
                             }
                         } break;
@@ -6268,38 +6265,37 @@ void draw_structure_export_window(ApplicationState* data) {
 
                     size_t num_frames = md_array_size(frame_indices);
                     if (num_frames > 0) {
-                        float* x = (float*)md_alloc(frame_alloc, sizeof(float) * sys->atom.count);
-                        float* y = (float*)md_alloc(frame_alloc, sizeof(float) * sys->atom.count);
-                        float* z = (float*)md_alloc(frame_alloc, sizeof(float) * sys->atom.count);
-
+						md_system_state_t frame_state = { .alloc = frame_alloc };
+                        md_system_state_init(&frame_state, sys->atom.count);
+                        
                         for (size_t f = 0; f < num_frames; ++f) {
                             int frame_idx = frame_indices[f];
-                            if (!md_trajectory_load_frame(traj, frame_idx, NULL, x, y, z)) {
+                            if (!md_trajectory_load_frame(traj, frame_idx, NULL, &frame_state)) {
                                 VIAMD_LOG_ERROR("Failed to load frame %d from trajectory for structure export.", frame_idx);
                                 continue;
                             }
 
-                            size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), x, y, z);
+                            size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), &frame_state);
                             
                             if (struct_exp.selected_file_format == 0) { // XYZ
-                                xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                                xyz_write_frame(file, atomic_numbers, &frame_state, atom_indices, num_atoms);
                             } else if (struct_exp.selected_file_format == 1) { // PDB
                                 int model_num = (num_frames > 1) ? (int)(f + 1) : 0;
-                                md_pdb_system_write_state_to_file(file, sys, x, y, z, atom_indices, num_atoms, model_num);
+                                md_pdb_system_write_state_to_file(file, sys, &frame_state, atom_indices, num_atoms, model_num);
                             }
                         }
                     }
                     else {
                         // Single frame from system
-                        float* x = sys->atom.x;
-                        float* y = sys->atom.y;
-                        float* z = sys->atom.z;
-                        size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), x, y, z);
+                        float* x = state->x;
+                        float* y = state->y;
+                        float* z = state->z;
+                        size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), &data->mold.state);
                         
                         if (struct_exp.selected_file_format == 0) { // XYZ
-                            xyz_write_frame(file, atomic_numbers, x, y, z, atom_indices, num_atoms);
+                            xyz_write_frame(file, atomic_numbers, state, atom_indices, num_atoms);
                         } else if (struct_exp.selected_file_format == 1) { // PDB
-                            md_pdb_system_write_state_to_file(file, sys, x, y, z, atom_indices, num_atoms, 0);
+                            md_pdb_system_write_state_to_file(file, sys, state, atom_indices, num_atoms, 0);
                         }
                     }
 
@@ -6316,19 +6312,20 @@ void draw_structure_export_window(ApplicationState* data) {
 
 static void update_md_buffers(ApplicationState* data) {
     ASSERT(data);
-    const auto& mol = data->mold.sys;
+    const md_system_t& sys = data->mold.sys;
+	const md_system_state_t& state = data->mold.state;
 
-    if (mol.atom.count == 0) return;
+    if (sys.atom.count == 0) return;
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
         vec3_t pbc_ext = { 0 };
-        md_unitcell_diag_extract_float(pbc_ext.elem, &data->mold.sys.unitcell);
-        md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
+        md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)state.num_atoms, state.x, state.y, state.z, 0);
         if (!(data->mold.dirty_gpu_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
         }
 #if EXPERIMENTAL_GFX_API
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
+        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)state.num_atoms, state.x, state.y, state.z, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
 #endif
     }
@@ -6341,12 +6338,12 @@ static void update_md_buffers(ApplicationState* data) {
         md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
         defer { md_temp_end(tmp); };
 
-        float* radii = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-        md_atom_extract_radii(radii, 0, mol.atom.count, &mol.atom);
+        float* radii = (float*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(float));
+        md_atom_extract_radii(radii, 0, sys.atom.count, &sys.atom);
 
-        md_gl_mol_set_atom_radius(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, radii, 0);
+        md_gl_mol_set_atom_radius(data->mold.gl_mol, 0, (uint32_t)sys.atom.count, radii, 0);
 #if EXPERIMENTAL_GFX_API
-        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, (uint32_t)mol.atom.count, mol.atom.radius, 0);
+        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, (uint32_t)sys.atom.count, sys.atom.radius, 0);
 #endif
     }
 
@@ -6354,8 +6351,8 @@ static void update_md_buffers(ApplicationState* data) {
         md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
         defer { md_temp_end(tmp); };
 
-        uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(uint8_t));
-        MEMSET(flags, 0, mol.atom.count * sizeof(uint8_t));
+        uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(uint8_t));
+        MEMSET(flags, 0, sys.atom.count * sizeof(uint8_t));
 
         {
             md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.highlight_mask);
@@ -6378,11 +6375,11 @@ static void update_md_buffers(ApplicationState* data) {
                 flags[idx] |= AtomBit_Visible;
             }
         }
-        md_gl_mol_set_atom_flags(data->mold.gl_mol, 0, (uint32_t)mol.atom.count, flags, 0);
+        md_gl_mol_set_atom_flags(data->mold.gl_mol, 0, (uint32_t)sys.atom.count, flags, 0);
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyBonds) {
-        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)mol.bond.count, mol.bond.pairs, sizeof(md_atom_pair_t));
+        md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtySecondaryStructure) {
@@ -6526,9 +6523,9 @@ static void render(ApplicationState* state) {
     // Immediate mode graphics
     const mat4_t model_view_mat = state->view.param.matrix.curr.view;
 
-    if (state->simulation_box.enabled && state->mold.sys.unitcell.flags != 0) {
+    if (state->simulation_box.enabled && state->mold.state.unitcell.flags != 0) {
         mat3_t A = { 0 };
-		md_unitcell_A_extract_float(A.elem, &state->mold.sys.unitcell);
+		md_unitcell_A_extract_float(A.elem, &state->mold.state.unitcell);
         immediate::Scope scope(state->gfx.world, "simulation box");
         immediate::box_wireframe(scope, {0,0,0}, {1,1,1}, mat4_from_mat3(A), convert_color(state->simulation_box.color));
     }
@@ -6957,13 +6954,13 @@ static void draw_representations_opaque(ApplicationState* state) {
 
 		// MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
         float max_bond_length = 10.0f;
-        if (md_unitcell_flags(&state->mold.sys.unitcell) == 0) {
+        if (md_unitcell_flags(&state->mold.state.unitcell) == 0) {
             vec3_t aabb_ext = vec3_sub(state->mold.sys_aabb_max, state->mold.sys_aabb_min);
             max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
         }
         else {
             vec3_t ext = { 0 };
-            md_unitcell_diag_extract_float(ext.elem, &state->mold.sys.unitcell);
+            md_unitcell_diag_extract_float(ext.elem, &state->mold.state.unitcell);
             float min_half_box_ext = vec3_reduce_min(vec3_mul1(ext, 0.5f));
             max_bond_length = MAX(3.0, min_half_box_ext);
         }
@@ -7094,13 +7091,13 @@ static void draw_representations_opaque_lean_and_mean(ApplicationState* data, ui
 
     // MIN HALF BOX EXTENT AS MAX BOND LENGTH APPROXIMATION
     float max_bond_length = 10.0f;
-    if (md_unitcell_flags(&data->mold.sys.unitcell) == 0) {
+    if (md_unitcell_flags(&data->mold.state.unitcell) == 0) {
         vec3_t aabb_ext = vec3_sub(data->mold.sys_aabb_max, data->mold.sys_aabb_min);
         max_bond_length = MAX(3.0f, vec3_length(aabb_ext) * 0.5f); // Max bond length should not exceed half the diagonal of the bounding box
     }
     else {
         vec3_t ext = { 0 };
-        md_unitcell_diag_extract_float(ext.elem, &data->mold.sys.unitcell);
+        md_unitcell_diag_extract_float(ext.elem, &data->mold.state.unitcell);
         float min_half_box_ext = vec3_reduce_min(vec3_mul1(ext, 0.5f));
         max_bond_length = MAX(3.0, min_half_box_ext);
     }

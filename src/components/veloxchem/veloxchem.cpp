@@ -585,6 +585,7 @@ struct VeloxChem : viamd::EventHandler {
 
         bool use_obb = true;
         bool show_window = false;
+    md_system_state_t export_state = {0};
     } export_state;
 
     // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
@@ -928,9 +929,9 @@ struct VeloxChem : viamd::EventHandler {
                     ASSERT(md_array_size(atom_xyzw) == count);
                     for (size_t i = 0; i < count; ++i) {
                         int idx = qm_to_atom_idx ? qm_to_atom_idx[i] : (int)i;
-                        atom_xyzw[i].x = (float)(state.mold.sys.atom.x[idx] * ANGSTROM_TO_BOHR);
-                        atom_xyzw[i].y = (float)(state.mold.sys.atom.y[idx] * ANGSTROM_TO_BOHR);
-                        atom_xyzw[i].z = (float)(state.mold.sys.atom.z[idx] * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].x = (float)(state.mold.state.x[idx] * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].y = (float)(state.mold.state.y[idx] * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].z = (float)(state.mold.state.z[idx] * ANGSTROM_TO_BOHR);
 
 						int z = md_atom_atomic_number(&state.mold.sys.atom, idx);
 						nucl_dipole.x += atom_xyzw[i].x * z;
@@ -1285,7 +1286,7 @@ struct VeloxChem : viamd::EventHandler {
                                         idx = qm_to_atom_idx[idx];
                                     }
                                     float radius = md_atom_radius(&data.sys->atom, idx);
-                                    point_xyzw[i] = vec4_set(data.sys->atom.x[idx], data.sys->atom.y[idx], data.sys->atom.z[idx], radius);
+                                    point_xyzw[i] = vec4_set(data.state->x[idx], data.state->y[idx], data.state->z[idx], radius);
                                     point_colors[i] = data.atom_colors[idx];
                                 }
 
@@ -3894,9 +3895,9 @@ struct VeloxChem : viamd::EventHandler {
         const dvec3_t* coords = atom_coords ? atom_coords : md_vlx_atom_coordinates(vlx);
         size_t num_atoms = md_vlx_number_of_atoms(vlx);
         for (size_t i = 0; i < num_atoms; i++) {
-            state.mold.sys.atom.x[i] = (float)coords[i].x;
-            state.mold.sys.atom.y[i] = (float)coords[i].y;
-            state.mold.sys.atom.z[i] = (float)coords[i].z;
+            state.mold.state.x[i] = (float)coords[i].x;
+            state.mold.state.y[i] = (float)coords[i].y;
+            state.mold.state.z[i] = (float)coords[i].z;
         }
 		viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
         state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
@@ -5603,9 +5604,9 @@ struct VeloxChem : viamd::EventHandler {
 #else
                             const double scl = vib.displacement_amp_scl * 0.25 * sin(vib.t);
                             for (size_t i = 0; i < num_atoms; i++) {
-                                state.mold.sys.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                state.mold.sys.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                state.mold.sys.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                state.mold.state.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                state.mold.state.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                state.mold.state.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
                             if (vib.displace_aos) {
                             }
@@ -5627,9 +5628,9 @@ struct VeloxChem : viamd::EventHandler {
                     // If all is deselected, reset coords once
                     else if (vib.coord_modified) {
                         for (size_t i = 0; i < num_atoms; i++) {
-                            state.mold.sys.atom.x[i] = (float)atom_coord[i].x;
-                            state.mold.sys.atom.y[i] = (float)atom_coord[i].y;
-                            state.mold.sys.atom.z[i] = (float)atom_coord[i].z;
+                            state.mold.state.x[i] = (float)atom_coord[i].x;
+                            state.mold.state.y[i] = (float)atom_coord[i].y;
+                            state.mold.state.z[i] = (float)atom_coord[i].z;
                         }
                         viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
                         state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
@@ -7184,7 +7185,7 @@ struct VeloxChem : viamd::EventHandler {
                                 candidate_mask = &state.selection.selection_mask;
                             }
                             point_set_region_mask_compute(&state.selection.highlight_mask,
-                                state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, state.mold.sys.atom.count,
+                                state.mold.state.x, state.mold.state.y, state.mold.state.z, state.mold.state.num_atoms,
                                 candidate_mask, event.world_to_clip, event.region_min, event.region_max, event.surface_size);
 
                             grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
