@@ -463,7 +463,7 @@ void init_trajectory_data(ApplicationState* data) {
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
-        md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, NULL, &data->mold.state);
+        md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &data->mold.state);
 
         if (data->mold.sys.protein_backbone.segment.count > 0) {
             data->trajectory_data.secondary_structure.stride = data->mold.sys.protein_backbone.segment.count;
@@ -502,7 +502,7 @@ void init_trajectory_data(ApplicationState* data) {
                         md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
                         md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
                         
-                        md_trajectory_reader_load_frame(reader, frame_idx, NULL, &frame_state);
+                        md_trajectory_reader_load_frame(reader, frame_idx, &frame_state);
                         md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
                         md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
                     }
@@ -512,7 +512,7 @@ void init_trajectory_data(ApplicationState* data) {
                         md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
                         md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
                         
-                        md_trajectory_load_frame(traj, frame_idx, NULL, &frame_state);
+                        md_trajectory_load_frame(traj, frame_idx, &frame_state);
                         md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
                         md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
                     }
@@ -583,7 +583,7 @@ void init_system_data(ApplicationState* data) {
 
         // Calculate a default view transform to use later as a reset target
         ViewTransform default_view = {};
-        reset_view(&default_view, data->mold.sys);
+        reset_view(&default_view, data->mold.state);
 
         data->view.camera.near_plane = 1.0f;
         data->view.camera.far_plane = 100000.0f;
@@ -659,7 +659,6 @@ void free_system_data(ApplicationState* data) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
 
-md_system_state_t load_state = {0};
 bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::LoaderState& load_state) {
     ASSERT(state);
 
@@ -1038,7 +1037,6 @@ void load_workspace(ApplicationState* data, str_t filename) {
     //apply_atom_elem_mappings(data);
 }
 
-md_system_state_t app_state = {0};
 void save_workspace(ApplicationState* app_state, str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -1748,6 +1746,12 @@ void interpolate_system_state(ApplicationState* app) {
         .aabb_max = md_temp_alloc_array(temp, vec3_t, num_threads),
     };
 
+    // Stamp the destination with the frame it is about to represent. The interpolated state is not
+    // loaded through md_trajectory_reader_load_frame, so nothing else would fill this in, and a
+    // stale value is worse than an absent one. Nearest snaps to a whole frame; the other modes land
+    // between two, which is exactly what the fractional part is for.
+    app->mold.state.frame = (mode == InterpolationMode::Nearest) ? (double)nearest_frame : time;
+
     int requested_frames[4] = { 0 };
     int num_requested_frames = 0;
 
@@ -1804,8 +1808,7 @@ void interpolate_system_state(ApplicationState* app) {
                 int slot_idx = frame_cache_load_slot[i];
                 int frame_idx = data->app->mold.frame_cache.frame_idx[slot_idx];
                 md_system_state_t* state = &data->app->mold.frame_cache.states[slot_idx];
-                md_trajectory_frame_header_t header = {0};
-                md_trajectory_load_frame(data->app->mold.sys.trajectory, frame_idx, &header, state);
+                md_trajectory_load_frame(data->app->mold.sys.trajectory, frame_idx, state);
             }
         }
     );
@@ -2235,7 +2238,7 @@ void recenter_update_target_data(ApplicationState* state) {
             float* temp_z = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
 
             md_system_state_t temp_state = { (size_t)num_atoms, temp_x, temp_y, temp_z, {} };
-            md_trajectory_load_frame(state->mold.sys.trajectory, 0, NULL, &temp_state);
+            md_trajectory_load_frame(state->mold.sys.trajectory, 0, &temp_state);
 
             md_bitfield_iter_t it = md_bitfield_iter_create(&target_mask);
             int dst_idx = 0;
@@ -2820,7 +2823,7 @@ void file_queue_process(ApplicationState* state) {
 
         if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
             load_workspace(state, e.path);
-            reset_view(&state->view.camera, state->mold.sys, &state->representation.visibility_mask);
+            reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask);
         } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
             char buf[1024];
             str_t base_path = {};
@@ -2874,7 +2877,7 @@ void file_queue_process(ApplicationState* state) {
                         md_system_state_t interpolate_system_state = {0};
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        reset_view(&state->view.camera, state->mold.sys, &state->representation.visibility_mask);
+                        reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask);
                     }
                 }
             }
@@ -3094,7 +3097,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                                 // Use state from frame closest to the current animation time
                                 md_system_state_t frame_state = { .alloc = temp.arena };
 								md_system_state_init(&frame_state, sys.atom.count);
-                                if (!md_trajectory_load_frame(sys.trajectory, nearest_frame, NULL, &frame_state)) {
+                                if (!md_trajectory_load_frame(sys.trajectory, nearest_frame, &frame_state)) {
                                     MD_LOG_ERROR("Failed to extract frame data");
                                 }
                             }
@@ -3160,8 +3163,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             }
 
             if (num_tasks > 0) {
-                for (int i = 1; i < num_tasks; ++i) {
-                    task_system::set_task_dependency(tasks[i], tasks[i-1]);
+                for (int j = 1; j < num_tasks; ++j) {
+                    task_system::set_task_dependency(tasks[j], tasks[j-1]);
                 }
                 task_system::enqueue_task(tasks[0]);
                 task_system::task_wait_for(tasks[num_tasks - 1]);
@@ -3179,8 +3182,8 @@ void script_visualize_payload(ApplicationState* state, const md_script_vis_paylo
 
     md_script_vis_ctx_t ctx = {
         .ir   = state->script.eval_ir,
-        .mol  = &state->mold.sys,
-        .traj = state->mold.sys.trajectory,
+        .sys  = &state->mold.sys,
+        .state = &state->mold.state,
     };
 
     if (md_script_vis_eval_payload(&state->script.vis, payload, subidx, &ctx, flags)) {
@@ -3194,9 +3197,9 @@ void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flag
     ASSERT(state);
 
     md_script_vis_ctx_t ctx = {
-        .ir   = state->script.eval_ir,
-        .mol  = &state->mold.sys,
-        .traj = state->mold.sys.trajectory,
+        .ir    = state->script.eval_ir,
+        .sys   = &state->mold.sys,
+        .state = &state->mold.state,
     };
 
     if (md_script_vis_eval_string(&state->script.vis, str, &ctx, flags)) {

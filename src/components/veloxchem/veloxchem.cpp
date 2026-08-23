@@ -1469,9 +1469,9 @@ struct VeloxChem : viamd::EventHandler {
                         md_bitfield_t mask = md_bitfield_create(state.allocator.frame);
                         md_bitfield_set_indices_u32(&mask, (uint32_t*)qm_to_atom_idx, md_vlx_number_of_atoms(vlx));
                         filter_colors(colors, num_colors, &mask);
-                        reset_view(&default_view, state.mold.sys, &mask);
+                        reset_view(&default_view, state.mold.state, &mask);
                     } else {
-                        reset_view(&default_view, state.mold.sys);
+                        reset_view(&default_view, state.mold.state);
                     }
 
                     gl_rep = md_gl_rep_create(state.mold.gl_mol);

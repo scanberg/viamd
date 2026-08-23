@@ -408,9 +408,8 @@ struct Shapespace : viamd::EventHandler {
 
                         md_array(vec4_t) xyzw = 0;
                         for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                            md_trajectory_frame_header_t header;
                             md_system_state_t frame_state = { app_state->mold.sys.atom.count, x, y, z, {} };
-                            md_trajectory_load_frame(traj, frame_idx, &header, &frame_state);
+                            md_trajectory_load_frame(traj, frame_idx, &frame_state);
 
                             for (size_t i = 0; i < md_array_size(shapespace->bitfields); ++i) {
                                 const md_bitfield_t* bf = &shapespace->bitfields[i];
@@ -424,8 +423,8 @@ struct Shapespace : viamd::EventHandler {
                                     xyzw[dst_idx++] = vec4_set(x[src_idx], y[src_idx], z[src_idx], w ? w[src_idx] : 1.0f);
                                 }
 
-                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &app_state->mold.state.unitcell);
-                                md_util_deperiodize_vec4(xyzw, count, com, &app_state->mold.state.unitcell);
+                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &frame_state.unitcell);
+                                md_util_deperiodize_vec4(xyzw, count, com, &frame_state.unitcell);
 
                                 const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                                 const vec3_t weights = md_util_shape_weights(&M);

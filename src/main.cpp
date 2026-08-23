@@ -662,7 +662,7 @@ int main(int argc, char** argv) {
                 reset_transform.orientation = state.view.camera.orientation;
                 reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
             } else {
-                reset_view(&reset_transform, state.mold.sys);
+                reset_view(&reset_transform, state.mold.state);
             }
             state.view.target = reset_transform;
         }
@@ -864,7 +864,7 @@ int main(int argc, char** argv) {
                     }
                     
                     if (src_str) {
-                        md_script_ir_compile_from_source(state.script.ir, src_str, &state.mold.sys, state.mold.sys.trajectory, NULL);
+                        md_script_ir_compile_from_source(state.script.ir, src_str, &state.mold.sys, NULL);
 
                         const size_t num_errors = md_script_ir_num_errors(state.script.ir);
                         const md_log_token_t* errors = md_script_ir_errors(state.script.ir);
@@ -981,8 +981,7 @@ int main(int argc, char** argv) {
                         if (md_script_ir_property_count(state.script.eval_ir) > 0) {
                             state.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&state](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;
-								md_trajectory_i* traj = state.mold.sys.trajectory;
-                                md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, traj, frame_beg, frame_end);
+                                md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, frame_beg, frame_end);
                             });
                             
 #if MEASURE_EVALUATION_TIME
@@ -1018,7 +1017,7 @@ int main(int argc, char** argv) {
                                 state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                     (void)thread_num;
                                     md_trajectory_i* traj = state.mold.sys.trajectory;
-                                    md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, traj, offset + beg, offset + end);
+                                    md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, offset + beg, offset + end);
                                 });
                                 task_system::enqueue_task(state.tasks.evaluate_filt);
                             }
@@ -1128,7 +1127,7 @@ int main(int argc, char** argv) {
                 state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
-                reset_view(&state.view.target, state.mold.sys);
+                reset_view(&state.view.target, state.mold.state);
             }
         }
 
@@ -1587,7 +1586,7 @@ static void draw_main_menu(ApplicationState* data) {
             if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, WORKSPACE_FILE_EXTENSION)) {
                     load_workspace(data, str_from_cstr(path_buf));
-                    reset_view(&data->view.camera, data->mold.sys, &data->representation.visibility_mask);
+                    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask);
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
@@ -1628,7 +1627,7 @@ static void draw_main_menu(ApplicationState* data) {
         */
         if (ImGui::BeginMenu("Visuals")) {
             if (ImGui::Button("Reset View")) {
-                reset_view(&data->view.target, data->mold.sys, &data->representation.visibility_mask);
+                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask);
             }
             ImGui::Separator();
             ImGui::Checkbox("Vsync", &data->app.window.vsync);
@@ -2055,10 +2054,8 @@ static void draw_main_menu(ApplicationState* data) {
                         x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
                         y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
                         z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                        md_trajectory_frame_header_t frame_header;
-
                         md_system_state_t frame_state = { mol.atom.count, x, y, z, {} };
-                        if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_header, &frame_state)) {
+                        if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_state)) {
                             MD_LOG_ERROR("Failed to extract frame data");
                         } 
                     } else {
@@ -2340,7 +2337,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                     create_default_representations(data);
                 }
                 data->animation = {};
-                reset_view(&data->view.target, data->mold.sys, &data->representation.visibility_mask);
+                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask);
             }
             [[fallthrough]];
         }
@@ -5725,7 +5722,7 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
 
     const md_system_t& sys = data.mold.sys;
     md_system_state_t state = { .alloc = temp.arena };
-    if (!md_trajectory_load_frame(data.mold.sys.trajectory, 0, NULL, &state)) {
+    if (!md_trajectory_load_frame(data.mold.sys.trajectory, 0, &state)) {
         return false;
     }
 
@@ -5736,8 +5733,8 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
     if (md_script_ir_valid(data.script.eval_ir)) {
         md_script_vis_ctx_t ctx = {
             .ir = data.script.eval_ir,
-            .mol = &data.mold.sys,
-            .traj = data.mold.sys.trajectory,
+            .sys = &data.mold.sys,
+            .state = &data.mold.state,
         };
         result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF);
     }
@@ -6234,12 +6231,14 @@ void draw_structure_export_window(ApplicationState* data) {
                             
                             // Write CRYST1 record with unit cell if available
                             if (traj) {
-                                md_trajectory_frame_header_t frame_header;
+                                // Coordinates are not needed, only the cell of the first exported
+                                // frame, which is delivered on the state.
+                                md_system_state_t frame_state = {};
                                 int first_frame = md_array_size(frame_indices) > 0 ? frame_indices[0] : 0;
-                                if (md_trajectory_load_frame(traj, first_frame, &frame_header, NULL)) {
-                                    if (frame_header.unitcell.flags != 0) {
+                                if (md_trajectory_load_frame(traj, first_frame, &frame_state)) {
+                                    if (frame_state.unitcell.flags != 0) {
                                         double a, b, c, alpha, beta, gamma;
-                                        md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &frame_header.unitcell);
+                                        md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &frame_state.unitcell);
                                         md_file_printf(file, "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f P 1           1\n", a, b, c, alpha, beta, gamma);
                                     }
                                 }
@@ -6270,7 +6269,7 @@ void draw_structure_export_window(ApplicationState* data) {
                         
                         for (size_t f = 0; f < num_frames; ++f) {
                             int frame_idx = frame_indices[f];
-                            if (!md_trajectory_load_frame(traj, frame_idx, NULL, &frame_state)) {
+                            if (!md_trajectory_load_frame(traj, frame_idx, &frame_state)) {
                                 VIAMD_LOG_ERROR("Failed to load frame %d from trajectory for structure export.", frame_idx);
                                 continue;
                             }
