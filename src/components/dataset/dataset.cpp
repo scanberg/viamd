@@ -1,11 +1,11 @@
 #include <viamd_event.h>
 #include <viamd.h>
 #include <event.h>
+#include <serialization_utils.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_log.h>
 #include <core/md_array.h>
 #include <core/md_bitfield.h>
 #include <md_system.h>
@@ -289,6 +289,25 @@ struct Dataset : viamd::EventHandler {
             case viamd::EventType_ViamdWindowDrawMenu:
                 ImGui::Checkbox("Dataset", &show_window);
                 break;
+            case viamd::EventType_ViamdSerialize: {
+				viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
+
+                // TODO: write atom type overrides (if any).
+                // Strategy: Compare against defaults and only write if any value differ.
+                // Write one complete section per each delta atom type
+                // Write only the propert(ies) within the type which is overwritten
+                break;
+            }
+			case viamd::EventType_ViamdDeserialize: {
+                viamd::deserialization_state_t &state = *(viamd::deserialization_state_t*)e.payload;
+                str_t section = viamd::section_header(state);
+				if (str_eq_cstr(section, "AtomType")) {
+					str_t ident, arg;
+                    while (viamd::next_entry(ident, arg, state)) {
+                    }
+				}
+				break;
+			}
             default:
                 break;
             }

@@ -514,15 +514,14 @@ struct VeloxChem : viamd::EventHandler {
     } rixs;
 
     // Settings + interaction state for the XPS plot.
-    // No cached arrays: the broadened curves are generated on the fly by an ImPlotGetter and the
-    // per-element peak arrays are a few tens of doubles built into the frame temp arena, so there is
-    // nothing worth keeping between frames.
+    // No cached arrays: the broadened curve is generated on the fly by an ImPlotGetter and the peak
+    // arrays are a few tens of doubles built into the frame temp arena, so there is nothing worth
+    // keeping between frames.
     struct Xps {
         broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
         double broadening_fwhm_ev = 0.5;    // Matches the default of plot_xps_spectrum()
 
         bool show_sticks = true;
-        bool cpk_colors  = true;    // Color each element by its CPK color instead of the ImPlot palette
         bool invert_x    = false;   // XPS binding energy axes are often drawn decreasing to the right
 
         // false -> every core hole contributes a stick of height 1 (what VeloxChem's plot does)
@@ -530,9 +529,17 @@ struct VeloxChem : viamd::EventHandler {
         // These differ only for delocalized holes, see the comment in draw_xps_plot().
         bool weight_by_contribution = false;
 
-        // Indices into the flat entry array, NOT into a group.
-        int hovered  = -1;
-        int selected = -1;
+        // Which element is on screen. One at a time: a peak is now an ATOM rather than an element,
+        // and core binding energies of different elements are hundreds of eV apart, so putting two
+        // elements on one axis leaves each of them an unreadable spike. Zero means nothing has been
+        // picked yet - the first group with entries is adopted on the first draw.
+        md_element_t element = 0;
+
+        // Index into the FLAT entry array, not into a group. -1 when the cursor is not on a peak.
+        // There is deliberately no 'selected' counterpart: a peak draws as selected when its atom is
+        // in the application selection mask, so the plot is a view of that mask and cannot drift
+        // out of sync with the viewport or with a selection made anywhere else.
+        int hovered = -1;
 
         uint64_t hash = 0;  // Refit the axes when the settings change
     } xps;
@@ -3641,16 +3648,18 @@ struct VeloxChem : viamd::EventHandler {
     // =================================================================================================
     // XPS
     //
-    // ImGui/ImPlot port of VeloxChem's spectrumplot.plot_xps_spectrum(). The python version draws one
-    // element per figure and takes an 'element' argument to pick which; here every element is instead
-    // a separate ImPlot item on shared axes, so they can be toggled individually from the legend.
+    // ImGui/ImPlot port of VeloxChem's spectrumplot.plot_xps_spectrum(). Like the python version this
+    // draws one element at a time, picked from a combo box listing only the elements that actually
+    // have core hole entries.
     //
-    // The broadened curve and the stick spectrum of a given element are registered under the SAME
-    // ImPlot label. ImPlot keys items by label id (RegisterOrGetItem), so the two draw calls resolve
-    // to one item: one legend entry, one show/hide state, one color. That is what makes an element
-    // behave as a single channel. It also means plot_xps_sticks() gets its color for free -- BeginItem
-    // stages the existing item color into ImPlotCol_Fill, so the sticks match the curve without the
-    // caller restating the style.
+    // Within that element every peak is one ATOM, so the plot doubles as a way to find the atom a
+    // binding energy belongs to: hovering a peak highlights its atom in the viewport and clicking
+    // adds it to the selection. That is also why there is no CPK coloring any more - the colour used
+    // to encode the element, which the combo box now carries, and per atom CPK would encode nothing
+    // at all since every peak on screen shares one element.
+    //
+    // Two ImPlot items, matching the other spectra in the Response window: "Broadened Spectrum" on Y1
+    // and "Peaks" on Y2, each with its own legend entry and show/hide state.
     // =================================================================================================
 
     // Per-element input to the broadening getter. Lives on the stack for the duration of one
@@ -3676,11 +3685,13 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // Draws the stick spectrum of one element as an ImPlot item under 'label'.
-    // 'sel' and 'hov' are indices into the flat entry array; 'base' is the offset of this group
-    // within it, so the caller can keep a single selection across all elements.
+    // 'hovered' is an index into the flat entry array and 'base' is the offset of this group within
+    // it, so a hover survives being compared against entries from any group.
+    // 'stick_selected' is per entry and comes from the application selection mask - the plot does not
+    // own a selection of its own.
     // Returns false if the item is hidden through the legend, in which case nothing was drawn.
     static bool plot_xps_sticks(const char* label, const md_vlx_xps_entry_t* entries, const double* stick_y,
-                                size_t count, size_t base, int& selected, int& hovered) {
+                                const bool* stick_selected, size_t count, size_t base, int& hovered) {
         const float bar_width_in_pixels    = 2.0f;
         const float point_radius_in_pixels = 3.0f;
 
@@ -3730,9 +3741,9 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             const int    flat_idx = (int)(base + i);
-            const ImVec4 color    = (flat_idx == hovered)  ? COLOR_PEAK_HOVER
-                                  : (flat_idx == selected) ? COLOR_PEAK_SELECTED
-                                                           : item_color;
+            const ImVec4 color    = (flat_idx == hovered)   ? COLOR_PEAK_HOVER
+                                  : (stick_selected[i])     ? COLOR_PEAK_SELECTED
+                                                            : item_color;
             const ImU32  col32    = ImGui::ColorConvertFloat4ToU32(color);
 
             draw_list.AddRectFilled(ImVec2{ p_min.x - bar_width_in_pixels * 0.5f, p_min.y },
@@ -3753,7 +3764,18 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    void draw_xps_plot(ImVec2 size = ImVec2(-1.0f, 350.0f)) {
+    // Maps an atom index as it appears in the vlx object onto an index into the loaded system. The
+    // two differ when the qm data covers only a subset of the system. Returns -1 when the entry has
+    // no atom at all - a delta-SCF entry can arrive without one - or when the mapping lands outside
+    // the system, in which case there is nothing to highlight.
+    int32_t xps_atom_index(int32_t vlx_atom_index, const ApplicationState& state) const {
+        if (vlx_atom_index < 0) return -1;
+        if ((size_t)vlx_atom_index >= md_vlx_number_of_atoms(vlx)) return -1;
+        const int32_t idx = qm_to_atom_idx ? qm_to_atom_idx[vlx_atom_index] : vlx_atom_index;
+        return (idx >= 0 && (size_t)idx < state.mold.sys.atom.count) ? idx : -1;
+    }
+
+    void draw_xps_plot(ApplicationState& state, ImVec2 size = ImVec2(-1.0f, 350.0f)) {
         const size_t num_groups  = md_vlx_xps_group_count(vlx);
         const size_t num_entries = md_vlx_xps_count(vlx);
         if (num_groups == 0 || num_entries == 0) return;
@@ -3765,18 +3787,63 @@ struct VeloxChem : viamd::EventHandler {
 
         constexpr int num_broadened_samples = 2048;
 
+        // Resolves the selected element, adopting the first non empty group when the selection is
+        // unset or no longer present. Called again after the combo so a change lands on the same
+        // frame it is made rather than one frame later.
+        auto resolve_group = [&]() -> const md_vlx_xps_group_t* {
+            const md_vlx_xps_group_t* g = md_vlx_xps_group_by_element(vlx, xps.element);
+            if (g && g->count > 0) return g;
+            for (size_t i = 0; i < num_groups; ++i) {
+                g = md_vlx_xps_group_by_index(vlx, i);
+                if (g && g->count > 0) {
+                    xps.element = g->element;
+                    return g;
+                }
+            }
+            return nullptr;
+        };
+
+        const md_vlx_xps_group_t* grp = resolve_group();
+        if (!grp) return;
+
         // ---- Settings ---------------------------------------------------------------------------
         const float avail_width = ImGui::GetContentRegionAvail().x;
         ImGui::PushItemWidth(MIN(avail_width, 200.0f));
+        defer { ImGui::PopItemWidth(); };
+
+        // The group list is exactly the set of elements that were computed, so listing it offers no
+        // element that would draw an empty plot.
+        {
+            const str_t cur_sym = md_util_element_symbol(grp->element);
+            char preview[8];
+            snprintf(preview, sizeof(preview), "%.*s", (int)cur_sym.len, cur_sym.ptr);
+            if (ImGui::BeginCombo("Element", preview)) {
+                for (size_t g = 0; g < num_groups; ++g) {
+                    const md_vlx_xps_group_t* it = md_vlx_xps_group_by_index(vlx, g);
+                    if (!it || it->count == 0) continue;
+                    const str_t sym = md_util_element_symbol(it->element);
+                    char item[32];
+                    snprintf(item, sizeof(item), "%.*s (%i)", (int)sym.len, sym.ptr, (int)it->count);
+                    if (ImGui::Selectable(item, it->element == xps.element)) {
+                        xps.element = it->element;
+                        xps.hovered = -1;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            // NOTE: no tooltip on the combo. IsItemHovered() after EndCombo() reports on whatever the
+            // popup left in LastItemData, not on the combo frame. The bracketed count is the number
+            // of core hole states computed for that element, one per atom.
+            grp = resolve_group();
+            if (!grp) return;
+        }
+
         static const double fwhm_min = 0.05;
         static const double fwhm_max = 5.0;
         ImGui::SliderScalar((const char*)u8"Broadening FWHM (eV)", ImGuiDataType_Double, &xps.broadening_fwhm_ev, &fwhm_min, &fwhm_max);
         ImGui::Combo("Broadening mode", (int*)(&xps.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
-        ImGui::PopItemWidth();
 
         ImGui::Checkbox("Sticks", &xps.show_sticks);
-        ImGui::SameLine();
-        ImGui::Checkbox("CPK colors", &xps.cpk_colors);
         ImGui::SameLine();
         ImGui::Checkbox("Invert energy axis", &xps.invert_x);
         ImGui::SameLine();
@@ -3787,14 +3854,28 @@ struct VeloxChem : viamd::EventHandler {
                               "     hole delocalized over N atoms sums to one instead of N.");
         }
 
-        // ---- Shared energy range -----------------------------------------------------------------
-        // Taken over every entry, not just the visible ones, so toggling a channel does not shift
-        // the axes underneath the user.
+        // ---- Per peak arrays ---------------------------------------------------------------------
+        // The broadening kernels take tightly packed arrays, so the strided entry fields are gathered
+        // here. A handful of doubles for one element, from the frame temp arena.
+        double* peaks_x        = md_temp_alloc_array(temp, double, grp->count);
+        double* peaks_y        = md_temp_alloc_array(temp, double, grp->count);
+        bool*   peaks_selected = md_temp_alloc_array(temp, bool,   grp->count);
+        for (size_t i = 0; i < grp->count; ++i) {
+            peaks_x[i] = grp->entries[i].ionization_energy;
+            peaks_y[i] = xps.weight_by_contribution ? grp->entries[i].contribution : 1.0;
+            const int32_t atom = xps_atom_index(grp->entries[i].atom_index, state);
+            peaks_selected[i]  = (atom >= 0) && md_bitfield_test_bit(&state.selection.selection_mask, (uint64_t)atom);
+        }
+
+        // ---- Energy range ------------------------------------------------------------------------
+        // Over the selected element only. Core binding energies of different elements sit hundreds of
+        // eV apart, so a range spanning all of them would compress the peaks actually on screen into
+        // a single unreadable spike.
         double x_min = DBL_MAX;
         double x_max = -DBL_MAX;
-        for (size_t i = 0; i < num_entries; ++i) {
-            x_min = MIN(x_min, all_entries[i].ionization_energy);
-            x_max = MAX(x_max, all_entries[i].ionization_energy);
+        for (size_t i = 0; i < grp->count; ++i) {
+            x_min = MIN(x_min, peaks_x[i]);
+            x_max = MAX(x_max, peaks_x[i]);
         }
         const double pad = 5.0;
         x_min = MAX(0.0, x_min - pad);
@@ -3802,7 +3883,8 @@ struct VeloxChem : viamd::EventHandler {
 
         uint64_t hash = md_hash64(&xps.broadening_fwhm_ev, sizeof(xps.broadening_fwhm_ev), xps.broadening_mode);
         hash = md_hash64(&xps.weight_by_contribution, sizeof(xps.weight_by_contribution), hash);
-        hash = md_hash64(all_entries, num_entries * sizeof(md_vlx_xps_entry_t), hash);
+        hash = md_hash64(&xps.element, sizeof(xps.element), hash);
+        hash = md_hash64(grp->entries, grp->count * sizeof(md_vlx_xps_entry_t), hash);
         const bool refit = (hash != xps.hash);
         xps.hash = hash;
 
@@ -3812,7 +3894,10 @@ struct VeloxChem : viamd::EventHandler {
 
         const ImPlotAxisFlags x_flags = xps.invert_x ? ImPlotAxisFlags_Invert : ImPlotAxisFlags_None;
 
-        if (ImPlot::BeginPlot("XPS", size)) {
+        // NoMenus: right click removes an atom from the selection here, and ImPlot would otherwise
+        // open its context menu on the very same event. The ramachandran plot gives up its context
+        // menu for the same reason.
+        if (ImPlot::BeginPlot("XPS", size, ImPlotFlags_NoMenus)) {
             ImPlot::SetupAxis(ImAxis_X1, "Binding energy (eV)", x_flags);
             ImPlot::SetupAxis(ImAxis_Y1, "Intensity (a.u.)");
             if (xps.show_sticks) {
@@ -3821,70 +3906,71 @@ struct VeloxChem : viamd::EventHandler {
             ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
             ImPlot::SetupFinish();
 
-            // Hover is recomputed from scratch every frame by plot_xps_sticks.
-            if (xps.show_sticks) xps.hovered = -1;
+            // Recomputed from scratch every frame by plot_xps_sticks. Cleared unconditionally so that
+            // hiding the sticks - through the checkbox or the legend - cannot leave a stale hover
+            // driving the tooltip and the highlight.
+            xps.hovered = -1;
 
-            for (size_t g = 0; g < num_groups; ++g) {
-                const md_vlx_xps_group_t* grp = md_vlx_xps_group_by_index(vlx, g);
-                if (!grp || grp->count == 0) continue;
+            XpsCurve curve = {
+                peaks_x, peaks_y, grp->count, x_min, x_max,
+                xps.broadening_fwhm_ev, num_broadened_samples, xps.broadening_mode,
+            };
+            ImPlot::SetAxis(ImAxis_Y1);
+            ImPlot::PlotLineG("Broadened Spectrum", xps_curve_getter, &curve, num_broadened_samples);
 
-                const str_t sym = md_util_element_symbol(grp->element);
-                char label[16];
-                snprintf(label, sizeof(label), "%.*s", (int)sym.len, sym.ptr);
+            if (xps.show_sticks) {
+                ImPlot::SetAxis(ImAxis_Y2);
+                const size_t base = (size_t)(grp->entries - all_entries);
+                plot_xps_sticks("Peaks", grp->entries, peaks_y, peaks_selected, grp->count, base, xps.hovered);
+            }
 
-                // The broadening kernels take tightly packed arrays, so the strided entry fields are
-                // gathered here. A handful of doubles per element, from the frame temp arena.
-                double* peaks_x = md_temp_alloc_array(temp, double, grp->count);
-                double* peaks_y = md_temp_alloc_array(temp, double, grp->count);
-                for (size_t i = 0; i < grp->count; ++i) {
-                    peaks_x[i] = grp->entries[i].ionization_energy;
-                    peaks_y[i] = xps.weight_by_contribution ? grp->entries[i].contribution : 1.0;
-                }
+            // ---- Interaction ---------------------------------------------------------------------
+            const bool plot_hovered = ImPlot::IsPlotHovered();
+            const md_vlx_xps_entry_t* hov_entry =
+                (xps.hovered >= 0 && xps.hovered < (int)num_entries) ? &all_entries[xps.hovered] : nullptr;
+            const int32_t hov_atom = hov_entry ? xps_atom_index(hov_entry->atom_index, state) : -1;
 
-                if (xps.cpk_colors) {
-                    const ImVec4 col = ImGui::ColorConvertU32ToFloat4(md_util_element_cpk_color(grp->element));
-                    ImPlot::SetNextLineStyle(col);
-                    ImPlot::SetNextFillStyle(col);
-                }
-
-                // Broadened curve. This registers the item, so it must come before the sticks.
-                XpsCurve curve = {
-                    peaks_x, peaks_y, grp->count, x_min, x_max,
-                    xps.broadening_fwhm_ev, num_broadened_samples, xps.broadening_mode,
-                };
-                ImPlot::SetAxis(ImAxis_Y1);
-                ImPlot::PlotLineG(label, xps_curve_getter, &curve, num_broadened_samples);
-
-                if (xps.show_sticks) {
-                    ImPlot::SetAxis(ImAxis_Y2);
-                    const size_t base = (size_t)(grp->entries - all_entries);
-                    plot_xps_sticks(label, grp->entries, peaks_y, grp->count, base, xps.selected, xps.hovered);
+            // While the cursor is inside the plot this owns the highlight mask, which is the contract
+            // every other hover provider in the application follows. Cleared unconditionally, so
+            // moving off a peak but staying inside the plot drops the highlight rather than leaving
+            // the last atom lit up.
+            if (plot_hovered) {
+                md_bitfield_clear(&state.selection.highlight_mask);
+                if (hov_atom >= 0) {
+                    md_bitfield_set_bit(&state.selection.highlight_mask, (uint64_t)hov_atom);
                 }
             }
 
-            if (xps.show_sticks && ImPlot::IsPlotHovered() && xps.hovered >= 0 && xps.hovered < (int)num_entries) {
-                const md_vlx_xps_entry_t& e = all_entries[xps.hovered];
-                const str_t sym = md_util_element_symbol(e.element);
+            if (plot_hovered && hov_entry) {
+                const str_t sym = md_util_element_symbol(hov_entry->element);
                 if (ImGui::BeginTooltip()) {
                     // Atom index is shown 1-based to match the labels VeloxChem prints.
-                    if (e.atom_index >= 0) {
-                        ImGui::Text("%.*s%i", (int)sym.len, sym.ptr, e.atom_index + 1);
+                    if (hov_entry->atom_index >= 0) {
+                        ImGui::Text("%.*s%i", (int)sym.len, sym.ptr, hov_entry->atom_index + 1);
                     } else {
                         ImGui::Text("%.*s (unassigned atom)", (int)sym.len, sym.ptr);
                     }
-                    ImGui::Text("Binding energy: %.3f eV", e.ionization_energy);
-                    ImGui::Text("Contribution: %.4g", e.contribution);
-                    ImGui::Text("MO index: %i", e.mo_index);
-                    if (e.is_delocalized) {
+                    ImGui::Text("Binding energy: %.3f eV", hov_entry->ionization_energy);
+                    ImGui::Text("Contribution: %.4g", hov_entry->contribution);
+                    ImGui::Text("MO index: %i", hov_entry->mo_index);
+                    if (hov_entry->is_delocalized) {
+                        // The hole is shared with the other atoms carrying this same mo_index; only
+                        // the atom this entry names is highlighted.
                         ImGui::TextUnformatted("Delocalized core hole");
                     }
                     ImGui::EndTooltip();
                 }
             }
 
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
-                ImPlot::IsPlotHovered()) {
-                xps.selected = (xps.hovered == xps.selected) ? -1 : xps.hovered;
+            // Left adds the atom to the selection, right removes it - the same convention the
+            // ramachandran plot and the dataset window use. Drags are excluded so that panning or
+            // box selecting does not also grab whatever sat under the cursor when the drag began.
+            if (plot_hovered && hov_atom >= 0) {
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
+                    md_bitfield_set_bit(&state.selection.selection_mask, (uint64_t)hov_atom);
+                } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
+                    md_bitfield_clear_bit(&state.selection.selection_mask, (uint64_t)hov_atom);
+                }
             }
 
             ImPlot::EndPlot();
@@ -4720,7 +4806,7 @@ struct VeloxChem : viamd::EventHandler {
             if (has_xps) {
                 ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
                 if (ImGui::TreeNodeEx("XPS", tree_flags)) {
-                    draw_xps_plot();
+                    draw_xps_plot(state);
                 }
             }
 
