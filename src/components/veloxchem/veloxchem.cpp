@@ -5356,57 +5356,61 @@ struct VeloxChem : viamd::EventHandler {
                     ImGui::SameLine();
                     ImGui::Checkbox("Invert Y", &vib.invert_y);
                     */
+
                     ImPlotAxisFlags x_flags = vib.invert_x ? ImPlotAxisFlags_Invert : 0;
                     ImPlotAxisFlags y_flags = vib.invert_y ? ImPlotAxisFlags_Invert : 0;
 
-                    if (ImGui::TreeNodeEx("IR", tree_flags)) {
+                    if (x_peaks && y_peaks_ir && num_normal_modes) {
+                        if (ImGui::TreeNodeEx("IR", tree_flags)) {
 
-                        ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
+                            ImPlot::SetNextAxisLinks(ImAxis_X1, &x_min, &x_max);
 
-                        if (refit) {
-                            ImPlot::SetNextAxesToFit();
-                        }
-
-                        if (ImPlot::BeginPlot("IR Spectrum")) {
-                            ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
-
-                            ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flags);
-                            ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"Absorption Cross Section", y_flags);
-                            ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"IR Intensity (km/mol)", y_flags | ImPlotAxisFlags_AuxDefault);
-
-                            ImPlot::SetupFinish();
-
-                            ImPlot::SetAxis(ImAxis_Y1);
-						    SpectrumGetterData getter_data = { x_peaks, y_peaks_ir, num_normal_modes, x_min, x_max, vib.broadening_fwhm, num_samples };
-						    ImPlot::PlotLineG("Broadening", getter, &getter_data, num_samples);
-
-                            ImPlot::SetAxis(ImAxis_Y2);
-                            plot_peaks("IR Intensity", x_peaks, y_peaks_ir, num_normal_modes, vib.selected, vib.hovered);
-
-                            if (ImPlot::FitThisFrame()) {
-                                ImPlotPlot* plot = ImPlot::GetCurrentPlot();
-                                if (plot) {
-                                    double min_x = DBL_MAX, max_x = -DBL_MAX, max_y = -DBL_MAX;
-                                    for (size_t i = 0; i < num_normal_modes; ++i) {
-                                        min_x = MIN(min_x, x_peaks[i]);
-                                        max_x = MAX(max_x, x_peaks[i]);
-                                        max_y = MAX(max_y, y_peaks_ir[i]);
-                                    }
-
-                                    double normalization_factor = 1.0;
-                                    if (vib.broadening_mode == BROADENING_MODE_LORENTZIAN) {
-                                        normalization_factor = 1.0 / PI;
-                                    } else {
-                                        normalization_factor = sqrt(2.0) / (sigma_from_fwhm(vib.broadening_fwhm) * sqrt(PI));
-                                    }
-
-                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(min_x, max_x);
-                                    plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(0.0, 1.2 * max_y * normalization_factor);
-                                    plot->Axes[ImAxis_Y2].FitExtents = ImPlotRange(0.0, 1.1 * max_y);
-                                }
+                            if (refit) {
+                                ImPlot::SetNextAxesToFit();
                             }
 
-                            ImPlot::EndPlot();
+                            if (ImPlot::BeginPlot("IR Spectrum")) {
+                                ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+
+                                ImPlot::SetupAxis(ImAxis_X1, (const char*)u8"Harmonic Frequency (cm⁻¹)", x_flags);
+                                ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"Absorption Cross Section", y_flags);
+                                ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"IR Intensity (km/mol)", y_flags | ImPlotAxisFlags_AuxDefault);
+
+                                ImPlot::SetupFinish();
+
+                                ImPlot::SetAxis(ImAxis_Y1);
+                                SpectrumGetterData getter_data = { x_peaks, y_peaks_ir, num_normal_modes, x_min, x_max, vib.broadening_fwhm, num_samples };
+                                ImPlot::PlotLineG("Broadening", getter, &getter_data, num_samples);
+
+                                ImPlot::SetAxis(ImAxis_Y2);
+                                plot_peaks("IR Intensity", x_peaks, y_peaks_ir, num_normal_modes, vib.selected, vib.hovered);
+
+                                if (ImPlot::FitThisFrame()) {
+                                    ImPlotPlot* plot = ImPlot::GetCurrentPlot();
+                                    if (plot) {
+                                        double min_x = DBL_MAX, max_x = -DBL_MAX, max_y = -DBL_MAX;
+                                        for (size_t i = 0; i < num_normal_modes; ++i) {
+                                            min_x = MIN(min_x, x_peaks[i]);
+                                            max_x = MAX(max_x, x_peaks[i]);
+                                            max_y = MAX(max_y, y_peaks_ir[i]);
+                                        }
+
+                                        double normalization_factor = 1.0;
+                                        if (vib.broadening_mode == BROADENING_MODE_LORENTZIAN) {
+                                            normalization_factor = 1.0 / PI;
+                                        }
+                                        else {
+                                            normalization_factor = sqrt(2.0) / (sigma_from_fwhm(vib.broadening_fwhm) * sqrt(PI));
+                                        }
+
+                                        plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(min_x, max_x);
+                                        plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(0.0, 1.2 * max_y * normalization_factor);
+                                        plot->Axes[ImAxis_Y2].FitExtents = ImPlotRange(0.0, 1.1 * max_y);
+                                    }
+                                }
+
+                                ImPlot::EndPlot();
+                            }
                         }
                     }
 
@@ -5506,11 +5510,21 @@ struct VeloxChem : viamd::EventHandler {
 
                     ImVec2 table_size = {0, 0};
 
-                    int num_cols = 3 + (int)num_external_frequencies;
+                    int num_cols = 1 + (int)num_external_frequencies;
+					if (x_peaks) {
+						num_cols++;
+					}
+					if (y_peaks_ir) {
+						num_cols++;
+					}
                     if (ImGui::BeginTable("table", num_cols, flags, table_size, 0)) {
                         ImGui::TableSetupColumn("Vibration mode", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("Harmonic Frequency", columns_base_flags, 0.0f);
-                        ImGui::TableSetupColumn("IR Intensity", columns_base_flags, 0.0f);
+                        if (x_peaks) {
+                            ImGui::TableSetupColumn("Harmonic Frequency", columns_base_flags, 0.0f);
+                        }
+                        if (y_peaks_ir) {
+                            ImGui::TableSetupColumn("IR Intensity", columns_base_flags, 0.0f);
+                        }
                         for (size_t i = 0; i < num_external_frequencies; ++i) {
                             char label[32];
                             double freq = external_frequencies[i];
@@ -5545,10 +5559,14 @@ struct VeloxChem : viamd::EventHandler {
                             if (ImGui::Selectable(label, is_sel || is_hov, selectable_flags)) {
                                 vib.selected = (vib.selected == row_n) ? -1 : row_n;
                             }
-                            ImGui::TableNextColumn();
-                            ImGui::Text("%12.6f", x_peaks[row_n]);
-                            ImGui::TableNextColumn();
-                            ImGui::Text("%12.6f", y_peaks_ir[row_n]);
+                            if (x_peaks) {
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%12.6f", x_peaks[row_n]);
+                            }
+							if (y_peaks_ir) {
+                                ImGui::TableNextColumn();
+                                ImGui::Text("%12.6f", y_peaks_ir[row_n]);
+                            }
                             for (size_t i = 0; i < num_external_frequencies; ++i) {
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%12.6f", y_raman_activities[i][row_n]);
