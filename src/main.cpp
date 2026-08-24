@@ -1016,7 +1016,6 @@ int main(int argc, char** argv) {
                             if (beg_frame != end_frame) {
                                 state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                     (void)thread_num;
-                                    md_trajectory_i* traj = state.mold.sys.trajectory;
                                     md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, offset + beg, offset + end);
                                 });
                                 task_system::enqueue_task(state.tasks.evaluate_filt);
@@ -1175,12 +1174,19 @@ int main(int argc, char** argv) {
             viamd::event_system_enqueue_event(viamd::EventType_ViamdRepresentationChanged, viamd::EventPayloadType_ApplicationState, &state);
         }
 
+        // Process the queued events BEFORE uploading to the GPU and rendering.
+        // The ViamdSystemStateChanged handler applies the toggled operations (recenter, apply
+        // pbc, unwrap) directly to mold.state coordinates. update_md_buffers uploads those
+        // coordinates and then clears dirty_gpu_buffers, so anything processed after it is not
+        // merely rendered a frame late - it is discarded outright, because the next frame
+        // re-interpolates mold.state from the trajectory before it is ever uploaded.
+        viamd::event_system_process_event_queue();
+
         update_md_buffers(&state);
         update_display_properties(&state);
 
         render(&state);
 
-        viamd::event_system_process_event_queue();
         task_system::execute_main_task_queue();
 
         // Reset frame allocator
@@ -6286,9 +6292,6 @@ void draw_structure_export_window(ApplicationState* data) {
                     }
                     else {
                         // Single frame from system
-                        float* x = state->x;
-                        float* y = state->y;
-                        float* z = state->z;
                         size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), &data->mold.state);
                         
                         if (struct_exp.selected_file_format == 0) { // XYZ

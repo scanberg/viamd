@@ -623,6 +623,7 @@ void free_system_data(ApplicationState* data) {
     //md_molecule_free(&data->mold.sys, persistent_alloc);
     md_arena_allocator_reset(data->mold.sys_alloc);
     MEMSET(&data->mold.sys, 0, sizeof(data->mold.sys));
+    MEMSET(&data->mold.state, 0, sizeof(data->mold.state));
 
     md_array_free(data->operations.initial_frame.xyzw, data->allocator.persistent);
     data->operations.initial_frame.xyzw = nullptr;
@@ -933,21 +934,6 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 }
             }
         }
-        /*else if (str_eq(section, STR_LIT("AtomElementMapping"))) {
-            str_t lbl = {};
-            int elem = 0;
-            str_t ident, arg;
-            while (viamd::next_entry(ident, arg, state)) {
-                if (str_eq(ident, STR_LIT("Label"))) {
-                    viamd::extract_str(lbl, arg);
-                } else if (str_eq(ident, STR_LIT("Element"))) {
-                    viamd::extract_int(elem, arg);
-                }
-            }
-            if (!str_empty(lbl) && elem) {
-                add_atom_elem_mapping(data, lbl, (md_element_t)elem);
-            }
-        } */
         else if (str_eq(section, STR_LIT("UserBonds"))) {
             str_t ident, arg;
             while (viamd::next_entry(ident, arg, state)) {
@@ -2237,7 +2223,11 @@ void recenter_update_target_data(ApplicationState* state) {
             float* temp_y = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
             float* temp_z = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
 
-            md_system_state_t temp_state = { (size_t)num_atoms, temp_x, temp_y, temp_z, {} };
+            md_system_state_t temp_state = { 0 };
+            temp_state.num_atoms = num_atoms;
+            temp_state.x = temp_x;
+            temp_state.y = temp_y;
+            temp_state.z = temp_z;
             md_trajectory_load_frame(state->mold.sys.trajectory, 0, &temp_state);
 
             md_bitfield_iter_t it = md_bitfield_iter_create(&target_mask);
@@ -2248,8 +2238,11 @@ void recenter_update_target_data(ApplicationState* state) {
                 state->operations.initial_frame.xyzw[dst_idx++] = vec4_set(temp_x[src_idx], temp_y[src_idx], temp_z[src_idx], mass);
             }
 
-            md_util_unwrap_vec4(state->operations.initial_frame.xyzw, NULL, count, &state->mold.sys.bond, &state->mold.state.unitcell);
-            state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.xyzw, NULL, count, NULL);
+            // Place the reference in mutually consistent images against ITS OWN cell - these are
+            // frame 0's coordinates, and under a varying cell that is not the cell the viewport is
+            // currently showing.
+            md_util_deperiodize_self_vec4(state->operations.initial_frame.xyzw, count, &temp_state.unitcell,
+                                          &state->operations.initial_frame.com);
         }
     }
 }
@@ -2270,9 +2263,6 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
         vec4_t* target_xyzw = md_temp_alloc_array(temp, vec4_t, count);
         md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
 
-        // Unwrap target structure (required for rotation)
-        md_util_unwrap_vec4(target_xyzw, NULL, count, &app->mold.sys.bond, &app->mold.state.unitcell);
-
         // Calculate target
         vec3_t target = {0};
         if (md_unitcell_flags(&app->mold.state.unitcell) != 0) {
@@ -2281,24 +2271,31 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
             target = mat3_mul_vec3(A, vec3_set1(0.5f));
         } 
 
-        // Calculate COM
-        vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, count, NULL);
-
-
-        // Calculate Rotation
+        // Place the target in mutually consistent images and take its centre. When there is a
+        // reference to hold the orientation against, the rotation, the centre and each point's
+        // periodic image are solved for together, so the images are chosen to minimise the alignment
+        // residual rather than being committed to beforehand by a criterion unrelated to it.
+        vec3_t target_com = {0};
         mat3_t R = mat3_ident();
-        if (app->operations.fixate_orientation && app->operations.initial_frame.xyzw) {
-            ASSERT(md_array_size(app->operations.initial_frame.xyzw) == count);
-            const vec4_t* xyzw[2] = {
-                app->operations.initial_frame.xyzw,
-                target_xyzw,
-            };
-            const vec3_t com[2] = {
-                app->operations.initial_frame.com,
-                target_com,
-            };
-            R = mat3_optimal_rotation_vec4(xyzw, NULL, count, com);
+
+        // The reference has to have been built from the SAME target that is being fitted now.
+        // A size match is not sufficient: the selection can change to a different set of equal
+        // size between recenter_update() and this call, which would silently pair up unrelated
+        // atoms and yield a garbage rotation. The version is the identity of the target.
+        const bool reference_valid =
+            app->operations.initial_frame.xyzw &&
+            md_array_size(app->operations.initial_frame.xyzw) == count &&
+            app->operations.initial_frame.target_version == recenter_get_active_target_version(app);
+
+        if (app->operations.fixate_orientation && reference_valid)
+        {
+            md_util_optimal_rotation_pbc_vec4(&R, &target_com, target_xyzw,
+                                              app->operations.initial_frame.xyzw,
+                                              app->operations.initial_frame.com,
+                                              target_xyzw, count, &app->mold.state.unitcell);
             R = mat3_orthonormalize(R);
+        } else {
+            md_util_deperiodize_self_vec4(target_xyzw, count, &app->mold.state.unitcell, &target_com);
         }
         const mat4_t A = app->operations.initial_frame.alignment_mat;
         mat4_t T = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
@@ -3076,7 +3073,12 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             
             md_system_t& sys = app->mold.sys;
 			md_system_state_t& sys_state = app->mold.state;
-            mat4_t recenter_transform = { 0 };
+            // Identity, not the zero matrix: a transform that never gets computed must leave
+            // the system where it is rather than collapse it onto the origin.
+            mat4_t recenter_transform = mat4_ident();
+
+            // Whether any operation below actually rewrote mold.state coordinates.
+            bool coords_modified = false;
 
             if (app->operations.recalc_bonds) {
                 static int64_t cur_nearest_frame = -1;
@@ -3134,6 +3136,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
                     tasks[num_tasks++] = calc_transform_task;
                     tasks[num_tasks++] = apply_transform_task;
+                    coords_modified = true;
                 }
             }
 
@@ -3147,6 +3150,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     md_util_pbc(x, y, z, NULL, count, &sys_state.unitcell);
                 });
                 tasks[num_tasks++] = pbc_task;
+                coords_modified = true;
             } 
 
             if (state->operations.unwrap_structures) {
@@ -3160,6 +3164,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     }
                 });
                 tasks[num_tasks++] = unwrap_task;
+                coords_modified = true;
             }
 
             if (num_tasks > 0) {
@@ -3168,6 +3173,13 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 }
                 task_system::enqueue_task(tasks[0]);
                 task_system::task_wait_for(tasks[num_tasks - 1]);
+            }
+
+            // The operations above rewrote the coordinates that update_md_buffers uploads.
+            // Nothing else flags them: the synchronous broadcasts of this event do not pass
+            // through the interpolation step that would otherwise have set the bit.
+            if (coords_modified) {
+                app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
             }
             break;
         }
