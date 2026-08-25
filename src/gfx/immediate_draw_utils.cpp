@@ -140,7 +140,7 @@ static inline void append_draw_command(Queue& ctx, size_t count, GLenum primitiv
 }
 
 static void init_queue_storage(Queue& q, md_allocator_i* arena) {
-    MEMSET(&q, 0, sizeof(Queue));
+    q = Queue{};
     q.arena = arena;
     md_array_ensure(q.vertices, 100000, q.arena);
     md_array_ensure(q.indices, 100000, q.arena);

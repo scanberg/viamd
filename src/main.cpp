@@ -249,17 +249,6 @@ static void downsample_histogram(float* dst_bins, int num_dst_bins, const float*
     }
 }
 
-static void scale_histogram(float* bins, const float* weights, int num_bins) {
-    ASSERT(bins);
-    ASSERT(weights);
-
-    for (int i = 0; i < num_bins; ++i) {
-        if (weights[i]) {
-            bins[i] /= weights[i];
-        }
-    }
-}
-
 static double frame_to_time(double frame, const ApplicationState& data) {
     const int64_t num_frames = md_array_size(data.timeline.x_values);
     ASSERT(num_frames);
@@ -311,15 +300,12 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 static void init_display_properties(ApplicationState* state);
 static void update_display_properties(ApplicationState* state);
 
-static void update_density_volume(ApplicationState* state);
-
 static void update_view_param(ApplicationState* state);
 
 //static void init_display_properties(ApplicationState* state);
 //static void update_density_volume_texture(ApplicationState* state);
 
 static void render(ApplicationState* state);
-static void apply_postprocessing(const ApplicationState& state);
 static void draw_representations_opaque(ApplicationState* state);
 static void draw_representations_opaque_lean_and_mean(ApplicationState* state, uint32_t mask = 0xFFFFFFFFU);
 static void draw_representations_transparent(ApplicationState* state);
@@ -352,11 +338,6 @@ static void create_screenshot(str_t path);
 static void modify_selection(ApplicationState* state, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(state);
     modify_field(&state->selection.selection_mask, atom_mask, op);
-}
-
-static void modify_selection(ApplicationState* state, md_urange_t range, SelectionOperator op = SelectionOperator::Set) {
-    ASSERT(state);
-    modify_field(&state->selection.selection_mask, range, op);
 }
 
 int main(int argc, char** argv) {
@@ -772,7 +753,6 @@ int main(int argc, char** argv) {
         }
 
         if (time_changed) {
-            md_system_state_t interpolate_system_state = {0};
             state.mold.interpolate_system_state = true;
             time_stopped = false;
 
@@ -2271,7 +2251,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                 md_lammps_atom_format_t format = md_lammps_atom_format_from_file(path);
                 state.atom_format_idx = format;
 				const char* format_str = atom_format_strings[format];
-                strncpy(state.atom_format_buf, format_str, sizeof(state.atom_format_buf));
+                snprintf(state.atom_format_buf, sizeof(state.atom_format_buf), "%s", format_str);
             }
             state.atom_format_idx = CLAMP(state.atom_format_idx, 0, MD_LAMMPS_ATOM_FORMAT_COUNT - 1);
 
@@ -2281,7 +2261,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                         state.atom_format_idx = i;
                         int source_idx = i > 0 ? i : MD_LAMMPS_ATOM_FORMAT_FULL;
                         const char* format_str = atom_format_strings[source_idx];
-                        strncpy(state.atom_format_buf, format_str, sizeof(state.atom_format_buf));
+                        snprintf(state.atom_format_buf, sizeof(state.atom_format_buf), "%s", format_str);
                     }
                 }
                 ImGui::EndCombo();
@@ -2484,52 +2464,6 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     }
     if (num_items > 1) sb += "}";
     md_temp_end(temp);
-}
-
-static void write_script_atom_ranges(md_strb_t* sb, const md_bitfield_t* bf, int ref_idx = 0) {
-    ASSERT(sb);
-    ASSERT(bf);
-
-    const int64_t popcount = md_bitfield_popcount(bf);
-
-    md_strb_fmt(sb, "atom(");
-
-    if (popcount > 1) {
-        md_strb_push_char(sb, '{');
-    }
-
-    int range_beg = -1;
-    int prev_idx  = -1;
-
-    uint64_t beg_idx = bf->beg_bit;
-    uint64_t end_idx = bf->end_bit;
-    while ((beg_idx = md_bitfield_scan(bf, beg_idx, end_idx)) != 0) {
-        int idx = (int)beg_idx - 1;
-        if (range_beg == -1) range_beg = idx;
-
-        if (idx - prev_idx > 1) {
-            if (prev_idx > range_beg) {
-                md_strb_fmt(sb, "%i:%i,", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
-            } else if (prev_idx != -1) {
-                md_strb_fmt(sb, "%i,", prev_idx - ref_idx + 1);
-            }
-            range_beg = idx;
-        }
-
-        prev_idx = idx;
-    }
-
-    md_strb_pop(sb, 1);
-    if (prev_idx - range_beg > 0) {
-        md_strb_fmt(sb, "%i:%i", range_beg - ref_idx + 1, prev_idx - ref_idx + 1);
-    } else if (prev_idx != -1) {
-        md_strb_fmt(sb, "%i", prev_idx - ref_idx + 1);
-    }
-
-    if (popcount > 1) {
-        md_strb_push_char(sb, '}');
-    }
-    md_strb_push_char(sb, ')');
 }
 
 static md_array(str_t) generate_script_selection_suggestions(str_t ident, const md_bitfield_t* bf, const md_system_t* sys) {
@@ -2750,6 +2684,8 @@ static str_t create_unique_identifier(const md_script_ir_t* ir, str_t base, md_a
 
 // # context_menu
 void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
+    // @Robin: Will hit ever be used here? (Possibly remove argument)
+    (void)hit;
     ASSERT(state);
 
     if (!state->mold.sys.atom.count) return;
@@ -3225,7 +3161,6 @@ static void draw_animation_window(ApplicationState* data) {
             for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
                 if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
                     data->animation.interpolation = (InterpolationMode)i;
-					md_system_state_t interpolate_system_state = {0};
 					data->mold.interpolate_system_state = true;
                     data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 }
@@ -4033,12 +3968,12 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
             float* y_vals = (float*)md_alloc(frame_alloc, args.values.count * sizeof(float));
             for (int i = 0; i < args.values.count; ++i) {
                 float val = args.values.y[i];
-                y_vals[i] = (args.value_filter.min < val && val < args.value_filter.max) ? args.values.max_y : -INFINITY;
+                y_vals[i] = (args.value_filter.min < val && val < args.value_filter.max) ? args.values.max_y : -FLT_MAX;
             }
 
             const ImVec4 filter_frame_color = ImVec4(1, 1, 1, 1);
             ImPlot::SetNextFillStyle(filter_frame_color, 0.15f);
-            ImPlot::PlotShaded("##value_filter", args.values.x, y_vals, args.values.count, -INFINITY);
+            ImPlot::PlotShaded("##value_filter", args.values.x, y_vals, args.values.count, -FLT_MAX);
         }
 
         if (args.filter.show) {
@@ -4226,27 +4161,6 @@ static double distance_to_linesegment(ImPlotPoint p0, ImPlotPoint p1, ImPlotPoin
         double wy = p.y - (p0.y + vy * t);
         double d_ww = wx*wx + wy*wy;
         return sqrt(d_ww);
-    }
-}
-
-static float distance_to_linesegment(vec2_t line_beg, vec2_t line_end, vec2_t point) {
-
-    vec2_t v = vec2_sub(line_end, line_beg);
-    vec2_t u = vec2_sub(point, line_beg);
-    float dot = vec2_dot(u,v);
-    float len2 = vec2_dot(v,v);
-
-    if (len2 < 1.0e-5f) {
-        return vec2_dist(point, line_beg);
-    }
-
-    float t = dot / len2;
-    if (t < 0.0f) {
-        return vec2_dist(point, line_beg);
-    } else if (t > 1.0f) {
-        return vec2_dist(point, line_end);
-    } else {
-        return vec2_dist(point, vec2_add(line_beg, vec2_mul1(v, t)));
     }
 }
 
@@ -5634,8 +5548,6 @@ static void draw_script_editor_window(ApplicationState* state) {
 static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename) {
     ASSERT(column_data);
     ASSERT(column_labels);
-    ASSERT(num_columns >= 0);
-    ASSERT(num_rows >= 0);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -5683,8 +5595,6 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
 static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename) {
     ASSERT(column_data);
     ASSERT(column_labels);
-    ASSERT(num_columns >= 0);
-    ASSERT(num_rows >= 0);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -6522,9 +6432,6 @@ static void render(ApplicationState* state) {
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
-    // Immediate mode graphics
-    const mat4_t model_view_mat = state->view.param.matrix.curr.view;
-
     if (state->simulation_box.enabled && state->mold.state.unitcell.flags != 0) {
         mat3_t A = { 0 };
 		md_unitcell_A_extract_float(A.elem, &state->mold.state.unitcell);
@@ -6926,7 +6833,7 @@ static void draw_representations_opaque(ApplicationState* state) {
             } else if (rep.type == RepresentationType::DipoleMoment) {
                 // immediate draw of dipole moment as arrow
                 size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
-                if (rep.dipole.dipole_idx <= 0 && rep.dipole.dipole_idx < num_dipoles) {
+                if (rep.dipole.dipole_idx >= 0 && (size_t)rep.dipole.dipole_idx < num_dipoles) {
                     immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
 					immediate::set_picking_base_idx(scope, state->picking_range_dipole.beg + rep.dipole.dipole_idx);
                     const DipoleMoment& dipole = state->representation.info.dipole_moments[rep.dipole.dipole_idx];

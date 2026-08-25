@@ -110,6 +110,7 @@ void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
 
 bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, const LoaderState& state) {
     ASSERT(out_sys);
+    ASSERT(out_state);
 
     md_trajectory_flags_t traj_flags = MD_TRAJECTORY_FLAG_NONE;
     if (state.flags & LoaderFlag_DisableCacheWrite) {

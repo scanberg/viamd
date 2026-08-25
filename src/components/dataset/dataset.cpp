@@ -154,7 +154,6 @@ struct Dataset : viamd::EventHandler {
         defer { md_temp_end(temp_scope); };
         
         md_array_resize(atom_types, type_count, arena);
-        MEMSET(atom_types, 0, md_array_bytes(atom_types));
 
         // Map atom types into dataset items
         for (size_t i = 0; i < type_count; ++i) {
@@ -290,9 +289,7 @@ struct Dataset : viamd::EventHandler {
                 ImGui::Checkbox("Dataset", &show_window);
                 break;
             case viamd::EventType_ViamdSerialize: {
-				viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
-
-                // TODO: write atom type overrides (if any).
+                // TODO: write atom type overrides (if any). The payload is a viamd::serialization_state_t.
                 // Strategy: Compare against defaults and only write if any value differ.
                 // Write one complete section per each delta atom type
                 // Write only the propert(ies) within the type which is overwritten
@@ -501,7 +498,6 @@ struct Dataset : viamd::EventHandler {
             ImGui::Checkbox("Use single letter codes for amino and nucleic acids", &use_short_labels);
 
             if (num_entities && ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
-                const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.4f, ImGui::GetFontSize() * 1.1f);
 
                 for (size_t ent_idx = 0; ent_idx < num_entities; ++ent_idx) {
                     char buf[256];

@@ -169,19 +169,19 @@ enum class RepresentationType {
     Count
 };
 
-static const char* selection_granularity_str[(int)SelectionGranularity::Count] = {
+inline const char* selection_granularity_str[(int)SelectionGranularity::Count] = {
     "Atom",
     "Component",
     "Instance",
 };
 
-static const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
+inline const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
     "Nearest",
     "Linear",
     "Cubic Spline",
 };
 
-static const char* representation_type_str[(int)RepresentationType::Count] = {
+inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Spacefill",
     "Licorice",
     "Ball And Stick",
@@ -191,7 +191,7 @@ static const char* representation_type_str[(int)RepresentationType::Count] = {
     "Dipole Moment"
 };
 
-static const char* color_mapping_str[(int)ColorMapping::Count] = {
+inline const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Uniform Color",
     "Type",
     "Serial",
@@ -205,7 +205,7 @@ static const char* color_mapping_str[(int)ColorMapping::Count] = {
 };
 
 
-static const char* electronic_structure_source_str[(int)ElectronicStructureSource::Count] = {
+inline const char* electronic_structure_source_str[(int)ElectronicStructureSource::Count] = {
     "Molecular Orbital",
     "Natural Transition Orbital",
     "Transition Density",
@@ -223,7 +223,7 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
 
 typedef uint32_t ElectronicStructureSourceFlags;
 
-static const char* electronic_structure_spin_str[(int)ElectronicStructureSpin::Count] = {
+inline const char* electronic_structure_spin_str[(int)ElectronicStructureSpin::Count] = {
     "None",
     "Alpha",
     "Beta",
@@ -237,7 +237,7 @@ enum class ElectronicStructureNtoComponent {
     Count
 };
 
-static const char* electronic_structure_nto_component_str[(int)ElectronicStructureNtoComponent::Count] = {
+inline const char* electronic_structure_nto_component_str[(int)ElectronicStructureNtoComponent::Count] = {
     "Particle",
     "Hole",
 };
@@ -249,7 +249,7 @@ enum class ElectronicStructureTransitionDensityComponent {
     Count
 };
 
-static const char* electronic_structure_transition_density_component_str[(int)ElectronicStructureTransitionDensityComponent::Count] = {
+inline const char* electronic_structure_transition_density_component_str[(int)ElectronicStructureTransitionDensityComponent::Count] = {
     "Attachment",
     "Detachment",
     "Difference"
@@ -402,7 +402,7 @@ enum class VolumeResolution {
     Count,
 };
 
-static const char* volume_resolution_str[(int)VolumeResolution::Count] = {
+inline const char* volume_resolution_str[(int)VolumeResolution::Count] = {
     "Low",
     "Mid",
     "High",
@@ -418,7 +418,7 @@ enum class ScreenshotResolution {
     Count,
 };
 
-static const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] = {
+inline const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] = {
     "Window",
     "Full HD (1920x1080)",
     "Quad HD (2560x1440)",
@@ -434,7 +434,7 @@ enum class BondColorMode {
     Count,
 };
 
-static const char* bond_color_mode_str[(int)BondColorMode::Count] = {
+inline const char* bond_color_mode_str[(int)BondColorMode::Count] = {
     "Nearest Atom",
     "Smooth Atom",
     "Uniform Color",
@@ -1782,7 +1782,7 @@ struct InteractionSurfaceEvent {
     InteractionSurfaceID surface_id = 0;
     ImGuiID item_id = 0;
 
-    InteractionSurfaceEventKind kind = InteractionSurfaceEventKind::Hover;
+    InteractionSurfaceEventKind kind = InteractionSurfaceEventKind::None;
     InteractionSelectionMode selection_mode = InteractionSelectionMode::None;
     InteractionSurfaceEventPhase region_phase = InteractionSurfaceEventPhase::None;
 

@@ -1444,7 +1444,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         }
     }
 
-    if (colors && rep->tint_scale > 0.0f || rep->saturation < 1.0f) {
+    if (colors && (rep->tint_scale > 0.0f || rep->saturation < 1.0f)) {
         uint32_t tint_color = convert_color(rep->tint_color);
         tint_colors(colors, num_atoms, tint_color, rep->tint_scale, rep->saturation);
     }
@@ -1479,7 +1479,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         break;
     }
 	case RepresentationType::DipoleMoment:
-		rep->type_is_valid = rep->dipole.dipole_idx < md_array_size(state->representation.info.dipole_moments);
+		rep->type_is_valid = rep->dipole.dipole_idx >= 0 && (size_t)rep->dipole.dipole_idx < md_array_size(state->representation.info.dipole_moments);
 		break;
     default:
         ASSERT(false);
@@ -2328,7 +2328,7 @@ void picking_handler_new_frame(PickingHandler* handler) {
 
     const uint32_t slot_idx = handler->frame_idx % ARRAY_SIZE(handler->history);
     handler->history[slot_idx].submitted_frame_idx = handler->frame_idx;
-    MEMSET(&handler->history[slot_idx].space, 0, sizeof(PickingSpace));
+    handler->history[slot_idx].space = PickingSpace{};
 }
 
 PickingSpace* picking_handler_current_space(PickingHandler* handler) {
@@ -2350,7 +2350,7 @@ const PickingSpace* picking_handler_find_space(const PickingHandler& handler, ui
 void picking_surface_init(PickingSurface* surface, PickingSourceID source) {
     ASSERT(surface);
 
-    MEMSET(surface, 0, sizeof(PickingSurface));
+    *surface = PickingSurface{};
     surface->source = source;
 
     for (size_t i = 0; i < ARRAY_SIZE(surface->slots); ++i) {
@@ -2376,7 +2376,7 @@ void picking_surface_free(PickingSurface* surface) {
         if (slot.depth_pbo) glDeleteBuffers(1, &slot.depth_pbo);
     }
 
-    MEMSET(surface, 0, sizeof(PickingSurface));
+    *surface = PickingSurface{};
 }
 
 bool picking_surface_submit_readback(
@@ -2666,7 +2666,7 @@ InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(V
 
 void interaction_surface_event_extract(InteractionSurfaceEvent* event, const InteractionSurfaceState& state, const PickingHit& hit) {
     ASSERT(event);
-    MEMSET(event, 0, sizeof(InteractionSurfaceEvent));
+    *event = InteractionSurfaceEvent{};
 
     event->surface_id   = state.surface_id;
     event->item_id      = state.item_id;
@@ -2871,7 +2871,6 @@ void file_queue_process(ApplicationState* state) {
                             create_default_representations(state);
                         }
                         recompute_atom_visibility_mask(state);
-                        md_system_state_t interpolate_system_state = {0};
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                         reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask);

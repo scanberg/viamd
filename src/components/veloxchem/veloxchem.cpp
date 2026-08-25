@@ -896,7 +896,7 @@ struct VeloxChem : viamd::EventHandler {
                     uint32_t cp_idx = req->hit.local_idx;
                     if (cp_idx < critical_points.simp_graph.num_vertices) {
                         md_topo_critical_point_type_t type = md_topo_vertex_type(&critical_points.simp_graph, cp_idx);
-                        const char* str = md_topo_critical_point_type_str[type];
+                        const char* str = md_topo_critical_point_type_str(type);
                         float value = critical_points.simp_graph.vertices[cp_idx].value;
                         md_strb_fmt(&req->sb, "Type: %s\nValue: %.7f", str, value);
                     }
@@ -3099,10 +3099,22 @@ struct VeloxChem : viamd::EventHandler {
             x_values = x_vals;
         }
 
+        // An item hidden through the legend draws nothing, so it must not claim a hover or take a
+        // click either. ImPlot only resolves that inside BeginItem, which happens further down -
+        // after both would already have run - so the item is looked up directly instead. It is
+        // absent on the very first frame it is drawn, which BeginItem will treat as shown.
+        const ImPlotItem* item = ImPlot::GetItem(title);
+        const bool item_visible = (item == nullptr) || item->Show;
+
+        // Dropped whenever the cursor is inside the plot, hidden or not, so that a hover taken
+        // before the item was toggled off cannot keep driving a tooltip in the caller.
         if (ImPlot::IsPlotHovered()) {
+            hovered = -1;
+        }
+
+        if (item_visible && ImPlot::IsPlotHovered()) {
             // Calculate the hovered index as the closest peak or 'bar' to the mouse position
             // This comparison needs to be done in pixel space
-            hovered = -1;
 
             const ImVec2 mouse_pos = ImGui::GetMousePos();
             const double pixel_tolerance = 7.0;
@@ -3143,7 +3155,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         // Update selected peak on click
-        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
+        if (item_visible && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
             ImPlot::IsPlotHovered()) {
             selected = hovered == selected ? -1 : hovered;
         }
@@ -4215,7 +4227,7 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
                         }
 
-                        char label[16];
+                        char label[24];
                         snprintf(label, sizeof(label), "%zu", row_n + 1);
                         ImGui::Selectable(label, is_sel || is_hov, selectable_flags);
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + 1)) {
@@ -4405,8 +4417,8 @@ struct VeloxChem : viamd::EventHandler {
                     md_topo_count_vertex_types(vertex_count, &critical_points.simp_graph);
 
                     const md_topo_extremum_graph_t& graph = critical_points.simp_graph;
-                    ImGui::Text("Number of Edges:           %zu", graph.num_edges);
-                    ImGui::Text("Number of Critical Points: %zu", graph.num_vertices);
+                    ImGui::Text("Number of Edges:           %u", graph.num_edges);
+                    ImGui::Text("Number of Critical Points: %u", graph.num_vertices);
                     ImGui::Text("\tNumber of Maxima:        %u", vertex_count[MD_TOPO_MAXIMUM]);
                     ImGui::Text("\tNumber of Split Saddles: %u", vertex_count[MD_TOPO_SPLIT_SADDLE]);
                     ImGui::Text("\tNumber of Minima:        %u", vertex_count[MD_TOPO_MINIMUM]);
@@ -4415,7 +4427,7 @@ struct VeloxChem : viamd::EventHandler {
                         for (size_t i = 0; i < graph.num_vertices; ++i) {
                             const md_topo_vert_t& v = graph.vertices[i];
                             const md_topo_critical_point_type_t type = md_topo_vertex_type(&graph, i);
-                            const char* type_cstr = md_topo_critical_point_type_str[type];
+                            const char* type_cstr = md_topo_critical_point_type_str(type);
                             printf("Vertex %zu: Type=%s, Value=%.6f, Pos=(%.4f, %.4f, %.4f)\n", i, type_cstr, v.value, v.x, v.y, v.z);
                         }
                     }
@@ -4555,7 +4567,7 @@ struct VeloxChem : viamd::EventHandler {
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%.6f", v.z);
                                 ImGui::TableNextColumn();
-                                ImGui::TextUnformatted(md_topo_critical_point_type_str[type]);
+                                ImGui::TextUnformatted(md_topo_critical_point_type_str(type));
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%.8f", v.value);                                
                             }
@@ -5510,7 +5522,7 @@ struct VeloxChem : viamd::EventHandler {
                                 snprintf(label, sizeof(label), "%.4f", external_frequencies[vib.external_frequency_index]);
                                 if (ImGui::BeginCombo("External Frequency", label)) {
                                     for (size_t i = 0; i < num_external_frequencies; ++i) {
-                                        bool is_selected = (vib.external_frequency_index == i);
+                                        bool is_selected = ((size_t)vib.external_frequency_index == i);
 
                                         snprintf(label, sizeof(label), "%.4f", external_frequencies[i]);
                                         if (ImGui::Selectable(label, is_selected)) {
@@ -6885,7 +6897,7 @@ struct VeloxChem : viamd::EventHandler {
 
     static inline void imgui_delayed_hover_tooltip(const char* text) {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-            ImGui::SetTooltip(text);
+            ImGui::SetTooltip("%s", text);
         }
     }
 
@@ -7030,7 +7042,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (row_n > 0) {
                             ImGui::InputText("##label", nto.group.label[row_n], sizeof(nto.group.label[row_n]));
                         } else {
-                            ImGui::Text(nto.group.label[0]);
+                            ImGui::Text("%s", nto.group.label[0]);
                         }
                         ImGui::PopItemWidth();
                     }
@@ -7310,7 +7322,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     draw_list->ChannelsSetCurrent(0);
 
-                    ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
+                    //ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     ImVec2 text_pos_tl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p0.y + TEXT_BASE_HEIGHT * 0.5f);
                     const char* lbl = ((i & 1) == 0) ? "Attachment" : "Detachment";
 

@@ -57,7 +57,7 @@ static void record_gl_reset_state(GLResetState* state) {
 	glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &state->fbo);
 	glGetIntegerv(GL_VIEWPORT, state->viewport);
 	glGetIntegerv(GL_SCISSOR_BOX, state->scissor_rect);
-	for (int i = 0; i < ARRAY_SIZE(state->draw_buffers); ++i) {
+	for (size_t i = 0; i < ARRAY_SIZE(state->draw_buffers); ++i) {
 		glGetIntegerv(GL_DRAW_BUFFER0 + i, &state->draw_buffers[i]);
 	}
 }
