@@ -1,11 +1,11 @@
 #include <viamd_event.h>
 #include <viamd.h>
 #include <event.h>
+#include <serialization_utils.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_log.h>
 #include <core/md_array.h>
 #include <core/md_bitfield.h>
 #include <md_system.h>
@@ -154,7 +154,6 @@ struct Dataset : viamd::EventHandler {
         defer { md_temp_end(temp_scope); };
         
         md_array_resize(atom_types, type_count, arena);
-        MEMSET(atom_types, 0, md_array_bytes(atom_types));
 
         // Map atom types into dataset items
         for (size_t i = 0; i < type_count; ++i) {
@@ -289,6 +288,23 @@ struct Dataset : viamd::EventHandler {
             case viamd::EventType_ViamdWindowDrawMenu:
                 ImGui::Checkbox("Dataset", &show_window);
                 break;
+            case viamd::EventType_ViamdSerialize: {
+                // TODO: write atom type overrides (if any). The payload is a viamd::serialization_state_t.
+                // Strategy: Compare against defaults and only write if any value differ.
+                // Write one complete section per each delta atom type
+                // Write only the propert(ies) within the type which is overwritten
+                break;
+            }
+			case viamd::EventType_ViamdDeserialize: {
+                viamd::deserialization_state_t &state = *(viamd::deserialization_state_t*)e.payload;
+                str_t section = viamd::section_header(state);
+				if (str_eq_cstr(section, "AtomType")) {
+					str_t ident, arg;
+                    while (viamd::next_entry(ident, arg, state)) {
+                    }
+				}
+				break;
+			}
             default:
                 break;
             }
@@ -438,25 +454,25 @@ struct Dataset : viamd::EventHandler {
 
             ImGui::Separator();
 
-            if (data.mold.sys.unitcell.flags) {
-                md_unitcell_flags_t flags = data.mold.sys.unitcell.flags;
+            if (data.mold.state.unitcell.flags) {
+                md_unitcell_flags_t flags = data.mold.state.unitcell.flags;
                 bool ortho = flags & MD_UNITCELL_ORTHO;
                 bool tricl = flags & MD_UNITCELL_TRICLINIC;
                 ImGui::Text("Unitcell %s", ortho ? "Orthorhombic" : tricl ? "Triclinic" : "");
                 if (flags & MD_UNITCELL_ORTHO) {
                     ImGui::Indent();
-                    ImGui::Text("X: %f %s", data.mold.sys.unitcell.x, flags & MD_UNITCELL_PBC_X ? "(pbc)" : "");
-                    ImGui::Text("Y: %f %s", data.mold.sys.unitcell.y, flags & MD_UNITCELL_PBC_Y ? "(pbc)" : "");
-                    ImGui::Text("Z: %f %s", data.mold.sys.unitcell.z, flags & MD_UNITCELL_PBC_Z ? "(pbc)" : "");
+                    ImGui::Text("X: %f %s", data.mold.state.unitcell.x, flags & MD_UNITCELL_PBC_X ? "(pbc)" : "");
+                    ImGui::Text("Y: %f %s", data.mold.state.unitcell.y, flags & MD_UNITCELL_PBC_Y ? "(pbc)" : "");
+                    ImGui::Text("Z: %f %s", data.mold.state.unitcell.z, flags & MD_UNITCELL_PBC_Z ? "(pbc)" : "");
                     ImGui::Unindent();
                 } else if (flags & MD_UNITCELL_TRICLINIC) {
                     ImGui::Indent();
-                    ImGui::Text("X:  %f", data.mold.sys.unitcell.x);
-                    ImGui::Text("XY: %f", data.mold.sys.unitcell.xy);
-                    ImGui::Text("XZ: %f", data.mold.sys.unitcell.xz);
-                    ImGui::Text("Y:  %f", data.mold.sys.unitcell.y);
-                    ImGui::Text("YZ: %f", data.mold.sys.unitcell.yz);
-                    ImGui::Text("Z:  %f", data.mold.sys.unitcell.z);
+                    ImGui::Text("X:  %f", data.mold.state.unitcell.x);
+                    ImGui::Text("XY: %f", data.mold.state.unitcell.xy);
+                    ImGui::Text("XZ: %f", data.mold.state.unitcell.xz);
+                    ImGui::Text("Y:  %f", data.mold.state.unitcell.y);
+                    ImGui::Text("YZ: %f", data.mold.state.unitcell.yz);
+                    ImGui::Text("Z:  %f", data.mold.state.unitcell.z);
                     ImGui::Unindent();
                 } 
                 ImGui::Separator();
@@ -482,7 +498,6 @@ struct Dataset : viamd::EventHandler {
             ImGui::Checkbox("Use single letter codes for amino and nucleic acids", &use_short_labels);
 
             if (num_entities && ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
-                const ImVec2 item_size = ImVec2(ImGui::GetFontSize() * 1.4f, ImGui::GetFontSize() * 1.1f);
 
                 for (size_t ent_idx = 0; ent_idx < num_entities; ++ent_idx) {
                     char buf[256];

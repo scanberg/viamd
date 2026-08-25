@@ -182,8 +182,8 @@ struct DensityVolume : viamd::EventHandler {
                     md_script_vis_init(&vis, state->allocator.frame);
                     md_script_vis_ctx_t ctx = {
                         .ir = state->script.eval_ir,
-                        .mol = &state->mold.sys,
-                        .traj = state->mold.sys.trajectory,
+                        .sys = &state->mold.sys,
+                        .state = &state->mold.state
                     };
                     result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_SDF);
                 }

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 struct md_system_t;
+struct md_system_state_t;
 
 // This is a stupid dispatch wrapper to select the appropriate loaders for system and trajectories
 
@@ -43,7 +44,7 @@ typedef uint32_t LoaderType;
 
 namespace loader {
 
-    struct State {		
+    struct LoaderState {		
 		LoaderType  type  = LoaderType_Undefined;
         const void* arg   = 0;
         LoaderFlags flags = LoaderFlag_None;
@@ -52,9 +53,11 @@ namespace loader {
     // The reason here why we don't directly provide prepackaged loaders based on extensions
     // Is to get a chance to glance into the file and see if we recognize it first.
     // And perhaps there is also some arguments or options that need to be supplied for the loader.
-    void init(State* state, str_t filepath, const md_system_t* sys = nullptr);
+    void init(LoaderState* state, str_t filepath, const md_system_t* sys = nullptr);
 
-    bool load(md_system_t* sys, str_t filepath, const State& state);
+    // out_state receives the loaded coordinates. Set out_state->alloc before calling; it may
+    // differ from sys->alloc (a temp arena for the state, a persistent one for the system).
+    bool load(md_system_t* sys, md_system_state_t* out_state, str_t filepath, const LoaderState& state);
 
     // To help enlist supported loader type
     str_t       type_name(LoaderType type);
@@ -63,4 +66,4 @@ namespace loader {
 
     LoaderType type_from_ext(str_t ext);
 
-}  // namespace load
+}  // namespace loader

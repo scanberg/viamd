@@ -73,7 +73,7 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
 #endif
 };
 
-void init(State* state, str_t filepath, const md_system_t* sys) {
+void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
     ASSERT(state);
 	*state = { 0 };
 
@@ -108,8 +108,9 @@ void init(State* state, str_t filepath, const md_system_t* sys) {
     state->flags |= LoaderFlag_RequiresDialogue;
 }
 
-bool load(md_system_t* sys, str_t filepath, const State& state) {
-    ASSERT(sys);    
+bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, const LoaderState& state) {
+    ASSERT(out_sys);
+    ASSERT(out_state);
 
     md_trajectory_flags_t traj_flags = MD_TRAJECTORY_FLAG_NONE;
     if (state.flags & LoaderFlag_DisableCacheWrite) {
@@ -122,10 +123,10 @@ bool load(md_system_t* sys, str_t filepath, const State& state) {
             if (state.flags & LoaderFlag_DisableCacheWrite) {
                 options |= MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE;
             }
-            return md_pdb_system_init_from_file(sys, filepath, options);
+            return md_pdb_system_init_from_file(out_sys, out_state, filepath, options);
         }
         case LoaderType_GRO:
-            return md_gro_system_init_from_file(sys, filepath);
+            return md_gro_system_init_from_file(out_sys, out_state, filepath);
         case LoaderType_XYZ:
         case LoaderType_XMOL:
         case LoaderType_ARC: {
@@ -133,25 +134,25 @@ bool load(md_system_t* sys, str_t filepath, const State& state) {
             if (state.flags & LoaderFlag_DisableCacheWrite) {
                 options |= MD_XYZ_OPTION_DISABLE_CACHE_WRITE;
             }
-            return md_xyz_system_init_from_file(sys, filepath, options);
+            return md_xyz_system_init_from_file(out_sys, out_state, filepath, options);
         }
         case LoaderType_CIF:
-            return md_mmcif_system_init_from_file(sys, filepath);
+            return md_mmcif_system_init_from_file(out_sys, out_state, filepath);
         case LoaderType_LAMMPSDATA: {
             const char* format = (const char*)state.arg;
-            return md_lammps_system_init_from_file(sys, filepath, format);
+            return md_lammps_system_init_from_file(out_sys, out_state, filepath, format);
         }
         case LoaderType_LAMMPSTRJ:
-            return md_lammps_trajectory_attach_from_file(sys, filepath, traj_flags);
+            return md_lammps_trajectory_attach_from_file(out_sys, filepath, traj_flags);
         case LoaderType_XTC:
-            return md_xtc_attach_from_file(sys, filepath, traj_flags);
+            return md_xtc_attach_from_file(out_sys, filepath, traj_flags);
         case LoaderType_TRR:
-            return md_trr_attach_from_file(sys, filepath, traj_flags);
+            return md_trr_attach_from_file(out_sys, filepath, traj_flags);
         case LoaderType_DCD:
-            return md_dcd_attach_from_file(sys, filepath, traj_flags);
+            return md_dcd_attach_from_file(out_sys, filepath, traj_flags);
 #if MD_VLX
         case LoaderType_VLX_H5:
-            return md_vlx_system_init_from_file(sys, filepath);
+            return md_vlx_system_init_from_file(out_sys, out_state, filepath);
 #endif
         default:
             return false;
