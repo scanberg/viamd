@@ -984,7 +984,7 @@ struct PickingReadbackSlot {
     
     vec2_t surface_coord = {0};
     vec2_t screen_coord  = {0};
-    mat4_t clip_to_world = mat4_ident();
+    mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
 struct PickingSurface {
@@ -1021,7 +1021,7 @@ struct PickingReadbackRequest {
     uint32_t height = 0;
     vec2_t surface_coord = {0};
     vec2_t screen_coord = {0};
-    mat4_t clip_to_world = mat4_ident();
+    mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
 struct ApplicationState {
@@ -1097,7 +1097,7 @@ struct ApplicationState {
         // Is only used for rendering and visualization of properties.
         md_system_state_t   state = {};
 
-		mat4_t 			    unitcell_transform = mat4_ident();
+		mat4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
 
         FrameCache          frame_cache;
 
@@ -1336,7 +1336,7 @@ struct ApplicationState {
             vec3_t  com = {};
 
             // Alignment matrix for orienting the structure based on principal axes. This is calculated based on the initial frame and applied to all frames for consistent orientation.
-            mat4_t alignment_mat = mat4_ident();
+            mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
         } initial_frame;
 
     } operations;
@@ -1791,8 +1791,8 @@ struct InteractionSurfaceEvent {
     vec2_t region_min = {};
     vec2_t region_max = {};
 
-    mat4_t clip_to_world = mat4_ident();
-    mat4_t world_to_clip = mat4_ident();
+    mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
+    mat4_t world_to_clip = MD_MAT4_IDENT_INIT;
 
     PickingHit hit = {};
 };

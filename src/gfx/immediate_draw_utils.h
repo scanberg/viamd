@@ -24,8 +24,8 @@ struct Vertex {
 };
 
 struct RenderParams {
-    mat4_t view = mat4_ident();
-    mat4_t proj = mat4_ident();
+    mat4_t view = MD_MAT4_IDENT_INIT;
+    mat4_t proj = MD_MAT4_IDENT_INIT;
 };
 
 struct Queue;
