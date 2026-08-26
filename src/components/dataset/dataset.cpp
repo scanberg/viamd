@@ -132,6 +132,17 @@ struct ElementDefault {
     float mass;
 };
 
+// Which properties of an element default the user has changed away from the values built into mdlib.
+// Only these are stored in a workspace, and only these are pushed onto the atom types linked to the element:
+// a property the user never touched must not overwrite whatever the loader supplied for a type.
+struct ElementDefaultDelta {
+    bool color  = false;
+    bool radius = false;
+    bool mass   = false;
+
+    explicit operator bool() const { return color || radius || mass; }
+};
+
 struct Dataset : viamd::EventHandler {
     bool show_window = false;
 
@@ -318,6 +329,96 @@ struct Dataset : viamd::EventHandler {
 
     }
 
+    ElementDefaultDelta compute_element_default_delta(md_atomic_number_t z) const {
+        const ElementDefault& def = element_defaults[z];
+        ElementDefaultDelta delta;
+        delta.color  = u32_from_vec4(def.color) != md_atomic_number_cpk_color(z);
+        delta.radius = def.radius != md_atomic_number_vdw_radius(z);
+        delta.mass   = def.mass   != md_atomic_number_mass(z);
+        return delta;
+    }
+
+    // Write one [ElementDefault] section per element the user has customized. The table is not tied to the
+    // loaded system, so every customized element is written, not just the ones the current system happens to use.
+    void serialize_element_defaults(viamd::serialization_state_t& state) {
+        for (int z = 0; z < MD_Z_Count; ++z) {
+            ElementDefaultDelta delta = compute_element_default_delta((md_atomic_number_t)z);
+            if (!delta) continue;
+
+            const ElementDefault& def = element_defaults[z];
+            viamd::write_section_header(state, STR_LIT("ElementDefault"));
+            viamd::write_int(state, STR_LIT("Element"), z);
+
+            if (delta.color)  viamd::write_vec4(state, STR_LIT("Color"),  def.color);
+            if (delta.radius) viamd::write_flt (state, STR_LIT("Radius"), def.radius);
+            if (delta.mass)   viamd::write_flt (state, STR_LIT("Mass"),   def.mass);
+        }
+    }
+
+    // Unlike the atom types these need no buffering: the element defaults are application state with no
+    // dependency on the loaded system, so a section can be applied the moment it is parsed.
+    void deserialize_element_default(viamd::deserialization_state_t& state) {
+        int  z = -1;
+        bool has_color = false, has_radius = false, has_mass = false;
+        vec4_t color = {};
+        float radius = 0, mass = 0;
+
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "Element")) {
+                viamd::extract_int(z, arg);
+            } else if (str_eq_cstr(ident, "Color")) {
+                has_color = viamd::extract_flt_vec(color.elem, 4, arg);
+            } else if (str_eq_cstr(ident, "Radius")) {
+                has_radius = viamd::extract_flt(radius, arg);
+            } else if (str_eq_cstr(ident, "Mass")) {
+                has_mass = viamd::extract_flt(mass, arg);
+            }
+        }
+
+        if (z < 0 || z >= MD_Z_Count) {
+            MD_LOG_INFO("Dataset: skipping [ElementDefault] section with a missing or out of range Element entry");
+            return;
+        }
+
+        ElementDefault& def = element_defaults[z];
+        if (has_color)  def.color  = color;
+        if (has_radius) def.radius = radius;
+        if (has_mass)   def.mass   = mass;
+    }
+
+    // Push the customized element defaults onto every atom type which is linked to them, mirroring what editing
+    // the table in the UI does. Property by property, so a mass the loader took from a force field is not
+    // clobbered by the element's mass just because the user recolored that element.
+    void apply_element_defaults_to_atom_types(ApplicationState& data, bool& radius_changed, bool& color_changed) {
+        md_atom_type_data_t& type = data.mold.sys.atom.type;
+
+        size_t type_count = md_system_atom_type_count(&data.mold.sys);
+        if (type_count == 0 || md_array_size(atom_types) != type_count) return;
+
+        for (size_t i = 0; i < type_count; ++i) {
+            if (!atom_types[i].use_defaults) continue;
+
+            const md_atomic_number_t z = type.z[i];
+            const ElementDefaultDelta delta = compute_element_default_delta(z);
+            if (!delta) continue;
+
+            const ElementDefault& def = element_defaults[z];
+            if (delta.radius) {
+                radius_changed |= type.radius[i] != def.radius;
+                type.radius[i] = def.radius;
+            }
+            if (delta.mass) {
+                type.mass[i] = def.mass;
+            }
+            if (delta.color) {
+                const uint32_t color = u32_from_vec4(def.color);
+                color_changed |= type.color[i] != color;
+                type.color[i] = color;
+            }
+        }
+    }
+
     // Which properties of an atom type the user has changed since it was loaded.
     // Converts to true if any of them have, i.e. if the type needs to be stored in the workspace at all.
     struct AtomTypeDelta {
@@ -331,14 +432,29 @@ struct Dataset : viamd::EventHandler {
         explicit operator bool() const { return elem || radius || mass || color || coarse || defaults; }
     };
 
-    static AtomTypeDelta compute_atom_type_delta(const md_atom_type_data_t& type, const DatasetItem& item, size_t i) {
+    AtomTypeDelta compute_atom_type_delta(const md_atom_type_data_t& type, const DatasetItem& item, size_t i) const {
         const AtomTypeLoadState& load = item.load;
+
+        // The state this type is restored to before any [AtomType] entry is applied: what the loader assigned,
+        // with the customized element defaults pushed on top if the type is linked to them. Diffing against that
+        // is what keeps an element level edit in [ElementDefault] instead of duplicated across every type using it.
+        float    base_radius = load.radius;
+        float    base_mass   = load.mass;
+        uint32_t base_color  = load.color;
+
+        if (item.use_defaults) {
+            const ElementDefaultDelta ed = compute_element_default_delta(type.z[i]);
+            const ElementDefault& def = element_defaults[type.z[i]];
+            if (ed.radius) base_radius = def.radius;
+            if (ed.mass)   base_mass   = def.mass;
+            if (ed.color)  base_color  = u32_from_vec4(def.color);
+        }
 
         AtomTypeDelta delta;
         delta.elem   = type.z[i]      != load.z;
-        delta.radius = type.radius[i] != load.radius;
-        delta.mass   = type.mass[i]   != load.mass;
-        delta.color  = type.color[i]  != load.color;
+        delta.radius = type.radius[i] != base_radius;
+        delta.mass   = type.mass[i]   != base_mass;
+        delta.color  = type.color[i]  != base_color;
         delta.coarse = (type.flags[i] & MD_FLAG_COARSE_GRAINED) != (load.flags & MD_FLAG_COARSE_GRAINED);
 
         // use_defaults is not stored in the system, its implicit default follows the coarse grained flag
@@ -440,7 +556,7 @@ struct Dataset : viamd::EventHandler {
     // Apply the buffered overrides onto the freshly loaded atom types. Must run after init_dataset_items so
     // that the load state has been snapshotted: it stays the baseline, the user's modifications sit on top.
     // A property a section does not carry was never modified, so it keeps whatever the loader assigned.
-    void apply_pending_atom_type_overrides(ApplicationState& data) {
+    void apply_pending_atom_type_overrides(ApplicationState& data, bool& radius_changed, bool& color_changed) {
         size_t num_overrides = md_array_size(pending_overrides);
         if (num_overrides == 0) return;
         defer { free_pending_overrides(); };
@@ -450,9 +566,6 @@ struct Dataset : viamd::EventHandler {
 
         size_t type_count = md_system_atom_type_count(&sys);
         if (type_count == 0 || md_array_size(atom_types) != type_count) return;
-
-        bool radius_changed = false;
-        bool color_changed  = false;
 
         for (size_t j = 0; j < num_overrides; ++j) {
             const AtomTypeOverride& ovr = pending_overrides[j];
@@ -469,15 +582,15 @@ struct Dataset : viamd::EventHandler {
                     type.z[i] = ovr.z;
                 }
                 if (ovr.has_radius) {
+                    radius_changed |= type.radius[i] != ovr.radius;
                     type.radius[i] = ovr.radius;
-                    radius_changed = true;
                 }
                 if (ovr.has_mass) {
                     type.mass[i] = ovr.mass;
                 }
                 if (ovr.has_color) {
+                    color_changed |= type.color[i] != ovr.color;
                     type.color[i] = ovr.color;
-                    color_changed = true;
                 }
                 if (ovr.has_coarse_grained) {
                     if (ovr.coarse_grained) {
@@ -498,6 +611,18 @@ struct Dataset : viamd::EventHandler {
                 MD_LOG_INFO("Dataset: workspace contains overrides for atom type '%s' which is not present in the loaded system", ovr.name);
             }
         }
+    }
+
+    void on_system_init(ApplicationState& data) {
+        init_dataset_items(data);
+
+        bool radius_changed = false;
+        bool color_changed  = false;
+
+        // Order matters. The per type overrides carry the UseDefaults flags, and those decide which types the
+        // element defaults are allowed to touch, so they have to be in place before the defaults are pushed.
+        apply_pending_atom_type_overrides(data, radius_changed, color_changed);
+        apply_element_defaults_to_atom_types(data, radius_changed, color_changed);
 
         if (radius_changed) {
             data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
@@ -525,8 +650,7 @@ struct Dataset : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSystemInit: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
-                init_dataset_items(state);
-                apply_pending_atom_type_overrides(state);
+                on_system_init(state);
                 break;
             }
             case viamd::EventType_ViamdFrameTick: {
@@ -539,13 +663,16 @@ struct Dataset : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
+                serialize_element_defaults(state);
                 serialize_atom_types(state);
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t &state = *(viamd::deserialization_state_t*)e.payload;
                 str_t section = viamd::section_header(state);
-                if (str_eq_cstr(section, "AtomType")) {
+                if (str_eq_cstr(section, "ElementDefault")) {
+                    deserialize_element_default(state);
+                } else if (str_eq_cstr(section, "AtomType")) {
                     deserialize_atom_type(state);
                 }
                 break;
