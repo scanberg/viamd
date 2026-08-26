@@ -8,6 +8,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_bitfield.h>
+#include <core/md_log.h>
 #include <md_system.h>
 #include <md_util.h>
 
@@ -74,6 +75,39 @@ struct AtomElementMapping {
     md_element_t elem = 0;
 };
 
+// What an atom type looked like straight out of the loader, before the user got to it. Loading the same
+// file again reproduces exactly this, so it is the baseline a workspace stores modifications against:
+// whatever differs from it is something the user changed, and nothing else needs to be written.
+struct AtomTypeLoadState {
+    md_atomic_number_t z = 0;
+    float      radius = 0;
+    float      mass   = 0;
+    uint32_t   color  = 0;
+    md_flags_t flags  = MD_FLAG_NONE;
+};
+
+// A single deserialized [AtomType] section. The workspace is parsed before the system is loaded, so these
+// are buffered here and applied once the atom types actually exist (see apply_pending_atom_type_overrides).
+struct AtomTypeOverride {
+    char name[32] = "";             // Name of the atom type
+    md_atomic_number_t load_z = 0;  // Element the type was assigned upon load, together with name it identifies the type
+
+    // Only the fields which were present in the section are applied
+    bool has_z              = false;
+    bool has_radius         = false;
+    bool has_mass           = false;
+    bool has_color          = false;
+    bool has_coarse_grained = false;
+    bool has_use_defaults   = false;
+
+    md_atomic_number_t z = 0;
+    float    radius = 0;
+    float    mass   = 0;
+    uint32_t color  = 0;
+    bool     coarse_grained = false;
+    bool     use_defaults   = true;
+};
+
 // We use this to represent a single entity within the loaded system, e.g. a residue type
 // This is used to represent multiple types, so all fields are not used in all cases
 struct DatasetItem {
@@ -88,6 +122,8 @@ struct DatasetItem {
 
     // Atom type only
     bool use_defaults = true; // Flag if this particular atom type should be linked to the default values stemming for the element (only applicable to atom types with an element, i.e. not coarse grained)
+
+    AtomTypeLoadState load = {}; // What the loader assigned, the baseline user modifications are stored against
 };
 
 struct ElementDefault {
@@ -98,6 +134,10 @@ struct ElementDefault {
 
 struct Dataset : viamd::EventHandler {
     bool show_window = false;
+
+    // Cached at ViamdInitialize: the serialize event only carries the serialization state,
+    // so we need our own handle on the system in order to diff the atom types.
+    ApplicationState* app_state = nullptr;
     
     // Dataset data (moved from ApplicationState.dataset)
     md_array(AtomElementMapping) atom_element_remappings = 0;
@@ -107,6 +147,11 @@ struct Dataset : viamd::EventHandler {
     md_allocator_i* arena = 0;
 
     ElementDefault element_defaults[MD_Z_Count] = {};
+
+    // Atom type overrides read from a workspace, waiting for a system to be applied to.
+    // Deliberately heap allocated: `arena` is reset by init_dataset_items, which runs after these are parsed.
+    md_array(AtomTypeOverride) pending_overrides = 0;
+    char pending_workspace[1024] = "";  // Workspace the pending overrides stem from, used to discard stale ones
 
     Dataset() { 
         viamd::event_system_register_handler(*this); 
@@ -160,6 +205,17 @@ struct Dataset : viamd::EventHandler {
             str_t atom_type_name = md_atom_type_name(&sys.atom.type, i);
             DatasetItem item = { .key = i };
             snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(atom_type_name));
+
+            // Snapshot what the loader assigned, so that we can tell later on what the user has changed
+            item.load.z      = sys.atom.type.z[i];
+            item.load.radius = sys.atom.type.radius[i];
+            item.load.mass   = sys.atom.type.mass[i];
+            item.load.color  = sys.atom.type.color[i];
+            item.load.flags  = sys.atom.type.flags[i];
+
+            // Coarse grained types have no element to inherit from, so they always carry custom properties
+            item.use_defaults = !(item.load.flags & MD_FLAG_COARSE_GRAINED);
+
             atom_types[i] = item;
         }
 
@@ -262,22 +318,215 @@ struct Dataset : viamd::EventHandler {
 
     }
 
+    // Which properties of an atom type the user has changed since it was loaded.
+    // Converts to true if any of them have, i.e. if the type needs to be stored in the workspace at all.
+    struct AtomTypeDelta {
+        bool elem     = false;
+        bool radius   = false;
+        bool mass     = false;
+        bool color    = false;
+        bool coarse   = false;
+        bool defaults = false;
+
+        explicit operator bool() const { return elem || radius || mass || color || coarse || defaults; }
+    };
+
+    static AtomTypeDelta compute_atom_type_delta(const md_atom_type_data_t& type, const DatasetItem& item, size_t i) {
+        const AtomTypeLoadState& load = item.load;
+
+        AtomTypeDelta delta;
+        delta.elem   = type.z[i]      != load.z;
+        delta.radius = type.radius[i] != load.radius;
+        delta.mass   = type.mass[i]   != load.mass;
+        delta.color  = type.color[i]  != load.color;
+        delta.coarse = (type.flags[i] & MD_FLAG_COARSE_GRAINED) != (load.flags & MD_FLAG_COARSE_GRAINED);
+
+        // use_defaults is not stored in the system, its implicit default follows the coarse grained flag
+        delta.defaults = item.use_defaults != !(load.flags & MD_FLAG_COARSE_GRAINED);
+        return delta;
+    }
+
+    // Write one [AtomType] section per atom type the user has modified, containing the identifying name +
+    // loaded element followed by only those properties which actually differ from what was loaded.
+    void serialize_atom_types(viamd::serialization_state_t& state) {
+        if (!app_state) return;
+
+        const md_system_t& sys = app_state->mold.sys;
+        const md_atom_type_data_t& type = sys.atom.type;
+
+        size_t type_count = md_system_atom_type_count(&sys);
+        if (type_count == 0 || md_array_size(atom_types) != type_count) return;
+
+        for (size_t i = 0; i < type_count; ++i) {
+            const DatasetItem& item = atom_types[i];
+            if (i == 0 && item.count == 0) {
+                // Skip sentinel "unknown" atom type if unused
+                continue;
+            }
+
+            AtomTypeDelta delta = compute_atom_type_delta(type, item, i);
+            if (!delta) continue;
+
+            viamd::write_section_header(state, STR_LIT("AtomType"));
+            viamd::write_str(state, STR_LIT("Name"), md_atom_type_name(&type, i));
+            viamd::write_int(state, STR_LIT("LoadedElement"), item.load.z);
+
+            if (delta.elem)     viamd::write_int (state, STR_LIT("Element"),       type.z[i]);
+            if (delta.radius)   viamd::write_flt (state, STR_LIT("Radius"),        type.radius[i]);
+            if (delta.mass)     viamd::write_flt (state, STR_LIT("Mass"),          type.mass[i]);
+            if (delta.color)    viamd::write_vec4(state, STR_LIT("Color"),         vec4_from_u32(type.color[i]));
+            if (delta.coarse)   viamd::write_bool(state, STR_LIT("CoarseGrained"), (type.flags[i] & MD_FLAG_COARSE_GRAINED) != 0);
+            if (delta.defaults) viamd::write_bool(state, STR_LIT("UseDefaults"),   item.use_defaults);
+        }
+    }
+
+    // Parse a single [AtomType] section. The system is not loaded at this point, so we only buffer it.
+    void deserialize_atom_type(viamd::deserialization_state_t& state) {
+        // Overrides are buffered per workspace. If this section stems from another workspace than the one
+        // currently buffered, then those never made it onto a system (the molecule failed to load) and are stale.
+        if (!str_eq_cstr(state.filename, pending_workspace)) {
+            free_pending_overrides();
+            str_copy_to_char_buf(pending_workspace, sizeof(pending_workspace), state.filename);
+        }
+
+        AtomTypeOverride ovr = {};
+
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "Name")) {
+                viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
+            } else if (str_eq_cstr(ident, "LoadedElement")) {
+                int z;
+                if (viamd::extract_int(z, arg)) {
+                    ovr.load_z = (md_atomic_number_t)z;
+                }
+            } else if (str_eq_cstr(ident, "Element")) {
+                int z;
+                if (viamd::extract_int(z, arg)) {
+                    ovr.z = (md_atomic_number_t)z;
+                    ovr.has_z = true;
+                }
+            } else if (str_eq_cstr(ident, "Radius")) {
+                ovr.has_radius = viamd::extract_flt(ovr.radius, arg);
+            } else if (str_eq_cstr(ident, "Mass")) {
+                ovr.has_mass = viamd::extract_flt(ovr.mass, arg);
+            } else if (str_eq_cstr(ident, "Color")) {
+                vec4_t color = {};
+                if (viamd::extract_flt_vec(color.elem, 4, arg)) {
+                    ovr.color = u32_from_vec4(color);
+                    ovr.has_color = true;
+                }
+            } else if (str_eq_cstr(ident, "CoarseGrained")) {
+                ovr.has_coarse_grained = viamd::extract_bool(ovr.coarse_grained, arg);
+            } else if (str_eq_cstr(ident, "UseDefaults")) {
+                ovr.has_use_defaults = viamd::extract_bool(ovr.use_defaults, arg);
+            }
+        }
+
+        if (ovr.name[0] == '\0') {
+            MD_LOG_INFO("Dataset: skipping [AtomType] section without a Name entry");
+            return;
+        }
+
+        md_array_push(pending_overrides, ovr, md_get_heap_allocator());
+    }
+
+    void free_pending_overrides() {
+        md_array_free(pending_overrides, md_get_heap_allocator());
+        pending_overrides = 0;
+        pending_workspace[0] = '\0';
+    }
+
+    // Apply the buffered overrides onto the freshly loaded atom types. Must run after init_dataset_items so
+    // that the load state has been snapshotted: it stays the baseline, the user's modifications sit on top.
+    // A property a section does not carry was never modified, so it keeps whatever the loader assigned.
+    void apply_pending_atom_type_overrides(ApplicationState& data) {
+        size_t num_overrides = md_array_size(pending_overrides);
+        if (num_overrides == 0) return;
+        defer { free_pending_overrides(); };
+
+        md_system_t& sys = data.mold.sys;
+        md_atom_type_data_t& type = sys.atom.type;
+
+        size_t type_count = md_system_atom_type_count(&sys);
+        if (type_count == 0 || md_array_size(atom_types) != type_count) return;
+
+        bool radius_changed = false;
+        bool color_changed  = false;
+
+        for (size_t j = 0; j < num_overrides; ++j) {
+            const AtomTypeOverride& ovr = pending_overrides[j];
+            str_t name = str_from_cstr(ovr.name);
+
+            // Identify the type by its name plus the element it had upon load
+            bool matched = false;
+            for (size_t i = 0; i < type_count; ++i) {
+                DatasetItem& item = atom_types[i];
+                if (item.load.z != ovr.load_z) continue;
+                if (!str_eq(md_atom_type_name(&type, i), name)) continue;
+
+                if (ovr.has_z) {
+                    type.z[i] = ovr.z;
+                }
+                if (ovr.has_radius) {
+                    type.radius[i] = ovr.radius;
+                    radius_changed = true;
+                }
+                if (ovr.has_mass) {
+                    type.mass[i] = ovr.mass;
+                }
+                if (ovr.has_color) {
+                    type.color[i] = ovr.color;
+                    color_changed = true;
+                }
+                if (ovr.has_coarse_grained) {
+                    if (ovr.coarse_grained) {
+                        type.flags[i] |=  MD_FLAG_COARSE_GRAINED;
+                    } else {
+                        type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
+                    }
+                }
+                if (ovr.has_use_defaults) {
+                    item.use_defaults = ovr.use_defaults;
+                }
+
+                matched = true;
+                break;
+            }
+
+            if (!matched) {
+                MD_LOG_INFO("Dataset: workspace contains overrides for atom type '%s' which is not present in the loaded system", ovr.name);
+            }
+        }
+
+        if (radius_changed) {
+            data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
+        }
+        if (color_changed) {
+            flag_all_representations_as_dirty(&data);
+        }
+    }
+
     void process_events(const viamd::Event* events, size_t num_events) final {
         for (size_t i = 0; i < num_events; ++i) {
             const viamd::Event e = events[i];
             switch (e.type) {
             case viamd::EventType_ViamdInitialize: {
                 // Initialize component
+                app_state = (ApplicationState*)e.payload;
                 init_element_defaults();
                 break;
             }
             case viamd::EventType_ViamdShutdown:
                 // Cleanup
                 clear_dataset_items();
+                free_pending_overrides();
+                app_state = nullptr;
                 break;
             case viamd::EventType_ViamdSystemInit: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 init_dataset_items(state);
+                apply_pending_atom_type_overrides(state);
                 break;
             }
             case viamd::EventType_ViamdFrameTick: {
@@ -289,22 +538,18 @@ struct Dataset : viamd::EventHandler {
                 ImGui::Checkbox("Dataset", &show_window);
                 break;
             case viamd::EventType_ViamdSerialize: {
-                // TODO: write atom type overrides (if any). The payload is a viamd::serialization_state_t.
-                // Strategy: Compare against defaults and only write if any value differ.
-                // Write one complete section per each delta atom type
-                // Write only the propert(ies) within the type which is overwritten
+                viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
+                serialize_atom_types(state);
                 break;
             }
-			case viamd::EventType_ViamdDeserialize: {
+            case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t &state = *(viamd::deserialization_state_t*)e.payload;
                 str_t section = viamd::section_header(state);
-				if (str_eq_cstr(section, "AtomType")) {
-					str_t ident, arg;
-                    while (viamd::next_entry(ident, arg, state)) {
-                    }
-				}
-				break;
-			}
+                if (str_eq_cstr(section, "AtomType")) {
+                    deserialize_atom_type(state);
+                }
+                break;
+            }
             default:
                 break;
             }
