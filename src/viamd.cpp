@@ -2214,7 +2214,6 @@ void recenter_update_target_data(ApplicationState* state) {
         md_array_resize(state->operations.initial_frame.xyzw, count, state->allocator.persistent);
 
         state->operations.initial_frame.com = vec3_zero();
-        state->operations.initial_frame.alignment_mat = mat4_ident();
 
         if (state->operations.initial_frame.xyzw && count > 0) {
             // Fetch initial frame data required for orienting the structure
@@ -2275,6 +2274,11 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
         // reference to hold the orientation against, the rotation, the centre and each point's
         // periodic image are solved for together, so the images are chosen to minimise the alignment
         // residual rather than being committed to beforehand by a criterion unrelated to it.
+        //
+        // Both calls report the centre in the image the STATE coordinates actually occupy, which is
+        // what makes the translation below valid - it is applied to those same coordinates, untouched.
+        // A centre folded into the reference cell would place a target living outside that cell one
+        // lattice vector off, and with a rotation in play, off by R times a lattice vector.
         vec3_t target_com = {0};
         mat3_t R = mat3_ident();
 
@@ -2297,7 +2301,7 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
         } else {
             md_util_deperiodize_self_vec4(target_xyzw, count, &app->mold.state.unitcell, &target_com);
         }
-        const mat4_t A = app->operations.initial_frame.alignment_mat;
+        const mat4_t A = app->operations.alignment_mat;
         mat4_t T = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
         transform = T;
     }

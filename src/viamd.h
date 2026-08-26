@@ -1306,6 +1306,15 @@ struct ApplicationState {
         bool recenter = false;
         bool fixate_orientation = false;
 
+        // Extra transform applied to the target in its own centred frame, between fixating the
+        // orientation and placing it at the centre of the cell:
+        //     T = translate(cell_centre) * alignment_mat * R * translate(-com)
+        // Identity by default. This is the hook for aligning the structure to something once it is
+        // centred - principal axes, a chosen bond, a user supplied orientation - without having to
+        // touch the transform itself. Owned by whoever sets it: recentering never writes to it, and
+        // it survives a change of recenter target.
+        mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
+
         struct {
             char query[256] = "";
             char error[256] = "";
@@ -1334,9 +1343,6 @@ struct ApplicationState {
             // Need to store the initial frame position for recentering and orienting to work properly when applying on trajectories
             vec4_t* xyzw = nullptr;
             vec3_t  com = {};
-
-            // Alignment matrix for orienting the structure based on principal axes. This is calculated based on the initial frame and applied to all frames for consistent orientation.
-            mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
         } initial_frame;
 
     } operations;
