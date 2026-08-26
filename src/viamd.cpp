@@ -766,7 +766,11 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_str(file, arg);
                     if (!str_empty(file)) {
                         md_strb_t path = md_strb_create(temp_alloc);
-                        path += folder;
+                        // Paths are stored relative to the workspace, except when no relative
+                        // path exists between the two (a separate volume on windows)
+                        if (!md_path_is_absolute(file)) {
+                            path += folder;
+                        }
                         path += file;
                         new_molecule_file = md_path_make_canonical(path, temp_alloc);
                     }
@@ -775,7 +779,9 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_str(file, arg);
                     if (!str_empty(file)) {
                         md_strb_t path = md_strb_create(temp_alloc);
-                        path += folder;
+                        if (!md_path_is_absolute(file)) {
+                            path += folder;
+                        }
                         path += file;
                         new_trajectory_file = md_path_make_canonical(path, temp_alloc);
                     }
@@ -1062,8 +1068,20 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     state.sb += header_snippet;
     state.sb += '\n';
 
-    str_t mol_file  = md_path_make_relative(filename, str_from_cstr(app_state->files.molecule),   temp_alloc);
-    str_t traj_file = md_path_make_relative(filename, str_from_cstr(app_state->files.trajectory), temp_alloc);
+    // Files are stored relative to the workspace so that a dataset can be moved as a whole.
+    // If no relative path exists (a separate volume on windows) we fall back to the absolute
+    // path, and a slot which holds no file is written as an empty string.
+    auto workspace_relative_path = [filename, temp_alloc](const char* file) -> str_t {
+        if (!file || file[0] == '\0') {
+            return {};
+        }
+        str_t path = str_from_cstr(file);
+        str_t rel  = md_path_make_relative(filename, path, temp_alloc);
+        return str_empty(rel) ? md_path_make_canonical(path, temp_alloc) : rel;
+    };
+
+    str_t mol_file  = workspace_relative_path(app_state->files.molecule);
+    str_t traj_file = workspace_relative_path(app_state->files.trajectory);
 
     viamd::write_section_header(state, STR_LIT("Files"));
     viamd::write_str(state, STR_LIT("MoleculeFile"), mol_file);
@@ -2842,6 +2860,10 @@ void file_queue_process(ApplicationState* state) {
             str_t rel_path = md_path_make_relative(base_path, e.path, state->allocator.frame);
             MD_LOG_DEBUG("Attempting to make relative path from '" STR_FMT "' to '" STR_FMT "'", STR_ARG(base_path), STR_ARG(e.path));
             MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
+            if (str_empty(rel_path)) {
+                // No relative path exists between the two (a separate volume on windows)
+                rel_path = md_path_make_canonical(e.path, state->allocator.frame);
+            }
             if (!str_empty(rel_path)) {
                 snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_ARG(rel_path));
                 TextEditor::Coordinates pos = state->editor.GetCursorPosition();
