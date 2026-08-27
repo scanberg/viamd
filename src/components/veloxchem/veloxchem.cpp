@@ -1277,18 +1277,9 @@ struct VeloxChem : viamd::EventHandler {
 				if (num_density_properties > 0) {
 					info.electronic_structure_source_mask |= ElectronicStructureSourceFlag_DensityProperty;
 				}
-
-                dvec3_t ground_state_dipole = md_vlx_scf_ground_state_dipole_moment(vlx);
-                DipoleMoment ground_state_dipole_info = {
-                    .key = HASH_STR_LIT64("ground_state_dipole"),
-                    .label = str_copy(STR_LIT("Ground State Dipole Moment"), info.alloc),
-					.vec = ground_state_dipole,
-                    .origin = center_of_charge * BOHR_TO_ANGSTROM,
-				};
-
-				md_array_push(info.dipole_moments, ground_state_dipole_info, info.alloc);
-
-                // @TODO: Fill in dipole information
+                // Dipoles are published into sys.attributes at load (see init_from_file), so there
+                // is nothing to fan in here. Consumers query the attribute table instead, which is
+                // what lets more than one producer contribute dipoles at the same time.
                 break;
             }
             case viamd::EventType_ViamdRepresentationEvalElectronicStructure: {
@@ -1652,9 +1643,27 @@ struct VeloxChem : viamd::EventHandler {
 						nucl_dipole += xyz * atom_z[i];
                     }
 
+					dvec3_t ground_state_dipole = md_vlx_scf_ground_state_dipole_moment(vlx);
+
                     size_t num_electrons = md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA) + md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA);
                     const double inv_ne = num_electrons > 0 ? 1.0 / (double)num_electrons : 1.0;
-                    center_of_charge = (nucl_dipole - md_vlx_scf_ground_state_dipole_moment(vlx)) * inv_ne;
+                    center_of_charge = (nucl_dipole - ground_state_dipole) * inv_ne;
+
+                    // A single 3-vector is rank 2 {1,3}: the trailing axis is the components.
+                    // Rank 1 {3} would read as three independent scalars.
+                    const md_attribute_format_t attr_format_vec3 = {
+                        .type  = MD_ATTRIBUTE_TYPE_F64,
+                        .rank  = 2,
+                        .shape = { 1, 3 },
+                    };
+
+                    // The dipole is in atomic units (e a0) while its origin is a point in system
+                    // space, so the two carry different units and each says so for itself.
+                    const md_unit_t unit_dipole   = md_unit_elementary_charge_bohr();
+                    const dvec3_t   dipole_origin = center_of_charge * BOHR_TO_ANGSTROM;
+
+                    md_attributes_create(&state.mold.sys.attributes, STR_LIT("dipole/ground_state/vector"), attr_format_vec3, unit_dipole, &ground_state_dipole, sizeof(ground_state_dipole));
+                    md_attributes_create(&state.mold.sys.attributes, STR_LIT("dipole/ground_state/origin"), attr_format_vec3, md_unit_angstrom(), &dipole_origin, sizeof(dipole_origin));
 
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
                     calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);

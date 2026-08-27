@@ -464,12 +464,17 @@ struct Selection {
     md_bitfield_t atom_mask {};
 };
 
+// A dipole gathered from the system's attribute table, not accumulated by anyone.
+// Each dipole is a group of two attributes which the producer published:
+//     dipole/<group>/vector    the moment, in `unit`
+//     dipole/<group>/origin    where to draw it from, Angstrom
+// Build these with dipole_moments_gather; nothing owns or caches them.
 struct DipoleMoment {
-	uint64_t key = 0;
-	str_t label = { 0 };
-    dvec3_t vec = { 0, 0, 0 };
-	dvec3_t origin = { 0, 0, 0 };
-	md_unit_t unit = md_unit_none();
+    md_attribute_id_t key = MD_ATTRIBUTE_INVALID;   // id of the vector attribute, stable across a reload
+    str_t  label  = { 0 };                          // group name, prettified for display
+    vec3_t vec    = { 0, 0, 0 };
+    vec3_t origin = { 0, 0, 0 };
+    md_unit_t unit = md_unit_none();
 };
 
 struct NaturalTransitionOrbitalLambda {
@@ -517,7 +522,6 @@ struct RepresentationInfo {
 
     md_array(AtomProperty) atom_properties = nullptr;
     md_array(DensityProperty) density_properties = nullptr;
-	md_array(DipoleMoment) dipole_moments = nullptr;
 
     md_allocator_i* alloc = nullptr;
 };
@@ -891,7 +895,7 @@ struct AtomicPropertyRepresentation {
 };
 
 struct DipoleRepresentation {
-    int dipole_idx = 0;
+    md_attribute_id_t dipole_key = MD_ATTRIBUTE_INVALID;   // the vector attribute, so it survives a reload
     vec4_t color = { 0, 0, 0, 1 };
     vec3_t offset = { 0, 0, 0 };
     double scale = 1.0;
@@ -1680,6 +1684,17 @@ void flag_all_representations_as_dirty(ApplicationState* app);
 void remove_all_representations(ApplicationState* app);
 void create_default_representations(ApplicationState* app);
 void recompute_atom_visibility_mask(ApplicationState* app);
+
+// Enumerates the complete dipole groups in the system's attribute table, in name order.
+// Returns the total number found and writes at most cap, so pass cap 0 to count. Cheap enough to
+// call per frame: it is a prefix query over a small sorted array, and there is nothing to cache
+// or invalidate because the attribute table IS the state.
+// Groups missing either half, or whose shapes are not one 3-component value, are skipped.
+size_t dipole_moments_gather(DipoleMoment out[], size_t cap, const md_system_t& sys);
+
+// Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
+// Writes at most cap-1 characters plus a terminator, returns the length written.
+int dipole_label_pretty(char* buf, size_t cap, str_t group);
 
 // Recentering operations (low level)
 

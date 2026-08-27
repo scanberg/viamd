@@ -192,15 +192,28 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             md_strb_fmt(sb, "length: %.3f\n", d);
         }
     } else if (hit.domain == PickingDomain_Dipole) {
+        DipoleMoment dipoles[64];
+        size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state.mold.sys), ARRAY_SIZE(dipoles));
         int dipole_idx = hit.local_idx;
-        size_t num_dipoles = md_array_size(state.representation.info.dipole_moments);
         if (0 <= dipole_idx && dipole_idx < (int)num_dipoles) {
-			md_strb_fmt(sb, "%.*s\n", STR_ARG(state.representation.info.dipole_moments[dipole_idx].label));
-            dvec3_t dipole = state.representation.info.dipole_moments[dipole_idx].vec;
-			// Dipoles are given in atomic units (e * bohr), we can convert to Debye for more intuitive values (1 e * bohr ≈ 2.541746 Debye)
-			const double au_to_debye = 2.541746;
-			dipole *= au_to_debye;
-			md_strb_fmt(sb, "(%.3f %.3f %.3f) Debye\n", dipole.x, dipole.y, dipole.z);
+            const DipoleMoment& d = dipoles[dipole_idx];
+
+            char label[64];
+            int label_len = dipole_label_pretty(label, sizeof(label), d.label);
+            md_strb_fmt(sb, "%.*s\n", label_len, label);
+
+            // Debye is the readable unit for a dipole. The conversion is the attribute's own
+            // business now, and it refuses rather than rescaling if the producer published
+            // something which is not a dipole moment at all.
+            const md_attribute_t* attr = md_attributes_get(&state.mold.sys.attributes, d.key);
+            float debye[3];
+            if (attr && md_attribute_extract_f32(debye, ARRAY_SIZE(debye), attr, md_unit_debye()) == 3) {
+                md_strb_fmt(sb, "(%.3f %.3f %.3f) Debye\n", debye[0], debye[1], debye[2]);
+            } else {
+                char unit_buf[32];
+                size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), d.unit);
+                md_strb_fmt(sb, "(%.3f %.3f %.3f) %.*s\n", d.vec.x, d.vec.y, d.vec.z, (int)unit_len, unit_buf);
+            }
         }
     }
 }
@@ -1298,6 +1311,66 @@ void recompute_atom_visibility_mask(ApplicationState* state) {
     state->representation.visibility_mask_hash = md_bitfield_hash64(&mask, 0);
 }
 
+// "ground_state" reads as "Ground State" in a menu. The path segment is the identity; this is
+// presentation only, which is why it lives here and not in mdlib. Writes into a caller buffer so
+// gathering stays allocation free.
+int dipole_label_pretty(char* buf, size_t cap, str_t group) {
+    if (!buf || cap == 0) return 0;
+    size_t n = MIN(group.len, cap - 1);
+    bool boundary = true;
+    for (size_t i = 0; i < n; ++i) {
+        char c = group.ptr[i];
+        if (c == '_' || c == '-') {
+            buf[i] = ' ';
+            boundary = true;
+            continue;
+        }
+        buf[i] = (boundary && c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+        boundary = false;
+    }
+    buf[n] = '\0';
+    return (int)n;
+}
+
+size_t dipole_moments_gather(DipoleMoment out[], size_t cap, const md_system_t& sys) {
+    str_t groups[64];
+    size_t num_groups = md_attributes_query_children(groups, ARRAY_SIZE(groups), &sys.attributes, STR_LIT("dipole"));
+    num_groups = MIN(num_groups, ARRAY_SIZE(groups));
+
+    size_t count = 0;
+    for (size_t i = 0; i < num_groups; ++i) {
+        char path[256];
+        int len = snprintf(path, sizeof(path), "dipole/" STR_FMT "/vector", STR_ARG(groups[i]));
+        const md_attribute_t* vec = md_attributes_find(&sys.attributes, str_from_cstrn(path, len));
+        len = snprintf(path, sizeof(path), "dipole/" STR_FMT "/origin", STR_ARG(groups[i]));
+        const md_attribute_t* org = md_attributes_find(&sys.attributes, str_from_cstrn(path, len));
+
+        // A group carrying only one half is not a dipole anyone can draw.
+        if (!vec || !org) continue;
+        if (md_attribute_value_count(&vec->format) != 1 || md_attribute_components(&vec->format) != 3) continue;
+        if (md_attribute_value_count(&org->format) != 1 || md_attribute_components(&org->format) != 3) continue;
+
+        if (out && count < cap) {
+            float v[3], o[3];
+            // The vector comes back as stored, whatever the producer chose; the origin must be a
+            // length in system space, and extraction refuses if it is not.
+            if (md_attribute_extract_f32(v, ARRAY_SIZE(v), vec, md_unit_none())     != 3) continue;
+            if (md_attribute_extract_f32(o, ARRAY_SIZE(o), org, md_unit_angstrom()) != 3) continue;
+
+            out[count] = {
+                .key    = vec->id,
+                .label  = groups[i],
+                .vec    = vec3_set(v[0], v[1], v[2]),
+                .origin = vec3_set(o[0], o[1], o[2]),
+                .unit   = vec->unit,
+            };
+        }
+        count += 1;
+    }
+
+    return count;
+}
+
 void update_all_representations(ApplicationState* state) {
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         update_representation(state, &state->representation.reps[i]);
@@ -1497,7 +1570,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         break;
     }
 	case RepresentationType::DipoleMoment:
-		rep->type_is_valid = rep->dipole.dipole_idx >= 0 && (size_t)rep->dipole.dipole_idx < md_array_size(state->representation.info.dipole_moments);
+		rep->type_is_valid = md_attributes_get(&state->mold.sys.attributes, rep->dipole.dipole_key) != NULL;
 		break;
     default:
         ASSERT(false);
@@ -1659,17 +1732,18 @@ done:
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
         rep->enabled = true;
 
-		size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
-		// Create a default representation for ground state dipole moment if present
-        if (num_dipoles > 0) {
-            for (size_t i = 0; i < num_dipoles; ++i) {
-				double magnitude = dvec3_length(state->representation.info.dipole_moments[i].vec);
-                if (magnitude > 1e-3) {
-                    Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
-					const char* label = str_empty(state->representation.info.dipole_moments[i].label) ? "dipole moment" : str_ptr(state->representation.info.dipole_moments[i].label);
-                    snprintf(dipole_rep->name, sizeof(dipole_rep->name), "%s", label);
-                    dipole_rep->enabled = true;
-                }
+		DipoleMoment dipoles[64];
+		size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
+		// One representation per dipole, each addressing its own BY KEY. Setting that is what the
+		// positional version forgot to do, so every auto created representation drew dipole zero.
+        for (size_t i = 0; i < num_dipoles; ++i) {
+            if (vec3_length(dipoles[i].vec) > 1e-3f) {
+                Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
+                dipole_rep->dipole.dipole_key = dipoles[i].key;
+                char label[sizeof(dipole_rep->name)];
+                dipole_label_pretty(label, sizeof(label), dipoles[i].label);
+                snprintf(dipole_rep->name, sizeof(dipole_rep->name), "%s", label[0] ? label : "dipole moment");
+                dipole_rep->enabled = true;
             }
         }
     }
@@ -2989,7 +3063,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 			PickingSpace* space = (PickingSpace*)event.payload;
             size_t num_atoms = state->mold.sys.atom.count;
             size_t num_bonds = state->mold.sys.bond.count;
-            size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
+            size_t num_dipoles = dipole_moments_gather(NULL, 0, state->mold.sys);
             picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
             picking_range_reserve(&state->picking_range_dipole, space, PickingDomain_Dipole, num_dipoles);

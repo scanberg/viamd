@@ -3674,7 +3674,32 @@ static void draw_representations_window(ApplicationState* state) {
                 update_rep |= draw_representations_window_electronic_structure(state, rep);
                 break;
             case RepresentationType::DipoleMoment:
-				ImGui::ColorEdit4("color", rep.dipole.color.elem);
+            {
+                DipoleMoment dipoles[64];
+                size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
+
+                char preview[64] = "";
+                for (size_t i = 0; i < num_dipoles; ++i) {
+                    if (dipoles[i].key == rep.dipole.dipole_key) {
+                        dipole_label_pretty(preview, sizeof(preview), dipoles[i].label);
+                        break;
+                    }
+                }
+
+                if (ImGui::BeginCombo("dipole", preview)) {
+                    for (size_t i = 0; i < num_dipoles; ++i) {
+                        char label[64];
+                        dipole_label_pretty(label, sizeof(label), dipoles[i].label);
+                        bool selected = dipoles[i].key == rep.dipole.dipole_key;
+                        if (ImGui::Selectable(label, selected)) {
+                            rep.dipole.dipole_key = dipoles[i].key;
+                            update_rep = true;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            ImGui::ColorEdit4("color", rep.dipole.color.elem);
 				ImGui::SliderScalar("scale", ImGuiDataType_Double, &rep.dipole.scale, &dipole_min, &dipole_max, "%.3f");
 				ImGui::SliderFloat("radius", &rep.dipole.radius, 0.01f, 0.5f);
 				ImGui::DragFloat3("offset", rep.dipole.offset.elem, 0.01f, -100.0f, 100.0f);
@@ -6853,14 +6878,26 @@ static void draw_representations_opaque(ApplicationState* state) {
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
                 // immediate draw of dipole moment as arrow
-                size_t num_dipoles = md_array_size(state->representation.info.dipole_moments);
-                if (rep.dipole.dipole_idx >= 0 && (size_t)rep.dipole.dipole_idx < num_dipoles) {
-                    immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
-					immediate::set_picking_base_idx(scope, state->picking_range_dipole.beg + rep.dipole.dipole_idx);
-                    const DipoleMoment& dipole = state->representation.info.dipole_moments[rep.dipole.dipole_idx];
+                DipoleMoment dipoles[64];
+                size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
 
-                    const vec3_t org = vec3_set(dipole.origin.x, dipole.origin.y, dipole.origin.z);
-                    const vec3_t vec = vec3_set(dipole.vec.x, dipole.vec.y, dipole.vec.z) * rep.dipole.scale;
+                // The picking index is the position within this frame's gathered set; the
+                // representation itself holds the key, so a reload cannot silently repoint it.
+                size_t dipole_idx = SIZE_MAX;
+                for (size_t i = 0; i < num_dipoles; ++i) {
+                    if (dipoles[i].key == rep.dipole.dipole_key) {
+                        dipole_idx = i;
+                        break;
+                    }
+                }
+
+                if (dipole_idx != SIZE_MAX) {
+                    immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
+                    immediate::set_picking_base_idx(scope, state->picking_range_dipole.beg + (uint32_t)dipole_idx);
+                    const DipoleMoment& dipole = dipoles[dipole_idx];
+
+                    const vec3_t org = dipole.origin;
+                    const vec3_t vec = dipole.vec * (float)rep.dipole.scale;
 
                     // cylinder body
                     const float body_scale = 0.8f;
@@ -6874,7 +6911,7 @@ static void draw_representations_opaque(ApplicationState* state) {
 
                     uint32_t color_u32 = convert_color(rep.dipole.color);
 
-					uint32_t picking_idx = rep.dipole.dipole_idx;
+                    uint32_t picking_idx = (uint32_t)dipole_idx;
 
                     immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
                     immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
