@@ -473,10 +473,6 @@ struct VeloxChem : viamd::EventHandler {
     struct Rixs {
         // --- Settings (mirrors the keyword arguments of spectrumplot.plot_rixs_map) ---
 
-        // true  -> x axis is energy loss      (RIXS,    axis is inverted per convention)
-        // false -> x axis is emission energy  (res-XES, axis is not inverted)
-        bool energy_loss = true;
-
         // Include the elastic (Rayleigh) line as an additional stick per photon energy.
         bool plot_elastic_line = false;
 
@@ -484,8 +480,8 @@ struct VeloxChem : viamd::EventHandler {
         bool normalize = true;
 
         broadening_mode_t broadening_mode = BROADENING_MODE_LORENTZIAN;
-        double broadening_fwhm_ev = 0.24;   // FWHM in eV applied along the loss/emission axis
-        double x_step_ev = 0.01;            // Grid spacing along the loss/emission axis, in eV
+        double broadening_fwhm_ev = 0.24;   // FWHM in eV applied along the energy loss axis
+        double x_step_ev = 0.01;            // Grid spacing along the energy loss axis, in eV
         ImPlotColormap colormap = ImPlotColormap_Viridis;
 
         // Arena backing every pointer below. Owned by the module, see the comment above the struct.
@@ -500,7 +496,7 @@ struct VeloxChem : viamd::EventHandler {
         // bounds_max.y (top), so reversing the row order here reproduces matplotlib's origin='lower'.
         double* map = nullptr;
 
-        double* grid      = nullptr;  // [num_cols] loss / emission energy in eV
+        double* grid      = nullptr;  // [num_cols] energy loss in eV
         double* photon_ev = nullptr;  // [num_rows] incoming photon energies in eV, ascending
         double* xas_x     = nullptr;  // [num_xas]  broadened XAS energies in eV
         double* xas_y     = nullptr;  // [num_xas]  broadened XAS intensities
@@ -508,12 +504,12 @@ struct VeloxChem : viamd::EventHandler {
         double* core_f    = nullptr;  // [num_core] core oscillator strengths, sorted with core_ev
 
         size_t num_rows = 0;  // == number of incoming photon energies (P)
-        size_t num_cols = 0;  // == number of grid samples along the loss/emission axis (N)
+        size_t num_cols = 0;  // == number of grid samples along the energy loss axis (N)
         size_t num_xas  = 0;
         size_t num_core = 0;
 
         double map_min = 0.0, map_max = 0.0;
-        double x_min_ev = 0.0, x_max_ev = 0.0;  // extent of the loss / emission axis
+        double x_min_ev = 0.0, x_max_ev = 0.0;  // extent of the energy loss axis
         double y_min_ev = 0.0, y_max_ev = 0.0;  // extent of the photon energy axis (pixel edges)
         double xas_max  = 0.0;
 
@@ -522,6 +518,14 @@ struct VeloxChem : viamd::EventHandler {
 
         int hovered_core  = -1;
         int selected_core = -1;
+
+        // --- RIXS spectrum (a single incoming photon energy, i.e. one row of the map) ---
+        // The spectrum is cheap enough to rebuild every frame, so nothing is cached here beyond the
+        // selection state. The broadening settings above are shared with the map.
+        int selected_photon = 0;   // index into the ascending photon energy list
+        int hovered_final   = -1;
+        int selected_final  = -1;
+        uint64_t spectrum_hash = 0;  // only used to refit the axes when the plotted data changes
 
         // Set once the non-uniform photon spacing has been reported, to avoid spamming the log while
         // a settings slider is being dragged.
@@ -3231,9 +3235,10 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     // =================================================================================================
-    // RIXS map
+    // RIXS map & spectrum
     //
-    // ImGui/ImPlot port of VeloxChem's spectrumplot.plot_rixs_map().
+    // ImGui/ImPlot port of VeloxChem's spectrumplot.plot_rixs_map(), plus a 1D spectrum widget that
+    // shows a single row of that map (one incoming photon energy).
     // The implementation is split into a pure data pass (compute_rixs_map) and a drawing pass
     // (draw_rixs_map) so that the map can be rebuilt only when the settings or the input actually
     // change. Both take the input data through RixsMapInput and are therefore independent of the
@@ -3251,7 +3256,6 @@ struct VeloxChem : viamd::EventHandler {
         const double* elastic_cross_sections = nullptr;  // [P], a.u.    (optional)
         const double* cross_sections         = nullptr;  // [F][P], a.u.
         const double* energy_losses_au       = nullptr;  // [F][P], a.u.
-        const double* emission_energies_au   = nullptr;  // [F][P], a.u.
         const double* core_eigenvalues_au    = nullptr;  // [C], a.u.    (optional)
         const double* core_osc_strengths     = nullptr;  // [C]          (optional)
         double gamma_fwhm_ev = 0.0;                      // core-hole lifetime broadening, eV
@@ -3269,7 +3273,6 @@ struct VeloxChem : viamd::EventHandler {
         out.elastic_cross_sections = md_vlx_rsp_rixs_elastic_cross_sections(vlx);
         out.cross_sections         = md_vlx_rsp_rixs_cross_sections(vlx);
         out.energy_losses_au       = md_vlx_rsp_rixs_energy_losses(vlx);
-        out.emission_energies_au   = md_vlx_rsp_rixs_emission_energies(vlx);
         out.core_eigenvalues_au    = md_vlx_rsp_rixs_core_eigenvalues(vlx);
         out.core_osc_strengths     = md_vlx_rsp_rixs_core_osc_strengths(vlx);
         out.gamma_fwhm_ev          = md_vlx_rsp_rixs_gamma_fwhm_ev(vlx);
@@ -3277,11 +3280,11 @@ struct VeloxChem : viamd::EventHandler {
         out.num_final_states       = md_vlx_rsp_rixs_number_of_final_states(vlx);
         out.num_core_states        = md_vlx_rsp_rixs_number_of_core_states(vlx);
 
-        // The map itself needs at least the photon energies, the cross-sections and one of the two
-        // abscissa arrays. The XAS panel is optional and is skipped if the core data is missing.
+        // The map itself needs the photon energies, the cross-sections and the energy losses.
+        // The XAS panel is optional and is skipped if the core data is missing.
         if (out.num_photon_energies == 0 || out.num_final_states == 0) return false;
         if (!out.photon_energies_au || !out.cross_sections) return false;
-        if (!out.energy_losses_au && !out.emission_energies_au) return false;
+        if (!out.energy_losses_au) return false;
 
         return true;
     }
@@ -3325,7 +3328,7 @@ struct VeloxChem : viamd::EventHandler {
         const size_t P = in.num_photon_energies;
         const size_t F = in.num_final_states;
 
-        const double* x_src = r.energy_loss ? in.energy_losses_au : in.emission_energies_au;
+        const double* x_src = in.energy_losses_au;
         if (P == 0 || F == 0 || !in.photon_energies_au || !in.cross_sections || !x_src) return;
 
         // Include the elastic line as one extra stick per photon energy, if requested and available.
@@ -3366,8 +3369,8 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (use_elastic) {
-                // Elastic scattering: zero energy loss, or emission at the incoming photon energy.
-                const double x = r.energy_loss ? 0.0 : r.photon_ev[i];
+                // Elastic scattering: zero energy loss.
+                const double x = 0.0;
                 sx[F] = x;
                 sy[F] = in.elastic_cross_sections[p];
                 x_lo = MIN(x_lo, x);
@@ -3377,7 +3380,7 @@ struct VeloxChem : viamd::EventHandler {
 
         if (!(x_lo <= x_hi)) return;  // catches NaN / empty input
 
-        // ---- Build the grid along the loss / emission axis -------------------------------------------
+        // ---- Build the grid along the energy loss axis -------------------------------------------
         // The python version uses np.arange(val_min, val_max, xstep). Here the sample count is derived
         // from the same step but clamped, so that a small step cannot blow up the allocation.
         const double pad = 0.5;
@@ -3503,7 +3506,7 @@ struct VeloxChem : viamd::EventHandler {
 
     // Draws the XAS side panel content: a filled broadened curve plotted as x = f(y), plus the
     // core-excitation sticks as horizontal bars. Only valid inside a plot context.
-    void plot_xas_sidebar(const Rixs& r, int& hovered) {
+    void plot_xas_sidebar(const Rixs& r, int& hovered, ImVec4 curve_col, ImVec4 stick_col) {
         ImDrawList& draw_list = *ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
         defer { ImPlot::PopPlotClipRect(); };
@@ -3511,7 +3514,7 @@ struct VeloxChem : viamd::EventHandler {
         // Fill between x = 0 and the curve. ImPlot::PlotShaded only shades along y, so the horizontal
         // equivalent of matplotlib's fill_betweenx is drawn manually, one quad per segment.
         if (r.num_xas > 1) {
-            const ImU32 fill_col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.0f, 0.0f, 0.0f, 0.2f));
+            const ImU32 fill_col = ImGui::ColorConvertFloat4ToU32(ImVec4(curve_col.x, curve_col.y, curve_col.z, curve_col.w * 0.25f));
             for (size_t j = 0; j + 1 < r.num_xas; ++j) {
                 const ImVec2 a = ImPlot::PlotToPixels(0.0,          r.xas_x[j],     IMPLOT_AUTO, IMPLOT_AUTO);
                 const ImVec2 b = ImPlot::PlotToPixels(r.xas_y[j],   r.xas_x[j],     IMPLOT_AUTO, IMPLOT_AUTO);
@@ -3546,7 +3549,9 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         for (size_t i = 0; i < r.num_core; ++i) {
-            const ImVec4 col = ((int)i == hovered) ? COLOR_PEAK_HOVER : ImVec4(0.0f, 0.545f, 0.545f, 0.7f); // darkcyan
+            const ImVec4 col = ((int)i == hovered)            ? COLOR_PEAK_HOVER
+                             : ((int)i == r.selected_core)   ? COLOR_PEAK_SELECTED
+                                                             : stick_col;
             ImVec2 p0 = ImPlot::PlotToPixels(0.0,         r.core_ev[i], IMPLOT_AUTO, IMPLOT_AUTO);
             ImVec2 p1 = ImPlot::PlotToPixels(r.core_f[i], r.core_ev[i], IMPLOT_AUTO, IMPLOT_AUTO);
             p0.y -= bar_thickness_in_pixels * 0.5f;
@@ -3555,35 +3560,189 @@ struct VeloxChem : viamd::EventHandler {
         }
     }
 
-    // Standalone RIXS map widget: settings, 2D map, XAS side panel and colorbar.
-    // Call from inside an ImGui window. 'size' is the total size of the plot row; pass -1 for the
-    // width to use the available content region.
-    void draw_rixs_map(const RixsMapInput& in, Rixs& r, ImVec2 size = ImVec2(-1.0f, 350.0f)) {
-        // ---- Settings --------------------------------------------------------------------------------
+    // The settings for the whole RIXS section. Drawn once, above both plots: the spectrum is a single
+    // row of the map, so they share the broadening and the elastic line and must not drift apart.
+    void draw_rixs_settings(const RixsMapInput& in, Rixs& r) {
         const float avail_width = ImGui::GetContentRegionAvail().x;
         ImGui::PushItemWidth(MIN(avail_width, 200.0f));
-
-        int mode = r.energy_loss ? 0 : 1;
-        static const char* mode_str[] = { "Energy loss (RIXS)", "Emission energy (res-XES)" };
-        if (ImGui::Combo("X axis", &mode, mode_str, IM_ARRAYSIZE(mode_str))) {
-            r.energy_loss = (mode == 0);
-        }
+        defer { ImGui::PopItemWidth(); };
 
         static const double broadening_min = 0.01;
         static const double broadening_max = 2.0;
         ImGui::SliderScalar((const char*)u8"Broadening FWHM (eV)", ImGuiDataType_Double, &r.broadening_fwhm_ev, &broadening_min, &broadening_max);
         ImGui::Combo("Broadening mode", (int*)(&r.broadening_mode), broadening_mode_str, BROADENING_MODE_COUNT);
-        ImGui::PopItemWidth();
 
-        ImGui::Checkbox("Normalize", &r.normalize);
         if (in.elastic_cross_sections) {
-            ImGui::SameLine();
             ImGui::Checkbox("Elastic line", &r.plot_elastic_line);
+            ImGui::SameLine();
+        }
+        // Only affects the map, the spectrum is drawn on its own auto fitted axes.
+        ImGui::Checkbox("Normalize map", &r.normalize);
+    }
+
+    // The RIXS section: one set of settings, then the spectrum and the map, each in its own tree node
+    // so either can be collapsed away.
+    void draw_rixs_section(const RixsMapInput& in, Rixs& r) {
+        const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+
+        draw_rixs_settings(in, r);
+
+        ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+        if (ImGui::TreeNodeEx("Spectrum", flags)) {
+            draw_rixs_spectrum(in, r);
         }
 
-        // ---- Rebuild the cache only when something actually changed -----------------------------------
-        uint64_t hash = md_hash64(&r.energy_loss,        sizeof(r.energy_loss),        0);
+        ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
+        if (ImGui::TreeNodeEx("Map", flags)) {
+            draw_rixs_map(in, r);
+        }
+    }
+
+    // Standalone RIXS spectrum widget: the energy loss spectrum for one incoming photon energy, which
+    // is exactly one row of the RIXS map. The photon energy is picked from a combo listing every
+    // incoming energy of the calculation, the broadening is shared with the map.
+    // Call from inside an ImGui window.
+    void draw_rixs_spectrum(const RixsMapInput& in, Rixs& r, ImVec2 size = ImVec2(-1.0f, 350.0f)) {
+        const size_t P = in.num_photon_energies;
+        const size_t F = in.num_final_states;
+        if (P == 0 || F == 0 || !in.photon_energies_au || !in.cross_sections || !in.energy_losses_au) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        constexpr int num_broadened_samples = 2048;
+
+        // Photon energies ascending, so the combo lists them in order and the indices agree with the
+        // row order of the map.
+        int* sort_idx = md_temp_alloc_array(temp, int, P);
+        for (size_t i = 0; i < P; ++i) sort_idx[i] = (int)i;
+        std::sort(sort_idx, sort_idx + P, [&](int a, int b) {
+            return in.photon_energies_au[a] < in.photon_energies_au[b];
+        });
+
+        double* photon_ev = md_temp_alloc_array(temp, double, P);
+        for (size_t i = 0; i < P; ++i) {
+            photon_ev[i] = in.photon_energies_au[sort_idx[i]] * HARTREE_TO_EV;
+        }
+
+        // The selection is kept across data sets, so it has to be validated against the current one.
+        r.selected_photon = CLAMP(r.selected_photon, 0, (int)P - 1);
+
+        // ---- Which row of the map to show ------------------------------------------------------------
+        // Not a setting of the section: it selects the data, the broadening settings above apply to
+        // both plots and are drawn once by draw_rixs_settings().
+        {
+            const float avail_width = ImGui::GetContentRegionAvail().x;
+            ImGui::PushItemWidth(MIN(avail_width, 200.0f));
+            defer { ImGui::PopItemWidth(); };
+
+            char preview[32];
+            snprintf(preview, sizeof(preview), "%.4f eV", photon_ev[r.selected_photon]);
+            if (ImGui::BeginCombo("Photon energy", preview)) {
+                for (int i = 0; i < (int)P; ++i) {
+                    char item[32];
+                    snprintf(item, sizeof(item), "%.4f eV", photon_ev[i]);
+                    if (ImGui::Selectable(item, i == r.selected_photon)) {
+                        r.selected_photon = i;
+                        r.hovered_final   = -1;
+                        r.selected_final  = -1;
+                    }
+                    if (i == r.selected_photon) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        // ---- Sticks for the selected photon energy ---------------------------------------------------
+        // Column p of the [F][P] arrays, gathered into the tightly packed arrays the broadening kernels
+        // and plot_peaks expect. A handful of doubles, from the frame temp arena.
+        const size_t p = (size_t)sort_idx[r.selected_photon];
+        const bool   use_elastic = r.plot_elastic_line && in.elastic_cross_sections != nullptr;
+        const size_t num_peaks   = F + (use_elastic ? 1 : 0);
+
+        double* peaks_x = md_temp_alloc_array(temp, double, num_peaks);
+        double* peaks_y = md_temp_alloc_array(temp, double, num_peaks);
+
+        double x_lo =  DBL_MAX;
+        double x_hi = -DBL_MAX;
+        for (size_t f = 0; f < F; ++f) {
+            peaks_x[f] = in.energy_losses_au[f * P + p] * HARTREE_TO_EV;
+            peaks_y[f] = in.cross_sections[f * P + p];
+            x_lo = MIN(x_lo, peaks_x[f]);
+            x_hi = MAX(x_hi, peaks_x[f]);
+        }
+        if (use_elastic) {
+            // Elastic scattering: zero energy loss.
+            peaks_x[F] = 0.0;
+            peaks_y[F] = in.elastic_cross_sections[p];
+            x_lo = MIN(x_lo, peaks_x[F]);
+            x_hi = MAX(x_hi, peaks_x[F]);
+        }
+
+        if (!(x_lo <= x_hi)) return;  // catches NaN / empty input
+
+        // Same padding as the map, so both cover the same range for a given photon energy.
+        const double pad = 0.5;
+        const double x_min = x_lo - pad;
+        const double x_max = x_hi + pad;
+
+        // ---- Refit whenever the plotted data changes -------------------------------------------------
+        uint64_t hash = md_hash64(&r.selected_photon,   sizeof(r.selected_photon),   0);
         hash = md_hash64(&r.plot_elastic_line,  sizeof(r.plot_elastic_line),  hash);
+        hash = md_hash64(&r.broadening_mode,    sizeof(r.broadening_mode),    hash);
+        hash = md_hash64(&r.broadening_fwhm_ev, sizeof(r.broadening_fwhm_ev), hash);
+        hash = md_hash64(&in,                   sizeof(in),                   hash);
+
+        if (hash != r.spectrum_hash) {
+            r.spectrum_hash = hash;
+            ImPlot::SetNextAxesToFit();
+        }
+
+        if (ImPlot::BeginPlot("RIXS spectrum", size)) {
+            // The energy-loss convention draws the axis reversed (high loss on the left), as in the map.
+            ImPlot::SetupAxis(ImAxis_X1, "Energy loss [eV]", ImPlotAxisFlags_Invert);
+            ImPlot::SetupAxis(ImAxis_Y1, "Intensity [a.u.]");
+            ImPlot::SetupAxis(ImAxis_Y2, "Cross section [a.u.]", ImPlotAxisFlags_AuxDefault);
+            ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
+            ImPlot::SetupFinish();
+
+            BroadenedCurve curve = {
+                peaks_x, peaks_y, num_peaks, x_min, x_max,
+                r.broadening_fwhm_ev, num_broadened_samples, r.broadening_mode,
+            };
+            ImPlot::SetAxis(ImAxis_Y1);
+            ImPlot::PlotLineG("Broadened Spectrum", broadened_curve_getter, &curve, num_broadened_samples);
+
+            ImPlot::SetAxis(ImAxis_Y2);
+            plot_peaks("Cross Section", peaks_x, peaks_y, num_peaks, r.selected_final, r.hovered_final);
+
+            if (ImPlot::IsPlotHovered() && r.hovered_final != -1) {
+                const int i = r.hovered_final;
+                if (ImGui::BeginTooltip()) {
+                    if (use_elastic && (size_t)i == F) {
+                        ImGui::TextUnformatted("Elastic line");
+                    } else {
+                        ImGui::Text("Final state %i", i + 1);
+                    }
+                    ImGui::Text("Energy loss: %.4f eV", peaks_x[i]);
+                    ImGui::Text("Cross section: %.4g", peaks_y[i]);
+                    ImGui::EndTooltip();
+                }
+            }
+
+            ImPlot::EndPlot();
+        }
+    }
+
+    // RIXS map widget: 2D map, XAS side panel and colorbar. The settings it reads are drawn by
+    // draw_rixs_settings().
+    // Call from inside an ImGui window. 'size' is the total size of the plot row; pass -1 for the
+    // width to use the available content region.
+    void draw_rixs_map(const RixsMapInput& in, Rixs& r, ImVec2 size = ImVec2(-1.0f, 350.0f)) {
+        // ---- Rebuild the cache only when something actually changed -----------------------------------
+        uint64_t hash = md_hash64(&r.plot_elastic_line, sizeof(r.plot_elastic_line), 0);
         hash = md_hash64(&r.normalize,          sizeof(r.normalize),          hash);
         hash = md_hash64(&r.broadening_mode,    sizeof(r.broadening_mode),    hash);
         hash = md_hash64(&r.broadening_fwhm_ev, sizeof(r.broadening_fwhm_ev), hash);
@@ -3611,26 +3770,70 @@ struct VeloxChem : viamd::EventHandler {
         const float map_w         = has_xas ? total_w * (4.0f / 5.25f) : total_w;
         const float xas_w         = total_w - map_w;
 
-        char x_label[64];
-        snprintf(x_label, sizeof(x_label), "%s [eV]", r.energy_loss ? "Energy loss" : "Emission energy");
-
-        ImPlot::PushColormap(r.colormap);
-        defer { ImPlot::PopColormap(); };
+        const char* x_label = "Energy loss [eV]";
 
         // The energy-loss convention draws the axis reversed (high loss on the left).
-        const ImPlotAxisFlags x_flags = r.energy_loss ? ImPlotAxisFlags_Invert : ImPlotAxisFlags_None;
+        const ImPlotAxisFlags x_flags = ImPlotAxisFlags_Invert;
+
+        // Only the heatmap and the colorbar are drawn with the map colormap. The XAS panel is a
+        // regular line plot and picks up the default item colors, like every other spectrum.
+        ImPlot::PushColormap(r.colormap);
+
+        // PlotHeatmap only rasterizes the cells it was given, so anything outside the data would fall
+        // through to the window background. Painting the canvas in the color a zero sample maps to
+        // makes the map read as an infinite field of zeros instead of a floating tile.
+        const double map_range = MAX(r.map_max - r.map_min, DBL_EPSILON);
+        const float  zero_t    = ImClamp((float)((0.0 - r.map_min) / map_range), 0.0f, 1.0f);
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImPlot::SampleColormap(zero_t, r.colormap));
 
         ImPlot::SetNextAxisLinks(ImAxis_Y1, &r.y_link_min, &r.y_link_max);
         if (ImPlot::BeginPlot("RIXS map", ImVec2(map_w, height), ImPlotFlags_NoLegend)) {
             ImPlot::SetupAxis(ImAxis_X1, x_label, x_flags);
             ImPlot::SetupAxis(ImAxis_Y1, "Photon energy [eV]");
             ImPlot::SetupAxesLimits(r.x_min_ev, r.x_max_ev, r.y_min_ev, r.y_max_ev, refit ? ImPlotCond_Always : ImPlotCond_Once);
+
+            // Keep panning and zooming inside the data. Combined with the background above, there is
+            // no way to end up looking at a region the map says nothing about.
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, r.x_min_ev, r.x_max_ev);
+            ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, r.y_min_ev, r.y_max_ev);
             ImPlot::SetupFinish();
 
             ImPlot::PlotHeatmap("##rixs_map", r.map, (int)r.num_rows, (int)r.num_cols,
                                 r.map_min, r.map_max, nullptr,
                                 ImPlotPoint(r.x_min_ev, r.y_min_ev),
                                 ImPlotPoint(r.x_max_ev, r.y_max_ev));
+
+            // The row currently shown in the spectrum. White reads against the whole colormap, which
+            // a colormap color would not.
+            if (r.selected_photon >= 0 && (size_t)r.selected_photon < r.num_rows) {
+                const double y = r.photon_ev[r.selected_photon];
+                ImPlot::SetNextLineStyle(ImVec4(1.0f, 1.0f, 1.0f, 0.85f), 1.5f);
+                ImPlot::PlotInfLines("##selected_photon", &y, 1, ImPlotInfLinesFlags_Horizontal);
+            }
+
+            // Clicking anywhere in the map moves the spectrum to the closest incoming photon energy.
+            // Released rather than clicked, and dragging excluded, so that panning the plot does not
+            // change the selection.
+            if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && r.num_rows > 0) {
+                const double y = ImPlot::GetPlotMousePos().y;
+
+                int    closest   = 0;
+                double closest_d = DBL_MAX;
+                for (size_t i = 0; i < r.num_rows; ++i) {
+                    const double d = fabs(r.photon_ev[i] - y);
+                    if (d < closest_d) {
+                        closest_d = d;
+                        closest   = (int)i;
+                    }
+                }
+
+                if (closest != r.selected_photon) {
+                    r.selected_photon = closest;
+                    r.hovered_final   = -1;
+                    r.selected_final  = -1;
+                }
+            }
 
             if (ImPlot::IsPlotHovered()) {
                 const ImPlotPoint p = ImPlot::GetPlotMousePos();
@@ -3642,7 +3845,7 @@ struct VeloxChem : viamd::EventHandler {
                     const size_t col = (size_t)(u * (double)r.num_cols);
                     const size_t row = r.num_rows - 1 - (size_t)(v * (double)r.num_rows);
                     ImGui::BeginTooltip();
-                    ImGui::Text("%s: %.3f eV", r.energy_loss ? "Energy loss" : "Emission energy", p.x);
+                    ImGui::Text("Energy loss: %.3f eV", p.x);
                     ImGui::Text("Photon energy: %.3f eV", p.y);
                     ImGui::Text("Intensity: %.4g", r.map[row * r.num_cols + col]);
                     ImGui::EndTooltip();
@@ -3650,21 +3853,32 @@ struct VeloxChem : viamd::EventHandler {
             }
             ImPlot::EndPlot();
         }
+        ImPlot::PopStyleColor();
+        ImPlot::PopColormap();
 
         if (has_xas) {
             ImGui::SameLine();
             ImPlot::SetNextAxisLinks(ImAxis_Y1, &r.y_link_min, &r.y_link_max);
             const ImPlotFlags xas_flags = ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
             if (ImPlot::BeginPlot("XAS", ImVec2(xas_w, height), xas_flags)) {
-                ImPlot::SetupAxis(ImAxis_X1, "Intensity", ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoGridLines);
+                ImPlot::SetupAxis(ImAxis_X1, "Intensity",  ImPlotAxisFlags_NoGridLines);
                 // The photon energy axis is shared with the map, so it is not labelled again here.
                 ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoLabel);
                 ImPlot::SetupAxesLimits(0.0, MAX(r.xas_max, 1.0e-12) * 1.1, r.y_min_ev, r.y_max_ev, refit ? ImPlotCond_Always : ImPlotCond_Once);
+                // The photon energy axis is linked to the map, so it carries the same constraint.
+                ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, r.y_min_ev, r.y_max_ev);
                 ImPlot::SetupFinish();
 
-                plot_xas_sidebar(r, r.hovered_core);
+                // The first two colors of the current colormap, as two ordinary plot items would get.
+                // NOTE: GetColormapColor, not NextColormapColor: the latter advances a counter that
+                // lives in the plot and is never reset per frame, so calling it for items that are not
+                // registered with ImPlot walks through the colormap one step per frame (flickering).
+                const ImVec4 curve_col = ImPlot::GetColormapColor(0);
+                const ImVec4 stick_col = ImPlot::GetColormapColor(1);
 
-                ImPlot::SetNextLineStyle(ImVec4(0.0f, 0.0f, 0.0f, 1.0f), 2.5f);
+                plot_xas_sidebar(r, r.hovered_core, curve_col, stick_col);
+
+                ImPlot::SetNextLineStyle(curve_col);
                 ImPlot::PlotLine("##xas", r.xas_y, r.xas_x, (int)r.num_xas);
 
                 if (r.hovered_core != -1) {
@@ -3684,8 +3898,10 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         ImGui::SameLine();
+        ImPlot::PushColormap(r.colormap);
         ImPlot::ColormapScale("Intensity [arb. u.]", r.map_min, r.map_max, ImVec2(colorbar_w, height),
                               r.normalize ? "%.2f" : "%.1e");
+        ImPlot::PopColormap();
     }
 
     // =================================================================================================
@@ -3707,7 +3923,8 @@ struct VeloxChem : viamd::EventHandler {
 
     // Per-element input to the broadening getter. Lives on the stack for the duration of one
     // PlotLineG call, which consumes it immediately.
-    struct XpsCurve {
+    // A broadened curve sampled on the fly by ImPlot, shared by the XPS and RIXS spectra.
+    struct BroadenedCurve {
         const double*     peaks_x;
         const double*     peaks_y;
         size_t            num_peaks;
@@ -3718,8 +3935,8 @@ struct VeloxChem : viamd::EventHandler {
         broadening_mode_t mode;
     };
 
-    static ImPlotPoint xps_curve_getter(int idx, void* user_data) {
-        const XpsCurve* c = (const XpsCurve*)user_data;
+    static ImPlotPoint broadened_curve_getter(int idx, void* user_data) {
+        const BroadenedCurve* c = (const BroadenedCurve*)user_data;
         const double x = c->x_min + (c->x_max - c->x_min) * idx / (double)(c->num_samples - 1);
         const double y = (c->mode == BROADENING_MODE_LORENTZIAN)
             ? lorentzian_xps(x, c->peaks_x, c->peaks_y, c->num_peaks, c->fwhm)
@@ -3954,12 +4171,12 @@ struct VeloxChem : viamd::EventHandler {
             // driving the tooltip and the highlight.
             xps.hovered = -1;
 
-            XpsCurve curve = {
+            BroadenedCurve curve = {
                 peaks_x, peaks_y, grp->count, x_min, x_max,
                 xps.broadening_fwhm_ev, num_broadened_samples, xps.broadening_mode,
             };
             ImPlot::SetAxis(ImAxis_Y1);
-            ImPlot::PlotLineG("Broadened Spectrum", xps_curve_getter, &curve, num_broadened_samples);
+            ImPlot::PlotLineG("Broadened Spectrum", broadened_curve_getter, &curve, num_broadened_samples);
 
             if (xps.show_sticks) {
                 ImPlot::SetAxis(ImAxis_Y2);
@@ -4818,8 +5035,8 @@ struct VeloxChem : viamd::EventHandler {
                 RixsMapInput rixs_input = {};
                 if (rixs_map_input_from_vlx(rixs_input)) {
                     ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
-                    if (ImGui::TreeNodeEx("RIXS Map", tree_flags)) {
-                        draw_rixs_map(rixs_input, rixs);
+                    if (ImGui::TreeNodeEx("RIXS", tree_flags)) {
+                        draw_rixs_section(rixs_input, rixs);
                     }
                 }
             }
