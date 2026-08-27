@@ -71,6 +71,9 @@
 
 #define COLOR_PEAK_SELECTED ImVec4(0.5, 0.5, 1.0, 1.0)
 #define COLOR_PEAK_HOVER    ImVec4(1.0, 1.0, 0.5, 1.0)
+// COLOR_PEAK_HOVER as a table row background. Kept translucent: the row text and the selectable's
+// own fill both draw on top of it, and an opaque tint makes either unreadable.
+#define COLOR_ROW_HIGHLIGHT ImVec4(1.0, 1.0, 0.5, 0.25)
 
 #define COLOR_TABLE_SELECTED IM_BLUE
 #define COLOR_TABLE_HOVERED  IM_YELLOW
@@ -559,6 +562,11 @@ struct VeloxChem : viamd::EventHandler {
         // in the application selection mask, so the plot is a view of that mask and cannot drift
         // out of sync with the viewport or with a selection made anywhere else.
         int hovered = -1;
+
+        // MO of the hovered peak, handed to the orbital grid window so it can highlight the matching
+        // table row, or -1 when no peak is hovered. Written by draw_xps_plot, consumed and cleared by
+        // draw_orb_window - see the comment at the top of that function for the ordering.
+        int32_t highlight_mo_idx = -1;
 
         uint64_t hash = 0;  // Refit the axes when the settings change
     } xps;
@@ -3583,6 +3591,12 @@ struct VeloxChem : viamd::EventHandler {
     // The RIXS section: one set of settings, then the spectrum and the map, each in its own tree node
     // so either can be collapsed away.
     void draw_rixs_section(const RixsMapInput& in, Rixs& r) {
+        // The enclosing tree node uses NoTreePushOnOpen, so without this everything drawn here would
+        // share the ID scope of the parent window - and collide with the identically labelled
+        // broadening widgets of the XPS section, which sits under the same kind of node.
+        ImGui::PushID("rixs");
+        defer { ImGui::PopID(); };
+
         const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
         draw_rixs_settings(in, r);
@@ -4040,6 +4054,15 @@ struct VeloxChem : viamd::EventHandler {
         const size_t num_entries = md_vlx_xps_count(vlx);
         if (num_groups == 0 || num_entries == 0) return;
 
+        // The enclosing tree node uses NoTreePushOnOpen, so this section would otherwise draw into the
+        // parent window's ID scope. Two collisions follow from that: ImPlot derives the plot ID from
+        // Window->GetID(title), so BeginPlot("XPS") lands on the exact ID of the TreeNodeEx("XPS")
+        // header - which makes ImPlot report the plot as held while the header is dragged, panning the
+        // axes - and the broadening widgets below collide with the identically labelled ones in the
+        // RIXS section when a file carries both.
+        ImGui::PushID("xps");
+        defer { ImGui::PopID(); };
+
         const md_vlx_xps_entry_t* all_entries = md_vlx_xps_entries(vlx);
 
         md_temp_scope_t temp = md_temp_begin();
@@ -4199,6 +4222,16 @@ struct VeloxChem : viamd::EventHandler {
                 if (hov_atom >= 0) {
                     md_bitfield_set_bit(&state.selection.highlight_mask, (uint64_t)hov_atom);
                 }
+            }
+
+            // Same contract towards the orbital grid window: only written while the cursor is inside
+            // the plot, so moving off a peak drops the row highlight exactly as it drops the atom
+            // highlight. A delocalized hole names one shared core MO, so every entry of that hole
+            // lights the same row - which is the truth of it.
+            // md_vlx.c range checks atom_index on load but not mo_index, so it is checked here.
+            if (plot_hovered && hov_entry && hov_entry->mo_index >= 0 &&
+                (size_t)hov_entry->mo_index < num_molecular_orbitals()) {
+                xps.highlight_mo_idx = hov_entry->mo_index;
             }
 
             if (plot_hovered && hov_entry) {
@@ -5994,6 +6027,14 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void draw_orb_window(const ApplicationState& state) {
+        // The XPS plot hands over the MO of the peak under the cursor. draw_rsp_window runs after
+        // this one in the frame tick, so what is read here is one frame old - invisible for a hover
+        // highlight, and cheaper than reordering the windows. Consumed unconditionally, ahead of the
+        // early returns, so a hover that has gone away - or a Response window that stopped drawing
+        // altogether - cannot leave a row lit up forever.
+        const int32_t xps_highlight_mo = xps.highlight_mo_idx;
+        xps.highlight_mo_idx = -1;
+
         if (!orb.show_window) return;
         if (num_molecular_orbitals() == 0) return;
         ImGui::SetNextWindowSize({600, 300}, ImGuiCond_FirstUseEver);
@@ -6105,6 +6146,9 @@ struct VeloxChem : viamd::EventHandler {
                     for (int n = (int)num_molecular_orbitals() - 1; n >= 0; n--) {
                         ImGui::PushID(n + 1);
                         ImGui::TableNextRow();
+                        if (n == xps_highlight_mo) {
+                            ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(COLOR_ROW_HIGHLIGHT));
+                        }
                         bool is_selected = (beg_mo_idx <= n && n < beg_mo_idx + window_size);
                         ImGui::TableNextColumn();
                         if (orb.scroll_to_idx != -1 && n == orb.scroll_to_idx) {
