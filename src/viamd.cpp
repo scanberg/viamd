@@ -199,15 +199,17 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             const DipoleMoment& d = dipoles[dipole_idx];
 
             char label[64];
-            int label_len = dipole_label_pretty(label, sizeof(label), d.label);
+            int label_len = dipole_entry_label(label, sizeof(label), d);
             md_strb_fmt(sb, "%.*s\n", label_len, label);
 
             // Debye is the readable unit for a dipole. The conversion is the attribute's own
             // business now, and it refuses rather than rescaling if the producer published
-            // something which is not a dipole moment at all.
+            // something which is not a dipole moment at all. One element of the group, because a
+            // transition dipole attribute holds one per excited state.
             const md_attribute_t* attr = md_attributes_get(&state.mold.sys.attributes, d.key);
             float debye[3];
-            if (attr && md_attribute_extract_f32(debye, ARRAY_SIZE(debye), attr, md_unit_debye()) == 3) {
+            const md_attribute_slice_t slice = (attr && attr->format.rank > 0) ? md_attribute_slice_1(d.index) : md_attribute_slice_all();
+            if (attr && md_attribute_extract_slice_f32(debye, ARRAY_SIZE(debye), attr, &slice, md_unit_debye()) == 3) {
                 md_strb_fmt(sb, "(%.3f %.3f %.3f) Debye\n", debye[0], debye[1], debye[2]);
             } else {
                 char unit_buf[32];
@@ -642,6 +644,10 @@ void free_system_data(ApplicationState* data) {
     data->operations.initial_frame.xyzw = nullptr;
 
     md_gl_mol_destroy(data->mold.gl_mol);
+
+    // The dataset's GPU data goes with the dataset, for the same reason gl_mol does.
+    system_gpu_data_free(data);
+
     MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
     data->interpolated_properties.secondary_structure = nullptr;
@@ -1251,11 +1257,11 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, state->allocator.persistent);
 
-    size_t num_props = md_array_size(state->representation.info.atom_properties);
-    if (num_props > 0) {
-        rep->atomic_property.idx = 0;
-        rep->atomic_property.range_beg = state->representation.info.atom_properties[0].value_min;
-        rep->atomic_property.range_end = state->representation.info.atom_properties[0].value_max;
+    // Default to the first per atom field the system offers, if it offers any. There is no list to
+    // consult: the attribute table is the list.
+    md_attribute_id_t first_property = MD_ATTRIBUTE_INVALID;
+    if (atom_property_query(&first_property, 1, state->mold.sys) > 0) {
+        atom_property_select(&rep->atomic_property, first_property, state->mold.sys);
     }
 
     flag_representation_as_dirty(rep);
@@ -1332,6 +1338,16 @@ int dipole_label_pretty(char* buf, size_t cap, str_t group) {
     return (int)n;
 }
 
+int dipole_entry_label(char* buf, size_t cap, const DipoleMoment& dipole) {
+    if (!buf || cap == 0) return 0;
+
+    int len = dipole_label_pretty(buf, cap, dipole.label);
+    if (dipole.count > 1 && (size_t)len + 1 < cap) {
+        len += snprintf(buf + len, cap - (size_t)len, " %u", dipole.index + 1);
+    }
+    return len;
+}
+
 size_t dipole_moments_gather(DipoleMoment out[], size_t cap, const md_system_t& sys) {
     str_t groups[64];
     size_t num_groups = md_attributes_query_children(groups, ARRAY_SIZE(groups), &sys.attributes, STR_LIT("dipole"));
@@ -1347,28 +1363,307 @@ size_t dipole_moments_gather(DipoleMoment out[], size_t cap, const md_system_t& 
 
         // A group carrying only one half is not a dipole anyone can draw.
         if (!vec || !org) continue;
-        if (md_attribute_value_count(&vec->format) != 1 || md_attribute_components(&vec->format) != 3) continue;
-        if (md_attribute_value_count(&org->format) != 1 || md_attribute_components(&org->format) != 3) continue;
+        if (md_attribute_components(&vec->format) != 3 || md_attribute_components(&org->format) != 3) continue;
 
-        if (out && count < cap) {
-            float v[3], o[3];
-            // The vector comes back as stored, whatever the producer chose; the origin must be a
-            // length in system space, and extraction refuses if it is not.
-            if (md_attribute_extract_f32(v, ARRAY_SIZE(v), vec, md_unit_none())     != 3) continue;
-            if (md_attribute_extract_f32(o, ARRAY_SIZE(o), org, md_unit_angstrom()) != 3) continue;
+        // The vector decides how many dipoles the group holds. The origin is addressed by the same
+        // index space but need not have the same shape: an origin with fewer index axes is constant
+        // over the ones it lacks, which is how one shared anchor serves every excited state.
+        const size_t num_elem = md_attribute_value_count(&vec->format);
+        const size_t num_org  = md_attribute_value_count(&org->format);
+        if (num_elem == 0 || (num_org != num_elem && num_org != 1)) continue;
 
-            out[count] = {
-                .key    = vec->id,
-                .label  = groups[i],
-                .vec    = vec3_set(v[0], v[1], v[2]),
-                .origin = vec3_set(o[0], o[1], o[2]),
-                .unit   = vec->unit,
-            };
+        for (size_t e = 0; e < num_elem; ++e) {
+            if (out && count < cap) {
+                // One slice, clamped to each half's own rank. A shared origin is rank 0 and takes
+                // no index; a per state one is rank 1 and takes the same index as the vector. That
+                // clamp is the whole cost of not requiring the two to have equal shapes.
+                const md_attribute_slice_t vec_slice = vec->format.rank > 0 ? md_attribute_slice_1((uint32_t)e) : md_attribute_slice_all();
+                const md_attribute_slice_t org_slice = org->format.rank > 0 ? vec_slice : md_attribute_slice_all();
+
+                // The vector comes back as stored, whatever the producer chose; the origin must be a
+                // length in system space, and extraction refuses if it is not. A refusal leaves the
+                // entry at zero rather than dropping it, so that counting and writing agree on how
+                // many there are - a picking index into this array depends on that.
+                float v[3] = {0, 0, 0};
+                float o[3] = {0, 0, 0};
+                md_attribute_extract_slice_f32(v, ARRAY_SIZE(v), vec, &vec_slice, md_unit_none());
+                md_attribute_extract_slice_f32(o, ARRAY_SIZE(o), org, &org_slice, md_unit_angstrom());
+
+                out[count] = {
+                    .key    = vec->id,
+                    .index  = (uint32_t)e,
+                    .count  = (uint32_t)num_elem,
+                    .label  = groups[i],
+                    .vec    = vec3_set(v[0], v[1], v[2]),
+                    .origin = vec3_set(o[0], o[1], o[2]),
+                    .unit   = vec->unit,
+                };
+            }
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+
+// A per atom scalar field: values one component wide, the atom axis LAST, and at most one axis of
+// variants ahead of it. mdlib deliberately does not know that an "atom/..." path is over this
+// system's atoms - categories are not predeclared - so this is where that convention is checked.
+static bool atom_property_qualifies(const md_attribute_t* attr, const md_system_t& sys) {
+    const md_attribute_format_t& fmt = attr->format;
+    if (fmt.rank < 1 || fmt.rank > 2) return false;
+    if (md_attribute_components(&fmt) != 1) return false;
+    return fmt.shape[fmt.rank - 1] == (uint32_t)sys.atom.count;
+}
+
+size_t atom_property_query(md_attribute_id_t out_ids[], size_t cap, const md_system_t& sys) {
+    md_attribute_id_t ids[128];
+    size_t num_ids = md_attributes_query(ids, ARRAY_SIZE(ids), &sys.attributes, STR_LIT("atom"));
+    num_ids = MIN(num_ids, ARRAY_SIZE(ids));
+
+    size_t count = 0;
+    for (size_t i = 0; i < num_ids; ++i) {
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, ids[i]);
+        if (!attr || !atom_property_qualifies(attr, sys)) continue;
+
+        if (out_ids && count < cap) {
+            out_ids[count] = ids[i];
         }
         count += 1;
     }
 
     return count;
+}
+
+str_t atom_property_label(const md_attribute_t* attr) {
+    if (!attr) return str_t{};
+    // An empty label is a valid state, and the leaf is what the path spells for itself.
+    return str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
+}
+
+int atom_property_variant_count(const md_attribute_t* attr) {
+    if (!attr) return 0;
+    return attr->format.rank > 1 ? (int)attr->format.shape[0] : 1;
+}
+
+bool atom_property_value_range(float* out_min, float* out_max, const md_attribute_t* attr) {
+    if (!attr) return false;
+
+    const size_t num_values = md_attribute_element_count(&attr->format);
+    if (num_values == 0) return false;
+
+    md_temp_scope_t temp = md_temp_begin();
+    float* values = (float*)md_temp_alloc(temp, sizeof(float) * num_values);
+
+    // Deliberately the whole attribute and not one variant: a span recomputed per variant would
+    // make the colours shift as the index slider moves, which reads as the data changing.
+    bool result = values && md_attribute_extract_f32(values, num_values, attr, md_unit_none()) == num_values;
+    if (result) {
+        float value_min =  FLT_MAX;
+        float value_max = -FLT_MAX;
+        for (size_t i = 0; i < num_values; ++i) {
+            value_min = MIN(value_min, values[i]);
+            value_max = MAX(value_max, values[i]);
+        }
+        if (out_min) *out_min = value_min;
+        if (out_max) *out_max = value_max;
+    }
+    md_temp_end(temp);
+
+    return result;
+}
+
+void atom_property_select(AtomicPropertyRepresentation* prop, md_attribute_id_t key, const md_system_t& sys) {
+    ASSERT(prop);
+
+    prop->key = key;
+    prop->variant_idx = 0;
+
+    float value_min = 0.0f;
+    float value_max = 1.0f;
+    atom_property_value_range(&value_min, &value_max, md_attributes_get(&sys.attributes, key));
+
+    prop->value_min = value_min;
+    prop->value_max = value_max;
+    prop->range_beg = value_min;
+    prop->range_end = value_max;
+}
+
+// ---------------------------------------------------------------------------
+// Per dataset GPU data
+// ---------------------------------------------------------------------------
+// Built from the system's own basis/ attributes, so it needs no loader and no component - which is
+// the point of publishing the basis in the first place. Lives beside gl_mol because it is the same
+// kind of thing: derived FROM the system so that something can draw or evaluate it, and never read
+// back by mdlib.
+//
+// The device scratch is grown here rather than allocated per dataset. A wider basis loaded later
+// grows it; a narrower one leaves it alone, because it is scratch and only the maximum matters.
+
+void system_gpu_data_free(ApplicationState* state) {
+    ASSERT(state);
+#if MD_ENABLE_GPU
+    if (state->mold.gpu_basis) {
+        md_gto_gpu_basis_destroy(state->mold.gpu_basis);
+        state->mold.gpu_basis = nullptr;
+    }
+    if (state->mold.gpu_atoms) {
+        md_gpu_free(state->mold.gpu_atoms, state->gpu_stream);
+        state->mold.gpu_atoms = nullptr;
+    }
+    state->mold.gpu_atoms_dirty = true;
+#else
+    (void)state;
+#endif
+}
+
+bool system_gpu_data_update(ApplicationState* state, double cutoff) {
+    ASSERT(state);
+#if MD_ENABLE_GPU
+    system_gpu_data_free(state);
+
+    if (!state->gpu_device || !state->gpu_pool) {
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &state->mold.sys.attributes, md_temp_allocator(temp))) {
+        // A system with no basis published is the normal case, not a failure.
+        return false;
+    }
+
+    md_gto_gpu_basis_desc_t desc = { .basis = &basis, .cutoff = cutoff };
+    state->mold.gpu_basis = md_gto_gpu_basis_create(state->gpu_pool, state->gpu_stream, &desc);
+    if (!state->mold.gpu_basis) {
+        MD_LOG_ERROR("Failed to upload the GTO basis to the device");
+        return false;
+    }
+
+    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    const size_t num_atoms = md_gto_gpu_basis_num_atoms(state->mold.gpu_basis);
+
+    state->mold.gpu_atoms = md_gpu_malloc(state->gpu_pool, md_gto_gpu_atom_buffer_size(num_atoms), state->gpu_stream);
+    state->mold.gpu_atoms_dirty = true;
+
+    // Density coefficients are the larger of the two packings, so one size covers both the density
+    // and the MO evaluation paths.
+    const size_t coeff_size = md_gto_gpu_coeff_size_density(num_cgtos);
+    if (coeff_size > state->gpu_coeff_capacity) {
+        if (state->gpu_coeff) {
+            md_gpu_free(state->gpu_coeff, state->gpu_stream);
+        }
+        state->gpu_coeff = md_gpu_malloc(state->gpu_pool, coeff_size, state->gpu_stream);
+        state->gpu_coeff_capacity = state->gpu_coeff ? coeff_size : 0;
+    }
+
+    return state->mold.gpu_atoms != nullptr && state->gpu_coeff != nullptr;
+#else
+    (void)state; (void)cutoff;
+    return false;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Orbital evaluation
+// ---------------------------------------------------------------------------
+// Nothing here holds a reader. The basis and the AO coefficients are attributes on the system, the
+// atom positions are the system's own state, and the grid, the destination texture and the
+// evaluation parameters belong to the caller. There is no vlx pointer in scope, no event, and no
+// component to ask - which is the whole point of publishing the coefficients.
+//
+// The basis is rebuilt per call for now. That is one interleave over a few hundred shells, but it
+// is the obvious thing for a representation to cache, keyed on the ids of the basis/ attributes it
+// was built from.
+double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, uint32_t orbital_idx) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, coefficient_path);
+    if (!attr) {
+        MD_LOG_DEBUG("No orbital coefficients published at '" STR_FMT "'", STR_ARG(coefficient_path));
+        return nullptr;
+    }
+
+    // {M,A}: one row per molecular orbital, one column per atomic orbital.
+    if (attr->format.rank != 2 || md_attribute_components(&attr->format) != 1) {
+        MD_LOG_ERROR("'" STR_FMT "' is not a matrix of orbital coefficients", STR_ARG(coefficient_path));
+        return nullptr;
+    }
+    if (orbital_idx >= attr->format.shape[0]) {
+        MD_LOG_ERROR("Orbital %u is out of range in '" STR_FMT "'", orbital_idx, STR_ARG(coefficient_path));
+        return nullptr;
+    }
+
+    // Ask the slice how big it is, then allocate for exactly that. The size comes from the format
+    // alone, so this same shape works whether the coefficients are stored or worked out on demand.
+    const md_attribute_slice_t slice = md_attribute_slice_1(orbital_idx);
+    const size_t num_ao = md_attribute_slice_count(attr, &slice);
+    if (num_ao == 0) {
+        return nullptr;
+    }
+
+    double* dst = (double*)md_temp_alloc(temp, sizeof(double) * num_ao);
+    if (!dst) {
+        return nullptr;
+    }
+
+    // f64, because that is what md_gto takes: the coefficients are double at this boundary to keep
+    // the QM code's precision, and extracting them through floats would spend it here.
+    if (md_attribute_extract_slice_f64(dst, num_ao, attr, &slice, md_unit_none()) != num_ao) {
+        return nullptr;
+    }
+
+    if (out_num_ao) *out_num_ao = num_ao;
+    return dst;
+}
+
+bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+                         str_t coefficient_path, uint32_t orbital_idx, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
+    if (state.num_atoms == 0 || !state.x || !state.y || !state.z) {
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    size_t  num_ao    = 0;
+    double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, sys, coefficient_path, orbital_idx);
+    if (!ao_coeffs) {
+        return false;
+    }
+
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+        return false;
+    }
+
+    // The coefficients and the basis are separate attributes, so nothing guarantees they agree
+    // until it is checked here.
+    if (md_gto_basis_num_ao(&basis) != num_ao) {
+        MD_LOG_ERROR("The basis spans %zu atomic orbitals and '" STR_FMT "' %zu", md_gto_basis_num_ao(&basis), STR_ARG(coefficient_path), num_ao);
+        return false;
+    }
+    if (md_gto_basis_num_atoms(&basis) > state.num_atoms) {
+        MD_LOG_ERROR("The basis indexes %zu atoms and the state holds %zu", md_gto_basis_num_atoms(&basis), state.num_atoms);
+        return false;
+    }
+
+    // md_gto evaluates in Bohr and wants xyz interleaved; a system state is Angstrom and planar.
+    // This conversion is the one input which is neither an attribute nor a caller parameter, and
+    // that is the right shape: the basis deliberately stores no coordinates, so that it survives a
+    // geometry change and the positions come from wherever the current ones live.
+    const float ANGSTROM_TO_BOHR = 1.8897261246257702f;
+    vec3_t* atom_xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * state.num_atoms);
+    if (!atom_xyz) {
+        return false;
+    }
+    for (size_t i = 0; i < state.num_atoms; ++i) {
+        atom_xyz[i] = vec3_set(state.x[i], state.y[i], state.z[i]) * ANGSTROM_TO_BOHR;
+    }
+
+    md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, sizeof(vec3_t), ao_coeffs, cutoff, mode, op);
+    return true;
 }
 
 void update_all_representations(ApplicationState* state) {
@@ -1451,18 +1746,23 @@ void update_representation(ApplicationState* state, Representation* rep) {
             // @TODO: Map colors accordingly
             //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
 
-            if (md_array_size(state->representation.info.atom_properties) > 0) {
-                float* values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
-                EvalAtomProperty eval = {
-                    .key = state->representation.info.atom_properties[rep->atomic_property.idx].key,
-                    .idx = rep->atomic_property.sub_idx,
-                    .num_values = num_atoms,
-                    .dst_values = values,
-                    .output_written = false,
-                };
-                viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalAtomProperty, viamd::EventPayloadType_EvalAtomProperty, &eval);
+            {
+                const md_attribute_t* attr = md_attributes_get(&sys.attributes, rep->atomic_property.key);
+                size_t num_extracted = 0;
+                float* values = nullptr;
 
-                if (eval.output_written) {
+                if (attr) {
+                    values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
+
+                    // Fixing the variant axis hands back exactly the atom axis, so there is no
+                    // offset arithmetic here to get wrong. A field with no variant axis is rank 1
+                    // and takes no indices at all.
+                    const uint32_t variant = (uint32_t)CLAMP(rep->atomic_property.variant_idx, 0, MAX(atom_property_variant_count(attr) - 1, 0));
+                    const md_attribute_slice_t slice = attr->format.rank > 1 ? md_attribute_slice_1(variant) : md_attribute_slice_all();
+                    num_extracted = md_attribute_extract_slice_f32(values, num_atoms, attr, &slice, md_unit_none());
+                }
+
+                if (num_extracted == num_atoms) {
                     float range_ext = (rep->atomic_property.range_end - rep->atomic_property.range_beg);
                     range_ext = MAX(range_ext, 0.001f);
                     for (size_t i = 0; i < num_atoms; ++i) {
@@ -1470,11 +1770,11 @@ void update_representation(ApplicationState* state, Representation* rep) {
                         colors[i] = ImPlot::SampleColormapU32(ImClamp(t, 0.0f, 1.0f), rep->atomic_property.colormap);
                     }
                 } else {
-                    MD_LOG_DEBUG("No output written for EvalAtomProperty event");
+                    if (attr) {
+                        MD_LOG_DEBUG("Failed to extract values for the selected atom property");
+                    }
                     MEMSET(colors, 0xFFFFFFFFu, bytes);
                 }
-            } else {
-                MEMSET(colors, 0xFFFFFFFFu, bytes);
             }
 #if 0
             if (rep->prop) {
@@ -1614,6 +1914,10 @@ void update_representation_info(ApplicationState* state) {
 
     // Broadcast event to populate info
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
+
+    // Per atom scalar fields are deliberately NOT collected here. They live in the system's
+    // attribute table under atom/, whoever loaded the data put them there, and the UI reads that
+    // table directly through atom_property_query. A copy kept here could only go stale against it.
 }
 
 static void init_all_representations(ApplicationState* state) {
@@ -1734,12 +2038,15 @@ done:
 
 		DipoleMoment dipoles[64];
 		size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
-		// One representation per dipole, each addressing its own BY KEY. Setting that is what the
-		// positional version forgot to do, so every auto created representation drew dipole zero.
+		// One representation per GROUP, addressing element zero. Auto creating one per element would
+		// mean a representation per excited state for a transition dipole set, which is a list
+		// nobody wants opened for them; the user moves the index once the representation exists.
         for (size_t i = 0; i < num_dipoles; ++i) {
+            if (dipoles[i].index != 0) continue;
             if (vec3_length(dipoles[i].vec) > 1e-3f) {
                 Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
-                dipole_rep->dipole.dipole_key = dipoles[i].key;
+                dipole_rep->dipole.dipole_key   = dipoles[i].key;
+                dipole_rep->dipole.dipole_index = dipoles[i].index;
                 char label[sizeof(dipole_rep->name)];
                 dipole_label_pretty(label, sizeof(label), dipoles[i].label);
                 snprintf(dipole_rep->name, sizeof(dipole_rep->name), "%s", label[0] ? label : "dipole moment");

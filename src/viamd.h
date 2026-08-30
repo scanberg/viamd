@@ -7,6 +7,8 @@
 #include <core/md_str_builder.h>
 
 #include <md_system.h>
+#include <md_gto.h>
+#include <core/md_grid.h>
 #include <md_trajectory.h>
 #include <md_script.h>
 #include <md_gl.h>
@@ -464,13 +466,18 @@ struct Selection {
     md_bitfield_t atom_mask {};
 };
 
-// A dipole gathered from the system's attribute table, not accumulated by anyone.
-// Each dipole is a group of two attributes which the producer published:
+// One dipole gathered from the system's attribute table, not accumulated by anyone.
+// A group is two attributes which the producer published, sharing a shape:
 //     dipole/<group>/vector    the moment, in `unit`
 //     dipole/<group>/origin    where to draw it from, Angstrom
+// A group holds ONE moment (a ground state) or one per excited state, and gathering flattens that:
+// each element of each group is its own entry. key alone therefore does not address a dipole -
+// (key, index) does, which is why a representation stores both.
 // Build these with dipole_moments_gather; nothing owns or caches them.
 struct DipoleMoment {
     md_attribute_id_t key = MD_ATTRIBUTE_INVALID;   // id of the vector attribute, stable across a reload
+    uint32_t index = 0;                             // which element within the group
+    uint32_t count = 0;                             // elements in the group; 1 means index is decorative
     str_t  label  = { 0 };                          // group name, prettified for display
     vec3_t vec    = { 0, 0, 0 };
     vec3_t origin = { 0, 0, 0 };
@@ -498,14 +505,6 @@ struct MolecularOrbital {
     double* energy = nullptr;
 };
 
-struct AtomProperty {
-    uint64_t key    = 0;
-    str_t label     = { 0 };
-    int num_idx     = 0;
-    float value_min = 0;
-    float value_max = 0;
-};
-
 struct DensityProperty {
     uint64_t key    = 0;
     str_t label     = { 0 };
@@ -520,7 +519,6 @@ struct RepresentationInfo {
 
     ElectronicStructureSourceFlags electronic_structure_source_mask = 0;
 
-    md_array(AtomProperty) atom_properties = nullptr;
     md_array(DensityProperty) density_properties = nullptr;
 
     md_allocator_i* alloc = nullptr;
@@ -540,14 +538,6 @@ struct IsoDesc {
     float values[8];
     vec4_t colors[8];
     float optical_densities[8];
-};
-
-struct EvalAtomProperty {
-    uint64_t key = 0;
-	int idx = 0;    // Represents the index if the property is multidimensional.
-    size_t num_values = 0;
-    float* dst_values = nullptr;
-    bool output_written = false;
 };
 
 struct ElectronicStructureRepresentation {
@@ -885,17 +875,24 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
     }
 }
 
+// Colouring by a per atom scalar field. The field itself is an attribute on the system, so what
+// is stored here is its id and nothing else about it - no copied label, no cached list position.
+// The id is a hash of the path and stable across a reload, so a representation keeps pointing at
+// the same quantity when the data is reloaded; an index into a gathered list would not.
 struct AtomicPropertyRepresentation {
     int colormap = DEFAULT_COLORMAP;
-    float range_beg = 0.0f;
+    md_attribute_id_t key = MD_ATTRIBUTE_INVALID;
+    int variant_idx = 0;                // position along the leading axis, when the field has one
+    float value_min = 0.0f;             // span of the DATA, refreshed when key changes
+    float value_max = 1.0f;
+    float range_beg = 0.0f;             // span the colour ramp is mapped over, user adjustable
     float range_end = 1.0f;
-    bool  range_symmetric_zero = true; // Use a symmetric min and max value around zero
-    int idx = 0;
-	int sub_idx = 0;
+    bool  range_symmetric_zero = true;  // Use a symmetric min and max value around zero
 };
 
 struct DipoleRepresentation {
     md_attribute_id_t dipole_key = MD_ATTRIBUTE_INVALID;   // the vector attribute, so it survives a reload
+    uint32_t dipole_index = 0;                             // which element of that group; see DipoleMoment
     vec4_t color = { 0, 0, 0, 1 };
     vec3_t offset = { 0, 0, 0 };
     double scale = 1.0;
@@ -1034,6 +1031,18 @@ struct ApplicationState {
 
 #if MD_ENABLE_GPU
     md_gpu_device_t gpu_device = nullptr;
+
+    // Evaluation scratch. Device scoped and deliberately NOT per dataset: the volume is a fixed
+    // 512^3 R32F texture - half a gigabyte - and every evaluation reads it straight back into its
+    // own destination texture, so one is enough no matter how many datasets or representations are
+    // asking. The coefficient buffer is grown to fit the widest basis loaded so far, for the same
+    // reason. Whoever evaluates borrows these; nobody else frees them.
+    md_gpu_stream_t gpu_stream  = nullptr;   // the device's default compute stream
+    md_gpu_pool_t   gpu_pool    = nullptr;   // device-local: basis, atoms, coefficients
+    md_gpu_pool_t   gpu_rb_pool = nullptr;   // host-readable: volume readback staging
+    md_gpu_tex_t    gpu_volume  = 0;         // 3d R32F scratch for an evaluated orbital / density
+    md_gpu_ptr_t    gpu_coeff   = nullptr;   // AO coefficient staging, sized to the widest basis
+    size_t          gpu_coeff_capacity = 0;
 #endif
 
     struct {
@@ -1110,6 +1119,19 @@ struct ApplicationState {
 
         bool                interpolate_system_state = false;
         uint32_t            dirty_gpu_buffers = 0;
+
+#if MD_ENABLE_GPU
+        // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
+        // built FROM the system so that something can draw or evaluate it, and mdlib never reads it
+        // back. The test is simple - no mdlib function takes an md_system_t* and touches these -
+        // which is what keeps them out of md_system_t itself, unlike the trajectory it does read.
+        //
+        // This whole block is per DATASET, so it is what gets replicated when several systems can
+        // be loaded at once. That is also why the evaluation scratch is not here but on the device.
+        md_gto_gpu_basis_t  gpu_basis = nullptr;   // built from the basis/ attributes, not from a loader
+        md_gpu_ptr_t        gpu_atoms = nullptr;   // packed float4 positions, xyz in Bohr
+        bool                gpu_atoms_dirty = true;
+#endif
     } mold;
 
     DisplayProperty* display_properties = nullptr;
@@ -1695,6 +1717,61 @@ size_t dipole_moments_gather(DipoleMoment out[], size_t cap, const md_system_t& 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
 // Writes at most cap-1 characters plus a terminator, returns the length written.
 int dipole_label_pretty(char* buf, size_t cap, str_t group);
+
+// The same, plus a 1 based element number when the group holds more than one moment:
+// "Electric Transition 3". A single moment gets no number, because there is nothing to tell apart.
+int dipole_entry_label(char* buf, size_t cap, const DipoleMoment& dipole);
+
+// Per atom scalar fields are not a list anybody builds or keeps: they are whatever the system's
+// attribute table holds under atom/, and these read it directly. Nothing to rebuild when the data
+// changes, and nothing that can go stale against it.
+
+// Ids of the attributes under atom/ which are per atom scalar fields, in path order.
+// Returns the total number found and writes at most cap, so pass cap 0 to count.
+// An attribute qualifies when its values are single components and its LAST index axis is this
+// system's atom count; an optional leading axis is the variant axis. Everything else under atom/ -
+// a position, a velocity, anything several components wide - is data this colouring cannot express
+// and is skipped rather than mangled. Cheap enough to call per frame.
+size_t atom_property_query(md_attribute_id_t out_ids[], size_t cap, const md_system_t& sys);
+
+// What to show for it: the attribute's label, or its leaf path segment when it has none. A view
+// into the table's storage, null terminated, so it can go straight to ImGui.
+str_t atom_property_label(const md_attribute_t* attr);
+
+// Number of variants: the leading index axis, 1 when the field has none.
+int atom_property_variant_count(const md_attribute_t* attr);
+
+// Span of the values, over EVERY variant so a colour ramp does not jump as the variant changes.
+// Derived rather than stored: it belongs to whoever is drawing the ramp, not to the table.
+// Scans the whole attribute, so call it when the selection changes, not per frame.
+bool atom_property_value_range(float* out_min, float* out_max, const md_attribute_t* attr);
+
+// Builds the per dataset GPU data - the uploaded GTO basis and the atom buffer - from the system's
+// own basis/ attributes, and grows the device coefficient scratch to fit. Returns false when the
+// system publishes no basis, which is the normal case rather than a failure.
+bool system_gpu_data_update(ApplicationState* state, double cutoff);
+void system_gpu_data_free(ApplicationState* state);
+
+// One orbital's AO coefficient row, out of the rank 2 {M,A} attribute at coefficient_path, in the
+// double precision md_gto asks for. Allocated from temp; NULL when the path is absent, is not a
+// coefficient matrix, or does not hold that orbital. out_num_ao receives the row length.
+double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, uint32_t orbital_idx);
+
+// Evaluates one molecular orbital into a 3D texture, sourcing everything it needs from the system:
+// the GTO basis and the AO coefficients from the attribute table, the atom positions from the state.
+// coefficient_path is a rank 2 {M,A} attribute of doubles, "orbital/alpha/coefficient" or its beta
+// sibling; orbital_idx selects the row.
+//
+// The caller owns the grid, the destination texture and the evaluation parameters, which is why no
+// registry of "fields" is needed to sit between: what varies per request is the request, and what
+// is data is data.
+bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+                         str_t coefficient_path, uint32_t orbital_idx, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+
+// Points a representation at an attribute and seeds its drawing range from that attribute's own
+// span. Selecting a field and choosing the range to draw it over are one action the first time and
+// separate afterwards, which is why the range is seeded here and never recomputed behind the user.
+void atom_property_select(AtomicPropertyRepresentation* prop, md_attribute_id_t key, const md_system_t& sys);
 
 // Recentering operations (low level)
 

@@ -280,6 +280,15 @@ struct VeloxChem : viamd::EventHandler {
 
     bool use_gpu_path = false;
 #if MD_ENABLE_GPU
+    // EVERY handle below is BORROWED and none of them is freed here.
+    //
+    // The device, its stream, its pools and the evaluation scratch belong to the application - one
+    // set per device, because the scratch volume alone is half a gigabyte. The uploaded basis and
+    // the atom buffer belong to the dataset (ApplicationState::mold), because they are derived from
+    // that system's basis/ attributes and every consumer of that system wants the same ones.
+    //
+    // This component is one such consumer. It refreshes these when it loads a file and otherwise
+    // just uses them.
     md_gpu_device_t         gpu_device  = nullptr;
     // All VeloxChem GPU work is issued on this one stream. Program order within
     // it is the entire dependency model, so no events or barriers are needed.
@@ -287,10 +296,10 @@ struct VeloxChem : viamd::EventHandler {
     md_gpu_pool_t           gpu_pool    = nullptr;  // Device-local: basis, atoms, coefficients
     md_gpu_pool_t           gpu_rb_pool = nullptr;  // Host-readable: volume readback staging
 
-    md_gto_gpu_basis_t      gpu_basis   = nullptr;  // CGTO basis buffer, contains a gpu representation of the current basis set for vlx object
-    md_gpu_ptr_t            gpu_atoms   = nullptr;  // Packed float4 atom positions (xyz in Bohr, w unused), length = number of atoms in system
-    md_gpu_ptr_t            gpu_coeff   = nullptr;  // Buffer for storing AO coefficients for evaluation.
-    md_gpu_tex_t            gpu_volume  = 0;        // 3d R32F texture for storing evaluated orbital / density values.
+    md_gto_gpu_basis_t      gpu_basis   = nullptr;  // borrowed from mold: built from the basis/ attributes
+    md_gpu_ptr_t            gpu_atoms   = nullptr;  // borrowed from mold: packed float4 positions, xyz in Bohr
+    md_gpu_ptr_t            gpu_coeff   = nullptr;  // borrowed from the device scratch
+    md_gpu_tex_t            gpu_volume  = 0;        // borrowed from the device scratch, 512^3 R32F
 
     bool gpu_atoms_dirty = true;
 
@@ -834,19 +843,12 @@ struct VeloxChem : viamd::EventHandler {
                 glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
                 use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
 #if MD_ENABLE_GPU
-                gpu_device = state.gpu_device;
-                if (gpu_device) {
-                    gpu_stream = md_gpu_stream_default(gpu_device, MD_GPU_STREAM_COMPUTE);
-
-                    md_gpu_pool_desc_t pool_desc = {};
-                    pool_desc.flags = MD_GPU_MEM_DEVICE;
-                    pool_desc.label = "VeloxChem";
-                    gpu_pool = md_gpu_pool_create(gpu_device, &pool_desc);
-
-                    pool_desc.flags = MD_GPU_MEM_HOST_READ;
-                    pool_desc.label = "VeloxChem readback";
-                    gpu_rb_pool = md_gpu_pool_create(gpu_device, &pool_desc);
-                }
+                // Borrowed, not created. These are one per device and shared by whoever evaluates.
+                gpu_device  = state.gpu_device;
+                gpu_stream  = state.gpu_stream;
+                gpu_pool    = state.gpu_pool;
+                gpu_rb_pool = state.gpu_rb_pool;
+                gpu_volume  = state.gpu_volume;
                 md_gto_gpu_initialize(gpu_device);
                 md_topo_gpu_initialize(gpu_device);
 #endif
@@ -858,12 +860,10 @@ struct VeloxChem : viamd::EventHandler {
                 gl::pbo_upload_shutdown();
                 md_gto_gpu_shutdown();
                 md_topo_gpu_shutdown();
-                md_gto_gpu_basis_destroy(gpu_basis);
-                md_gpu_free(gpu_atoms, gpu_stream);
-                md_gpu_free(gpu_coeff, gpu_stream);
-                md_gpu_tex_destroy(gpu_volume, gpu_stream);
-                md_gpu_pool_destroy(gpu_rb_pool);
-                md_gpu_pool_destroy(gpu_pool);
+                // Nothing here is freed: every handle is borrowed. The application destroys the
+                // device scratch and the dataset's uploaded basis; dropping the references is all
+                // this component owes.
+                gpu_basis = nullptr;
                 gpu_atoms = nullptr;
                 gpu_coeff = nullptr;
                 gpu_volume = 0;
@@ -1236,30 +1236,9 @@ struct VeloxChem : viamd::EventHandler {
                     info.electronic_structure_source_mask |= ElectronicStructureSourceFlag_TransitionDensity;
                 }
                 
-				size_t num_atomic_properties = md_vlx_atomic_property_count(vlx);
-				for (size_t i = 0; i < num_atomic_properties; ++i) {
-					const md_vlx_atomic_property_t* vlx_prop = md_vlx_atomic_property_by_index(vlx, i);
-                    if (!vlx_prop) continue;
-
-                    double value_min =  DBL_MAX;
-                    double value_max = -DBL_MAX;
-
-					size_t len = vlx_prop->dim[0] * vlx_prop->dim[1];
-                    for (size_t j = 0; j < len; ++j) {
-                        value_min = MIN(value_min, vlx_prop->data[j]);
-                        value_max = MAX(value_max, vlx_prop->data[j]);
-                    }
-
-                    AtomProperty prop = {
-                        .key = vlx_prop->key,
-                        .label = str_copy(vlx_prop->label, info.alloc),
-                        .num_idx = (int)vlx_prop->dim[1],
-                        .value_min = (float)value_min,
-                        .value_max = (float)value_max,
-                    };
-
-                    md_array_push(info.atom_properties, prop, info.alloc);
-                }
+                // Atomic properties are NOT listed here any more. md_vlx_system_init_from_data
+                // publishes them into sys->attributes at load time and viamd gathers them from
+                // there, so there is no round trip back into this component to read a value.
                 
 				size_t num_density_properties = md_vlx_density_property_count(vlx);
                 for (size_t i = 0; i < num_density_properties; ++i) {
@@ -1325,7 +1304,17 @@ struct VeloxChem : viamd::EventHandler {
                             md_gto_op_t op = gto_op_from_use_magnitude(es.use_magnitude);
                             md_vlx_spin_t spin = vlx_spin_from_electronic_structure(es.spin);
 							size_t mo_idx = es.orbital_idx;
-                            const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, spin);
+
+                            // Out of the attribute table, not out of the vlx object. Together with
+                            // the basis above, this branch no longer reads anything the reader owns.
+                            str_t coeff_path =  spin == MD_VLX_SPIN_BETA
+                                ? (str_t)STR_LIT("orbital/beta/coefficient")
+                                : (str_t)STR_LIT("orbital/alpha/coefficient");
+
+                            md_temp_scope_t mo_temp = md_temp_begin();
+                            defer { md_temp_end(mo_temp); };
+
+                            const double* ao_coeffs = orbital_coefficients_extract(nullptr, mo_temp, state.mold.sys, coeff_path, (uint32_t)mo_idx);
                             if (!ao_coeffs) {
                                 MD_LOG_ERROR("Failed to retrieve AO coefficients for Molecular Orbital index: %zu", mo_idx);
                                 return;
@@ -1446,20 +1435,6 @@ struct VeloxChem : viamd::EventHandler {
 
                 break;
             }
-            case viamd::EventType_ViamdRepresentationEvalAtomProperty: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_EvalAtomProperty);
-                EvalAtomProperty& data = *(EvalAtomProperty*)e.payload;
-
-				const md_vlx_atomic_property_t* prop = md_vlx_atomic_property_by_key(vlx, data.key);
-                if (prop && (data.idx == 0 || data.idx < (int)prop->dim[1]) && data.num_values == prop->dim[0]) {
-					const double* src_values = prop->data + data.idx * prop->dim[0];
-                    for (size_t i = 0; i < data.num_values; ++i) {
-                        data.dst_values[i] = (float)src_values[i];
-                    }
-                    data.output_written = true;
-                }
-                break;
-            }
             case viamd::EventType_ViamdPickingRangeReserve: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_PickingSpace);
                 PickingSpace* space = (PickingSpace*)e.payload;
@@ -1513,13 +1488,11 @@ struct VeloxChem : viamd::EventHandler {
 
     void reset_data() {
 #if MD_ENABLE_GPU
-        // Callbacks reference gpu_volume, the readback pool and the GL
-        // textures, all of which are about to go away.
+        // Callbacks reference gpu_volume, the readback pool and the GL textures, so the queue has
+        // to be drained before those references are dropped. Only the references though: the
+        // scratch belongs to the device and the uploaded basis to the dataset, and free_system_data
+        // releases the latter when the system it was built from goes away.
         drain_volume_jobs();
-        md_gto_gpu_basis_destroy(gpu_basis);
-        md_gpu_free(gpu_atoms, gpu_stream);
-        md_gpu_free(gpu_coeff, gpu_stream);
-        md_gpu_tex_destroy(gpu_volume, gpu_stream);
         gpu_basis  = nullptr;
         gpu_atoms  = nullptr;
         gpu_coeff  = nullptr;
@@ -1578,8 +1551,19 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 
                 if (md_vlx_parse_file(vlx, filename)) {
-                    if (!md_vlx_gto_basis_extract(&basis, vlx, arena)) {
-                        MD_LOG_ERROR("Failed to extract GTO basis from VLX object");
+                    // Publish first, then read back. Everything this file carries which fits the
+                    // attribute model goes into the system's table here - the dipole groups, the
+                    // SCF history, orbital energies, response and vibrational quantities, normal
+                    // modes, the GTO basis and the MO coefficients. mdlib owns the paths, formats
+                    // and units; this component is a consumer of them from here on, like anything
+                    // else which can read a system.
+                    md_vlx_publish_attributes(&state.mold.sys, vlx);
+
+                    // And the basis comes back out of that table rather than out of the vlx object,
+                    // which is the whole point: an evaluator needs the system, not the reader.
+                    md_gto_basis_free(&basis, arena);
+                    if (!md_gto_basis_extract_attributes(&basis, &state.mold.sys.attributes, arena)) {
+                        MD_LOG_ERROR("Failed to build a GTO basis from the system's attributes");
                         return;
                     }
                     size_t num_vlx_atoms = md_vlx_number_of_atoms(vlx);
@@ -1649,54 +1633,22 @@ struct VeloxChem : viamd::EventHandler {
                     const double inv_ne = num_electrons > 0 ? 1.0 / (double)num_electrons : 1.0;
                     center_of_charge = (nucl_dipole - ground_state_dipole) * inv_ne;
 
-                    // A single 3-vector is rank 2 {1,3}: the trailing axis is the components.
-                    // Rank 1 {3} would read as three independent scalars.
-                    const md_attribute_format_t attr_format_vec3 = {
-                        .type  = MD_ATTRIBUTE_TYPE_F64,
-                        .rank  = 2,
-                        .shape = { 1, 3 },
-                    };
-
-                    // The dipole is in atomic units (e a0) while its origin is a point in system
-                    // space, so the two carry different units and each says so for itself.
-                    const md_unit_t unit_dipole   = md_unit_elementary_charge_bohr();
-                    const dvec3_t   dipole_origin = center_of_charge * BOHR_TO_ANGSTROM;
-
-                    md_attributes_create(&state.mold.sys.attributes, STR_LIT("dipole/ground_state/vector"), attr_format_vec3, unit_dipole, &ground_state_dipole, sizeof(ground_state_dipole));
-                    md_attributes_create(&state.mold.sys.attributes, STR_LIT("dipole/ground_state/origin"), attr_format_vec3, md_unit_angstrom(), &dipole_origin, sizeof(dipole_origin));
-
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
                     calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
                     calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));
 
 #if MD_ENABLE_GPU
-                    if (gpu_pool) {
-                        // The pool serves device-local memory; md_gpu_upload_begin
-                        // stages through the stream arena when needed, so there is
-                        // no separate host-visible variant to pick here.
-                        md_gto_gpu_basis_desc_t basis_desc = { .basis = &basis, .cutoff = DEFAULT_GTO_CUTOFF_VALUE };
-                        gpu_basis = md_gto_gpu_basis_create(gpu_pool, gpu_stream, &basis_desc);
-
-                        size_t num_cgtos = md_gto_gpu_basis_num_cgtos(gpu_basis);
-                        size_t num_atoms = md_gto_gpu_basis_num_atoms(gpu_basis);
-
-                        gpu_atoms = md_gpu_malloc(gpu_pool, md_gto_gpu_atom_buffer_size(num_atoms), gpu_stream);
-                        gpu_atoms_dirty = true;
-
-                        // Density coefficients are the larger of the two packings, so one
-                        // allocation covers both the density and the MO evaluation paths.
-                        gpu_coeff = md_gpu_malloc(gpu_pool, md_gto_gpu_coeff_size_density(num_cgtos), gpu_stream);
-
-                        md_gpu_tex_desc_t gpu_vol_desc = {
-                            .width  = 512,
-                            .height = 512,
-                            .depth  = 512,
-                            .format = MD_GPU_FORMAT_R32_FLOAT,
-                            .flags  = MD_GPU_TEX_STORAGE,
-                            .label  = "VeloxChem volume",
-                        };
-                        gpu_volume = md_gpu_tex_create(gpu_device, &gpu_vol_desc);
-                    }
+                    // The dataset's uploaded basis is built from the basis/ attributes we just
+                    // published, by the application rather than here: it is derived from the
+                    // system, every consumer of that system wants the same one, and this component
+                    // is only the first to ask. Then refresh what we borrow, since growing the
+                    // coefficient scratch can have moved it.
+                    system_gpu_data_update(&state, DEFAULT_GTO_CUTOFF_VALUE);
+                    gpu_basis       = state.mold.gpu_basis;
+                    gpu_atoms       = state.mold.gpu_atoms;
+                    gpu_coeff       = state.gpu_coeff;
+                    gpu_volume      = state.gpu_volume;
+                    gpu_atoms_dirty = true;
 #endif
 
                     // NTO
@@ -1880,9 +1832,19 @@ struct VeloxChem : viamd::EventHandler {
 #endif
     }
 
-    bool evaluate_mo(uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
+    // Takes the system rather than reading the vlx member: the coefficients are an attribute on it
+    // now, and threading it through is what keeps this from needing the reader at all.
+    bool evaluate_mo(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_op_t op, double cutoff_value = DEFAULT_GTO_CUTOFF_VALUE) {
         (void)cutoff_value;
-        const double* ao_coeffs = md_vlx_scf_mo_coefficients(vlx, mo_idx, mo_type);
+
+        str_t coeff_path = mo_type == MD_VLX_SPIN_BETA
+            ? (str_t)STR_LIT("orbital/beta/coefficient")
+            : (str_t)STR_LIT("orbital/alpha/coefficient");
+
+        md_temp_scope_t mo_temp = md_temp_begin();
+        defer { md_temp_end(mo_temp); };
+
+        const double* ao_coeffs = orbital_coefficients_extract(nullptr, mo_temp, sys, coeff_path, (uint32_t)mo_idx);
         if (!ao_coeffs) {
             MD_LOG_ERROR("Failed to retrieve AO coefficients for Molecular Orbital index: %zu", mo_idx);
             return false;
@@ -4291,6 +4253,22 @@ struct VeloxChem : viamd::EventHandler {
         state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
     }
 
+    // Reads one rank 1 series of doubles out of the system's attribute table.
+    //
+    // Hands back the stored buffer rather than extracting to float, deliberately: the vlx/ series
+    // are resident F64 and this panel prints total energies to ten decimals, which a float does not
+    // carry. That is the opt-in fast path - it is only valid because the attribute is resident, and
+    // the null return covers every case where it is not.
+    static const double* vlx_series(size_t* out_count, const md_system_t& sys, str_t path) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+        if (!attr || !attr->data) return nullptr;
+        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
+        if (attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) return nullptr;
+
+        if (out_count) *out_count = attr->format.shape[0];
+        return (const double*)attr->data;
+    }
+
     void draw_summary_window(ApplicationState& state) {
         if (!summary.show_window) {
             opt.selected = (int)md_vlx_opt_number_of_steps(vlx) - 1;
@@ -4330,17 +4308,28 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (ImGui::TreeNode("SCF")) {
-                size_t num_iter = md_vlx_scf_history_size(vlx);
-                const double* grad_norm = md_vlx_scf_history_gradient_norm(vlx);
-                const double* energy = md_vlx_scf_history_energy(vlx);
+                // The convergence history is read from the system's attribute table rather than
+                // from the vlx object. md_vlx_publish_attributes put it there when the file was
+                // loaded, so this panel is one consumer among others and a file which carried no
+                // history simply has no such path - there is no separate "was it parsed" question.
+                size_t num_iter = 0;
+                size_t num_grad = 0;
+                const double* energy    = vlx_series(&num_iter, state.mold.sys, STR_LIT("vlx/scf/history/energy"));
+                const double* grad_norm = vlx_series(&num_grad, state.mold.sys, STR_LIT("vlx/scf/history/gradient_norm"));
+
+                // Siblings in one group share a shape; a file which somehow disagrees is not a
+                // history anyone can plot.
+                if (!energy || !grad_norm || num_grad != num_iter) {
+                    energy = nullptr;
+                    grad_norm = nullptr;
+                    num_iter = 0;
+                }
+
                 double* energy_offsets = nullptr;
                 double ref_energy = 0.0;
 
                 // We set up iterations as doubles for easier use
                 if (num_iter > 0) {
-                    ASSERT(energy);
-                    ASSERT(grad_norm);
-
                     energy_offsets = md_temp_alloc_array(temp, double, num_iter);
                     ref_energy = energy[num_iter - 1];
                     for (size_t i = 0; i < num_iter; i++) {
@@ -6308,7 +6297,7 @@ struct VeloxChem : viamd::EventHandler {
 
                     if (-1 < mo_idx && mo_idx < num_tot_mos) {
                         init_volume(&orb.vol[slot_idx], grid);
-                        evaluate_mo(orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_OP_SET);
+                        evaluate_mo(orb.vol[slot_idx].tex_id, grid, state.mold.sys, mo_type, mo_idx, MD_GTO_OP_SET);
                     }
                 }
             }
@@ -6890,7 +6879,7 @@ struct VeloxChem : viamd::EventHandler {
                     case ElectronicStructureSource::MolecularOrbital:
                     {
                         md_gto_op_t op = gto_op_from_use_magnitude(export_state.use_magnitude);
-                        evaluate_mo(vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, op);
+                        evaluate_mo(vol.tex_id, grid, state.mold.sys, export_state.mo.type, export_state.mo.idx, op);
                         break;
                     }
                     case ElectronicStructureSource::NaturalTransitionOrbital:

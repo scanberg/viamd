@@ -432,6 +432,29 @@ int main(int argc, char** argv) {
     if (!state.gpu_device) {
         const char* reason = md_gpu_last_error();
         VIAMD_LOG_ERROR("Failed to create GPU device: %s", reason ? reason : "unknown");
+    } else {
+        // The pools and the scratch belong to the device, not to whichever component happens to
+        // evaluate first. Components borrow them; see the note on ApplicationState.
+        state.gpu_stream = md_gpu_stream_default(state.gpu_device, MD_GPU_STREAM_COMPUTE);
+
+        md_gpu_pool_desc_t pool_desc = {};
+        pool_desc.flags = MD_GPU_MEM_DEVICE;
+        pool_desc.label = "evaluation";
+        state.gpu_pool = md_gpu_pool_create(state.gpu_device, &pool_desc);
+
+        pool_desc.flags = MD_GPU_MEM_HOST_READ;
+        pool_desc.label = "evaluation readback";
+        state.gpu_rb_pool = md_gpu_pool_create(state.gpu_device, &pool_desc);
+
+        md_gpu_tex_desc_t vol_desc = {
+            .width  = 512,
+            .height = 512,
+            .depth  = 512,
+            .format = MD_GPU_FORMAT_R32_FLOAT,
+            .flags  = MD_GPU_TEX_STORAGE,
+            .label  = "Evaluation volume",
+        };
+        state.gpu_volume = md_gpu_tex_create(state.gpu_device, &vol_desc);
     }
 #endif
 
@@ -1211,6 +1234,19 @@ int main(int argc, char** argv) {
     gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU
     if (state.gpu_device) {
+        system_gpu_data_free(&state);
+
+        md_gpu_free(state.gpu_coeff, state.gpu_stream);
+        md_gpu_tex_destroy(state.gpu_volume, state.gpu_stream);
+        md_gpu_pool_destroy(state.gpu_rb_pool);
+        md_gpu_pool_destroy(state.gpu_pool);
+        state.gpu_coeff = nullptr;
+        state.gpu_coeff_capacity = 0;
+        state.gpu_volume = 0;
+        state.gpu_rb_pool = nullptr;
+        state.gpu_pool = nullptr;
+        state.gpu_stream = nullptr;
+
         md_gpu_device_destroy(state.gpu_device);
         state.gpu_device = nullptr;
     }
@@ -3678,10 +3714,12 @@ static void draw_representations_window(ApplicationState* state) {
                 DipoleMoment dipoles[64];
                 size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
 
+                // A group holds one moment or one per excited state, so a dipole is addressed by
+                // (key, index) and never by key alone.
                 char preview[64] = "";
                 for (size_t i = 0; i < num_dipoles; ++i) {
-                    if (dipoles[i].key == rep.dipole.dipole_key) {
-                        dipole_label_pretty(preview, sizeof(preview), dipoles[i].label);
+                    if (dipoles[i].key == rep.dipole.dipole_key && dipoles[i].index == rep.dipole.dipole_index) {
+                        dipole_entry_label(preview, sizeof(preview), dipoles[i]);
                         break;
                     }
                 }
@@ -3689,10 +3727,11 @@ static void draw_representations_window(ApplicationState* state) {
                 if (ImGui::BeginCombo("dipole", preview)) {
                     for (size_t i = 0; i < num_dipoles; ++i) {
                         char label[64];
-                        dipole_label_pretty(label, sizeof(label), dipoles[i].label);
-                        bool selected = dipoles[i].key == rep.dipole.dipole_key;
+                        dipole_entry_label(label, sizeof(label), dipoles[i]);
+                        bool selected = dipoles[i].key == rep.dipole.dipole_key && dipoles[i].index == rep.dipole.dipole_index;
                         if (ImGui::Selectable(label, selected)) {
-                            rep.dipole.dipole_key = dipoles[i].key;
+                            rep.dipole.dipole_key   = dipoles[i].key;
+                            rep.dipole.dipole_index = dipoles[i].index;
                             update_rep = true;
                         }
                     }
@@ -3718,40 +3757,57 @@ static void draw_representations_window(ApplicationState* state) {
                 }
 
                 if (rep.color_mapping == ColorMapping::Property) {
-                    AtomProperty* props = state->representation.info.atom_properties;
-                    int num_props = (int)md_array_size(state->representation.info.atom_properties);
-                    if (num_props > 0) {
-                        rep.atomic_property.idx = CLAMP(rep.atomic_property.idx, 0, num_props - 1);
-                        if (ImGui::BeginCombo("property", props[rep.atomic_property.idx].label.ptr)) {
-                            for (int i = 0; i < num_props; ++i) {
-                                bool selected = rep.atomic_property.idx == i;
-                                if (ImGui::Selectable(props[i].label.ptr, selected)) {
-                                    rep.atomic_property.idx = i;
-                                    rep.atomic_property.range_beg = props[i].value_min;
-                                    rep.atomic_property.range_end = props[i].value_max;
+                    // The list of per atom fields IS the system's attribute table under atom/.
+                    // Queried here rather than cached anywhere, so it cannot disagree with the data.
+                    md_attribute_id_t prop_ids[64];
+                    size_t num_props = MIN(atom_property_query(prop_ids, ARRAY_SIZE(prop_ids), state->mold.sys), ARRAY_SIZE(prop_ids));
+
+                    const md_attributes_t& attributes = state->mold.sys.attributes;
+                    const md_attribute_t* selected_prop = md_attributes_get(&attributes, rep.atomic_property.key);
+
+                    // A key the table no longer holds - a reload which dropped that field - falls
+                    // back to the first available rather than leaving the representation blank.
+                    if (!selected_prop && num_props > 0) {
+                        atom_property_select(&rep.atomic_property, prop_ids[0], state->mold.sys);
+                        selected_prop = md_attributes_get(&attributes, rep.atomic_property.key);
+                        update_rep = true;
+                    }
+
+                    if (num_props > 0 && selected_prop) {
+                        if (ImGui::BeginCombo("property", atom_property_label(selected_prop).ptr)) {
+                            for (size_t i = 0; i < num_props; ++i) {
+                                const md_attribute_t* attr = md_attributes_get(&attributes, prop_ids[i]);
+                                if (!attr) continue;
+                                bool selected = prop_ids[i] == rep.atomic_property.key;
+                                if (ImGui::Selectable(atom_property_label(attr).ptr, selected)) {
+                                    atom_property_select(&rep.atomic_property, prop_ids[i], state->mold.sys);
                                     update_rep = true;
                                 }
                             }
                             ImGui::EndCombo();
                         }
 
-                        if (props[rep.atomic_property.idx].num_idx > 1) {
-                            int idx = rep.atomic_property.sub_idx + 1;
+                        const int num_variants = atom_property_variant_count(selected_prop);
+                        if (num_variants > 1) {
+                            int idx = rep.atomic_property.variant_idx + 1;
                             const int min = 1;
-                            const int max = props[rep.atomic_property.idx].num_idx;
+                            const int max = num_variants;
                             if (ImGui::SliderInt("index", &idx, min, max)) {
                                 update_rep = true;
                             }
-                            rep.atomic_property.sub_idx = CLAMP(idx - 1, 0, props[rep.atomic_property.idx].num_idx - 1);
+                            rep.atomic_property.variant_idx = CLAMP(idx - 1, 0, num_variants - 1);
                         }
                         
                         if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.atomic_property.colormap), ImVec2(inner_item_width,0), rep.atomic_property.colormap)) {
                             ImGui::OpenPopup("Color Map Selector");
                         }
 
-						const float value_pad = MAX(fabsf(props[rep.atomic_property.idx].value_min), fabsf(props[rep.atomic_property.idx].value_max));
-                        const float value_min = props[rep.atomic_property.idx].value_min - value_pad;
-                        const float value_max = props[rep.atomic_property.idx].value_max + value_pad;
+                        // The data's own span, taken when the field was selected. Not recomputed
+                        // here: it is what the user's range is measured against, and a value which
+                        // moved underneath the slider would move the slider.
+						const float value_pad = MAX(fabsf(rep.atomic_property.value_min), fabsf(rep.atomic_property.value_max));
+                        const float value_min = rep.atomic_property.value_min - value_pad;
+                        const float value_max = rep.atomic_property.value_max + value_pad;
 
 						// Otherwise, we allow independent scaling of the min and max values
                         // Scale a bit outside of the default range
@@ -6885,7 +6941,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                 // representation itself holds the key, so a reload cannot silently repoint it.
                 size_t dipole_idx = SIZE_MAX;
                 for (size_t i = 0; i < num_dipoles; ++i) {
-                    if (dipoles[i].key == rep.dipole.dipole_key) {
+                    if (dipoles[i].key == rep.dipole.dipole_key && dipoles[i].index == rep.dipole.dipole_index) {
                         dipole_idx = i;
                         break;
                     }
