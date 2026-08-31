@@ -3726,10 +3726,10 @@ static void draw_representations_window(ApplicationState* state) {
 
                 if (ImGui::BeginCombo("dipole", preview)) {
                     for (size_t i = 0; i < num_dipoles; ++i) {
-                        char label[64];
-                        dipole_entry_label(label, sizeof(label), dipoles[i]);
+                        char lbl[64];
+                        dipole_entry_label(lbl, sizeof(lbl), dipoles[i]);
                         bool selected = dipoles[i].key == rep.dipole.dipole_key && dipoles[i].index == rep.dipole.dipole_index;
-                        if (ImGui::Selectable(label, selected)) {
+                        if (ImGui::Selectable(lbl, selected)) {
                             rep.dipole.dipole_key   = dipoles[i].key;
                             rep.dipole.dipole_index = dipoles[i].index;
                             update_rep = true;
@@ -6940,9 +6940,9 @@ static void draw_representations_opaque(ApplicationState* state) {
                 // The picking index is the position within this frame's gathered set; the
                 // representation itself holds the key, so a reload cannot silently repoint it.
                 size_t dipole_idx = SIZE_MAX;
-                for (size_t i = 0; i < num_dipoles; ++i) {
-                    if (dipoles[i].key == rep.dipole.dipole_key && dipoles[i].index == rep.dipole.dipole_index) {
-                        dipole_idx = i;
+                for (size_t j = 0; j < num_dipoles; ++j) {
+                    if (dipoles[j].key == rep.dipole.dipole_key && dipoles[j].index == rep.dipole.dipole_index) {
+                        dipole_idx = j;
                         break;
                     }
                 }

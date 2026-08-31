@@ -1366,8 +1366,8 @@ struct ApplicationState {
         struct {
             uint64_t target_version = 0;
 
-            // Need to store the initial frame position for recentering and orienting to work properly when applying on trajectories
-            vec4_t* xyzw = nullptr;
+			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
+            vec4_t* rel_xyzw = nullptr;
             vec3_t  com = {};
         } initial_frame;
 

@@ -640,8 +640,8 @@ void free_system_data(ApplicationState* data) {
     MEMSET(&data->mold.sys, 0, sizeof(data->mold.sys));
     MEMSET(&data->mold.state, 0, sizeof(data->mold.state));
 
-    md_array_free(data->operations.initial_frame.xyzw, data->allocator.persistent);
-    data->operations.initial_frame.xyzw = nullptr;
+    md_array_free(data->operations.initial_frame.rel_xyzw, data->allocator.persistent);
+    data->operations.initial_frame.rel_xyzw = nullptr;
 
     md_gl_mol_destroy(data->mold.gl_mol);
 
@@ -2610,11 +2610,11 @@ void recenter_update_target_data(ApplicationState* state) {
         state->operations.initial_frame.target_version = target_version;
         size_t count = md_bitfield_popcount(&target_mask);
 
-        md_array_resize(state->operations.initial_frame.xyzw, count, state->allocator.persistent);
+        md_array_resize(state->operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
 
         state->operations.initial_frame.com = vec3_zero();
 
-        if (state->operations.initial_frame.xyzw && count > 0) {
+        if (state->operations.initial_frame.rel_xyzw && count > 0) {
             // Fetch initial frame data required for orienting the structure
             size_t num_atoms = state->mold.sys.atom.count;
             float* temp_x = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
@@ -2633,14 +2633,11 @@ void recenter_update_target_data(ApplicationState* state) {
             while (md_bitfield_iter_next(&it)) {
                 uint64_t src_idx = md_bitfield_iter_idx(&it);
                 float mass = md_atom_mass(&state->mold.sys.atom, src_idx);
-                state->operations.initial_frame.xyzw[dst_idx++] = vec4_set(temp_x[src_idx], temp_y[src_idx], temp_z[src_idx], mass);
+                state->operations.initial_frame.rel_xyzw[dst_idx++] = vec4_set(temp_x[src_idx], temp_y[src_idx], temp_z[src_idx], mass);
             }
 
-            // Place the reference in mutually consistent images against ITS OWN cell - these are
-            // frame 0's coordinates, and under a varying cell that is not the cell the viewport is
-            // currently showing.
-            md_util_deperiodize_self_vec4(state->operations.initial_frame.xyzw, count, &temp_state.unitcell,
-                                          &state->operations.initial_frame.com);
+			state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.rel_xyzw, NULL, count, &temp_state.unitcell);
+			md_util_convert_to_relative_coordinates_vec4(state->operations.initial_frame.rel_xyzw, state->operations.initial_frame.com, count, &temp_state.unitcell);
         }
     }
 }
@@ -2659,7 +2656,9 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
 
         // Extract xyzw subset of target
         vec4_t* target_xyzw = md_temp_alloc_array(temp, vec4_t, count);
-        md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
+
+		md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
+		vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, count, &app->mold.state.unitcell);
 
         // Calculate target
         vec3_t target = {0};
@@ -2678,7 +2677,6 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
         // what makes the translation below valid - it is applied to those same coordinates, untouched.
         // A centre folded into the reference cell would place a target living outside that cell one
         // lattice vector off, and with a rotation in play, off by R times a lattice vector.
-        vec3_t target_com = {0};
         mat3_t R = mat3_ident();
 
         // The reference has to have been built from the SAME target that is being fitted now.
@@ -2686,23 +2684,18 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
         // size between recenter_update() and this call, which would silently pair up unrelated
         // atoms and yield a garbage rotation. The version is the identity of the target.
         const bool reference_valid =
-            app->operations.initial_frame.xyzw &&
-            md_array_size(app->operations.initial_frame.xyzw) == count &&
+            app->operations.initial_frame.rel_xyzw &&
+            md_array_size(app->operations.initial_frame.rel_xyzw) == count &&
             app->operations.initial_frame.target_version == recenter_get_active_target_version(app);
 
-        if (app->operations.fixate_orientation && reference_valid)
-        {
-            md_util_optimal_rotation_pbc_vec4(&R, &target_com, target_xyzw,
-                                              app->operations.initial_frame.xyzw,
-                                              app->operations.initial_frame.com,
-                                              target_xyzw, count, &app->mold.state.unitcell);
+        if (app->operations.fixate_orientation && reference_valid) {
+		    md_util_convert_to_relative_coordinates_vec4(target_xyzw, target_com, count, &app->mold.state.unitcell);
+            R = md_util_optimal_rotation_rel_vec4(target_xyzw, app->operations.initial_frame.rel_xyzw, count);
             R = mat3_orthonormalize(R);
-        } else {
-            md_util_deperiodize_self_vec4(target_xyzw, count, &app->mold.state.unitcell, &target_com);
         }
+
         const mat4_t A = app->operations.alignment_mat;
-        mat4_t T = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
-        transform = T;
+        transform = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target_com);
     }
     mat4_store((float*)M, transform);
 }
