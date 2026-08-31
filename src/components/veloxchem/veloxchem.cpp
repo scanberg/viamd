@@ -1264,6 +1264,7 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdRepresentationEvalElectronicStructure: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_EvalElectronicStructure);
                 EvalElectronicStructure& data = *(EvalElectronicStructure*)e.payload;
+                const md_system_t* sys = data.sys;
 
                 Representation* rep = data.rep;
 
@@ -1307,14 +1308,14 @@ struct VeloxChem : viamd::EventHandler {
 
                             // Out of the attribute table, not out of the vlx object. Together with
                             // the basis above, this branch no longer reads anything the reader owns.
-                            str_t coeff_path =  spin == MD_VLX_SPIN_BETA
-                                ? (str_t)STR_LIT("orbital/beta/coefficient")
-                                : (str_t)STR_LIT("orbital/alpha/coefficient");
+                            str_t coeff_path = (spin == MD_VLX_SPIN_BETA)
+                                ? str_t STR_LIT("orbital/beta/coefficient")
+                                : str_t STR_LIT("orbital/alpha/coefficient");
 
                             md_temp_scope_t mo_temp = md_temp_begin();
                             defer { md_temp_end(mo_temp); };
 
-                            const double* ao_coeffs = orbital_coefficients_extract(nullptr, mo_temp, state.mold.sys, coeff_path, (uint32_t)mo_idx);
+                            const double* ao_coeffs = orbital_coefficients_extract(nullptr, mo_temp, *sys, coeff_path, (uint32_t)mo_idx);
                             if (!ao_coeffs) {
                                 MD_LOG_ERROR("Failed to retrieve AO coefficients for Molecular Orbital index: %zu", mo_idx);
                                 return;
@@ -1838,8 +1839,8 @@ struct VeloxChem : viamd::EventHandler {
         (void)cutoff_value;
 
         str_t coeff_path = mo_type == MD_VLX_SPIN_BETA
-            ? (str_t)STR_LIT("orbital/beta/coefficient")
-            : (str_t)STR_LIT("orbital/alpha/coefficient");
+            ? str_t STR_LIT("orbital/beta/coefficient")
+            : str_t STR_LIT("orbital/alpha/coefficient");
 
         md_temp_scope_t mo_temp = md_temp_begin();
         defer { md_temp_end(mo_temp); };
