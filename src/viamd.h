@@ -397,6 +397,12 @@ enum {
 
 typedef uint32_t FileFlags;
 
+// Bohr is what md_gto evaluates in, and what a GTO basis' exponents are expressed against; Angstrom
+// is what the world, the camera and a system's coordinates are in. Every conversion between the two
+// goes through these, so there is one value and not one per file that happened to need it.
+inline constexpr double ANGSTROM_TO_BOHR = 1.8897261246257702;
+inline constexpr double BOHR_TO_ANGSTROM = 0.5291772109029999;
+
 enum class VolumeResolution {
     Low,
     Mid,
@@ -409,6 +415,19 @@ inline const char* volume_resolution_str[(int)VolumeResolution::Count] = {
     "Mid",
     "High",
 };
+
+// Samples per Angstrom for each VolumeResolution. Beside the enum, because a value per enumerator
+// is part of what the enum MEANS and a second table elsewhere is how the two drift apart.
+inline const double volume_resolution_samples_per_angstrom[(int)VolumeResolution::Count] = {
+    4.0,
+    8.0,
+    16.0,
+};
+
+// Primitives whose contribution falls below this are pruned when a basis is expanded. One value for
+// the whole application: the uploaded basis is built once per dataset with it, so an evaluation
+// asking for a different one would silently get this one anyway.
+#define DEFAULT_GTO_CUTOFF_VALUE 1.0e-6
 
 enum class ScreenshotResolution {
     Window,
@@ -524,6 +543,110 @@ struct RepresentationInfo {
     md_allocator_i* alloc = nullptr;
 };
 
+// ---------------------------------------------------------------------------
+// Volume geometry
+// ---------------------------------------------------------------------------
+// Fitting an object aligned box around a set of points and turning it into a grid and a volume.
+// None of it knows what is being evaluated in that volume or who asked, which is why it sits here
+// rather than in whichever component first needed it.
+
+// Object aligned bounding box
+struct OABB {
+    mat3_t orientation = mat3_ident();
+    vec3_t min_ext = { 0 };
+    vec3_t max_ext = { 0 };
+};
+
+struct AABB {
+    vec3_t min_ext = { 0 };
+    vec3_t max_ext = { 0 };
+};
+
+static mat3_t mat3_PCA(const vec4_t* xyzw, size_t count) {
+    vec3_t acc = vec3_zero();
+    for (size_t i = 0; i < count; ++i) {
+        acc = vec3_add(acc, vec3_from_vec4(xyzw[i]));
+    }
+    vec3_t mean = acc / (float)count;
+
+    mat3_t cov = mat3_covariance_matrix_vec4(xyzw, nullptr, count, mean);
+    mat3_eigen_t eigen = mat3_eigen(cov);
+    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+    return PCA;
+}
+
+static void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, size_t count, const mat3_t& orientation = mat3_ident()) {
+    vec4_t min_v = vec4_set1( FLT_MAX);
+    vec4_t max_v = vec4_set1(-FLT_MAX);
+
+    mat4_t rot = mat4_from_mat3(mat3_transpose(orientation));
+
+    for (size_t i = 0; i < count; ++i) {
+        vec4_t v = mat4_mul_vec4(rot, xyzw[i]);
+        min_v = vec4_min(min_v, v);
+        max_v = vec4_max(max_v, v);
+    }
+
+    // Padding
+    const float pad = 6.0f;
+    min_v -= pad;
+    max_v += pad; 
+
+	MEMCPY(out_min, &min_v, sizeof(float) * 3);
+	MEMCPY(out_max, &max_v, sizeof(float) * 3);
+}
+
+// Construct texture to world transformation matrix for Volume
+// extent is the extent of the volume (dim * voxel_size)
+static inline mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent) {
+    mat4_t T = mat4_translate_vec3(origin);
+    mat4_t R = mat4_from_mat3(orientation);
+    mat4_t S = mat4_scale_vec3(extent);
+    return T * R * S;
+}
+
+static inline mat4_t compute_world_to_model_mat(const mat3_t& orientation, const vec3_t& origin) {
+    mat4_t world_to_model = mat4_from_mat3(mat3_transpose(orientation)) * mat4_translate_vec3(-origin);
+    return world_to_model;
+}
+
+static inline mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& in_origin, const vec3_t& stepsize) {
+    vec3_t step_x = orientation.col[0] * stepsize.x;
+    vec3_t step_y = orientation.col[1] * stepsize.y;
+    vec3_t step_z = orientation.col[2] * stepsize.z;
+    // Shift origin by half voxel
+    vec3_t origin = in_origin + orientation * (stepsize * 0.5f);
+
+    mat4_t index_to_world = {
+        step_x.x, step_x.y, step_x.z, 0.0f,
+        step_y.x, step_y.y, step_y.z, 0.0f,
+        step_z.x, step_z.y, step_z.z, 0.0f,
+        origin.x, origin.y, origin.z, 1.0f,
+    };
+
+    return index_to_world;
+}
+
+// Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
+static inline void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_length) {
+    out_dim[0] = CLAMP(ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
+    out_dim[1] = CLAMP(ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
+    out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
+}
+
+// Grid units are BOHR, matching what md_gto evaluates in; a Volume's transforms are Angstrom,
+// matching the world the camera lives in. init_volume is where the two meet, and it is the only
+// place that conversion belongs.
+static inline void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, double samples_per_unit_length) {
+    ASSERT(grid);
+    vec3_t extent = max_ext - min_ext;
+    compute_dim(grid->dim, extent, samples_per_unit_length);
+    vec3_t voxel_size = vec3_div(extent, vec3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
+    grid->orientation = orientation;
+    grid->origin = orientation * min_ext;
+    grid->spacing = voxel_size;
+}
+
 struct Volume {
     mat4_t world_to_model   = {};   // Roto-translation into volume local axes, no scaling applied (preserves world length units)
     mat4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
@@ -531,6 +654,10 @@ struct Volume {
     int dim[3] = {128, 128, 128};
     uint32_t tex_id = 0;
 };
+
+// Sizes and allocates the GL 3D texture for a grid, and fills in the transforms that place it in
+// the world. Defined in viamd.cpp because it is the half that touches GL.
+void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F);
 
 // Descriptor for handling iso surfaces
 struct IsoDesc {
@@ -590,7 +717,11 @@ struct ElectronicStructureRepresentation {
     int orbital_idx = 0;
     int excited_state_idx = 0;
     int nto_lambda_idx = 0;
-    int density_property_idx = 0;
+    // The density property this representation draws, named by the id of its attribute rather than
+    // by a position in a list. An index silently re-points at a different property whenever the set
+    // changes across a reload; an id is derived from the path, so it names the same thing or
+    // nothing at all.
+    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
 
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
@@ -782,7 +913,6 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
         rep->spin = ElectronicStructureSpin::None;
         rep->use_magnitude = false;
         rep->use_atom_colors = false;
-        rep->density_property_idx = MAX(0, rep->density_property_idx);
         if (rep->density_property.num_isos <= 0) {
             electronic_structure_density_property_init_defaults(rep);
         }
@@ -947,15 +1077,6 @@ struct Representation {
 	DipoleRepresentation dipole = {};
 };
 
-// Event Payload when an electronic structure is to be evaluated
-struct EvalElectronicStructure {
-    const md_system_t* sys = 0;
-    const md_system_state_t* state = 0;
-    double frame = 0.0;
-    Representation* rep = 0;
-    uint32_t* atom_colors = 0;
-};
-
 struct FrameCache {
     FRAME_CACHE_LRU_TYPE lru = {};
     md_system_state_t states[FRAME_CACHE_SIZE] = {};
@@ -1043,6 +1164,23 @@ struct ApplicationState {
     md_gpu_tex_t    gpu_volume  = 0;         // 3d R32F scratch for an evaluated orbital / density
     md_gpu_ptr_t    gpu_coeff   = nullptr;   // AO coefficient staging, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
+
+    // One in-flight readback of gpu_volume into a GL texture. A slot must outlive the call that
+    // queued it, so these live here rather than in the frame arena - and here specifically because
+    // every one of them references gpu_volume, gpu_rb_pool and gpu_stream above. Whoever destroys
+    // those drains these first.
+    struct GpuVolumeJob {
+        bool              in_flight = false;
+        ApplicationState* owner     = nullptr;
+        uint32_t          tex_id    = 0;        // GL texture to receive the data
+        md_gpu_ptr_t      rb        = nullptr;  // HOST_READ staging block
+        size_t            size      = 0;
+    };
+    // Readbacks are issued at most one per representation per change, and a change cannot be
+    // requested again until the previous frame has been drawn, so a handful of slots is ample.
+    // Running out falls back to blocking.
+    static constexpr int GPU_VOLUME_JOB_SLOTS = 8;
+    GpuVolumeJob gpu_volume_jobs[GPU_VOLUME_JOB_SLOTS] = {};
 #endif
 
     struct {
@@ -1130,7 +1268,11 @@ struct ApplicationState {
         // be loaded at once. That is also why the evaluation scratch is not here but on the device.
         md_gto_gpu_basis_t  gpu_basis = nullptr;   // built from the basis/ attributes, not from a loader
         md_gpu_ptr_t        gpu_atoms = nullptr;   // packed float4 positions, xyz in Bohr
-        bool                gpu_atoms_dirty = true;
+        // Hash of the positions currently in gpu_atoms, 0 when nothing has been uploaded. The
+        // positions come from the system STATE, so they move with the trajectory; comparing what is
+        // uploaded against what is wanted is the only test that cannot go stale, and it costs a hash
+        // over the QM atoms against an upload of the same array.
+        uint64_t            gpu_atoms_hash = 0;
 #endif
     } mold;
 
@@ -1752,10 +1894,14 @@ bool atom_property_value_range(float* out_min, float* out_max, const md_attribut
 bool system_gpu_data_update(ApplicationState* state, double cutoff);
 void system_gpu_data_free(ApplicationState* state);
 
-// One orbital's AO coefficient row, out of the rank 2 {M,A} attribute at coefficient_path, in the
-// double precision md_gto asks for. Allocated from temp; NULL when the path is absent, is not a
-// coefficient matrix, or does not hold that orbital. out_num_ao receives the row length.
-double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, uint32_t orbital_idx);
+// One orbital's AO coefficient row, out of the attribute at coefficient_path narrowed by 'slice',
+// in the double precision md_gto asks for. Allocated from temp; NULL when the path is absent or the
+// slice does not narrow it to a single row. out_num_ao receives the row length.
+//
+// md_attribute_slice_1(m) for a {M,A} matrix of molecular orbitals, md_attribute_slice_2(s,l) for
+// the {S,L,A} natural transition orbitals - the caller says which row, and nothing here has to know
+// which of the two it was addressing.
+double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, const md_attribute_slice_t* slice);
 
 // Evaluates one molecular orbital into a 3D texture, sourcing everything it needs from the system:
 // the GTO basis and the AO coefficients from the attribute table, the atom positions from the state.
@@ -1766,7 +1912,103 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 // registry of "fields" is needed to sit between: what varies per request is the request, and what
 // is data is data.
 bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
-                         str_t coefficient_path, uint32_t orbital_idx, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+                         str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+
+// Blocks until every queued volume readback has landed in its GL texture. Call before destroying
+// the device scratch, the pools or a GL texture one of them writes to, and wherever a caller needs
+// the texture's contents NOW rather than next frame - an export, say. A no-op without the GPU
+// backend, where evaluation writes the texture directly.
+void gpu_volume_jobs_drain(ApplicationState* state);
+
+// Records which system atom each basis atom is, for a QM calculation covering only part of the
+// loaded system. Pass NULL / 0 to clear it, which is what the standalone case wants: absent means
+// the identity, and a stale map would send every evaluation to the wrong atoms.
+void basis_atom_map_publish(md_system_t* sys, const int32_t* system_index, size_t count);
+
+// One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', in the
+// double precision md_gto asks for. Allocated from temp; NULL when the path is absent or the slice
+// does not narrow it to a square matrix. Pass a zero slice (or NULL) for an attribute which is
+// already {A,A}, md_attribute_slice_1(state) for one indexed by state. out_dim receives A.
+double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice);
+
+// Evaluates one density into a 3D texture, from the same two sources as orbital_evaluate_gl: the
+// basis/ attributes and the state's atom positions. density_path plus 'slice' name the matrix -
+// "orbital/total/density" with no slice, "vlx/rsp/transition_density/attachment" with the excited
+// state index - and whether that matrix is stored or computed on demand is the table's business.
+bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+                         str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op);
+
+// ---------------------------------------------------------------------------
+// The attribute paths an electronic structure representation draws from
+// ---------------------------------------------------------------------------
+// Named once here rather than spelled at each use, so the whole set is visible in one place.
+//
+// The 'orbital/' paths are FORMAT NEUTRAL: md_gto's own normalised representation, which any QM
+// reader fills with the same meaning. The 'vlx/rsp/' two are still VeloxChem's own - they are what
+// is waiting for a neutral name, and the moment a second reader publishes something comparable is
+// the moment to give them one and alias these onto it.
+namespace es_path {
+    inline const str_t alpha_coefficient   = STR_LIT("orbital/alpha/coefficient");
+    inline const str_t beta_coefficient    = STR_LIT("orbital/beta/coefficient");
+
+    inline const str_t alpha_density       = STR_LIT("orbital/alpha/density");
+    inline const str_t beta_density        = STR_LIT("orbital/beta/density");
+    inline const str_t total_density       = STR_LIT("orbital/total/density");
+    inline const str_t difference_density  = STR_LIT("orbital/difference/density");
+
+    inline const str_t nto_particle        = STR_LIT("vlx/rsp/nto/particle/coefficient");
+    inline const str_t nto_hole            = STR_LIT("vlx/rsp/nto/hole/coefficient");
+
+    inline const str_t attachment_density  = STR_LIT("vlx/rsp/transition_density/attachment");
+    inline const str_t detachment_density  = STR_LIT("vlx/rsp/transition_density/detachment");
+    inline const str_t transition_diff     = STR_LIT("vlx/rsp/transition_density/difference");
+
+    inline const str_t density_property    = STR_LIT("vlx/density_property");
+}
+
+// The only interpretation of use_magnitude there is. ABS is a MODIFIER bit on an accumulate op, not
+// an op of its own, which is why it is or'd onto SET rather than replacing it.
+inline md_gto_op_t es_gto_op(bool use_magnitude) {
+    return MD_GTO_OP_SET | (use_magnitude ? MD_GTO_OP_ABS : 0);
+}
+
+// Which density path a spin selection names. The four are siblings in the table precisely so that
+// this is a lookup and not four cases of arithmetic at the point of use.
+inline str_t es_electron_density_path(ElectronicStructureSpin spin) {
+    switch (spin) {
+    case ElectronicStructureSpin::Alpha:      return es_path::alpha_density;
+    case ElectronicStructureSpin::Beta:       return es_path::beta_density;
+    case ElectronicStructureSpin::Difference: return es_path::difference_density;
+    case ElectronicStructureSpin::None:
+    case ElectronicStructureSpin::Total:
+    default:                                  return es_path::total_density;
+    }
+}
+
+// The grid an electronic structure representation is evaluated on: an object aligned box around the
+// basis atoms, padded, at samples_per_unit_length samples per BOHR. False when the system publishes
+// no basis, which is the normal "nothing to draw" case rather than a failure.
+bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, const md_system_state_t& state, double samples_per_unit_length);
+
+// The entry points a representation calls: name the attribute, get a filled 3D texture. One
+// function per kind of thing being evaluated, with the choice of backend inside - so a caller never
+// asks which device is available, and both backends share the basis, the atom gather and the map.
+//
+// With the GPU backend the texture is filled from the frame loop rather than before the call
+// returns; gpu_volume_jobs_drain() forces it where the contents are needed immediately.
+bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t coefficient_path,
+                      const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t density_path,
+                      const md_attribute_slice_t* slice, md_gto_op_t op);
+
+#if MD_ENABLE_GPU
+// The first half of density_evaluate: evaluates into the DEVICE scratch volume (ApplicationState::
+// gpu_volume) and leaves it there, for a consumer which records another kernel over it on the same
+// stream instead of reading it back. False when the GPU backend is unavailable, in which case there
+// is no scratch volume to run anything over and the caller wants the GL path instead.
+bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
+                                    const md_attribute_slice_t* slice, md_gto_op_t op);
+#endif
 
 // Points a representation at an attribute and seeds its drawing range from that attribute's own
 // span. Selecting a field and choosing the range to draw it over are one action the first time and

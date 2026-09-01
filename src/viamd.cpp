@@ -30,6 +30,20 @@ static const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
     return NULL;
 }
 
+void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
+    ASSERT(vol);
+    MEMCPY(vol->dim, grid.dim, sizeof(vol->dim));
+
+    // A grid is in BOHR and a Volume's transforms are in Angstrom; this is where the two meet.
+    const float scl = (float)BOHR_TO_ANGSTROM;
+
+    vec3_t extent = md_grid_extent(&grid);
+    vol->world_to_model   = compute_world_to_model_mat(grid.orientation, grid.origin * scl);
+    vol->texture_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, extent * scl);
+    vol->voxel_size       = grid.spacing * scl;
+    gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
+}
+
 static void init_all_representations(ApplicationState* state);
 
 static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& state, const PickingHit& hit) {
@@ -895,8 +909,15 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_int(rep->electronic_structure.excited_state_idx, arg);
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureNtoLambdaIdx"))) {
                     viamd::extract_int(rep->electronic_structure.nto_lambda_idx, arg);
+                } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyPath"))) {
+                    // The id is a function of the path, so this resolves without the dataset being
+                    // loaded yet - and names the same property after a reload, which the index it
+                    // replaces did not.
+                    rep->electronic_structure.density_property_key = md_attributes_id_from_path(arg);
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureDensityPropertyIdx"))) {
-                    viamd::extract_int(rep->electronic_structure.density_property_idx, arg);
+                    // DEPRECATED. A position in a list that only existed while a particular file was
+                    // open; there is nothing to resolve it against. Workspaces written before the
+                    // path was stored fall back to the first property available.
                 } else if (str_eq(ident, STR_LIT("ElectronicStructureRes"))) {
                     int res;
                     viamd::extract_int(res, arg);
@@ -1144,7 +1165,9 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
             viamd::write_int(state,  STR_LIT("ElectronicStructureMoIdx"),    rep.electronic_structure.orbital_idx);
             viamd::write_int(state,  STR_LIT("ElectronicStructureNtoIdx"),   rep.electronic_structure.excited_state_idx);
             viamd::write_int(state,  STR_LIT("ElectronicStructureNtoLambdaIdx"), rep.electronic_structure.nto_lambda_idx);
-            viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIdx"), rep.electronic_structure.density_property_idx);
+            if (const md_attribute_t* prop = md_attributes_get(&app_state->mold.sys.attributes, rep.electronic_structure.density_property_key)) {
+                viamd::write_str(state, STR_LIT("ElectronicStructureDensityPropertyPath"), prop->path);
+            }
             viamd::write_int(state,  STR_LIT("ElectronicStructureType"),     electronic_structure_legacy_type(rep.electronic_structure));
             viamd::write_int(state,  STR_LIT("ElectronicStructureSource"),   (int)rep.electronic_structure.source);
             viamd::write_int(state,  STR_LIT("ElectronicStructureField"),    (int)electronic_structure_legacy_field(rep.electronic_structure));
@@ -1297,6 +1320,9 @@ void remove_representation(ApplicationState* state, size_t idx) {
     auto& rep = state->representation.reps[idx];
     md_bitfield_free(&rep.atom_mask);
     md_gl_rep_destroy(rep.md_rep);
+    // A readback queued for this representation's volume would land in a texture that no longer
+    // exists, so let the queue run out first.
+    gpu_volume_jobs_drain(state);
     if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
     if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
     if (rep.electronic_structure.dvr.tf_tex)         gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
@@ -1512,7 +1538,7 @@ void system_gpu_data_free(ApplicationState* state) {
         md_gpu_free(state->mold.gpu_atoms, state->gpu_stream);
         state->mold.gpu_atoms = nullptr;
     }
-    state->mold.gpu_atoms_dirty = true;
+    state->mold.gpu_atoms_hash = 0;
 #else
     (void)state;
 #endif
@@ -1547,7 +1573,7 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
     const size_t num_atoms = md_gto_gpu_basis_num_atoms(state->mold.gpu_basis);
 
     state->mold.gpu_atoms = md_gpu_malloc(state->gpu_pool, md_gto_gpu_atom_buffer_size(num_atoms), state->gpu_stream);
-    state->mold.gpu_atoms_dirty = true;
+    state->mold.gpu_atoms_hash = 0;
 
     // Density coefficients are the larger of the two packings, so one size covers both the density
     // and the MO evaluation paths.
@@ -1578,27 +1604,29 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
 // The basis is rebuilt per call for now. That is one interleave over a few hundred shells, but it
 // is the obvious thing for a representation to cache, keyed on the ids of the basis/ attributes it
 // was built from.
-double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, uint32_t orbital_idx) {
+double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, const md_attribute_slice_t* slice) {
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, coefficient_path);
     if (!attr) {
         MD_LOG_DEBUG("No orbital coefficients published at '" STR_FMT "'", STR_ARG(coefficient_path));
         return nullptr;
     }
 
-    // {M,A}: one row per molecular orbital, one column per atomic orbital.
-    if (attr->format.rank != 2 || md_attribute_components(&attr->format) != 1) {
-        MD_LOG_ERROR("'" STR_FMT "' is not a matrix of orbital coefficients", STR_ARG(coefficient_path));
+    // Whatever the attribute's own rank, the slice has to leave exactly ONE row of AO coefficients:
+    // {M,A} sliced by the orbital, {S,L,A} sliced by state and lambda. Asking the slice for its
+    // format rather than the attribute is what makes those the same call.
+    md_attribute_format_t format = {};
+    if (!md_attribute_slice_format(&format, attr, slice)) {
+        MD_LOG_ERROR("The slice does not address '" STR_FMT "'", STR_ARG(coefficient_path));
         return nullptr;
     }
-    if (orbital_idx >= attr->format.shape[0]) {
-        MD_LOG_ERROR("Orbital %u is out of range in '" STR_FMT "'", orbital_idx, STR_ARG(coefficient_path));
+    if (format.rank != 1 || md_attribute_components(&format) != 1) {
+        MD_LOG_ERROR("'" STR_FMT "' does not slice down to one row of orbital coefficients", STR_ARG(coefficient_path));
         return nullptr;
     }
 
     // Ask the slice how big it is, then allocate for exactly that. The size comes from the format
     // alone, so this same shape works whether the coefficients are stored or worked out on demand.
-    const md_attribute_slice_t slice = md_attribute_slice_1(orbital_idx);
-    const size_t num_ao = md_attribute_slice_count(attr, &slice);
+    const size_t num_ao = md_attribute_slice_count(attr, slice);
     if (num_ao == 0) {
         return nullptr;
     }
@@ -1610,7 +1638,7 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 
     // f64, because that is what md_gto takes: the coefficients are double at this boundary to keep
     // the QM code's precision, and extracting them through floats would spend it here.
-    if (md_attribute_extract_slice_f64(dst, num_ao, attr, &slice, md_unit_none()) != num_ao) {
+    if (md_attribute_extract_slice_f64(dst, num_ao, attr, slice, md_unit_none()) != num_ao) {
         return nullptr;
     }
 
@@ -1618,23 +1646,361 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
     return dst;
 }
 
-bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
-                         str_t coefficient_path, uint32_t orbital_idx, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
+// ---------------------------------------------------------------------------
+// Which system atom each basis atom is
+// ---------------------------------------------------------------------------
+// A QM calculation may cover only PART of a loaded system - a chromophore inside a protein - and
+// then the basis' atom indices are its own and not the system's. That map was the last thing an
+// evaluation still needed a loader for, so it is published beside the basis and read from there.
+//
+// Absent means the identity, which is what a standalone load is, so nothing publishes it in the
+// common case and every consumer needs the same one line to handle both.
+//
+// It is VIAMD that publishes it and not the reader, because the file alone cannot decide: the same
+// h5 carries a local-to-global map whether it is opened on its own - where the map must NOT be
+// applied, since the system IS the QM atoms - or against a larger system, where it must. Only the
+// side holding both knows which, and that is here.
+static const str_t BASIS_ATOM_MAP_PATH = STR_LIT("basis/atom/system_index");
+
+void basis_atom_map_publish(md_system_t* sys, const int32_t* system_index, size_t count) {
+    ASSERT(sys);
+
+    // Clearing is as important as setting: a stale map from a previous load would silently send
+    // every evaluation to the wrong atoms.
+    if (const md_attribute_t* existing = md_attributes_find(&sys->attributes, BASIS_ATOM_MAP_PATH)) {
+        md_attributes_remove(&sys->attributes, existing->id);
+    }
+    if (!system_index || count == 0) {
+        return;
+    }
+
+    const md_attribute_format_t format = {
+        .type = MD_ATTRIBUTE_TYPE_U32, .components = 1, .rank = 1, .shape = { (uint32_t)count },
+    };
+    const md_attribute_desc_t desc = {
+        .path   = BASIS_ATOM_MAP_PATH,
+        .format = format,
+        .unit   = md_unit_none(),
+        .label  = STR_LIT("System Atom Index"),
+    };
+    md_attribute_id_t id = md_attributes_create(&sys->attributes, &desc);
+
+    uint32_t* dst = (uint32_t*)md_attributes_data(&sys->attributes, id, MD_ATTRIBUTE_TYPE_U32);
+    if (!dst) {
+        if (id != MD_ATTRIBUTE_INVALID) md_attributes_remove(&sys->attributes, id);
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        dst[i] = (uint32_t)system_index[i];
+    }
+}
+
+// NULL when there is none, which the callers read as the identity. Same explicitness as
+// gto_attr_column in md_gto.c and for the same reason: the table is open, so a path with the wrong
+// shape is a mistake to refuse rather than to reinterpret.
+static const uint32_t* basis_atom_map_find(size_t* out_count, const md_system_t& sys) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, BASIS_ATOM_MAP_PATH);
+    if (!attr) {
+        return nullptr;
+    }
+    if (attr->format.type != MD_ATTRIBUTE_TYPE_U32 || attr->format.rank != 1 || md_attribute_components(&attr->format) != 1 || !attr->data) {
+        MD_LOG_ERROR("'" STR_FMT "' is not a plain column of atom indices", STR_ARG(BASIS_ATOM_MAP_PATH));
+        return nullptr;
+    }
+    if (out_count) *out_count = attr->format.shape[0];
+    return (const uint32_t*)attr->data;
+}
+
+// Gathers the BASIS atoms' positions out of the state, in the Bohr and the interleaved layout
+// md_gto works in, in basis atom order. Returns the number written, 0 on failure.
+//
+// This conversion is the one input to an evaluation which is neither an attribute nor a caller
+// parameter, and that is the right shape: the basis deliberately stores no coordinates, so that it
+// survives a geometry change and the positions come from wherever the current ones live.
+static size_t basis_atom_positions_gather(vec3_t* dst, size_t cap, const md_system_t& sys, const md_system_state_t& state, size_t num_basis_atoms) {
+    if (!dst || num_basis_atoms == 0 || num_basis_atoms > cap) {
+        return 0;
+    }
+    // Checked here rather than at each call site: this is the only place the state is read, so this
+    // is the only place that can be wrong about it.
     if (state.num_atoms == 0 || !state.x || !state.y || !state.z) {
+        return 0;
+    }
+
+    size_t map_count = 0;
+    const uint32_t* map = basis_atom_map_find(&map_count, sys);
+    if (map && map_count < num_basis_atoms) {
+        MD_LOG_ERROR("The basis spans %zu atoms and '" STR_FMT "' maps %zu", num_basis_atoms, STR_ARG(BASIS_ATOM_MAP_PATH), map_count);
+        return 0;
+    }
+
+    for (size_t i = 0; i < num_basis_atoms; ++i) {
+        const size_t idx = map ? (size_t)map[i] : i;
+        if (idx >= state.num_atoms) {
+            MD_LOG_ERROR("Basis atom %zu is system atom %zu and the state holds %zu", i, idx, state.num_atoms);
+            return 0;
+        }
+        dst[i] = vec3_set(state.x[idx], state.y[idx], state.z[idx]) * (float)ANGSTROM_TO_BOHR;
+    }
+    return num_basis_atoms;
+}
+
+// ---------------------------------------------------------------------------
+// Volume readback
+// ---------------------------------------------------------------------------
+// Getting an evaluated volume out of the device scratch texture and into the GL texture a
+// representation draws. Nothing about it is specific to what was evaluated or to who asked, and
+// every handle it touches is on the ApplicationState above - which is why it lives here and not in
+// whichever component happened to need it first.
+
+#if MD_ENABLE_GPU
+
+// Prefers a pixel unpack buffer: one write into memory the GPU already sees, and the transfer
+// overlaps instead of blocking. Falls back to the plain client pointer upload when no buffer is
+// available.
+static void gpu_volume_upload_to_gl(uint32_t vol_tex, const void* src, size_t size) {
+    if (!src) return;
+    if (void* dst = gl::pbo_upload_begin(size)) {
+        MEMCPY(dst, src, size);
+        if (gl::pbo_upload_end_texture_3D(vol_tex, 0, GL_R32F)) return;
+    }
+    gl::set_texture_3D_data(vol_tex, 0, src, GL_R32F);
+}
+
+static ApplicationState::GpuVolumeJob* gpu_volume_job_acquire(ApplicationState* state) {
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        if (!state->gpu_volume_jobs[i].in_flight) {
+            state->gpu_volume_jobs[i] = ApplicationState::GpuVolumeJob{};
+            state->gpu_volume_jobs[i].in_flight = true;
+            state->gpu_volume_jobs[i].owner = state;
+            return &state->gpu_volume_jobs[i];
+        }
+    }
+    return nullptr;
+}
+
+static bool gpu_volume_job_any_in_flight(const ApplicationState* state) {
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        if (state->gpu_volume_jobs[i].in_flight) return true;
+    }
+    return false;
+}
+
+static bool gpu_volume_job_in_flight_for(const ApplicationState* state, uint32_t tex_id) {
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        if (state->gpu_volume_jobs[i].in_flight && state->gpu_volume_jobs[i].tex_id == tex_id) return true;
+    }
+    return false;
+}
+
+// Runs on the GL thread, from md_gpu_device_poll() in the frame loop.
+static void gpu_volume_job_complete(void* user) {
+    ApplicationState::GpuVolumeJob* job = (ApplicationState::GpuVolumeJob*)user;
+    ApplicationState* self = job->owner;
+    if (self && job->tex_id) {
+        gpu_volume_upload_to_gl(job->tex_id, md_gpu_host_ptr(job->rb), job->size);
+    }
+    if (self && job->rb) md_gpu_free(job->rb, self->gpu_stream);
+    job->rb        = nullptr;
+    job->in_flight = false;
+}
+
+// Used when no job slot is free, and when a caller genuinely needs the data before it returns.
+static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, size_t size) {
+    md_gpu_ptr_t rb = md_gpu_malloc(state->gpu_rb_pool, size, state->gpu_stream);
+    if (!rb) return false;
+    const md_gpu_tex_region_t region = {
+        .offset = {0, 0, 0},
+        .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+    };
+    bool ok = md_gpu_memcpy_from_tex_async(rb, state->gpu_volume, &region, size, state->gpu_stream);
+    md_gpu_stream_sync(state->gpu_stream);
+    if (ok) gpu_volume_upload_to_gl(vol_tex, md_gpu_host_ptr(rb), size);
+    md_gpu_free(rb, state->gpu_stream);
+    return ok;
+}
+
+// Queues a readback of the evaluated region of gpu_volume. Returns once the copy is recorded; the
+// GL texture is filled later, from gpu_volume_job_complete(), which md_gpu_device_poll() calls on
+// the GL thread.
+//
+// Returns true when the work was QUEUED -- not that the texture holds data.
+static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid) {
+    if (!state->gpu_stream || !state->gpu_rb_pool || !state->gpu_volume) {
         return false;
     }
+    const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
+
+    // Never allow two outstanding readbacks for the same texture. Two reasons, both of which
+    // produce a wrong image rather than a slow one:
+    //
+    //  - a staging block can be most of a gigabyte, so N in flight is N times that;
+    //  - md_gpu_stream_sync does not fire user callbacks, only md_gpu_device_poll does. So a
+    //    blocking fallback taken while an older job is still pending would upload new data now and
+    //    let the older callback overwrite it with stale data next frame.
+    //
+    // Draining costs the stall we are trying to avoid, but only when the user outruns the GPU, and
+    // it keeps uploads strictly ordered.
+    if (gpu_volume_job_in_flight_for(state, vol_tex)) {
+        gpu_volume_jobs_drain(state);
+    }
+
+    ApplicationState::GpuVolumeJob* job = gpu_volume_job_acquire(state);
+    if (!job) {
+        gpu_volume_jobs_drain(state);
+        job = gpu_volume_job_acquire(state);
+    }
+    if (!job) {
+        return gpu_volume_readback_blocking(state, vol_tex, grid, size);
+    }
+
+    md_gpu_ptr_t rb = md_gpu_malloc(state->gpu_rb_pool, size, state->gpu_stream);
+    if (!rb) {
+        MD_LOG_ERROR("Failed to allocate volume readback staging (%zu bytes)", size);
+        job->in_flight = false;
+        return false;
+    }
+
+    const md_gpu_tex_region_t region = {
+        .offset = {0, 0, 0},
+        .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
+    };
+    if (!md_gpu_memcpy_from_tex_async(rb, state->gpu_volume, &region, size, state->gpu_stream)) {
+        MD_LOG_ERROR("Failed to record the volume readback");
+        md_gpu_free(rb, state->gpu_stream);
+        job->in_flight = false;
+        return false;
+    }
+
+    job->tex_id = vol_tex;
+    job->rb     = rb;
+    job->size   = size;
+
+    if (!md_gpu_launch_host_fn(state->gpu_stream, gpu_volume_job_complete, job)) {
+        // No callback means nothing would ever free rb or fill the texture, so finish this one
+        // synchronously instead of leaking it.
+        MD_LOG_ERROR("Failed to queue the volume completion; falling back to a blocking readback");
+        md_gpu_stream_sync(state->gpu_stream);
+        gpu_volume_upload_to_gl(vol_tex, md_gpu_host_ptr(rb), size);
+        md_gpu_free(rb, state->gpu_stream);
+        job->in_flight = false;
+        return true;
+    }
+    return true;
+}
+
+// Queues the atom upload on gpu_stream if it is dirty. Any evaluation launched afterwards on the
+// same stream observes it. md_gpu_upload_begin writes straight into the destination when that is
+// safe and stages through a transient arena otherwise, so there is one path regardless of whether
+// the device is discrete.
+static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t& sys, const md_system_state_t& sys_state) {
+    if (!state->gpu_stream || !state->mold.gpu_basis || !state->mold.gpu_atoms) {
+        return false;
+    }
+    const size_t num_atoms = md_gto_gpu_basis_num_atoms(state->mold.gpu_basis);
+    const size_t sz = md_gto_gpu_atom_buffer_size(num_atoms);
 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
 
+    // Same gather as the GL path, through the same map, so the two backends cannot disagree about
+    // which atom a basis index means. Packed to vec4 because that is what the device wants.
+    vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * MAX(num_atoms, (size_t)1));
+    if (!xyz || basis_atom_positions_gather(xyz, num_atoms, sys, sys_state, num_atoms) != num_atoms) {
+        return false;
+    }
+
+    // Gather first, then decide: the gather is what the comparison is ABOUT, and it is cheap next
+    // to the transfer it may save.
+    const uint64_t hash = md_hash64(xyz, sizeof(vec3_t) * num_atoms, 0);
+    if (hash != 0 && hash == state->mold.gpu_atoms_hash) {
+        return true;
+    }
+
+    vec4_t* xyzw = (vec4_t*)md_temp_alloc(temp, sizeof(vec4_t) * MAX(num_atoms, (size_t)1));
+    if (!xyzw) {
+        return false;
+    }
+    for (size_t i = 0; i < num_atoms; ++i) {
+        xyzw[i] = vec4_set(xyz[i].x, xyz[i].y, xyz[i].z, 1.0f);
+    }
+
+    float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->mold.gpu_atoms, sz);
+    if (!dst) {
+        MD_LOG_ERROR("Failed to upload the atom positions to the device");
+        return false;
+    }
+    md_gto_gpu_atom_pack(dst, (const float*)xyzw, sizeof(vec4_t), num_atoms);
+    if (!md_gpu_upload_end(state->gpu_stream)) {
+        return false;
+    }
+
+    state->mold.gpu_atoms_hash = hash;
+    return true;
+}
+
+#endif // MD_ENABLE_GPU
+
+void gpu_volume_jobs_drain(ApplicationState* state) {
+    ASSERT(state);
+#if MD_ENABLE_GPU
+    if (!state->gpu_stream || !gpu_volume_job_any_in_flight(state)) return;
+    md_gpu_stream_sync(state->gpu_stream);
+    md_gpu_device_poll(state->gpu_device);   // this is what actually runs the callbacks
+
+    // Backstop: if a callback somehow did not fire, release the staging block here rather than
+    // leaking it, since the pool may be about to go.
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        if (j.in_flight) {
+            if (j.rb) md_gpu_free(j.rb, state->gpu_stream);
+            j.rb = nullptr;
+            j.in_flight = false;
+        }
+    }
+#else
+    (void)state;
+#endif
+}
+
+// The two things every GTO evaluation needs besides its own coefficients: the basis, rebuilt from
+// the system's basis/ attributes, and the basis atoms' positions in the units md_gto works in.
+// Neither depends on WHAT is being evaluated, and both come out of the system - so this is the
+// whole of the context an evaluation has, and there is deliberately nothing else in it.
+static bool gto_evaluation_context(md_gto_basis_t* out_basis, vec3_t** out_atom_xyz, md_temp_scope_t temp,
+                                   const md_system_t& sys, const md_system_state_t& state) {
+    ASSERT(out_basis);
+    ASSERT(out_atom_xyz);
+
+    MEMSET(out_basis, 0, sizeof(*out_basis));
+    if (!md_gto_basis_extract_attributes(out_basis, &sys.attributes, md_temp_allocator(temp))) {
+        return false;
+    }
+
+    const size_t num_basis_atoms = md_gto_basis_num_atoms(out_basis);
+    vec3_t* atom_xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * MAX(num_basis_atoms, (size_t)1));
+    if (!atom_xyz || basis_atom_positions_gather(atom_xyz, num_basis_atoms, sys, state, num_basis_atoms) != num_basis_atoms) {
+        return false;
+    }
+
+    *out_atom_xyz = atom_xyz;
+    return true;
+}
+
+bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+                         str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
     size_t  num_ao    = 0;
-    double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, sys, coefficient_path, orbital_idx);
+    double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, sys, coefficient_path, slice);
     if (!ao_coeffs) {
         return false;
     }
 
     md_gto_basis_t basis = {};
-    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+    vec3_t* atom_xyz = nullptr;
+    if (!gto_evaluation_context(&basis, &atom_xyz, temp, sys, state)) {
         return false;
     }
 
@@ -1644,26 +2010,406 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
         MD_LOG_ERROR("The basis spans %zu atomic orbitals and '" STR_FMT "' %zu", md_gto_basis_num_ao(&basis), STR_ARG(coefficient_path), num_ao);
         return false;
     }
-    if (md_gto_basis_num_atoms(&basis) > state.num_atoms) {
-        MD_LOG_ERROR("The basis indexes %zu atoms and the state holds %zu", md_gto_basis_num_atoms(&basis), state.num_atoms);
-        return false;
-    }
-
-    // md_gto evaluates in Bohr and wants xyz interleaved; a system state is Angstrom and planar.
-    // This conversion is the one input which is neither an attribute nor a caller parameter, and
-    // that is the right shape: the basis deliberately stores no coordinates, so that it survives a
-    // geometry change and the positions come from wherever the current ones live.
-    const float ANGSTROM_TO_BOHR = 1.8897261246257702f;
-    vec3_t* atom_xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * state.num_atoms);
-    if (!atom_xyz) {
-        return false;
-    }
-    for (size_t i = 0; i < state.num_atoms; ++i) {
-        atom_xyz[i] = vec3_set(state.x[i], state.y[i], state.z[i]) * ANGSTROM_TO_BOHR;
-    }
 
     md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, sizeof(vec3_t), ao_coeffs, cutoff, mode, op);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Density evaluation
+// ---------------------------------------------------------------------------
+// A density in this table is an AO x AO matrix. It is either that on its own - the SCF densities,
+// the density properties - or the innermost two axes of something indexed by state, as the
+// transition densities are at {S,A,A}. Both are addressed the same way here: a path plus a slice
+// which narrows to one matrix. The caller names what it wants and this cares neither which of the
+// two shapes it came from, nor whether the values were stored or worked out on demand, because
+// md_attribute_slice_format answers the first and the extract answers the second.
+double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
+    if (!attr) {
+        MD_LOG_DEBUG("No density published at '" STR_FMT "'", STR_ARG(density_path));
+        return nullptr;
+    }
+
+    md_attribute_format_t format = {};
+    if (!md_attribute_slice_format(&format, attr, slice)) {
+        MD_LOG_ERROR("The slice does not address '" STR_FMT "'", STR_ARG(density_path));
+        return nullptr;
+    }
+
+    // Square is not pedantry: the GL and GPU density paths both pack the upper triangle and never
+    // read the lower half, so a non square matrix would be silently half consumed.
+    if (format.rank != 2 || format.shape[0] != format.shape[1] || md_attribute_components(&format) != 1) {
+        MD_LOG_ERROR("'" STR_FMT "' does not slice down to a square density matrix", STR_ARG(density_path));
+        return nullptr;
+    }
+
+    const size_t count = md_attribute_slice_count(attr, slice);
+    if (count == 0) {
+        return nullptr;
+    }
+
+    double* dst = (double*)md_temp_alloc(temp, sizeof(double) * count);
+    if (!dst) {
+        return nullptr;
+    }
+    if (md_attribute_extract_slice_f64(dst, count, attr, slice, md_unit_none()) != count) {
+        return nullptr;
+    }
+
+    if (out_dim) *out_dim = format.shape[0];
+    return dst;
+}
+
+bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+                         str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    size_t  dim = 0;
+    double* density_matrix = density_matrix_extract(&dim, temp, sys, density_path, slice);
+    if (!density_matrix) {
+        return false;
+    }
+
+    md_gto_basis_t basis = {};
+    vec3_t* atom_xyz = nullptr;
+    if (!gto_evaluation_context(&basis, &atom_xyz, temp, sys, state)) {
+        return false;
+    }
+
+    if (md_gto_basis_num_ao(&basis) != dim) {
+        MD_LOG_ERROR("The basis spans %zu atomic orbitals and '" STR_FMT "' %zu", md_gto_basis_num_ao(&basis), STR_ARG(density_path), dim);
+        return false;
+    }
+
+    md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, sizeof(vec3_t), density_matrix, false, op);
+    return true;
+}
+
+static bool es_attribute_exists(const md_system_t& sys, str_t path) {
+    return md_attributes_find(&sys.attributes, path) != nullptr;
+}
+
+// Evaluates whatever the representation is currently pointed at into its own volume texture.
+// Everything it needs is an attribute on the system or a field of the representation; there is no
+// reader, no component and no event in the path, which is the whole point of the port.
+static bool electronic_structure_evaluate(ApplicationState* state, Representation* rep) {
+    const ElectronicStructureRepresentation& es = rep->electronic_structure;
+
+    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)es.resolution];
+
+    md_grid_t grid = {};
+    if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
+        return false;
+    }
+    init_volume(&rep->electronic_structure.density_vol, grid, GL_R32F);
+    const uint32_t tex_id = rep->electronic_structure.density_vol.tex_id;
+
+    switch (es.source) {
+    case ElectronicStructureSource::MolecularOrbital: {
+        const str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.orbital_idx);
+        return orbital_evaluate(state, tex_id, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, es_gto_op(es.use_magnitude), DEFAULT_GTO_CUTOFF_VALUE);
+    }
+    case ElectronicStructureSource::NaturalTransitionOrbital: {
+        const str_t path = (es.nto_component == ElectronicStructureNtoComponent::Particle) ? es_path::nto_particle : es_path::nto_hole;
+        // {S,L,A}: the excited state and then the lambda pair within it. Two indices instead of the
+        // one an ordinary orbital takes, which is exactly what a slice is for.
+        const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)es.excited_state_idx, (uint32_t)es.nto_lambda_idx);
+        return orbital_evaluate(state, tex_id, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, es_gto_op(es.use_magnitude), DEFAULT_GTO_CUTOFF_VALUE);
+    }
+    case ElectronicStructureSource::TransitionDensity: {
+        str_t path = es_path::attachment_density;
+        switch (es.transition_density_component) {
+        case ElectronicStructureTransitionDensityComponent::Detachment: path = es_path::detachment_density; break;
+        case ElectronicStructureTransitionDensityComponent::Difference: path = es_path::transition_diff;    break;
+        case ElectronicStructureTransitionDensityComponent::Attachment:
+        default: break;
+        }
+        // These are VIRTUAL: the slice is what tells the provider to reconstruct one state rather
+        // than all of them, and it is the only reason asking for one is affordable.
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.excited_state_idx);
+        return density_evaluate(state, tex_id, grid, path, &slice, MD_GTO_OP_SET);
+    }
+    case ElectronicStructureSource::ElectronDensity: {
+        // A spin difference is signed, so it is the one density the magnitude toggle applies to.
+        const bool magnitude = (es.spin == ElectronicStructureSpin::Difference) && es.use_magnitude;
+        return density_evaluate(state, tex_id, grid, es_electron_density_path(es.spin), nullptr, es_gto_op(magnitude));
+    }
+    case ElectronicStructureSource::DensityProperty: {
+        const md_attribute_t* attr = md_attributes_get(&state->mold.sys.attributes, es.density_property_key);
+        if (!attr) {
+            return false;
+        }
+        return density_evaluate(state, tex_id, grid, attr->path, nullptr, MD_GTO_OP_SET);
+    }
+    default:
+        MD_LOG_ERROR("Unknown electronic structure source");
+        return false;
+    }
+}
+
+// The colour volume beside the density one: the atoms' own colours splatted into a downsampled 3D
+// texture, so that a surface can be shaded by whatever the representation is colouring atoms with.
+static void electronic_structure_color_volume_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors) {
+    if (!atom_colors) {
+        return;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    const md_system_t&       sys       = state->mold.sys;
+    const md_system_state_t& sys_state = state->mold.state;
+
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+        return;
+    }
+    const size_t num_points = md_gto_basis_num_atoms(&basis);
+    if (num_points == 0) {
+        return;
+    }
+
+    const int downsample_factor = 1;
+    int dim[3] = {
+        (int)(rep->electronic_structure.density_vol.dim[0] / downsample_factor),
+        (int)(rep->electronic_structure.density_vol.dim[1] / downsample_factor),
+        (int)(rep->electronic_structure.density_vol.dim[2] / downsample_factor),
+    };
+    MEMCPY(rep->electronic_structure.color_vol.dim, dim, sizeof(dim));
+    rep->electronic_structure.color_vol.world_to_model   = rep->electronic_structure.density_vol.world_to_model;
+    rep->electronic_structure.color_vol.texture_to_world = rep->electronic_structure.density_vol.texture_to_world;
+    rep->electronic_structure.color_vol.voxel_size       = rep->electronic_structure.density_vol.voxel_size * (float)downsample_factor;
+    gl::init_texture_3D(&rep->electronic_structure.color_vol.tex_id, dim[0], dim[1], dim[2], GL_RGBA8);
+
+    const vec3_t& voxel_size     = rep->electronic_structure.color_vol.voxel_size;
+    const mat4_t& world_to_model = rep->electronic_structure.color_vol.world_to_model;
+    mat4_t index_to_world = rep->electronic_structure.color_vol.texture_to_world
+        * mat4_scale(1.0f / dim[0], 1.0f / dim[1], 1.0f / dim[2])
+        * mat4_translate(0.5f, 0.5f, 0.5f); // Center of the corner voxel should be at the origin
+
+    // The colours are per SYSTEM atom and the splats are per BASIS atom, so the map is consulted
+    // here too - and once more it is the same lookup in the same direction the evaluation used.
+    size_t map_count = 0;
+    const uint32_t* map = basis_atom_map_find(&map_count, sys);
+    if (map && map_count < num_points) {
+        return;
+    }
+
+    vec4_t*   point_xyzw   = (vec4_t*)md_temp_alloc(temp, sizeof(vec4_t) * num_points);
+    uint32_t* point_colors = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * num_points);
+    if (!point_xyzw || !point_colors) {
+        return;
+    }
+    if (sys_state.num_atoms == 0 || !sys_state.x || !sys_state.y || !sys_state.z) {
+        return;
+    }
+    for (size_t i = 0; i < num_points; ++i) {
+        const size_t idx = map ? (size_t)map[i] : i;
+        if (idx >= sys_state.num_atoms) {
+            return;
+        }
+        // Angstrom and not Bohr: these are world coordinates for the splatting pass, which shares
+        // the Volume's transforms, unlike the grid the density was evaluated on.
+        const float radius = md_atom_radius(&sys.atom, idx);
+        point_xyzw[i]   = vec4_set(sys_state.x[idx], sys_state.y[idx], sys_state.z[idx], radius);
+        point_colors[i] = atom_colors[idx];
+    }
+
+    volume::compute_point_color_volume(rep->electronic_structure.color_vol.tex_id, dim, voxel_size.elem, world_to_model.elem,
+                                       index_to_world.elem, point_xyzw, point_colors, num_points,
+                                       rep->electronic_structure.gaussian_splatting_power);
+}
+
+// ---------------------------------------------------------------------------
+// Where to evaluate
+// ---------------------------------------------------------------------------
+// An object aligned box around the BASIS atoms, padded, at the requested sample density. Derived
+// from the system on every call rather than cached at load, for two reasons: it is a PCA over the
+// tens to hundreds of atoms a QM calculation covers, which is nothing next to the evaluation it
+// precedes, and computing it here is what makes the box follow the geometry instead of pinning it
+// to whatever the coordinates were when the file was opened.
+bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, const md_system_state_t& state, double samples_per_unit_length) {
+    ASSERT(grid);
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+        return false;
+    }
+
+    const size_t num_atoms = md_gto_basis_num_atoms(&basis);
+    if (num_atoms == 0) {
+        return false;
+    }
+
+    vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * num_atoms);
+    if (!xyz || basis_atom_positions_gather(xyz, num_atoms, sys, state, num_atoms) != num_atoms) {
+        return false;
+    }
+
+    // mat3_PCA and calculate_bounds both want a homogeneous point, and w == 1 is what makes the
+    // rotation in calculate_bounds a rotation of a POINT rather than of a direction.
+    vec4_t* xyzw = (vec4_t*)md_temp_alloc(temp, sizeof(vec4_t) * num_atoms);
+    if (!xyzw) {
+        return false;
+    }
+    for (size_t i = 0; i < num_atoms; ++i) {
+        xyzw[i] = vec4_set(xyz[i].x, xyz[i].y, xyz[i].z, 1.0f);
+    }
+
+    OABB oabb = {};
+    oabb.orientation = mat3_PCA(xyzw, num_atoms);
+    calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, xyzw, num_atoms, oabb.orientation);
+
+    init_grid(grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Evaluation: the entry points a representation calls
+// ---------------------------------------------------------------------------
+// One function per KIND of thing being evaluated - an orbital, a density - and the choice of
+// backend inside it. A caller names the attribute it wants drawn and gets a filled texture; which
+// device did the work is not its business, and pushing that choice down here is what lets the two
+// backends share the basis, the atom gather and the map they all agree on.
+//
+// The GPU path writes the device scratch volume and queues a readback into vol_tex; the texture is
+// filled from the frame loop's md_gpu_device_poll rather than before this returns. Call
+// gpu_volume_jobs_drain() where the contents are needed immediately.
+
+#if MD_ENABLE_GPU
+// True when the device scratch and this dataset's uploaded basis are both present, which is what
+// every GPU path below needs before it can start.
+static bool gpu_evaluation_ready(const ApplicationState* state) {
+    return state->gpu_stream && state->mold.gpu_basis && state->mold.gpu_atoms && state->gpu_coeff && state->gpu_volume;
+}
+#endif
+
+bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t coefficient_path,
+                      const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
+    ASSERT(state);
+
+#if MD_ENABLE_GPU
+    if (gpu_evaluation_ready(state)) {
+        const md_system_t&       sys       = state->mold.sys;
+        const md_system_state_t& sys_state = state->mold.state;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        size_t  num_ao    = 0;
+        const double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, sys, coefficient_path, slice);
+        if (!ao_coeffs) {
+            return false;
+        }
+
+        const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+        if (num_cgtos != num_ao) {
+            MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and '" STR_FMT "' %zu", num_cgtos, STR_ARG(coefficient_path), num_ao);
+            return false;
+        }
+        if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
+            return false;
+        }
+
+        const double* coeff_ptrs[1] = { ao_coeffs };
+        float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->gpu_coeff, md_gto_gpu_coeff_size_mo(1, num_cgtos));
+        if (!dst) {
+            return false;
+        }
+        md_gto_gpu_coeff_pack_mo(dst, coeff_ptrs, nullptr, 1, num_cgtos);
+        md_gpu_upload_end(state->gpu_stream);
+
+        md_gto_gpu_orbital_desc_t desc = {
+            .basis        = state->mold.gpu_basis,
+            .atom_xyz     = state->mold.gpu_atoms,
+            .coeff        = state->gpu_coeff,
+            .out_tex      = state->gpu_volume,
+            .grid         = &grid,
+            .sample_offset = {0.5f, 0.5f, 0.5f},
+            .num_orbitals = 1,
+            .eval_mode    = mode,
+            .op           = op,
+        };
+        md_gto_gpu_orbital_launch(state->gpu_stream, &desc);
+        return gpu_volume_readback(state, vol_tex, grid);
+    }
+#endif
+
+    return orbital_evaluate_gl(vol_tex, grid, state->mold.sys, state->mold.state, coefficient_path, slice, mode, op, cutoff);
+}
+
+#if MD_ENABLE_GPU
+bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
+                                    const md_attribute_slice_t* slice, md_gto_op_t op) {
+    ASSERT(state);
+    if (!gpu_evaluation_ready(state)) {
+        return false;
+    }
+
+    const md_system_t&       sys       = state->mold.sys;
+    const md_system_state_t& sys_state = state->mold.state;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    size_t dim = 0;
+    const double* density_matrix = density_matrix_extract(&dim, temp, sys, density_path, slice);
+    if (!density_matrix) {
+        return false;
+    }
+
+    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    if (num_cgtos != dim) {
+        MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and '" STR_FMT "' %zu", num_cgtos, STR_ARG(density_path), dim);
+        return false;
+    }
+    if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
+        return false;
+    }
+
+    float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->gpu_coeff, md_gto_gpu_coeff_size_density(num_cgtos));
+    if (!dst) {
+        return false;
+    }
+    md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
+    md_gpu_upload_end(state->gpu_stream);
+
+    md_gto_gpu_density_desc_t desc = {
+        .basis         = state->mold.gpu_basis,
+        .atom_xyz      = state->mold.gpu_atoms,
+        .coeff         = state->gpu_coeff,
+        .out_tex       = state->gpu_volume,
+        .grid          = &grid,
+        .sample_offset = {0.5f, 0.5f, 0.5f},
+        .op            = op,
+    };
+    md_gto_gpu_density_launch(state->gpu_stream, &desc);
+    return true;
+}
+#endif
+
+bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t density_path,
+                      const md_attribute_slice_t* slice, md_gto_op_t op) {
+    ASSERT(state);
+
+#if MD_ENABLE_GPU
+    // Evaluate, then read back. The split exists because a consumer that runs another kernel over
+    // the result - the critical point extraction does - wants the first half and not the second.
+    if (density_evaluate_to_gpu_volume(state, grid, density_path, slice, op)) {
+        return gpu_volume_readback(state, vol_tex, grid);
+    }
+    if (gpu_evaluation_ready(state)) {
+        return false;   // the GPU path was available and failed; the GL one would fail the same way
+    }
+#endif
+
+    return density_evaluate_gl(vol_tex, grid, state->mold.sys, state->mold.state, density_path, slice, op);
 }
 
 void update_all_representations(ApplicationState* state) {
@@ -1855,17 +2601,36 @@ void update_representation(ApplicationState* state, Representation* rep) {
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
         break;
     case RepresentationType::ElectronicStructure: {
-        const bool backend_supported = electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, rep->electronic_structure.source);
-        rep->type_is_valid = backend_supported || rep->electronic_structure.source == ElectronicStructureSource::DensityProperty;
-        if (backend_supported && rep->type_is_valid && rep->enabled) {
-            EvalElectronicStructure data = {
-                .sys = &state->mold.sys,
-                .state = &state->mold.state,
-                .frame = state->animation.frame,
-                .rep = rep,
-                .atom_colors = colors,
-            };
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationEvalElectronicStructure, viamd::EventPayloadType_EvalElectronicStructure, &data);
+        rep->type_is_valid = electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, rep->electronic_structure.source);
+        if (rep->type_is_valid && rep->enabled) {
+            // Re-evaluating is expensive and everything it depends on is right here, so it is
+            // gated on a hash of exactly those inputs - the frame included, since the geometry
+            // moves the grid.
+            uint64_t vol_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 0);
+            vol_hash = md_hash64(&rep->electronic_structure.source,                       sizeof(rep->electronic_structure.source), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.use_magnitude,                sizeof(rep->electronic_structure.use_magnitude), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.spin,                         sizeof(rep->electronic_structure.spin), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.nto_component,                sizeof(rep->electronic_structure.nto_component), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.transition_density_component, sizeof(rep->electronic_structure.transition_density_component), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.resolution,                   sizeof(rep->electronic_structure.resolution), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.orbital_idx,                  sizeof(rep->electronic_structure.orbital_idx), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.excited_state_idx,            sizeof(rep->electronic_structure.excited_state_idx), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.nto_lambda_idx,               sizeof(rep->electronic_structure.nto_lambda_idx), vol_hash);
+            vol_hash = md_hash64(&rep->electronic_structure.density_property_key,         sizeof(rep->electronic_structure.density_property_key), vol_hash);
+
+            if (vol_hash != rep->electronic_structure.vol_hash) {
+                rep->electronic_structure.vol_hash = vol_hash;
+                electronic_structure_evaluate(state, rep);
+            }
+
+            if (rep->electronic_structure.use_atom_colors) {
+                uint64_t col_hash = md_hash64(&rep->electronic_structure.gaussian_splatting_power, sizeof(rep->electronic_structure.gaussian_splatting_power), (int)rep->color_mapping);
+                col_hash = md_hash64_combine(col_hash, rep->electronic_structure.vol_hash);
+                if (col_hash != rep->electronic_structure.col_hash) {
+                    rep->electronic_structure.col_hash = col_hash;
+                    electronic_structure_color_volume_update(state, rep, colors);
+                }
+            }
         }
         break;
     }
@@ -1914,6 +2679,49 @@ void update_representation_info(ApplicationState* state) {
 
     // Broadcast event to populate info
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
+
+    // What an electronic structure representation can SHOW is decided here and not by whoever
+    // loaded the file: each source needs particular attributes, and asking the table which of them
+    // exist is both the exact test and one that a second reader satisfies for free.
+    const md_system_t& sys = state->mold.sys;
+    ElectronicStructureSourceFlags& mask = state->representation.info.electronic_structure_source_mask;
+
+    if (es_attribute_exists(sys, es_path::alpha_coefficient)) mask |= ElectronicStructureSourceFlag_MolecularOrbital;
+    if (es_attribute_exists(sys, es_path::alpha_density))     mask |= ElectronicStructureSourceFlag_ElectronDensity;
+    if (es_attribute_exists(sys, es_path::nto_particle))      mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
+    if (es_attribute_exists(sys, es_path::attachment_density))mask |= ElectronicStructureSourceFlag_TransitionDensity;
+
+    // Every leaf under the density property group is one property. The list is the table's, in the
+    // table's own path order, and the label falls back to the last path segment when the file gave
+    // the attribute none of its own.
+    {
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        const size_t num_props = md_attributes_query(nullptr, 0, &sys.attributes, es_path::density_property);
+        md_attribute_id_t* ids = num_props ? (md_attribute_id_t*)md_temp_alloc(temp, sizeof(md_attribute_id_t) * num_props) : nullptr;
+        if (ids) {
+            md_attributes_query(ids, num_props, &sys.attributes, es_path::density_property);
+            for (size_t i = 0; i < num_props; ++i) {
+                const md_attribute_t* attr = md_attributes_get(&sys.attributes, ids[i]);
+                if (!attr) continue;
+
+                str_t label = attr->label;
+                if (str_empty(label)) {
+                    label = attr->path;
+                    size_t sep = 0;
+                    if (str_rfind_char(&sep, label, '/')) {
+                        label = str_substr(label, sep + 1, SIZE_MAX);
+                    }
+                }
+                DensityProperty prop = { .key = attr->id, .label = str_copy(label, alloc) };
+                md_array_push(state->representation.info.density_properties, prop, alloc);
+            }
+            if (md_array_size(state->representation.info.density_properties) > 0) {
+                mask |= ElectronicStructureSourceFlag_DensityProperty;
+            }
+        }
+    }
 
     // Per atom scalar fields are deliberately NOT collected here. They live in the system's
     // attribute table under atom/, whoever loaded the data put them there, and the UI reads that
@@ -2036,22 +2844,28 @@ done:
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
         rep->enabled = true;
 
+		// ONE representation, for the ground state moment. A group each meant a VeloxChem file with
+		// transition dipoles opened with a representation per group, and with the electric,
+		// magnetic and velocity sets that is three nobody asked for on top of the one they wanted.
+		// The ground state is what a dipole means to someone who has not said otherwise; the rest
+		// are a representation away, and the index slider covers the excited states within each.
 		DipoleMoment dipoles[64];
 		size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
-		// One representation per GROUP, addressing element zero. Auto creating one per element would
-		// mean a representation per excited state for a transition dipole set, which is a list
-		// nobody wants opened for them; the user moves the index once the representation exists.
         for (size_t i = 0; i < num_dipoles; ++i) {
-            if (dipoles[i].index != 0) continue;
-            if (vec3_length(dipoles[i].vec) > 1e-3f) {
-                Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
-                dipole_rep->dipole.dipole_key   = dipoles[i].key;
-                dipole_rep->dipole.dipole_index = dipoles[i].index;
-                char label[sizeof(dipole_rep->name)];
-                dipole_label_pretty(label, sizeof(label), dipoles[i].label);
-                snprintf(dipole_rep->name, sizeof(dipole_rep->name), "%s", label[0] ? label : "dipole moment");
-                dipole_rep->enabled = true;
-            }
+            // The group name is the identity here, the same string the path spells.
+            if (dipoles[i].index != 0 || !str_eq(dipoles[i].label, STR_LIT("ground_state"))) continue;
+            if (vec3_length(dipoles[i].vec) <= 1e-3f) continue;
+
+            Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
+            dipole_rep->dipole.dipole_key   = dipoles[i].key;
+            dipole_rep->dipole.dipole_index = dipoles[i].index;
+
+            // Lower case, like every other auto created representation - "protein", "water",
+            // "electronic structure". dipole_label_pretty title cases for menus and tooltips,
+            // which is a different job and stays as it is.
+            snprintf(dipole_rep->name, sizeof(dipole_rep->name), "ground state");
+            dipole_rep->enabled = true;
+            break;
         }
     }
 

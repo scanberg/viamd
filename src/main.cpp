@@ -1234,6 +1234,9 @@ int main(int argc, char** argv) {
     gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU
     if (state.gpu_device) {
+        // A queued readback writes into a GL texture and frees a staging block from gpu_rb_pool, so
+        // nothing below may go until the queue has run out.
+        gpu_volume_jobs_drain(&state);
         system_gpu_data_free(&state);
 
         md_gpu_free(state.gpu_coeff, state.gpu_stream);
@@ -3259,20 +3262,16 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     ImGuiComboFlags flags = 0;
     ElectronicStructureRepresentation& es = rep.electronic_structure;
 
-    auto density_property_combo_label = [](char* buf, size_t buf_cap, const DensityProperty* props, int num_props, int idx) {
+    // The key is an opaque hash now, so it is no longer worth showing beside the label: a property
+    // with no label is named by its path's last segment already, which is the readable thing.
+    auto density_property_combo_label = [](char* buf, size_t buf_cap, const DensityProperty* prop) {
         ASSERT(buf);
         ASSERT(buf_cap > 0);
-        if (!props || num_props <= 0 || idx < 0 || idx >= num_props) {
+        if (!prop || str_empty(prop->label)) {
             snprintf(buf, buf_cap, "None");
             return;
         }
-
-        const DensityProperty& prop = props[idx];
-        if (!str_empty(prop.label)) {
-            snprintf(buf, buf_cap, "%.*s (%llu)", (int)prop.label.len, prop.label.ptr, (unsigned long long)prop.key);
-        } else {
-            snprintf(buf, buf_cap, "%llu", (unsigned long long)prop.key);
-        }
+        snprintf(buf, buf_cap, "%.*s", (int)prop->label.len, prop->label.ptr);
     };
 
     bool advanced = state->representation.advanced_mode;
@@ -3308,22 +3307,32 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         DensityProperty* density_props = state->representation.info.density_properties;
         const int num_density_props = (int)md_array_size(density_props);
         if (num_density_props > 0) {
-            const int idx = CLAMP(es.density_property_idx, 0, num_density_props - 1);
-            if (idx != es.density_property_idx) {
-                es.density_property_idx = idx;
+            // A key that names nothing in the current list - a fresh representation, or a workspace
+            // saved against a file whose properties differ - falls back to the first one rather
+            // than drawing nothing.
+            const DensityProperty* selected = nullptr;
+            for (int n = 0; n < num_density_props; ++n) {
+                if (density_props[n].key == es.density_property_key) {
+                    selected = &density_props[n];
+                    break;
+                }
+            }
+            if (!selected) {
+                selected = &density_props[0];
+                es.density_property_key = selected->key;
                 update_rep = true;
             }
 
             char preview[256];
-            density_property_combo_label(preview, sizeof(preview), density_props, num_density_props, es.density_property_idx);
+            density_property_combo_label(preview, sizeof(preview), selected);
             if (ImGui::BeginCombo("property", preview)) {
                 for (int n = 0; n < num_density_props; ++n) {
                     char label[256];
-                    density_property_combo_label(label, sizeof(label), density_props, num_density_props, n);
-                    const bool is_selected = (es.density_property_idx == n);
+                    density_property_combo_label(label, sizeof(label), &density_props[n]);
+                    const bool is_selected = (es.density_property_key == density_props[n].key);
                     if (ImGui::Selectable(label, is_selected)) {
-                        if (es.density_property_idx != n) {
-                            es.density_property_idx = n;
+                        if (es.density_property_key != density_props[n].key) {
+                            es.density_property_key = density_props[n].key;
                             update_rep = true;
                         }
                     }
