@@ -407,7 +407,10 @@ int main(int argc, char** argv) {
     state.allocator.frame = frame_alloc;
     state.representation.info.alloc = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
-    state.mold.sys_alloc  = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
+    // One arena per dataset, held by the system and the state that share it. Both are rewound
+    // rather than destroyed between loads, so this handle is set once and never reassigned.
+    state.mold.sys.alloc   = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
+    state.mold.state.alloc = state.mold.sys.alloc;
 
     md_temp_arena_system_init();
 
@@ -2440,17 +2443,17 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_system_t* mol = &data->mold.sys;
     
     
-    md_array_free(mol->bond.pairs, data->mold.sys_alloc);
-    md_array_free(mol->bond.order, data->mold.sys_alloc);
+    md_array_free(mol->bond.pairs, data->mold.sys.alloc);
+    md_array_free(mol->bond.order, data->mold.sys.alloc);
 
-    md_array_free(mol->bond.conn.atom_idx, data->mold.sys_alloc);
-    md_array_free(mol->bond.conn.bond_idx, data->mold.sys_alloc);
+    md_array_free(mol->bond.conn.atom_idx, data->mold.sys.alloc);
+    md_array_free(mol->bond.conn.bond_idx, data->mold.sys.alloc);
 
     md_index_data_free(&mol->structure);
     md_index_data_free(&mol->ring);
     
     md_system_state_t mol_state = {0};
-    md_util_system_infer(mol, &mol_state, data->mold.sys_alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_STRUCTURE_BIT);
+    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_STRUCTURE_BIT);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     flag_all_representations_as_dirty(data);
@@ -6397,7 +6400,7 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtySecondaryStructure) {
-        const md_gl_secondary_structure_t* ss_arr = data->interpolated_properties.secondary_structure;
+        const md_gl_secondary_structure_t* ss_arr = data->mold.interpolated_properties.secondary_structure;
         size_t ss_len = md_array_size(ss_arr);
         if (ss_len > 0) {
             md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)ss_len, ss_arr, 0);

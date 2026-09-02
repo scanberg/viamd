@@ -652,9 +652,16 @@ struct Ramachandran : viamd::EventHandler {
         if (show_window && state.mold.sys.protein_backbone.segment.count > 0) {
             const size_t num_frames = md_trajectory_num_frames(state.mold.sys.trajectory);
             if (num_frames > 0) {
-                if (full_fingerprint != state.trajectory_data.backbone_angles.fingerprint) {
+                // The density is derived from every frame of 'backbone/angle', so it is rebuilt
+                // exactly when that attribute's version moves. Asking the table beats a stamp kept
+                // beside the data: there is one answer, and it cannot be forgotten by a producer
+                // that writes the array without updating the copy next to it.
+                const uint64_t angle_version = md_attributes_version(&state.mold.sys.attributes,
+                    md_attributes_id_from_path(STR_LIT("backbone/angle")));
+
+                if (full_fingerprint != angle_version) {
                     if (!task_system::task_is_running(compute_density_full)) {
-                        full_fingerprint = state.trajectory_data.backbone_angles.fingerprint;
+                        full_fingerprint = angle_version;
 
                         const uint32_t frame_beg = 0;
                         const uint32_t frame_end = (uint32_t)num_frames;

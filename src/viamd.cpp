@@ -459,8 +459,17 @@ void free_trajectory_data(ApplicationState* state) {
     }
     md_array_free(state->display_properties, state->allocator.persistent);
 
-    md_array_free(state->trajectory_data.backbone_angles.data,               state->allocator.persistent);
-    md_array_free(state->trajectory_data.secondary_structure.data,           state->allocator.persistent);
+    // backbone_angles.data and secondary_structure.data are VIEWS into sys.attributes and
+    // are not md_arrays - freeing them here would hand the wrong pointer to the array allocator. The
+    // table owns them and releases them with the system; dropping the views is all that is owed.
+    state->trajectory_data.backbone_angles.data       = nullptr;
+    state->trajectory_data.backbone_angles.stride     = 0;
+    state->trajectory_data.backbone_angles.count      = 0;
+    state->trajectory_data.secondary_structure.data   = nullptr;
+    state->trajectory_data.secondary_structure.stride = 0;
+    state->trajectory_data.secondary_structure.count  = 0;
+
+    // The denoised render copy is still an ordinary array owned here.
     md_array_free(state->trajectory_data.secondary_structure_render.data,    state->allocator.persistent);
 
     free_frame_cache(&state->mold.frame_cache, state->allocator.persistent);
@@ -489,26 +498,125 @@ void init_trajectory_data(ApplicationState* data) {
             data->timeline.x_values[i] = (float)header.frame_times[i];
         }
 
+        // The COORDINATE for the frame axis, published as an ordinary attribute rather than as
+        // axis metadata on every temporal quantity. This is the ANCHORING idea applied to an index
+        // axis: a dipole publishes its origin as a sibling, and a quantity indexed by frame gets
+        // its frame times the same way - one attribute serving every temporal attribute in the
+        // table, since they all share that axis.
+        //
+        // It also retires a convention. md_trajectory_header_t documents that an EMPTY time_unit
+        // means the format could not tell us real time and the values are ordinals standing in for
+        // it. Here that is structural: the unit is on the attribute, and a reader that cannot
+        // express time simply publishes none.
+        {
+            data->mold.sys.attributes.num_frames = (uint32_t)num_frames;
+
+            const md_attribute_desc_t time_desc = {
+                .path   = STR_LIT("frame/time"),
+                .format = {
+                    .type = MD_ATTRIBUTE_TYPE_F64, .components = 1,
+                    .rank = 1, .shape = { (uint32_t)num_frames },
+                },
+                // Temporal AND resident: the frame axis is its only axis, and a whole extract is a
+                // copy of a few hundred kilobytes, which is exactly what a plot of the time axis
+                // wants. That is why the whole-extract rule is about cost rather than the axis.
+                .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
+                .unit   = header.time_unit,
+                .label  = STR_LIT("Time"),
+                .data   = header.frame_times,
+                .byte_size = num_frames * sizeof(double),
+            };
+            md_attributes_replace(&data->mold.sys.attributes, &time_desc);
+
+            if (header.frame_steps) {
+                const md_attribute_desc_t step_desc = {
+                    .path   = STR_LIT("frame/step"),
+                    .format = {
+                        .type = MD_ATTRIBUTE_TYPE_I64, .components = 1,
+                        .rank = 1, .shape = { (uint32_t)num_frames },
+                    },
+                    .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
+                    .unit   = md_unit_none(),
+                    .label  = STR_LIT("Step"),
+                    .description = STR_LIT("The file's own notion of where a frame sits in the run, not the frame ordinal"),
+                    .data   = header.frame_steps,
+                    .byte_size = num_frames * sizeof(int64_t),
+                };
+                md_attributes_replace(&data->mold.sys.attributes, &step_desc);
+            }
+        }
+
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
         md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &data->mold.state);
 
         if (data->mold.sys.protein_backbone.segment.count > 0) {
-            data->trajectory_data.secondary_structure.stride = data->mold.sys.protein_backbone.segment.count;
-            data->trajectory_data.secondary_structure.count = data->mold.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(data->trajectory_data.secondary_structure.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(data->trajectory_data.secondary_structure.data, 0, md_array_bytes(data->trajectory_data.secondary_structure.data));
+            // The angles and the per frame secondary structure are TEMPORAL attributes: the table
+            // owns the storage and the trajectory_data fields below are views onto it. That is the
+            // point of the move - 'stride' and 'count' were a hand rolled shape {F,S}, and the one
+            // place they could disagree with the buffer was here, in three lines repeated per
+            // quantity. Now the shape IS the declaration, and md_attributes_query answers "what
+            // varies over time in this dataset" without anybody maintaining a second list.
+            //
+            // Both are declared together so the frame axis and the segment axis are stated once for
+            // the pair. Resident rather than computed on demand, because the ramachandran density
+            // reads EVERY frame at once - a per plane provider would recompute the whole trajectory
+            // each time the window redraws. Reserved-and-filled-lazily is the interesting third
+            // option, and it only starts paying at trajectory lengths where this allocation hurts.
+            const size_t num_segments = data->mold.sys.protein_backbone.segment.count;
+            md_attributes_t* attributes = &data->mold.sys.attributes;
 
+            // What the TEMPORAL tag is checked against. Set before anything temporal is published,
+            // so a declaration whose outermost extent disagrees is refused at the point the mistake
+            // is made rather than surviving until something reads past the end of it.
+            attributes->num_frames = (uint32_t)num_frames;
+
+            // md_secondary_structure_t is a 4 byte enum, so I32 is the storage and the PATH is what
+            // tells a consumer these are labels rather than numbers to average - which is the rule
+            // md_system.h already states for integral attributes.
+            const md_attribute_desc_t ss_desc = {
+                .path   = STR_LIT("backbone/secondary_structure"),
+                .format = {
+                    .type = MD_ATTRIBUTE_TYPE_I32, .components = 1,
+                    .rank = 2, .shape = { (uint32_t)num_frames, (uint32_t)num_segments },
+                },
+                .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
+                .unit   = md_unit_none(),
+                .label  = STR_LIT("Secondary Structure"),
+            };
+            md_attribute_id_t ss_id = md_attributes_replace(attributes, &ss_desc);
+
+            data->trajectory_data.secondary_structure.data   = (md_secondary_structure_t*)md_attributes_data(attributes, ss_id, MD_ATTRIBUTE_TYPE_I32);
+            data->trajectory_data.secondary_structure.stride = num_segments;
+            data->trajectory_data.secondary_structure.count  = num_segments * num_frames;
+
+            const md_attribute_format_t angle_format = {
+                .type = MD_ATTRIBUTE_TYPE_F32, .components = 2,   // phi, psi - one value, two parts
+                .rank = 2, .shape = { (uint32_t)num_frames, (uint32_t)num_segments },
+            };
+            const md_attribute_desc_t angle_desc = {
+                .path   = STR_LIT("backbone/angle"),
+                .format = angle_format,
+                .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
+                .unit   = md_unit_radian(),
+                .label  = STR_LIT("Backbone Angles"),
+            };
+            md_attribute_id_t angle_id = md_attributes_replace(attributes, &angle_desc);
+
+            // md_backbone_angles_t is exactly {float phi; float psi;}, so the table's storage IS a
+            // md_backbone_angles_t array - no repacking, and the existing consumers keep their type.
+            data->trajectory_data.backbone_angles.data   = (md_backbone_angles_t*)md_attributes_data(attributes, angle_id, MD_ATTRIBUTE_TYPE_F32);
+            data->trajectory_data.backbone_angles.stride = num_segments;
+            data->trajectory_data.backbone_angles.count  = num_segments * num_frames;
+
+            // The denoised copy stays an ordinary array: it is a PRESENTATION smoothing of the one
+            // above, read only by the renderer, and publishing it would put two answers to "what is
+            // the secondary structure at frame f" in the same table.
             data->trajectory_data.secondary_structure_render.stride = data->mold.sys.protein_backbone.segment.count;
             data->trajectory_data.secondary_structure_render.count = data->mold.sys.protein_backbone.segment.count * num_frames;
             md_array_resize(data->trajectory_data.secondary_structure_render.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
             MEMSET(data->trajectory_data.secondary_structure_render.data, 0, md_array_bytes(data->trajectory_data.secondary_structure_render.data));
-
-            data->trajectory_data.backbone_angles.stride = data->mold.sys.protein_backbone.segment.count;
-            data->trajectory_data.backbone_angles.count = data->mold.sys.protein_backbone.segment.count * num_frames;
-            md_array_resize(data->trajectory_data.backbone_angles.data, data->mold.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-            MEMSET(data->trajectory_data.backbone_angles.data, 0, md_array_bytes(data->trajectory_data.backbone_angles.data));
 
             // Launch work to compute the values
             task_system::task_interrupt_and_wait_for(data->tasks.backbone_computations);
@@ -559,8 +667,14 @@ void init_trajectory_data(ApplicationState* data) {
                 uint64_t t1 = (uint64_t)md_time_now();
                 double elapsed = md_time_as_seconds(t1 - t0);
                 MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
-                data->trajectory_data.backbone_angles.fingerprint     = generate_fingerprint();
-                data->trajectory_data.secondary_structure.fingerprint = generate_fingerprint();
+                // The fill is finished, so the two temporal attributes have changed - which is the
+                // one moment a consumer caching something derived from them needs to hear about.
+                // The table carries that now; the hand rolled fingerprints beside the data are gone,
+                // because a stamp that lives next to storage the table owns is a second answer
+                // waiting to disagree with it.
+                md_attributes_t* attributes = &data->mold.sys.attributes;
+                md_attributes_touch(attributes, md_attributes_id_from_path(STR_LIT("backbone/angle")));
+                md_attributes_touch(attributes, md_attributes_id_from_path(STR_LIT("backbone/secondary_structure")));
                 data->trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
 
 				data->mold.interpolate_system_state = true;
@@ -594,7 +708,7 @@ void init_system_data(ApplicationState* data) {
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
         if (data->mold.sys.protein_backbone.segment.count > 0) {
-            data->interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, data->mold.sys.protein_backbone.segment.count, data->mold.sys_alloc);
+            data->mold.interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, data->mold.sys.protein_backbone.segment.count, data->mold.sys.alloc);
         }
 
         mat3_t A;
@@ -649,10 +763,16 @@ void free_system_data(ApplicationState* data) {
     ASSERT(data);
     interrupt_async_tasks(data);
 
-    //md_molecule_free(&data->mold.sys, persistent_alloc);
-    md_arena_allocator_reset(data->mold.sys_alloc);
+    // The arena OUTLIVES the system it backs, and the zeroing below is why there used to be a
+    // second handle to it: MEMSET over md_system_t clears sys.alloc along with everything else, so
+    // the only pointer to the arena has to be carried across by hand. Rewound, not destroyed - the
+    // next load reuses it.
+    md_allocator_i* sys_alloc = data->mold.sys.alloc;
+    md_arena_allocator_reset(sys_alloc);
     MEMSET(&data->mold.sys, 0, sizeof(data->mold.sys));
     MEMSET(&data->mold.state, 0, sizeof(data->mold.state));
+    data->mold.sys.alloc   = sys_alloc;
+    data->mold.state.alloc = sys_alloc;
 
     md_array_free(data->operations.initial_frame.rel_xyzw, data->allocator.persistent);
     data->operations.initial_frame.rel_xyzw = nullptr;
@@ -664,7 +784,7 @@ void free_system_data(ApplicationState* data) {
 
     MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
-    data->interpolated_properties.secondary_structure = nullptr;
+    data->mold.interpolated_properties.secondary_structure = nullptr;
 
     MEMSET(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
     clear_frame_cache(&data->mold.frame_cache);
@@ -706,10 +826,10 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             free_trajectory_data(state);
             free_system_data(state);
 
-            state->mold.sys.alloc = state->mold.sys_alloc;
-            // The loaded coordinates are the initial current state; inference copies them into
-            // sys.reference, so the two stay independent.
-            state->mold.state.alloc = state->mold.sys_alloc;
+            // sys.alloc and state.alloc are already the dataset arena - set at startup and put
+            // back by free_system_data above. The loaded coordinates are the initial current state;
+            // inference copies them into sys.reference, so the two stay independent.
+            ASSERT(state->mold.sys.alloc && state->mold.state.alloc == state->mold.sys.alloc);
             if (!loader::load(&state->mold.sys, &state->mold.state, path_to_file, load_state)) {
                 VIAMD_LOG_ERROR("Failed to load molecular data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 return false;
@@ -3188,7 +3308,7 @@ void interpolate_system_state(ApplicationState* app) {
     }
 
     if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.secondary_structure) {
-        if (md_array_size(app->interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
+        if (md_array_size(app->mold.interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
 			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
         }
         size_t num_backbone_segments = sys.protein_backbone.segment.count;
@@ -3240,7 +3360,7 @@ void interpolate_system_state(ApplicationState* app) {
                     md_secondary_structure_t ss = src_ss_nearest[i];
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = ss;
-                    data->app->interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
+                    data->app->mold.interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
                 }
                 break;
             }
@@ -3251,7 +3371,7 @@ void interpolate_system_state(ApplicationState* app) {
                     md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[0], ss_gl[1], data->t);
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    data->app->interpolated_properties.secondary_structure[i] = ss_gl_i;
+                    data->app->mold.interpolated_properties.secondary_structure[i] = ss_gl_i;
                 }
                 break;
             }
@@ -3278,7 +3398,7 @@ void interpolate_system_state(ApplicationState* app) {
                     md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[1], ss_gl[2], smoothstep5(data->t));
                     // Set both the analytical (nearest) and interpolated secondary structure (rendering)
                     data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    data->app->interpolated_properties.secondary_structure[i] = ss_gl_i;
+                    data->app->mold.interpolated_properties.secondary_structure[i] = ss_gl_i;
                 }
                 break;
             }
@@ -3297,7 +3417,7 @@ void interpolate_system_state(ApplicationState* app) {
             const md_gl_secondary_structure_t ss_helix = { .helix = 1.0f };
             const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
 
-            md_gl_secondary_structure_t* ss_gl = data->app->interpolated_properties.secondary_structure;
+            md_gl_secondary_structure_t* ss_gl = data->app->mold.interpolated_properties.secondary_structure;
             for (size_t i = 0; i < data->app->mold.sys.protein_backbone.range.count; ++i) {
                 size_t range_beg = data->app->mold.sys.protein_backbone.range.offset[i];
                 size_t range_end = data->app->mold.sys.protein_backbone.range.offset[i + 1];

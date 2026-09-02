@@ -1236,9 +1236,21 @@ struct ApplicationState {
 
     // --- MDLIB DATA ---
     struct {
-        md_allocator_i*     sys_alloc = nullptr;
-
+        // The arena backing this dataset is sys.alloc - there is no second handle to it. It is
+        // created once at startup and survives every load: free_system_data rewinds it and puts the
+        // handle back, because zeroing a system also zeroes the allocator it was using.
         md_gl_mol_t         gl_mol = {};
+
+        // Derived FOR DRAWING, in the renderer's own format, never read back - the same rule the
+        // GPU block below states, which is why this belongs beside gl_mol rather than in one of the
+        // attribute tables. md_gl_secondary_structure_t is a pair of blend weights, not a physical
+        // quantity: nothing would ask "what is the helix weight of segment 12" as a question about
+        // the molecule, and its only consumer is md_gl_mol_set_backbone_secondary_structure.
+        //
+        // Per DATASET, so it replicates with the rest of this block when several can be loaded.
+        struct {
+            md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
+        } interpolated_properties;
 #if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};
 #endif
@@ -1520,28 +1532,31 @@ struct ApplicationState {
         bool prefetch_frames = true;
     } settings;
 
+    // Views onto the temporal attributes, plus the one array still owned here.
+    //
+    // 'stride' and 'count' are redundant with the attributes' own shape {frames, segments} and are
+    // kept only so the existing consumers keep their loops. Whoever next touches those loops should
+    // take the shape from the attribute and delete them - the point of the move was that a hand
+    // rolled shape beside table owned storage is a second answer waiting to disagree.
+    //
+    // The fingerprints are gone for the same reason: md_attributes_version is the one answer to
+    // "did this change", and a stamp next to the data can be forgotten by whoever writes it.
     struct {
-        md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
-    } interpolated_properties;
-
-    struct { 
         struct {
-            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
-            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_secondary_structure_t* data = nullptr;
-            uint64_t fingerprint = 0;
+            size_t stride = 0;                          // == shape[1] of 'backbone/secondary_structure'
+            size_t count = 0;                           // == its element count
+            md_secondary_structure_t* data = nullptr;   // VIEW into sys.attributes, not owned
         } secondary_structure;
         struct {
             size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
             size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_secondary_structure_t* data = nullptr;
+            md_secondary_structure_t* data = nullptr;   // owned here: a presentation smoothing, not a quantity
             uint64_t fingerprint = 0;
         } secondary_structure_render;
         struct {
-            size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
-            size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
-            md_backbone_angles_t* data = nullptr;
-            uint64_t fingerprint = 0;
+            size_t stride = 0;                          // == shape[1] of 'backbone/angle'
+            size_t count = 0;                           // == its element count
+            md_backbone_angles_t* data = nullptr;       // VIEW into sys.attributes, not owned
         } backbone_angles;
     } trajectory_data;
 
