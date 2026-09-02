@@ -15,6 +15,7 @@
 #include <md_util.h>
 #include <md_topo.h>
 #include <md_vector_graphics.h>
+#include <md_flow.h>
 #include <md_csv.h>
 #include <md_xvg.h>
 #include <core/md_vec_math.h>
@@ -26,8 +27,12 @@
 #include <core/md_gpu.h>
 #endif
 
+#include <serialization_utils.h>
+
 #include <imgui_widgets.h>
 #include <imgui_internal.h>
+
+#include "flow_draw.h"
 
 #include <implot_widgets.h>
 #include <implot_internal.h>
@@ -120,6 +125,19 @@ static const char* electronic_structure_value_mode_str(ElectronicStructureSource
     }
 }
 
+// What the Charge Transfer diagram routes its flow through.
+//
+// Groups is the M1 view and reproduces the old two-column diagram exactly; it is kept as the
+// comparison the NTO view can be checked against, not as a feature.
+enum flow_mode_t {
+    FLOW_MODE_GROUPS = 0,   // group -> group, via compute_transition_matrix
+    FLOW_MODE_NTO,          // atom/group -> NTO pair -> atom/group
+    FLOW_MODE_ORBITALS,     // occupied MO -> NTO pair -> virtual MO
+    FLOW_MODE_COUNT,
+};
+
+static const char* flow_mode_str[] = { "Groups only", "Atoms via NTOs", "Orbitals" };
+
 enum x_unit_t {
     X_UNIT_EV,
     X_UNIT_NM,
@@ -158,6 +176,27 @@ static void attribute_charge_density(double out_charge[], const int* ao_to_idx, 
 			s += D_row[nu] * S_row[nu];
 		}
 		out_charge[idx] += s;
+	}
+}
+
+// Mulliken partitioning of a SINGLE orbital vector, which is the same quantity as above for the
+// rank-one density D = C C^T. Written out rather than routed through attribute_charge_density so
+// it does not have to materialize an N x N matrix per orbital - with 32 NTOs and a few hundred
+// AOs, forming those densities is most of the work and none of the answer.
+//
+//   q_g = sum_{mu in g} C[mu] * (S C)[mu],  and  sum_g q_g = C^T S C = 1 for a normalized orbital.
+static void attribute_orbital_density(double out_charge[], const int* ao_to_idx, const double* C, const double* S, size_t num_ao) {
+	ASSERT(C);
+	ASSERT(S);
+	ASSERT(ao_to_idx);
+
+	for (size_t mu = 0; mu < num_ao; ++mu) {
+		const double* S_row = &S[mu * num_ao];
+		double sc = 0.0;
+		for (size_t nu = 0; nu < num_ao; ++nu) {
+			sc += S_row[nu] * C[nu];
+		}
+		out_charge[ao_to_idx[mu]] += C[mu] * sc;
 	}
 }
 
@@ -311,6 +350,103 @@ struct VeloxChem : viamd::EventHandler {
         bool link_attachment_detachment_density = false;
         bool show_coordinate_system_widget = true;
     } nto;
+
+    // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
+    //
+    // Separate window, separate state, but the SAME group definitions as the NTO window - asking
+    // someone to define their groups twice in two windows would be worse than any coupling this
+    // introduces.
+    struct Flow {
+        bool show_window = false;
+
+        flow_mode_t mode = FLOW_MODE_NTO;
+
+        md_flow_graph_t  graph  = {};
+        md_flow_cut_t    cut    = {};
+        md_flow_layout_t layout = {};
+        md_flow_layout_params_t params = {};
+
+        // Node labels are borrowed by the graph rather than owned, so they have to outlive it.
+        // Group labels already live in nto.group.label; these two are ours.
+        char nto_label[MD_VLX_NTO_MAX_LAMBDAS][40] = {};
+
+        // Second line: the dominant MO character of each NTO, e.g. "HOMO-1 -> LUMO". Empty when
+        // no single pair dominates enough to name honestly.
+        char nto_character[MD_VLX_NTO_MAX_LAMBDAS][40] = {};
+
+        // Fixed-stride blocks, allocated once per file. The graph BORROWS these strings, so they
+        // have to outlive it; rebuilding them per graph rebuild would leak into the arena on every
+        // state change. Atom labels never change at all; MO labels are rewritten in place.
+        char*  atom_labels = nullptr;
+        size_t num_atom_labels = 0;
+        char*  mo_labels = nullptr;
+        size_t num_mo_labels = 0;
+
+        // Most atoms contribute almost nothing to a given transition, so the diagram opens with a
+        // threshold rather than with a hundred hairline ribbons. The slider is in the toolbar.
+        float initial_threshold = 0.01f;
+
+        // How hard to flatten the ORBITAL columns' heights. 0 = strictly proportional, 1 = nearly
+        // uniform. Applied only to orbital columns: an atom column's proportions ARE the charge
+        // transfer story, while an NTO column is a channel picker, and a channel drawn two pixels
+        // tall cannot be read, labelled or clicked.
+        float size_normalize = 0.75f;
+
+        // NTO pairs below this share of the transition are dropped and the rest renormalized.
+        // Distinct from the cut threshold, which hides nodes that are still in the graph.
+        float lambda_cutoff = 1.0e-3f;
+
+        FlowDrawStyle style = {};
+
+        // View transform, in graph units. Kept here rather than in the layout so that panning and
+        // zooming never trigger a relayout.
+        vec2_t pan  = {0, 0};
+        float  zoom = 1.0f;
+
+        // Last frame's hit, so the dimming does not flicker while the cursor crosses a seam.
+        FlowHit hover = {};
+
+        // Deferred because fitting needs a laid-out graph and a canvas size, neither of which the
+        // rebuild has. Consumed on the next draw.
+        bool fit_requested = true;
+
+        // Rubber-band region select. The button is captured at press time rather than read live,
+        // so a drag started with the left button stays an ADD even if the right one gets pressed
+        // part way through.
+        bool   region_active = false;
+        bool   region_add    = true;
+        ImVec2 region_start  = {0, 0};
+
+        // ATOM selection is NOT held here. It lives in state.selection.selection_mask, and this
+        // window reads it every frame - so a selection made in the 3D view, by a script, or in any
+        // other window shows up here, and one made here shows up everywhere else. A private copy
+        // would be a second source of truth that silently drifts from the first.
+        //
+        // ORBITAL selection - NTO pairs and canonical MOs - is a different quantity: it picks a
+        // transition channel rather than atoms, so it has nowhere else to live and is held here,
+        // by key, like expansion.
+        md_array(uint64_t) selected_orbital_keys = nullptr;
+
+        uint64_t data_hash = 0;
+        bool built = false;
+    } flow;
+
+    // Workspace group assignments, waiting for a molecule.
+    //
+    // load_workspace parses the ENTIRE workspace text before it loads any data, so when the
+    // [VeloxChem] section is read there is no vlx object and no atom count yet. Groups are
+    // per-atom, so they have to be buffered and stamped on at the end of init_from_file.
+    //
+    // The buffer lives on the heap, NOT on 'arena': reset_data() resets that arena, and a
+    // workspace load goes through reset_data before it gets anywhere near init_from_file.
+    struct PendingGroups {
+        bool   pending = false;
+        size_t count = 0;
+        char   label[MAX_NTO_GROUPS][64] = {};
+        vec4_t color[MAX_NTO_GROUPS] = {};
+        md_bitfield_t atoms[MAX_NTO_GROUPS] = {};
+        bool   atoms_initialized = false;
+    } pending_groups;
 
     struct Rsp {
         bool show_window = false;
@@ -550,11 +686,16 @@ struct VeloxChem : viamd::EventHandler {
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
                 if (vlx) {
+                    // Before any window draws, so both transition windows see the same numbers and
+                    // neither has to be open for the other to have data.
+                    update_nto_derived_data();
+
                     draw_orb_window(state);
                     draw_summary_window(state);
                     draw_rsp_window(state);
                     if (md_vlx_rsp_has_nto(vlx)) {
                         draw_nto_window(state);
+                        draw_flow_window(state);
                     }
                     draw_export_window(state);
                 }
@@ -568,6 +709,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::Checkbox("Orbital Grid", &orb.show_window);
                         if (md_vlx_rsp_has_nto(vlx)) {
                             ImGui::Checkbox("Transition Analysis", &nto.show_window);
+                            ImGui::Checkbox("Charge Transfer Analysis", &flow.show_window);
                         }
                         ImGui::Checkbox("Export", &export_state.show_window);
                         ImGui::EndMenu();
@@ -767,6 +909,19 @@ struct VeloxChem : viamd::EventHandler {
             }
             case viamd::EventType_ViamdSystemFree: {
                 reset_data();
+                break;
+            }
+            case viamd::EventType_ViamdSerialize: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_SerializationState);
+                serialize_workspace(*(viamd::serialization_state_t*)e.payload);
+                break;
+            }
+            case viamd::EventType_ViamdDeserialize: {
+                ASSERT(e.payload_type == viamd::EventPayloadType_DeserializationState);
+                viamd::deserialization_state_t& deser = *(viamd::deserialization_state_t*)e.payload;
+                if (str_eq(viamd::section_header(deser), STR_LIT("VeloxChem"))) {
+                    deserialize_workspace(deser);
+                }
                 break;
             }
             case viamd::EventType_ViamdSystemStateChanged: {
@@ -972,6 +1127,8 @@ struct VeloxChem : viamd::EventHandler {
         atom_xyzw = nullptr;
         orb = VeloxChem::Orb{};
         nto = VeloxChem::Nto{};
+        // The arena reset above already released everything these held.
+        flow = VeloxChem::Flow{};
         rsp = VeloxChem::Rsp{};
         // The rixs arena outlives the VLX object, so carry it across the value-initialization.
         // Rewinding it first drops the cached arrays that the zeroed struct would otherwise orphan.
@@ -988,9 +1145,18 @@ struct VeloxChem : viamd::EventHandler {
 		defer { md_temp_end(temp); };
         size_t num_atoms = md_vlx_number_of_atoms(vlx);
         uint32_t* colors = (uint32_t*)md_temp_alloc_array(temp, uint32_t, num_atoms);
+        // Group 0 is "not in any group", so it keeps the element colour the molecule would have
+        // anyway. Stamping the unassigned grey over everything would make an ungrouped system look
+        // like a system whose groups all happen to be grey.
+        const md_element_t* atom_z = md_vlx_atomic_numbers(vlx);
         for (size_t i = 0; i < num_atoms; ++i) {
             const size_t group_idx = nto.atom_group_idx[i];
-            const uint32_t color = group_idx < nto.group.count ? convert_color(nto.group.color[group_idx]) : U32_MAGENTA;
+            uint32_t color = U32_MAGENTA;
+            if (group_idx == 0) {
+                color = atom_z ? md_util_element_cpk_color(atom_z[i]) : U32_MAGENTA;
+            } else if (group_idx < nto.group.count) {
+                color = convert_color(nto.group.color[group_idx]);
+            }
             colors[i] = color;
         }
 
@@ -1133,27 +1299,13 @@ struct VeloxChem : viamd::EventHandler {
                             snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
                         }
 
-                        str_t file = {};
-                        extract_file(&file, filename);
-
-                        if (str_eq_cstr(file, "tq.out")) {
-                            // Hardcoded values for a particular dataset
-                            uint32_t index_from_text[23] = { 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
-                            //nto.atom_group_idx = index_from_text;
-                            nto.group.count = 3;
-                            MEMCPY(nto.atom_group_idx, index_from_text, MIN(sizeof(index_from_text), md_array_bytes(nto.atom_group_idx)));
-                            snprintf(nto.group.label[1], sizeof(nto.group.label[1]), "Thio");
-                            snprintf(nto.group.label[2], sizeof(nto.group.label[2]), "Quin");
-                        }
-                        else {
-
-                            // @TODO: Remove once proper interface is there
-                            nto.group.count = 3;
-                            // Assign half of the atoms to group 1
-                            for (size_t i = 0; i < num_vlx_atoms; ++i) {
-                                nto.atom_group_idx[i] = i < num_vlx_atoms / 2 ? 1 : 2;
-                            }
-                        }
+                        // No groups until the user makes one. Slot 0 is the "everything else"
+                        // bucket every atom starts in; it is not a group the user chose and is
+                        // never drawn as one. Splitting the molecule in half, or stamping a
+                        // hardcoded mapping onto a file with a particular name, put invented
+                        // structure in front of the user and then invited them to read charge
+                        // transfer off it.
+                        nto.group.count = 1;
                         nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
                         update_nto_group_colors();
 
@@ -1208,6 +1360,9 @@ struct VeloxChem : viamd::EventHandler {
                     // CriPoAl
                     md_bitfield_init(&critical_points.selection_mask, arena);
                     md_bitfield_init(&critical_points.highlight_mask, arena);
+
+                    // Last, so it overrides the placeholder grouping that init sets up.
+                    apply_pending_groups();
 
                     MD_LOG_INFO("Successfully initialized VeloxChem data");
                 }
@@ -7231,6 +7386,1610 @@ struct VeloxChem : viamd::EventHandler {
             ImGui::EndPopup();
         }
 
+    }
+    // Everything derived from the group assignment: the representation colours and the transition
+    // matrix. Lifted out of draw_nto_window so it runs whether or not that window is open - the
+    // Charge Transfer window needs the same numbers, and a window should not have to be visible
+    // for another one to have data.
+    //
+    // Driven by rsp.selected rather than nto.sel_nto_idx: the latter tracks which state's VOLUMES
+    // are resident, which is a rendering concern and is only updated while the NTO window draws.
+    // ---------------------------------------------------------------------------
+    // Workspace persistence
+    // ---------------------------------------------------------------------------
+
+    void ensure_pending_group_storage() {
+        if (pending_groups.atoms_initialized) return;
+        for (size_t i = 0; i < MAX_NTO_GROUPS; ++i) {
+            md_bitfield_init(&pending_groups.atoms[i], md_get_heap_allocator());
+        }
+        pending_groups.atoms_initialized = true;
+    }
+
+    void serialize_workspace(viamd::serialization_state_t& ser) {
+        if (!vlx || !nto.atom_group_idx) return;
+
+        viamd::write_section_header(ser, STR_LIT("VeloxChem"));
+
+        viamd::write_bool(ser, STR_LIT("ShowTransitionAnalysis"), nto.show_window);
+        viamd::write_bool(ser, STR_LIT("ShowChargeTransfer"),     flow.show_window);
+        viamd::write_int (ser, STR_LIT("FlowMode"),               (int64_t)flow.mode);
+        viamd::write_flt (ser, STR_LIT("FlowThreshold"),          flow.cut.threshold);
+        viamd::write_flt (ser, STR_LIT("FlowOthersCap"),          flow.cut.other_max);
+        viamd::write_flt (ser, STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
+        viamd::write_int (ser, STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
+        viamd::write_flt (ser, STR_LIT("FlowNodeThickness"),      flow.params.node_thickness);
+        viamd::write_flt (ser, STR_LIT("FlowNodeGap"),            flow.params.node_gap);
+        viamd::write_flt (ser, STR_LIT("FlowRibbonAlpha"),        flow.style.ribbon_alpha);
+        viamd::write_flt (ser, STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
+        viamd::write_int (ser, STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
+        viamd::write_int (ser, STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
+        viamd::write_flt (ser, STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
+        viamd::write_flt (ser, STR_LIT("FlowNodeFillTint"),       flow.style.node_fill_tint);
+        viamd::write_flt (ser, STR_LIT("FlowBorderWidth"),        flow.style.border_width);
+        viamd::write_bool(ser, STR_LIT("FlowColorLabels"),        flow.style.color_labels);
+
+        viamd::write_int(ser, STR_LIT("GroupCount"), (int64_t)nto.group.count);
+
+        // One bitfield per group rather than one index per atom: the same information, but it
+        // survives being looked at in a text editor.
+        md_bitfield_t mask = md_bitfield_create(md_get_heap_allocator());
+        defer { md_bitfield_free(&mask); };
+
+        for (size_t g = 0; g < nto.group.count; ++g) {
+            md_bitfield_clear(&mask);
+            for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
+                if (nto.atom_group_idx[i] == (uint32_t)g) {
+                    md_bitfield_set_bit(&mask, i);
+                }
+            }
+            viamd::write_str(ser, STR_LIT("GroupLabel"), str_from_cstr(nto.group.label[g]));
+            viamd::write_vec4(ser, STR_LIT("GroupColor"), nto.group.color[g]);
+            viamd::write_bitfield(ser, STR_LIT("GroupAtoms"), &mask);
+        }
+    }
+
+    void deserialize_workspace(viamd::deserialization_state_t& deser) {
+        ensure_pending_group_storage();
+
+        pending_groups.pending = true;
+        pending_groups.count = 0;
+        for (size_t i = 0; i < MAX_NTO_GROUPS; ++i) {
+            md_bitfield_clear(&pending_groups.atoms[i]);
+            pending_groups.label[i][0] = '\0';
+            pending_groups.color[i] = vec4_t{0.5f, 0.5f, 0.5f, 1.0f};
+        }
+
+        // 'GroupLabel' opens a group; the color and atom entries that follow belong to it. The
+        // index only advances on a label, so a malformed section cannot walk off the end.
+        int64_t group_idx = -1;
+
+        str_t ident = {};
+        str_t arg   = {};
+        while (viamd::next_entry(ident, arg, deser)) {
+            if (str_eq_cstr(ident, "ShowTransitionAnalysis")) {
+                viamd::extract_bool(nto.show_window, arg);
+            } else if (str_eq_cstr(ident, "ShowChargeTransfer")) {
+                viamd::extract_bool(flow.show_window, arg);
+            } else if (str_eq_cstr(ident, "FlowMode")) {
+                int mode = FLOW_MODE_NTO;
+                if (viamd::extract_int(mode, arg)) {
+                    flow.mode = (flow_mode_t)CLAMP(mode, 0, FLOW_MODE_COUNT - 1);
+                }
+            } else if (str_eq_cstr(ident, "FlowThreshold")) {
+                viamd::extract_flt(flow.cut.threshold, arg);
+            } else if (str_eq_cstr(ident, "FlowOthersCap")) {
+                viamd::extract_flt(flow.cut.other_max, arg);
+            } else if (str_eq_cstr(ident, "FlowSizeNormalize")) {
+                viamd::extract_flt(flow.size_normalize, arg);
+            } else if (str_eq_cstr(ident, "FlowOthersExpanded")) {
+                int mask = 0;
+                if (viamd::extract_int(mask, arg)) flow.cut.other_expanded = (uint32_t)MAX(0, mask);
+            } else if (str_eq_cstr(ident, "FlowNodeThickness")) {
+                viamd::extract_flt(flow.params.node_thickness, arg);
+            } else if (str_eq_cstr(ident, "FlowNodeGap")) {
+                viamd::extract_flt(flow.params.node_gap, arg);
+            } else if (str_eq_cstr(ident, "FlowRibbonAlpha")) {
+                viamd::extract_flt(flow.style.ribbon_alpha, arg);
+            } else if (str_eq_cstr(ident, "FlowRibbonCurvature")) {
+                viamd::extract_flt(flow.style.ribbon_curvature, arg);
+            } else if (str_eq_cstr(ident, "FlowOrder")) {
+                int order = MD_FLOW_ORDER_WEIGHT;
+                if (viamd::extract_int(order, arg)) {
+                    flow.params.order = (md_flow_order_t)CLAMP(order, 0, 1);
+                }
+            } else if (str_eq_cstr(ident, "FlowRibbonMinPx")) {
+                viamd::extract_flt(flow.style.ribbon_min_px, arg);
+            } else if (str_eq_cstr(ident, "FlowNodeFillTint")) {
+                viamd::extract_flt(flow.style.node_fill_tint, arg);
+            } else if (str_eq_cstr(ident, "FlowBorderWidth")) {
+                viamd::extract_flt(flow.style.border_width, arg);
+            } else if (str_eq_cstr(ident, "FlowColorLabels")) {
+                viamd::extract_bool(flow.style.color_labels, arg);
+            } else if (str_eq_cstr(ident, "FlowSweeps")) {
+                int sweeps = 2;
+                if (viamd::extract_int(sweeps, arg)) {
+                    flow.params.barycentre_sweeps = (uint32_t)CLAMP(sweeps, 0, 8);
+                }
+            } else if (str_eq_cstr(ident, "GroupCount")) {
+                int count = 0;
+                if (viamd::extract_int(count, arg)) {
+                    pending_groups.count = (size_t)CLAMP(count, 0, MAX_NTO_GROUPS);
+                }
+            } else if (str_eq_cstr(ident, "GroupLabel")) {
+                group_idx += 1;
+                if (group_idx < MAX_NTO_GROUPS) {
+                    viamd::extract_to_char_buf(pending_groups.label[group_idx], sizeof(pending_groups.label[0]), arg);
+                }
+            } else if (str_eq_cstr(ident, "GroupColor")) {
+                if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
+                    viamd::extract_vec4(pending_groups.color[group_idx], arg);
+                }
+            } else if (str_eq_cstr(ident, "GroupAtoms")) {
+                if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
+                    viamd::extract_bitfield(&pending_groups.atoms[group_idx], arg);
+                }
+            }
+        }
+
+        // Trust the labels actually present over a GroupCount that disagrees with them.
+        pending_groups.count = MAX(pending_groups.count, (size_t)(group_idx + 1));
+        pending_groups.count = MIN(pending_groups.count, (size_t)MAX_NTO_GROUPS);
+    }
+
+    // Consume-once: a buffered grouping belongs to the workspace that was just opened, and must
+    // not be stamped onto whatever file is loaded next.
+    void apply_pending_groups() {
+        if (!pending_groups.pending) return;
+        pending_groups.pending = false;
+
+        if (!nto.atom_group_idx || pending_groups.count == 0) return;
+
+        const size_t num_atoms = md_array_size(nto.atom_group_idx);
+        MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
+
+        nto.group.count = pending_groups.count;
+        for (size_t g = 0; g < pending_groups.count; ++g) {
+            if (pending_groups.label[g][0]) {
+                snprintf(nto.group.label[g], sizeof(nto.group.label[g]), "%s", pending_groups.label[g]);
+            }
+            nto.group.color[g] = pending_groups.color[g];
+
+            for (size_t i = 0; i < num_atoms; ++i) {
+                if (md_bitfield_test_bit(&pending_groups.atoms[g], i)) {
+                    nto.atom_group_idx[i] = (uint32_t)g;
+                }
+            }
+        }
+
+        update_nto_group_colors();
+        MD_LOG_INFO("Restored %zu VeloxChem groups from the workspace", pending_groups.count);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Charge Transfer Analysis
+    // ---------------------------------------------------------------------------
+
+    // Node keys are (column, level, index) so that expansion, selection and hover survive a
+    // rebuild. Anything keyed by array index would reset every time the state or the grouping
+    // changes, which is exactly when the user least wants to lose what they had open.
+    enum flow_level_t {
+        FLOW_LEVEL_GROUP = 0,
+        FLOW_LEVEL_ATOM  = 1,
+        FLOW_LEVEL_MO    = 2,   // a canonical molecular orbital; owns no atoms
+    };
+
+    // Whether a node stands for a set of atoms. Orbital nodes - NTOs and MOs alike - do not, so
+    // they take no part in atom selection, region sweeps or group assignment.
+    static inline bool flow_level_has_atoms(uint32_t level) {
+        return level == FLOW_LEVEL_GROUP || level == FLOW_LEVEL_ATOM;
+    }
+
+    static inline uint64_t flow_node_key(uint32_t column, uint32_t level, uint32_t index) {
+        return ((uint64_t)column << 40) | ((uint64_t)level << 32) | (uint64_t)index;
+    }
+    static inline uint32_t flow_key_index(uint64_t key) { return (uint32_t)(key & 0xFFFFFFFFu); }
+    static inline uint32_t flow_key_level(uint64_t key) { return (uint32_t)((key >> 32) & 0xFFu); }
+
+    static const size_t FLOW_ATOM_LABEL_STRIDE = 12;   // "Xx" + up to 8 digits + nul
+
+    const char* flow_atom_label(uint32_t atom_idx) const {
+        if (!flow.atom_labels || atom_idx >= flow.num_atom_labels) return "?";
+        return flow.atom_labels + (size_t)atom_idx * FLOW_ATOM_LABEL_STRIDE;
+    }
+
+    // Colour says what an atom belongs to. Inside a group that is the group; outside one there is
+    // no group to name, so it falls back to the atom's ROLE - donating or accepting.
+    //
+    // Not CPK here, deliberately. Now that colour lives on the border rather than the fill, a
+    // white element (hydrogen) would draw a white outline on a near-white box and vanish, and a
+    // near-black one (carbon) would say nothing about the transition. Role colour is both always
+    // visible and the thing the diagram is actually about; the 3D viewport still uses CPK, because
+    // there a molecule should look like a molecule.
+    vec4_t flow_atom_color(uint32_t atom_idx, uint32_t column) const {
+        const uint32_t group_idx = (atom_idx < md_array_size(nto.atom_group_idx)) ? nto.atom_group_idx[atom_idx] : 0;
+        if (group_idx > 0 && group_idx < nto.group.count) {
+            return nto.group.color[group_idx];
+        }
+        return (column == 0) ? vec4_t{0.78f, 0.24f, 0.22f, 1.0f}    // donating
+                             : vec4_t{0.13f, 0.56f, 0.35f, 1.0f};   // accepting
+    }
+
+    char* flow_mo_label_storage(uint32_t mo_idx) {
+        if (!flow.mo_labels || mo_idx >= flow.num_mo_labels) return nullptr;
+        return flow.mo_labels + (size_t)mo_idx * FLOW_ATOM_LABEL_STRIDE;
+    }
+
+    void flow_build_label_storage() {
+        const size_t num_mo = md_vlx_scf_number_of_molecular_orbitals(vlx);
+        if (num_mo > 0 && !flow.mo_labels) {
+            flow.mo_labels = (char*)md_alloc(arena, num_mo * FLOW_ATOM_LABEL_STRIDE);
+            MEMSET(flow.mo_labels, 0, num_mo * FLOW_ATOM_LABEL_STRIDE);
+            flow.num_mo_labels = num_mo;
+        }
+        flow_build_atom_labels();
+    }
+
+    void flow_build_atom_labels() {
+        const size_t num_atoms = md_vlx_number_of_atoms(vlx);
+        if (num_atoms == 0 || flow.atom_labels) return;
+
+        const md_element_t* z = md_vlx_atomic_numbers(vlx);
+        flow.atom_labels = (char*)md_alloc(arena, num_atoms * FLOW_ATOM_LABEL_STRIDE);
+        flow.num_atom_labels = num_atoms;
+
+        for (size_t i = 0; i < num_atoms; ++i) {
+            char* dst = flow.atom_labels + i * FLOW_ATOM_LABEL_STRIDE;
+            const str_t sym = z ? md_util_element_symbol(z[i]) : str_from_cstr("X");
+            // One-based, matching how the rest of VIAMD numbers atoms to the user.
+            snprintf(dst, FLOW_ATOM_LABEL_STRIDE, "%.*s%zu", (int)sym.len, sym.ptr, i + 1);
+        }
+    }
+
+    // The M1 view: two columns of groups, exactly what the old diagram showed, but through the
+    // md_flow model. Kept so the NTO view below has something to be checked against.
+    bool build_flow_graph_groups() {
+        md_flow_graph_init(&flow.graph, 2, arena);
+
+        if (!nto.transition_matrix || nto.transition_matrix_dim != nto.group.count) return false;
+
+        const size_t num_groups = nto.group.count;
+        if (num_groups == 0) return false;
+
+        double hole_sum = 0.0;
+        double part_sum = 0.0;
+        for (size_t i = 0; i < num_groups; ++i) {
+            hole_sum += MAX(0.0f, nto.transition_density_hole[i]);
+            part_sum += MAX(0.0f, nto.transition_density_part[i]);
+        }
+        if (hole_sum <= 0.0 || part_sum <= 0.0) return false;
+
+        uint32_t src_node[MAX_NTO_GROUPS];
+        uint32_t dst_node[MAX_NTO_GROUPS];
+        for (size_t i = 0; i < MAX_NTO_GROUPS; ++i) {
+            src_node[i] = MD_FLOW_INVALID_INDEX;
+            dst_node[i] = MD_FLOW_INVALID_INDEX;
+        }
+
+        // A group can donate without accepting (or the reverse), so the two columns hold
+        // different node sets rather than one set drawn twice.
+        for (size_t i = 0; i < num_groups; ++i) {
+            const float w = (float)(MAX(0.0f, nto.transition_density_hole[i]) / hole_sum);
+            if (w <= 0.0f) continue;
+            md_flow_node_t node = {
+                .column = 0,
+                .parent = MD_FLOW_INVALID_INDEX,
+                .level  = 0,
+                .weight = w,
+                .color  = nto.group.color[i],
+                .label  = str_from_cstr(nto.group.label[i]),
+                .key    = flow_node_key(0, FLOW_LEVEL_GROUP, (uint32_t)i),
+            };
+            src_node[i] = md_flow_graph_add_node(&flow.graph, &node);
+        }
+        for (size_t i = 0; i < num_groups; ++i) {
+            const float w = (float)(MAX(0.0f, nto.transition_density_part[i]) / part_sum);
+            if (w <= 0.0f) continue;
+            md_flow_node_t node = {
+                .column = 1,
+                .parent = MD_FLOW_INVALID_INDEX,
+                .level  = 0,
+                .weight = w,
+                .color  = nto.group.color[i],
+                .label  = str_from_cstr(nto.group.label[i]),
+                .key    = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)i),
+            };
+            dst_node[i] = md_flow_graph_add_node(&flow.graph, &node);
+        }
+
+        // compute_transition_matrix() already normalizes so that a donor's row sums to its hole
+        // share and an acceptor's column to its particle share, which is exactly invariant (4).
+        // If that ever stops being true the validation below says so instead of drawing nonsense.
+        for (size_t src = 0; src < num_groups; ++src) {
+            if (src_node[src] == MD_FLOW_INVALID_INDEX) continue;
+            for (size_t dst = 0; dst < num_groups; ++dst) {
+                if (dst_node[dst] == MD_FLOW_INVALID_INDEX) continue;
+                const float w = nto.transition_matrix[dst * num_groups + src];
+                if (w > 0.0f) {
+                    md_flow_graph_add_link(&flow.graph, src_node[src], dst_node[dst], w);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // The M2 view: group -> NTO pair -> group.
+    //
+    // This is the first version that measures the group-to-group flow instead of guessing it.
+    // compute_transition_matrix() only ever had the two marginals and split the difference
+    // proportionally; routing through the NTOs gives
+    //
+    //     flow(g1 -> g2) = sum_k lambda_k * q_hole[k][g1] * q_part[k][g2]
+    //
+    // which is a real joint distribution. It is not the FULL one - the product form asserts that
+    // hole and particle are independent once you know which NTO pair you are in, which is exactly
+    // what the NTO decomposition claims and no more. The occupied x virtual amplitude matrix (M4)
+    // drops that assumption too.
+    bool build_flow_graph_nto() {
+        md_flow_graph_init(&flow.graph, 3, arena);
+
+        if (rsp.selected < 0 || !nto.atom_group_idx) return false;
+
+        const size_t num_groups = nto.group.count;
+        const size_t num_ao     = md_vlx_scf_number_of_atomic_orbitals(vlx);
+        const double* S         = md_vlx_scf_overlap_matrix_data(vlx);
+        const int* ao_to_atom   = md_vlx_ao_to_atom_idx(vlx);
+
+        if (num_groups == 0 || num_ao == 0 || !S || !ao_to_atom) return false;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        const size_t max_lambdas = MD_VLX_NTO_MAX_LAMBDAS;
+
+        double* lambdas = md_temp_alloc_zero_array(temp, double, max_lambdas);
+        double* C_hole  = md_temp_alloc_zero_array(temp, double, max_lambdas * num_ao);
+        double* C_part  = md_temp_alloc_zero_array(temp, double, max_lambdas * num_ao);
+
+        const size_t num_hole = md_vlx_rsp_nto_coefficients_extract(C_hole, lambdas, vlx, (size_t)rsp.selected, MD_VLX_NTO_HOLE, max_lambdas);
+        const size_t num_part = md_vlx_rsp_nto_coefficients_extract(C_part, nullptr, vlx, (size_t)rsp.selected, MD_VLX_NTO_PARTICLE, max_lambdas);
+        const size_t num_nto  = MIN(num_hole, num_part);
+        if (num_nto == 0) return false;
+
+        // Attribute to ATOMS, not to groups. The group numbers are then sums over their members,
+        // which is what makes the collapsed and expanded views incapable of disagreeing (invariant
+        // 3). Attributing per group and separately per atom would be two computations of the same
+        // thing, and the moment they diverge the diagram lies in one of its two states.
+        const size_t num_atoms = md_array_size(nto.atom_group_idx);
+        if (num_atoms == 0) return false;
+
+        int* ao_to_atom_clamped = md_temp_alloc_array(temp, int, num_ao);
+        for (size_t i = 0; i < num_ao; ++i) {
+            const int atom_idx = ao_to_atom[i];
+            ao_to_atom_clamped[i] = (atom_idx >= 0 && (size_t)atom_idx < num_atoms) ? atom_idx : 0;
+        }
+
+        double* q_hole = md_temp_alloc_zero_array(temp, double, num_nto * num_atoms);
+        double* q_part = md_temp_alloc_zero_array(temp, double, num_nto * num_atoms);
+
+        // Mulliken populations of a single orbital are not guaranteed non-negative - that is a
+        // known artifact of the partitioning, not a bug here. A negative share of a flow means
+        // nothing on a diagram, so clamp and renormalize, and accept that the renormalization is
+        // an approximation rather than pretending the raw numbers were clean.
+        double* lambda_keep = md_temp_alloc_zero_array(temp, double, num_nto);
+        double lambda_sum = 0.0;
+        size_t num_keep = 0;
+
+        for (size_t k = 0; k < num_nto; ++k) {
+            if (lambdas[k] < (double)flow.lambda_cutoff) continue;
+
+            attribute_orbital_density(q_hole + num_keep * num_atoms, ao_to_atom_clamped, C_hole + k * num_ao, S, num_ao);
+            attribute_orbital_density(q_part + num_keep * num_atoms, ao_to_atom_clamped, C_part + k * num_ao, S, num_ao);
+
+            double hsum = 0.0, psum = 0.0;
+            for (size_t a = 0; a < num_atoms; ++a) {
+                double* h = q_hole + num_keep * num_atoms + a;
+                double* p = q_part + num_keep * num_atoms + a;
+                *h = MAX(0.0, *h);
+                *p = MAX(0.0, *p);
+                hsum += *h;
+                psum += *p;
+            }
+            if (hsum <= 0.0 || psum <= 0.0) continue;
+            for (size_t a = 0; a < num_atoms; ++a) {
+                q_hole[num_keep * num_atoms + a] /= hsum;
+                q_part[num_keep * num_atoms + a] /= psum;
+            }
+
+            lambda_keep[num_keep] = lambdas[k];
+            lambda_sum += lambdas[k];
+            snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
+            flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]),
+                               C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
+            num_keep++;
+        }
+
+        if (num_keep == 0 || lambda_sum <= 0.0) return false;
+
+        // Lambdas are truncated at MD_VLX_NTO_MAX_LAMBDAS and again by the cutoff, so they do not
+        // sum to one on their own. Renormalizing over what is kept is what makes the diagram add
+        // up; it also means the percentages are shares of the RETAINED transition, which the
+        // window says out loud when anything was dropped.
+        for (size_t k = 0; k < num_keep; ++k) {
+            lambda_keep[k] /= lambda_sum;
+        }
+
+        // Per-atom column weights, and the group totals they add up to.
+        double* atom_hole = md_temp_alloc_zero_array(temp, double, num_atoms);
+        double* atom_part = md_temp_alloc_zero_array(temp, double, num_atoms);
+        for (size_t a = 0; a < num_atoms; ++a) {
+            for (size_t k = 0; k < num_keep; ++k) {
+                atom_hole[a] += lambda_keep[k] * q_hole[k * num_atoms + a];
+                atom_part[a] += lambda_keep[k] * q_part[k * num_atoms + a];
+            }
+        }
+
+        uint32_t* atom_src = md_temp_alloc_array(temp, uint32_t, num_atoms);
+        uint32_t* atom_dst = md_temp_alloc_array(temp, uint32_t, num_atoms);
+        uint32_t* mid_node = md_temp_alloc_array(temp, uint32_t, num_keep);
+        for (size_t a = 0; a < num_atoms; ++a) {
+            atom_src[a] = MD_FLOW_INVALID_INDEX;
+            atom_dst[a] = MD_FLOW_INVALID_INDEX;
+        }
+
+        // md_flow requires a parent to be an EARLIER node in the same column, so each group node
+        // goes in before its atoms - which also means the group's weight has to be known first.
+        // Two passes per column, and no post-hoc fixups.
+        const int columns[2] = { 0, 2 };
+        const double* column_weight[2] = { atom_hole, atom_part };
+        uint32_t* column_atom_node[2] = { atom_src, atom_dst };
+
+        for (int ci = 0; ci < 2; ++ci) {
+            const uint32_t column = (uint32_t)columns[ci];
+            const double* weight = column_weight[ci];
+            uint32_t* atom_node = column_atom_node[ci];
+
+            // Atoms are the fundamental level; a group is an OPTIONAL layer above them. Group 0 is
+            // the "not in any group" bucket every atom starts in, so its atoms are roots rather
+            // than children of a node standing for a group the user never made.
+            for (size_t a = 0; a < num_atoms; ++a) {
+                if (nto.atom_group_idx[a] != 0 || weight[a] <= 0.0) continue;
+                md_flow_node_t node = {
+                    .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_ATOM,
+                    .weight = (float)weight[a],
+                    .color  = flow_atom_color((uint32_t)a, column),
+                    .label  = str_from_cstr(flow_atom_label((uint32_t)a)),
+                    .key    = flow_node_key(column, FLOW_LEVEL_ATOM, (uint32_t)a),
+                };
+                atom_node[a] = md_flow_graph_add_node(&flow.graph, &node);
+            }
+
+            // md_flow requires a parent to be an EARLIER node in the same column, so each group
+            // node goes in before its atoms - which also means the group's weight has to be known
+            // first. Two passes per group, and no post-hoc fixups.
+            for (size_t g = 1; g < num_groups; ++g) {
+                double group_weight = 0.0;
+                for (size_t a = 0; a < num_atoms; ++a) {
+                    if (nto.atom_group_idx[a] == (uint32_t)g) group_weight += weight[a];
+                }
+                if (group_weight <= 0.0) continue;
+
+                md_flow_node_t group_node = {
+                    .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
+                    .weight = (float)group_weight, .color = nto.group.color[g],
+                    .label = str_from_cstr(nto.group.label[g]),
+                    .key = flow_node_key(column, FLOW_LEVEL_GROUP, (uint32_t)g),
+                };
+                const uint32_t parent = md_flow_graph_add_node(&flow.graph, &group_node);
+                if (parent == MD_FLOW_INVALID_INDEX) continue;
+
+                for (size_t a = 0; a < num_atoms; ++a) {
+                    if (nto.atom_group_idx[a] != (uint32_t)g || weight[a] <= 0.0) continue;
+
+                    // An atom inside a group wears the group's colour: the expanded view has to
+                    // read as a closer look at the collapsed one, not as a different quantity.
+                    md_flow_node_t node = {
+                        .column = column, .parent = parent, .level = FLOW_LEVEL_ATOM,
+                        .weight = (float)weight[a], .color = nto.group.color[g],
+                        .label = str_from_cstr(flow_atom_label((uint32_t)a)),
+                        .key = flow_node_key(column, FLOW_LEVEL_ATOM, (uint32_t)a),
+                    };
+                    atom_node[a] = md_flow_graph_add_node(&flow.graph, &node);
+                }
+            }
+        }
+
+        for (size_t k = 0; k < num_keep; ++k) {
+            // Middle-column nodes take their colour from the colormap rather than from a group:
+            // an NTO belongs to the transition, not to either side of it.
+            const ImVec4 c = ImPlot::GetColormapColor((int)k, ImPlotColormap_Deep);
+            md_flow_node_t node = {
+                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
+                .weight = (float)lambda_keep[k], .color = vec_cast(c),
+                .label = str_from_cstr(flow.nto_label[k]),
+                .sublabel = str_from_cstr(flow.nto_character[k]),
+                .key = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)k),
+            };
+            mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
+        }
+
+        // Links live between LEAVES - atoms here. Everything coarser is a sum over these, which is
+        // why collapsing a group can never disagree with expanding it.
+        for (size_t k = 0; k < num_keep; ++k) {
+            for (size_t a = 0; a < num_atoms; ++a) {
+                if (atom_src[a] != MD_FLOW_INVALID_INDEX) {
+                    const float w = (float)(lambda_keep[k] * q_hole[k * num_atoms + a]);
+                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, atom_src[a], mid_node[k], w);
+                }
+                if (atom_dst[a] != MD_FLOW_INVALID_INDEX) {
+                    const float w = (float)(lambda_keep[k] * q_part[k * num_atoms + a]);
+                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, mid_node[k], atom_dst[a], w);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // "HOMO-2", "LUMO+3" - how a chemist names an orbital, which is the entire point of showing
+    // this column. Falls back to a bare index when the HOMO is unknown.
+    void flow_mo_label(char* buf, size_t cap, size_t mo_idx, size_t homo_idx) {
+        if (mo_idx <= homo_idx) {
+            const size_t below = homo_idx - mo_idx;
+            if (below == 0) snprintf(buf, cap, "HOMO");
+            else            snprintf(buf, cap, "HOMO-%zu", below);
+        } else {
+            const size_t above = mo_idx - homo_idx - 1;
+            if (above == 0) snprintf(buf, cap, "LUMO");
+            else            snprintf(buf, cap, "LUMO+%zu", above);
+        }
+    }
+
+    // The MO pair an NTO is mostly made of, as a label like "HOMO-1 -> LUMO".
+    //
+    // This is what the sketch's "pi* / sigma* / Rydberg" is reaching for, but those are symmetry
+    // assignments and we have no classifier - inventing one would put a confident chemical claim on
+    // screen that nothing computed. The dominant MO pair is the honest version: it is measured, it
+    // is what people write in papers, and it says something the NTO index alone never can.
+    //
+    // Left blank unless one MO leads on each side by a clear margin. A 40/35 split has no dominant
+    // character and saying otherwise would be worse than saying nothing.
+    void flow_nto_character(char* buf, size_t cap, const double* C_hole_k, const double* C_part_k, float min_share) {
+        buf[0] = '\0';
+
+        const size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
+        const size_t num_mo = md_vlx_scf_number_of_molecular_orbitals(vlx);
+        const double* S     = md_vlx_scf_overlap_matrix_data(vlx);
+        const size_t homo   = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
+        if (!S || num_ao == 0 || num_mo == 0 || homo + 1 >= num_mo) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        double* sc = md_temp_alloc_array(temp, double, num_ao);
+
+        size_t best[2] = { num_mo, num_mo };
+        double share[2] = { 0.0, 0.0 };
+
+        for (int side = 0; side < 2; ++side) {
+            const double* C_nto = (side == 0) ? C_hole_k : C_part_k;
+            const size_t beg = (side == 0) ? 0    : homo + 1;
+            const size_t end = (side == 0) ? homo + 1 : num_mo;
+
+            for (size_t mu = 0; mu < num_ao; ++mu) {
+                double sum = 0.0;
+                for (size_t nu = 0; nu < num_ao; ++nu) sum += S[mu * num_ao + nu] * C_nto[nu];
+                sc[mu] = sum;
+            }
+
+            double norm = 0.0, top = 0.0;
+            size_t top_mo = num_mo;
+            for (size_t mo = beg; mo < end; ++mo) {
+                const double* C_mo = md_vlx_scf_mo_coefficients(vlx, mo, MD_VLX_SPIN_ALPHA);
+                if (!C_mo) continue;
+                double ov = 0.0;
+                for (size_t mu = 0; mu < num_ao; ++mu) ov += C_mo[mu] * sc[mu];
+                const double w = ov * ov;
+                norm += w;
+                if (w > top) { top = w; top_mo = mo; }
+            }
+            if (norm <= 1.0e-9 || top_mo >= num_mo) return;
+            best[side] = top_mo;
+            share[side] = top / norm;
+        }
+
+        if (share[0] < (double)min_share || share[1] < (double)min_share) return;
+
+        char lo[24], hi[24];
+        flow_mo_label(lo, sizeof(lo), best[0], homo);
+        flow_mo_label(hi, sizeof(hi), best[1], homo);
+        snprintf(buf, cap, "%s " "\xe2\x86\x92" " %s", lo, hi);
+    }
+
+    // occupied MO -> NTO pair -> virtual MO.
+    //
+    // NTOs ARE a rotation of the MOs: hole NTO k = sum_i U_ik phi_i over occupied MOs, particle
+    // NTO k = sum_a V_ak phi_a over virtual ones. U and V are orthogonal, so |U_ik|^2 is an exact
+    // normalized share and every band here is exact - no Mulliken partitioning anywhere.
+    //
+    // This is deliberately a route WITHOUT atoms rather than an extra column inside the atom
+    // route. Chaining atom <- MO <- NTO would keep only the diagonal of
+    //     q_k(A) = sum_ij U_ik U_jk P_ij(A)
+    // and drop the MO-MO interference. Measured on test_data/vlx/amide.h5, that moves 33.6% of the
+    // population on the dominant transition: a diagram that adds up perfectly and is wrong by a
+    // third about which atoms donated. See docs/transition_flow_design.md.
+    bool build_flow_graph_orbitals() {
+        md_flow_graph_init(&flow.graph, 3, arena);
+
+        if (rsp.selected < 0) return false;
+
+        const size_t num_ao  = md_vlx_scf_number_of_atomic_orbitals(vlx);
+        const size_t num_mo  = md_vlx_scf_number_of_molecular_orbitals(vlx);
+        const double* S      = md_vlx_scf_overlap_matrix_data(vlx);
+        const size_t homo    = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
+
+        if (num_ao == 0 || num_mo == 0 || !S) return false;
+        const size_t nocc = homo + 1;
+        if (nocc == 0 || nocc >= num_mo) return false;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        const size_t max_lambdas = MD_VLX_NTO_MAX_LAMBDAS;
+        double* lambdas = md_temp_alloc_zero_array(temp, double, max_lambdas);
+        double* C_hole  = md_temp_alloc_zero_array(temp, double, max_lambdas * num_ao);
+        double* C_part  = md_temp_alloc_zero_array(temp, double, max_lambdas * num_ao);
+
+        const size_t num_hole = md_vlx_rsp_nto_coefficients_extract(C_hole, lambdas, vlx, (size_t)rsp.selected, MD_VLX_NTO_HOLE, max_lambdas);
+        const size_t num_part = md_vlx_rsp_nto_coefficients_extract(C_part, nullptr, vlx, (size_t)rsp.selected, MD_VLX_NTO_PARTICLE, max_lambdas);
+        const size_t num_nto  = MIN(num_hole, num_part);
+        if (num_nto == 0) return false;
+
+        // Projection onto the MO basis: U_ik = <phi_i | NTO_k> = C_i^T S C_k. S*C_k is formed once
+        // per NTO and then dotted with each MO, which keeps this at O(k * nao^2) rather than
+        // O(k * nmo * nao^2).
+        double* sc = md_temp_alloc_array(temp, double, num_ao);
+        double* w_occ = md_temp_alloc_zero_array(temp, double, num_mo);
+        double* w_vir = md_temp_alloc_zero_array(temp, double, num_mo);
+        double* proj_occ = md_temp_alloc_zero_array(temp, double, num_nto * num_mo);
+        double* proj_vir = md_temp_alloc_zero_array(temp, double, num_nto * num_mo);
+
+        double* lambda_keep = md_temp_alloc_zero_array(temp, double, num_nto);
+        double lambda_sum = 0.0;
+        size_t num_keep = 0;
+
+        for (size_t k = 0; k < num_nto; ++k) {
+            if (lambdas[k] < (double)flow.lambda_cutoff) continue;
+
+            for (int side = 0; side < 2; ++side) {
+                const double* C_nto = (side == 0 ? C_hole : C_part) + k * num_ao;
+                double* proj = (side == 0 ? proj_occ : proj_vir) + num_keep * num_mo;
+                const size_t mo_beg = (side == 0) ? 0    : nocc;
+                const size_t mo_end = (side == 0) ? nocc : num_mo;
+
+                for (size_t mu = 0; mu < num_ao; ++mu) {
+                    double sum = 0.0;
+                    for (size_t nu = 0; nu < num_ao; ++nu) sum += S[mu * num_ao + nu] * C_nto[nu];
+                    sc[mu] = sum;
+                }
+
+                double norm = 0.0;
+                for (size_t mo = mo_beg; mo < mo_end; ++mo) {
+                    const double* C_mo = md_vlx_scf_mo_coefficients(vlx, mo, MD_VLX_SPIN_ALPHA);
+                    if (!C_mo) continue;
+                    double overlap = 0.0;
+                    for (size_t mu = 0; mu < num_ao; ++mu) overlap += C_mo[mu] * sc[mu];
+                    proj[mo] = overlap * overlap;   // |U_ik|^2
+                    norm += proj[mo];
+                }
+                // Should already be 1 by orthogonality; renormalizing absorbs the numerical drift
+                // rather than letting it leak into the conservation check.
+                if (norm > 1.0e-9) {
+                    for (size_t mo = mo_beg; mo < mo_end; ++mo) proj[mo] /= norm;
+                } else {
+                    continue;
+                }
+            }
+
+            snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
+            flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]),
+                               C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
+
+            lambda_keep[num_keep] = lambdas[k];
+            lambda_sum += lambdas[k];
+            num_keep++;
+        }
+
+        if (num_keep == 0 || lambda_sum <= 0.0) return false;
+        for (size_t k = 0; k < num_keep; ++k) lambda_keep[k] /= lambda_sum;
+
+        for (size_t k = 0; k < num_keep; ++k) {
+            for (size_t mo = 0; mo < num_mo; ++mo) {
+                w_occ[mo] += lambda_keep[k] * proj_occ[k * num_mo + mo];
+                w_vir[mo] += lambda_keep[k] * proj_vir[k * num_mo + mo];
+            }
+        }
+
+        uint32_t* occ_node = md_temp_alloc_array(temp, uint32_t, num_mo);
+        uint32_t* vir_node = md_temp_alloc_array(temp, uint32_t, num_mo);
+        uint32_t* mid_node = md_temp_alloc_array(temp, uint32_t, num_keep);
+        for (size_t mo = 0; mo < num_mo; ++mo) { occ_node[mo] = vir_node[mo] = MD_FLOW_INVALID_INDEX; }
+
+        // Every orbital with any weight becomes a node. There is no truncation here on purpose:
+        // dropping the tail would break conservation, and the cut's threshold already folds the
+        // small ones into "Others" at view time, where it can be undone.
+        char label[32];
+        for (size_t mo = 0; mo < num_mo; ++mo) {
+            const bool occupied = mo <= homo;
+            const double w = occupied ? w_occ[mo] : w_vir[mo];
+            if (w <= 0.0) continue;
+
+            flow_mo_label(label, sizeof(label), mo, homo);
+            char* dst = flow_mo_label_storage((uint32_t)mo);
+            if (!dst) continue;
+            snprintf(dst, FLOW_ATOM_LABEL_STRIDE, "%s", label);
+
+            md_flow_node_t node = {
+                .column = occupied ? 0u : 2u,
+                .parent = MD_FLOW_INVALID_INDEX,
+                .level  = FLOW_LEVEL_MO,
+                .weight = (float)w,
+                .color  = occupied ? vec4_t{0.78f, 0.24f, 0.22f, 1.0f} : vec4_t{0.13f, 0.56f, 0.35f, 1.0f},
+                .label  = str_from_cstr(dst),
+                .key    = flow_node_key(occupied ? 0u : 2u, FLOW_LEVEL_MO, (uint32_t)mo),
+            };
+            (occupied ? occ_node : vir_node)[mo] = md_flow_graph_add_node(&flow.graph, &node);
+        }
+
+        for (size_t k = 0; k < num_keep; ++k) {
+            const ImVec4 c = ImPlot::GetColormapColor((int)k, ImPlotColormap_Deep);
+            md_flow_node_t node = {
+                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
+                .weight = (float)lambda_keep[k], .color = vec_cast(c),
+                .label = str_from_cstr(flow.nto_label[k]),
+                .sublabel = str_from_cstr(flow.nto_character[k]),
+                .key = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)k),
+            };
+            mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
+        }
+
+        for (size_t k = 0; k < num_keep; ++k) {
+            for (size_t mo = 0; mo < num_mo; ++mo) {
+                if (occ_node[mo] != MD_FLOW_INVALID_INDEX) {
+                    const float w = (float)(lambda_keep[k] * proj_occ[k * num_mo + mo]);
+                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, occ_node[mo], mid_node[k], w);
+                }
+                if (vir_node[mo] != MD_FLOW_INVALID_INDEX) {
+                    const float w = (float)(lambda_keep[k] * proj_vir[k * num_mo + mo]);
+                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, mid_node[k], vir_node[mo], w);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    void rebuild_flow_graph() {
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        // The cut stores expansion by node INDEX, and a rebuild renumbers every node - a new
+        // excited state, a regroup or a route change would otherwise leave the user's open groups
+        // pointing at whatever now happens to sit at those indices. Carry the state across by KEY,
+        // which is what the key field exists for.
+        md_array(uint64_t) expanded_keys = 0;
+        md_array(uint64_t) known_keys = 0;
+        for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
+            md_array_push(known_keys, flow.graph.nodes[i].key, md_temp_allocator(temp));
+            if (md_flow_cut_is_expanded(&flow.cut, (uint32_t)i)) {
+                md_array_push(expanded_keys, flow.graph.nodes[i].key, md_temp_allocator(temp));
+            }
+        }
+
+        md_flow_graph_free(&flow.graph);
+        flow.built = false;
+        flow.hover = FlowHit{};     // a cut index, and stale now (selection is by key, so it lives)
+
+        const bool ok = (flow.mode == FLOW_MODE_ORBITALS) ? build_flow_graph_orbitals()
+                      : (flow.mode == FLOW_MODE_NTO)      ? build_flow_graph_nto()
+                                                          : build_flow_graph_groups();
+        if (!ok) {
+            md_flow_graph_free(&flow.graph);
+            return;
+        }
+
+        // Validating every build is cheap and it is the only thing standing between a arithmetic
+        // slip upstream and a diagram that looks plausible while being wrong.
+        const md_flow_result_t result = md_flow_graph_validate(&flow.graph, 1.0e-3f);
+        if (result != MD_FLOW_OK) {
+            MD_LOG_ERROR("Charge transfer graph is inconsistent: %s", md_flow_result_str(result));
+            md_flow_graph_clear(&flow.graph);
+            return;
+        }
+
+        // Atoms are the level the diagram is about, so a group opens by default and its band
+        // brackets its members. A group the user has deliberately closed stays closed - which is
+        // why "was this key expanded" and "did this key exist at all" are different questions.
+        md_flow_cut_collapse_all(&flow.cut);
+        for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
+            const uint64_t key = flow.graph.nodes[i].key;
+
+            bool was_expanded = false;
+            for (size_t k = 0; k < md_array_size(expanded_keys); ++k) {
+                if (key == expanded_keys[k]) { was_expanded = true; break; }
+            }
+            bool was_known = false;
+            for (size_t k = 0; k < md_array_size(known_keys); ++k) {
+                if (key == known_keys[k]) { was_known = true; break; }
+            }
+
+            if (was_expanded || !was_known) {
+                md_flow_cut_set_expanded(&flow.cut, (uint32_t)i, true);
+            }
+        }
+
+        flow.built = true;
+        flow.fit_requested = true;
+        md_flow_cut_resolve(&flow.cut, &flow.graph);
+    }
+
+    // Frame the diagram with room to breathe.
+    //
+    // Resetting to pan=0, zoom=1 makes the unit square exactly fill the canvas, which sounds right
+    // and looks wrong: the layout's unit square bounds the NODES, while bands hang off the sides
+    // and captions sit above the top row. Those are sized in pixels by the drawing backend, so the
+    // fit has to reserve pixels for them and only then convert to a zoom.
+    void flow_fit_view(ImVec2 canvas_size) {
+        if (!flow.built || md_array_size(flow.layout.nodes) == 0) {
+            flow.pan = {0, 0};
+            flow.zoom = 1.0f;
+            return;
+        }
+
+        vec2_t bb_min = { 1.0e30f,  1.0e30f };
+        vec2_t bb_max = {-1.0e30f, -1.0e30f };
+        for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
+            const md_flow_layout_node_t* n = flow.layout.nodes + i;
+            bb_min.x = MIN(bb_min.x, n->min.x);  bb_min.y = MIN(bb_min.y, n->min.y);
+            bb_max.x = MAX(bb_max.x, n->max.x);  bb_max.y = MAX(bb_max.y, n->max.y);
+        }
+
+        const float bb_w = MAX(bb_max.x - bb_min.x, 1.0e-4f);
+        const float bb_h = MAX(bb_max.y - bb_min.y, 1.0e-4f);
+
+        // Room for the decorations the layout knows nothing about, plus a plain margin so the
+        // diagram is not welded to the window edge.
+        const float margin   = 12.0f;
+        const float caption  = ImGui::GetTextLineHeight() + 8.0f;
+        const float band_w   = flow.style.band_offset_px + flow.style.band_width_px;
+        const float band_lbl = md_array_size(flow.layout.bands) > 0 ? 64.0f : 0.0f;
+
+        const float pad_x = margin + band_w + band_lbl;
+        const float pad_y_top = margin + caption;
+        const float pad_y_bot = margin;
+
+        const float avail_w = MAX(canvas_size.x - pad_x * 2.0f, 16.0f);
+        const float avail_h = MAX(canvas_size.y - pad_y_top - pad_y_bot, 16.0f);
+
+        // Graph units are fractions of the canvas, so a graph-space extent of bb_w occupies
+        // bb_w * zoom * canvas_size.x pixels.
+        const float zoom_x = avail_w / (bb_w * canvas_size.x);
+        const float zoom_y = avail_h / (bb_h * canvas_size.y);
+        flow.zoom = CLAMP(MIN(zoom_x, zoom_y), 0.25f, 12.0f);
+
+        // Centre the content in what is left after the padding. The vertical target is offset by
+        // half the difference between the top and bottom pads, so the caption band does not push
+        // the diagram off-centre.
+        const vec2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
+        const float target_x = 0.5f;
+        const float target_y = 0.5f + (pad_y_top - pad_y_bot) * 0.5f / canvas_size.y;
+
+        flow.pan.x = target_x - bb_center.x * flow.zoom;
+        flow.pan.y = target_y - bb_center.y * flow.zoom;
+    }
+
+    // Visible nodes whose on-screen rect overlaps a region, in cut index space.
+    //
+    // Orbital nodes are skipped: they own no atoms, so sweeping over one and calling that
+    // "selecting atoms" would either do nothing or, worse, quietly select the whole molecule.
+    void flow_nodes_in_region(md_array(uint32_t)* out_nodes, const FlowView& view, ImVec2 rect_min, ImVec2 rect_max,
+                              md_allocator_i* alloc)
+    {
+        for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
+            const md_flow_layout_node_t* ln = flow.layout.nodes + i;
+            const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, ln->cut_idx);
+            if (!node || !flow_level_has_atoms(node->level)) continue;
+
+            const ImVec2 min = flow_view_to_screen(view, ln->min);
+            const ImVec2 max = flow_view_to_screen(view, ln->max);
+
+            // Overlap, not containment: a sweep across a column should catch the rows it crosses,
+            // not only the ones it happens to swallow whole.
+            if (max.x < rect_min.x || min.x > rect_max.x) continue;
+            if (max.y < rect_min.y || min.y > rect_max.y) continue;
+
+            md_array_push(*out_nodes, ln->cut_idx, alloc);
+        }
+    }
+
+    // Group membership from whatever is currently selected - wherever that selection was made.
+    void flow_assign_selection_to_group(const ApplicationState& state, uint32_t group_idx) {
+        if (group_idx >= nto.group.count) return;
+        for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
+            if (md_bitfield_test_bit(&state.selection.selection_mask, i)) {
+                nto.atom_group_idx[i] = group_idx;
+            }
+        }
+    }
+
+    // Returns the new group index, or 0 (the ungrouped bucket) when there is no room.
+    uint32_t flow_create_group_from_selection(const ApplicationState& state) {
+        if (nto.group.count >= MAX_NTO_GROUPS) {
+            MD_LOG_ERROR("Cannot create another group: the limit of %d is reached", (int)MAX_NTO_GROUPS);
+            return 0;
+        }
+        const uint32_t group_idx = (uint32_t)nto.group.count++;
+        flow_assign_selection_to_group(state, group_idx);
+        return group_idx;
+    }
+
+    bool flow_orbital_is_selected(uint64_t key) const {
+        for (size_t i = 0; i < md_array_size(flow.selected_orbital_keys); ++i) {
+            if (flow.selected_orbital_keys[i] == key) return true;
+        }
+        return false;
+    }
+
+    void flow_orbital_set_selected(uint64_t key, bool selected) {
+        for (size_t i = 0; i < md_array_size(flow.selected_orbital_keys); ++i) {
+            if (flow.selected_orbital_keys[i] != key) continue;
+            if (!selected) {
+                flow.selected_orbital_keys[i] = flow.selected_orbital_keys[md_array_size(flow.selected_orbital_keys) - 1];
+                md_array_shrink(flow.selected_orbital_keys, md_array_size(flow.selected_orbital_keys) - 1);
+            }
+            return;
+        }
+        if (selected) md_array_push(flow.selected_orbital_keys, key, arena);
+    }
+
+    // One node's contribution to a selection change. Atom-bearing nodes edit the application mask
+    // directly - there is no diagram-local copy to keep in step - while NTO nodes are a separate
+    // axis and never touch it.
+    void flow_set_selected(ApplicationState& state, uint32_t cut_idx, bool selected) {
+        const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!node) return;
+
+        if (!flow_level_has_atoms(node->level)) {
+            flow_orbital_set_selected(node->key, selected);
+            return;
+        }
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        md_bitfield_t mask = md_bitfield_create(md_temp_allocator(temp));
+        flow_node_atom_mask(&mask, cut_idx);
+        if (selected) {
+            md_bitfield_or_inplace(&state.selection.selection_mask, &mask);
+        } else {
+            md_bitfield_andnot_inplace(&state.selection.selection_mask, &mask);
+        }
+    }
+
+    void flow_clear_selection(ApplicationState& state) {
+        md_bitfield_clear(&state.selection.selection_mask);
+        md_array_shrink(flow.selected_orbital_keys, 0);
+    }
+
+    // Atoms belonging to a visible node, for the two-way link with the viewport.
+    void flow_node_atom_mask(md_bitfield_t* out_mask, uint32_t cut_idx) {
+        md_bitfield_clear(out_mask);
+        const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!node || (node->flags & MD_FLOW_NODE_FLAG_OTHER)) return;
+
+        // Orbitals own no atoms; selecting "all the atoms an NTO touches" would be the whole
+        // molecule and mean nothing. Gated on the LEVEL rather than the column, because in the
+        // Orbitals route the outer columns are orbitals too.
+        const md_flow_node_t* n = node;
+        if (!flow_level_has_atoms(n->level)) return;
+
+        const uint32_t index = flow_key_index(n->key);
+        if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
+            md_bitfield_set_bit(out_mask, index);
+            return;
+        }
+        for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
+            if (nto.atom_group_idx[i] == index) {
+                md_bitfield_set_bit(out_mask, i);
+            }
+        }
+    }
+
+    void draw_flow_window(ApplicationState& state) {
+        if (!flow.show_window) return;
+
+        const size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
+        if (num_excited_states == 0) return;
+
+        if (!flow.cut.alloc) {
+            md_flow_cut_init(&flow.cut, arena);
+            md_flow_layout_init(&flow.layout, arena);
+            flow.params = md_flow_layout_params_default();
+            flow.cut.threshold = flow.initial_threshold;
+            // Uncapped on purpose. A cap makes "Show above 1%" stop being true - folding halts
+            // early and the LARGEST sub-threshold rows stay on screen, with nothing to tell the
+            // reader why. A big "Others" is fine now that it opens.
+            flow.cut.other_max = 1.0f;
+            flow_build_label_storage();
+        }
+
+        // Rebuild only when the numbers behind the picture actually changed. Hashing the matrix
+        // itself rather than a bookkeeping counter keeps this window independent of whatever the
+        // NTO window happens to be doing.
+        uint64_t hash = md_hash64(nto.atom_group_idx, md_array_bytes(nto.atom_group_idx), 0);
+        hash = md_hash64(nto.group.color, sizeof(nto.group.color), hash);
+        hash ^= (uint64_t)nto.group.count;
+        hash ^= (uint64_t)(rsp.selected + 1) << 8;
+        hash ^= (uint64_t)flow.mode << 24;
+        if (nto.transition_matrix) {
+            const size_t dim = nto.transition_matrix_dim;
+            hash = md_hash64(nto.transition_matrix, sizeof(float) * dim * (dim + 2), hash);
+        }
+        if (hash != flow.data_hash) {
+            flow.data_hash = hash;
+            rebuild_flow_graph();
+        }
+
+        bool export_requested = false;
+
+        ImGui::SetNextWindowSize(ImVec2(720, 420), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Charge Transfer Analysis", &flow.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
+            if (ImGui::BeginMenuBar()) {
+                if (ImGui::BeginMenu("File")) {
+                    export_requested = ImGui::MenuItem("Export Diagram (SVG)", nullptr, false, flow.built);
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Settings")) {
+                    ImGui::SliderFloat("Box tint", &flow.style.node_fill_tint, 0.0f, 0.5f);
+                    ImGui::SetItemTooltip("How much of a node's colour survives in its interior.\n"
+                                          "0 is white; the colour itself lives on the border.");
+                    ImGui::SliderFloat("Border width", &flow.style.border_width, 0.5f, 4.0f, "%.1f px");
+                    ImGui::Checkbox("Colour the labels", &flow.style.color_labels);
+                    ImGui::Separator();
+                    ImGui::SliderFloat("Ribbon opacity", &flow.style.ribbon_alpha, 0.05f, 1.0f);
+                    ImGui::SliderFloat("Ribbon curvature", &flow.style.ribbon_curvature, 0.0f, 1.0f);
+                    ImGui::SliderInt("Ribbon segments", &flow.style.ribbon_segments, 4, 64);
+                    ImGui::Separator();
+                    ImGui::SliderFloat("Node thickness", &flow.params.node_thickness, 0.01f, 0.25f);
+                    ImGui::SliderFloat("Node gap", &flow.params.node_gap, 0.0f, 0.1f);
+                    ImGui::BeginDisabled(flow.params.order != MD_FLOW_ORDER_BARYCENTRE);
+                    int sweeps = (int)flow.params.barycentre_sweeps;
+                    if (ImGui::SliderInt("Crossing sweeps", &sweeps, 0, 4)) {
+                        flow.params.barycentre_sweeps = (uint32_t)MAX(0, sweeps);
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SetItemTooltip("Only used by the 'Fewest crossings' row order.");
+                    ImGui::Separator();
+                    ImGui::SliderFloat("Hide ribbons under", &flow.style.ribbon_min_px, 0.0f, 6.0f, "%.1f px");
+                    ImGui::SetItemTooltip("A ribbon thinner than this is not drawn - it reads as noise rather\n"
+                                          "than as a quantity. The flow is still in the model and still counted.");
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMenuBar();
+            }
+
+            ImGui::PushItemWidth(160.0f);
+            int state_idx = rsp.selected + 1;
+            if (ImGui::SliderInt("State", &state_idx, 1, (int)num_excited_states)) {
+                rsp.selected = state_idx - 1;
+            }
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+            ImGui::PushItemWidth(130.0f);
+            int mode = (int)flow.mode;
+            if (ImGui::Combo("Route", &mode, flow_mode_str, FLOW_MODE_COUNT)) {
+                flow.mode = (flow_mode_t)mode;
+            }
+            ImGui::SetItemTooltip("'Groups only' reproduces the old two-column diagram, where the\n"
+                                  "group-to-group flow is inferred from the two marginals.\n"
+                                  "'Atoms via NTOs' measures it instead.\n"
+                                  "'Orbitals' drops atoms entirely and shows which canonical MOs the\n"
+                                  "NTOs are built from - every band there is exact.");
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+            ImGui::PushItemWidth(160.0f);
+            float threshold_pct = flow.cut.threshold * 100.0f;
+            if (ImGui::SliderFloat("Show above", &threshold_pct, 0.0f, 25.0f, "%.1f%%")) {
+                flow.cut.threshold = threshold_pct * 0.01f;
+                md_flow_cut_resolve(&flow.cut, &flow.graph);
+            }
+            ImGui::SetItemTooltip("Share of a COLUMN, not of the whole diagram. Everything below folds\n"
+                                  "into 'Others'; double click that to draw its members individually.");
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+            ImGui::PushItemWidth(140.0f);
+            float other_pct = flow.cut.other_max * 100.0f;
+            if (ImGui::SliderFloat("Others cap", &other_pct, 1.0f, 100.0f, "%.0f%%")) {
+                flow.cut.other_max = other_pct * 0.01f;
+                md_flow_cut_resolve(&flow.cut, &flow.graph);
+            }
+            ImGui::SetItemTooltip("The most a single 'Others' may hold. Below 100%% folding stops early,\n"
+                                  "which means sub-threshold rows STAY on screen - so 'Show above' no\n"
+                                  "longer means what it says. Leave it at 100%% unless you want that.");
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+            ImGui::PushItemWidth(140.0f);
+            ImGui::SliderFloat("Even sizes", &flow.size_normalize, 0.0f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("Flattens the ORBITAL columns' heights so a 1%% channel is still big\n"
+                                  "enough to read and click. Atom columns stay strictly proportional -\n"
+                                  "their sizes are the charge transfer itself.\n"
+                                  "Ribbons keep their true widths and simply taper into the column.");
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+            // 'Groups only' has no atom level to open. Its links come from the two marginals and
+            // carry no information about which ATOM within a group donated to which - splitting
+            // them proportionally would invent detail one level finer than the data supports,
+            // which is the exact failure this window exists to stop doing.
+            const bool expandable = (flow.mode == FLOW_MODE_NTO);   // only that route has a hierarchy
+            ImGui::BeginDisabled(!expandable);
+            if (ImGui::Button("Expand all")) {
+                md_flow_cut_expand_all(&flow.cut, &flow.graph);
+                md_flow_cut_resolve(&flow.cut, &flow.graph);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Collapse all")) {
+                md_flow_cut_collapse_all(&flow.cut);
+                md_flow_cut_resolve(&flow.cut, &flow.graph);
+            }
+            ImGui::EndDisabled();
+            if (!expandable) {
+                ImGui::SetItemTooltip("Only 'Atoms via NTOs' has a hierarchy to open.\n"
+                                      "'Groups only' infers its flow from the two marginals and says\n"
+                                      "nothing about which atom went where; 'Orbitals' has no atoms.");
+            }
+
+            ImGui::SameLine();
+            ImGui::PushItemWidth(150.0f);
+            int order = (int)flow.params.order;
+            static const char* order_str[] = { "By contribution", "Fewest crossings" };
+            if (ImGui::Combo("Order", &order, order_str, IM_ARRAYSIZE(order_str))) {
+                flow.params.order = (md_flow_order_t)order;
+            }
+            ImGui::SetItemTooltip("Rows within a column. 'By contribution' puts the largest at the top;\n"
+                                  "either way a group's atoms stay together inside the group's slot.");
+            ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            ImGui::SetItemTooltip("Left drag pans, wheel zooms at the cursor.\n"
+                                  "Shift+left selects, shift+right deselects - click one item,\n"
+                                  "or drag a box over several. Shift+right on empty space clears.\n"
+                                  "Double click opens a node; double click on empty space refits.\n"
+                                  "Right click for group actions on the selection.");
+
+            const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
+            ImVec2 canvas_sz = ImGui::GetContentRegionAvail();
+            canvas_sz.x = MAX(canvas_sz.x, 64.0f);
+            canvas_sz.y = MAX(canvas_sz.y, 64.0f);
+            const ImVec2 canvas_p1 = canvas_p0 + canvas_sz;
+
+            ImGui::InvisibleButton("##flow_canvas", canvas_sz,
+                ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+            const bool canvas_hovered = ImGui::IsItemHovered();
+            const bool canvas_active  = ImGui::IsItemActive();
+
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
+            draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(0, 0, 0, 60));
+
+            if (!flow.built) {
+                const char* msg = "No transition data for this state";
+                draw_list->AddText(canvas_p0 + (canvas_sz - ImGui::CalcTextSize(msg)) * 0.5f, IM_COL32(0, 0, 0, 160), msg);
+                ImGui::End();
+                return;
+            }
+
+            ImGuiIO& io = ImGui::GetIO();
+
+            // Zoom about the cursor. Screen = area + (p * zoom + pan) * size, so the graph point
+            // under the pointer is p = (rel - pan) / zoom, and holding it fixed across a zoom
+            // change means pan' = rel - p * zoom'. That is an ASSIGNMENT, not an increment - the
+            // increment form leaves an extra pan term in and the view creeps toward the corner.
+            if (canvas_hovered && io.MouseWheel != 0.0f) {
+                const ImVec2 rel = (io.MousePos - canvas_p0) / canvas_sz;
+                const vec2_t p = { (rel.x - flow.pan.x) / flow.zoom, (rel.y - flow.pan.y) / flow.zoom };
+                flow.zoom = CLAMP(flow.zoom * (1.0f + io.MouseWheel * 0.12f), 0.25f, 12.0f);
+                flow.pan.x = rel.x - p.x * flow.zoom;
+                flow.pan.y = rel.y - p.y * flow.zoom;
+            }
+
+            // Left drag pans. Selection moved onto shift, so the plain drag is free for the thing
+            // people reach for first - and a shift drag is a region, so panning has to stand down
+            // for it or the diagram would slide out from under the rubber band.
+            if (canvas_active && !flow.region_active && !io.KeyShift &&
+                                 (ImGui::IsMouseDragging(ImGuiMouseButton_Left) ||
+                                  ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
+                                  ImGui::IsMouseDragging(ImGuiMouseButton_Right))) {
+                flow.pan.x += io.MouseDelta.x / canvas_sz.x;
+                flow.pan.y += io.MouseDelta.y / canvas_sz.y;
+            }
+
+            // Map the slider onto a per-column exponent. Orbital columns get it; atom columns stay
+            // proportional. In the Orbitals route every column is orbitals.
+            {
+                const float e = 1.0f - flow.size_normalize * 0.85f;   // 1.0 .. 0.15
+                for (uint32_t c = 0; c < MD_FLOW_MAX_COLUMNS; ++c) flow.params.weight_exponent[c] = 1.0f;
+                flow.params.weight_exponent[1] = e;
+                if (flow.mode == FLOW_MODE_ORBITALS) {
+                    flow.params.weight_exponent[0] = e;
+                    flow.params.weight_exponent[2] = e;
+                }
+            }
+
+            md_flow_layout_compute(&flow.layout, &flow.graph, &flow.cut, &flow.params);
+
+            // The layout lives in graph space and knows nothing about pan or zoom, so fitting
+            // after it is computed costs nothing and needs no second pass.
+            if (flow.fit_requested) {
+                flow.fit_requested = false;
+                flow_fit_view(canvas_sz);
+            }
+
+            FlowView view = {};
+            view.area_min = canvas_p0;
+            view.area_max = canvas_p1;
+            view.pan  = { flow.pan.x, flow.pan.y };
+            view.zoom = flow.zoom;
+
+            // Node state is DERIVED from the application masks every frame rather than stored.
+            // That is what makes a selection made in the 3D view, or by a script, light up here
+            // without any event plumbing - and it is why there is no local copy to fall out of
+            // step with the rest of VIAMD.
+            md_temp_scope_t draw_temp = md_temp_begin();
+            defer { md_temp_end(draw_temp); };
+
+            const size_t cut_space = md_array_size(flow.graph.nodes) + md_array_size(flow.cut.other);
+            uint8_t* node_state = md_temp_alloc_zero_array(draw_temp, uint8_t, cut_space ? cut_space : 1);
+
+            const size_t num_atoms = md_array_size(nto.atom_group_idx);
+
+            // One pass over the atoms gives both the per-atom answer and the per-group tallies, so
+            // a group node is a lookup rather than a rescan.
+            uint32_t* group_total = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
+            uint32_t* group_sel   = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
+            uint32_t* group_hi    = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
+            bool selection_touches_atoms = false;
+
+            for (size_t a = 0; a < num_atoms; ++a) {
+                const uint32_t g = nto.atom_group_idx[a] < MAX_NTO_GROUPS ? nto.atom_group_idx[a] : 0;
+                const bool sel = md_bitfield_test_bit(&state.selection.selection_mask, a);
+                const bool hi  = md_bitfield_test_bit(&state.selection.highlight_mask, a);
+                group_total[g] += 1;
+                group_sel[g]   += sel ? 1 : 0;
+                group_hi[g]    += hi  ? 1 : 0;
+                selection_touches_atoms |= sel;
+            }
+
+            for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
+                const md_flow_node_t* n = flow.graph.nodes + i;
+                uint8_t st = 0;
+
+                if (!flow_level_has_atoms(n->level)) {
+                    if (flow_orbital_is_selected(n->key)) st |= FlowNodeState_Selected;
+                } else {
+                    const uint32_t index = flow_key_index(n->key);
+                    if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
+                        if (index < num_atoms) {
+                            if (md_bitfield_test_bit(&state.selection.selection_mask, index)) st |= FlowNodeState_Selected;
+                            if (md_bitfield_test_bit(&state.selection.highlight_mask, index)) st |= FlowNodeState_Highlight;
+                        }
+                    } else if (index < MAX_NTO_GROUPS && group_total[index] > 0) {
+                        // A group is only "selected" when all of it is. Anything less is partial -
+                        // otherwise one selected atom would claim the whole group, and there would
+                        // be no way to see the difference.
+                        if (group_sel[index] == group_total[index])  st |= FlowNodeState_Selected;
+                        else if (group_sel[index] > 0)               st |= FlowNodeState_Partial;
+                        if (group_hi[index] > 0)                     st |= FlowNodeState_Highlight;
+                    }
+                }
+                node_state[i] = st;
+            }
+
+            FlowEmphasis emphasis = {};
+            emphasis.node_state = node_state;
+            emphasis.num_state_entries = cut_space;
+            emphasis.any_selected = selection_touches_atoms || md_array_size(flow.selected_orbital_keys) > 0;
+            emphasis.hover_node = flow.hover.node;
+            emphasis.hover_link = flow.hover.link;
+
+            draw_list->PushClipRect(canvas_p0, canvas_p1, true);
+            const FlowHit hit = flow_draw_imgui(draw_list, view, &flow.graph, &flow.cut, &flow.layout,
+                                                flow.style, emphasis);
+            draw_list->PopClipRect();
+
+            flow.hover = canvas_hovered ? hit : FlowHit{};
+
+            // Column captions. They belong to the window rather than to the backend: the backend
+            // draws a graph and has no idea what its columns mean.
+            // Captions belong to the COLUMNS, so they live in graph space and pan and zoom with
+            // them. Pinned to the window corners they would drift away from what they name the
+            // moment anyone moved the view.
+            {
+                const ImU32 caption_col = IM_COL32(0, 0, 0, 200);
+                const char* caption_atoms[3]    = { "DONATING (hole)", "NTO PAIRS", "ACCEPTING (particle)" };
+                const char* caption_orbitals[3] = { "OCCUPIED MOs",    "NTO PAIRS", "VIRTUAL MOs" };
+                const char** caption = (flow.mode == FLOW_MODE_ORBITALS) ? caption_orbitals : caption_atoms;
+
+                for (uint32_t c = 0; c < flow.graph.num_columns; ++c) {
+                    float x0 = 0.0f, x1 = 0.0f, top = 1.0e30f;
+                    bool found = false;
+                    for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
+                        const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, flow.layout.nodes[i].cut_idx);
+                        if (!n || n->column != c) continue;
+                        x0 = flow.layout.nodes[i].min.x;
+                        x1 = flow.layout.nodes[i].max.x;
+                        top = MIN(top, flow.layout.nodes[i].min.y);
+                        found = true;
+                    }
+                    if (!found) continue;
+
+                    const char* lbl = (flow.graph.num_columns == 2 && c == 1) ? caption[2] : caption[MIN(c, 2u)];
+                    const ImVec2 mid = flow_view_to_screen(view, vec2_t{ (x0 + x1) * 0.5f, top });
+                    const ImVec2 size = ImGui::CalcTextSize(lbl);
+                    draw_list->AddText({ mid.x - size.x * 0.5f, mid.y - size.y - 6.0f }, caption_col, lbl);
+                }
+            }
+
+            // ---- selection: rubber band, or a click when the band never opened ----
+            //
+            // Press, drag and release are one gesture, so they are handled in one place rather than
+            // split across the "is something under the cursor" branches - a drag that starts on a
+            // node routinely ends over empty space, and the release is the half that matters.
+            bool region_preview = false;
+            {
+                // Every button here also pans, so a "click" means pressed and released without
+                // travelling. Deciding that at RELEASE, from the distance actually covered, is what
+                // lets one gesture be either a click or a band without the user declaring which.
+                const float slop = 4.0f;
+
+                if (canvas_hovered && io.KeyShift && !flow.region_active &&
+                    (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)))
+                {
+                    flow.region_active = true;
+                    flow.region_add    = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                    flow.region_start  = io.MousePos;
+                }
+
+                if (flow.region_active) {
+                    const ImGuiMouseButton button = flow.region_add ? ImGuiMouseButton_Left : ImGuiMouseButton_Right;
+                    const ImVec2 rect_min = { ImMin(flow.region_start.x, io.MousePos.x), ImMin(flow.region_start.y, io.MousePos.y) };
+                    const ImVec2 rect_max = { ImMax(flow.region_start.x, io.MousePos.x), ImMax(flow.region_start.y, io.MousePos.y) };
+                    const bool dragged = ImLengthSqr(io.MousePos - flow.region_start) >= slop * slop;
+
+                    md_temp_scope_t rtemp = md_temp_begin();
+                    defer { md_temp_end(rtemp); };
+                    md_allocator_i* ralloc = md_temp_allocator(rtemp);
+
+                    if (ImGui::IsMouseDown(button)) {
+                        if (dragged) {
+                            region_preview = true;
+                            const ImU32 fill = flow.region_add ? IM_COL32(60, 130, 220, 48) : IM_COL32(210, 70, 70, 48);
+                            const ImU32 line = flow.region_add ? IM_COL32(60, 130, 220, 200) : IM_COL32(210, 70, 70, 200);
+                            draw_list->PushClipRect(canvas_p0, canvas_p1, true);
+                            draw_list->AddRectFilled(rect_min, rect_max, fill);
+                            draw_list->AddRect(rect_min, rect_max, line);
+                            draw_list->PopClipRect();
+
+                            // Preview into the highlight mask so the 3D view shows what the release
+                            // is about to do, for both add and remove.
+                            md_array(uint32_t) nodes = 0;
+                            flow_nodes_in_region(&nodes, view, rect_min, rect_max, ralloc);
+
+                            md_bitfield_t node_mask = md_bitfield_create(ralloc);
+                            md_bitfield_clear(&state.selection.highlight_mask);
+                            for (size_t i = 0; i < md_array_size(nodes); ++i) {
+                                flow_node_atom_mask(&node_mask, nodes[i]);
+                                md_bitfield_or_inplace(&state.selection.highlight_mask, &node_mask);
+                            }
+                        }
+                    } else {
+                        if (dragged) {
+                            md_array(uint32_t) nodes = 0;
+                            flow_nodes_in_region(&nodes, view, rect_min, rect_max, ralloc);
+                            for (size_t i = 0; i < md_array_size(nodes); ++i) {
+                                flow_set_selected(state, nodes[i], flow.region_add);
+                            }
+                        } else if (hit.node >= 0) {
+                            // Never opened into a band: the same gesture on a single item.
+                            flow_set_selected(state, (uint32_t)hit.node, flow.region_add);
+                        } else if (!flow.region_add) {
+                            // Shift+right on nothing clears everything - the gesture that removes
+                            // one item, aimed at no item.
+                            flow_clear_selection(state);
+                        }
+                        flow.region_active = false;
+                    }
+                }
+            }
+
+            // Plain right click (no shift, no drag) opens the group menu. Shift+right is the
+            // deselect gesture and a right DRAG pans, so this is the one right-button meaning left
+            // over - and it is the one that needs somewhere to live, since the new window had no
+            // way to make a group at all.
+            if (canvas_hovered && !io.KeyShift && !flow.region_active &&
+                ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
+                io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Right] < 16.0f)
+            {
+                ImGui::OpenPopup("##flow_context");
+            }
+
+            if (ImGui::BeginPopup("##flow_context")) {
+                const size_t num_selected = md_bitfield_popcount(&state.selection.selection_mask);
+                if (num_selected == 0) {
+                    ImGui::TextDisabled("No atoms selected");
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Shift+click or shift+drag to select");
+                } else {
+                    ImGui::Text("%zu atom%s selected", num_selected, num_selected == 1 ? "" : "s");
+                    ImGui::Separator();
+
+                    if (ImGui::MenuItem("Create new group", nullptr, false, nto.group.count < MAX_NTO_GROUPS)) {
+                        flow_create_group_from_selection(state);
+                    }
+                    if (ImGui::BeginMenu("Add to group", nto.group.count > 1)) {
+                        // Slot 0 is the ungrouped bucket, not a destination anyone means to pick.
+                        for (size_t g = 1; g < nto.group.count; ++g) {
+                            if (ImGui::MenuItem(nto.group.label[g])) {
+                                flow_assign_selection_to_group(state, (uint32_t)g);
+                            }
+                        }
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::MenuItem("Remove from groups")) {
+                        flow_assign_selection_to_group(state, 0);
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Clear selection")) {
+                        flow_clear_selection(state);
+                    }
+                }
+                ImGui::EndPopup();
+            }
+
+            if (canvas_hovered && hit.node >= 0) {
+                const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, (uint32_t)hit.node);
+                if (node && (node->flags & MD_FLOW_NODE_FLAG_OTHER)) {
+                    // An "Others" is a sum, so its tooltip has to say what it is a sum OF - an
+                    // unexplained grey box holding a chunk of the transfer is worse than no box.
+                    const uint32_t other_idx = (uint32_t)hit.node - (uint32_t)md_array_size(flow.graph.nodes);
+                    const uint32_t count = other_idx < md_array_size(flow.cut.other_count)
+                                         ? flow.cut.other_count[other_idx] : 0;
+                    ImGui::SetTooltip("Others\n%.1f%% across %u entries, each below %.1f%%\n\n"
+                                      "Double click to draw them individually",
+                                      node->weight * 100.0f, count, flow.cut.threshold * 100.0f);
+                } else if (node) {
+                    const char* what = (node->column == 0) ? "detachment"
+                                     : (node->column == 1) ? "transition" : "attachment";
+                    const bool has_children = (uint32_t)hit.node < md_array_size(flow.graph.nodes)
+                                              && !md_flow_node_is_leaf(&flow.graph, (uint32_t)hit.node);
+                    if (has_children) {
+                        const bool open = md_flow_cut_is_expanded(&flow.cut, (uint32_t)hit.node);
+                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s\n\nDouble click to %s",
+                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what,
+                            open ? "collapse" : "show its atoms");
+                    } else {
+                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s",
+                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what);
+                    }
+                }
+                // Hovering previews in the viewport; committing to a selection takes shift, so a
+                // plain drag can pan without the selection changing under the cursor. While a band
+                // is open it owns the preview, or the node under the cursor would keep overwriting
+                // what the band is about to do.
+                if (!region_preview) {
+                    flow_node_atom_mask(&state.selection.highlight_mask, (uint32_t)hit.node);
+                }
+
+                // Double click opens or closes a node - including an "Others", which opens by
+                // suspending the threshold for its column. That is what lets the threshold hide
+                // things honestly: everything below it goes, and you can still look.
+                if (!io.KeyShift && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    const uint32_t idx = (uint32_t)hit.node;
+                    const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, idx);
+                    if (n && (n->flags & MD_FLOW_NODE_FLAG_OTHER)) {
+                        md_flow_cut_set_other_expanded(&flow.cut, n->column, true);
+                        md_flow_cut_resolve(&flow.cut, &flow.graph);
+                    } else if (idx < md_array_size(flow.graph.nodes) && !md_flow_node_is_leaf(&flow.graph, idx)) {
+                        md_flow_cut_set_expanded(&flow.cut, idx, !md_flow_cut_is_expanded(&flow.cut, idx));
+                        md_flow_cut_resolve(&flow.cut, &flow.graph);
+                    } else if (n && md_flow_cut_is_other_expanded(&flow.cut, n->column)) {
+                        // Double clicking a node in an opened column closes it again - the pair of
+                        // gestures is symmetric, since the "Others" itself is gone while open.
+                        md_flow_cut_set_other_expanded(&flow.cut, n->column, false);
+                        md_flow_cut_resolve(&flow.cut, &flow.graph);
+                    }
+                }
+            } else if (canvas_hovered && hit.node < 0 && hit.link < 0) {
+                // Cursor is in this canvas and over nothing, so whatever this window last put in
+                // the highlight mask is stale. Cleared only under those two conditions: clearing it
+                // unconditionally would stamp on the 3D viewport's own hover.
+                if (!region_preview) {
+                    md_bitfield_clear(&state.selection.highlight_mask);
+                }
+
+                // Empty space: double click reframes. A button for this would occupy toolbar room
+                // permanently to undo something that only occasionally needs undoing.
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    flow_fit_view(canvas_sz);
+                }
+            }
+            if (canvas_hovered && hit.link >= 0) {
+                const md_flow_link_t* link = flow.cut.links + hit.link;
+                const md_flow_node_t* src = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
+                const md_flow_node_t* dst = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
+                if (src && dst) {
+                    ImGui::SetTooltip("%.*s  ->  %.*s\n%.2f%%",
+                        (int)src->label.len, src->label.ptr,
+                        (int)dst->label.len, dst->label.ptr,
+                        link->weight * 100.0f);
+                }
+            }
+        }
+        ImGui::End();
+
+        if (export_requested) {
+            export_flow_diagram(ImVec2(1024, 640));
+        }
+    }
+
+    bool export_flow_diagram(ImVec2 size) {
+        if (!flow.built) {
+            MD_LOG_ERROR("Charge transfer export failed: no diagram to export");
+            return false;
+        }
+
+        char path_buf[1024] = {};
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("svg"))) {
+            return false;
+        }
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        md_vg_scene_t scene = {};
+        md_vg_scene_init(&scene, { size.x, size.y }, md_temp_allocator(temp));
+
+        // The export draws the SAME layout the screen does, at a different size. That is the
+        // point of keeping layout separate from drawing: there is no second implementation to
+        // drift out of agreement with the first.
+        md_flow_layout_t layout = {};
+        md_flow_layout_init(&layout, md_temp_allocator(temp));
+        md_flow_layout_compute(&layout, &flow.graph, &flow.cut, &flow.params);
+
+        FlowView view = {};
+        view.area_min = { 0.0f, 0.0f };
+        view.area_max = size;
+        view.zoom = 1.0f;
+
+        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style);
+
+        const bool success = md_vg_scene_write_svg_file(&scene, str_from_cstr(path_buf));
+        if (success) {
+            MD_LOG_INFO("Exported charge transfer diagram to '%s'", path_buf);
+        } else {
+            MD_LOG_ERROR("Failed to export charge transfer diagram to '%s'", path_buf);
+        }
+        return success;
+    }
+
+    void update_nto_derived_data() {
+        if (!vlx || !md_vlx_rsp_has_nto(vlx) || !nto.atom_group_idx) return;
+
         // Create hash to check for changes to trigger update of colors in gl representation
         uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, md_array_bytes(nto.atom_group_idx), 0);
         uint64_t color_hash    = md_hash64(nto.group.color, sizeof(nto.group.color), atom_idx_hash);
@@ -7242,7 +9001,7 @@ struct VeloxChem : viamd::EventHandler {
         }
 
         // Create hash to check for changes to trigger recomputation of transition matrix
-        uint64_t matrix_hash = atom_idx_hash ^ nto.sel_nto_idx ^ nto.group.count;
+        uint64_t matrix_hash = atom_idx_hash ^ (uint64_t)rsp.selected ^ nto.group.count;
         static uint64_t cur_matrix_hash = 0;
 
         if (matrix_hash != cur_matrix_hash) {
@@ -7266,8 +9025,8 @@ struct VeloxChem : viamd::EventHandler {
             // Clear all of the values to zero (matrix, group values)
             MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
-			if (nto.sel_nto_idx != -1) {
-				const size_t nto_idx = (size_t)nto.sel_nto_idx;
+			if (rsp.selected != -1) {
+				const size_t nto_idx = (size_t)rsp.selected;
 #if 1
 				{
 					md_temp_scope_t temp = md_temp_begin();
@@ -7376,6 +9135,7 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
     }
+
 };
 
 static VeloxChem instance = {};
