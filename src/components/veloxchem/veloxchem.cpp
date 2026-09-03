@@ -200,6 +200,64 @@ static void attribute_orbital_density(double out_charge[], const int* ao_to_idx,
 	}
 }
 
+// Column identifiers for the Orbital Grid's "Molecular Orbitals" table. File scope because the
+// active sort column is remembered in Orb across frames, and because the order it produces is
+// what the orbital grid takes its span from.
+enum OrbitalColumn {
+    OrbitalColumn_Idx,
+    OrbitalColumn_OccAlpha,
+    OrbitalColumn_OccBeta,
+    OrbitalColumn_EneAlpha,
+    OrbitalColumn_EneBeta,
+};
+
+// Fills row_to_mo with the mo indices in the order the table lists them, and mo_to_row with its
+// inverse. The grid shows a span of table ROWS rather than a span of mo indices, so both views
+// agree by construction whatever the sort is - see draw_orb_window.
+//
+// The default, mo index descending, is the conventional orbital diagram order with the highest
+// energy on top, and is exactly what this table showed before it became sortable.
+//
+// sum_occupancy: in the restricted layouts a single "Occupancy" column shows alpha + beta, and
+// the sort key has to be the value on screen, not the half of it that alpha contributes.
+static void orbital_table_build_order(int* row_to_mo, int* mo_to_row, int num_mos, int sort_column, bool ascending,
+                                      const double* occ_alpha, const double* occ_beta,
+                                      const double* ene_alpha, const double* ene_beta, bool sum_occupancy)
+{
+    for (int i = 0; i < num_mos; ++i) {
+        row_to_mo[i] = i;
+    }
+
+    // A column whose data never arrived falls back to the index, which keeps the order total and
+    // the comparator a strict weak ordering rather than sorting on a null dereference.
+    auto key_of = [&](int n) -> double {
+        switch (sort_column) {
+        case OrbitalColumn_OccAlpha: return occ_alpha ? ((sum_occupancy && occ_beta) ? occ_alpha[n] + occ_beta[n] : occ_alpha[n]) : (double)n;
+        case OrbitalColumn_OccBeta:  return occ_beta  ? occ_beta[n]  : (double)n;
+        case OrbitalColumn_EneAlpha: return ene_alpha ? ene_alpha[n] : (double)n;
+        case OrbitalColumn_EneBeta:  return ene_beta  ? ene_beta[n]  : (double)n;
+        case OrbitalColumn_Idx:
+        default:                     return (double)n;
+        }
+    };
+
+    std::sort(row_to_mo, row_to_mo + num_mos, [&](int a, int b) {
+        const double ka = key_of(a);
+        const double kb = key_of(b);
+        if (ka != kb) {
+            return ascending ? (ka < kb) : (ka > kb);
+        }
+        // Ties are the common case, not the exception - occupancies are mostly 2, 1 or 0, and
+        // symmetry makes energies degenerate - so the mo index breaks them, in the same direction
+        // as the sort so that a degenerate run reads the way the index column would.
+        return ascending ? (a < b) : (a > b);
+    });
+
+    for (int r = 0; r < num_mos; ++r) {
+        mo_to_row[row_to_mo[r]] = r;
+    }
+}
+
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
     md_vlx_t* vlx = nullptr;
@@ -271,6 +329,11 @@ struct VeloxChem : viamd::EventHandler {
         uint64_t energy_hash = 0;
     } opt;
 
+    struct Scf {
+        // Convergence history the SCF plot last fitted its axes to. See draw_summary_window.
+        uint64_t plot_hash = 0;
+    } scf;
+
     struct Orb {
         bool show_window = false;
         Volume   vol[16] = {};
@@ -283,10 +346,15 @@ struct VeloxChem : viamd::EventHandler {
         int mo_idx = -1;
         int scroll_to_idx = -1;
 
+        // Active sort of the orbital table. Mo index descending is what the table showed before
+        // it was sortable, so it stays the default.
+        int  sort_column    = OrbitalColumn_Idx;
+        bool sort_ascending = false;
+
         IsoDesc iso = {
             .count = 2,
             .values = {0.05f, -0.05},
-            .colors = {{0.f/255.f,75.f/255.f,135.f/255.f,0.75f}, {255.f/255.f,205.f/255.f,0.f/255.f,0.75f}},
+            .colors = {{0.f, 75.f/255.f, 135.f/255.f, 0.75f}, {1.0f, 205.f/255.f, 0.f, 0.75f}},
         };
 
         GBuffer gbuf = {};
@@ -3642,7 +3710,12 @@ struct VeloxChem : viamd::EventHandler {
             return;
         }
 
-        static ImPlotRect lims{ 0,1,0,1 };
+        // Same as the Response window: keep a margin between the data and the plot frame instead
+        // of letting the curves run into the edges. ImPlot applies this only to axes it FITS, so
+        // it covers the optimization plot and the SCF plot's linear energy axis; the SCF plot's
+        // log gradient axis cannot use it and pads itself, see below.
+        ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.05f, 0.1f));
+        defer { ImPlot::PopStyleVar(); };
 
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
@@ -3706,18 +3779,55 @@ struct VeloxChem : viamd::EventHandler {
                 }
 
                 if (num_iter > 1) {
+                    // The gradient axis is log10, and FitPadding cannot pad it: ImPlotAxis::ApplyFit
+                    // pads in VALUE space, while a log axis is constrained to (DBL_MIN, inf). A fit
+                    // spanning 1e-9 to 1e-1 has an extent of ~0.1, so padding it by 10% drives the
+                    // minimum negative and it clamps three hundred decades below the data. Pad in
+                    // decades instead and set the limits directly.
+                    double grad_lo = DBL_MAX;
+                    double grad_hi = -DBL_MAX;
+                    for (size_t i = 0; i < num_iter; ++i) {
+                        // Non-positive values have no place on a log axis and would only drag the
+                        // fit down to the clamp.
+                        if (grad_norm[i] > 0.0) {
+                            grad_lo = MIN(grad_lo, grad_norm[i]);
+                            grad_hi = MAX(grad_hi, grad_norm[i]);
+                        }
+                    }
+                    const bool has_grad_range = (grad_lo <= grad_hi);
+                    if (has_grad_range) {
+                        const double log_lo = log10(grad_lo);
+                        const double log_hi = log10(grad_hi);
+                        // Ten percent of the span at each end, matching the linear axes - with a
+                        // floor, because a run that barely moved has no span to take a share of.
+                        const double log_pad = MAX((log_hi - log_lo) * 0.1, 0.1);
+                        grad_lo = pow(10.0, log_lo - log_pad);
+                        grad_hi = pow(10.0, log_hi + log_pad);
+                    }
+
+                    // Refit when a different history arrives - the same idiom the Optimization plot
+                    // below uses. In between, ImPlotCond_Once leaves the axes the user's to zoom
+                    // and pan, which ImPlotCond_Always every frame would take away.
+                    uint64_t plot_hash = md_hash64((const uint8_t*)grad_norm,      sizeof(double) * num_iter, 0);
+                    plot_hash          = md_hash64((const uint8_t*)energy_offsets, sizeof(double) * num_iter, plot_hash);
+                    const ImPlotCond axis_cond = (plot_hash != scf.plot_hash) ? ImPlotCond_Always : ImPlotCond_Once;
+                    scf.plot_hash = plot_hash;
+
                     if (ImPlot::BeginPlot("SCF")) {
-                        ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (int)num_iter);
+                        ImPlot::SetupAxisLimits(ImAxis_X1, 1.0, (double)num_iter, axis_cond);
                         ImPlot::SetupLegend(ImPlotLocation_NorthEast);
                         ImPlot::SetupAxes("Iteration", "Gradient Norm (au)");
                         // We draw 2 y axis as "Energy total" has values in a different range then the rest of the data
                         ImPlot::SetupAxis(ImAxis_Y2, "Energy (au)", ImPlotAxisFlags_AuxDefault);
                         ImPlot::SetupAxisScale(ImAxis_Y1, ImPlotScale_Log10);
+                        if (has_grad_range) {
+                            // After SetupAxes, which is what enables Y1.
+                            ImPlot::SetupAxisLimits(ImAxis_Y1, grad_lo, grad_hi, axis_cond);
+                        }
 
                         ImPlot::PlotLine("Gradient", grad_norm, (int)num_iter, 1.0, 1.0);
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
                         ImPlot::PlotLine("Energy", energy_offsets, (int)num_iter, 1.0, 1.0);
-                        lims = ImPlot::GetPlotLimits(ImAxis_X1, ImAxis_Y1);
                         //ImPlot::PlotLine("Density Change", iter, vlx.scf.iter.density_change, (int)vlx.scf.iter.count);
                         //ImPlot::PlotLine("Energy Change", iter, vlx.scf.iter.energy_change, (int)vlx.scf.iter.count);
                         //ImPlot::PlotLine("Max Gradient", iter, vlx.scf.iter.max_gradient, (int)vlx.scf.iter.count);
@@ -3740,9 +3850,7 @@ struct VeloxChem : viamd::EventHandler {
                 size_t num_steps = md_vlx_opt_number_of_steps(vlx);
                 if (num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
-                        ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.05f, 0.1f));
-                        defer { ImPlot::PopStyleVar(); };
-
+                        // FitPadding is pushed once for the whole window, at the top of this function.
                         md_vlx_opt_type_t opt_type = md_vlx_opt_type(vlx);
                         size_t ts_index = md_vlx_opt_irc_ts_index(vlx);
                         const double* energies = md_vlx_opt_energies(vlx);
@@ -5394,13 +5502,55 @@ struct VeloxChem : viamd::EventHandler {
                 orb_lumo_idx = MAX(lumo_idx[0], lumo_idx[1]);
             }
 
+            const int num_tot_mos = (int)num_molecular_orbitals();
+
             int num_mos = num_x * num_y;
-            int beg_mo_idx = orb.mo_idx - num_mos / 2 + (num_mos % 2 == 0 ? 1 : 0);
-            int window_size = num_mos;
-            if (type == MD_VLX_SCF_UNRESTRICTED) {
-                beg_mo_idx = orb.mo_idx - num_y / 2 + (num_y % 2 == 0 ? 1 : 0);
-                window_size = num_y;
+            // Number of distinct orbitals on screen: an unrestricted grid spends its two columns
+            // on the alpha and the beta half of the same orbital, so a grid row is one orbital.
+            const int window_size = (type == MD_VLX_SCF_UNRESTRICTED) ? num_y : num_mos;
+
+            // The table is sortable and the grid shows a span of it, so the span is taken in ROW
+            // space, not in mo index space. Under a sort by energy or occupancy the orbitals on
+            // screen are no longer contiguous by index, and a span taken by index would show a
+            // different set than the rows it highlights.
+            md_temp_scope_t temp = md_temp_begin();
+            defer { md_temp_end(temp); };
+            int* row_to_mo = md_temp_alloc_array(temp, int, num_tot_mos);
+            int* mo_to_row = md_temp_alloc_array(temp, int, num_tot_mos);
+
+            // A column the current scf type does not display must not stay selected, or a
+            // restricted file opened after an unrestricted one would sort on a hidden key.
+            if (type != MD_VLX_SCF_UNRESTRICTED &&
+                (orb.sort_column == OrbitalColumn_OccBeta || orb.sort_column == OrbitalColumn_EneBeta)) {
+                orb.sort_column = OrbitalColumn_Idx;
+                orb.sort_ascending = false;
             }
+
+            auto rebuild_order = [&]() {
+                orbital_table_build_order(row_to_mo, mo_to_row, num_tot_mos, orb.sort_column, orb.sort_ascending,
+                                          occ_alpha, occ_beta, ene_alpha, ene_beta, type != MD_VLX_SCF_UNRESTRICTED);
+            };
+            rebuild_order();
+
+            // Centered on the selected orbital's row. Deliberately not clamped to the ends: the
+            // window keeps its size and runs off the list, and panels past the end draw empty,
+            // exactly as they did when the span was taken in index space.
+            int beg_row = 0;
+            auto recompute_window = [&]() {
+                const int cur_row = (0 <= orb.mo_idx && orb.mo_idx < num_tot_mos) ? mo_to_row[orb.mo_idx] : 0;
+                beg_row = cur_row - window_size / 2;
+            };
+            recompute_window();
+
+            // Slot k of the window counted from the BOTTOM, which is the order the grid lays its
+            // slots out in - slot 0 is the bottom right cell. Rows past either end return a
+            // negative, distinct per slot: every mo_idx < 0 is skipped when drawing and when
+            // evaluating, and keeping them distinct stops two empty slots from matching each
+            // other in the volume reuse search below and swapping back and forth forever.
+            auto window_mo_idx = [&](int k) -> int {
+                const int row = beg_row + window_size - 1 - k;
+                return (0 <= row && row < num_tot_mos) ? row_to_mo[row] : (-1 - k);
+            };
 
             // LEFT PANE
             {
@@ -5411,9 +5561,18 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::BeginGroup();
 
                 ImGui::SliderInt("##Rows", &orb.num_y, 1, 4);
-                if (type == MD_VLX_SCF_UNRESTRICTED) ImGui::PushDisabled();
-                ImGui::SliderInt("##Cols", &orb.num_x, 1, 4);
-                if (type == MD_VLX_SCF_UNRESTRICTED) ImGui::PopDisabled();
+
+                // An unrestricted grid is always two columns wide, alpha next to beta. Show the
+                // slider at the count actually in effect rather than at the stored preference,
+                // but keep writing back only when it is live, so the preference survives for the
+                // next restricted dataset.
+                const bool cols_fixed = (type == MD_VLX_SCF_UNRESTRICTED);
+                int num_x_slider = cols_fixed ? num_x : orb.num_x;
+                if (cols_fixed) ImGui::PushDisabled();
+                if (ImGui::SliderInt("##Cols", &num_x_slider, 1, 4) && !cols_fixed) {
+                    orb.num_x = num_x_slider;
+                }
+                if (cols_fixed) ImGui::PopDisabled();
 
                 const double iso_min = 1.0e-4;
                 const double iso_max = 5.0;
@@ -5431,14 +5590,6 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::ColorEdit4("##Color Negative", orb.iso.colors[1].elem);
                 ImGui::SetItemTooltip("Color Negative");
 
-                enum {
-                    Col_Idx,
-                    Col_Occ_Alpha,
-                    Col_Occ_Beta,
-                    Col_Ene_Alpha,
-                    Col_Ene_Beta,
-                };
-
                 const char* btn_text = "Goto HOMO";
                 if (type == MD_VLX_SCF_RESTRICTED_OPENSHELL && (homo_idx[0] != homo_idx[1])) {
                     btn_text = "Goto SOMO";
@@ -5455,7 +5606,8 @@ struct VeloxChem : viamd::EventHandler {
 
                 const ImGuiTableFlags flags =
                     ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
-                    ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY;
+                    ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_ScrollY |
+                    ImGuiTableFlags_Sortable;
                 if (ImGui::BeginTable("Molecular Orbitals", num_cols, flags))//, ImVec2(0.0f, TEXT_BASE_HEIGHT * 15), 0.0f))
                 {
                     // Declare columns
@@ -5465,28 +5617,53 @@ struct VeloxChem : viamd::EventHandler {
                     // - ImGuiTableColumnFlags_DefaultSort
                     // - ImGuiTableColumnFlags_NoSort / ImGuiTableColumnFlags_NoSortAscending / ImGuiTableColumnFlags_NoSortDescending
                     // - ImGuiTableColumnFlags_PreferSortAscending / ImGuiTableColumnFlags_PreferSortDescending
+                    // MO carries PreferSortDescending as well as DefaultSort so the table opens on
+                    // highest index first - the order it had before it was sortable.
+                    const ImGuiTableColumnFlags mo_col_flags =
+                        ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed;
                     if (type == MD_VLX_SCF_UNRESTRICTED) {
-                        ImGui::TableSetupColumn("MO", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Idx);
-                        ImGui::TableSetupColumn((const char*)u8"Occ. α", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Occ_Alpha);
-                        ImGui::TableSetupColumn((const char*)u8"Occ. β", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Occ_Beta);
-                        ImGui::TableSetupColumn((const char*)u8"Ene. α", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Ene_Alpha);
-                        ImGui::TableSetupColumn((const char*)u8"Ene. β", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Ene_Beta);
+                        ImGui::TableSetupColumn("MO", mo_col_flags, 0.0f, OrbitalColumn_Idx);
+                        ImGui::TableSetupColumn((const char*)u8"Occ. α", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, OrbitalColumn_OccAlpha);
+                        ImGui::TableSetupColumn((const char*)u8"Occ. β", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, OrbitalColumn_OccBeta);
+                        ImGui::TableSetupColumn((const char*)u8"Ene. α", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, OrbitalColumn_EneAlpha);
+                        ImGui::TableSetupColumn((const char*)u8"Ene. β", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, OrbitalColumn_EneBeta);
                     }
                     else {
-                        ImGui::TableSetupColumn("MO", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Idx);
-                        ImGui::TableSetupColumn("Occupancy", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Occ_Alpha);
-                        ImGui::TableSetupColumn("Energy", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, Col_Ene_Alpha);
+                        ImGui::TableSetupColumn("MO", mo_col_flags, 0.0f, OrbitalColumn_Idx);
+                        ImGui::TableSetupColumn("Occupancy", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, OrbitalColumn_OccAlpha);
+                        ImGui::TableSetupColumn("Energy", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, OrbitalColumn_EneAlpha);
                     }
                     ImGui::TableSetupScrollFreeze(0, 1); // Make row always visible
+
+                    // Re-sorted here rather than on the next frame: the rows below and the grid
+                    // slots further down both read this order within this same frame, and a lag
+                    // would show the grid a span of the previous order.
+                    if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+                        if (sort_specs->SpecsDirty) {
+                            const int  col = (sort_specs->SpecsCount > 0) ? (int)sort_specs->Specs[0].ColumnUserID : (int)OrbitalColumn_Idx;
+                            const bool asc = (sort_specs->SpecsCount > 0) && (sort_specs->Specs[0].SortDirection == ImGuiSortDirection_Ascending);
+                            if (col != orb.sort_column || asc != orb.sort_ascending) {
+                                orb.sort_column = col;
+                                orb.sort_ascending = asc;
+                                rebuild_order();
+                                recompute_window();
+                            }
+                            sort_specs->SpecsDirty = false;
+                        }
+                    }
+
                     ImGui::TableHeadersRow();
 
-                    for (int n = (int)num_molecular_orbitals() - 1; n >= 0; n--) {
+                    for (int row = 0; row < num_tot_mos; ++row) {
+                        const int n = row_to_mo[row];
                         ImGui::PushID(n + 1);
                         ImGui::TableNextRow();
                         if (n == xps_highlight_mo) {
                             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(COLOR_ROW_HIGHLIGHT));
                         }
-                        bool is_selected = (beg_mo_idx <= n && n < beg_mo_idx + window_size);
+                        // Contiguous in rows, so the highlighted block follows the sort and always
+                        // names the same orbitals the grid is showing.
+                        bool is_selected = (beg_row <= row && row < beg_row + window_size);
                         ImGui::TableNextColumn();
                         if (orb.scroll_to_idx != -1 && n == orb.scroll_to_idx) {
                             orb.scroll_to_idx = -1;
@@ -5507,10 +5684,14 @@ struct VeloxChem : viamd::EventHandler {
                             const char* lbl = "";
                             double occ = occ_alpha[n];
                             if (type == MD_VLX_SCF_UNRESTRICTED) {
-                                if (n == homo_idx[0] && n == orb_homo_idx) {
+                                // Compared against alpha's own homo/lumo only. The window-wide
+                                // orb_homo_idx/orb_lumo_idx are extremes over both spins, so
+                                // requiring them here left whichever spin did not hold the
+                                // extreme permanently unlabelled.
+                                if (n == homo_idx[0]) {
                                     lbl = "HOMO";
                                 }
-                                else if (n == lumo_idx[0] && n == orb_lumo_idx) {
+                                else if (n == lumo_idx[0]) {
                                     lbl = "LUMO";
                                 }
                             }
@@ -5534,10 +5715,10 @@ struct VeloxChem : viamd::EventHandler {
                             ImGui::TableNextColumn();
                             if (occ_beta) {
                                 const char* lbl = "";
-                                if (n == homo_idx[1] && n == orb_homo_idx) {
+                                if (n == homo_idx[1]) {
                                     lbl = "HOMO";
                                 }
-                                else if (n == lumo_idx[1] && n == orb_lumo_idx) {
+                                else if (n == lumo_idx[1]) {
                                     lbl = "LUMO";
                                 }
                                 ImGui::Text("%.1f %s", occ_beta[n], lbl);
@@ -5580,11 +5761,11 @@ struct VeloxChem : viamd::EventHandler {
             md_vlx_spin_t vol_mo_type[16] = {};
             for (int i = 0; i < num_mos; ++i) {
                 if (type == MD_VLX_SCF_UNRESTRICTED) {
-                    vol_mo_idx[i] = beg_mo_idx + i / 2;
+                    vol_mo_idx[i] = window_mo_idx(i / 2);
                     vol_mo_type[i] = (i & 1) ? MD_VLX_SPIN_ALPHA : MD_VLX_SPIN_BETA;
                 }
                 else {
-                    vol_mo_idx[i] = beg_mo_idx + i;
+                    vol_mo_idx[i] = window_mo_idx(i);
                     vol_mo_type[i] = MD_VLX_SPIN_ALPHA;
                 }
             }
@@ -5601,7 +5782,13 @@ struct VeloxChem : viamd::EventHandler {
                 bool found = false;
                 for (int j = 0; j < num_mos; ++j) {
                     if (i == j) continue;
-                    if (vol_mo_idx[i] == orb.vol_mo_idx[j]) {
+                    // The spin has to match as well, not just the index. In the unrestricted
+                    // layout two slots share every mo index and differ only in spin, so an
+                    // index-only comparison lets a slot claim its own opposite-spin twin: it
+                    // renders the wrong spin, and the swap drags an already-resolved slot's
+                    // volume away with it. With the spin compared, no resolved slot can match,
+                    // because (mo_idx, spin) is unique across slots.
+                    if (vol_mo_idx[i] == orb.vol_mo_idx[j] && vol_mo_type[i] == orb.vol_mo_type[j]) {
                         // Swap to correct location
                         ImSwap(orb.vol[i], orb.vol[j]);
                         ImSwap(orb.vol_mo_idx[i], orb.vol_mo_idx[j]);
@@ -5625,8 +5812,6 @@ struct VeloxChem : viamd::EventHandler {
 #else
                 init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
 #endif
-                const int num_tot_mos = (int)num_molecular_orbitals();
-
                 for (int i = 0; i < num_jobs; ++i) {
                     int slot_idx = job_queue[i];
                     int mo_idx = vol_mo_idx[slot_idx];
@@ -5668,19 +5853,14 @@ struct VeloxChem : viamd::EventHandler {
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_min, canvas_max, IM_COL32(255, 255, 255, 255));
 
-            const int num_orbs = (int)num_molecular_orbitals();
-
             for (int i = 0; i < num_mos; ++i) {
                 ImGui::PushID(i);
                 defer { ImGui::PopID(); };
 
-                int mo_idx = beg_mo_idx + i;
-                if (type == MD_VLX_SCF_UNRESTRICTED) {
-                    mo_idx = beg_mo_idx + i / 2;
-                }
+                const int mo_idx = window_mo_idx((type == MD_VLX_SCF_UNRESTRICTED) ? i / 2 : i);
                 int x = num_x - i % num_x - 1;
                 int y = num_y - i / num_x - 1;
-                if (-1 < mo_idx && mo_idx < num_orbs) {
+                if (-1 < mo_idx && mo_idx < num_tot_mos) {
                     const ImVec2 p0 = canvas_min + orb_win_sz * ImVec2((float)(x + 0), (float)(y + 0));
                     const ImVec2 p1 = canvas_min + orb_win_sz * ImVec2((float)(x + 1), (float)(y + 1));
                     const ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
@@ -5729,11 +5909,14 @@ struct VeloxChem : viamd::EventHandler {
 
                     const char* lbl = "";
                     if (type == MD_VLX_SCF_UNRESTRICTED) {
+                        // 0 = alpha, 1 = beta, matching vol_mo_type above. A panel shows one
+                        // spin, so it is labelled against that spin's own homo/lumo; gating on
+                        // the window-wide extremes left the other spin unlabelled.
                         int j = (i & 1) ? 0 : 1;
-                        if (mo_idx == orb_homo_idx && orb_homo_idx == homo_idx[j]) {
+                        if (mo_idx == homo_idx[j]) {
                             lbl = "(HOMO)";
                         }
-                        else if (mo_idx == orb_lumo_idx && orb_lumo_idx == lumo_idx[j]) {
+                        else if (mo_idx == lumo_idx[j]) {
                             lbl = "(LUMO)";
                         }
                     }
@@ -5764,13 +5947,15 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }
 
-            for (int x = 1; x < orb.num_x; ++x) {
+            // num_x, not orb.num_x: an unrestricted grid is forced to two columns, and the stored
+            // preference drew a stray line on the canvas edge.
+            for (int x = 1; x < num_x; ++x) {
                 ImVec2 p0 = { canvas_min.x + orb_win_sz.x * x, canvas_min.y };
                 ImVec2 p1 = { canvas_min.x + orb_win_sz.x * x, canvas_max.y };
                 draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
             }
 
-            for (int y = 1; y < orb.num_y; ++y) {
+            for (int y = 1; y < num_y; ++y) {
                 ImVec2 p0 = { canvas_min.x, canvas_min.y + orb_win_sz.y * y };
                 ImVec2 p1 = { canvas_max.x, canvas_min.y + orb_win_sz.y * y };
                 draw_list->AddLine(p0, p1, IM_COL32(0, 0, 0, 255));
@@ -6043,16 +6228,28 @@ struct VeloxChem : viamd::EventHandler {
 
             if (show_mo_combo) {
                 md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
-                if (type == MD_VLX_SCF_RESTRICTED_OPENSHELL) {
+                // Only an unrestricted calculation has two distinct sets of coefficients. For
+                // restricted and restricted-openshell, scf.beta is a shallow copy of alpha that
+                // shares the very same coefficient buffer (md_vlx.c), and the beta attribute is
+                // published as an alias of alpha's, so a selector there would offer two names
+                // for identical data. Forcing alpha in that case also keeps a Beta selection
+                // left over from a previously loaded file from picking beta's homo/lumo labels.
+                if (type == MD_VLX_SCF_UNRESTRICTED) {
                     const char* options[2] = {"Alpha", "Beta"};
                     if (ImGui::BeginCombo("##MO_TYPE", options[export_state.mo.type])) {
                         for (size_t i = 0; i < ARRAY_SIZE(options); ++i) {
-                            if (ImGui::Selectable(options[i])) {
+                            const bool is_selected = (export_state.mo.type == (md_vlx_spin_t)i);
+                            if (ImGui::Selectable(options[i], is_selected)) {
                                 export_state.mo.type = (md_vlx_spin_t)i;
+                            }
+                            if (is_selected) {
+                                ImGui::SetItemDefaultFocus();
                             }
                         }
                         ImGui::EndCombo();
                     }
+                } else {
+                    export_state.mo.type = MD_VLX_SPIN_ALPHA;
                 }
 
                 int orb_homo_idx = homo_idx[export_state.mo.type];
