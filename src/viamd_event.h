@@ -36,7 +36,6 @@ enum : EventType {
     // System state corresponds to the transient portion of the system i.e. atom coordinates + unitcell, which can be modified by a script or by a trajectory frame change.
     EventType_ViamdSystemStateChanged		= HASH_STR_LIT("VIAMD System State Changed"),		// Called when system state has been modified (e.g. by a script or by a trajectory frame change)
 
-	EventType_ViamdRepresentationInfoFill					= HASH_STR_LIT("VIAMD Representation Info Fill"),
 
 	// Picking events
 	// This reserve range is to give each event handler a chance to reserve a picking range before a frame is rendered.
@@ -52,7 +51,6 @@ enum : EventType {
 enum : EventPayloadType {
 	EventPayloadType_Undefined					= 0,
 	EventPayloadType_ApplicationState			= HASH_STR_LIT("Payload Application State"),
-	EventPayloadType_RepresentationInfo			= HASH_STR_LIT("Payload Representation Info"),
 	EventPayloadType_Representation				= HASH_STR_LIT("Payload Representation"),
 	EventPayloadType_SerializationState			= HASH_STR_LIT("Payload Serialization State"),
 	EventPayloadType_DeserializationState		= HASH_STR_LIT("Payload Deserialization State"),

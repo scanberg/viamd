@@ -59,6 +59,12 @@ namespace loader {
     // differ from sys->alloc (a temp arena for the state, a persistent one for the system).
     bool load(md_system_t* sys, md_system_state_t* out_state, str_t filepath, const LoaderState& state);
 
+    // For a file that ADDS to an already loaded system rather than replacing it (LoaderFlag_
+    // Supplemental, set by init above). Its data lands in the system's attribute table; the atoms
+    // and the coordinates are left alone, which is why there is no out_state. Returns false for a
+    // loader type with nothing supplemental to contribute.
+    bool load_supplemental(md_system_t* sys, str_t filepath, const LoaderState& state);
+
     // To help enlist supported loader type
     str_t       type_name(LoaderType type);
     str_t       type_ext(LoaderType type);

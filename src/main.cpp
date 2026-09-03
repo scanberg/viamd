@@ -3353,7 +3353,11 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 
     const bool show_spin = electronic_structure_uses_spin(es);
     if (show_spin) {
-        const bool has_beta = state->representation.info.beta.num_orbitals > 0;
+        // Asked of the table: a second, DISTINCT set of coefficients. This used to be true for a
+        // restricted file too, because beta is published there as an alias of alpha and the fan-in
+        // only checked that the column existed - so the selector appeared and toggled between two
+        // names for one datum.
+        const bool has_beta = es_has_distinct_beta_orbitals(state->mold.sys);
         if (es.source == ElectronicStructureSource::MolecularOrbital) {
             if (es.spin != ElectronicStructureSpin::Alpha && es.spin != ElectronicStructureSpin::Beta) {
                 es.spin = ElectronicStructureSpin::Alpha;
@@ -3420,21 +3424,34 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     const bool show_lambdas = electronic_structure_uses_nto_lambda_idx(es);
 
     if (show_molecular_orbitals) {
-        // The labels carry the (homo)/(lumo) markers, and those sit at different indices for the
-        // two spins in an unrestricted calculation. The rendered volume already follows es.spin
-        // (electronic_structure_evaluate picks the coefficient attribute from it), so the label
-        // set has to follow it too - otherwise the entry marked (homo) under spin=Beta is alpha's
-        // HOMO index. Falls back to alpha whenever beta was never filled in.
-        const MolecularOrbital& mo_info =
-            (es.spin == ElectronicStructureSpin::Beta && state->representation.info.beta.label)
-            ? state->representation.info.beta
-            : state->representation.info.alpha;
-        if (mo_info.label) {
-            es.orbital_idx = CLAMP(es.orbital_idx, 0, (int)mo_info.num_orbitals - 1);
-            if (ImGui::BeginCombo("orbital idx", mo_info.label[es.orbital_idx].ptr)) {
-                for (int n = 0; n < (int)mo_info.num_orbitals; n++) {
+        // The (homo)/(lumo) markers sit at different indices for the two spins in an unrestricted
+        // calculation, and the rendered volume already follows es.spin - so the frontier has to
+        // follow it too, or the entry marked (homo) under spin=Beta is alpha's HOMO index.
+        //
+        // Formatted here rather than read out of a precomputed list: it is an index and two markers,
+        // and a copy of it would be one more thing to keep in step with the table.
+        const bool use_beta = (es.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(state->mold.sys);
+
+        size_t num_orbitals = 0;
+        OrbitalFrontier frontier = {};
+        if (es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) && num_orbitals > 0) {
+            es_orbital_frontier(&frontier, state->mold.sys, use_beta ? es_path::beta_occupation : es_path::alpha_occupation);
+
+            auto orbital_label = [&frontier](char* buf, size_t cap, int n) {
+                const char* mark = (n == frontier.homo_idx) ? " (homo)" : (n == frontier.lumo_idx) ? " (lumo)" : "";
+                snprintf(buf, cap, "%i%s", n + 1, mark);
+            };
+
+            es.orbital_idx = CLAMP(es.orbital_idx, 0, (int)num_orbitals - 1);
+
+            char preview[32];
+            orbital_label(preview, sizeof(preview), es.orbital_idx);
+            if (ImGui::BeginCombo("orbital idx", preview)) {
+                for (int n = 0; n < (int)num_orbitals; n++) {
                     bool is_selected = (es.orbital_idx == n);
-                    if (ImGui::Selectable(mo_info.label[n].ptr, is_selected)) {
+                    char label[32];
+                    orbital_label(label, sizeof(label), n);
+                    if (ImGui::Selectable(label, is_selected)) {
                         if (es.orbital_idx != n) {
                             update_rep = true;
                         }
@@ -3451,12 +3468,17 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     }
 
     if (show_exited_states) {
-        if (state->representation.info.nto.label) {
-            es.excited_state_idx = CLAMP(es.excited_state_idx, 0, (int)state->representation.info.nto.num_orbitals - 1);
-            if (ImGui::BeginCombo("state idx", state->representation.info.nto.label[es.excited_state_idx].ptr)) {
-                for (int n = 0; n < (int)state->representation.info.nto.num_orbitals; n++) {
+        const int num_excited_states = (int)es_excited_state_count(state->mold.sys);
+        if (num_excited_states > 0) {
+            es.excited_state_idx = CLAMP(es.excited_state_idx, 0, num_excited_states - 1);
+            char preview[16];
+            snprintf(preview, sizeof(preview), "%i", es.excited_state_idx + 1);
+            if (ImGui::BeginCombo("state idx", preview)) {
+                for (int n = 0; n < num_excited_states; n++) {
                     const bool is_selected = (es.excited_state_idx == n);
-                    if (ImGui::Selectable(state->representation.info.nto.label[n].ptr, is_selected)) {
+                    char label[16];
+                    snprintf(label, sizeof(label), "%i", n + 1);
+                    if (ImGui::Selectable(label, is_selected)) {
                         if (es.excited_state_idx != n) {
                             update_rep = true;
                         }
@@ -3470,29 +3492,40 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 ImGui::EndCombo();
             }
             if (show_lambdas) {
-                if (state->representation.info.nto.lambda) {
-                    const NaturalTransitionOrbitalLambda& lambda = state->representation.info.nto.lambda[es.excited_state_idx];
-                    const int num_lambdas = (int)lambda.num_lambdas;
-                    if (num_lambdas > 0) {
-                        es.nto_lambda_idx = CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
-                        if (lambda.label) {
-                            if (ImGui::BeginCombo("lambda idx", lambda.label[es.nto_lambda_idx].ptr)) {
-                                for (int n = 0; n < (int)num_lambdas; n++) {
-                                    const bool is_selected = (es.nto_lambda_idx == n);
-                                    if (ImGui::Selectable(lambda.label[n].ptr, is_selected)) {
-                                        if (es.nto_lambda_idx != n) {
-                                            update_rep = true;
-                                        }
-                                        es.nto_lambda_idx = n;
-                                    }
+                // The same 1e-3 the rest of the tree stops at, and the same place the zero padded
+                // tail of the ragged lambda axis stops it.
+                const double LAMBDA_CUTOFF = 1.0e-3;
+                double lambdas[32];
+                const int num_lambdas = (int)es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state->mold.sys,
+                                                            (size_t)es.excited_state_idx, LAMBDA_CUTOFF);
+                if (num_lambdas > 0) {
+                    es.nto_lambda_idx = CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
 
-                                    if (is_selected) {
-                                        ImGui::SetItemDefaultFocus();
-                                    }
+                    auto lambda_label = [&lambdas](char* buf, size_t cap, int n) {
+                        // The bytes rather than a u8 literal: u8"" is const char8_t* in C++20 and
+                        // a format string has to be a plain char array. \xce\xbb is U+03BB, lambda.
+                        snprintf(buf, cap, "\xce\xbb[%i] (%.3f)", n + 1, lambdas[n]);
+                    };
+
+                    char preview[32];
+                    lambda_label(preview, sizeof(preview), es.nto_lambda_idx);
+                    if (ImGui::BeginCombo("lambda idx", preview)) {
+                        for (int n = 0; n < num_lambdas; n++) {
+                            const bool is_selected = (es.nto_lambda_idx == n);
+                            char label[32];
+                            lambda_label(label, sizeof(label), n);
+                            if (ImGui::Selectable(label, is_selected)) {
+                                if (es.nto_lambda_idx != n) {
+                                    update_rep = true;
                                 }
-                                ImGui::EndCombo();
+                                es.nto_lambda_idx = n;
+                            }
+
+                            if (is_selected) {
+                                ImGui::SetItemDefaultFocus();
                             }
                         }
+                        ImGui::EndCombo();
                     }
                 }
             }
@@ -3712,7 +3745,8 @@ static void draw_representations_window(ApplicationState* state) {
                 for (int i = 0; i < (int)RepresentationType::Count; ++i) {
                     if (i == (int)RepresentationType::ElectronicStructure) {
                         // Do not enlist Electronic Structure if there are no orbitals available
-                        if (state->representation.info.alpha.num_orbitals == 0) continue;
+                        size_t num_orbitals = 0;
+                        if (!es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) || num_orbitals == 0) continue;
                     }
                     if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                         rep.type = (RepresentationType)i;

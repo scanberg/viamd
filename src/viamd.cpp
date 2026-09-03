@@ -820,7 +820,17 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
     str_t path_to_file = md_path_make_canonical(filepath, state->allocator.frame);
     if (path_to_file) {
         if (load_state.flags & LoaderFlag_Supplemental) {
-            // Do nothing here to hinder system or trajectory paths
+            // Neither the system nor the trajectory is touched - this file only adds to what is
+            // already loaded, and the loader merges it into the system's attribute table. A
+            // component picks it up from there, off the ViamdLoadData event below.
+            //
+            // 'success' stays false on purpose: it is what tells the caller a system was loaded,
+            // and it resets the camera and the animation when it is true.
+            if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state)) {
+                VIAMD_LOG_SUCCESS("Successfully loaded supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
+            } else {
+                VIAMD_LOG_ERROR("Failed to load supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
+            }
         } else if (load_state.flags & LoaderFlag_System) {
             interrupt_async_tasks(state);
             free_trajectory_data(state);
@@ -863,6 +873,15 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
                 VIAMD_LOG_ERROR("Failed to open trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
         }
+#if MD_ENABLE_GPU
+        // The dataset's uploaded GTO basis, built here rather than by whichever component happens to
+        // want it first: it is derived from the system's own basis/ attributes, every consumer of
+        // that system wants the same one, and a system's GPU basis must not depend on which UI
+        // component is compiled in. Returns false when the system publishes no basis, which is the
+        // normal case rather than a failure.
+        system_gpu_data_update(state, DEFAULT_GTO_CUTOFF_VALUE);
+#endif
+
         LoadDataPayload data = {
             .app_state = state,
             .loader_state = load_state,
@@ -1419,7 +1438,11 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     if (!str_empty(filter)) {
         str_copy_to_char_buf(rep->filt, sizeof(rep->filt), filter);
     }
-    rep->electronic_structure.orbital_idx = (int)state->representation.info.alpha.homo_idx;
+    // Opens on the HOMO, derived from the occupations rather than handed over by whoever loaded
+    // the file. -1 (nothing occupied) clamps to 0, which is the only orbital there is to show.
+    OrbitalFrontier frontier = {};
+    es_orbital_frontier(&frontier, state->mold.sys, es_path::alpha_occupation);
+    rep->electronic_structure.orbital_idx = MAX(frontier.homo_idx, 0);
     init_representation(state, rep);
     return rep;
 }
@@ -1780,55 +1803,175 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 // h5 carries a local-to-global map whether it is opened on its own - where the map must NOT be
 // applied, since the system IS the QM atoms - or against a larger system, where it must. Only the
 // side holding both knows which, and that is here.
-static const str_t BASIS_ATOM_MAP_PATH = STR_LIT("basis/atom/system_index");
+static const str_t QM_ATOM_MAP_PATH = STR_LIT("qm/atom/system_index");
 
-void basis_atom_map_publish(md_system_t* sys, const int32_t* system_index, size_t count) {
-    ASSERT(sys);
+// The map itself is written by the READER, on the load path: only the entry point that was called
+// knows whether this file stands alone or supplements a larger system, and that is the whole of
+// the decision. See vlx_publish_atom_system_index in md_vlx.c.
 
-    // Clearing is as important as setting: a stale map from a previous load would silently send
-    // every evaluation to the wrong atoms.
-    if (const md_attribute_t* existing = md_attributes_find(&sys->attributes, BASIS_ATOM_MAP_PATH)) {
-        md_attributes_remove(&sys->attributes, existing->id);
+bool es_orbital_extent(const md_system_t& sys, size_t* out_num_mo, size_t* out_num_ao) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::alpha_coefficient);
+    if (!attr || attr->format.rank != 2 || md_attribute_components(&attr->format) != 1) {
+        return false;
     }
-    if (!system_index || count == 0) {
-        return;
+    if (out_num_mo) *out_num_mo = attr->format.shape[0];
+    if (out_num_ao) *out_num_ao = attr->format.shape[1];
+    return true;
+}
+
+bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, str_t occupation_path) {
+    ASSERT(out);
+    *out = {};
+
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, occupation_path);
+    if (!attr || !attr->data || attr->format.type != MD_ATTRIBUTE_TYPE_F64 ||
+        attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) {
+        return false;
     }
 
-    const md_attribute_format_t format = {
-        .type = MD_ATTRIBUTE_TYPE_U32, .components = 1, .rank = 1, .shape = { (uint32_t)count },
-    };
-    const md_attribute_desc_t desc = {
-        .path   = BASIS_ATOM_MAP_PATH,
-        .format = format,
-        .unit   = md_unit_none(),
-        .label  = STR_LIT("System Atom Index"),
-    };
-    md_attribute_id_t id = md_attributes_create(&sys->attributes, &desc);
+    const double* occ = (const double*)attr->data;
+    const int num = (int)attr->format.shape[0];
+    out->num_orbitals = num;
 
-    uint32_t* dst = (uint32_t*)md_attributes_data(&sys->attributes, id, MD_ATTRIBUTE_TYPE_U32);
-    if (!dst) {
-        if (id != MD_ATTRIBUTE_INVALID) md_attributes_remove(&sys->attributes, id);
-        return;
+    // Scanning DOWN from the top rather than up to the first zero: an unoccupied orbital below an
+    // occupied one is a non-aufbau ordering, not the frontier, and the last occupied orbital is
+    // what the word means either way.
+    int homo = -1;
+    for (int i = num - 1; i >= 0; --i) {
+        if (occ[i] > 0.0) {
+            homo = i;
+            break;
+        }
     }
-    for (size_t i = 0; i < count; ++i) {
-        dst[i] = (uint32_t)system_index[i];
-    }
+    out->homo_idx = homo;
+    out->lumo_idx = homo + 1;   // == num when everything is occupied: out of range, and correct
+    return true;
 }
 
 // NULL when there is none, which the callers read as the identity. Same explicitness as
 // gto_attr_column in md_gto.c and for the same reason: the table is open, so a path with the wrong
 // shape is a mistake to refuse rather than to reinterpret.
-static const uint32_t* basis_atom_map_find(size_t* out_count, const md_system_t& sys) {
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, BASIS_ATOM_MAP_PATH);
+static const uint32_t* qm_atom_map_find(size_t* out_count, const md_system_t& sys) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, QM_ATOM_MAP_PATH);
     if (!attr) {
         return nullptr;
     }
     if (attr->format.type != MD_ATTRIBUTE_TYPE_U32 || attr->format.rank != 1 || md_attribute_components(&attr->format) != 1 || !attr->data) {
-        MD_LOG_ERROR("'" STR_FMT "' is not a plain column of atom indices", STR_ARG(BASIS_ATOM_MAP_PATH));
+        MD_LOG_ERROR("'" STR_FMT "' is not a plain column of atom indices", STR_ARG(QM_ATOM_MAP_PATH));
         return nullptr;
     }
     if (out_count) *out_count = attr->format.shape[0];
     return (const uint32_t*)attr->data;
+}
+
+bool es_has_distinct_beta_orbitals(const md_system_t& sys) {
+    const md_attribute_t* a = md_attributes_find(&sys.attributes, es_path::alpha_coefficient);
+    const md_attribute_t* b = md_attributes_find(&sys.attributes, es_path::beta_coefficient);
+    if (!a || !b) {
+        return false;
+    }
+    // md_attribute_same_data, never an id comparison: an alias has its own path and therefore its
+    // own id, and this is the API's own answer to "are these two the same datum".
+    return !md_attribute_same_data(a, b);
+}
+
+double es_electron_count(const md_system_t& sys, str_t occupation_path) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, occupation_path);
+    if (!attr || !attr->data || attr->format.type != MD_ATTRIBUTE_TYPE_F64 ||
+        attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) {
+        return 0.0;
+    }
+    const double* occ = (const double*)attr->data;
+    double sum = 0.0;
+    for (uint32_t i = 0; i < attr->format.shape[0]; ++i) {
+        sum += occ[i];
+    }
+    return sum;
+}
+
+bool es_has_distinct_beta_occupations(const md_system_t& sys) {
+    const md_attribute_t* a = md_attributes_find(&sys.attributes, es_path::alpha_occupation);
+    const md_attribute_t* b = md_attributes_find(&sys.attributes, es_path::beta_occupation);
+    if (!a || !b) {
+        return false;
+    }
+    return !md_attribute_same_data(a, b);
+}
+
+size_t es_excited_state_count(const md_system_t& sys) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
+    if (!attr || attr->format.rank != 2 || md_attribute_components(&attr->format) != 1) {
+        return 0;
+    }
+    return attr->format.shape[0];
+}
+
+size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, size_t state_idx, double cutoff) {
+    if (!out_values || cap == 0) {
+        return 0;
+    }
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
+    if (!attr || state_idx >= es_excited_state_count(sys)) {
+        return 0;
+    }
+
+    const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state_idx);
+    const size_t row = md_attribute_slice_count(attr, &slice);
+    if (row == 0) {
+        return 0;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    double* values = (double*)md_temp_alloc(temp, sizeof(double) * row);
+    if (!values || md_attribute_extract_slice_f64(values, row, attr, &slice, md_unit_none()) != row) {
+        return 0;
+    }
+
+    size_t count = 0;
+    while (count < row && count < cap && values[count] >= cutoff) {
+        out_values[count] = values[count];
+        count += 1;
+    }
+    return count;
+}
+
+bool es_qm_atoms(QmAtoms* out, const md_system_t& sys) {
+    ASSERT(out);
+    *out = {};
+
+    // The element column defines the domain: it is published for every QM system, and its length
+    // is the atom count. Without it there is no QM atom space to speak of.
+    const md_attribute_t* z = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/atomic_number"));
+    if (!z || !z->data || z->format.type != MD_ATTRIBUTE_TYPE_U8 ||
+        z->format.rank != 1 || md_attribute_components(&z->format) != 1) {
+        return false;
+    }
+    out->count         = z->format.shape[0];
+    out->atomic_number = (const uint8_t*)z->data;
+
+    if (const md_attribute_t* c = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/coordinate"))) {
+        if (c->data && c->format.type == MD_ATTRIBUTE_TYPE_F64 && c->format.rank == 1 &&
+            md_attribute_components(&c->format) == 3 && c->format.shape[0] == out->count) {
+            // dvec3_t is three doubles with no padding, and the {N,3} layout is exactly an
+            // array of them, so this is a view and not a reinterpretation.
+            out->coordinate = (const dvec3_t*)c->data;
+        } else {
+            MD_LOG_ERROR("'qm/atom/coordinate' is not %zu positions", out->count);
+        }
+    }
+
+    size_t map_count = 0;
+    if (const uint32_t* map = qm_atom_map_find(&map_count, sys)) {
+        if (map_count == out->count) {
+            out->system_index = map;
+        } else {
+            // Left null rather than half applied. The identity is wrong here, but sending an
+            // evaluation to arbitrary atoms is worse than sending it to the first N.
+            MD_LOG_ERROR("The QM domain holds %zu atoms and the system index maps %zu", out->count, map_count);
+        }
+    }
+    return true;
 }
 
 // Gathers the BASIS atoms' positions out of the state, in the Bohr and the interleaved layout
@@ -1848,9 +1991,9 @@ static size_t basis_atom_positions_gather(vec3_t* dst, size_t cap, const md_syst
     }
 
     size_t map_count = 0;
-    const uint32_t* map = basis_atom_map_find(&map_count, sys);
+    const uint32_t* map = qm_atom_map_find(&map_count, sys);
     if (map && map_count < num_basis_atoms) {
-        MD_LOG_ERROR("The basis spans %zu atoms and '" STR_FMT "' maps %zu", num_basis_atoms, STR_ARG(BASIS_ATOM_MAP_PATH), map_count);
+        MD_LOG_ERROR("The basis spans %zu atoms and '" STR_FMT "' maps %zu", num_basis_atoms, STR_ARG(QM_ATOM_MAP_PATH), map_count);
         return 0;
     }
 
@@ -2083,31 +2226,46 @@ void gpu_volume_jobs_drain(ApplicationState* state) {
 #endif
 }
 
-// The two things every GTO evaluation needs besides its own coefficients: the basis, rebuilt from
-// the system's basis/ attributes, and the basis atoms' positions in the units md_gto works in.
-// Neither depends on WHAT is being evaluated, and both come out of the system - so this is the
-// whole of the context an evaluation has, and there is deliberately nothing else in it.
-static bool gto_evaluation_context(md_gto_basis_t* out_basis, vec3_t** out_atom_xyz, md_temp_scope_t temp,
-                                   const md_system_t& sys, const md_system_state_t& state) {
-    ASSERT(out_basis);
-    ASSERT(out_atom_xyz);
+vec3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, const md_system_t& sys, const md_system_state_t& state) {
+    if (out_count) *out_count = 0;
 
-    MEMSET(out_basis, 0, sizeof(*out_basis));
-    if (!md_gto_basis_extract_attributes(out_basis, &sys.attributes, md_temp_allocator(temp))) {
-        return false;
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
+        return nullptr;
     }
 
-    const size_t num_basis_atoms = md_gto_basis_num_atoms(out_basis);
+    const size_t num_basis_atoms = md_gto_basis_num_atoms(&basis);
     vec3_t* atom_xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * MAX(num_basis_atoms, (size_t)1));
     if (!atom_xyz || basis_atom_positions_gather(atom_xyz, num_basis_atoms, sys, state, num_basis_atoms) != num_basis_atoms) {
-        return false;
+        return nullptr;
     }
 
-    *out_atom_xyz = atom_xyz;
+    if (out_count) *out_count = num_basis_atoms;
+    return atom_xyz;
+}
+
+// The basis an evaluation runs against, rebuilt from the system's basis/ attributes. Positions are
+// NOT part of it: they come in as a parameter, because which geometry an orbital is drawn at is the
+// caller's decision and nothing down here is in a position to make it.
+static bool gto_basis_context(md_gto_basis_t* out_basis, md_temp_scope_t temp, const md_system_t& sys) {
+    ASSERT(out_basis);
+    MEMSET(out_basis, 0, sizeof(*out_basis));
+    return md_gto_basis_extract_attributes(out_basis, &sys.attributes, md_temp_allocator(temp));
+}
+
+// Every evaluation checks its positions the same way, and the count is the only thing that can be
+// wrong about them: an array of the wrong length would put shells on the wrong nuclei.
+static bool gto_positions_match_basis(const md_gto_basis_t* basis, const vec3_t* atom_pos, size_t num_atom_pos) {
+    const size_t expected = md_gto_basis_num_atoms(basis);
+    if (!atom_pos || num_atom_pos != expected) {
+        MD_LOG_ERROR("The basis spans %zu atoms and %zu positions were supplied", expected, num_atom_pos);
+        return false;
+    }
     return true;
 }
 
-bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                         const vec3_t* atom_pos, size_t num_atom_pos,
                          str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
@@ -2119,8 +2277,7 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
     }
 
     md_gto_basis_t basis = {};
-    vec3_t* atom_xyz = nullptr;
-    if (!gto_evaluation_context(&basis, &atom_xyz, temp, sys, state)) {
+    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
         return false;
     }
 
@@ -2131,7 +2288,7 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
         return false;
     }
 
-    md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, sizeof(vec3_t), ao_coeffs, cutoff, mode, op);
+    md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), ao_coeffs, cutoff, mode, op);
     return true;
 }
 
@@ -2181,7 +2338,8 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
     return dst;
 }
 
-bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                         const vec3_t* atom_pos, size_t num_atom_pos,
                          str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op) {
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
@@ -2193,8 +2351,7 @@ bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
     }
 
     md_gto_basis_t basis = {};
-    vec3_t* atom_xyz = nullptr;
-    if (!gto_evaluation_context(&basis, &atom_xyz, temp, sys, state)) {
+    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
         return false;
     }
 
@@ -2203,7 +2360,7 @@ bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
         return false;
     }
 
-    md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_xyz, sizeof(vec3_t), density_matrix, false, op);
+    md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), density_matrix, false, op);
     return true;
 }
 
@@ -2313,7 +2470,7 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
     // The colours are per SYSTEM atom and the splats are per BASIS atom, so the map is consulted
     // here too - and once more it is the same lookup in the same direction the evaluation used.
     size_t map_count = 0;
-    const uint32_t* map = basis_atom_map_find(&map_count, sys);
+    const uint32_t* map = qm_atom_map_find(&map_count, sys);
     if (map && map_count < num_points) {
         return;
     }
@@ -2461,7 +2618,14 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     }
 #endif
 
-    return orbital_evaluate_gl(vol_tex, grid, state->mold.sys, state->mold.state, coefficient_path, slice, mode, op, cutoff);
+    // The call site's choice of geometry, made explicit: this wrapper draws at the system's CURRENT
+    // state. A caller wanting another one gathers its own positions and calls the _gl form.
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    size_t num_atom_pos = 0;
+    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
+    return orbital_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, coefficient_path, slice, mode, op, cutoff);
 }
 
 #if MD_ENABLE_GPU
@@ -2529,7 +2693,13 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     }
 #endif
 
-    return density_evaluate_gl(vol_tex, grid, state->mold.sys, state->mold.state, density_path, slice, op);
+    // As above: the current state, chosen here rather than assumed further down.
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    size_t num_atom_pos = 0;
+    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
+    return density_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_path, slice, op);
 }
 
 void update_all_representations(ApplicationState* state) {
@@ -2797,9 +2967,6 @@ void update_representation_info(ApplicationState* state) {
     state->representation.info = {};
     state->representation.info.alloc = alloc;
 
-    // Broadcast event to populate info
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRepresentationInfoFill, viamd::EventPayloadType_RepresentationInfo, &state->representation.info);
-
     // What an electronic structure representation can SHOW is decided here and not by whoever
     // loaded the file: each source needs particular attributes, and asking the table which of them
     // exist is both the exact test and one that a second reader satisfies for free.
@@ -2883,7 +3050,8 @@ void create_default_representations(ApplicationState* state) {
     bool water_present = false;
     bool ligand_present = false;
     bool coarse_grained = false;
-    bool orbitals_present = state->representation.info.alpha.num_orbitals > 0;
+    size_t num_orbitals = 0;
+    bool orbitals_present = es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) && num_orbitals > 0;
 
     if (state->mold.sys.atom.count > 3'000'000) {
         VIAMD_LOG_INFO("Large system detected, creating default representation for all atoms");

@@ -159,6 +159,19 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
     }
 }
 
+bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& state) {
+    ASSERT(out_sys);
+
+    switch (state.type) {
+#if MD_VLX
+        case LoaderType_VLX_H5:
+            return md_vlx_system_supplement_from_file(out_sys, filepath);
+#endif
+        default:
+            return false;
+    }
+}
+
 str_t type_name(LoaderType type) {
     if (type < LoaderType_COUNT) {
         return loader_name[type];

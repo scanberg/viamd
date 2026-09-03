@@ -98,19 +98,6 @@ enum NTO {
     NTO_Detachment,
 };
 
-// The reference the SCF was solved against. It belongs with the method and the basis set because
-// it is part of how the calculation is named - RKS/B3LYP/def2-SVP - and because it is what decides
-// whether the beta orbitals are their own set or a second name for alpha's.
-static const char* vlx_scf_type_str(md_vlx_scf_type_t type) {
-    switch (type) {
-    case MD_VLX_SCF_RESTRICTED:           return "Restricted";
-    case MD_VLX_SCF_RESTRICTED_OPENSHELL: return "Restricted Open-Shell";
-    case MD_VLX_SCF_UNRESTRICTED:         return "Unrestricted";
-    case MD_VLX_SCF_UNKNOWN:              // fallthrough
-    default:                              return "Unknown";
-    }
-}
-
 static const char* electronic_structure_value_mode_str(ElectronicStructureSource source, ElectronicStructureSpin spin, bool use_magnitude) {
     switch (source) {
     case ElectronicStructureSource::MolecularOrbital:
@@ -258,6 +245,34 @@ static void orbital_table_build_order(int* row_to_mo, int* mo_to_row, int num_mo
     }
 }
 
+// What the charge transfer flow graph procedures know about a calculation, and the whole of it.
+// Gathered by the caller - the only place that has to know whether this came from an attribute
+// table, a reader, or somewhere else entirely. Past that point there is no system and no reader
+// here: arrays, counts and indices, and that is the entire contract.
+//
+// Row major throughout. S is {A,A} and C_mo is {M,A}, so orbital m starts at C_mo + m * num_ao. The
+// NTO blocks are {K,A} for ONE excited state, with nto_lambda[k] the weight of pair k. That axis is
+// PADDED - a state has as many pairs as it has - and the pad carries weight zero, which the lambda
+// cutoff every consumer already applies discards in exactly the same place. ao_to_atom is one atom
+// index per AO.
+//
+// Any pointer may be null and any count zero: a file without response data has no NTOs, and a
+// builder checks what it uses rather than assuming a complete set.
+struct FlowQmData {
+    size_t        num_ao      = 0;
+    size_t        num_mo      = 0;
+    int           homo_idx    = -1;      // -1 when the channel holds no electrons
+
+    const double* S           = nullptr; // {A,A} AO overlap
+    const double* C_mo        = nullptr; // {M,A} MO coefficients
+    const int*    ao_to_atom  = nullptr; // [A]
+
+    size_t        num_nto     = 0;       // K, padded
+    const double* nto_lambda  = nullptr; // [K]
+    const double* C_nto_hole  = nullptr; // {K,A}
+    const double* C_nto_part  = nullptr; // {K,A}
+};
+
 struct VeloxChem : viamd::EventHandler {
     VeloxChem() { viamd::event_system_register_handler(*this); }
     md_vlx_t* vlx = nullptr;
@@ -294,7 +309,21 @@ struct VeloxChem : viamd::EventHandler {
 
     // If this is not NULL, then it means the qm data represented in the vlx object is a subset of the actual system
     // This array then maps the local qm indices into system-wide atom indices.
-    const int32_t* qm_to_atom_idx = nullptr;
+    // The atoms the calculation covered, read from the system's attribute table. This is a
+    // DIFFERENT index space from the system's atoms - see QmAtoms in viamd.h - and qm_to_system_atom
+    // is the only way across. Refreshed at load; the pointers belong to the table.
+    QmAtoms qm = {};
+
+    // The {M,A} shape of the coefficient attribute, cached beside it: the per frame window gate asks
+    // for it and the answer only changes with the system.
+    size_t num_mos = 0;
+
+    // Excited states carrying NTOs. Cached for the same reason, and because the menu handler has no
+    // ApplicationState to reach the table through.
+    size_t num_excited = 0;
+
+    // Version of the coefficient attribute the setup above last ran for. See the load event.
+    uint64_t qm_version = 0;
     md_bitfield_t* qm_mask = nullptr;
 
     struct Summary {
@@ -503,10 +532,10 @@ struct VeloxChem : viamd::EventHandler {
     //
     // load_workspace parses the ENTIRE workspace text before it loads any data, so when the
     // [VeloxChem] section is read there is no vlx object and no atom count yet. Groups are
-    // per-atom, so they have to be buffered and stamped on at the end of init_from_file.
+    // per-atom, so they have to be buffered and stamped on at the end of init_qm_from_system.
     //
     // The buffer lives on the heap, NOT on 'arena': reset_data() resets that arena, and a
-    // workspace load goes through reset_data before it gets anywhere near init_from_file.
+    // workspace load goes through reset_data before it gets anywhere near init_qm_from_system.
     struct PendingGroups {
         bool   pending = false;
         size_t count = 0;
@@ -701,12 +730,14 @@ struct VeloxChem : viamd::EventHandler {
     // Allocated from arena; zeroed when reset_data() is called.
     md_gto_basis_t basis = {};
 
+    // The {M,A} shape of the coefficient attribute. Cached at load beside the QM atom domain,
+    // because the gate below asks for it every frame and the answer only changes with the system.
     size_t num_molecular_orbitals() const {
-        return md_vlx_scf_number_of_molecular_orbitals(vlx);
+        return num_mos;
     }
 
     size_t num_natural_transition_orbitals() const {
-        return md_vlx_rsp_number_of_excited_states(vlx);
+        return num_excited;
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final {
@@ -753,15 +784,19 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
-                if (vlx) {
+                // What the SYSTEM holds, not what this component parsed. Orbitals are what every
+                // window here is ultimately about, and the transition windows want their own data on
+                // top of that - so a system published by any QM reader opens the ones it can fill
+                // and none of the ones it cannot.
+                if (qm.count > 0 && num_molecular_orbitals() > 0) {
                     // Before any window draws, so both transition windows see the same numbers and
                     // neither has to be open for the other to have data.
-                    update_nto_derived_data();
+                    update_nto_derived_data(state.mold.sys);
 
                     draw_orb_window(state);
                     draw_summary_window(state);
                     draw_rsp_window(state);
-                    if (md_vlx_rsp_has_nto(vlx)) {
+                    if (num_excited > 0) {
                         draw_nto_window(state);
                         draw_flow_window(state);
                     }
@@ -770,12 +805,12 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdWindowDrawMenu:
-                if (vlx) {
-                    if (ImGui::BeginMenu("VeloxChem")) {
+                if (qm.count > 0 && num_molecular_orbitals() > 0) {
+                    if (ImGui::BeginMenu("Quantum Chemistry")) {
                         ImGui::Checkbox("Summary", &summary.show_window);
                         ImGui::Checkbox("Response", &rsp.show_window);
                         ImGui::Checkbox("Orbital Grid", &orb.show_window);
-                        if (md_vlx_rsp_has_nto(vlx)) {
+                        if (num_excited > 0) {
                             ImGui::Checkbox("Transition Analysis", &nto.show_window);
                             ImGui::Checkbox("Charge Transfer Analysis", &flow.show_window);
                         }
@@ -959,19 +994,31 @@ struct VeloxChem : viamd::EventHandler {
                 }
                 break;
             }
-#if 0
-            case viamd::EventType_ViamdSystemInit: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
-                ApplicationState& state = *(ApplicationState*)e.payload;
-                init_from_file(str_from_cstr(state.files.molecule), state);
-                break;
-            }
-#endif
             case viamd::EventType_ViamdLoadData: {
                  ASSERT(e.payload_type == viamd::EventPayloadType_LoadData);
                  LoadDataPayload& payload = *(LoadDataPayload*)e.payload;
+                 ApplicationState& state = *payload.app_state;
+
+                 // The reader first, because the response sections still read its object. Then the
+                 // attribute driven half, which is what a system from any OTHER qm reader gets.
                  if (payload.loader_state.type == LoaderType_VLX_H5) {
-                     init_from_file(payload.path_to_file, *payload.app_state);
+                     if (!parse_vlx_file(payload.path_to_file)) {
+                         MD_LOG_INFO("Failed to initialize VeloxChem data");
+                         reset_data();
+                         break;
+                     }
+                 }
+
+                 // Keyed on the coefficient attribute's VERSION, not on merely being present: this
+                 // event also fires for a trajectory or a supplemental file loaded on top of a
+                 // system that already has orbitals, and re-running the setup then would throw away
+                 // the user's cameras and selections. A version is bumped only when the attribute
+                 // is actually written, so a reload re-initialises and nothing else does.
+                 const md_attribute_t* coeff = md_attributes_find(&state.mold.sys.attributes, es_path::alpha_coefficient);
+                 const uint64_t version = coeff ? md_attributes_version(&state.mold.sys.attributes, coeff->id) : 0;
+                 if (version != 0 && version != qm_version) {
+                     qm_version = version;
+                     init_qm_from_system(state);
                  }
                  break;
             }
@@ -996,15 +1043,20 @@ struct VeloxChem : viamd::EventHandler {
                 ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
-                if (vlx) {
+                // Nothing below reads the reader any more - the QM atom domain and the dipole both
+                // come out of the table - so the gate is whether there are QM atoms to re-gather.
+                if (qm.count > 0) {
                     // Update atom_xyz
 					// Calculate nuclei charge weighted center of charge for later use in orbital centering
 					dvec3_t nucl_dipole = {0};
 
-					size_t count = qm_to_atom_idx ? md_vlx_number_of_atoms(vlx) : state.mold.sys.atom.count;
+					// One entry per QM atom, gathered from wherever that atom sits in the system.
+					// No branch on whether a map exists: without one the QM atoms ARE the system's,
+					// so the count matches and qm_to_system_atom is the identity.
+					const size_t count = qm.count;
                     ASSERT(md_array_size(atom_xyzw) == count);
                     for (size_t i = 0; i < count; ++i) {
-                        int idx = qm_to_atom_idx ? qm_to_atom_idx[i] : (int)i;
+                        const size_t idx = qm_to_system_atom(qm, i);
                         atom_xyzw[i].x = (float)(state.mold.state.x[idx] * ANGSTROM_TO_BOHR);
                         atom_xyzw[i].y = (float)(state.mold.state.y[idx] * ANGSTROM_TO_BOHR);
                         atom_xyzw[i].z = (float)(state.mold.state.z[idx] * ANGSTROM_TO_BOHR);
@@ -1015,9 +1067,17 @@ struct VeloxChem : viamd::EventHandler {
 						nucl_dipole.z += atom_xyzw[i].z * z;
                     }
 
-                    size_t num_electrons = md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA) + md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA);
-                    nucl_dipole /= num_electrons > 0 ? (double)num_electrons : 1.0;
-                    center_of_charge = nucl_dipole - md_vlx_scf_ground_state_dipole_moment(vlx);
+                    // The occupations summed, rather than a count the reader kept beside them.
+                    const double num_electrons = es_electron_count(state.mold.sys, es_path::alpha_occupation) +
+                                                 es_electron_count(state.mold.sys, es_path::beta_occupation);
+
+                    // The centroid of the ELECTRONIC charge: mu = sum_A Z_A R_A - <r_e> N_e, so
+                    // <r_e> = (sum_A Z_A R_A - mu) / N_e. This used to divide the nuclear term by
+                    // N_e and only then subtract the dipole, which subtracts a dipole from a
+                    // position - dimensionally impossible, and disagreeing with the load path,
+                    // which had it right. The two now compute one formula.
+                    const double inv_ne = num_electrons > 0.0 ? 1.0 / num_electrons : 1.0;
+                    center_of_charge = (nucl_dipole - dipole_ground_state(state.mold.sys)) * inv_ne;
                     
                     // Recalculate OABB and AABB
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
@@ -1031,97 +1091,6 @@ struct VeloxChem : viamd::EventHandler {
                     }
                 }
                 
-                break;
-            }
-            case viamd::EventType_ViamdRepresentationInfoFill: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_RepresentationInfo);
-                RepresentationInfo& info = *(RepresentationInfo*)e.payload;
-
-                info.alpha.homo_idx = homo_idx[0];
-                info.alpha.lumo_idx = lumo_idx[0];
-
-                info.beta.homo_idx  = homo_idx[1];
-                info.beta.lumo_idx  = lumo_idx[1];
-
-                size_t num_mos = num_molecular_orbitals();
-                if (num_mos) {
-                    const double* occ = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_ALPHA);
-                    const double* ene = md_vlx_scf_mo_energy   (vlx, MD_VLX_SPIN_ALPHA);
-
-                    if (occ && ene) {
-                        info.alpha.num_orbitals = num_mos;
-                        md_array_resize(info.alpha.label,       num_mos, info.alloc);
-                        md_array_resize(info.alpha.occupation,  num_mos, info.alloc);
-                        md_array_resize(info.alpha.energy,      num_mos, info.alloc);
-
-                        for (size_t i = 0; i < num_mos; ++i) {
-                            const char* lbl = "";
-                            if (i == info.alpha.homo_idx) {
-                                lbl = " (homo)";
-                            } else if (i == info.alpha.lumo_idx) {
-                                lbl = " (lumo)";
-                            }
-                            info.alpha.label[i]      = str_printf(info.alloc, "%zu%s", i + 1, lbl);
-                            info.alpha.energy[i]     = ene[i];
-                            info.alpha.occupation[i] = occ[i];
-                        }
-                    }
-                }
-
-                // @TODO: Check condition of wheter or not to include beta orbitals
-                if (true) {
-                    const double* occ = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA);
-                    const double* ene = md_vlx_scf_mo_energy   (vlx, MD_VLX_SPIN_BETA);
-
-                    if (occ && ene) {
-                        info.beta.num_orbitals = num_mos;
-                        md_array_resize(info.beta.label,       num_mos, info.alloc);
-                        md_array_resize(info.beta.occupation,  num_mos, info.alloc);
-                        md_array_resize(info.beta.energy,      num_mos, info.alloc);
-
-                        for (size_t i = 0; i < num_mos; ++i) {
-                            const char* lbl = "";
-                            if (i == info.beta.homo_idx) {
-                                lbl = " (homo)";
-                            } else if (i == info.beta.lumo_idx) {
-                                lbl = " (lumo)";
-                            }
-                            info.beta.label[i]      = str_printf(info.alloc, "%zu%s", i + 1, lbl);
-                            info.beta.energy[i]     = ene[i];
-                            info.beta.occupation[i] = occ[i];
-                        }
-                    }
-                }
-                
-                size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
-                if (md_vlx_rsp_has_nto(vlx) && num_excited_states > 0) {
-                    info.nto.num_orbitals = num_excited_states;
-                    md_array_resize(info.nto.label, num_excited_states, info.alloc);
-                    for (size_t i = 0; i < num_excited_states; ++i) {
-                        info.nto.label[i] = str_printf(info.alloc, "%zu", i + 1);
-
-                        const double LAMBDA_CUTOFF = 1.0e-3;
-                        double lambdas[16] = {0};
-                        size_t lambda_count = md_vlx_rsp_nto_lambdas_extract(lambdas, vlx, i, ARRAY_SIZE(lambdas));
-                        NaturalTransitionOrbitalLambda lambda_info = {};
-                        for (size_t j = 0; j < lambda_count; ++j) {
-                            if (lambdas[j] < LAMBDA_CUTOFF) break;
-                            str_t lbl = str_printf(info.alloc, (const char*)u8"λ[%zu] (%.3f)", j + 1, lambdas[j]);
-                            md_array_push(lambda_info.label, lbl, info.alloc);
-                            md_array_push(lambda_info.value, lambdas[j], info.alloc);
-                            lambda_info.num_lambdas += 1;
-                        }
-                        md_array_push(info.nto.lambda, lambda_info, info.alloc);
-                    }
-                }
-                
-                // Neither the source mask nor the density property list is filled here any more.
-                // Both are answers about what the SYSTEM holds, and update_representation_info reads
-                // them straight off its attribute table - which is the exact test, and one a second
-                // reader satisfies without touching this file.
-                //
-                // Atomic properties and dipoles went the same way earlier: published into
-                // sys->attributes at load, gathered from there, no round trip back into here.
                 break;
             }
             case viamd::EventType_ViamdPickingRangeReserve: {
@@ -1184,6 +1153,10 @@ struct VeloxChem : viamd::EventHandler {
         //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
         md_vlx_destroy(vlx);
+        qm = {};    // the pointers belong to the system's table, which is going away with it
+        num_mos = 0;
+        num_excited = 0;
+        qm_version = 0;
         md_arena_allocator_reset(arena);
         md_topo_extremum_graph_free(&critical_points.raw_graph);
         md_topo_extremum_graph_free(&critical_points.simp_graph);
@@ -1211,12 +1184,12 @@ struct VeloxChem : viamd::EventHandler {
     void update_nto_group_colors() {
         md_temp_scope_t temp = md_temp_begin();
 		defer { md_temp_end(temp); };
-        size_t num_atoms = md_vlx_number_of_atoms(vlx);
+        size_t num_atoms = qm.count;
         uint32_t* colors = (uint32_t*)md_temp_alloc_array(temp, uint32_t, num_atoms);
         // Group 0 is "not in any group", so it keeps the element colour the molecule would have
         // anyway. Stamping the unassigned grey over everything would make an ungrouped system look
         // like a system whose groups all happen to be grey.
-        const md_element_t* atom_z = md_vlx_atomic_numbers(vlx);
+        const md_element_t* atom_z = qm.atomic_number;
         for (size_t i = 0; i < num_atoms; ++i) {
             const size_t group_idx = nto.atom_group_idx[i];
             uint32_t color = U32_MAGENTA;
@@ -1231,215 +1204,201 @@ struct VeloxChem : viamd::EventHandler {
         md_gl_rep_set_atom_colors(nto.gl_rep, 0, (uint32_t)num_atoms, colors, 0);
     }
 
-    void init_from_file(str_t filename, ApplicationState& state) {
-        str_t ext;
-        if (extract_ext(&ext, filename)) {
-            if (str_eq_ignore_case(ext, STR_LIT("h5"))) {
-                MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
-                
-                if (!vlx) {
-                    vlx = md_vlx_create(arena);
-                } else {
-                    md_vlx_reset(vlx);
-                }
-                
-                if (md_vlx_parse_file(vlx, filename)) {
-                    // Publish first, then read back. Everything this file carries which fits the
-                    // attribute model goes into the system's table here - the dipole groups, the
-                    // SCF history, orbital energies, response and vibrational quantities, normal
-                    // modes, the GTO basis and the MO coefficients. mdlib owns the paths, formats
-                    // and units; this component is a consumer of them from here on, like anything
-                    // else which can read a system.
-                    md_vlx_publish_attributes(&state.mold.sys, vlx);
+    // Everything this component needs about a quantum chemistry system, out of the system's own
+    // attribute table. No reader appears in it, which is the whole point: it runs for ANY loaded
+    // system that carries orbitals, whichever producer filled the table.
+    void init_qm_from_system(ApplicationState& state) {
+        // The system's attribute table is already populated - md_vlx_system_init_from_file
+        // and md_vlx_system_supplement_from_file publish it on the load path, before the
+        // event that got us here. This component is a consumer of that table, not its
+        // producer, which is what lets a system published by some other QM reader drive
+        // the same windows.
+        //
+        // The parse above is still here because most of this file reaches for the vlx
+        // object directly. Every call site moved off it is a step towards not needing it.
 
-                    // And the basis comes back out of that table rather than out of the vlx object,
-                    // which is the whole point: an evaluator needs the system, not the reader.
-                    md_gto_basis_free(&basis, arena);
-                    if (!md_gto_basis_extract_attributes(&basis, &state.mold.sys.attributes, arena)) {
-                        MD_LOG_ERROR("Failed to build a GTO basis from the system's attributes");
-                        return;
-                    }
-                    size_t num_vlx_atoms = md_vlx_number_of_atoms(vlx);
+        // The basis comes out of that table rather than out of the vlx object,
+        // which is the whole point: an evaluator needs the system, not the reader.
+        md_gto_basis_free(&basis, arena);
+        if (!md_gto_basis_extract_attributes(&basis, &state.mold.sys.attributes, arena)) {
+            MD_LOG_ERROR("Failed to build a GTO basis from the system's attributes");
+            return;
+        }
+        // The QM atom domain, out of the table the load path filled. Standalone or
+        // supplemental was decided there, by which entry point the loader called, and
+        // the atomic numbers were checked before the flag was ever set
+        // (md_vlx_system_is_file_supplemental) - so there is nothing left to validate
+        // or to publish here.
+        if (!es_qm_atoms(&qm, state.mold.sys)) {
+            MD_LOG_ERROR("The system carries no QM atom domain");
+            return;
+        }
+        const size_t num_vlx_atoms = qm.count;
 
-                    const int* local_to_global = md_vlx_local_to_global_atom_idx(vlx);
-                    if (local_to_global) {
-                        // This means that the vlx file is derived from a larger system and only contains data for a subset.
-                        // We can support this by remapping atom indices.
-                        // *HOWEVER* The VLX h5 file can be loaded as a stand alone system and in such case, the mapping should not be applied.
-                        if (num_vlx_atoms < state.mold.sys.atom.count) {
-                            // @TODO: Check atomic numbers consistency as well
-                            const uint8_t* atomic_numbers = md_vlx_atomic_numbers(vlx);
-                            bool match = true;
-                            for (size_t i = 0; i < num_vlx_atoms; ++i) {
-                                int idx = local_to_global[i];
-                                if (md_atom_atomic_number(&state.mold.sys.atom, idx) != atomic_numbers[i]) {
-                                   match = false;
-                                   break;
-                                }
-                            }
-                            if (match) {
-                                qm_to_atom_idx = local_to_global;
-                            } else {
-                                MD_LOG_ERROR("VLX file '%s' contains a subset of atoms, but their atomic numbers do not match with the system. Atom index remapping will not be applied.", STR_ARG(filename));
-                                md_vlx_reset(vlx);
-                                return;
-                            }
-                        }
-                    }
+        num_mos = 0;
+        es_orbital_extent(state.mold.sys, &num_mos, nullptr);
+        num_excited = es_excited_state_count(state.mold.sys);
 
-                    // Which system atom each basis atom is, published beside the basis so that an
-                    // evaluation can gather positions with nothing but the system in reach. NULL is
-                    // the standalone case and clears any map a previous load left behind.
-                    basis_atom_map_publish(&state.mold.sys, qm_to_atom_idx, num_vlx_atoms);
+        // From the published occupations rather than from the vlx object: the frontier
+        // is one scan of a column already in the table, and reading it there is what a
+        // system published by some other QM reader will need.
+        //
+        // It also answers two cases md_vlx's own indices got wrong. A channel holding
+        // no electrons at all - beta in a fully polarised open shell - reported HOMO 0
+        // and labelled the first orbital; it now reports -1 and labels nothing. A fully
+        // occupied set reported 0 for both; LUMO is now num_orbitals, out of range,
+        // because there is no LUMO to point at.
+        OrbitalFrontier frontier = {};
+        es_orbital_frontier(&frontier, state.mold.sys, es_path::alpha_occupation);
+        homo_idx[0] = frontier.homo_idx;
+        lumo_idx[0] = frontier.lumo_idx;
 
-                    homo_idx[0] = (int)md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
-                    homo_idx[1] = (int)md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_BETA);
+        es_orbital_frontier(&frontier, state.mold.sys, es_path::beta_occupation);
+        homo_idx[1] = frontier.homo_idx;
+        lumo_idx[1] = frontier.lumo_idx;
 
-                    lumo_idx[0] = (int)md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_ALPHA);
-                    lumo_idx[1] = (int)md_vlx_scf_lumo_idx(vlx, MD_VLX_SPIN_BETA);
+        size_t num_colors = state.mold.sys.atom.count;
+        uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, num_colors * sizeof(uint32_t));
+        color_atoms_type(colors, num_colors, state.mold.sys);
 
-                    size_t num_colors = state.mold.sys.atom.count;
-                    uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, num_colors * sizeof(uint32_t));
-                    color_atoms_type(colors, num_colors, state.mold.sys);
+        if (qm.system_index) {
+            md_bitfield_t mask = md_bitfield_create(state.allocator.frame);
+            md_bitfield_set_indices_u32(&mask, (uint32_t*)qm.system_index, qm.count);
+            filter_colors(colors, num_colors, &mask);
+            reset_view(&default_view, state.mold.state, &mask);
+        } else {
+            reset_view(&default_view, state.mold.state);
+        }
 
-                    if (qm_to_atom_idx) {
-                        md_bitfield_t mask = md_bitfield_create(state.allocator.frame);
-                        md_bitfield_set_indices_u32(&mask, (uint32_t*)qm_to_atom_idx, md_vlx_number_of_atoms(vlx));
-                        filter_colors(colors, num_colors, &mask);
-                        reset_view(&default_view, state.mold.state, &mask);
-                    } else {
-                        reset_view(&default_view, state.mold.state);
-                    }
+        gl_rep = md_gl_rep_create(state.mold.gl_mol);
+        md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
 
-                    gl_rep = md_gl_rep_create(state.mold.gl_mol);
-                    md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
-
-					const md_element_t* atom_z = md_vlx_atomic_numbers(vlx);
+					const md_element_t* atom_z = qm.atomic_number;
 					dvec3_t nucl_dipole = { 0, 0, 0 };
 
-                    md_array_resize(atom_xyzw, num_vlx_atoms, arena);
-                    const dvec3_t* atom_vlx = md_vlx_atom_coordinates(vlx);
-                    for (size_t i = 0; i < num_vlx_atoms; ++i) {
-                        dvec3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
-                        atom_xyzw[i] = vec4_set((float)xyz.x, (float)xyz.y, (float)xyz.z, 1.0f);
+        md_array_resize(atom_xyzw, num_vlx_atoms, arena);
+        const dvec3_t* atom_vlx = qm.coordinate;
+        for (size_t i = 0; i < num_vlx_atoms; ++i) {
+            dvec3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
+            atom_xyzw[i] = vec4_set((float)xyz.x, (float)xyz.y, (float)xyz.z, 1.0f);
 						nucl_dipole += xyz * atom_z[i];
-                    }
+        }
 
-					dvec3_t ground_state_dipole = md_vlx_scf_ground_state_dipole_moment(vlx);
+					const dvec3_t ground_state_dipole = dipole_ground_state(state.mold.sys);
 
-                    size_t num_electrons = md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA) + md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA);
-                    const double inv_ne = num_electrons > 0 ? 1.0 / (double)num_electrons : 1.0;
-                    center_of_charge = (nucl_dipole - ground_state_dipole) * inv_ne;
+        const double num_electrons = es_electron_count(state.mold.sys, es_path::alpha_occupation) +
+                                     es_electron_count(state.mold.sys, es_path::beta_occupation);
+        const double inv_ne = num_electrons > 0.0 ? 1.0 / num_electrons : 1.0;
+        center_of_charge = (nucl_dipole - ground_state_dipole) * inv_ne;
 
-                    oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
-                    calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
-                    calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));
+        oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
+        calculate_bounds(oabb.min_ext.elem, oabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw), oabb.orientation);
+        calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));
 
-#if MD_ENABLE_GPU
-                    // The dataset's uploaded basis is built from the basis/ attributes just
-                    // published, by the application rather than here: it is derived from the
-                    // system, every consumer of that system wants the same one, and this component
-                    // is only the first to ask.
-                    system_gpu_data_update(&state, DEFAULT_GTO_CUTOFF_VALUE);
-#endif
+        // NTO
 
-                    // NTO
+        // NTOs specifically, not excited states in general: everything set up below is
+        // the transition analysis, which has nothing to show without them.
+        if (num_excited > 0) {
+            //nto.show_window = true;
 
-                    size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
-                    if (num_excited_states > 0) {
-                        //nto.show_window = true;
-
-                        picking_surface_init(&nto.picking_surface, interaction_surface_nto);
+            picking_surface_init(&nto.picking_surface, interaction_surface_nto);
 						vec3_t center = (oabb.min_ext + oabb.max_ext) * 0.5f * BOHR_TO_ANGSTROM;
 						vec3_t half_ext = (oabb.max_ext - oabb.min_ext) * 0.5f * BOHR_TO_ANGSTROM;
-                        nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
-                        nto.camera = nto.target;
+            nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
+            nto.camera = nto.target;
 
 						nto.atom_group_idx = md_array_create(uint32_t, num_vlx_atoms, arena);
-                        MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_vlx_atoms);
+            MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_vlx_atoms);
 
-                        snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
-                        nto.group.color[0] = vec4_t{ 0.25f, 0.25f, 0.25f, 1.0f };
+            snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
+            nto.group.color[0] = vec4_t{ 0.25f, 0.25f, 0.25f, 1.0f };
 
-                        for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
-                            ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
-                            nto.group.color[i] = vec_cast(color);
-                            snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
-                        }
+            for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+                ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
+                nto.group.color[i] = vec_cast(color);
+                snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
+            }
 
-                        // No groups until the user makes one. Slot 0 is the "everything else"
-                        // bucket every atom starts in; it is not a group the user chose and is
-                        // never drawn as one. Splitting the molecule in half, or stamping a
-                        // hardcoded mapping onto a file with a particular name, put invented
-                        // structure in front of the user and then invited them to read charge
-                        // transfer off it.
-                        nto.group.count = 1;
-                        nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
-                        update_nto_group_colors();
+            // No groups until the user makes one. Slot 0 is the "everything else"
+            // bucket every atom starts in; it is not a group the user chose and is
+            // never drawn as one. Splitting the molecule in half, or stamping a
+            // hardcoded mapping onto a file with a particular name, put invented
+            // structure in front of the user and then invited them to read charge
+            // transfer off it.
+            nto.group.count = 1;
+            nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+            update_nto_group_colors();
 
-                        // Callculate ballpark scaling factor for dipole vectors
-                        vec3_t extent = aabb.max_ext - aabb.min_ext;
-                        float max_ext = MAX(extent.x, MAX(extent.y, extent.z));
-                        float max_len = 0;
-                        const dvec3_t* electric_dp = md_vlx_rsp_electric_transition_dipole_moments(vlx);
-                        const dvec3_t* magnetic_dp = md_vlx_rsp_magnetic_transition_dipole_moments(vlx);
-                        if (electric_dp && magnetic_dp) {
-                            for (size_t i = 0; i < num_excited_states; ++i) {
-                                max_len = MAX(max_len, (float)dvec3_length(electric_dp[i]));
-                                max_len = MAX(max_len, (float)dvec3_length(magnetic_dp[i]));
-                            }
-                            nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
-                        }
+            // Callculate ballpark scaling factor for dipole vectors
+            vec3_t extent = aabb.max_ext - aabb.min_ext;
+            float max_ext = MAX(extent.x, MAX(extent.y, extent.z));
+            float max_len = 0;
+            {
+                md_temp_scope_t temp = md_temp_begin();
+                defer { md_temp_end(temp); };
+                max_len = (float)MAX(dipole_max_length(temp, state.mold.sys, STR_LIT("dipole/electric_transition/vector")),
+                                     dipole_max_length(temp, state.mold.sys, STR_LIT("dipole/magnetic_transition/vector")));
+            }
+            if (max_len > 0.0f) {
+                nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
+            }
 
 #if USE_AABB_GRID
-                        init_grid(&nto.grid, mat3_ident(), aabb.min_ext, aabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
+            init_grid(&nto.grid, mat3_ident(), aabb.min_ext, aabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
 #else
-                        init_grid(&nto.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
+            init_grid(&nto.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
 #endif
-                        nto.target = default_view;
-                        nto.camera = nto.target;
-                    }
-
-                    // RSP
-					md_vlx_rsp_type_t rsp_type = md_vlx_rsp_type(vlx);
-                    if (rsp_type != MD_VLX_RSP_UNKNOWN) {
-                        if (rsp_type == MD_VLX_RSP_LINEAR) {
-                            rsp.hovered = -1;
-                            rsp.selected = 0;
-						}
-                    }
-
-                    // OPT
-                    if (md_vlx_opt_number_of_steps(vlx) > 0) {
-                        opt.selected = (int)(md_vlx_opt_number_of_steps(vlx) - 1);
-                    }
-
-                    // ORB
-                    //orb.show_window = true;
-                    picking_surface_init(&orb.picking_surface, interaction_surface_orb);
-                    orb.target = default_view;
-                    orb.camera = orb.target;
-                    orb.mo_idx = homo_idx[0];
-                    orb.scroll_to_idx = homo_idx[0];
-
-                    // Export
-                    export_state.mo.idx = homo_idx[0];
-
-                    // CriPoAl
-                    md_bitfield_init(&critical_points.selection_mask, arena);
-                    md_bitfield_init(&critical_points.highlight_mask, arena);
-
-                    // Last, so it overrides the placeholder grouping that init sets up.
-                    apply_pending_groups();
-
-                    MD_LOG_INFO("Successfully initialized VeloxChem data");
-                }
-                else {
-                    MD_LOG_INFO("Failed to initialize VeloxChem data");
-                    reset_data();
-                }
-            }
+            nto.target = default_view;
+            nto.camera = nto.target;
         }
+
+        // RSP. Oscillator strengths are what a linear response calculation produces and
+        // what the absorption plot draws, so their presence is the question - a reader
+        // with no response type of its own answers it just by publishing them.
+        if (md_attributes_find(&state.mold.sys.attributes, STR_LIT("vlx/rsp/oscillator_strength"))) {
+            rsp.hovered = -1;
+            rsp.selected = 0;
+        }
+
+        // OPT. Opens on the last step, which is the converged geometry.
+        size_t num_opt_steps = 0;
+        if (attribute_series_f64(&num_opt_steps, state.mold.sys, STR_LIT("vlx/opt/energy")) && num_opt_steps > 0) {
+            opt.selected = (int)(num_opt_steps - 1);
+        }
+
+        // ORB
+        //orb.show_window = true;
+        picking_surface_init(&orb.picking_surface, interaction_surface_orb);
+        orb.target = default_view;
+        orb.camera = orb.target;
+        orb.mo_idx = homo_idx[0];
+        orb.scroll_to_idx = homo_idx[0];
+
+        // Export
+        export_state.mo.idx = homo_idx[0];
+
+        // CriPoAl
+        md_bitfield_init(&critical_points.selection_mask, arena);
+        md_bitfield_init(&critical_points.highlight_mask, arena);
+
+        // Last, so it overrides the placeholder grouping that init sets up.
+        apply_pending_groups();
+
+        MD_LOG_INFO("Successfully initialized quantum chemistry data");
+    }
+
+    // The VeloxChem reader's own load step, and all that is left of one. The parse is still here
+    // because the response sections read the vlx object directly; everything else comes from the
+    // table, which md_vlx_system_init_from_file filled before this event was broadcast.
+    bool parse_vlx_file(str_t filename) {
+        MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
+        if (!vlx) {
+            vlx = md_vlx_create(arena);
+        } else {
+            md_vlx_reset(vlx);
+        }
+        return md_vlx_parse_file(vlx, filename);
     }
 
     // Every one of these forwards to the application's evaluator. What used to live here - packing
@@ -3450,9 +3409,9 @@ struct VeloxChem : viamd::EventHandler {
     // the system, in which case there is nothing to highlight.
     int32_t xps_atom_index(int32_t vlx_atom_index, const ApplicationState& state) const {
         if (vlx_atom_index < 0) return -1;
-        if ((size_t)vlx_atom_index >= md_vlx_number_of_atoms(vlx)) return -1;
-        const int32_t idx = qm_to_atom_idx ? qm_to_atom_idx[vlx_atom_index] : vlx_atom_index;
-        return (idx >= 0 && (size_t)idx < state.mold.sys.atom.count) ? idx : -1;
+        if ((size_t)vlx_atom_index >= qm.count) return -1;
+        const size_t idx = qm_to_system_atom(qm, (size_t)vlx_atom_index);
+        return (idx < state.mold.sys.atom.count) ? (int32_t)idx : -1;
     }
 
     void draw_xps_plot(ApplicationState& state, ImVec2 size = ImVec2(-1.0f, 350.0f)) {
@@ -3677,15 +3636,63 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void set_atom_coordinates(ApplicationState& state, const dvec3_t* atom_coords) {
-        const dvec3_t* coords = atom_coords ? atom_coords : md_vlx_atom_coordinates(vlx);
-        size_t num_atoms = md_vlx_number_of_atoms(vlx);
-        for (size_t i = 0; i < num_atoms; i++) {
-            state.mold.state.x[i] = (float)coords[i].x;
-            state.mold.state.y[i] = (float)coords[i].y;
-            state.mold.state.z[i] = (float)coords[i].z;
+        const dvec3_t* coords = atom_coords ? atom_coords : qm.coordinate;
+        if (!coords) return;
+
+        // Through the map. These are QM atom coordinates and the destination is the SYSTEM's state,
+        // so writing them at i would put QM atom i's position on system atom i - which is only the
+        // same atom when the calculation covers the whole system. Stepping an optimisation on a
+        // subset used to scramble the first N atoms of the molecule.
+        for (size_t i = 0; i < qm.count; i++) {
+            const size_t idx = qm_to_system_atom(qm, i);
+            if (idx >= state.mold.state.num_atoms) continue;
+            state.mold.state.x[idx] = (float)coords[i].x;
+            state.mold.state.y[idx] = (float)coords[i].y;
+            state.mold.state.z[idx] = (float)coords[i].z;
         }
 		viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
         state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
+    }
+
+    // The ground state dipole vector, in the e*bohr it is stored in, or zero when absent. Read as
+    // stored (md_unit_none) rather than converted: the centre of charge arithmetic below is in the
+    // same units as the nuclear term it is subtracted from, and a conversion here would be a
+    // silent change of what that subtraction means.
+    static dvec3_t dipole_ground_state(const md_system_t& sys) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, STR_LIT("dipole/ground_state/vector"));
+        if (!attr) return {0, 0, 0};
+        double v[3] = {0, 0, 0};
+        if (md_attribute_extract_f64(v, ARRAY_SIZE(v), attr, md_unit_none()) != ARRAY_SIZE(v)) {
+            return {0, 0, 0};
+        }
+        return {v[0], v[1], v[2]};
+    }
+
+    // The longest vector in a {N,3} dipole attribute, or 0 when it is absent. Only the magnitude is
+    // wanted - it sets an arrow scale - so the vectors themselves never have to come back.
+    static double dipole_max_length(md_temp_scope_t temp, const md_system_t& sys, str_t path) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+        if (!attr || md_attribute_components(&attr->format) != 3) {
+            return 0.0;
+        }
+        const size_t count = md_attribute_element_count(&attr->format);
+        double* v = md_temp_alloc_array(temp, double, count);
+        if (!v || md_attribute_extract_f64(v, count, attr, md_unit_none()) != count) {
+            return 0.0;
+        }
+        double max_len = 0.0;
+        for (size_t i = 0; i + 2 < count; i += 3) {
+            max_len = MAX(max_len, dvec3_length({v[i], v[i + 1], v[i + 2]}));
+        }
+        return max_len;
+    }
+
+    // One string out of the table, or empty when the path is absent. Pool strings are NUL
+    // terminated, so str_ptr goes straight into a "%s".
+    static str_t attribute_str(const md_system_t& sys, str_t path) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+        if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR) return {};
+        return md_attribute_str(&sys.attributes, attr, 0);
     }
 
     // Reads one rank 1 series of doubles out of the system's attribute table.
@@ -3694,7 +3701,7 @@ struct VeloxChem : viamd::EventHandler {
     // are resident F64 and this panel prints total energies to ten decimals, which a float does not
     // carry. That is the opt-in fast path - it is only valid because the attribute is resident, and
     // the null return covers every case where it is not.
-    static const double* vlx_series(size_t* out_count, const md_system_t& sys, str_t path) {
+    static const double* attribute_series_f64(size_t* out_count, const md_system_t& sys, str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
@@ -3726,21 +3733,34 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::TreeNode("Level of Calculation")) {
-                str_t basis_set = md_vlx_basis_set_ident(vlx);
-                str_t dft_func  = md_vlx_dft_func_label(vlx);
+                const str_t basis_set = attribute_str(state.mold.sys, STR_LIT("vlx/basis_set"));
+                const str_t dft_func   = attribute_str(state.mold.sys, STR_LIT("vlx/dft_functional"));
+
+                // Named from the same two questions the orbital grid branches on, so the label
+                // cannot disagree with the layout it describes. A reader with no word of its own for
+                // the method still gets an accurate one.
+                const bool unrestricted = es_has_distinct_beta_orbitals(state.mold.sys);
+                const bool open_shell   = !unrestricted && es_has_distinct_beta_occupations(state.mold.sys);
+                const char* scf_type = unrestricted ? "Unrestricted" : open_shell ? "Restricted Open-Shell" : "Restricted";
+
                 ImGui::Text("Method: %s", str_ptr(dft_func));
-                ImGui::Text("SCF Type: %s", vlx_scf_type_str(md_vlx_scf_type(vlx)));
+                ImGui::Text("SCF Type: %s", scf_type);
                 ImGui::Text("Basis Set: %s", str_ptr(basis_set));
                 ImGui::Spacing();
                 
                 ImGui::TreePop();
             }
             if (ImGui::TreeNode("System Information")) {
-                ImGui::Text("Num Atoms:           %-6zu", md_vlx_number_of_atoms(vlx));
-                ImGui::Text("Num Alpha Electrons: %-6zu", md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_ALPHA));
-                ImGui::Text("Num Beta Electrons:  %-6zu", md_vlx_number_of_electrons(vlx, MD_VLX_SPIN_BETA));
+                ImGui::Text("Num Atoms:           %-6zu", qm.count);
+                // Summed from the occupation columns. The multiplicity follows from the same two
+                // numbers - 2S+1 with S the half difference - so it is arithmetic here rather than a
+                // third quantity to publish and keep in agreement with the other two.
+                const double n_alpha = es_electron_count(state.mold.sys, es_path::alpha_occupation);
+                const double n_beta  = es_electron_count(state.mold.sys, es_path::beta_occupation);
+                ImGui::Text("Num Alpha Electrons: %-6.0f", n_alpha);
+                ImGui::Text("Num Beta Electrons:  %-6.0f", n_beta);
                 ImGui::Text("Molecular Charge:    %-6f",  md_vlx_molecular_charge(vlx));
-                ImGui::Text("Spin Multiplicity:   %-6zu", md_vlx_spin_multiplicity(vlx));
+                ImGui::Text("Spin Multiplicity:   %-6.0f", fabs(n_alpha - n_beta) + 1.0);
                 if (rsp_type == MD_VLX_RSP_C6) {
                     ImGui::Text("C6 Value:            %-12.6f (au)", md_vlx_c6_value(vlx));
                 }
@@ -3755,8 +3775,8 @@ struct VeloxChem : viamd::EventHandler {
                 // history simply has no such path - there is no separate "was it parsed" question.
                 size_t num_iter = 0;
                 size_t num_grad = 0;
-                const double* energy    = vlx_series(&num_iter, state.mold.sys, STR_LIT("vlx/scf/history/energy"));
-                const double* grad_norm = vlx_series(&num_grad, state.mold.sys, STR_LIT("vlx/scf/history/gradient_norm"));
+                const double* energy    = attribute_series_f64(&num_iter, state.mold.sys, STR_LIT("vlx/scf/history/energy"));
+                const double* grad_norm = attribute_series_f64(&num_grad, state.mold.sys, STR_LIT("vlx/scf/history/gradient_norm"));
 
                 // Siblings in one group share a shape; a file which somehow disagrees is not a
                 // history anyone can plot.
@@ -3945,7 +3965,7 @@ struct VeloxChem : viamd::EventHandler {
                 }
             }
 
-            size_t num_atoms = md_vlx_number_of_atoms(vlx);
+            size_t num_atoms = qm.count;
             if (num_atoms > 0 && ImGui::TreeNode("Geometry")) {
                 static const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollX |
                                                         ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
@@ -3953,8 +3973,8 @@ struct VeloxChem : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const dvec3_t* atom_coord = md_vlx_opt_coordinates(vlx, opt.selected) ? md_vlx_opt_coordinates(vlx, opt.selected) : md_vlx_atom_coordinates(vlx);
-                    const uint8_t* atom_nr    = md_vlx_atomic_numbers(vlx);
+                    const dvec3_t* atom_coord = md_vlx_opt_coordinates(vlx, opt.selected) ? md_vlx_opt_coordinates(vlx, opt.selected) : qm.coordinate;
+                    const uint8_t* atom_nr    = qm.atomic_number;
 
                     ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
                     ImGui::TableSetupColumn("Symbol", columns_base_flags, 0.0f);
@@ -4090,7 +4110,9 @@ struct VeloxChem : viamd::EventHandler {
 #else
                         uint32_t tex_id = 0;
                         if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
-                            if (density_evaluate_gl(tex_id, grid, state.mold.sys, state.mold.state, es_path::alpha_density, nullptr, MD_GTO_OP_SET)) {
+                            size_t num_atom_pos = 0;
+                            const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
+                            if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, es_path::alpha_density, nullptr, MD_GTO_OP_SET)) {
                                 if (!md_topo_compute_extremum_graph_GPU(&critical_points.raw_graph, tex_id, &grid, 0.0f)) {
                                     MD_LOG_ERROR("Failed to compute extremum graph for electron density");
                                 }
@@ -5073,7 +5095,7 @@ struct VeloxChem : viamd::EventHandler {
             if (num_normal_modes > 0) {
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if (ImGui::TreeNode("Vibrational Spectroscopy")) {
-                    size_t num_atoms = md_vlx_number_of_atoms(vlx);
+                    size_t num_atoms = qm.count;
 
                     // Broadening gamma limits
                     static const double gamma_min = 1.0;
@@ -5388,7 +5410,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::EndTable();
                     }
 
-                    const dvec3_t* atom_coord = md_vlx_atom_coordinates(vlx);
+                    const dvec3_t* atom_coord = qm.coordinate;
 
                     // Check selected state
                     if (vib.selected != -1) {
@@ -5485,20 +5507,26 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::SetNextWindowSize({600, 300}, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
 
-            const double* occ_alpha = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_ALPHA);
-            const double* occ_beta = md_vlx_scf_mo_occupancy(vlx, MD_VLX_SPIN_BETA);
-            const double* ene_alpha = md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_ALPHA);
-            const double* ene_beta = md_vlx_scf_mo_energy(vlx, MD_VLX_SPIN_BETA);
+            // The neutral names, which mdlib already aliases onto whatever the reader called them.
+            const double* occ_alpha = attribute_series_f64(nullptr, state.mold.sys, es_path::alpha_occupation);
+            const double* occ_beta  = attribute_series_f64(nullptr, state.mold.sys, es_path::beta_occupation);
+            const double* ene_alpha = attribute_series_f64(nullptr, state.mold.sys, es_path::alpha_energy);
+            const double* ene_beta  = attribute_series_f64(nullptr, state.mold.sys, es_path::beta_energy);
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
-            md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
 
-            int num_x = (type == MD_VLX_SCF_UNRESTRICTED) ? 2 : orb.num_x;
+            // The SCF type as the DATA states it - see es_has_distinct_beta_* in viamd.h. Two spin
+            // channels of coefficients is what an unrestricted grid is actually about, and one set
+            // of orbitals with two occupations is what makes a SOMO; neither needs a reader's enum.
+            const bool unrestricted = es_has_distinct_beta_orbitals(state.mold.sys);
+            const bool open_shell   = !unrestricted && es_has_distinct_beta_occupations(state.mold.sys);
+
+            int num_x = (unrestricted) ? 2 : orb.num_x;
             int num_y = orb.num_y;
 
             int orb_homo_idx = MAX(homo_idx[0], homo_idx[1]);
             int orb_lumo_idx = MIN(lumo_idx[0], lumo_idx[1]);
-            if (type == MD_VLX_SCF_RESTRICTED_OPENSHELL) {
+            if (open_shell) {
                 orb_lumo_idx = MAX(lumo_idx[0], lumo_idx[1]);
             }
 
@@ -5507,7 +5535,7 @@ struct VeloxChem : viamd::EventHandler {
             int num_mos = num_x * num_y;
             // Number of distinct orbitals on screen: an unrestricted grid spends its two columns
             // on the alpha and the beta half of the same orbital, so a grid row is one orbital.
-            const int window_size = (type == MD_VLX_SCF_UNRESTRICTED) ? num_y : num_mos;
+            const int window_size = (unrestricted) ? num_y : num_mos;
 
             // The table is sortable and the grid shows a span of it, so the span is taken in ROW
             // space, not in mo index space. Under a sort by energy or occupancy the orbitals on
@@ -5520,7 +5548,7 @@ struct VeloxChem : viamd::EventHandler {
 
             // A column the current scf type does not display must not stay selected, or a
             // restricted file opened after an unrestricted one would sort on a hidden key.
-            if (type != MD_VLX_SCF_UNRESTRICTED &&
+            if (!unrestricted &&
                 (orb.sort_column == OrbitalColumn_OccBeta || orb.sort_column == OrbitalColumn_EneBeta)) {
                 orb.sort_column = OrbitalColumn_Idx;
                 orb.sort_ascending = false;
@@ -5528,7 +5556,7 @@ struct VeloxChem : viamd::EventHandler {
 
             auto rebuild_order = [&]() {
                 orbital_table_build_order(row_to_mo, mo_to_row, num_tot_mos, orb.sort_column, orb.sort_ascending,
-                                          occ_alpha, occ_beta, ene_alpha, ene_beta, type != MD_VLX_SCF_UNRESTRICTED);
+                                          occ_alpha, occ_beta, ene_alpha, ene_beta, !unrestricted);
             };
             rebuild_order();
 
@@ -5566,7 +5594,7 @@ struct VeloxChem : viamd::EventHandler {
                 // slider at the count actually in effect rather than at the stored preference,
                 // but keep writing back only when it is live, so the preference survives for the
                 // next restricted dataset.
-                const bool cols_fixed = (type == MD_VLX_SCF_UNRESTRICTED);
+                const bool cols_fixed = (unrestricted);
                 int num_x_slider = cols_fixed ? num_x : orb.num_x;
                 if (cols_fixed) ImGui::PushDisabled();
                 if (ImGui::SliderInt("##Cols", &num_x_slider, 1, 4) && !cols_fixed) {
@@ -5591,7 +5619,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::SetItemTooltip("Color Negative");
 
                 const char* btn_text = "Goto HOMO";
-                if (type == MD_VLX_SCF_RESTRICTED_OPENSHELL && (homo_idx[0] != homo_idx[1])) {
+                if (open_shell && (homo_idx[0] != homo_idx[1])) {
                     btn_text = "Goto SOMO";
                 }
 
@@ -5602,7 +5630,7 @@ struct VeloxChem : viamd::EventHandler {
                     orb.scroll_to_idx = homo_idx[0];
                 }
 
-                int num_cols = (type == MD_VLX_SCF_UNRESTRICTED) ? 5 : 3;
+                int num_cols = (unrestricted) ? 5 : 3;
 
                 const ImGuiTableFlags flags =
                     ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_RowBg |
@@ -5621,7 +5649,7 @@ struct VeloxChem : viamd::EventHandler {
                     // highest index first - the order it had before it was sortable.
                     const ImGuiTableColumnFlags mo_col_flags =
                         ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed;
-                    if (type == MD_VLX_SCF_UNRESTRICTED) {
+                    if (unrestricted) {
                         ImGui::TableSetupColumn("MO", mo_col_flags, 0.0f, OrbitalColumn_Idx);
                         ImGui::TableSetupColumn((const char*)u8"Occ. α", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, OrbitalColumn_OccAlpha);
                         ImGui::TableSetupColumn((const char*)u8"Occ. β", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, 0.0f, OrbitalColumn_OccBeta);
@@ -5683,7 +5711,7 @@ struct VeloxChem : viamd::EventHandler {
                         if (occ_alpha) {
                             const char* lbl = "";
                             double occ = occ_alpha[n];
-                            if (type == MD_VLX_SCF_UNRESTRICTED) {
+                            if (unrestricted) {
                                 // Compared against alpha's own homo/lumo only. The window-wide
                                 // orb_homo_idx/orb_lumo_idx are extremes over both spins, so
                                 // requiring them here left whichever spin did not hold the
@@ -5711,7 +5739,7 @@ struct VeloxChem : viamd::EventHandler {
                         else {
                             ImGui::Text("-");
                         }
-                        if (type == MD_VLX_SCF_UNRESTRICTED) {
+                        if (unrestricted) {
                             ImGui::TableNextColumn();
                             if (occ_beta) {
                                 const char* lbl = "";
@@ -5734,7 +5762,7 @@ struct VeloxChem : viamd::EventHandler {
                         else {
                             ImGui::Text("-");
                         }
-                        if (type == MD_VLX_SCF_UNRESTRICTED) {
+                        if (unrestricted) {
                             ImGui::TableNextColumn();
                             if (ene_beta) {
                                 ImGui::Text("%.4f", ene_beta[n]);
@@ -5760,7 +5788,7 @@ struct VeloxChem : viamd::EventHandler {
             int vol_mo_idx[16] = { -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1 };
             md_vlx_spin_t vol_mo_type[16] = {};
             for (int i = 0; i < num_mos; ++i) {
-                if (type == MD_VLX_SCF_UNRESTRICTED) {
+                if (unrestricted) {
                     vol_mo_idx[i] = window_mo_idx(i / 2);
                     vol_mo_type[i] = (i & 1) ? MD_VLX_SPIN_ALPHA : MD_VLX_SPIN_BETA;
                 }
@@ -5857,7 +5885,7 @@ struct VeloxChem : viamd::EventHandler {
                 ImGui::PushID(i);
                 defer { ImGui::PopID(); };
 
-                const int mo_idx = window_mo_idx((type == MD_VLX_SCF_UNRESTRICTED) ? i / 2 : i);
+                const int mo_idx = window_mo_idx((unrestricted) ? i / 2 : i);
                 int x = num_x - i % num_x - 1;
                 int y = num_y - i / num_x - 1;
                 if (-1 < mo_idx && mo_idx < num_tot_mos) {
@@ -5908,7 +5936,7 @@ struct VeloxChem : viamd::EventHandler {
 
 
                     const char* lbl = "";
-                    if (type == MD_VLX_SCF_UNRESTRICTED) {
+                    if (unrestricted) {
                         // 0 = alpha, 1 = beta, matching vol_mo_type above. A panel shows one
                         // spin, so it is labelled against that spin's own homo/lumo; gating on
                         // the window-wide extremes left the other spin unlabelled.
@@ -5935,7 +5963,7 @@ struct VeloxChem : viamd::EventHandler {
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
-                    if (type == MD_VLX_SCF_UNRESTRICTED) {
+                    if (unrestricted) {
                         draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (i & 1) ? (const char*)u8"α" : (const char*)u8"β");
                         snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
                     }
@@ -6227,14 +6255,14 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (show_mo_combo) {
-                md_vlx_scf_type_t type = md_vlx_scf_type(vlx);
+                const bool unrestricted = es_has_distinct_beta_orbitals(state.mold.sys);
                 // Only an unrestricted calculation has two distinct sets of coefficients. For
                 // restricted and restricted-openshell, scf.beta is a shallow copy of alpha that
                 // shares the very same coefficient buffer (md_vlx.c), and the beta attribute is
                 // published as an alias of alpha's, so a selector there would offer two names
                 // for identical data. Forcing alpha in that case also keeps a Beta selection
                 // left over from a previously loaded file from picking beta's homo/lumo labels.
-                if (type == MD_VLX_SCF_UNRESTRICTED) {
+                if (unrestricted) {
                     const char* options[2] = {"Alpha", "Beta"};
                     if (ImGui::BeginCombo("##MO_TYPE", options[export_state.mo.type])) {
                         for (size_t i = 0; i < ARRAY_SIZE(options); ++i) {
@@ -6440,9 +6468,9 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     int num_samples = vol.dim[0] * vol.dim[1] * vol.dim[2];
-                    size_t              natoms = md_vlx_number_of_atoms(vlx);
-                    const dvec3_t* vlx_coords  = md_vlx_atom_coordinates(vlx);
-                    const uint8_t* vlx_numbers = md_vlx_atomic_numbers(vlx);
+                    size_t              natoms = qm.count;
+                    const dvec3_t* vlx_coords  = qm.coordinate;
+                    const uint8_t* vlx_numbers = qm.atomic_number;
                     float* data = md_temp_alloc_array(temp, float, num_samples);
 
                     vec3_t origin = grid.origin;
@@ -7828,10 +7856,10 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void flow_build_atom_labels() {
-        const size_t num_atoms = md_vlx_number_of_atoms(vlx);
+        const size_t num_atoms = qm.count;
         if (num_atoms == 0 || flow.atom_labels) return;
 
-        const md_element_t* z = md_vlx_atomic_numbers(vlx);
+        const md_element_t* z = qm.atomic_number;
         flow.atom_labels = (char*)md_alloc(arena, num_atoms * FLOW_ATOM_LABEL_STRIDE);
         flow.num_atom_labels = num_atoms;
 
@@ -7928,31 +7956,116 @@ struct VeloxChem : viamd::EventHandler {
     // hole and particle are independent once you know which NTO pair you are in, which is exactly
     // what the NTO decomposition claims and no more. The occupied x virtual amplitude matrix (M4)
     // drops that assumption too.
-    bool build_flow_graph_nto() {
+    // Fills the flow procedures' input out of the system's attribute table. Every field here is
+    // either a read of a published path or a pure function of the basis - nothing reaches for
+    // md_vlx - which is what lets a system published by another QM reader drive the same diagram.
+    //
+    // Allocates into 'temp', so that scope has to outlive the graph build which consumes it.
+    // Returns false only when there is no calculation to speak of; a missing OPTIONAL part leaves
+    // its field null and is the caller's to check, not an error.
+    bool flow_qm_data_gather(FlowQmData* out, md_temp_scope_t temp, const md_system_t& sys) {
+        ASSERT(out);
+        *out = {};
+
+        if (!es_orbital_extent(sys, &out->num_mo, &out->num_ao)) return false;
+
+        const size_t num_ao = out->num_ao;
+        const size_t num_mo = out->num_mo;
+        if (num_ao == 0 || num_mo == 0) return false;
+
+        out->homo_idx = homo_idx[0];
+
+        // Extracted rather than pointed at, so a producer that publishes either of these through a
+        // provider instead of storing them works here unchanged.
+        if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::overlap)) {
+            if (attr->format.rank == 2 && md_attribute_components(&attr->format) == 1 &&
+                attr->format.shape[0] == num_ao && attr->format.shape[1] == num_ao) {
+                double* S = md_temp_alloc_array(temp, double, num_ao * num_ao);
+                if (md_attribute_extract_f64(S, num_ao * num_ao, attr, md_unit_none()) == num_ao * num_ao) {
+                    out->S = S;
+                }
+            }
+        }
+
+        if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::alpha_coefficient)) {
+            double* C = md_temp_alloc_array(temp, double, num_mo * num_ao);
+            if (md_attribute_extract_f64(C, num_mo * num_ao, attr, md_unit_none()) == num_mo * num_ao) {
+                out->C_mo = C;
+            }
+        }
+
+        // A pure function of the shell list, and md_vlx derives its own copy by calling this same
+        // procedure - so there is nothing to publish, and nothing that can drift out of step with
+        // the AO ordering the evaluator walks.
+        if (basis.num_shells > 0 && md_gto_basis_num_ao(&basis) == num_ao) {
+            uint32_t* shell_atom = md_temp_alloc_array(temp, uint32_t, num_ao);
+            if (md_gto_basis_ao_to_atom(shell_atom, &basis) == num_ao) {
+                int* ao_to_atom = md_temp_alloc_array(temp, int, num_ao);
+                for (size_t i = 0; i < num_ao; ++i) {
+                    ao_to_atom[i] = (int)shell_atom[i];
+                }
+                out->ao_to_atom = ao_to_atom;
+            }
+        }
+
+        // One excited state's NTO pairs. The attributes are {S,Lmax,A} and {S,Lmax}, so narrowing
+        // by the state gives exactly the {K,A} block and the [K] weights the builders want, with no
+        // reshaping on either side.
+        if (rsp.selected >= 0) {
+            const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)rsp.selected);
+
+            const md_attribute_t* lambda_attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
+            const md_attribute_t* hole_attr   = md_attributes_find(&sys.attributes, es_path::nto_hole);
+            const md_attribute_t* part_attr   = md_attributes_find(&sys.attributes, es_path::nto_particle);
+
+            if (lambda_attr && hole_attr && part_attr) {
+                // Bounded by the label storage the builders write into, which is the real
+                // constraint - not by any reader's idea of how many pairs a state may have.
+                const size_t num_nto = MIN(md_attribute_slice_count(lambda_attr, &slice), ARRAY_SIZE(flow.nto_label));
+                const size_t block   = num_nto * num_ao;
+
+                if (num_nto > 0 &&
+                    md_attribute_slice_count(hole_attr, &slice) >= block &&
+                    md_attribute_slice_count(part_attr, &slice) >= block) {
+                    double* lambda = md_temp_alloc_array(temp, double, num_nto);
+                    double* hole   = md_temp_alloc_array(temp, double, block);
+                    double* part   = md_temp_alloc_array(temp, double, block);
+
+                    if (md_attribute_extract_slice_f64(lambda, num_nto, lambda_attr, &slice, md_unit_none()) >= num_nto &&
+                        md_attribute_extract_slice_f64(hole,   block,  hole_attr,   &slice, md_unit_none()) >= block &&
+                        md_attribute_extract_slice_f64(part,   block,  part_attr,   &slice, md_unit_none()) >= block) {
+                        out->num_nto    = num_nto;
+                        out->nto_lambda = lambda;
+                        out->C_nto_hole = hole;
+                        out->C_nto_part = part;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    bool build_flow_graph_nto(const FlowQmData& qm) {
         md_flow_graph_init(&flow.graph, 3, arena);
 
         if (rsp.selected < 0 || !nto.atom_group_idx) return false;
 
         const size_t num_groups = nto.group.count;
-        const size_t num_ao     = md_vlx_scf_number_of_atomic_orbitals(vlx);
-        const double* S         = md_vlx_scf_overlap_matrix_data(vlx);
-        const int* ao_to_atom   = md_vlx_ao_to_atom_idx(vlx);
+        const size_t num_ao     = qm.num_ao;
+        const double* S         = qm.S;
+        const int* ao_to_atom   = qm.ao_to_atom;
 
         if (num_groups == 0 || num_ao == 0 || !S || !ao_to_atom) return false;
 
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
-        const size_t max_lambdas = MD_VLX_NTO_MAX_LAMBDAS;
-
-        double* lambdas = md_temp_alloc_zero_array(temp, double, max_lambdas);
-        double* C_hole  = md_temp_alloc_zero_array(temp, double, max_lambdas * num_ao);
-        double* C_part  = md_temp_alloc_zero_array(temp, double, max_lambdas * num_ao);
-
-        const size_t num_hole = md_vlx_rsp_nto_coefficients_extract(C_hole, lambdas, vlx, (size_t)rsp.selected, MD_VLX_NTO_HOLE, max_lambdas);
-        const size_t num_part = md_vlx_rsp_nto_coefficients_extract(C_part, nullptr, vlx, (size_t)rsp.selected, MD_VLX_NTO_PARTICLE, max_lambdas);
-        const size_t num_nto  = MIN(num_hole, num_part);
-        if (num_nto == 0) return false;
+        const double* lambdas = qm.nto_lambda;
+        const double* C_hole  = qm.C_nto_hole;
+        const double* C_part  = qm.C_nto_part;
+        const size_t num_nto  = qm.num_nto;
+        if (num_nto == 0 || !lambdas || !C_hole || !C_part) return false;
 
         // Attribute to ATOMS, not to groups. The group numbers are then sums over their members,
         // which is what makes the collapsed and expanded views incapable of disagreeing (invariant
@@ -8002,7 +8115,7 @@ struct VeloxChem : viamd::EventHandler {
             lambda_keep[num_keep] = lambdas[k];
             lambda_sum += lambdas[k];
             snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
-            flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]),
+            flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]), qm,
                                C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
             num_keep++;
         }
@@ -8152,14 +8265,17 @@ struct VeloxChem : viamd::EventHandler {
     //
     // Left blank unless one MO leads on each side by a clear margin. A 40/35 split has no dominant
     // character and saying otherwise would be worse than saying nothing.
-    void flow_nto_character(char* buf, size_t cap, const double* C_hole_k, const double* C_part_k, float min_share) {
+    void flow_nto_character(char* buf, size_t cap, const FlowQmData& qm, const double* C_hole_k, const double* C_part_k, float min_share) {
         buf[0] = '\0';
 
-        const size_t num_ao = md_vlx_scf_number_of_atomic_orbitals(vlx);
-        const size_t num_mo = md_vlx_scf_number_of_molecular_orbitals(vlx);
-        const double* S     = md_vlx_scf_overlap_matrix_data(vlx);
-        const size_t homo   = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
-        if (!S || num_ao == 0 || num_mo == 0 || homo + 1 >= num_mo) return;
+        const size_t num_ao  = qm.num_ao;
+        const size_t num_mo  = qm.num_mo;
+        const double* S      = qm.S;
+        const double* C_all  = qm.C_mo;
+        if (!S || !C_all || qm.homo_idx < 0) return;
+
+        const size_t homo = (size_t)qm.homo_idx;
+        if (num_ao == 0 || num_mo == 0 || homo + 1 >= num_mo) return;
 
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
@@ -8182,8 +8298,7 @@ struct VeloxChem : viamd::EventHandler {
             double norm = 0.0, top = 0.0;
             size_t top_mo = num_mo;
             for (size_t mo = beg; mo < end; ++mo) {
-                const double* C_mo = md_vlx_scf_mo_coefficients(vlx, mo, MD_VLX_SPIN_ALPHA);
-                if (!C_mo) continue;
+                const double* C_mo = C_all + mo * num_ao;
                 double ov = 0.0;
                 for (size_t mu = 0; mu < num_ao; ++mu) ov += C_mo[mu] * sc[mu];
                 const double w = ov * ov;
@@ -8215,32 +8330,29 @@ struct VeloxChem : viamd::EventHandler {
     // and drop the MO-MO interference. Measured on test_data/vlx/amide.h5, that moves 33.6% of the
     // population on the dominant transition: a diagram that adds up perfectly and is wrong by a
     // third about which atoms donated. See docs/transition_flow_design.md.
-    bool build_flow_graph_orbitals() {
+    bool build_flow_graph_orbitals(const FlowQmData& qm) {
         md_flow_graph_init(&flow.graph, 3, arena);
 
         if (rsp.selected < 0) return false;
 
-        const size_t num_ao  = md_vlx_scf_number_of_atomic_orbitals(vlx);
-        const size_t num_mo  = md_vlx_scf_number_of_molecular_orbitals(vlx);
-        const double* S      = md_vlx_scf_overlap_matrix_data(vlx);
-        const size_t homo    = md_vlx_scf_homo_idx(vlx, MD_VLX_SPIN_ALPHA);
+        const size_t num_ao  = qm.num_ao;
+        const size_t num_mo  = qm.num_mo;
+        const double* S      = qm.S;
+        const double* C_all  = qm.C_mo;
 
-        if (num_ao == 0 || num_mo == 0 || !S) return false;
+        if (num_ao == 0 || num_mo == 0 || !S || !C_all || qm.homo_idx < 0) return false;
+        const size_t homo = (size_t)qm.homo_idx;
         const size_t nocc = homo + 1;
         if (nocc == 0 || nocc >= num_mo) return false;
 
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
-        const size_t max_lambdas = MD_VLX_NTO_MAX_LAMBDAS;
-        double* lambdas = md_temp_alloc_zero_array(temp, double, max_lambdas);
-        double* C_hole  = md_temp_alloc_zero_array(temp, double, max_lambdas * num_ao);
-        double* C_part  = md_temp_alloc_zero_array(temp, double, max_lambdas * num_ao);
-
-        const size_t num_hole = md_vlx_rsp_nto_coefficients_extract(C_hole, lambdas, vlx, (size_t)rsp.selected, MD_VLX_NTO_HOLE, max_lambdas);
-        const size_t num_part = md_vlx_rsp_nto_coefficients_extract(C_part, nullptr, vlx, (size_t)rsp.selected, MD_VLX_NTO_PARTICLE, max_lambdas);
-        const size_t num_nto  = MIN(num_hole, num_part);
-        if (num_nto == 0) return false;
+        const double* lambdas = qm.nto_lambda;
+        const double* C_hole  = qm.C_nto_hole;
+        const double* C_part  = qm.C_nto_part;
+        const size_t num_nto  = qm.num_nto;
+        if (num_nto == 0 || !lambdas || !C_hole || !C_part) return false;
 
         // Projection onto the MO basis: U_ik = <phi_i | NTO_k> = C_i^T S C_k. S*C_k is formed once
         // per NTO and then dotted with each MO, which keeps this at O(k * nao^2) rather than
@@ -8272,8 +8384,7 @@ struct VeloxChem : viamd::EventHandler {
 
                 double norm = 0.0;
                 for (size_t mo = mo_beg; mo < mo_end; ++mo) {
-                    const double* C_mo = md_vlx_scf_mo_coefficients(vlx, mo, MD_VLX_SPIN_ALPHA);
-                    if (!C_mo) continue;
+                    const double* C_mo = C_all + mo * num_ao;
                     double overlap = 0.0;
                     for (size_t mu = 0; mu < num_ao; ++mu) overlap += C_mo[mu] * sc[mu];
                     proj[mo] = overlap * overlap;   // |U_ik|^2
@@ -8289,7 +8400,7 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
-            flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]),
+            flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]), qm,
                                C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
 
             lambda_keep[num_keep] = lambdas[k];
@@ -8366,7 +8477,7 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    void rebuild_flow_graph() {
+    void rebuild_flow_graph(const FlowQmData& qm) {
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
@@ -8387,8 +8498,8 @@ struct VeloxChem : viamd::EventHandler {
         flow.built = false;
         flow.hover = FlowHit{};     // a cut index, and stale now (selection is by key, so it lives)
 
-        const bool ok = (flow.mode == FLOW_MODE_ORBITALS) ? build_flow_graph_orbitals()
-                      : (flow.mode == FLOW_MODE_NTO)      ? build_flow_graph_nto()
+        const bool ok = (flow.mode == FLOW_MODE_ORBITALS) ? build_flow_graph_orbitals(qm)
+                      : (flow.mode == FLOW_MODE_NTO)      ? build_flow_graph_nto(qm)
                                                           : build_flow_graph_groups();
         if (!ok) {
             md_flow_graph_free(&flow.graph);
@@ -8634,7 +8745,16 @@ struct VeloxChem : viamd::EventHandler {
         }
         if (hash != flow.data_hash) {
             flow.data_hash = hash;
-            rebuild_flow_graph();
+
+            // Gathered HERE and not inside: the flow graph procedures work on arrays and counts and
+            // know nothing about a system, an attribute table or a reader. This is the one place
+            // that has to, and it is the place that already holds the system.
+            md_temp_scope_t temp = md_temp_begin();
+            defer { md_temp_end(temp); };
+
+            FlowQmData qm = {};
+            flow_qm_data_gather(&qm, temp, state.mold.sys);
+            rebuild_flow_graph(qm);
         }
 
         bool export_requested = false;
@@ -9184,8 +9304,18 @@ struct VeloxChem : viamd::EventHandler {
         return success;
     }
 
-    void update_nto_derived_data() {
-        if (!vlx || !md_vlx_rsp_has_nto(vlx) || !nto.atom_group_idx) return;
+    // Bookkeeping rather than numerics: it owns the hashes and the transition matrix storage, and
+    // the two procedures it hands the numbers to - attribute_charge_density and
+    // compute_transition_matrix - already take nothing but arrays. So this is where the system is
+    // allowed to be, and the fetches stay INSIDE the hash guard: a transition density is rebuilt
+    // from the solution vector on every read, and pulling two A x A of them per frame would be a
+    // real cost for a value that only changes when the selection does.
+    void update_nto_derived_data(const md_system_t& sys) {
+        if (!nto.atom_group_idx) return;
+
+        // What the table carries, not what a reader parsed. A system with no transition densities
+        // has no transition to attribute, whichever program produced it.
+        if (!md_attributes_find(&sys.attributes, es_path::attachment_density)) return;
 
         // Create hash to check for changes to trigger update of colors in gl representation
         uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, md_array_bytes(nto.atom_group_idx), 0);
@@ -9229,30 +9359,47 @@ struct VeloxChem : viamd::EventHandler {
 					md_temp_scope_t temp = md_temp_begin();
                     defer { md_temp_end(temp); };
 
-					const size_t num_aos = md_vlx_rsp_transition_density_matrix_size(vlx, nto_idx);
-					const double* S = md_vlx_scf_overlap_matrix_data(vlx);
+					// Full-density Mulliken attribution from attachment / detachment AO matrices.
+					// hole charges  <- detachment density (D-)
+					// part charges  <- attachment density (D+)
+					//
+					// Both are VIRTUAL attributes indexed by excited state, so the slice is what
+					// asks the table to reconstruct this one rather than every state.
+					const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)nto_idx);
 
-					if (num_aos > 0 && S != NULL) {
-						// Full-density Mulliken attribution from attachment / detachment AO matrices.
-						// hole charges  <- detachment density (D-)
-						// part charges  <- attachment density (D+)
-                        double* D_attach = md_temp_alloc_array(temp, double, num_aos * num_aos);
-                        double* D_detach = md_temp_alloc_array(temp, double, num_aos * num_aos);
+					size_t a_dim = 0;
+					size_t d_dim = 0;
+					size_t s_dim = 0;
+					const double* D_attach = density_matrix_extract(&a_dim, temp, sys, es_path::attachment_density, &slice);
+					const double* D_detach = density_matrix_extract(&d_dim, temp, sys, es_path::detachment_density, &slice);
+					const double* S        = density_matrix_extract(&s_dim, temp, sys, es_path::overlap, nullptr);
 
-						const size_t a_dim = md_vlx_rsp_transition_density_matrix_extract(D_attach, vlx, nto_idx, MD_VLX_TRANSITION_ATTACHMENT);
-						const size_t d_dim = md_vlx_rsp_transition_density_matrix_extract(D_detach, vlx, nto_idx, MD_VLX_TRANSITION_DETACHMENT);
+					const size_t num_aos = s_dim;
 
+					if (num_aos > 0 && S && D_attach && D_detach) {
 						if (a_dim == num_aos && d_dim == num_aos) {
 							double group_density_part[MAX_NTO_GROUPS] = {0};
 							double group_density_hole[MAX_NTO_GROUPS] = {0};
 
-							const int* ao_to_atom = md_vlx_ao_to_atom_idx(vlx);
+							// A pure function of the shell list - the same call md_vlx uses to build
+							// the copy this used to read - so there is no map to publish and none
+							// that can drift from the AO ordering.
+							uint32_t* ao_to_atom = md_temp_alloc_array(temp, uint32_t, num_aos);
+							if (md_gto_basis_num_ao(&basis) != num_aos ||
+								md_gto_basis_ao_to_atom(ao_to_atom, &basis) != num_aos) {
+								return;
+							}
+
+							// Bounded by the array actually being indexed rather than by any atom
+							// count reported elsewhere, which is the only bound that makes the read
+							// below safe.
+							const size_t num_group_atoms = md_array_size(nto.atom_group_idx);
                             int* ao_to_group = md_temp_alloc_array(temp, int, num_aos);
 
 							for (size_t i = 0; i < num_aos; i++) {
-								int atom_idx = ao_to_atom[i];
-								ASSERT(0 <= atom_idx && (size_t)atom_idx < md_vlx_number_of_atoms(vlx));
-								int g = (int)nto.atom_group_idx[atom_idx];
+								const uint32_t atom_idx = ao_to_atom[i];
+								ASSERT(atom_idx < num_group_atoms);
+								int g = (atom_idx < num_group_atoms) ? (int)nto.atom_group_idx[atom_idx] : 0;
 								if (g < 0 || g >= MAX_NTO_GROUPS) g = 0;
 								ao_to_group[i] = g;
 							}

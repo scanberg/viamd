@@ -503,27 +503,6 @@ struct DipoleMoment {
     md_unit_t unit = md_unit_none();
 };
 
-struct NaturalTransitionOrbitalLambda {
-    size_t num_lambdas = 0;
-    str_t* label = nullptr;
-    double* value = nullptr;
-};
-
-struct NaturalTransitionOrbital {
-    size_t num_orbitals = 0;
-    str_t* label = nullptr;
-    NaturalTransitionOrbitalLambda* lambda = nullptr;
-};
-
-struct MolecularOrbital {
-    size_t homo_idx = 0;
-    size_t lumo_idx = 0;
-    size_t num_orbitals = 0;
-    str_t* label = nullptr;
-    double* occupation = nullptr;
-    double* energy = nullptr;
-};
-
 struct DensityProperty {
     uint64_t key    = 0;
     str_t label     = { 0 };
@@ -531,11 +510,14 @@ struct DensityProperty {
 
 // Struct to fill in for the different components
 // Which provides information of what representations are available for the currently loaded datasets
+// What is LEFT of a fan-in that used to be filled by whichever component happened to have parsed
+// the file. Both remaining members are answers about what the SYSTEM holds, computed in
+// update_representation_info by reading its attribute table - which is the exact test, and one a
+// second reader satisfies without any component being involved.
+//
+// The orbital and excited-state members went the same way: main.cpp asks the table (es_orbital_*,
+// es_excited_state_count, es_nto_lambdas) rather than being handed a precomputed copy.
 struct RepresentationInfo {
-    MolecularOrbital alpha;
-    MolecularOrbital beta;
-    NaturalTransitionOrbital nto;
-
     ElectronicStructureSourceFlags electronic_structure_source_mask = 0;
 
     md_array(DensityProperty) density_properties = nullptr;
@@ -1926,8 +1908,18 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 // The caller owns the grid, the destination texture and the evaluation parameters, which is why no
 // registry of "fields" is needed to sit between: what varies per request is the request, and what
 // is data is data.
-bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                         const vec3_t* atom_pos, size_t num_atom_pos,
                          str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+
+// Positions for a system's BASIS atoms, in the bohr and interleaved layout md_gto works in, taken
+// out of `state` through the QM -> system map. Allocated from temp; null with a zero count when the
+// system publishes no basis or the state cannot serve it.
+//
+// This is what an evaluation takes INSTEAD of a state. Which geometry an orbital is drawn at - the
+// current frame, a reference, an optimisation step, a geometry that never was - is the call site's
+// decision, and an evaluation is in no position to make it.
+vec3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, const md_system_t& sys, const md_system_state_t& state);
 
 // Blocks until every queued volume readback has landed in its GL texture. Call before destroying
 // the device scratch, the pools or a GL texture one of them writes to, and wherever a caller needs
@@ -1935,10 +1927,90 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
 // backend, where evaluation writes the texture directly.
 void gpu_volume_jobs_drain(ApplicationState* state);
 
-// Records which system atom each basis atom is, for a QM calculation covering only part of the
-// loaded system. Pass NULL / 0 to clear it, which is what the standalone case wants: absent means
-// the identity, and a stale map would send every evaluation to the wrong atoms.
-void basis_atom_map_publish(md_system_t* sys, const int32_t* system_index, size_t count);
+
+// The QM ATOM DOMAIN: the atoms a quantum chemistry calculation covered, in its own order and at
+// its own geometry. NOT the system's atoms - a calculation can cover part of a loaded system, so
+// the two spaces differ in length and in order, and system_index is the only bridge.
+//
+// Published under qm/atom/. basis/shell/atom_index is an index INTO this space - the basis is one
+// thing defined over these atoms, not the other way round - and 'count' is what "how many atoms
+// does the QM cover" means; there is nothing else to ask.
+//
+// The pointers are into the table's own storage and are invalidated by the next attribute create
+// or remove - which, for a loaded system, means the next load.
+struct QmAtoms {
+    size_t          count         = 0;
+    const uint8_t*  atomic_number = nullptr;  // [N]
+    const dvec3_t*  coordinate    = nullptr;  // [N], Angstrom, the geometry the calculation ran at
+    const uint32_t* system_index  = nullptr;  // [N], or null for the identity
+};
+
+// False when the system carries no QM atom domain at all. An individual member may still be null
+// when that column was not published; a null system_index is not a failure, it is the standalone
+// case and reads as the identity.
+bool es_qm_atoms(QmAtoms* out, const md_system_t& sys);
+
+// Which system atom QM atom i is. The one place the two index spaces meet.
+inline size_t qm_to_system_atom(const QmAtoms& qm, size_t i) {
+    return qm.system_index ? (size_t)qm.system_index[i] : i;
+}
+
+// The extent of the MO coefficient matrix: M molecular orbitals over A atomic orbitals, read from
+// the attribute's own SHAPE. Deliberately not two more published scalars - a matrix cannot disagree
+// with its own dimensions, and a reader that publishes coefficients has already said this. Either
+// out pointer may be NULL. False when no coefficients are present, which is "this system is not a
+// QM calculation" rather than a failure.
+bool es_orbital_extent(const md_system_t& sys, size_t* out_num_mo, size_t* out_num_ao);
+
+// The frontier orbitals of one spin channel, from the occupations at occupation_path
+// (es_path::alpha_occupation or its beta sibling). DERIVED and not published: it is one scan of a
+// column that is already in the table, and a stored copy is a second thing to keep in agreement.
+//
+// HOMO is the highest index carrying occupation, LUMO the next one up. Both are -1 when the column
+// is absent; lumo_idx is num_orbitals when every orbital is occupied, which is out of range on
+// purpose - there is no LUMO to point at. NOTE this differs from md_vlx's own homo_idx/lumo_idx,
+// which take the FIRST zero occupancy and leave both at 0 when there is none; the two agree on
+// every aufbau-ordered canonical set, and this one also answers for the fully occupied case.
+// Natural orbitals, whose occupations are fractional and never exactly zero, have no frontier in
+// this sense and will report the last orbital.
+struct OrbitalFrontier {
+    int homo_idx      = -1;
+    int lumo_idx      = -1;
+    int num_orbitals  = 0;
+};
+bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, str_t occupation_path);
+
+// True when the system holds a SECOND, DISTINCT set of orbital coefficients - an unrestricted
+// calculation. Restricted and restricted-openshell publish beta as an alias of alpha: one datum
+// under two names, so a spin selector over them would offer a choice that changes nothing.
+bool es_has_distinct_beta_orbitals(const md_system_t& sys);
+
+// True when the two spin channels carry DIFFERENT occupations. Together with the above this is the
+// whole of the SCF type distinction, taken from the data rather than from a reader's enum:
+//
+//   restricted            same coefficients, same occupations
+//   restricted open shell same coefficients, different occupations   (the singly occupied case)
+//   unrestricted          different coefficients
+//
+// Which is the point - a second QM reader publishing the same columns says the same thing about
+// itself without anyone having to map its own enum onto md_vlx's.
+bool es_has_distinct_beta_occupations(const md_system_t& sys);
+
+// Electrons in one spin channel: the sum of its occupations, which is what an occupation IS. Not a
+// published number, because a published number is a second thing that can disagree with the column
+// it summarises. Returns 0.0 when the column is absent.
+//
+// A double rather than a count: natural orbitals occupy fractionally, and rounding here would hide
+// that from a caller who cares. Canonical SCF sums to an integer within float noise.
+double es_electron_count(const md_system_t& sys, str_t occupation_path);
+
+// Excited states carrying natural transition orbitals, from the weight table's leading axis.
+size_t es_excited_state_count(const md_system_t& sys);
+
+// One excited state's NTO weights, largest first, stopping at the first below 'cutoff'. The ragged
+// lambda axis is zero padded, so the cutoff ends the run in exactly the place the pairs do.
+// Returns how many were written.
+size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, size_t state_idx, double cutoff);
 
 // One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', in the
 // double precision md_gto asks for. Allocated from temp; NULL when the path is absent or the slice
@@ -1950,7 +2022,8 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
 // basis/ attributes and the state's atom positions. density_path plus 'slice' name the matrix -
 // "orbital/total/density" with no slice, "vlx/rsp/transition_density/attachment" with the excited
 // state index - and whether that matrix is stored or computed on demand is the table's business.
-bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys, const md_system_state_t& state,
+bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                         const vec3_t* atom_pos, size_t num_atom_pos,
                          str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op);
 
 // ---------------------------------------------------------------------------
@@ -1966,6 +2039,16 @@ namespace es_path {
     inline const str_t alpha_coefficient   = STR_LIT("orbital/alpha/coefficient");
     inline const str_t beta_coefficient    = STR_LIT("orbital/beta/coefficient");
 
+    inline const str_t alpha_energy        = STR_LIT("orbital/alpha/energy");
+    inline const str_t beta_energy         = STR_LIT("orbital/beta/energy");
+
+    inline const str_t alpha_occupation    = STR_LIT("orbital/alpha/occupation");
+    inline const str_t beta_occupation     = STR_LIT("orbital/beta/occupation");
+
+    // The AO metric the coefficients and densities above are expressed against. Singular for a
+    // basis that was stored spherically - see the note on md_vlx_publish_attributes.
+    inline const str_t overlap             = STR_LIT("basis/overlap");
+
     inline const str_t alpha_density       = STR_LIT("orbital/alpha/density");
     inline const str_t beta_density        = STR_LIT("orbital/beta/density");
     inline const str_t total_density       = STR_LIT("orbital/total/density");
@@ -1973,6 +2056,10 @@ namespace es_path {
 
     inline const str_t nto_particle        = STR_LIT("vlx/rsp/nto/particle/coefficient");
     inline const str_t nto_hole            = STR_LIT("vlx/rsp/nto/hole/coefficient");
+
+    // {S,Lmax}, the weight of each NTO pair, padded with zeros on the ragged lambda axis and
+    // indexing the same space as the two coefficient attributes above.
+    inline const str_t nto_lambda          = STR_LIT("vlx/rsp/nto/lambda");
 
     inline const str_t attachment_density  = STR_LIT("vlx/rsp/transition_density/attachment");
     inline const str_t detachment_density  = STR_LIT("vlx/rsp/transition_density/detachment");
