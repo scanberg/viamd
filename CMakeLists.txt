@@ -121,7 +121,7 @@ set(COMP_FILES
 )
 
 if (VIAMD_ENABLE_VELOXCHEM)
-    set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp)
+    set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp src/components/veloxchem/flow_draw.cpp)
 endif()
 
 set(SHADER_FILES 
