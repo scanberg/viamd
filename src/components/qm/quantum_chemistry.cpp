@@ -11,7 +11,6 @@
 #include <gfx/immediate_draw_utils.h>
 
 #include <md_gto.h>
-#include <md_vlx.h>
 #include <md_util.h>
 #include <md_topo.h>
 #include <md_vector_graphics.h>
@@ -56,6 +55,10 @@
 #define DEFAULT_GTO_CUTOFF_VALUE 1.0e-6
 #define MAX_NTO_GROUPS 16
 #define MAX_NTO_LAMBDAS 3
+// Upper bound on the NTO pairs the flow diagram keeps LABEL storage for. The lambda axis of
+// vlx/rsp/nto/lambda is padded to the widest row in the file, so this caps what is drawn rather
+// than what exists - a file with more pairs than this simply stops at this many columns.
+#define MAX_NTO_LABELS 32
 #define NTO_LAMBDA_CUTOFF_VALUE 0.1
 
 #define FORCE_CPU_PATH 0
@@ -81,11 +84,12 @@
 
 #define U32_MAGENTA IM_COL32(255, 0, 255, 255)
 
-#define U32_VELOXCHEM_GREEN IM_COL32(0, 162, 135, 191)
-#define VEC4_VELOXCHEM_GREEN {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f}
-
-// Complement to veloxchem green (magentaish)
-#define VEC4_VELOXCHEM_MAGENTA {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
+// The attachment/detachment pair. The teal is VeloxChem's own accent colour, kept because the
+// transition analysis has been read against it in print; the magenta is its complement, so the two
+// densities separate on either side of neutral rather than by lightness alone.
+#define U32_ATTACHMENT  IM_COL32(0, 162, 135, 191)
+#define VEC4_ATTACHMENT {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f}
+#define VEC4_DETACHMENT {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f}
 
 constexpr uint64_t interaction_surface_nto = HASH_STR_LIT64("interaction surface nto");
 constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface orb");
@@ -96,6 +100,18 @@ constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking
 enum NTO {
     NTO_Attachment,
     NTO_Detachment,
+};
+
+// Which spin channel an orbital belongs to. The component's own two valued vocabulary, not a
+// reader's: alpha is 0 and beta is 1, so the value indexes the two element label arrays and the two
+// homo_idx/lumo_idx slots directly, and es_path turns it into the attribute to read.
+//
+// ElectronicStructureSpin answers a different question - WHICH DENSITY a representation draws, with
+// Total and Difference beside the two channels - and its Alpha and Beta are not 0 and 1. Reusing it
+// here would leave every "which of the two orbital sets" site doing arithmetic to get an index back.
+enum SpinChannel {
+    SPIN_ALPHA = 0,
+    SPIN_BETA  = 1,
 };
 
 static const char* electronic_structure_value_mode_str(ElectronicStructureSource source, ElectronicStructureSpin spin, bool use_magnitude) {
@@ -258,7 +274,7 @@ static void orbital_table_build_order(int* row_to_mo, int* mo_to_row, int num_mo
 //
 // Any pointer may be null and any count zero: a file without response data has no NTOs, and a
 // builder checks what it uses rather than assuming a complete set.
-struct FlowQmData {
+struct FlowData {
     size_t        num_ao      = 0;
     size_t        num_mo      = 0;
     int           homo_idx    = -1;      // -1 when the channel holds no electrons
@@ -273,9 +289,15 @@ struct FlowQmData {
     const double* C_nto_part  = nullptr; // {K,A}
 };
 
-struct VeloxChem : viamd::EventHandler {
-    VeloxChem() { viamd::event_system_register_handler(*this); }
-    md_vlx_t* vlx = nullptr;
+// Everything below reads the SYSTEM's attribute table. There is no reader object here any more and
+// no second parse of the file: whatever loaded the system published what it carried, and these
+// windows are consumers of that table like any other - which is what lets a system published by
+// some other quantum chemistry reader drive the same windows without this file knowing it exists.
+//
+// The paths are named in one place: es_path in viamd.h for the format neutral ones, and the vlx/
+// literals below for what is still VeloxChem's own vocabulary waiting for a neutral name.
+struct QuantumChemistry : viamd::EventHandler {
+    QuantumChemistry() { viamd::event_system_register_handler(*this); }
 
     bool use_gpu_path = false;
 #if MD_ENABLE_GPU
@@ -307,12 +329,20 @@ struct VeloxChem : viamd::EventHandler {
     // This is the default view which is used as a reset view target
     ViewTransform default_view = {};
 
-    // If this is not NULL, then it means the qm data represented in the vlx object is a subset of the actual system
-    // This array then maps the local qm indices into system-wide atom indices.
-    // The atoms the calculation covered, read from the system's attribute table. This is a
-    // DIFFERENT index space from the system's atoms - see QmAtoms in viamd.h - and qm_to_system_atom
-    // is the only way across. Refreshed at load; the pointers belong to the table.
-    QmAtoms qm = {};
+    // How many atoms the calculation covered, and nothing else about them.
+    //
+    // The QM ATOM DOMAIN itself (see QmAtoms in viamd.h) is NOT cached here. es_qm_atoms hands back
+    // pointers into the attribute table's own storage, and md_attributes_replace frees the old
+    // buffer before it writes the new one - so a supplemental load, which republishes qm/atom/*
+    // onto an already loaded system, invalidates them. Keeping them alive would mean re-gathering
+    // on a signal from a DIFFERENT attribute's version, which is a coupling that breaks silently.
+    // Every site that reads the domain has the system in hand and hoists the pointers out of its
+    // own loop anyway, so it gathers them itself: three binary searches, once per frame.
+    //
+    // The COUNT survives because two handlers have no system to ask - the menu event carries no
+    // payload at all, and serialize_workspace takes only a serialization state. It is a plain
+    // number, so nothing it names can be freed underneath it.
+    size_t num_qm_atoms = 0;
 
     // The {M,A} shape of the coefficient attribute, cached beside it: the per frame window gate asks
     // for it and the answer only changes with the system.
@@ -367,7 +397,7 @@ struct VeloxChem : viamd::EventHandler {
         bool show_window = false;
         Volume   vol[16] = {};
         int      vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
-        md_vlx_spin_t vol_mo_type[16] = {};
+        SpinChannel vol_mo_type[16] = {};
         uint32_t iso_tex[16] = {};
         task_system::ID vol_task[16] = {};
         int num_x  = 3;
@@ -425,8 +455,8 @@ struct VeloxChem : viamd::EventHandler {
         vec4_t col_pos = { 0.0f, 0.294f, 0.529f, 0.75f };
         vec4_t col_neg = { 1.0f, 0.804f, 0.0f,   0.75f };
         vec4_t col_den = { 1.0f, 1.0f,   1.0f,   0.75f };
-        vec4_t col_att = VEC4_VELOXCHEM_GREEN;
-        vec4_t col_det = VEC4_VELOXCHEM_MAGENTA;
+        vec4_t col_att = VEC4_ATTACHMENT;
+        vec4_t col_det = VEC4_DETACHMENT;
 
         struct {
             bool enabled = false;
@@ -465,11 +495,11 @@ struct VeloxChem : viamd::EventHandler {
 
         // Node labels are borrowed by the graph rather than owned, so they have to outlive it.
         // Group labels already live in nto.group.label; these two are ours.
-        char nto_label[MD_VLX_NTO_MAX_LAMBDAS][40] = {};
+        char nto_label[MAX_NTO_LABELS][40] = {};
 
         // Second line: the dominant MO character of each NTO, e.g. "HOMO-1 -> LUMO". Empty when
         // no single pair dominates enough to name honestly.
-        char nto_character[MD_VLX_NTO_MAX_LAMBDAS][40] = {};
+        char nto_character[MAX_NTO_LABELS][40] = {};
 
         // Fixed-stride blocks, allocated once per file. The graph BORROWS these strings, so they
         // have to outlive it; rebuilding them per graph rebuild would leak into the arena on every
@@ -531,7 +561,7 @@ struct VeloxChem : viamd::EventHandler {
     // Workspace group assignments, waiting for a molecule.
     //
     // load_workspace parses the ENTIRE workspace text before it loads any data, so when the
-    // [VeloxChem] section is read there is no vlx object and no atom count yet. Groups are
+    // [QuantumChemistry] section is read there is no system and no atom count yet. Groups are
     // per-atom, so they have to be buffered and stamped on at the end of init_qm_from_system.
     //
     // The buffer lives on the heap, NOT on 'arena': reset_data() resets that arena, and a
@@ -707,12 +737,12 @@ struct VeloxChem : viamd::EventHandler {
         VolumeResolution resolution = VolumeResolution::Mid;
 
         struct {
-            md_vlx_spin_t type = MD_VLX_SPIN_ALPHA;
+            SpinChannel type = SPIN_ALPHA;
             int idx = 0;
         } mo;
 
         struct {
-            md_vlx_nto_type_t type = MD_VLX_NTO_PARTICLE;
+            ElectronicStructureNtoComponent type = ElectronicStructureNtoComponent::Particle;
             int lambda_idx = 0;
             int idx = 1;
         } nto;
@@ -722,10 +752,13 @@ struct VeloxChem : viamd::EventHandler {
     md_system_state_t export_state = {0};
     } export_state;
 
-    // Arena for persistent allocations for the veloxchem module (tied to the lifetime of the VLX object)
+    // Arena for persistent allocations for this module, reset by reset_data() when the system goes
+    // away. Nothing the attribute table owns is allocated from it - those pointers belong to the
+    // system - so what lives here is this component's own derived state.
     md_allocator_i* arena = 0;
 
-    // Extracted GTO basis from the VLX file. One shell per contracted radial shell,
+    // The GTO basis, built from the system's basis/ attributes. One shell per contracted radial
+    // shell,
     // pure radial normalization coefficients (sph→cart factors baked in by gto.c).
     // Allocated from arena; zeroed when reset_data() is called.
     md_gto_basis_t basis = {};
@@ -788,7 +821,7 @@ struct VeloxChem : viamd::EventHandler {
                 // window here is ultimately about, and the transition windows want their own data on
                 // top of that - so a system published by any QM reader opens the ones it can fill
                 // and none of the ones it cannot.
-                if (qm.count > 0 && num_molecular_orbitals() > 0) {
+                if (num_qm_atoms > 0 && num_molecular_orbitals() > 0) {
                     // Before any window draws, so both transition windows see the same numbers and
                     // neither has to be open for the other to have data.
                     update_nto_derived_data(state.mold.sys);
@@ -805,7 +838,7 @@ struct VeloxChem : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdWindowDrawMenu:
-                if (qm.count > 0 && num_molecular_orbitals() > 0) {
+                if (num_qm_atoms > 0 && num_molecular_orbitals() > 0) {
                     if (ImGui::BeginMenu("Quantum Chemistry")) {
                         ImGui::Checkbox("Summary", &summary.show_window);
                         ImGui::Checkbox("Response", &rsp.show_window);
@@ -827,7 +860,7 @@ struct VeloxChem : viamd::EventHandler {
                 defer { md_temp_end(temp); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
-                    immediate::Scope scope(state.gfx.overlay, "veloxchem_critical_points");
+                    immediate::Scope scope(state.gfx.overlay, "qm_critical_points");
                     // Render topology as points if available
                     immediate::set_picking_base_idx(scope, critical_points.picking_range.beg);
 
@@ -999,16 +1032,11 @@ struct VeloxChem : viamd::EventHandler {
                  LoadDataPayload& payload = *(LoadDataPayload*)e.payload;
                  ApplicationState& state = *payload.app_state;
 
-                 // The reader first, because the response sections still read its object. Then the
-                 // attribute driven half, which is what a system from any OTHER qm reader gets.
-                 if (payload.loader_state.type == LoaderType_VLX_H5) {
-                     if (!parse_vlx_file(payload.path_to_file)) {
-                         MD_LOG_INFO("Failed to initialize VeloxChem data");
-                         reset_data();
-                         break;
-                     }
-                 }
-
+                 // Nothing is parsed here. The loader published this system's table before the
+                 // event was broadcast, and there is no branch on WHICH loader did: a file type
+                 // check would gate these windows on VeloxChem having been the reader, which is
+                 // exactly the coupling this component no longer has.
+                 //
                  // Keyed on the coefficient attribute's VERSION, not on merely being present: this
                  // event also fires for a trajectory or a supplemental file loaded on top of a
                  // system that already has orbitals, and re-running the setup then would throw away
@@ -1034,7 +1062,7 @@ struct VeloxChem : viamd::EventHandler {
             case viamd::EventType_ViamdDeserialize: {
                 ASSERT(e.payload_type == viamd::EventPayloadType_DeserializationState);
                 viamd::deserialization_state_t& deser = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(deser), STR_LIT("VeloxChem"))) {
+                if (str_eq(viamd::section_header(deser), STR_LIT("QuantumChemistry"))) {
                     deserialize_workspace(deser);
                 }
                 break;
@@ -1045,7 +1073,14 @@ struct VeloxChem : viamd::EventHandler {
 
                 // Nothing below reads the reader any more - the QM atom domain and the dipole both
                 // come out of the table - so the gate is whether there are QM atoms to re-gather.
-                if (qm.count > 0) {
+                // atom_xyzw was sized by init_qm_from_system against the domain as it stood then.
+                // A supplemental load can republish qm/atom/* at a different length without
+                // touching the coefficient attribute that gates re-init, so the two lengths
+                // agreeing is something to CHECK here rather than an invariant to assert. A
+                // disagreement skips the update; the load event that caused it re-initialises.
+                QmAtoms qm = {};
+                if (num_qm_atoms > 0 && es_qm_atoms(&qm, state.mold.sys) &&
+                    md_array_size(atom_xyzw) == qm.count) {
                     // Update atom_xyz
 					// Calculate nuclei charge weighted center of charge for later use in orbital centering
 					dvec3_t nucl_dipole = {0};
@@ -1054,7 +1089,6 @@ struct VeloxChem : viamd::EventHandler {
 					// No branch on whether a map exists: without one the QM atoms ARE the system's,
 					// so the count matches and qm_to_system_atom is the identity.
 					const size_t count = qm.count;
-                    ASSERT(md_array_size(atom_xyzw) == count);
                     for (size_t i = 0; i < count; ++i) {
                         const size_t idx = qm_to_system_atom(qm, i);
                         atom_xyzw[i].x = (float)(state.mold.state.x[idx] * ANGSTROM_TO_BOHR);
@@ -1152,8 +1186,7 @@ struct VeloxChem : viamd::EventHandler {
 #endif
         //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
-        md_vlx_destroy(vlx);
-        qm = {};    // the pointers belong to the system's table, which is going away with it
+        num_qm_atoms = 0;
         num_mos = 0;
         num_excited = 0;
         qm_version = 0;
@@ -1164,24 +1197,26 @@ struct VeloxChem : viamd::EventHandler {
         critical_points.raw_graph.alloc = arena;
         critical_points.simp_graph.alloc = arena;
         basis = {};  // arena reset above invalidates allocations; zero the struct
-        vlx = nullptr;
         atom_xyzw = nullptr;
-        orb = VeloxChem::Orb{};
-        nto = VeloxChem::Nto{};
+        orb = QuantumChemistry::Orb{};
+        nto = QuantumChemistry::Nto{};
         // The arena reset above already released everything these held.
-        flow = VeloxChem::Flow{};
-        rsp = VeloxChem::Rsp{};
+        flow = QuantumChemistry::Flow{};
+        rsp = QuantumChemistry::Rsp{};
         // The rixs arena outlives the VLX object, so carry it across the value-initialization.
         // Rewinding it first drops the cached arrays that the zeroed struct would otherwise orphan.
         md_allocator_i* rixs_alloc = rixs.alloc;
         reset_rixs_cache(rixs);
-        rixs = VeloxChem::Rixs{};
+        rixs = QuantumChemistry::Rixs{};
         rixs.alloc = rixs_alloc;
-        vib = VeloxChem::Vib{};
-        opt = VeloxChem::Opt{};
+        vib = QuantumChemistry::Vib{};
+        opt = QuantumChemistry::Opt{};
     }
 
-    void update_nto_group_colors() {
+    void update_nto_group_colors(const md_system_t& sys) {
+        QmAtoms qm = {};
+        if (!es_qm_atoms(&qm, sys)) return;
+
         md_temp_scope_t temp = md_temp_begin();
 		defer { md_temp_end(temp); };
         size_t num_atoms = qm.count;
@@ -1208,17 +1243,14 @@ struct VeloxChem : viamd::EventHandler {
     // attribute table. No reader appears in it, which is the whole point: it runs for ANY loaded
     // system that carries orbitals, whichever producer filled the table.
     void init_qm_from_system(ApplicationState& state) {
-        // The system's attribute table is already populated - md_vlx_system_init_from_file
-        // and md_vlx_system_supplement_from_file publish it on the load path, before the
-        // event that got us here. This component is a consumer of that table, not its
-        // producer, which is what lets a system published by some other QM reader drive
-        // the same windows.
-        //
-        // The parse above is still here because most of this file reaches for the vlx
-        // object directly. Every call site moved off it is a step towards not needing it.
+        // The system's attribute table is already populated by whichever loader read the
+        // file - md_vlx_system_init_from_file and md_vlx_system_supplement_from_file for
+        // an h5, but the loader is not named anywhere below. This component is a consumer
+        // of that table and never its producer, which is what lets a system published by
+        // some other QM reader drive the same windows.
 
-        // The basis comes out of that table rather than out of the vlx object,
-        // which is the whole point: an evaluator needs the system, not the reader.
+        // The basis comes out of that table too: an evaluator needs the system, not a
+        // reader.
         md_gto_basis_free(&basis, arena);
         if (!md_gto_basis_extract_attributes(&basis, &state.mold.sys.attributes, arena)) {
             MD_LOG_ERROR("Failed to build a GTO basis from the system's attributes");
@@ -1229,11 +1261,14 @@ struct VeloxChem : viamd::EventHandler {
         // the atomic numbers were checked before the flag was ever set
         // (md_vlx_system_is_file_supplemental) - so there is nothing left to validate
         // or to publish here.
+        QmAtoms qm = {};
         if (!es_qm_atoms(&qm, state.mold.sys)) {
             MD_LOG_ERROR("The system carries no QM atom domain");
             return;
         }
-        const size_t num_vlx_atoms = qm.count;
+        // The one number kept: see num_qm_atoms above for why the pointers are not.
+        num_qm_atoms = qm.count;
+        const size_t num_atoms = qm.count;
 
         num_mos = 0;
         es_orbital_extent(state.mold.sys, &num_mos, nullptr);
@@ -1276,9 +1311,9 @@ struct VeloxChem : viamd::EventHandler {
 					const md_element_t* atom_z = qm.atomic_number;
 					dvec3_t nucl_dipole = { 0, 0, 0 };
 
-        md_array_resize(atom_xyzw, num_vlx_atoms, arena);
+        md_array_resize(atom_xyzw, num_atoms, arena);
         const dvec3_t* atom_vlx = qm.coordinate;
-        for (size_t i = 0; i < num_vlx_atoms; ++i) {
+        for (size_t i = 0; i < num_atoms; ++i) {
             dvec3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
             atom_xyzw[i] = vec4_set((float)xyz.x, (float)xyz.y, (float)xyz.z, 1.0f);
 						nucl_dipole += xyz * atom_z[i];
@@ -1308,8 +1343,8 @@ struct VeloxChem : viamd::EventHandler {
             nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
             nto.camera = nto.target;
 
-						nto.atom_group_idx = md_array_create(uint32_t, num_vlx_atoms, arena);
-            MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_vlx_atoms);
+						nto.atom_group_idx = md_array_create(uint32_t, num_atoms, arena);
+            MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
 
             snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
             nto.group.color[0] = vec4_t{ 0.25f, 0.25f, 0.25f, 1.0f };
@@ -1328,7 +1363,7 @@ struct VeloxChem : viamd::EventHandler {
             // transfer off it.
             nto.group.count = 1;
             nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
-            update_nto_group_colors();
+            update_nto_group_colors(state.mold.sys);
 
             // Callculate ballpark scaling factor for dipole vectors
             vec3_t extent = aabb.max_ext - aabb.min_ext;
@@ -1383,40 +1418,27 @@ struct VeloxChem : viamd::EventHandler {
         md_bitfield_init(&critical_points.highlight_mask, arena);
 
         // Last, so it overrides the placeholder grouping that init sets up.
-        apply_pending_groups();
+        apply_pending_groups(state.mold.sys);
 
         MD_LOG_INFO("Successfully initialized quantum chemistry data");
     }
 
-    // The VeloxChem reader's own load step, and all that is left of one. The parse is still here
-    // because the response sections read the vlx object directly; everything else comes from the
-    // table, which md_vlx_system_init_from_file filled before this event was broadcast.
-    bool parse_vlx_file(str_t filename) {
-        MD_LOG_INFO("Attempting to load VeloxChem data from file '" STR_FMT "'", STR_ARG(filename));
-        if (!vlx) {
-            vlx = md_vlx_create(arena);
-        } else {
-            md_vlx_reset(vlx);
-        }
-        return md_vlx_parse_file(vlx, filename);
-    }
-
     // Every one of these forwards to the application's evaluator. What used to live here - packing
     // coefficients for the device, launching the kernel, queueing the readback, and the GL fallback
-    // beside it - was never specific to VeloxChem; it is the same work for any system that
+    // beside it - was never specific to this component; it is the same work for any system that
     // publishes a basis, and it now lives once in viamd.cpp where the GPU resources do.
     //
     // What is left is the translation from this component's vocabulary to an attribute path and a
     // slice, which is the only part that was ever ours.
 
-    bool evaluate_nto(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type, md_gto_op_t op) {
-        const str_t path = (type == MD_VLX_NTO_PARTICLE) ? es_path::nto_particle : es_path::nto_hole;
+    bool evaluate_nto(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, ElectronicStructureNtoComponent type, md_gto_op_t op) {
+        const str_t path = (type == ElectronicStructureNtoComponent::Hole) ? es_path::nto_hole : es_path::nto_particle;
         const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)nto_idx, (uint32_t)lambda_idx);
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
 
-    bool evaluate_mo(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, md_vlx_spin_t mo_type, size_t mo_idx, md_gto_op_t op) {
-        const str_t path = (mo_type == MD_VLX_SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+    bool evaluate_mo(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, SpinChannel mo_type, size_t mo_idx, md_gto_op_t op) {
+        const str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
@@ -2614,8 +2636,8 @@ struct VeloxChem : viamd::EventHandler {
     // shows a single row of that map (one incoming photon energy).
     // The implementation is split into a pure data pass (compute_rixs_map) and a drawing pass
     // (draw_rixs_map) so that the map can be rebuilt only when the settings or the input actually
-    // change. Both take the input data through RixsMapInput and are therefore independent of the
-    // md_vlx object; rixs_map_input_from_vlx() provides the glue.
+    // change. Both take the input data through RixsMapInput and know nothing about where it came
+    // from; rixs_map_input_gather() reads it out of the system's attribute table.
     // =================================================================================================
 
     // Raw inputs, mirroring the 'rixs_results' dict consumed by plot_rixs_map().
@@ -2637,27 +2659,54 @@ struct VeloxChem : viamd::EventHandler {
         size_t num_core_states     = 0;
     };
 
-    // Collects the RIXS input from the currently loaded vlx object.
-    // Returns false if the loaded data is not a RIXS calculation or is incomplete.
-    bool rixs_map_input_from_vlx(RixsMapInput& out) {
-        if (!vlx || md_vlx_rsp_type(vlx) != MD_VLX_RSP_RIXS) return false;
+    // Collects the RIXS input out of the system's attribute table, under vlx/rsp/rixs/.
+    // Returns false if the system carries no RIXS data or carries it incompletely.
+    //
+    // The extents come from the attributes' OWN SHAPES rather than from three published counts: a
+    // {F,P} matrix cannot disagree with its own dimensions, and the one thing a separate count could
+    // add is a way for it to. The photon axis is checked across the three quantities that share it
+    // for the same reason - siblings in one group share an index space, and a file where they do not
+    // is not a map anyone can draw.
+    static bool rixs_map_input_gather(RixsMapInput& out, const md_system_t& sys) {
+        if (response_type(sys) != RSP_RIXS) return false;
 
-        out.photon_energies_au     = md_vlx_rsp_rixs_photon_energies(vlx);
-        out.elastic_cross_sections = md_vlx_rsp_rixs_elastic_cross_sections(vlx);
-        out.cross_sections         = md_vlx_rsp_rixs_cross_sections(vlx);
-        out.energy_losses_au       = md_vlx_rsp_rixs_energy_losses(vlx);
-        out.core_eigenvalues_au    = md_vlx_rsp_rixs_core_eigenvalues(vlx);
-        out.core_osc_strengths     = md_vlx_rsp_rixs_core_osc_strengths(vlx);
-        out.gamma_fwhm_ev          = md_vlx_rsp_rixs_gamma_fwhm_ev(vlx);
-        out.num_photon_energies    = md_vlx_rsp_rixs_number_of_photon_energies(vlx);
-        out.num_final_states       = md_vlx_rsp_rixs_number_of_final_states(vlx);
-        out.num_core_states        = md_vlx_rsp_rixs_number_of_core_states(vlx);
+        size_t num_photon   = 0;
+        size_t num_elastic  = 0;
+        size_t num_core     = 0;
+        size_t num_core_osc = 0;
 
-        // The map itself needs the photon energies, the cross-sections and the energy losses.
-        // The XAS panel is optional and is skipped if the core data is missing.
-        if (out.num_photon_energies == 0 || out.num_final_states == 0) return false;
-        if (!out.photon_energies_au || !out.cross_sections) return false;
-        if (!out.energy_losses_au) return false;
+        out.photon_energies_au     = attribute_series_f64(&num_photon,   sys, STR_LIT("vlx/rsp/rixs/photon_energy"));
+        out.elastic_cross_sections = attribute_series_f64(&num_elastic,  sys, STR_LIT("vlx/rsp/rixs/elastic_cross_section"));
+        out.core_eigenvalues_au    = attribute_series_f64(&num_core,     sys, STR_LIT("vlx/rsp/rixs/core_energy"));
+        out.core_osc_strengths     = attribute_series_f64(&num_core_osc, sys, STR_LIT("vlx/rsp/rixs/core_oscillator_strength"));
+        out.gamma_fwhm_ev          = attribute_scalar_f64(sys, STR_LIT("vlx/rsp/rixs/gamma_fwhm"));
+
+        size_t cs_rows = 0, cs_cols = 0;
+        size_t el_rows = 0, el_cols = 0;
+        out.cross_sections   = attribute_matrix_f64(&cs_rows, &cs_cols, sys, STR_LIT("vlx/rsp/rixs/cross_section"));
+        out.energy_losses_au = attribute_matrix_f64(&el_rows, &el_cols, sys, STR_LIT("vlx/rsp/rixs/energy_loss"));
+
+        // The map itself needs the photon energies, the cross sections and the energy losses.
+        if (!out.photon_energies_au || !out.cross_sections || !out.energy_losses_au) return false;
+        if (num_photon == 0 || cs_rows == 0) return false;
+        if (cs_cols != num_photon || el_rows != cs_rows || el_cols != num_photon) return false;
+
+        out.num_photon_energies = num_photon;
+        out.num_final_states    = cs_rows;
+
+        // The XAS panel is optional and is dropped whole when the core data is missing or does not
+        // agree with itself - half of it would draw oscillator strengths against the wrong energies.
+        if (!out.core_eigenvalues_au || !out.core_osc_strengths || num_core != num_core_osc) {
+            out.core_eigenvalues_au = nullptr;
+            out.core_osc_strengths  = nullptr;
+            num_core = 0;
+        }
+        out.num_core_states = num_core;
+
+        // Likewise the elastic line, which is drawn over the photon axis.
+        if (num_elastic != num_photon) {
+            out.elastic_cross_sections = nullptr;
+        }
 
         return true;
     }
@@ -3323,14 +3372,94 @@ struct VeloxChem : viamd::EventHandler {
         return ImPlotPoint{ x, y };
     }
 
+    // ---- XPS ------------------------------------------------------------------------------------
+    //
+    // The core-hole table as it sits in the system's attribute table: six sibling columns over one
+    // {C} index space. A record is not one attribute - a value has ONE type - so what the file
+    // carries as an array of structs is read back as six pointers, which is also why the plot below
+    // hands ImPlot contiguous arrays instead of a base pointer and a struct stride.
+    //
+    // The pointers are into the table's own storage and are invalidated by the next attribute create
+    // or remove; nothing here holds one past the frame it gathered it in.
+    struct XpsTable {
+        size_t         count             = 0;
+        const double*  ionization_energy = nullptr;  // [C], eV
+        const double*  contribution      = nullptr;  // [C], the atom's share of the core MO
+        const int32_t* atom_index        = nullptr;  // [C], into the QM ATOM DOMAIN; -1 when unassigned
+        const int32_t* mo_index          = nullptr;  // [C], into the molecular orbitals
+        const uint8_t* element           = nullptr;  // [C], atomic number
+        const uint8_t* is_delocalized    = nullptr;  // [C], one byte per entry
+    };
+
+    // False when the system carries no XPS at all. The ionization energies and the elements are what
+    // everything below indexes and groups by, so a table missing either is not one that can be
+    // drawn; the other four are optional and are checked where they are read.
+    static bool xps_table_gather(XpsTable* out, const md_system_t& sys) {
+        size_t num_energy = 0;
+        size_t num_element = 0;
+        const double*  energy  = (const double*) attribute_column(&num_energy,  sys, STR_LIT("vlx/xps/ionization_energy"), MD_ATTRIBUTE_TYPE_F64);
+        const uint8_t* element = (const uint8_t*)attribute_column(&num_element, sys, STR_LIT("vlx/xps/element"),           MD_ATTRIBUTE_TYPE_U8);
+        if (!energy || !element || num_energy == 0 || num_element != num_energy) {
+            return false;
+        }
+
+        // A sibling whose length disagrees with the index space is dropped rather than trusted: it
+        // would be read at an index that means something else in it.
+        auto column_of = [&](str_t path, md_attribute_type_t type) -> const void* {
+            size_t count = 0;
+            const void* data = attribute_column(&count, sys, path, type);
+            return (data && count == num_energy) ? data : nullptr;
+        };
+
+        out->count             = num_energy;
+        out->ionization_energy = energy;
+        out->element           = element;
+        out->contribution      = (const double*) column_of(STR_LIT("vlx/xps/contribution"),   MD_ATTRIBUTE_TYPE_F64);
+        out->atom_index        = (const int32_t*)column_of(STR_LIT("vlx/xps/atom_index"),     MD_ATTRIBUTE_TYPE_I32);
+        out->mo_index          = (const int32_t*)column_of(STR_LIT("vlx/xps/mo_index"),       MD_ATTRIBUTE_TYPE_I32);
+        out->is_delocalized    = (const uint8_t*)column_of(STR_LIT("vlx/xps/is_delocalized"), MD_ATTRIBUTE_TYPE_U8);
+        return true;
+    }
+
+    // One element's states: an OFFSET and a LENGTH into the columns above, not a copy of them.
+    struct XpsGroup {
+        uint8_t element = 0;
+        size_t  offset  = 0;
+        size_t  count   = 0;
+    };
+
+    // The per element runs, DERIVED rather than published. The entries are laid out as contiguous
+    // runs of equal element - the reader sorts them by (element, ionization energy) and md_vlx.h
+    // says so - so one scan of the element column reproduces the grouping exactly, and publishing
+    // the runs as well would be a second representation of one fact with nothing keeping the two in
+    // agreement.
+    //
+    // Returns the total number of runs and writes at most cap, so pass cap 0 to count.
+    static size_t xps_groups_gather(XpsGroup out[], size_t cap, const XpsTable& tbl) {
+        size_t num = 0;
+        size_t i = 0;
+        while (i < tbl.count) {
+            const uint8_t element = tbl.element[i];
+            size_t j = i;
+            while (j < tbl.count && tbl.element[j] == element) ++j;
+            if (out && num < cap) {
+                out[num] = XpsGroup{ element, i, j - i };
+            }
+            num += 1;
+            i = j;
+        }
+        return num;
+    }
+
     // Draws the stick spectrum of one element as an ImPlot item under 'label'.
     // 'hovered' is an index into the flat entry array and 'base' is the offset of this group within
     // it, so a hover survives being compared against entries from any group.
     // 'stick_selected' is per entry and comes from the application selection mask - the plot does not
     // own a selection of its own.
     // Returns false if the item is hidden through the legend, in which case nothing was drawn.
-    static bool plot_xps_sticks(const char* label, const md_vlx_xps_entry_t* entries, const double* stick_y,
-                                const bool* stick_selected, size_t count, size_t base, int& hovered) {
+    static bool plot_xps_sticks(const char* label, const double* stick_x, const double* stick_y,
+                                const bool* stick_selected, const uint8_t* stick_delocalized,
+                                size_t count, size_t base, int& hovered) {
         const float bar_width_in_pixels    = 2.0f;
         const float point_radius_in_pixels = 3.0f;
 
@@ -3356,7 +3485,7 @@ struct VeloxChem : viamd::EventHandler {
         double min_dist = DBL_MAX;
 
         for (size_t i = 0; i < count; ++i) {
-            const double x = entries[i].ionization_energy;
+            const double x = stick_x[i];
             const double y = stick_y[i];
 
             const ImVec2 p0_raw = ImPlot::PlotToPixels(x, 0.0, IMPLOT_AUTO, IMPLOT_AUTO);
@@ -3390,7 +3519,7 @@ struct VeloxChem : viamd::EventHandler {
             draw_list.AddCircleFilled(p1_raw, point_radius_in_pixels, col32);
 
             // A delocalized core hole is not attributable to a single atom, so mark it.
-            if (entries[i].is_delocalized) {
+            if (stick_delocalized && stick_delocalized[i]) {
                 draw_list.AddCircle(p1_raw, point_radius_in_pixels + 2.5f, col32, 0, 1.5f);
             }
 
@@ -3403,21 +3532,35 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    // Maps an atom index as it appears in the vlx object onto an index into the loaded system. The
-    // two differ when the qm data covers only a subset of the system. Returns -1 when the entry has
-    // no atom at all - a delta-SCF entry can arrive without one - or when the mapping lands outside
-    // the system, in which case there is nothing to highlight.
-    int32_t xps_atom_index(int32_t vlx_atom_index, const ApplicationState& state) const {
-        if (vlx_atom_index < 0) return -1;
-        if ((size_t)vlx_atom_index >= qm.count) return -1;
-        const size_t idx = qm_to_system_atom(qm, (size_t)vlx_atom_index);
+    // Maps an atom index in the QM ATOM DOMAIN onto an index into the loaded system. The two differ
+    // when the calculation covers only a subset of the system. Returns -1 when the entry names no
+    // atom at all - a delta-SCF entry can arrive without one - or when the mapping lands outside the
+    // system, in which case there is nothing to highlight.
+    // 'qm' is passed rather than gathered: this is called once per peak inside the plot's own
+    // loops, and the domain does not change between two peaks of the same frame.
+    static int32_t xps_atom_index(const QmAtoms& qm, int32_t qm_atom_index, const ApplicationState& state) {
+        if (qm_atom_index < 0) return -1;
+        if ((size_t)qm_atom_index >= qm.count) return -1;
+        const size_t idx = qm_to_system_atom(qm, (size_t)qm_atom_index);
         return (idx < state.mold.sys.atom.count) ? (int32_t)idx : -1;
     }
 
     void draw_xps_plot(ApplicationState& state, ImVec2 size = ImVec2(-1.0f, 350.0f)) {
-        const size_t num_groups  = md_vlx_xps_group_count(vlx);
-        const size_t num_entries = md_vlx_xps_count(vlx);
-        if (num_groups == 0 || num_entries == 0) return;
+        XpsTable tbl = {};
+        if (!xps_table_gather(&tbl, state.mold.sys)) return;
+
+        // The QM atom domain, for mapping an entry's atom onto a system atom. Gathered once here
+        // and handed down; the peaks below index it, they do not each look it up.
+        QmAtoms qm = {};
+        if (!es_qm_atoms(&qm, state.mold.sys)) return;
+
+        // One run per element that carries a core hole, which is at most one per element there is.
+        // A fixed array rather than an allocation: the gather is a scan of a column already in the
+        // table and the result is used within this frame only.
+        XpsGroup groups[128];
+        const size_t num_groups  = MIN(xps_groups_gather(groups, ARRAY_SIZE(groups), tbl), ARRAY_SIZE(groups));
+        const size_t num_entries = tbl.count;
+        if (num_groups == 0) return;
 
         // The enclosing tree node uses NoTreePushOnOpen, so this section would otherwise draw into the
         // parent window's ID scope. Two collisions follow from that: ImPlot derives the plot ID from
@@ -3428,8 +3571,6 @@ struct VeloxChem : viamd::EventHandler {
         ImGui::PushID("xps");
         defer { ImGui::PopID(); };
 
-        const md_vlx_xps_entry_t* all_entries = md_vlx_xps_entries(vlx);
-
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
@@ -3438,20 +3579,20 @@ struct VeloxChem : viamd::EventHandler {
         // Resolves the selected element, adopting the first non empty group when the selection is
         // unset or no longer present. Called again after the combo so a change lands on the same
         // frame it is made rather than one frame later.
-        auto resolve_group = [&]() -> const md_vlx_xps_group_t* {
-            const md_vlx_xps_group_t* g = md_vlx_xps_group_by_element(vlx, xps.element);
-            if (g && g->count > 0) return g;
+        auto resolve_group = [&]() -> const XpsGroup* {
             for (size_t i = 0; i < num_groups; ++i) {
-                g = md_vlx_xps_group_by_index(vlx, i);
-                if (g && g->count > 0) {
-                    xps.element = g->element;
-                    return g;
+                if (groups[i].element == xps.element && groups[i].count > 0) return &groups[i];
+            }
+            for (size_t i = 0; i < num_groups; ++i) {
+                if (groups[i].count > 0) {
+                    xps.element = groups[i].element;
+                    return &groups[i];
                 }
             }
             return nullptr;
         };
 
-        const md_vlx_xps_group_t* grp = resolve_group();
+        const XpsGroup* grp = resolve_group();
         if (!grp) return;
 
         // ---- Settings ---------------------------------------------------------------------------
@@ -3467,8 +3608,8 @@ struct VeloxChem : viamd::EventHandler {
             snprintf(preview, sizeof(preview), "%.*s", (int)cur_sym.len, cur_sym.ptr);
             if (ImGui::BeginCombo("Element", preview)) {
                 for (size_t g = 0; g < num_groups; ++g) {
-                    const md_vlx_xps_group_t* it = md_vlx_xps_group_by_index(vlx, g);
-                    if (!it || it->count == 0) continue;
+                    const XpsGroup* it = &groups[g];
+                    if (it->count == 0) continue;
                     const str_t sym = md_util_element_symbol(it->element);
                     char item[32];
                     snprintf(item, sizeof(item), "%.*s (%i)", (int)sym.len, sym.ptr, (int)it->count);
@@ -3505,13 +3646,18 @@ struct VeloxChem : viamd::EventHandler {
         // ---- Per peak arrays ---------------------------------------------------------------------
         // The broadening kernels take tightly packed arrays, so the strided entry fields are gathered
         // here. A handful of doubles for one element, from the frame temp arena.
-        double* peaks_x        = md_temp_alloc_array(temp, double, grp->count);
-        double* peaks_y        = md_temp_alloc_array(temp, double, grp->count);
-        bool*   peaks_selected = md_temp_alloc_array(temp, bool,   grp->count);
+        // The energies are already contiguous over the run, so only the two DERIVED arrays are
+        // built: the stick heights and the per peak selection. A handful of doubles for one element,
+        // from the frame temp arena.
+        const double* peaks_x        = tbl.ionization_energy + grp->offset;
+        double*       peaks_y        = md_temp_alloc_array(temp, double, grp->count);
+        bool*         peaks_selected = md_temp_alloc_array(temp, bool,   grp->count);
         for (size_t i = 0; i < grp->count; ++i) {
-            peaks_x[i] = grp->entries[i].ionization_energy;
-            peaks_y[i] = xps.weight_by_contribution ? grp->entries[i].contribution : 1.0;
-            const int32_t atom = xps_atom_index(grp->entries[i].atom_index, state);
+            const size_t e = grp->offset + i;
+            // Weighting by contribution needs the column; without it every hole is a unit peak,
+            // which is what VeloxChem plots anyway.
+            peaks_y[i] = (xps.weight_by_contribution && tbl.contribution) ? tbl.contribution[e] : 1.0;
+            const int32_t atom = xps_atom_index(qm, tbl.atom_index ? tbl.atom_index[e] : -1, state);
             peaks_selected[i]  = (atom >= 0) && md_bitfield_test_bit(&state.selection.selection_mask, (uint64_t)atom);
         }
 
@@ -3532,7 +3678,8 @@ struct VeloxChem : viamd::EventHandler {
         uint64_t hash = md_hash64(&xps.broadening_fwhm_ev, sizeof(xps.broadening_fwhm_ev), xps.broadening_mode);
         hash = md_hash64(&xps.weight_by_contribution, sizeof(xps.weight_by_contribution), hash);
         hash = md_hash64(&xps.element, sizeof(xps.element), hash);
-        hash = md_hash64(grp->entries, grp->count * sizeof(md_vlx_xps_entry_t), hash);
+        hash = md_hash64(peaks_x, grp->count * sizeof(double), hash);
+        hash = md_hash64(peaks_y, grp->count * sizeof(double), hash);
         const bool refit = (hash != xps.hash);
         xps.hash = hash;
 
@@ -3568,15 +3715,17 @@ struct VeloxChem : viamd::EventHandler {
 
             if (xps.show_sticks) {
                 ImPlot::SetAxis(ImAxis_Y2);
-                const size_t base = (size_t)(grp->entries - all_entries);
-                plot_xps_sticks("Peaks", grp->entries, peaks_y, peaks_selected, grp->count, base, xps.hovered);
+                plot_xps_sticks("Peaks", peaks_x, peaks_y, peaks_selected,
+                                tbl.is_delocalized ? tbl.is_delocalized + grp->offset : nullptr,
+                                grp->count, grp->offset, xps.hovered);
             }
 
             // ---- Interaction ---------------------------------------------------------------------
             const bool plot_hovered = ImPlot::IsPlotHovered();
-            const md_vlx_xps_entry_t* hov_entry =
-                (xps.hovered >= 0 && xps.hovered < (int)num_entries) ? &all_entries[xps.hovered] : nullptr;
-            const int32_t hov_atom = hov_entry ? xps_atom_index(hov_entry->atom_index, state) : -1;
+            // An index into the FLAT columns, which is why plot_xps_sticks was handed the group's
+            // offset as its base: a hover survives being compared against entries from any group.
+            const int  hov = (xps.hovered >= 0 && xps.hovered < (int)num_entries) ? xps.hovered : -1;
+            const int32_t hov_atom = (hov >= 0) ? xps_atom_index(qm, tbl.atom_index ? tbl.atom_index[hov] : -1, state) : -1;
 
             // While the cursor is inside the plot this owns the highlight mask, which is the contract
             // every other hover provider in the application follows. Cleared unconditionally, so
@@ -3593,25 +3742,26 @@ struct VeloxChem : viamd::EventHandler {
             // the plot, so moving off a peak drops the row highlight exactly as it drops the atom
             // highlight. A delocalized hole names one shared core MO, so every entry of that hole
             // lights the same row - which is the truth of it.
-            // md_vlx.c range checks atom_index on load but not mo_index, so it is checked here.
-            if (plot_hovered && hov_entry && hov_entry->mo_index >= 0 &&
-                (size_t)hov_entry->mo_index < num_molecular_orbitals()) {
-                xps.highlight_mo_idx = hov_entry->mo_index;
+            // The reader range checks atom_index on load but not mo_index, so it is checked here.
+            if (plot_hovered && hov >= 0 && tbl.mo_index && tbl.mo_index[hov] >= 0 &&
+                (size_t)tbl.mo_index[hov] < num_molecular_orbitals()) {
+                xps.highlight_mo_idx = tbl.mo_index[hov];
             }
 
-            if (plot_hovered && hov_entry) {
-                const str_t sym = md_util_element_symbol(hov_entry->element);
+            if (plot_hovered && hov >= 0) {
+                const int32_t hov_atom_index = tbl.atom_index ? tbl.atom_index[hov] : -1;
+                const str_t sym = md_util_element_symbol(tbl.element[hov]);
                 if (ImGui::BeginTooltip()) {
                     // Atom index is shown 1-based to match the labels VeloxChem prints.
-                    if (hov_entry->atom_index >= 0) {
-                        ImGui::Text("%.*s%i", (int)sym.len, sym.ptr, hov_entry->atom_index + 1);
+                    if (hov_atom_index >= 0) {
+                        ImGui::Text("%.*s%i", (int)sym.len, sym.ptr, hov_atom_index + 1);
                     } else {
                         ImGui::Text("%.*s (unassigned atom)", (int)sym.len, sym.ptr);
                     }
-                    ImGui::Text("Binding energy: %.3f eV", hov_entry->ionization_energy);
-                    ImGui::Text("Contribution: %.4g", hov_entry->contribution);
-                    ImGui::Text("MO index: %i", hov_entry->mo_index);
-                    if (hov_entry->is_delocalized) {
+                    ImGui::Text("Binding energy: %.3f eV", tbl.ionization_energy[hov]);
+                    if (tbl.contribution) ImGui::Text("Contribution: %.4g", tbl.contribution[hov]);
+                    if (tbl.mo_index)     ImGui::Text("MO index: %i", tbl.mo_index[hov]);
+                    if (tbl.is_delocalized && tbl.is_delocalized[hov]) {
                         // The hole is shared with the other atoms carrying this same mo_index; only
                         // the atom this entry names is highlighted.
                         ImGui::TextUnformatted("Delocalized core hole");
@@ -3636,6 +3786,9 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void set_atom_coordinates(ApplicationState& state, const dvec3_t* atom_coords) {
+        QmAtoms qm = {};
+        if (!es_qm_atoms(&qm, state.mold.sys)) return;
+
         const dvec3_t* coords = atom_coords ? atom_coords : qm.coordinate;
         if (!coords) return;
 
@@ -3711,9 +3864,167 @@ struct VeloxChem : viamd::EventHandler {
         return (const double*)attr->data;
     }
 
+    // True when the table carries this path at all. "Does this file have X" is a question about the
+    // table and nothing else: a block a file does not contain publishes nothing, so there is no
+    // separate "was it parsed" to ask alongside it.
+    static bool attribute_exists(const md_system_t& sys, str_t path) {
+        return md_attributes_find(&sys.attributes, path) != nullptr;
+    }
+
+    // One single valued attribute as a double, or 'fallback' when the path is absent. Anything that
+    // is not single valued returns the fallback too: md_attribute_extract_f64 refuses a cap smaller
+    // than the attribute, which is exactly the guard wanted here.
+    static double attribute_scalar_f64(const md_system_t& sys, str_t path, double fallback = 0.0) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+        if (!attr) return fallback;
+        double value = 0.0;
+        if (md_attribute_extract_f64(&value, 1, attr, md_unit_none()) != 1) return fallback;
+        return value;
+    }
+
+    // The length of a rank 1 series without reading it. Zero when the path is absent, which is how
+    // "how many optimisation steps / response frequencies / normal modes does this file carry" is
+    // asked now that there is no reader to ask it of.
+    static size_t attribute_series_count(const md_system_t& sys, str_t path) {
+        size_t count = 0;
+        return attribute_series_f64(&count, sys, path) ? count : 0;
+    }
+
+    // A rank 2 {R,C} block of doubles, straight out of the table's storage. NULL when the path is
+    // absent, computed, or not that shape. Same opt-in as attribute_series_f64 above and for the
+    // same reason: these are resident F64 and the callers want them at that precision.
+    static const double* attribute_matrix_f64(size_t* out_rows, size_t* out_cols, const md_system_t& sys, str_t path) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+        if (!attr || !attr->data) return nullptr;
+        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
+        if (attr->format.rank != 2 || md_attribute_components(&attr->format) != 1) return nullptr;
+
+        if (out_rows) *out_rows = attr->format.shape[0];
+        if (out_cols) *out_cols = attr->format.shape[1];
+        return (const double*)attr->data;
+    }
+
+    // One row of such a matrix. NULL when the row is out of range, which is what a caller holding a
+    // selection index left over from a previously loaded file needs - rather than a read past the
+    // end that looks like data.
+    static const double* attribute_matrix_row_f64(size_t* out_cols, const md_system_t& sys, str_t path, size_t row) {
+        size_t num_rows = 0;
+        size_t num_cols = 0;
+        const double* data = attribute_matrix_f64(&num_rows, &num_cols, sys, path);
+        if (!data || row >= num_rows) return nullptr;
+        if (out_cols) *out_cols = num_cols;
+        return data + row * num_cols;
+    }
+
+    // A rank 2 {R,C} of THREE component values - one vector per (r,c). This is the shape a per atom
+    // vector series over some other axis is published at: qm/atom/normal_mode is {M,N} displacements,
+    // vlx/opt/coordinate is {P,N} geometries. Components and rank are separate things, which is why
+    // this is not the matrix above with C*3 columns.
+    static const dvec3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, str_t path) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+        if (!attr || !attr->data) return nullptr;
+        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
+        if (attr->format.rank != 2 || md_attribute_components(&attr->format) != 3) return nullptr;
+
+        if (out_rows) *out_rows = attr->format.shape[0];
+        if (out_cols) *out_cols = attr->format.shape[1];
+        return (const dvec3_t*)attr->data;
+    }
+
+    // One row of it - one normal mode's displacements, one optimisation step's geometry. NULL when
+    // the row is out of range.
+    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, str_t path, size_t row) {
+        size_t num_rows = 0;
+        size_t num_cols = 0;
+        const dvec3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
+        if (!data || row >= num_rows) return nullptr;
+        return data + row * num_cols;
+    }
+
+    // A rank 1 series of 3 component values: dipole/<group>/vector is one per excited state.
+    static const dvec3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, str_t path) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+        if (!attr || !attr->data) return nullptr;
+        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
+        if (attr->format.rank != 1 || md_attribute_components(&attr->format) != 3) return nullptr;
+
+        if (out_count) *out_count = attr->format.shape[0];
+        return (const dvec3_t*)attr->data;
+    }
+
+    // A rank 1 column of a given STORED type, for the sibling columns a record was published as.
+    // Typed rather than converted: an atom index is an index, and a widened double of one is a
+    // number that has lost the only thing that made it an index.
+    static const void* attribute_column(size_t* out_count, const md_system_t& sys, str_t path, md_attribute_type_t type) {
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+        if (!attr || !attr->data) return nullptr;
+        if (attr->format.type != type) return nullptr;
+        if (attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) return nullptr;
+
+        if (out_count) *out_count = attr->format.shape[0];
+        return attr->data;
+    }
+
+    // ---- What KIND of calculation this is -------------------------------------------------------
+    //
+    // From vlx/rsp/type and vlx/opt/type, which the reader publishes as the lowercased enumerator
+    // name. Text in the table and an enum here: nothing stored depends on the ordering of a header
+    // this component no longer includes, and a second QM reader saying "rixs" about its own run
+    // lands in the same branch without either side having heard of the other.
+    //
+    // An absent path is NONE, and every branch below treats that as "nothing of this kind to draw" -
+    // which is also what a file with no response section at all gets, correctly.
+
+    enum RspType {
+        RSP_NONE = 0,
+        RSP_LINEAR,
+        RSP_CPP,
+        RSP_C6,
+        RSP_TPA,
+        RSP_TPA_TRANSITION,
+        RSP_RIXS,
+    };
+
+    static RspType response_type(const md_system_t& sys) {
+        const str_t s = attribute_str(sys, STR_LIT("vlx/rsp/type"));
+        if (str_eq(s, STR_LIT("linear")))         return RSP_LINEAR;
+        if (str_eq(s, STR_LIT("cpp")))            return RSP_CPP;
+        if (str_eq(s, STR_LIT("c6")))             return RSP_C6;
+        if (str_eq(s, STR_LIT("tpa")))            return RSP_TPA;
+        if (str_eq(s, STR_LIT("tpa_transition"))) return RSP_TPA_TRANSITION;
+        if (str_eq(s, STR_LIT("rixs")))           return RSP_RIXS;
+        return RSP_NONE;
+    }
+
+    enum OptType {
+        OPT_NONE = 0,
+        OPT_GEOMETRY,
+        OPT_CONSTRAINED,
+        OPT_TS,
+        OPT_IRC,
+    };
+
+    static OptType optimization_type(const md_system_t& sys) {
+        const str_t s = attribute_str(sys, STR_LIT("vlx/opt/type"));
+        if (str_eq(s, STR_LIT("geometry")))         return OPT_GEOMETRY;
+        if (str_eq(s, STR_LIT("constrained")))      return OPT_CONSTRAINED;
+        if (str_eq(s, STR_LIT("transition_state"))) return OPT_TS;
+        if (str_eq(s, STR_LIT("irc")))              return OPT_IRC;
+        return OPT_NONE;
+    }
+
     void draw_summary_window(ApplicationState& state) {
+        const md_system_t& sys = state.mold.sys;
+
+        // The QM atom domain, gathered per frame rather than cached. The System Information and
+        // Geometry sections below both index it.
+        QmAtoms qm = {};
+        es_qm_atoms(&qm, sys);
+
         if (!summary.show_window) {
-            opt.selected = (int)md_vlx_opt_number_of_steps(vlx) - 1;
+            // Parked on the converged geometry while the window is closed, so re-opening it does not
+            // step the molecule back to wherever the last session left the slider.
+            opt.selected = (int)attribute_series_count(sys, STR_LIT("vlx/opt/energy")) - 1;
             return;
         }
 
@@ -3727,14 +4038,14 @@ struct VeloxChem : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
-        md_vlx_rsp_type_t rsp_type = md_vlx_rsp_type(vlx);
+        const RspType rsp_type = response_type(sys);
 
         // The actual plot
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::TreeNode("Level of Calculation")) {
-                const str_t basis_set = attribute_str(state.mold.sys, STR_LIT("vlx/basis_set"));
-                const str_t dft_func   = attribute_str(state.mold.sys, STR_LIT("vlx/dft_functional"));
+                const str_t basis_set = attribute_str(sys, STR_LIT("vlx/basis_set"));
+                const str_t dft_func   = attribute_str(sys, STR_LIT("vlx/dft_functional"));
 
                 // Named from the same two questions the orbital grid branches on, so the label
                 // cannot disagree with the layout it describes. A reader with no word of its own for
@@ -3759,24 +4070,24 @@ struct VeloxChem : viamd::EventHandler {
                 const double n_beta  = es_electron_count(state.mold.sys, es_path::beta_occupation);
                 ImGui::Text("Num Alpha Electrons: %-6.0f", n_alpha);
                 ImGui::Text("Num Beta Electrons:  %-6.0f", n_beta);
-                ImGui::Text("Molecular Charge:    %-6f",  md_vlx_molecular_charge(vlx));
+                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar_f64(sys, STR_LIT("vlx/molecular_charge")));
                 ImGui::Text("Spin Multiplicity:   %-6.0f", fabs(n_alpha - n_beta) + 1.0);
-                if (rsp_type == MD_VLX_RSP_C6) {
-                    ImGui::Text("C6 Value:            %-12.6f (au)", md_vlx_c6_value(vlx));
+                if (rsp_type == RSP_C6) {
+                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar_f64(sys, STR_LIT("vlx/rsp/c6")));
                 }
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
 
             if (ImGui::TreeNode("SCF")) {
-                // The convergence history is read from the system's attribute table rather than
-                // from the vlx object. md_vlx_publish_attributes put it there when the file was
-                // loaded, so this panel is one consumer among others and a file which carried no
-                // history simply has no such path - there is no separate "was it parsed" question.
+                // The convergence history comes out of the attribute table, put there when the
+                // file was loaded, so this panel is one consumer among others and a file which
+                // carried no history simply has no such path - there is no separate "was it
+                // parsed" question to ask alongside it.
                 size_t num_iter = 0;
                 size_t num_grad = 0;
-                const double* energy    = attribute_series_f64(&num_iter, state.mold.sys, STR_LIT("vlx/scf/history/energy"));
-                const double* grad_norm = attribute_series_f64(&num_grad, state.mold.sys, STR_LIT("vlx/scf/history/gradient_norm"));
+                const double* energy    = attribute_series_f64(&num_iter, sys, STR_LIT("vlx/scf/history/energy"));
+                const double* grad_norm = attribute_series_f64(&num_grad, sys, STR_LIT("vlx/scf/history/gradient_norm"));
 
                 // Siblings in one group share a shape; a file which somehow disagrees is not a
                 // history anyone can plot.
@@ -3854,26 +4165,30 @@ struct VeloxChem : viamd::EventHandler {
                         ImPlot::EndPlot();
                     }
                 } else {
-                    ImGui::Text("There is no history in the supplied veloxchem data");
+                    ImGui::Text("This dataset carries no SCF convergence history");
                 }
                 ImGui::Spacing();
                 if (num_iter > 0) {
                     ImGui::Text("Total energy:              %16.10f (au)", energy[num_iter - 1]);
                     ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
                 }
-                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", md_vlx_nuclear_repulsion_energy(vlx));
+                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar_f64(sys, STR_LIT("vlx/nuclear_repulsion_energy")));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
 
             {
-                size_t num_steps = md_vlx_opt_number_of_steps(vlx);
-                if (num_steps > 0) {
+                size_t num_steps = 0;
+                const double* opt_energies = attribute_series_f64(&num_steps, sys, STR_LIT("vlx/opt/energy"));
+                if (opt_energies && num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
                         // FitPadding is pushed once for the whole window, at the top of this function.
-                        md_vlx_opt_type_t opt_type = md_vlx_opt_type(vlx);
-                        size_t ts_index = md_vlx_opt_irc_ts_index(vlx);
-                        const double* energies = md_vlx_opt_energies(vlx);
+                        const OptType opt_type = optimization_type(sys);
+                        // Published for an IRC only, where it names the step the path was walked out
+                        // from. num_steps is out of range on purpose everywhere else, so the branch
+                        // below falls through to the minimum without a second test for the kind.
+                        const size_t ts_index = (size_t)attribute_scalar_f64(sys, STR_LIT("vlx/opt/irc_ts_index"), (double)num_steps);
+                        const double* energies = opt_energies;
                         const char* y_axis_label = "Relative Energy [kJ/mol]";
                         const char* plot_label = "OPT";
 
@@ -3886,7 +4201,7 @@ struct VeloxChem : viamd::EventHandler {
 
                         // Find minima as the reference energy
                         double ref_energy = energies[0];
-                        if (opt_type == MD_VLX_OPT_IRC) {
+                        if (opt_type == OPT_IRC) {
                             if (ts_index < num_steps) {
                                 ref_energy = energies[ts_index];
                             }
@@ -3911,7 +4226,7 @@ struct VeloxChem : viamd::EventHandler {
                             ImPlot::SetupAxes("Step", y_axis_label);
                             ImPlot::SetupLegend(ImPlotLocation_NorthEast);
 
-                            if (opt_type == MD_VLX_OPT_CONSTRAINED) {
+                            if (opt_type == OPT_CONSTRAINED) {
                                 ImPlot::PlotLineSpline("Energy", x_vals, y_vals, (int)num_steps);
                             } else {
                                 ImPlot::PlotLine("Energy", x_vals, y_vals, (int)num_steps);
@@ -3924,7 +4239,7 @@ struct VeloxChem : viamd::EventHandler {
 
                             plot_peaks("##opt_peaks", x_vals, y_vals, num_steps, opt.selected, opt.hovered, PlotPeaksFlags_Points);
 
-                            if (opt_type == MD_VLX_OPT_IRC) {
+                            if (opt_type == OPT_IRC) {
                                 // Plot a scatter point for the ts_index
                                 const double x = x_vals[ts_index];
                                 const double y = y_vals[ts_index];
@@ -3960,7 +4275,7 @@ struct VeloxChem : viamd::EventHandler {
                     static int prev_idx = -1;
                     if (opt.selected != prev_idx) {
                         prev_idx = opt.selected;
-                        set_atom_coordinates(state, md_vlx_opt_coordinates(vlx, opt.selected));
+                        set_atom_coordinates(state, attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected));
                     }
                 }
             }
@@ -3973,7 +4288,8 @@ struct VeloxChem : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const dvec3_t* atom_coord = md_vlx_opt_coordinates(vlx, opt.selected) ? md_vlx_opt_coordinates(vlx, opt.selected) : qm.coordinate;
+                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected);
+                    const dvec3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
                     const uint8_t* atom_nr    = qm.atomic_number;
 
                     ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
@@ -4473,20 +4789,26 @@ struct VeloxChem : viamd::EventHandler {
         defer { md_temp_end(temp); };
 
         if (!rsp.show_window) return;
-		md_vlx_rsp_type_t rsp_type = md_vlx_rsp_type(vlx);
-        const size_t num_frequencies  = md_vlx_rsp_number_of_frequencies(vlx);
-        const size_t num_normal_modes = md_vlx_vib_number_of_normal_modes(vlx);
+
+        const md_system_t& sys = state.mold.sys;
+
+		const RspType rsp_type = response_type(sys);
+        // The frequencies are given in a.u. but can either be peaks to broaden if LINEAR, or spectrum samples if CPP.
+        // Its own length is the frequency count - there is no separate number to disagree with it.
+        size_t num_frequencies = 0;
+        const double* x_freq_au = attribute_series_f64(&num_frequencies, sys, STR_LIT("vlx/rsp/frequency"));
+        if (!x_freq_au) num_frequencies = 0;
+
+        const size_t num_normal_modes = attribute_series_count(sys, STR_LIT("vlx/vib/frequency"));
         // If the spetrum is broadened from peaks, this is the number of samples in the visual space (x_min -> x_max) used to sample that signal.
         constexpr int num_broadened_samples = 2048;
 
         // XPS is a delta-SCF property and can be the only thing in the file, so it has to be able to
-        // keep this window alive on its own.
-        const bool has_xps = md_vlx_has_xps(vlx);
+        // keep this window alive on its own. Its ionization energies are the column everything else
+        // in that section is indexed against, so their presence is the question.
+        const bool has_xps = attribute_exists(sys, STR_LIT("vlx/xps/ionization_energy"));
 
         if (num_frequencies == 0 && num_normal_modes == 0 && !has_xps) return;
-
-        // The frequencies are given in a.u. but can either be peaks to broaden if LINEAR, or spectrum samples if CPP
-        const double* x_freq_au   = md_vlx_rsp_frequencies(vlx);
 
         double x_freq_au_min = DBL_MAX;
         double x_freq_au_max = -DBL_MAX;
@@ -4531,9 +4853,9 @@ struct VeloxChem : viamd::EventHandler {
 
             // RIXS is its own thing: the 2D map has no meaningful representation in the shared
             // 1D spectrum plots below, so it gets its own section.
-            if (rsp_type == MD_VLX_RSP_RIXS) {
+            if (rsp_type == RSP_RIXS) {
                 RixsMapInput rixs_input = {};
-                if (rixs_map_input_from_vlx(rixs_input)) {
+                if (rixs_map_input_gather(rixs_input, state.mold.sys)) {
                     ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
                     if (ImGui::TreeNodeEx("RIXS", tree_flags)) {
                         draw_rixs_section(rixs_input, rixs);
@@ -4570,18 +4892,18 @@ struct VeloxChem : viamd::EventHandler {
                 // Samples are only used in CPP RSP, these hold intermediate results, i.e. converted to the selected x unit.
                 size_t num_samples = 0;
                 double* x_samples = NULL;
-                const double* y_samples_sigma = md_vlx_rsp_sigma(vlx);
-                const double* y_samples_delta_epsilons = md_vlx_rsp_delta_epsilons(vlx);
-                const double* y_samples_ord = md_vlx_rsp_optical_rotations(vlx);
-                const double* y_samples_cs = md_vlx_rsp_tpa_cross_sections(vlx);
+                const double* y_samples_sigma = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/sigma"));
+                const double* y_samples_delta_epsilons = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"));
+                const double* y_samples_ord = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/optical_rotation"));
+                const double* y_samples_cs = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/cross_section"));
 
                 // Peaks are only used in LINEAR RSP, not in CPP
 				size_t num_peaks = 0;
 				double* x_peaks = NULL;
-                const double* y_peaks_osc = md_vlx_rsp_oscillator_strengths(vlx);
-                const double* y_peaks_cgs = md_vlx_rsp_rotatory_strengths(vlx);
-                const double* y_peaks_tpa_trans_linear = md_vlx_rsp_tpa_trans_linear(vlx);
-                const double* y_peaks_tpa_trans_circular = md_vlx_rsp_tpa_trans_circular(vlx);
+                const double* y_peaks_osc = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/oscillator_strength"));
+                const double* y_peaks_cgs = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/rotatory_strength"));
+                const double* y_peaks_tpa_trans_linear = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/linear"));
+                const double* y_peaks_tpa_trans_circular = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/circular"));
 
                 bool refit = false;
 
@@ -4595,7 +4917,7 @@ struct VeloxChem : viamd::EventHandler {
                     refit = true;
                 }
 
-				if (rsp_type == MD_VLX_RSP_LINEAR || rsp_type == MD_VLX_RSP_TPA_TRANSITION) {
+				if (rsp_type == RSP_LINEAR || rsp_type == RSP_TPA_TRANSITION) {
 					num_peaks = num_frequencies;
                     x_peaks = md_temp_alloc_array(temp, double, num_peaks);
                     convert_values_from_au(x_peaks, x_freq_au, num_peaks, rsp.x_unit);
@@ -4660,7 +4982,7 @@ struct VeloxChem : viamd::EventHandler {
                             ImPlot::SetupFinish();
 
                             ImPlot::SetAxis(ImAxis_Y1);
-                            if (rsp_type == MD_VLX_RSP_CPP) {
+                            if (rsp_type == RSP_CPP) {
                                 // Convert y_samples to eps
                                 constexpr double sigma_to_epsilon = 7323.816924863764;
                                 for (size_t i = 0; i < num_samples; ++i) {
@@ -4711,7 +5033,7 @@ struct VeloxChem : viamd::EventHandler {
                                     plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MIN(min_x, max_x), MAX(min_x, max_x));
 
                                     // FIND MAX Y AXES
-                                    if (rsp_type == MD_VLX_RSP_CPP) {
+                                    if (rsp_type == RSP_CPP) {
                                         int max_idx;
                                         find_min_max(NULL, &max_idx, y_samples, num_samples);
                                         plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(0.0, y_samples[max_idx]);
@@ -4791,7 +5113,7 @@ struct VeloxChem : viamd::EventHandler {
                             ImPlot::SetupFinish();
 
                             ImPlot::SetAxis(ImAxis_Y1);
-                            if (rsp_type == MD_VLX_RSP_CPP) {
+                            if (rsp_type == RSP_CPP) {
                                 ImPlot::PlotLineSpline("Interpolated Spectrum", x_samples, y_samples_delta_epsilons, (int)num_samples);
 
                                 int selected = -1;
@@ -4839,7 +5161,7 @@ struct VeloxChem : viamd::EventHandler {
                                     plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MIN(min_x, max_x), MAX(min_x, max_x));
 
                                     // FIND MAX Y AXES
-                                    if (rsp_type == MD_VLX_RSP_CPP) {
+                                    if (rsp_type == RSP_CPP) {
                                         int min_idx, max_idx;
                                         find_min_max(&min_idx, &max_idx, y_samples_delta_epsilons, num_samples);
                                         double max_delta_eps = MAX(fabs(y_samples_delta_epsilons[min_idx]), fabs(y_samples_delta_epsilons[max_idx]));
@@ -4925,7 +5247,7 @@ struct VeloxChem : viamd::EventHandler {
 
                         char x_label[64];
                         snprintf(x_label, sizeof(x_label), "Photon Energy [%s]", x_unit_short_str[rsp.x_unit]);
-                        const char* title = (rsp_type == MD_VLX_RSP_TPA_TRANSITION) ? "TPA Transition" : "TPA";
+                        const char* title = (rsp_type == RSP_TPA_TRANSITION) ? "TPA Transition" : "TPA";
 
                         auto getter = [](int idx, void* user_data) -> ImPlotPoint {
                             const SpectrumGetterData* data = (const SpectrumGetterData*)user_data;
@@ -4954,13 +5276,13 @@ struct VeloxChem : viamd::EventHandler {
                             ImPlot::SetupLegend(ImPlotLocation_NorthEast, ImPlotLegendFlags_None);
                             ImPlot::SetupAxis(ImAxis_X1, x_label);
                             ImPlot::SetupAxis(ImAxis_Y1, (const char*)u8"TPA Cross-Section [GM]");
-                            if (rsp_type == MD_VLX_RSP_TPA_TRANSITION) {
+                            if (rsp_type == RSP_TPA_TRANSITION) {
                                 ImPlot::SetupAxis(ImAxis_Y2, (const char*)u8"TPA Strengths (linear) [a.u.]", ImPlotAxisFlags_AuxDefault);
                             }
                             ImPlot::SetupFinish();
 
                             ImPlot::SetAxis(ImAxis_Y1);
-                            if (rsp_type == MD_VLX_RSP_TPA_TRANSITION) {
+                            if (rsp_type == RSP_TPA_TRANSITION) {
                                 SpectrumGetterData getter_data = { x_freq_au, y_peaks_tpa_trans_linear, num_peaks, x_min, x_max, rsp.broadening_fwhm * EV_TO_HARTREE, num_broadened_samples, rsp.x_unit};
                                 ImPlot::PlotLineG("Broadened Spectrum", getter, &getter_data, num_broadened_samples);
 
@@ -4979,7 +5301,7 @@ struct VeloxChem : viamd::EventHandler {
                                     plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MIN(min_x, max_x), MAX(min_x, max_x));
 
                                     // FIND MAX Y AXES
-                                    if (rsp_type == MD_VLX_RSP_TPA) {
+                                    if (rsp_type == RSP_TPA) {
                                         int max_idx;
                                         find_min_max(NULL, &max_idx, y_samples_cs, num_samples);
                                         double max_y = y_samples_cs[max_idx];
@@ -5095,6 +5417,11 @@ struct VeloxChem : viamd::EventHandler {
             if (num_normal_modes > 0) {
                 ImGui::SetNextItemOpen(true, ImGuiCond_Once);
                 if (ImGui::TreeNode("Vibrational Spectroscopy")) {
+                    // The displacement animation below moves the QM atoms, so it needs the domain
+                    // and the map across to the system's own atoms.
+                    QmAtoms qm = {};
+                    es_qm_atoms(&qm, sys);
+
                     size_t num_atoms = qm.count;
 
                     // Broadening gamma limits
@@ -5150,17 +5477,30 @@ struct VeloxChem : viamd::EventHandler {
 						getter = spectrum_getter_gaussian;
 					}
 
-                    const double* x_peaks_raw = md_vlx_vib_frequencies(vlx);
-                    const double* y_peaks_ir = md_vlx_vib_ir_intensities(vlx);
-                        
-                    size_t num_external_frequencies = md_vlx_vib_number_of_external_frequencies(vlx);
-                    const double* external_frequencies = md_vlx_vib_external_frequencies(vlx);
+                    const double* x_peaks_raw = attribute_series_f64(nullptr, sys, STR_LIT("vlx/vib/frequency"));
+                    const double* y_peaks_ir = attribute_series_f64(nullptr, sys, STR_LIT("vlx/vib/ir_intensity"));
+
+                    size_t num_external_frequencies = 0;
+                    const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, STR_LIT("vlx/vib/external_frequency"));
+                    if (!external_frequencies) num_external_frequencies = 0;
+
+                    // {E,M}: one row of per mode activities per external frequency, so a row IS the
+                    // spectrum at that frequency and the pointers below are into the table's own
+                    // storage rather than a gathered copy. The row count is checked against the
+                    // frequency axis it is indexed by - two siblings that disagree are not a
+                    // spectrum, and dropping both is better than plotting one against the other.
+                    size_t num_raman_rows = 0;
+                    size_t num_raman_cols = 0;
+                    const double* raman_activities = attribute_matrix_f64(&num_raman_rows, &num_raman_cols, sys, STR_LIT("vlx/vib/raman_activity"));
                     const double** y_raman_activities = NULL;
-                    if (num_external_frequencies > 0) {
+                    if (raman_activities && num_raman_rows == num_external_frequencies && num_raman_cols == num_normal_modes && num_external_frequencies > 0) {
                         y_raman_activities = md_temp_alloc_array(temp, const double*, num_external_frequencies);
                         for (size_t i = 0; i < num_external_frequencies; ++i) {
-                            y_raman_activities[i] = md_vlx_vib_raman_activities(vlx, i);
+                            y_raman_activities[i] = raman_activities + i * num_raman_cols;
                         }
+                    } else {
+                        num_external_frequencies = 0;
+                        external_frequencies = NULL;
                     }
 
                     double* x_peaks = md_temp_alloc_array(temp, double, num_normal_modes);
@@ -5416,9 +5756,11 @@ struct VeloxChem : viamd::EventHandler {
                     if (vib.selected != -1) {
                         // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const dvec3_t* norm_modes = md_vlx_vib_normal_mode(vlx, vib.selected);
+                        const dvec3_t* norm_modes = attribute_vec3_row(sys, STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected);
 
-                        if (norm_modes) {
+                        // Both columns are needed: the displacement is added to the reference
+                        // geometry, and qm/atom/coordinate is not guaranteed to be published.
+                        if (norm_modes && atom_coord) {
 
 #if 0
                             md_temp_scope_t temp = md_temp_begin();
@@ -5786,15 +6128,15 @@ struct VeloxChem : viamd::EventHandler {
 
             // These represent the new mo_idx we want to have in each slot
             int vol_mo_idx[16] = { -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1 };
-            md_vlx_spin_t vol_mo_type[16] = {};
+            SpinChannel vol_mo_type[16] = {};
             for (int i = 0; i < num_mos; ++i) {
                 if (unrestricted) {
                     vol_mo_idx[i] = window_mo_idx(i / 2);
-                    vol_mo_type[i] = (i & 1) ? MD_VLX_SPIN_ALPHA : MD_VLX_SPIN_BETA;
+                    vol_mo_type[i] = (i & 1) ? SPIN_ALPHA : SPIN_BETA;
                 }
                 else {
                     vol_mo_idx[i] = window_mo_idx(i);
-                    vol_mo_type[i] = MD_VLX_SPIN_ALPHA;
+                    vol_mo_type[i] = SPIN_ALPHA;
                 }
             }
 
@@ -5843,7 +6185,7 @@ struct VeloxChem : viamd::EventHandler {
                 for (int i = 0; i < num_jobs; ++i) {
                     int slot_idx = job_queue[i];
                     int mo_idx = vol_mo_idx[slot_idx];
-                    md_vlx_spin_t mo_type = vol_mo_type[slot_idx];
+                    SpinChannel mo_type = vol_mo_type[slot_idx];
                     orb.vol_mo_idx[slot_idx] = mo_idx;
                     orb.vol_mo_type[slot_idx] = mo_type;
 
@@ -6158,7 +6500,7 @@ struct VeloxChem : viamd::EventHandler {
 
     void draw_export_window(ApplicationState& state) {
         if (!export_state.show_window) return;
-        if (ImGui::Begin("VeloxChem Export", &export_state.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (ImGui::Begin("Quantum Chemistry Export", &export_state.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::BeginCombo("Source", electronic_structure_source_str[(int)export_state.source])) {
                 for (int i = 0; i < (int)ElectronicStructureSource::Count; i++) {
                     ElectronicStructureSource source = (ElectronicStructureSource)i;
@@ -6166,7 +6508,7 @@ struct VeloxChem : viamd::EventHandler {
                     bool disabled = source == ElectronicStructureSource::DensityProperty ||
                                     ((source == ElectronicStructureSource::NaturalTransitionOrbital ||
                                      source == ElectronicStructureSource::TransitionDensity) &&
-                                    (md_vlx_rsp_number_of_excited_states(vlx) == 0));
+                                    (num_excited == 0));
 
                     if (disabled) ImGui::PushDisabled();
                     if (ImGui::Selectable(electronic_structure_source_str[i], is_selected)) {
@@ -6201,7 +6543,10 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (export_state.source == ElectronicStructureSource::ElectronDensity) {
-                const bool has_beta_density = md_vlx_scf_density_matrix_data(vlx, MD_VLX_SPIN_BETA) != nullptr;
+                // Whether there is a beta density to offer is whether one is published. Restricted
+                // publishes it as an alias of alpha's, so the selector is offered there too - which
+                // is right: Total and Difference are still meaningful choices over the pair.
+                const bool has_beta_density = attribute_exists(state.mold.sys, es_path::beta_density);
                 if (has_beta_density) {
                     const ElectronicStructureSpin spin_options[] = {
                         ElectronicStructureSpin::Total,
@@ -6258,17 +6603,17 @@ struct VeloxChem : viamd::EventHandler {
                 const bool unrestricted = es_has_distinct_beta_orbitals(state.mold.sys);
                 // Only an unrestricted calculation has two distinct sets of coefficients. For
                 // restricted and restricted-openshell, scf.beta is a shallow copy of alpha that
-                // shares the very same coefficient buffer (md_vlx.c), and the beta attribute is
-                // published as an alias of alpha's, so a selector there would offer two names
+                // shares the very same coefficient buffer, and the beta attribute is published
+                // as an alias of alpha's, so a selector there would offer two names
                 // for identical data. Forcing alpha in that case also keeps a Beta selection
                 // left over from a previously loaded file from picking beta's homo/lumo labels.
                 if (unrestricted) {
                     const char* options[2] = {"Alpha", "Beta"};
                     if (ImGui::BeginCombo("##MO_TYPE", options[export_state.mo.type])) {
                         for (size_t i = 0; i < ARRAY_SIZE(options); ++i) {
-                            const bool is_selected = (export_state.mo.type == (md_vlx_spin_t)i);
+                            const bool is_selected = (export_state.mo.type == (SpinChannel)i);
                             if (ImGui::Selectable(options[i], is_selected)) {
-                                export_state.mo.type = (md_vlx_spin_t)i;
+                                export_state.mo.type = (SpinChannel)i;
                             }
                             if (is_selected) {
                                 ImGui::SetItemDefaultFocus();
@@ -6277,7 +6622,7 @@ struct VeloxChem : viamd::EventHandler {
                         ImGui::EndCombo();
                     }
                 } else {
-                    export_state.mo.type = MD_VLX_SPIN_ALPHA;
+                    export_state.mo.type = SPIN_ALPHA;
                 }
 
                 int orb_homo_idx = homo_idx[export_state.mo.type];
@@ -6337,8 +6682,11 @@ struct VeloxChem : viamd::EventHandler {
             }
 
             if (show_lambda_combo) {
+                // The same 1e-3 the rest of the tree stops at, and the same place the zero padded
+                // tail of the ragged lambda axis stops it.
+                const double LAMBDA_CUTOFF = 1.0e-3;
                 double lambdas[4] = {0};
-                size_t lambda_count = md_vlx_rsp_nto_lambdas_extract(lambdas, vlx, (size_t)export_state.nto.idx, ARRAY_SIZE(lambdas));
+                size_t lambda_count = es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state.mold.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF);
                 if (lambda_count > 0) {
                     if ((size_t)export_state.nto.lambda_idx >= lambda_count) {
                         export_state.nto.lambda_idx = (int)lambda_count - 1;
@@ -6448,10 +6796,11 @@ struct VeloxChem : viamd::EventHandler {
                     }
                     case ElectronicStructureSource::NaturalTransitionOrbital:
                     {
-                        md_vlx_nto_type_t type = export_state.nto_component == ElectronicStructureNtoComponent::Particle ? MD_VLX_NTO_PARTICLE : MD_VLX_NTO_HOLE;
                         md_gto_op_t op = es_gto_op(export_state.use_magnitude);
-                        
-                        evaluate_nto(state, vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, type, op);
+
+                        // The export's own component selection IS what evaluate_nto takes; there is
+                        // nothing left to translate it through.
+                        evaluate_nto(state, vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, export_state.nto_component, op);
                         break;
                     }
                     case ElectronicStructureSource::TransitionDensity:
@@ -6468,9 +6817,15 @@ struct VeloxChem : viamd::EventHandler {
                     }
 
                     int num_samples = vol.dim[0] * vol.dim[1] * vol.dim[2];
+
+                    // The geometry written into the cube and xyz headers is the one the calculation
+                    // ran at, which is the QM domain's own - not wherever the system's atoms are now.
+                    QmAtoms qm = {};
+                    es_qm_atoms(&qm, state.mold.sys);
+
                     size_t              natoms = qm.count;
-                    const dvec3_t* vlx_coords  = qm.coordinate;
-                    const uint8_t* vlx_numbers = qm.atomic_number;
+                    const dvec3_t* qm_coords  = qm.coordinate;
+                    const uint8_t* qm_numbers = qm.atomic_number;
                     float* data = md_temp_alloc_array(temp, float, num_samples);
 
                     vec3_t origin = grid.origin;
@@ -6503,7 +6858,7 @@ struct VeloxChem : viamd::EventHandler {
                         md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol.dim[2], step_z.x, step_z.y, step_z.z);
 
                         for (size_t i = 0; i < natoms; ++i) {
-                            md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", (int)vlx_numbers[i], (float)vlx_numbers[i], vlx_coords[i].x * ANGSTROM_TO_BOHR, vlx_coords[i].y * ANGSTROM_TO_BOHR, vlx_coords[i].z * ANGSTROM_TO_BOHR);
+                            md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", (int)qm_numbers[i], (float)qm_numbers[i], qm_coords[i].x * ANGSTROM_TO_BOHR, qm_coords[i].y * ANGSTROM_TO_BOHR, qm_coords[i].z * ANGSTROM_TO_BOHR);
                         }
 
                         // This entry somehow relates to the number of densities
@@ -6595,10 +6950,10 @@ struct VeloxChem : viamd::EventHandler {
                         
                         // XYZ
                         md_file_printf(xyz_file, "%zu\n", natoms);
-                        md_file_printf(xyz_file, "Geometry extracted from VeloxChem dataset: '%s'\n", state.files.molecule);
+                        md_file_printf(xyz_file, "Geometry extracted from: '%s'\n", state.files.molecule);
                         for (size_t i = 0; i < natoms; ++i) {
-                            str_t sym = md_util_element_symbol(vlx_numbers[i]);
-                            md_file_printf(xyz_file, "%-2s %12.6f %12.6f %12.6f\n", sym.ptr, vlx_coords[i].x, vlx_coords[i].y, vlx_coords[i].z);
+                            str_t sym = md_util_element_symbol(qm_numbers[i]);
+                            md_file_printf(xyz_file, "%-2s %12.6f %12.6f %12.6f\n", sym.ptr, qm_coords[i].x, qm_coords[i].y, qm_coords[i].z);
                         }
 
                         MD_LOG_INFO("Successfully exported electronic structure to '" STR_FMT "'", STR_ARG(path));
@@ -6743,8 +7098,9 @@ struct VeloxChem : viamd::EventHandler {
     void draw_nto_window(ApplicationState& state) {
         if (!nto.show_window) return;
 
-        size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
-
+        // Excited states carrying NTOs, from the weight table's leading axis. Cached at load
+        // because the menu handler has no system to read it from.
+        const size_t num_excited_states = num_excited;
         if (num_excited_states == 0) return;
 
         bool open_context_menu = false;
@@ -7175,11 +7531,21 @@ struct VeloxChem : viamd::EventHandler {
                     if (nto.dipole.enabled) {
                         const vec3_t mid = vec3_lerp(aabb.min_ext, aabb.max_ext, 0.5f);
 
-                        const dvec3_t* magnetic_dp = md_vlx_rsp_magnetic_transition_dipole_moments(vlx);
-                        const dvec3_t* electric_dp = md_vlx_rsp_electric_transition_dipole_moments(vlx);
+                        // Out of the dipole groups in the table, not out of a reader. Each is one
+                        // vector per excited state, so the selection indexes them directly - and the
+                        // count is checked, because a selection can outlive the file it was made in.
+                        size_t num_magn = 0;
+                        size_t num_elec = 0;
+                        const dvec3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, STR_LIT("dipole/magnetic_transition/vector"));
+                        const dvec3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, STR_LIT("dipole/electric_transition/vector"));
 
-                        vec3_t magn_vec = {(float)magnetic_dp[rsp.selected].x, (float)magnetic_dp[rsp.selected].y, (float)magnetic_dp[rsp.selected].z};
-                        vec3_t elec_vec = {(float)electric_dp[rsp.selected].x, (float)electric_dp[rsp.selected].y, (float)electric_dp[rsp.selected].z};
+                        const bool has_dipoles = magnetic_dp && electric_dp && rsp.selected >= 0 &&
+                                                 (size_t)rsp.selected < num_magn && (size_t)rsp.selected < num_elec;
+                        const dvec3_t magn_raw = has_dipoles ? magnetic_dp[rsp.selected] : dvec3_t{0, 0, 0};
+                        const dvec3_t elec_raw = has_dipoles ? electric_dp[rsp.selected] : dvec3_t{0, 0, 0};
+
+                        vec3_t magn_vec = {(float)magn_raw.x, (float)magn_raw.y, (float)magn_raw.z};
+                        vec3_t elec_vec = {(float)elec_raw.x, (float)elec_raw.y, (float)elec_raw.z};
 
                         magn_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
                         elec_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
@@ -7632,9 +7998,16 @@ struct VeloxChem : viamd::EventHandler {
     }
 
     void serialize_workspace(viamd::serialization_state_t& ser) {
-        if (!vlx || !nto.atom_group_idx) return;
+        // Nothing to write without a QM system loaded, and the group assignment is what this
+        // section is FOR: num_qm_atoms is "did init_qm_from_system run", which is the same question
+        // the reader pointer used to answer and one this component can still ask for itself.
+        if (num_qm_atoms == 0 || !nto.atom_group_idx) return;
 
-        viamd::write_section_header(ser, STR_LIT("VeloxChem"));
+        // Renamed from [VeloxChem] along with the component. Deliberately NOT accepting the old
+        // spelling on read: this section holds nothing but window flags and an NTO group
+        // assignment, both of which a user re-makes in a minute, and one name in the file beats a
+        // compatibility branch that has to be carried forever.
+        viamd::write_section_header(ser, STR_LIT("QuantumChemistry"));
 
         viamd::write_bool(ser, STR_LIT("ShowTransitionAnalysis"), nto.show_window);
         viamd::write_bool(ser, STR_LIT("ShowChargeTransfer"),     flow.show_window);
@@ -7764,7 +8137,7 @@ struct VeloxChem : viamd::EventHandler {
 
     // Consume-once: a buffered grouping belongs to the workspace that was just opened, and must
     // not be stamped onto whatever file is loaded next.
-    void apply_pending_groups() {
+    void apply_pending_groups(const md_system_t& sys) {
         if (!pending_groups.pending) return;
         pending_groups.pending = false;
 
@@ -7787,8 +8160,8 @@ struct VeloxChem : viamd::EventHandler {
             }
         }
 
-        update_nto_group_colors();
-        MD_LOG_INFO("Restored %zu VeloxChem groups from the workspace", pending_groups.count);
+        update_nto_group_colors(sys);
+        MD_LOG_INFO("Restored %zu atom groups from the workspace", pending_groups.count);
     }
 
     // ---------------------------------------------------------------------------
@@ -7845,17 +8218,20 @@ struct VeloxChem : viamd::EventHandler {
         return flow.mo_labels + (size_t)mo_idx * FLOW_ATOM_LABEL_STRIDE;
     }
 
-    void flow_build_label_storage() {
-        const size_t num_mo = md_vlx_scf_number_of_molecular_orbitals(vlx);
+    void flow_build_label_storage(const md_system_t& sys) {
+        const size_t num_mo = num_mos;
         if (num_mo > 0 && !flow.mo_labels) {
             flow.mo_labels = (char*)md_alloc(arena, num_mo * FLOW_ATOM_LABEL_STRIDE);
             MEMSET(flow.mo_labels, 0, num_mo * FLOW_ATOM_LABEL_STRIDE);
             flow.num_mo_labels = num_mo;
         }
-        flow_build_atom_labels();
+        flow_build_atom_labels(sys);
     }
 
-    void flow_build_atom_labels() {
+    void flow_build_atom_labels(const md_system_t& sys) {
+        QmAtoms qm = {};
+        if (!es_qm_atoms(&qm, sys)) return;
+
         const size_t num_atoms = qm.count;
         if (num_atoms == 0 || flow.atom_labels) return;
 
@@ -7963,7 +8339,7 @@ struct VeloxChem : viamd::EventHandler {
     // Allocates into 'temp', so that scope has to outlive the graph build which consumes it.
     // Returns false only when there is no calculation to speak of; a missing OPTIONAL part leaves
     // its field null and is the caller's to check, not an error.
-    bool flow_qm_data_gather(FlowQmData* out, md_temp_scope_t temp, const md_system_t& sys) {
+    bool flow_qm_data_gather(FlowData* out, md_temp_scope_t temp, const md_system_t& sys) {
         ASSERT(out);
         *out = {};
 
@@ -8046,7 +8422,7 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    bool build_flow_graph_nto(const FlowQmData& qm) {
+    bool build_flow_graph_nto(const FlowData& qm) {
         md_flow_graph_init(&flow.graph, 3, arena);
 
         if (rsp.selected < 0 || !nto.atom_group_idx) return false;
@@ -8122,7 +8498,7 @@ struct VeloxChem : viamd::EventHandler {
 
         if (num_keep == 0 || lambda_sum <= 0.0) return false;
 
-        // Lambdas are truncated at MD_VLX_NTO_MAX_LAMBDAS and again by the cutoff, so they do not
+        // Lambdas are truncated at MAX_NTO_LABELS and again by the cutoff, so they do not
         // sum to one on their own. Renormalizing over what is kept is what makes the diagram add
         // up; it also means the percentages are shares of the RETAINED transition, which the
         // window says out loud when anything was dropped.
@@ -8265,7 +8641,7 @@ struct VeloxChem : viamd::EventHandler {
     //
     // Left blank unless one MO leads on each side by a clear margin. A 40/35 split has no dominant
     // character and saying otherwise would be worse than saying nothing.
-    void flow_nto_character(char* buf, size_t cap, const FlowQmData& qm, const double* C_hole_k, const double* C_part_k, float min_share) {
+    void flow_nto_character(char* buf, size_t cap, const FlowData& qm, const double* C_hole_k, const double* C_part_k, float min_share) {
         buf[0] = '\0';
 
         const size_t num_ao  = qm.num_ao;
@@ -8330,7 +8706,7 @@ struct VeloxChem : viamd::EventHandler {
     // and drop the MO-MO interference. Measured on test_data/vlx/amide.h5, that moves 33.6% of the
     // population on the dominant transition: a diagram that adds up perfectly and is wrong by a
     // third about which atoms donated. See docs/transition_flow_design.md.
-    bool build_flow_graph_orbitals(const FlowQmData& qm) {
+    bool build_flow_graph_orbitals(const FlowData& qm) {
         md_flow_graph_init(&flow.graph, 3, arena);
 
         if (rsp.selected < 0) return false;
@@ -8477,7 +8853,7 @@ struct VeloxChem : viamd::EventHandler {
         return true;
     }
 
-    void rebuild_flow_graph(const FlowQmData& qm) {
+    void rebuild_flow_graph(const FlowData& qm) {
         md_temp_scope_t temp = md_temp_begin();
         defer { md_temp_end(temp); };
 
@@ -8716,7 +9092,7 @@ struct VeloxChem : viamd::EventHandler {
     void draw_flow_window(ApplicationState& state) {
         if (!flow.show_window) return;
 
-        const size_t num_excited_states = md_vlx_rsp_number_of_excited_states(vlx);
+        const size_t num_excited_states = num_excited;
         if (num_excited_states == 0) return;
 
         if (!flow.cut.alloc) {
@@ -8728,7 +9104,7 @@ struct VeloxChem : viamd::EventHandler {
             // early and the LARGEST sub-threshold rows stay on screen, with nothing to tell the
             // reader why. A big "Others" is fine now that it opens.
             flow.cut.other_max = 1.0f;
-            flow_build_label_storage();
+            flow_build_label_storage(state.mold.sys);
         }
 
         // Rebuild only when the numbers behind the picture actually changed. Hashing the matrix
@@ -8752,7 +9128,7 @@ struct VeloxChem : viamd::EventHandler {
             md_temp_scope_t temp = md_temp_begin();
             defer { md_temp_end(temp); };
 
-            FlowQmData qm = {};
+            FlowData qm = {};
             flow_qm_data_gather(&qm, temp, state.mold.sys);
             rebuild_flow_graph(qm);
         }
@@ -9324,7 +9700,7 @@ struct VeloxChem : viamd::EventHandler {
         static uint64_t cur_color_hash = 0;
         if (color_hash != cur_color_hash) {
             cur_color_hash = color_hash;
-            update_nto_group_colors();
+            update_nto_group_colors(sys);
         }
 
         // Create hash to check for changes to trigger recomputation of transition matrix
@@ -9432,8 +9808,8 @@ struct VeloxChem : viamd::EventHandler {
                     task_system::ID eval_detach = 0;
                     task_system::ID seg_detach  = 0;
 
-                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_TYPE_PARTICLE, MD_GTO_EVAL_MODE_PSI, samples_per_unit_length) &&
-                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, MD_VLX_NTO_HOLE,     MD_GTO_EVAL_MODE_PSI, samples_per_unit_length))
+                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, ElectronicStructureNtoComponent::Particle, MD_GTO_EVAL_MODE_PSI, samples_per_unit_length) &&
+                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, ElectronicStructureNtoComponent::Hole,     MD_GTO_EVAL_MODE_PSI, samples_per_unit_length))
                     {
                         task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
@@ -9482,4 +9858,4 @@ struct VeloxChem : viamd::EventHandler {
 
 };
 
-static VeloxChem instance = {};
+static QuantumChemistry instance = {};

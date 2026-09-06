@@ -1936,8 +1936,16 @@ void gpu_volume_jobs_drain(ApplicationState* state);
 // thing defined over these atoms, not the other way round - and 'count' is what "how many atoms
 // does the QM cover" means; there is nothing else to ask.
 //
-// The pointers are into the table's own storage and are invalidated by the next attribute create
-// or remove - which, for a loaded system, means the next load.
+// GATHER IT WHERE YOU USE IT; DO NOT STORE IT. The pointers are the attribute table's own storage,
+// and md_attributes_replace frees the old buffer before writing the new one - so anything that
+// republishes qm/atom/*, a supplemental QM file loaded onto an already loaded system above all,
+// leaves a stored copy pointing at freed memory. A cache would have to be invalidated on a signal
+// that does not exist: the supplement need not touch the orbital coefficients, so their version
+// does not move, and nothing else announces that the domain was rewritten.
+//
+// The cost of not caching is three binary searches over a sorted array (md_attributes_find), which
+// is nothing against what a caller does with the result. Gather once per function and hoist it out
+// of your own loop, the way every caller already did with the stored copy.
 struct QmAtoms {
     size_t          count         = 0;
     const uint8_t*  atomic_number = nullptr;  // [N]

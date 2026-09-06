@@ -58,14 +58,25 @@ option(VIAMD_IMGUI_ENABLE_VIEWPORTS "Enable ImGui Viewports" OFF)
 option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
-option(VIAMD_ENABLE_VELOXCHEM "Enable Veloxchem Module" OFF)
+option(VIAMD_ENABLE_QM "Enable the Quantum Chemistry module" OFF)
+
+# Renamed from VIAMD_ENABLE_VELOXCHEM when the module stopped being VeloxChem specific. The old
+# name still works so that an existing build directory, script or CI job does not silently produce
+# a binary without the module - a rename that turns a feature off without saying so is worse than
+# carrying two spellings.
+if (VIAMD_ENABLE_VELOXCHEM AND NOT VIAMD_ENABLE_QM)
+    message(DEPRECATION "VIAMD_ENABLE_VELOXCHEM is deprecated, use VIAMD_ENABLE_QM instead")
+    set(VIAMD_ENABLE_QM ON CACHE BOOL "Enable the Quantum Chemistry module" FORCE)
+endif ()
 set(VIAMD_MACOS_BUNDLE_ID "org.scanberg.viamd" CACHE STRING "macOS bundle identifier")
 set(VIAMD_NUM_WORKER_THREADS "0" CACHE STRING "Number of worker threads (Decrease if you run out of memory during evaluation), 0 = Use available cores")
 
 # MDLIB OPTIONS
 set(MD_LINK_STDLIB_STATIC ${VIAMD_LINK_STDLIB_STATIC} CACHE BOOL "" FORCE)
 
-if (VIAMD_ENABLE_VELOXCHEM)
+if (VIAMD_ENABLE_QM)
+    # VeloxChem h5 is the one QM reader mdlib currently has, so enabling the module enables it.
+    # A second reader would be turned on beside this, not instead of it.
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
     set(MD_VLX_BASIS_FOLDER "basis")
 endif ()
@@ -120,8 +131,8 @@ set(COMP_FILES
     src/components/density_volume/density_volume.cpp
 )
 
-if (VIAMD_ENABLE_VELOXCHEM)
-    set(COMP_FILES ${COMP_FILES} src/components/veloxchem/veloxchem.cpp src/components/veloxchem/flow_draw.cpp)
+if (VIAMD_ENABLE_QM)
+    set(COMP_FILES ${COMP_FILES} src/components/qm/quantum_chemistry.cpp src/components/qm/flow_draw.cpp)
 endif()
 
 set(SHADER_FILES 
@@ -205,7 +216,7 @@ if (_is_multi_config)
     set(VIAMD_BIN_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>")
 endif()
 
-if (VIAMD_ENABLE_VELOXCHEM)
+if (VIAMD_ENABLE_QM)
     if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
         # Bundle build: embed basis files inside Contents/MacOS/basis/ so that
         # the exe-relative lookup in md_vlx.c finds them without any code changes.
