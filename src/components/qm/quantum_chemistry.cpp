@@ -3773,11 +3773,20 @@ struct QuantumChemistry : viamd::EventHandler {
             // Left adds the atom to the selection, right removes it - the same convention the
             // ramachandran plot and the dataset window use. Drags are excluded so that panning or
             // box selecting does not also grab whatever sat under the cursor when the drag began.
-            if (plot_hovered && hov_atom >= 0) {
-                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
-                    md_bitfield_set_bit(&state.selection.selection_mask, (uint64_t)hov_atom);
-                } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
-                    md_bitfield_clear_bit(&state.selection.selection_mask, (uint64_t)hov_atom);
+            if (plot_hovered) {
+                if (hov_atom >= 0) {
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
+                        if (!ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                            md_bitfield_clear(&state.selection.selection_mask);
+                        }
+                        md_bitfield_set_bit(&state.selection.selection_mask, (uint64_t)hov_atom);
+                    }
+                    else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
+                        md_bitfield_clear_bit(&state.selection.selection_mask, (uint64_t)hov_atom);
+                    }
+                }
+                else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
+                    md_bitfield_clear(&state.selection.selection_mask);
                 }
             }
 
@@ -4820,6 +4829,20 @@ struct QuantumChemistry : viamd::EventHandler {
         ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.1f, 0.1f));
         defer { ImPlot::PopStyleVar(); };
 
+        // Hover hand-off between the spectra and their state tables. Each pairing runs through a
+        // single index (rsp.hovered for the response spectra, vib.hovered for the vibrational ones);
+        // whichever widget the cursor is over writes it as the window is drawn, and everything else
+        // just reads it. Peak -> row lands in the same frame, since the plots are drawn before the
+        // table; row -> peak lands on the next one.
+        //
+        // A table that has the cursor CLAIMS its index: the tables scroll, so they are child windows,
+        // and the reset at the end of this window would otherwise see the outer window as un-hovered
+        // and drop a hover the table only just resolved - which is what kept row -> peak from ever
+        // working. Claiming per index rather than per window also keeps one table's cursor from
+        // freezing a stale hover in the other one.
+        bool rsp_hover_claimed = false;
+        bool vib_hover_claimed = false;
+
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Response", &rsp.show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::BeginMenuBar()) {
@@ -5373,27 +5396,38 @@ struct QuantumChemistry : viamd::EventHandler {
 
                         // TODO: Add sorting to the table once the vibs data structure is properly defined
 
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                        ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
+                        // The row Selectable spans all columns, so it resolves the row hover on its own -
+                        // no post-pass over TableGetHoveredRow needed. All this has to do is drop the
+                        // previous value while the cursor is in the table and let the row under it set the
+                        // new one; landing on no row (header, gap below the rows) then means no hover.
+                        if (ImGui::IsWindowHovered()) {
+                            rsp_hover_claimed = true;
+                            rsp.hovered = -1;
+                        }
 
+                        const ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                         for (int row_n = 0; row_n < (int)num_frequencies; row_n++) {
-                            ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
                             bool is_sel = row_n == rsp.selected;
                             bool is_hov = row_n == rsp.hovered;
 
-                            ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
-                            ImGui::TableNextColumn();
+                            // The Selectable is passed 'is_sel || is_hov', so it fills with ImGuiCol_Header
+                            // for a hover that came from the plot and with ImGuiCol_HeaderHovered for one the
+                            // cursor made here. Both are set to the same colour for a given row, so a row lights
+                            // up identically whichever end the hover came from. Hover beats selection, matching
+                            // plot_peaks and the atom table.
+                            ImGui::PushStyleColor(ImGuiCol_Header, is_hov ? IM_YELLOW : IM_BLUE);
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
 
-                            if (is_sel) {
-                                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_BLUE);
-                            } else {
-                                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                            }
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
 
                             char label[16];
                             snprintf(label, sizeof(label), "%i", row_n + 1);
                             if (ImGui::Selectable(label, is_sel || is_hov, selectable_flags)) {
                                 rsp.selected = (rsp.selected == row_n) ? -1 : row_n;
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                rsp.hovered = row_n;
                             }
                             ImGui::TableNextColumn();
                             for (int col = 0; col < num_cols; ++col) {
@@ -5401,13 +5435,9 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImGui::TableNextColumn();
                             }
 
-                            ImGui::PopStyleColor(1);
-                        }
-                        if (ImGui::IsWindowHovered() && ImGui::TableGetHoveredRow() > 0) {
-                            rsp.hovered = ImGui::TableGetHoveredRow() - 1;
+                            ImGui::PopStyleColor(2);
                         }
 
-                        ImGui::PopStyleColor(2);
                         ImGui::EndTable();
                     }
                 }
@@ -5702,28 +5732,35 @@ struct QuantumChemistry : viamd::EventHandler {
 
                         // TODO: Add sorting to the table once the vibs data structure is properly defined
 
-                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                        ImGui::PushStyleColor(ImGuiCol_Header, IM_BLUE);
-                        
-                        for (int row_n = 0; row_n < (int)num_normal_modes; row_n++) {
+                        // Same hover contract as the response state table above.
+                        if (ImGui::IsWindowHovered()) {
+                            vib_hover_claimed = true;
+                            vib.hovered = -1;
+                        }
 
-                            ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                        const ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+                        for (int row_n = 0; row_n < (int)num_normal_modes; row_n++) {
                             bool is_sel = row_n == vib.selected;
                             bool is_hov = row_n == vib.hovered;
-                            
-                            ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
-                            ImGui::TableNextColumn();
 
-                            if (is_sel) {
-                                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_BLUE);
-                            } else {
-                                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
-                            }
+                            // The Selectable is passed 'is_sel || is_hov', so it fills with ImGuiCol_Header
+                            // for a hover that came from the plot and with ImGuiCol_HeaderHovered for one the
+                            // cursor made here. Both are set to the same colour for a given row, so a row lights
+                            // up identically whichever end the hover came from. Hover beats selection, matching
+                            // plot_peaks and the atom table.
+                            ImGui::PushStyleColor(ImGuiCol_Header, is_hov ? IM_YELLOW : IM_BLUE);
+                            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_YELLOW);
+
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
 
                             char label[16];
                             snprintf(label, sizeof(label), "%i", row_n + 1);
                             if (ImGui::Selectable(label, is_sel || is_hov, selectable_flags)) {
                                 vib.selected = (vib.selected == row_n) ? -1 : row_n;
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                vib.hovered = row_n;
                             }
                             if (x_peaks) {
                                 ImGui::TableNextColumn();
@@ -5738,15 +5775,9 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImGui::Text("%12.6f", y_raman_activities[i][row_n]);
                             }
 
-                            ImGui::PopStyleColor(1);
-                        }
-                        if (ImGui::IsWindowHovered() && ImGui::TableGetHoveredRow() > 0) {
-                            vib.hovered = ImGui::TableGetHoveredRow() - 1;
-                        } else {
-                            vib.hovered = -1;
+                            ImGui::PopStyleColor(2);
                         }
 
-                        ImGui::PopStyleColor(2);
                         ImGui::EndTable();
                     }
 
@@ -5827,8 +5858,16 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
         }
-        if (!ImGui::IsWindowHovered()) {
+        // An index no table claimed this frame loses its hover, so nothing can stay lit after the
+        // cursor has moved away. Dropping one the plots resolved is harmless: plot_peaks re-resolves
+        // it as the plots draw, ahead of every reader. Same for the NTO index listbox, which drives
+        // rsp.hovered from draw_nto_window - that runs after this window, so its value survives to
+        // the plots on the next frame.
+        if (!rsp_hover_claimed) {
             rsp.hovered = -1;
+        }
+        if (!vib_hover_claimed) {
+            vib.hovered = -1;
         }
         ImGui::End();
 

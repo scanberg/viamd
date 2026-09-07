@@ -485,44 +485,30 @@ struct Selection {
     md_bitfield_t atom_mask {};
 };
 
-// One dipole gathered from the system's attribute table, not accumulated by anyone.
-// A group is two attributes which the producer published, sharing a shape:
+// One dipole group the producer published, as two attributes sharing an index space:
 //     dipole/<group>/vector    the moment, in `unit`
 //     dipole/<group>/origin    where to draw it from, Angstrom
-// A group holds ONE moment (a ground state) or one per excited state, and gathering flattens that:
-// each element of each group is its own entry. key alone therefore does not address a dipole -
-// (key, index) does, which is why a representation stores both.
-// Build these with dipole_moments_gather; nothing owns or caches them.
-struct DipoleMoment {
+// A group holds ONE moment (a ground state) or one per excited state, so (key, element index)
+// addresses a dipole and key alone does not - which is why a representation stores both.
+//
+// This describes the group and carries no values: reading one moment is dipole_moment_read, and it
+// takes the same two numbers a representation and a picking hit already hold. Nothing owns a
+// DipoleGroup and 'label' points into the attribute table, so it must not outlive the system.
+struct DipoleGroup {
     md_attribute_id_t key = MD_ATTRIBUTE_INVALID;   // id of the vector attribute, stable across a reload
-    uint32_t index = 0;                             // which element within the group
-    uint32_t count = 0;                             // elements in the group; 1 means index is decorative
-    str_t  label  = { 0 };                          // group name, prettified for display
-    vec3_t vec    = { 0, 0, 0 };
-    vec3_t origin = { 0, 0, 0 };
+    str_t  label  = { 0 };                          // group name as the path spells it
+    uint32_t count = 0;                             // elements in the group; 1 means the index is decorative
     md_unit_t unit = md_unit_none();
 };
 
+// One density property out of the system's attribute table: a leaf under es_path::density_property,
+// named by its own label or, failing that, by the last segment of its path.
+// Build these with density_properties_gather; nothing owns or caches them, and 'label' points into
+// the attribute table rather than at a copy - so it is good for as long as the system is loaded and
+// must not outlive it.
 struct DensityProperty {
-    uint64_t key    = 0;
+    uint64_t key    = 0;    // attribute id, stable across a reload
     str_t label     = { 0 };
-};
-
-// Struct to fill in for the different components
-// Which provides information of what representations are available for the currently loaded datasets
-// What is LEFT of a fan-in that used to be filled by whichever component happened to have parsed
-// the file. Both remaining members are answers about what the SYSTEM holds, computed in
-// update_representation_info by reading its attribute table - which is the exact test, and one a
-// second reader satisfies without any component being involved.
-//
-// The orbital and excited-state members went the same way: main.cpp asks the table (es_orbital_*,
-// es_excited_state_count, es_nto_lambdas) rather than being handed a precomputed copy.
-struct RepresentationInfo {
-    ElectronicStructureSourceFlags electronic_structure_source_mask = 0;
-
-    md_array(DensityProperty) density_properties = nullptr;
-
-    md_allocator_i* alloc = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -1004,7 +990,7 @@ struct AtomicPropertyRepresentation {
 
 struct DipoleRepresentation {
     md_attribute_id_t dipole_key = MD_ATTRIBUTE_INVALID;   // the vector attribute, so it survives a reload
-    uint32_t dipole_index = 0;                             // which element of that group; see DipoleMoment
+    uint32_t dipole_index = 0;                             // which element of that group; see DipoleGroup
     vec4_t color = { 0, 0, 0, 1 };
     vec3_t offset = { 0, 0, 0 };
     double scale = 1.0;
@@ -1065,15 +1051,23 @@ struct FrameCache {
     int32_t frame_idx[FRAME_CACHE_SIZE] = {};
 };
 
+// A block of picking indices belonging to one domain. 'key' names WHAT the block indexes, for a
+// domain whose objects are not the system's own arrays: a dipole range is keyed by the attribute id
+// of one dipole group, so an index within it is the element index inside that group and the hit
+// needs nothing else to resolve. Domains that index the system directly - atoms, bonds - leave it 0.
 struct PickingRange {
     PickingDomainID domain = 0;
     uint32_t beg = 0;
     uint32_t end = 0;
+    uint64_t key = 0;
 };
 
+// Sized for atoms, bonds and one range per keyed object. A VeloxChem file publishes four dipole
+// groups today (ground state plus the electric, magnetic and velocity transition sets); reserving
+// past the end fails rather than aliasing, which costs those objects their picking, nothing else.
 struct PickingSpace {
     size_t num_ranges = 0;
-    PickingRange ranges[8] = {};
+    PickingRange ranges[16] = {};
 };
 
 struct PickingReadbackSlot {
@@ -1109,6 +1103,11 @@ struct PickingHandler {
 struct PickingHit {
     PickingSourceID source = 0;
     PickingDomainID domain = 0;
+
+    // What was hit, in the domain's own terms: 'key' is the range's key (0 for a domain that does
+    // not use one) and 'local_idx' is the offset within that range. For a dipole that is exactly
+    // (group attribute, element) - the identity, carried through, with nothing to reconstruct.
+    uint64_t key = 0;
 
     uint32_t frame_idx = 0;    uint32_t raw_idx = INVALID_PICKING_IDX;
     uint32_t local_idx = 0;
@@ -1336,7 +1335,6 @@ struct ApplicationState {
 
     PickingRange   picking_range_atom {};   // Reserved picking range for atoms
     PickingRange   picking_range_bond {};   // Reserved picking range for bonds
-    PickingRange   picking_range_dipole {}; // Reserved picking range for dipoles
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
@@ -1454,7 +1452,6 @@ struct ApplicationState {
 
     // --- REPRESENTATIONS ---
     struct {
-        RepresentationInfo info = {};
         md_array(Representation) reps = 0;
         md_bitfield_t visibility_mask = {0};
         uint64_t visibility_mask_hash = 0;
@@ -1835,7 +1832,6 @@ Representation* create_representation(ApplicationState* app, RepresentationType 
 Representation* clone_representation(ApplicationState* app, const Representation& rep);
 void remove_representation(ApplicationState* app, size_t idx);
 void update_representation(ApplicationState* app, Representation* rep);
-void update_representation_info(ApplicationState* app);
 void update_all_representations(ApplicationState* app);
 bool representation_uses_atom_colors(const Representation& rep);
 
@@ -1846,12 +1842,33 @@ void remove_all_representations(ApplicationState* app);
 void create_default_representations(ApplicationState* app);
 void recompute_atom_visibility_mask(ApplicationState* app);
 
-// Enumerates the complete dipole groups in the system's attribute table, in name order.
-// Returns the total number found and writes at most cap, so pass cap 0 to count. Cheap enough to
-// call per frame: it is a prefix query over a small sorted array, and there is nothing to cache
-// or invalidate because the attribute table IS the state.
+// Enumerates the complete dipole GROUPS in the system's attribute table, in name order - a handful
+// of entries, and no values are read. Returns the total number found and writes at most cap, so
+// pass cap 0 to count. Cheap enough to call per frame: it is a prefix query over a small sorted
+// array plus two lookups per group, and there is nothing to cache or invalidate because the
+// attribute table IS the state.
 // Groups missing either half, or whose shapes are not one 3-component value, are skipped.
-size_t dipole_moments_gather(DipoleMoment out[], size_t cap, const md_system_t& sys);
+size_t dipole_groups_gather(DipoleGroup out[], size_t cap, const md_system_t& sys);
+
+// The same description for ONE group, straight from its vector attribute - for a representation or
+// a picking hit which already holds the key and has no reason to walk the list. False when the key
+// names nothing, which is what a workspace pointed at a file that no longer has that group looks like.
+bool dipole_group_from_key(DipoleGroup* out, const md_system_t& sys, md_attribute_id_t key);
+
+// One moment out of a group: the vector as stored and the origin in Angstrom, which extraction
+// ENFORCES is a length. False when the key names nothing, the group has lost its origin, or the
+// index is past the end. This is the whole read path - drawing and the picking tooltip both take
+// the (key, index) they already hold and come straight here.
+bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& sys, md_attribute_id_t key, uint32_t index);
+
+// Every density property the system carries, in the attribute table's own path order. Returns how
+// many there are, which may exceed 'cap' - only the first 'cap' are written. Pass (NULL, 0) to count.
+size_t density_properties_gather(DensityProperty out[], size_t cap, const md_system_t& sys);
+
+// Which electronic structure sources this system can actually show. Asked of the attribute table on
+// the spot rather than cached: each source needs particular attributes, so their presence IS the
+// answer, and a second reader publishing them satisfies it without anyone being told.
+ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys);
 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
 // Writes at most cap-1 characters plus a terminator, returns the length written.
@@ -1859,7 +1876,7 @@ int dipole_label_pretty(char* buf, size_t cap, str_t group);
 
 // The same, plus a 1 based element number when the group holds more than one moment:
 // "Electric Transition 3". A single moment gets no number, because there is nothing to tell apart.
-int dipole_entry_label(char* buf, size_t cap, const DipoleMoment& dipole);
+int dipole_entry_label(char* buf, size_t cap, const DipoleGroup& group, uint32_t index);
 
 // Per atom scalar fields are not a list anybody builds or keeps: they are whatever the system's
 // attribute table holds under atom/, and these read it directly. Nothing to rebuild when the data
@@ -1987,6 +2004,13 @@ struct OrbitalFrontier {
     int num_orbitals  = 0;
 };
 bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, str_t occupation_path);
+
+// The orbital energies of one spin channel (es_path::alpha_energy or its beta sibling), in Hartree,
+// or NULL when that column is absent. Hands back the stored buffer rather than a copy: the column is
+// resident F64 and every caller only reads it. out_count receives its length, which is the orbital
+// count the column itself states - compare it against es_orbital_extent's before indexing the two
+// together rather than assuming they agree.
+const double* es_orbital_energies(size_t* out_count, const md_system_t& sys, str_t energy_path);
 
 // True when the system holds a SECOND, DISTINCT set of orbital coefficients - an unrestricted
 // calculation. Restricted and restricted-openshell publish beta as an alias of alpha: one datum
@@ -2147,7 +2171,12 @@ const PickingSpace* picking_handler_find_space(const PickingHandler& handler, ui
 // Reserves a range within the picking space for a specific domain (atoms, bonds, etc).
 // Returns true if the range was successfully reserved, false if there was not enough space. If successful, out_range will be filled with the reserved range.
 // out_range is optional and can be null if the caller does not need the details of the reserved range (e.g. just needs to know if the reservation was successful or not).
-bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count);
+// Reserves 'count' consecutive indices for a domain. 'key' names what they index for a domain whose
+// objects are not the system's own arrays; see PickingRange. Fails once the space is full.
+bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count, uint64_t key = 0);
+
+// The range a keyed object was given this frame, or NULL when it was not reserved one.
+const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key);
 
 void picking_surface_init(PickingSurface* surface, PickingSourceID source);
 void picking_surface_free(PickingSurface* surface);

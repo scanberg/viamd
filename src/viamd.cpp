@@ -206,29 +206,30 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             md_strb_fmt(sb, "length: %.3f\n", d);
         }
     } else if (hit.domain == PickingDomain_Dipole) {
-        DipoleMoment dipoles[64];
-        size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state.mold.sys), ARRAY_SIZE(dipoles));
-        int dipole_idx = hit.local_idx;
-        if (0 <= dipole_idx && dipole_idx < (int)num_dipoles) {
-            const DipoleMoment& d = dipoles[dipole_idx];
-
+        // The hit names the group and the element outright - its range was reserved against that
+        // group's attribute - so there is no list to rebuild and nothing to look the index up in.
+        const md_system_t& sys = state.mold.sys;
+        DipoleGroup group = {};
+        if (dipole_group_from_key(&group, sys, hit.key) && hit.local_idx < group.count) {
             char label[64];
-            int label_len = dipole_entry_label(label, sizeof(label), d);
+            int label_len = dipole_entry_label(label, sizeof(label), group, hit.local_idx);
             md_strb_fmt(sb, "%.*s\n", label_len, label);
 
             // Debye is the readable unit for a dipole. The conversion is the attribute's own
-            // business now, and it refuses rather than rescaling if the producer published
-            // something which is not a dipole moment at all. One element of the group, because a
-            // transition dipole attribute holds one per excited state.
-            const md_attribute_t* attr = md_attributes_get(&state.mold.sys.attributes, d.key);
+            // business, and it refuses rather than rescaling if the producer published something
+            // which is not a dipole moment at all. One element of the group, because a transition
+            // dipole attribute holds one per excited state.
+            const md_attribute_t* attr = md_attributes_get(&sys.attributes, group.key);
             float debye[3];
-            const md_attribute_slice_t slice = (attr && attr->format.rank > 0) ? md_attribute_slice_1(d.index) : md_attribute_slice_all();
+            const md_attribute_slice_t slice = (attr && attr->format.rank > 0) ? md_attribute_slice_1(hit.local_idx) : md_attribute_slice_all();
             if (attr && md_attribute_extract_slice_f32(debye, ARRAY_SIZE(debye), attr, &slice, md_unit_debye()) == 3) {
                 md_strb_fmt(sb, "(%.3f %.3f %.3f) Debye\n", debye[0], debye[1], debye[2]);
             } else {
+                vec3_t vec = {0, 0, 0};
+                dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx);
                 char unit_buf[32];
-                size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), d.unit);
-                md_strb_fmt(sb, "(%.3f %.3f %.3f) %.*s\n", d.vec.x, d.vec.y, d.vec.z, (int)unit_len, unit_buf);
+                size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), group.unit);
+                md_strb_fmt(sb, "(%.3f %.3f %.3f) %.*s\n", vec.x, vec.y, vec.z, (int)unit_len, unit_buf);
             }
         }
     }
@@ -754,7 +755,6 @@ void init_system_data(ApplicationState* data) {
     }
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemInit, viamd::EventPayloadType_ApplicationState, data);
 
-    update_representation_info(data);
     init_all_representations(data);
     data->script.compile_ir = true;
 }
@@ -888,7 +888,6 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             .path_to_file = path_to_file,
         };
         viamd::event_system_broadcast_event(viamd::EventType_ViamdLoadData, viamd::EventPayloadType_LoadData, &data);
-        update_representation_info(state);
     }
 
     return success;
@@ -1507,17 +1506,40 @@ int dipole_label_pretty(char* buf, size_t cap, str_t group) {
     return (int)n;
 }
 
-int dipole_entry_label(char* buf, size_t cap, const DipoleMoment& dipole) {
+int dipole_entry_label(char* buf, size_t cap, const DipoleGroup& group, uint32_t index) {
     if (!buf || cap == 0) return 0;
 
-    int len = dipole_label_pretty(buf, cap, dipole.label);
-    if (dipole.count > 1 && (size_t)len + 1 < cap) {
-        len += snprintf(buf + len, cap - (size_t)len, " %u", dipole.index + 1);
+    int len = dipole_label_pretty(buf, cap, group.label);
+    if (group.count > 1 && (size_t)len + 1 < cap) {
+        len += snprintf(buf + len, cap - (size_t)len, " %u", index + 1);
     }
     return len;
 }
 
-size_t dipole_moments_gather(DipoleMoment out[], size_t cap, const md_system_t& sys) {
+// The origin lives beside the vector: same group, last path segment swapped. Derived rather than
+// carried around, so a key is the only thing anyone has to hold on to.
+static const md_attribute_t* dipole_origin_of(const md_system_t& sys, const md_attribute_t* vec) {
+    size_t sep = 0;
+    if (!str_rfind_char(&sep, vec->path, '/')) return nullptr;
+
+    char path[256];
+    int len = snprintf(path, sizeof(path), "%.*s/origin", (int)sep, vec->path.ptr);
+    return md_attributes_find(&sys.attributes, str_from_cstrn(path, len));
+}
+
+// A vector and an origin form a group only if both are there, both are 3 component, and the origin
+// is addressed by the vector's index space - either one per element, or a single anchor shared over
+// all of them, which is how one centre of charge serves every excited state.
+static bool dipole_group_qualifies(const md_attribute_t* vec, const md_attribute_t* org) {
+    if (!vec || !org) return false;
+    if (md_attribute_components(&vec->format) != 3 || md_attribute_components(&org->format) != 3) return false;
+
+    const size_t num_elem = md_attribute_value_count(&vec->format);
+    const size_t num_org  = md_attribute_value_count(&org->format);
+    return num_elem > 0 && (num_org == num_elem || num_org == 1);
+}
+
+size_t dipole_groups_gather(DipoleGroup out[], size_t cap, const md_system_t& sys) {
     str_t groups[64];
     size_t num_groups = md_attributes_query_children(groups, ARRAY_SIZE(groups), &sys.attributes, STR_LIT("dipole"));
     num_groups = MIN(num_groups, ARRAY_SIZE(groups));
@@ -1527,52 +1549,67 @@ size_t dipole_moments_gather(DipoleMoment out[], size_t cap, const md_system_t& 
         char path[256];
         int len = snprintf(path, sizeof(path), "dipole/" STR_FMT "/vector", STR_ARG(groups[i]));
         const md_attribute_t* vec = md_attributes_find(&sys.attributes, str_from_cstrn(path, len));
-        len = snprintf(path, sizeof(path), "dipole/" STR_FMT "/origin", STR_ARG(groups[i]));
-        const md_attribute_t* org = md_attributes_find(&sys.attributes, str_from_cstrn(path, len));
+        if (!vec || !dipole_group_qualifies(vec, dipole_origin_of(sys, vec))) continue;
 
-        // A group carrying only one half is not a dipole anyone can draw.
-        if (!vec || !org) continue;
-        if (md_attribute_components(&vec->format) != 3 || md_attribute_components(&org->format) != 3) continue;
-
-        // The vector decides how many dipoles the group holds. The origin is addressed by the same
-        // index space but need not have the same shape: an origin with fewer index axes is constant
-        // over the ones it lacks, which is how one shared anchor serves every excited state.
-        const size_t num_elem = md_attribute_value_count(&vec->format);
-        const size_t num_org  = md_attribute_value_count(&org->format);
-        if (num_elem == 0 || (num_org != num_elem && num_org != 1)) continue;
-
-        for (size_t e = 0; e < num_elem; ++e) {
-            if (out && count < cap) {
-                // One slice, clamped to each half's own rank. A shared origin is rank 0 and takes
-                // no index; a per state one is rank 1 and takes the same index as the vector. That
-                // clamp is the whole cost of not requiring the two to have equal shapes.
-                const md_attribute_slice_t vec_slice = vec->format.rank > 0 ? md_attribute_slice_1((uint32_t)e) : md_attribute_slice_all();
-                const md_attribute_slice_t org_slice = org->format.rank > 0 ? vec_slice : md_attribute_slice_all();
-
-                // The vector comes back as stored, whatever the producer chose; the origin must be a
-                // length in system space, and extraction refuses if it is not. A refusal leaves the
-                // entry at zero rather than dropping it, so that counting and writing agree on how
-                // many there are - a picking index into this array depends on that.
-                float v[3] = {0, 0, 0};
-                float o[3] = {0, 0, 0};
-                md_attribute_extract_slice_f32(v, ARRAY_SIZE(v), vec, &vec_slice, md_unit_none());
-                md_attribute_extract_slice_f32(o, ARRAY_SIZE(o), org, &org_slice, md_unit_angstrom());
-
-                out[count] = {
-                    .key    = vec->id,
-                    .index  = (uint32_t)e,
-                    .count  = (uint32_t)num_elem,
-                    .label  = groups[i],
-                    .vec    = vec3_set(v[0], v[1], v[2]),
-                    .origin = vec3_set(o[0], o[1], o[2]),
-                    .unit   = vec->unit,
-                };
-            }
-            count += 1;
+        if (out && count < cap) {
+            out[count] = {
+                .key   = vec->id,
+                .label = groups[i],
+                .count = (uint32_t)md_attribute_value_count(&vec->format),
+                .unit  = vec->unit,
+            };
         }
+        count += 1;
     }
 
     return count;
+}
+
+bool dipole_group_from_key(DipoleGroup* out, const md_system_t& sys, md_attribute_id_t key) {
+    const md_attribute_t* vec = md_attributes_get(&sys.attributes, key);
+    if (!vec || !dipole_group_qualifies(vec, dipole_origin_of(sys, vec))) return false;
+
+    if (out) {
+        // The group name is the path segment before the leaf, which is the same string the gather
+        // above hands back - so a label built from either route reads identically.
+        str_t label = vec->path;
+        size_t sep = 0;
+        if (str_rfind_char(&sep, label, '/')) label = str_substr(label, 0, sep);
+        if (str_rfind_char(&sep, label, '/')) label = str_substr(label, sep + 1, SIZE_MAX);
+
+        *out = {
+            .key   = key,
+            .label = label,
+            .count = (uint32_t)md_attribute_value_count(&vec->format),
+            .unit  = vec->unit,
+        };
+    }
+    return true;
+}
+
+bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& sys, md_attribute_id_t key, uint32_t index) {
+    const md_attribute_t* vec = md_attributes_get(&sys.attributes, key);
+    if (!vec) return false;
+    const md_attribute_t* org = dipole_origin_of(sys, vec);
+    if (!dipole_group_qualifies(vec, org)) return false;
+    if (index >= md_attribute_value_count(&vec->format)) return false;
+
+    // One slice, clamped to each half's own rank. A shared origin is rank 0 and takes no index; a
+    // per state one is rank 1 and takes the same index as the vector. That clamp is the whole cost
+    // of not requiring the two to have equal shapes.
+    const md_attribute_slice_t vec_slice = vec->format.rank > 0 ? md_attribute_slice_1(index) : md_attribute_slice_all();
+    const md_attribute_slice_t org_slice = org->format.rank > 0 ? vec_slice : md_attribute_slice_all();
+
+    // The vector comes back as stored, whatever the producer chose; the origin must be a length in
+    // system space, and extraction refuses if it is not.
+    float v[3] = {0, 0, 0};
+    float o[3] = {0, 0, 0};
+    md_attribute_extract_slice_f32(v, ARRAY_SIZE(v), vec, &vec_slice, md_unit_none());
+    md_attribute_extract_slice_f32(o, ARRAY_SIZE(o), org, &org_slice, md_unit_angstrom());
+
+    if (out_vec)    *out_vec    = vec3_set(v[0], v[1], v[2]);
+    if (out_origin) *out_origin = vec3_set(o[0], o[1], o[2]);
+    return true;
 }
 
 
@@ -1846,6 +1883,19 @@ bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, str_t occ
     out->homo_idx = homo;
     out->lumo_idx = homo + 1;   // == num when everything is occupied: out of range, and correct
     return true;
+}
+
+const double* es_orbital_energies(size_t* out_count, const md_system_t& sys, str_t energy_path) {
+    if (out_count) *out_count = 0;
+
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, energy_path);
+    if (!attr || !attr->data || attr->format.type != MD_ATTRIBUTE_TYPE_F64 ||
+        attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) {
+        return nullptr;
+    }
+
+    if (out_count) *out_count = attr->format.shape[0];
+    return (const double*)attr->data;
 }
 
 // NULL when there is none, which the callers read as the identity. Same explicitness as
@@ -2891,7 +2941,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
         rep->type_is_valid = sys.protein_backbone.range.count > 0;
         break;
     case RepresentationType::ElectronicStructure: {
-        rep->type_is_valid = electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, rep->electronic_structure.source);
+        rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
         if (rep->type_is_valid && rep->enabled) {
             // Re-evaluating is expensive and everything it depends on is right here, so it is
             // gated on a hash of exactly those inputs - the frame included, since the geometry
@@ -2959,61 +3009,59 @@ void update_representation(ApplicationState* state, Representation* rep) {
     rep->needs_update = false;
 }
 
-void update_representation_info(ApplicationState* state) {
-    md_allocator_i* alloc = state->representation.info.alloc;
-    md_arena_allocator_reset(alloc);
+// Every leaf under the density property group is one property, in the table's own path order. The
+// label is the attribute's own, falling back to the last segment of its path when the file gave it
+// none - both borrowed from the table, so nothing is copied and nothing has to be freed.
+//
+// Counts past 'cap' on purpose: the return value is how many the system HAS, so a caller with a
+// fixed buffer can tell that it saw all of them.
+size_t density_properties_gather(DensityProperty out[], size_t cap, const md_system_t& sys) {
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
 
-    // Clear info, maintain allocator
-    state->representation.info = {};
-    state->representation.info.alloc = alloc;
+    const size_t num_props = md_attributes_query(nullptr, 0, &sys.attributes, es_path::density_property);
+    if (num_props == 0) return 0;
 
-    // What an electronic structure representation can SHOW is decided here and not by whoever
-    // loaded the file: each source needs particular attributes, and asking the table which of them
-    // exist is both the exact test and one that a second reader satisfies for free.
-    const md_system_t& sys = state->mold.sys;
-    ElectronicStructureSourceFlags& mask = state->representation.info.electronic_structure_source_mask;
+    md_attribute_id_t* ids = (md_attribute_id_t*)md_temp_alloc(temp, sizeof(md_attribute_id_t) * num_props);
+    if (!ids) return 0;
+    md_attributes_query(ids, num_props, &sys.attributes, es_path::density_property);
 
-    if (es_attribute_exists(sys, es_path::alpha_coefficient)) mask |= ElectronicStructureSourceFlag_MolecularOrbital;
-    if (es_attribute_exists(sys, es_path::alpha_density))     mask |= ElectronicStructureSourceFlag_ElectronDensity;
-    if (es_attribute_exists(sys, es_path::nto_particle))      mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
-    if (es_attribute_exists(sys, es_path::attachment_density))mask |= ElectronicStructureSourceFlag_TransitionDensity;
+    size_t count = 0;
+    for (size_t i = 0; i < num_props; ++i) {
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, ids[i]);
+        if (!attr) continue;
 
-    // Every leaf under the density property group is one property. The list is the table's, in the
-    // table's own path order, and the label falls back to the last path segment when the file gave
-    // the attribute none of its own.
-    {
-        md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
-
-        const size_t num_props = md_attributes_query(nullptr, 0, &sys.attributes, es_path::density_property);
-        md_attribute_id_t* ids = num_props ? (md_attribute_id_t*)md_temp_alloc(temp, sizeof(md_attribute_id_t) * num_props) : nullptr;
-        if (ids) {
-            md_attributes_query(ids, num_props, &sys.attributes, es_path::density_property);
-            for (size_t i = 0; i < num_props; ++i) {
-                const md_attribute_t* attr = md_attributes_get(&sys.attributes, ids[i]);
-                if (!attr) continue;
-
-                str_t label = attr->label;
-                if (str_empty(label)) {
-                    label = attr->path;
-                    size_t sep = 0;
-                    if (str_rfind_char(&sep, label, '/')) {
-                        label = str_substr(label, sep + 1, SIZE_MAX);
-                    }
+        if (out && count < cap) {
+            str_t label = attr->label;
+            if (str_empty(label)) {
+                label = attr->path;
+                size_t sep = 0;
+                if (str_rfind_char(&sep, label, '/')) {
+                    label = str_substr(label, sep + 1, SIZE_MAX);
                 }
-                DensityProperty prop = { .key = attr->id, .label = str_copy(label, alloc) };
-                md_array_push(state->representation.info.density_properties, prop, alloc);
             }
-            if (md_array_size(state->representation.info.density_properties) > 0) {
-                mask |= ElectronicStructureSourceFlag_DensityProperty;
-            }
+            out[count] = { .key = attr->id, .label = label };
         }
+        count += 1;
     }
-
-    // Per atom scalar fields are deliberately NOT collected here. They live in the system's
-    // attribute table under atom/, whoever loaded the data put them there, and the UI reads that
-    // table directly through atom_property_query. A copy kept here could only go stale against it.
+    return count;
 }
+
+ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
+    ElectronicStructureSourceFlags mask = 0;
+
+    if (es_attribute_exists(sys, es_path::alpha_coefficient))  mask |= ElectronicStructureSourceFlag_MolecularOrbital;
+    if (es_attribute_exists(sys, es_path::alpha_density))      mask |= ElectronicStructureSourceFlag_ElectronDensity;
+    if (es_attribute_exists(sys, es_path::nto_particle))       mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
+    if (es_attribute_exists(sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
+    if (density_properties_gather(nullptr, 0, sys) > 0)        mask |= ElectronicStructureSourceFlag_DensityProperty;
+
+    return mask;
+}
+
+// Per atom scalar fields are deliberately not gathered anywhere. They live in the system's attribute
+// table under atom/, whoever loaded the data put them there, and the UI reads that table directly
+// through atom_property_query.
 
 static void init_all_representations(ApplicationState* state) {
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
@@ -3137,16 +3185,19 @@ done:
 		// magnetic and velocity sets that is three nobody asked for on top of the one they wanted.
 		// The ground state is what a dipole means to someone who has not said otherwise; the rest
 		// are a representation away, and the index slider covers the excited states within each.
-		DipoleMoment dipoles[64];
-		size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
-        for (size_t i = 0; i < num_dipoles; ++i) {
+		DipoleGroup groups[16];
+		size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
+        for (size_t i = 0; i < num_groups; ++i) {
             // The group name is the identity here, the same string the path spells.
-            if (dipoles[i].index != 0 || !str_eq(dipoles[i].label, STR_LIT("ground_state"))) continue;
-            if (vec3_length(dipoles[i].vec) <= 1e-3f) continue;
+            if (!str_eq(groups[i].label, STR_LIT("ground_state"))) continue;
+
+            vec3_t vec = {0, 0, 0};
+            if (!dipole_moment_read(&vec, nullptr, state->mold.sys, groups[i].key, 0)) continue;
+            if (vec3_length(vec) <= 1e-3f) continue;
 
             Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
-            dipole_rep->dipole.dipole_key   = dipoles[i].key;
-            dipole_rep->dipole.dipole_index = dipoles[i].index;
+            dipole_rep->dipole.dipole_key   = groups[i].key;
+            dipole_rep->dipole.dipole_index = 0;
 
             // Lower case, like every other auto created representation - "protein", "water",
             // "electronic structure". dipole_label_pretty title cases for menus and tooltips,
@@ -3802,7 +3853,7 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
     mat4_store((float*)M, transform);
 }
 
-bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count) {
+bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, PickingDomainID domain, size_t count, uint64_t key) {
     ASSERT(space);
 
     if (count > 0 && space->num_ranges < ARRAY_SIZE(space->ranges)) {
@@ -3811,6 +3862,7 @@ bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, Picking
         curr_range->domain = domain;
         curr_range->beg = prev_range ? prev_range->end : 0;
         curr_range->end = curr_range->beg + (uint32_t)count;
+        curr_range->key = key;
         if (out_range) {
             MEMCPY(out_range, curr_range, sizeof(PickingRange));
         }
@@ -3933,6 +3985,16 @@ bool picking_surface_submit_readback(
     return true;
 }
 
+const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key) {
+    for (size_t i = 0; i < space.num_ranges; ++i) {
+        if (space.ranges[i].domain == domain && space.ranges[i].key == key) {
+            return &space.ranges[i];
+        }
+    }
+
+    return nullptr;
+}
+
 static const PickingRange* find_picking_range(const PickingSpace* space, uint32_t raw_idx) {
     ASSERT(space);
 
@@ -3995,6 +4057,7 @@ bool picking_surface_poll_hit(
 
     out_hit->source = surface->source;
     out_hit->domain = range.domain;
+    out_hit->key = range.key;
     out_hit->frame_idx = slot.submitted_frame_idx;
     out_hit->raw_idx = raw_idx;
     out_hit->local_idx = raw_idx - range.beg;
@@ -4182,15 +4245,14 @@ void interaction_surface_event_extract(InteractionSurfaceEvent* event, const Int
         } else if (state.deactivated) {
             event->region_phase = InteractionSurfaceEventPhase::Commit;
         }
-    } else if (ImGui::IsKeyDown(ImGuiMod_Shift) && (ImGui::IsMouseReleased(ImGuiMouseButton_Left) || ImGui::IsMouseReleased(ImGuiMouseButton_Right))) {
-        event->selection_mode = state.selection_mode;
-        event->kind = InteractionSurfaceEventKind::Click;
-        if (state.deactivated) {
-            event->region_phase = InteractionSurfaceEventPhase::Commit;
-        }
     } else if (state.hovered) {
-        if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0,0)) {
+		bool left_click  = ImGui::IsMouseReleased(ImGuiMouseButton_Left)  && ImGui::GetMouseDragDelta(ImGuiMouseButton_Left)  == ImVec2(0, 0);
+        bool right_click = ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::GetMouseDragDelta(ImGuiMouseButton_Right) == ImVec2(0, 0);
+        if (right_click && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
             event->kind = InteractionSurfaceEventKind::ContextMenu;
+		} else if (left_click || right_click) {
+			event->kind = InteractionSurfaceEventKind::Click;
+            event->selection_mode = state.selection_mode;
         } else {
             event->kind = InteractionSurfaceEventKind::Hover;
         }
@@ -4465,10 +4527,18 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 			PickingSpace* space = (PickingSpace*)event.payload;
             size_t num_atoms = state->mold.sys.atom.count;
             size_t num_bonds = state->mold.sys.bond.count;
-            size_t num_dipoles = dipole_moments_gather(NULL, 0, state->mold.sys);
             picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
-            picking_range_reserve(&state->picking_range_dipole, space, PickingDomain_Dipole, num_dipoles);
+
+            // One range per dipole group, keyed by the group's vector attribute, sized by that
+            // attribute's own shape. An index within a range is then the element index inside the
+            // group, so a hit carries the whole identity and nobody has to reproduce a flat
+            // ordering over every (group, element) pair to speak about one dipole.
+            DipoleGroup groups[16];
+            const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
+            for (size_t i = 0; i < num_groups; ++i) {
+                picking_range_reserve(NULL, space, PickingDomain_Dipole, groups[i].count, groups[i].key);
+            }
             break;
         }
         case viamd::EventType_ViamdInteractionSurface:
@@ -4478,7 +4548,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 switch (surf->kind) {
                 case InteractionSurfaceEventKind::Hover:
                     draw_picking_tooltip_window(surf->hit, *state);
-                    [[fallthrough]];
+					[[fallthrough]];
                 case InteractionSurfaceEventKind::Click:
                     // Use highlight mask as intermediate mask for selection operations and to provide hover feedback
                     md_bitfield_clear(&state->selection.highlight_mask);
@@ -4492,6 +4562,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             else if (surf->selection_mode == InteractionSelectionMode::Remove) {
                                 single_selection_sequence_pop_idx(&state->selection.single_selection_sequence, atom_idx);
                             }
+                            else if (surf->selection_mode == InteractionSelectionMode::None) {
+                                single_selection_sequence_clear(&state->selection.single_selection_sequence);
+                                single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
+                            }
                         }
                     } else if (surf->hit.domain == PickingDomain_Bond) {
                         size_t bond_idx = surf->hit.local_idx;
@@ -4502,21 +4576,27 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     }
                     
                     // Commit to selection mask upon click release, for hover we only update the highlight mask
-                    if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond) {
-                        grow_mask_by_selection_granularity(&state->selection.highlight_mask, state->selection.granularity, state->mold.sys);
-                        if (surf->selection_mode == InteractionSelectionMode::Append) {
-                            md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                    if (surf->kind == InteractionSurfaceEventKind::Click) {
+                        if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond) {
+                            grow_mask_by_selection_granularity(&state->selection.highlight_mask, state->selection.granularity, state->mold.sys);
+                            if (surf->selection_mode == InteractionSelectionMode::Append) {
+                                md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                            }
+                            else if (surf->selection_mode == InteractionSelectionMode::Remove) {
+                                md_bitfield_andnot_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                            }
+                            else if (surf->selection_mode == InteractionSelectionMode::None) {
+                                md_bitfield_clear(&state->selection.selection_mask);
+                                md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                            }
                         }
-                        else if (surf->selection_mode == InteractionSelectionMode::Remove) {
-                            md_bitfield_andnot_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
-                        }   
-                    } else if (surf->hit.domain == 0) {
-                        if (surf->selection_mode == InteractionSelectionMode::Remove) {
-                            md_bitfield_clear(&state->selection.selection_mask);
-                            single_selection_sequence_clear(&state->selection.single_selection_sequence);
+                        else if (surf->hit.domain == 0) {
+                            if (surf->selection_mode == InteractionSelectionMode::Remove) {
+                                md_bitfield_clear(&state->selection.selection_mask);
+                                single_selection_sequence_clear(&state->selection.single_selection_sequence);
+                            }
                         }
                     }
-
                     break;
                 case InteractionSurfaceEventKind::RegionSelect:
                     break;

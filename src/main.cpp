@@ -405,7 +405,6 @@ int main(int argc, char** argv) {
 
     state.allocator.persistent = persistent_alloc;
     state.allocator.frame = frame_alloc;
-    state.representation.info.alloc = md_arena_allocator_create(persistent_alloc, MEGABYTES(1));
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
     // One arena per dataset, held by the system and the state that share it. Both are rewound
     // rather than destroyed between loads, so this handle is set once and never reassigned.
@@ -3279,12 +3278,14 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 
     bool advanced = state->representation.advanced_mode;
     bool update_rep = false;
-    
+
+    const ElectronicStructureSourceFlags source_mask = es_source_mask(state->mold.sys);
+
     if (ImGui::BeginCombo("volume src", electronic_structure_source_str[(int)es.source], flags)) {
         for (int n = 0; n < (int)ElectronicStructureSource::Count; n++) {
             ElectronicStructureSource source = (ElectronicStructureSource)n;
             bool is_selected = (es.source == source);
-            bool disabled = !electronic_structure_source_supported(state->representation.info.electronic_structure_source_mask, source);
+            bool disabled = !electronic_structure_source_supported(source_mask, source);
 
             if (disabled) ImGui::PushDisabled();
             if (ImGui::Selectable(electronic_structure_source_str[n], is_selected)) {
@@ -3307,8 +3308,10 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     }
 
     if (electronic_structure_is_density_property(es)) {
-        DensityProperty* density_props = state->representation.info.density_properties;
-        const int num_density_props = (int)md_array_size(density_props);
+        // Gathered here rather than kept in a list somewhere: it is a handful of entries borrowed
+        // from the attribute table, and a stored copy would be one more thing to invalidate on load.
+        DensityProperty density_props[64];
+        const int num_density_props = (int)MIN(density_properties_gather(density_props, ARRAY_SIZE(density_props), state->mold.sys), ARRAY_SIZE(density_props));
         if (num_density_props > 0) {
             // A key that names nothing in the current list - a fresh representation, or a workspace
             // saved against a file whose properties differ - falls back to the first one rather
@@ -3428,8 +3431,8 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         // calculation, and the rendered volume already follows es.spin - so the frontier has to
         // follow it too, or the entry marked (homo) under spin=Beta is alpha's HOMO index.
         //
-        // Formatted here rather than read out of a precomputed list: it is an index and two markers,
-        // and a copy of it would be one more thing to keep in step with the table.
+        // Formatted here rather than read out of a precomputed list: it is an index, an energy and
+        // two markers, and a copy of it would be one more thing to keep in step with the table.
         const bool use_beta = (es.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(state->mold.sys);
 
         size_t num_orbitals = 0;
@@ -3437,20 +3440,44 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) && num_orbitals > 0) {
             es_orbital_frontier(&frontier, state->mold.sys, use_beta ? es_path::beta_occupation : es_path::alpha_occupation);
 
-            auto orbital_label = [&frontier](char* buf, size_t cap, int n) {
+            // Energies alongside the index, so the list can be read as an orbital diagram. A column
+            // that does not span the orbital set is not one to index with, so it is dropped whole
+            // rather than bounds checked per row - the list then falls back to bare indices.
+            size_t num_energies = 0;
+            const double* energy = es_orbital_energies(&num_energies, state->mold.sys, use_beta ? es_path::beta_energy : es_path::alpha_energy);
+            if (num_energies != num_orbitals) energy = nullptr;
+
+            // The UI font is monospaced (Dejavu Sans Mono), so a fixed field width per column is all
+            // the alignment this needs: right aligned index, then a fixed number of decimals, which
+            // puts every decimal point of the list on one column. Widths are passed in rather than
+            // baked into the format so the preview - a single line, nothing to align against - can
+            // ask for the same text unpadded.
+            int idx_width = 1;
+            for (size_t m = num_orbitals; m >= 10; m /= 10) idx_width++;
+
+            auto orbital_label = [&](char* buf, size_t cap, int n, int idx_w, int ene_w) {
                 const char* mark = (n == frontier.homo_idx) ? " (homo)" : (n == frontier.lumo_idx) ? " (lumo)" : "";
-                snprintf(buf, cap, "%i%s", n + 1, mark);
+                if (energy) {
+                    snprintf(buf, cap, "%*i  %*.4f%s", idx_w, n + 1, ene_w, energy[n], mark);
+                } else {
+                    snprintf(buf, cap, "%*i%s", idx_w, n + 1, mark);
+                }
             };
 
             es.orbital_idx = CLAMP(es.orbital_idx, 0, (int)num_orbitals - 1);
 
-            char preview[32];
-            orbital_label(preview, sizeof(preview), es.orbital_idx);
+            char preview[48];
+            orbital_label(preview, sizeof(preview), es.orbital_idx, 0, 0);
             if (ImGui::BeginCombo("orbital idx", preview)) {
-                for (int n = 0; n < (int)num_orbitals; n++) {
+                // Highest index first, so the lowest lying orbital sits at the bottom - the
+                // conventional orbital diagram, and the same order the Molecular Orbitals table
+                // defaults to. Canonical MOs come out of the SCF in ascending energy, so descending
+                // index IS descending energy; sorting on the energies instead would only differ for
+                // a non-aufbau set, and would then disagree with that table.
+                for (int n = (int)num_orbitals - 1; n >= 0; n--) {
                     bool is_selected = (es.orbital_idx == n);
-                    char label[32];
-                    orbital_label(label, sizeof(label), n);
+                    char label[48];
+                    orbital_label(label, sizeof(label), n, idx_width, 10);
                     if (ImGui::Selectable(label, is_selected)) {
                         if (es.orbital_idx != n) {
                             update_rep = true;
@@ -3766,31 +3793,55 @@ static void draw_representations_window(ApplicationState* state) {
                 break;
             case RepresentationType::DipoleMoment:
             {
-                DipoleMoment dipoles[64];
-                size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
+                // The combo lists GROUPS, which is what the file publishes. A group holding one
+                // moment per excited state is then picked apart by the index widget below, rather
+                // than flattening every (group, element) pair into one list nobody can scan.
+                DipoleGroup groups[16];
+                const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
 
-                // A group holds one moment or one per excited state, so a dipole is addressed by
-                // (key, index) and never by key alone.
-                char preview[64] = "";
-                for (size_t i = 0; i < num_dipoles; ++i) {
-                    if (dipoles[i].key == rep.dipole.dipole_key && dipoles[i].index == rep.dipole.dipole_index) {
-                        dipole_entry_label(preview, sizeof(preview), dipoles[i]);
-                        break;
-                    }
+                // Asked of the key the representation holds, not searched for in the list: a key
+                // that names nothing - a workspace pointed at a file without that group - simply
+                // leaves the preview empty and the index widget away.
+                DipoleGroup selected = {};
+                const bool has_selection = dipole_group_from_key(&selected, state->mold.sys, rep.dipole.dipole_key);
+
+                // A group can come back shorter than it was (fewer excited states), which would
+                // otherwise leave the representation pointing past its end.
+                if (has_selection && rep.dipole.dipole_index >= selected.count) {
+                    rep.dipole.dipole_index = 0;
+                    update_rep = true;
                 }
 
+                char preview[64] = "";
+                if (has_selection) dipole_label_pretty(preview, sizeof(preview), selected.label);
+
                 if (ImGui::BeginCombo("dipole", preview)) {
-                    for (size_t i = 0; i < num_dipoles; ++i) {
+                    for (size_t i = 0; i < num_groups; ++i) {
                         char lbl[64];
-                        dipole_entry_label(lbl, sizeof(lbl), dipoles[i]);
-                        bool selected = dipoles[i].key == rep.dipole.dipole_key && dipoles[i].index == rep.dipole.dipole_index;
-                        if (ImGui::Selectable(lbl, selected)) {
-                            rep.dipole.dipole_key   = dipoles[i].key;
-                            rep.dipole.dipole_index = dipoles[i].index;
-                            update_rep = true;
+                        dipole_label_pretty(lbl, sizeof(lbl), groups[i].label);
+                        const bool is_selected = groups[i].key == rep.dipole.dipole_key;
+                        if (ImGui::Selectable(lbl, is_selected)) {
+                            if (!is_selected) {
+                                rep.dipole.dipole_key   = groups[i].key;
+                                rep.dipole.dipole_index = 0;   // a different group; the old element means nothing in it
+                                update_rep = true;
+                            }
+                        }
+                        if (is_selected) {
+                            ImGui::SetItemDefaultFocus();
                         }
                     }
                     ImGui::EndCombo();
+                }
+
+                // Only an array of moments has an index to choose. One moment is addressed by the
+                // group alone, and a slider from 1 to 1 is a control that cannot do anything.
+                if (has_selection && selected.count > 1) {
+                    int index = (int)rep.dipole.dipole_index + 1;
+                    if (ImGui::SliderInt("index", &index, 1, (int)selected.count)) {
+                        rep.dipole.dipole_index = (uint32_t)CLAMP(index - 1, 0, (int)selected.count - 1);
+                        update_rep = true;
+                    }
                 }
             }
             ImGui::ColorEdit4("color", rep.dipole.color.elem);
@@ -6989,26 +7040,22 @@ static void draw_representations_opaque(ApplicationState* state) {
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
                 // immediate draw of dipole moment as arrow
-                DipoleMoment dipoles[64];
-                size_t num_dipoles = MIN(dipole_moments_gather(dipoles, ARRAY_SIZE(dipoles), state->mold.sys), ARRAY_SIZE(dipoles));
+                vec3_t dipole_vec = {0, 0, 0};
+                vec3_t dipole_org = {0, 0, 0};
+                if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
+                    // The representation's own (key, index) IS the picking address: the group's
+                    // range was reserved under that key this frame, and the shader adds the base to
+                    // the per primitive index, so the element index is what goes on the primitive.
+                    // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
+                    // which the shader passes through untouched - visible, just not pickable.
+                    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+                    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
 
-                // The picking index is the position within this frame's gathered set; the
-                // representation itself holds the key, so a reload cannot silently repoint it.
-                size_t dipole_idx = SIZE_MAX;
-                for (size_t j = 0; j < num_dipoles; ++j) {
-                    if (dipoles[j].key == rep.dipole.dipole_key && dipoles[j].index == rep.dipole.dipole_index) {
-                        dipole_idx = j;
-                        break;
-                    }
-                }
-
-                if (dipole_idx != SIZE_MAX) {
                     immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
-                    immediate::set_picking_base_idx(scope, state->picking_range_dipole.beg + (uint32_t)dipole_idx);
-                    const DipoleMoment& dipole = dipoles[dipole_idx];
+                    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
-                    const vec3_t org = dipole.origin;
-                    const vec3_t vec = dipole.vec * (float)rep.dipole.scale;
+                    const vec3_t org = dipole_org;
+                    const vec3_t vec = dipole_vec * (float)rep.dipole.scale;
 
                     // cylinder body
                     const float body_scale = 0.8f;
@@ -7022,7 +7069,7 @@ static void draw_representations_opaque(ApplicationState* state) {
 
                     uint32_t color_u32 = convert_color(rep.dipole.color);
 
-                    uint32_t picking_idx = (uint32_t)dipole_idx;
+                    uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
 
                     immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
                     immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
