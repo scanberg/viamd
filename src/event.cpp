@@ -20,10 +20,17 @@ void event_system_register_handler(EventHandler& handler) {
 
 void event_system_enqueue_event(EventType type, EventPayloadType payload_type, const void* payload, uint64_t delay_in_ms) {
 	md_timestamp_t time_now = md_time_now();
+
+	// md_time_now() counts platform ticks - nanoseconds on unix, QPC ticks on windows - so a delay
+	// in milliseconds has to be converted rather than added straight on. Adding it raw made a
+	// requested second come out as a microsecond on one platform and a tenth of that on the other.
+	const double ticks_per_ms = 1.0 / md_time_as_milliseconds(1);
+	const md_timestamp_t delay_in_ticks = (md_timestamp_t)((double)delay_in_ms * ticks_per_ms);
+
 	Event e = {
 		.type = type,
 		.payload_type = payload_type,
-		.timestamp = time_now + delay_in_ms,
+		.timestamp = (uint64_t)(time_now + delay_in_ticks),
 		.payload = payload,
 	};
 	md_array_push(event_system.event_queue, e, md_get_heap_allocator());
@@ -48,8 +55,10 @@ void event_system_process_event_queue() {
 		return;
 	}
 
+	// Stable, so events enqueued within the same tick keep the order they were enqueued in. Several
+	// of the load sequences enqueue a run of events back to back and depend on that order.
 	Event* beg = event_system.event_queue;
-	std::sort(beg, beg + num_events, [](const Event& a, const Event& b) {
+	std::stable_sort(beg, beg + num_events, [](const Event& a, const Event& b) {
 		return a.timestamp < b.timestamp;
 	});
 	
