@@ -120,19 +120,87 @@ if (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     set(VIAMD_FLAGS ${VIAMD_FLAGS} "-fms-extensions") #Silence pesky warnings of anonymous structs in vector types
 endif()
 
-file(GLOB SRC_FILES src/*.h src/*.cpp src/*.inl)
-file(GLOB APP_FILES src/app/*.cpp src/app/*.h)
-file(GLOB GFX_FILES src/gfx/*.cpp src/gfx/*.h)
+# Core sources are listed, extension points are globbed.
+#
+# src, src/app and src/gfx are the application itself: the set of files is part of its structure, so
+# it is written down where it can be reviewed. src/components and test are where someone adds to
+# viamd without needing to know anything about this file, so those are globbed - dropping a folder
+# into components, or a test into test, is all it takes.
+#
+# CONFIGURE_DEPENDS is what makes the globbing safe. The old advice against file(GLOB) was that it
+# ran at configure time only, so a file added afterwards silently stayed out of the build until
+# someone re-ran cmake by hand; since cmake 3.12 the generated build system re-checks the glob on
+# every build and re-configures when the set changes. What remains of the trade is that a globbed
+# folder *defines* what is built - a stray file joins the build silently, and a file that was never
+# git added builds locally but not for anybody else. So nothing that is not meant to be built
+# belongs in one; src/deprecated is where that goes and it is not globbed.
 
-set(COMP_FILES
-    src/components/ramachandran/ramachandran.cpp
-    src/components/shapespace/shapespace.cpp
-    src/components/dataset/dataset.cpp
-    src/components/density_volume/density_volume.cpp
+set(SRC_FILES
+    src/color_utils.cpp
+    src/event.cpp
+    src/image.cpp
+    src/imgui_widgets.cpp
+    src/implot_widgets.cpp
+    src/loader.cpp
+    src/main.cpp
+    src/serialization_utils.cpp
+    src/task_system.cpp
+    src/viamd.cpp
+
+    src/color_utils.h
+    src/event.h
+    src/image.h
+    src/imgui_widgets.h
+    src/implot_widgets.h
+    src/loader.h
+    src/serialization_utils.h
+    src/task_system.h
+    src/viamd.h
+    src/viamd_event.h
 )
 
-if (VIAMD_ENABLE_QM)
-    set(COMP_FILES ${COMP_FILES} src/components/qm/quantum_chemistry.cpp src/components/qm/flow_draw.cpp)
+set(APP_FILES
+    src/app/application.cpp
+    src/app/imgui_impl_glfw.cpp
+    src/app/imgui_impl_opengl3.cpp
+
+    src/app/application.h
+    src/app/IconsFontAwesome6.h
+    src/app/imgui_impl_glfw.h
+    src/app/imgui_impl_opengl3.h
+    src/app/imgui_impl_opengl3_loader.h
+)
+
+set(GFX_FILES
+    src/gfx/camera_utils.cpp
+    src/gfx/gbuffer.cpp
+    src/gfx/gl_utils.cpp
+    src/gfx/immediate_draw_utils.cpp
+    src/gfx/postprocessing_utils.cpp
+    src/gfx/volumerender_utils.cpp
+
+    src/gfx/camera.h
+    src/gfx/camera_utils.h
+    src/gfx/gbuffer.h
+    src/gfx/gl.h
+    src/gfx/gl_utils.h
+    src/gfx/immediate_draw_utils.h
+    src/gfx/postprocessing_utils.h
+    src/gfx/view_param.h
+    src/gfx/volumerender_utils.h
+)
+
+# One folder per component under src/components. Adding a component means adding its folder; there
+# is nothing to edit here.
+file(GLOB COMP_FILES CONFIGURE_DEPENDS
+    src/components/*/*.cpp
+    src/components/*/*.h
+    src/components/*/*.inl
+)
+
+# The one component behind a build option. Everything else in the folder is unconditional.
+if (NOT VIAMD_ENABLE_QM)
+    list(FILTER COMP_FILES EXCLUDE REGEX "/components/qm/")
 endif()
 
 set(SHADER_FILES 
@@ -288,4 +356,8 @@ target_link_libraries(viamd
     imgui_notify
     ${VIAMD_EXTRA_LIBS}
 )
+
+if (VIAMD_UNITTEST)
+    add_subdirectory(test)
+endif()
 
