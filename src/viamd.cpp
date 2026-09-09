@@ -208,25 +208,14 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
     } else if (hit.domain == PickingDomain_Dipole) {
         // The hit names the group and the element outright - its range was reserved against that
         // group's attribute - so there is no list to rebuild and nothing to look the index up in.
-        const md_system_t& sys = state.mold.sys;
         DipoleGroup group = {};
         if (dipole_group_from_key(&group, sys, hit.key) && hit.local_idx < group.count) {
             char label[64];
             int label_len = dipole_entry_label(label, sizeof(label), group, hit.local_idx);
             md_strb_fmt(sb, "%.*s\n", label_len, label);
 
-            // Debye is the readable unit for a dipole. The conversion is the attribute's own
-            // business, and it refuses rather than rescaling if the producer published something
-            // which is not a dipole moment at all. One element of the group, because a transition
-            // dipole attribute holds one per excited state.
-            const md_attribute_t* attr = md_attributes_get(&sys.attributes, group.key);
-            float debye[3];
-            const md_attribute_slice_t slice = (attr && attr->format.rank > 0) ? md_attribute_slice_1(hit.local_idx) : md_attribute_slice_all();
-            if (attr && md_attribute_extract_slice_f32(debye, ARRAY_SIZE(debye), attr, &slice, md_unit_debye()) == 3) {
-                md_strb_fmt(sb, "(%.3f %.3f %.3f) Debye\n", debye[0], debye[1], debye[2]);
-            } else {
-                vec3_t vec = {0, 0, 0};
-                dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx);
+            vec3_t vec = {0, 0, 0};
+            if (dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx)) {
                 char unit_buf[32];
                 size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), group.unit);
                 md_strb_fmt(sb, "(%.3f %.3f %.3f) %.*s\n", vec.x, vec.y, vec.z, (int)unit_len, unit_buf);
@@ -4536,8 +4525,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // ordering over every (group, element) pair to speak about one dipole.
             DipoleGroup groups[16];
             const size_t num_groups = MIN(dipole_groups_gather(groups, ARRAY_SIZE(groups), state->mold.sys), ARRAY_SIZE(groups));
-            for (size_t i = 0; i < num_groups; ++i) {
-                picking_range_reserve(NULL, space, PickingDomain_Dipole, groups[i].count, groups[i].key);
+            for (size_t j = 0; j < num_groups; ++j) {
+                picking_range_reserve(NULL, space, PickingDomain_Dipole, groups[j].count, groups[j].key);
             }
             break;
         }
