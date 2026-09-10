@@ -94,10 +94,45 @@ static void uf_union(sweep_ctx_t* c, uint32_t a, uint32_t b) {
     } else if (nb == CHANNEL_INVALID_INDEX || na == nb) {
         node = na;
     } else {
-        // Two branches which already have an identity meet here, so this is where they join
-        node = node_new(c, c->z_now, false);
-        node_attach(c, na, node, c->z_now);
-        node_attach(c, nb, node, c->z_now);
+        // Two branches which already have an identity meet here, so this is where they join.
+        //
+        // Three or more branches meeting in the same slab is one junction, not a chain of them. The
+        // unions arrive pairwise, so a merge node already made at this z is folded into rather than
+        // nested under, which keeps the junction n-ary. Nesting instead leaves the lower node with no
+        // z extent and - because the per slab accumulation below only ever reaches the node the
+        // component currently carries - with no voxels, no path and no clearance either, which is
+        // what used to fill the diagram with zero rows.
+        //
+        // A node made at this z is necessarily one of those junctions: branch nodes for this slab are
+        // not created until every union below has been applied.
+        const channel_node_t* nodes = c->tree->nodes;
+        const bool na_fresh = (nodes[na].z_top == c->z_now) && (nodes[na].num_voxels == 0);
+        const bool nb_fresh = (nodes[nb].z_top == c->z_now) && (nodes[nb].num_voxels == 0);
+
+        if (na_fresh && nb_fresh) {
+            // Two junctions made at this z, reached from different sides: one adopts the other's
+            // branches. Reading each next_sibling before reattaching keeps the list well formed. The
+            // emptied node is left unreferenced and is never visited again, since every traversal
+            // starts from a root.
+            node = na;
+            uint32_t child = c->tree->nodes[nb].first_child;
+            c->tree->nodes[nb].first_child = CHANNEL_INVALID_INDEX;
+            while (child != CHANNEL_INVALID_INDEX) {
+                const uint32_t next = c->tree->nodes[child].next_sibling;
+                node_attach(c, child, node, c->z_now);
+                child = next;
+            }
+        } else if (na_fresh) {
+            node = na;
+            node_attach(c, nb, node, c->z_now);
+        } else if (nb_fresh) {
+            node = nb;
+            node_attach(c, na, node, c->z_now);
+        } else {
+            node = node_new(c, c->z_now, false);
+            node_attach(c, na, node, c->z_now);
+            node_attach(c, nb, node, c->z_now);
+        }
     }
     c->node_at[ra] = node;
 }

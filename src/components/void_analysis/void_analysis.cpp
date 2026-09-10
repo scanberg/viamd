@@ -56,6 +56,10 @@ constexpr double PI_D = 3.14159265358979323846;
 // Angstrom^2 per Dalton to m^2 per gram
 constexpr double SPECIFIC_AREA_SCALE = 1.0e-20 / 1.66053906892e-24;
 
+// Opacity of the channel ribbon. The overlay pass blends on source alpha, so this is how much of the
+// structure is still read through the tube.
+constexpr uint32_t RIBBON_ALPHA = 0x60;
+
 enum RadiusSource {
     RadiusSource_Vdw = 0,       // Per atom radius as reported by the system
     RadiusSource_Uniform,       // One radius for every bead, for coarse grained models with no meaningful element
@@ -170,7 +174,10 @@ struct VoidAnalysis : viamd::EventHandler {
                 if (e.payload_type != viamd::EventPayloadType_ApplicationState) break;
                 const ApplicationState& state = *(ApplicationState*)e.payload;
                 immediate::Scope scope(state.gfx.overlay, "void_channel_path");
-                draw_channel_path_3d(scope, hovered_node);
+                // Camera Z in world space. The overlay is rendered with an identity model matrix, so
+                // this is the same space the grid is in.
+                const vec3_t cam_axis = vec3_normalize(vec3_from_vec4(state.view.param.matrix.inv.view.col[2]));
+                draw_channel_path_3d(scope, hovered_node, cam_axis);
                 break;
             }
             default:
@@ -657,9 +664,20 @@ struct VoidAnalysis : viamd::EventHandler {
 
         const md_timestamp_t t0 = md_time_now();
 
-        const double r_lo = (double)channel_r_min;
-        const double r_hi = MAX(stats.d_max, r_lo + 1.0);
-        const size_t n    = (size_t)CLAMP(channel_num_radii, 2, 128);
+        const double r_lo  = (double)channel_r_min;
+        const double d_max = MAX(stats.d_max, r_lo + 1.0);
+        const double tol   = 0.05 * (double)MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
+        const size_t n     = (size_t)CLAMP(channel_num_radii, 2, 128);
+
+        // r_c first, because it is also where the count curve has to stop. Nothing percolates above
+        // it by definition, so sweeping up to the largest clearance in the box - which measures a
+        // cavity, not a throat, and is just the max_dist clamp wherever a voxel has no bead in range
+        // - spends nearly every sample on a radius which cannot possibly get through, and leaves the
+        // one region that carries information sampled more coarsely than the voxel grid.
+        r_c = channel_critical_radius(&f, r_lo, d_max, tol, md_get_heap_allocator());
+
+        // A little past r_c so the curve is seen to fall to zero rather than ending on a cliff.
+        const double r_hi = (r_c >= r_lo) ? MIN(d_max, MAX(1.1 * r_c, r_lo + 10.0 * tol)) : d_max;
 
         md_array_resize(curve_radius, n, arena);
         md_array_resize(curve_count,  n, arena);
@@ -675,9 +693,6 @@ struct VoidAnalysis : viamd::EventHandler {
         task_system::enqueue_task(task);
         task_system::task_wait_for(task);
 
-        const double tol = 0.05 * (double)MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
-        r_c = channel_critical_radius(&f, r_lo, r_hi, tol, md_get_heap_allocator());
-
         channel_sweep(&channels, &f, (double)probe_radius, true, arena);
         layout_channel_tree();
 
@@ -692,8 +707,15 @@ struct VoidAnalysis : viamd::EventHandler {
     }
 
     // The hovered branch, then the route it takes on down to the bottom. Drawn into the overlay
-    // queue so it stays visible inside the structure rather than being buried by it.
-    void draw_channel_path_3d(immediate::Queue* q, uint32_t node) const {
+    // queue, which is rendered last with the depth test off, so it stays in front of the structure
+    // rather than being buried by it.
+    //
+    // A line is one pixel wide at any zoom, which in a dense network is easy to lose and thin enough
+    // for temporal AA to eat, so each segment is also drawn as a camera facing ribbon whose half
+    // width is the clearance there. The ribbon carries the width of the channel and is translucent so
+    // the structure still reads through it; the line stays opaque on top of it, which is what keeps a
+    // tight channel visible when the ribbon is below a pixel across.
+    void draw_channel_path_3d(immediate::Queue* q, uint32_t node, vec3_t cam_axis) const {
         const float wrap_x = 0.5f * grid.spacing.x * (float)grid.dim[0];
         const float wrap_y = 0.5f * grid.spacing.y * (float)grid.dim[1];
 
@@ -701,7 +723,27 @@ struct VoidAnalysis : viamd::EventHandler {
             // A channel may wrap through the periodic faces; the centreline must not be drawn
             // straight back across the box when it does.
             if (fabsf(a.x - b.x) > wrap_x || fabsf(a.y - b.y) > wrap_y) return;
-            immediate::line(q, vec3_t{a.x, a.y, a.z}, vec3_t{b.x, b.y, b.z}, col);
+
+            const vec3_t p0 = {a.x, a.y, a.z};
+            const vec3_t p1 = {b.x, b.y, b.z};
+
+            const vec3_t d   = vec3_sub(p1, p0);
+            const float  len = vec3_length(d);
+            if (len > 1.0e-6f) {
+                // Perpendicular to both the segment and the line of sight. It only degenerates when
+                // the segment points straight at the camera, where a ribbon has nothing to show.
+                vec3_t side = vec3_cross(vec3_mul1(d, 1.0f / len), cam_axis);
+                const float side_len = vec3_length(side);
+                if (side_len > 1.0e-4f) {
+                    side = vec3_mul1(side, 1.0f / side_len);
+                    const vec3_t e0 = vec3_mul1(side, a.w);
+                    const vec3_t e1 = vec3_mul1(side, b.w);
+                    const uint32_t fill = (col & 0x00FFFFFFu) | (RIBBON_ALPHA << 24);
+                    immediate::triangle(q, vec3_sub(p0, e0), vec3_add(p0, e0), vec3_add(p1, e1), fill);
+                    immediate::triangle(q, vec3_sub(p0, e0), vec3_add(p1, e1), vec3_sub(p1, e1), fill);
+                }
+            }
+            immediate::line(q, p0, p1, col);
         };
 
         uint32_t n = node;
