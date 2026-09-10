@@ -217,7 +217,12 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             vec3_t vec = {0, 0, 0};
             if (dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx)) {
                 char unit_buf[32];
-                size_t unit_len = md_unit_print(unit_buf, sizeof(unit_buf), group.unit);
+				size_t unit_len = 0;
+				if (md_unit_is_atomic(group.unit)) {
+					unit_len = snprintf(unit_buf, sizeof(unit_buf), "a.u.");
+				} else {
+                    unit_len = md_unit_print(unit_buf, sizeof(unit_buf), group.unit);
+                }
                 md_strb_fmt(sb, "(%.3f %.3f %.3f) %.*s\n", vec.x, vec.y, vec.z, (int)unit_len, unit_buf);
             }
         }
