@@ -316,3 +316,351 @@ UTEST(viamd_channels, layout_survives_a_deep_tree) {
     md_array_free(taken, alloc);
     channel_tree_free(&tree);
 }
+
+// --- Percolation -------------------------------------------------------------------------------
+//
+// The same questions the sweeps above answer by repetition, answered once in order of decreasing
+// clearance. The cross checks below are the point: two algorithms with almost nothing in common
+// have to land on the same critical radius, and if they do not, one of them is wrong.
+
+namespace {
+
+// A solid block with three cylindrical holes along z, radii 3, 5 and 7 - the same geometry as the
+// first case above, shared so the two families are checked against the identical field.
+struct DrilledBlock {
+    static const int DIM[3];
+    static constexpr float H = 0.5f;
+    static constexpr double AX[3] = { 20.25, 45.25, 70.25 };
+    static constexpr double AY = 45.25;
+    static constexpr double RAD[3] = { 3.0, 5.0, 7.0 };
+
+    std::vector<float> f;
+    channel_field_t field = {};
+
+    DrilledBlock() : f((size_t)DIM[0]*DIM[1]*DIM[2], 0.0f) {
+        for (int k = 0; k < DIM[2]; ++k)
+        for (int j = 0; j < DIM[1]; ++j)
+        for (int i = 0; i < DIM[0]; ++i) {
+            const double x = (i + 0.5) * H, y = (j + 0.5) * H;
+            double best = 0.0;
+            for (int c = 0; c < 3; ++c) {
+                const double rho = sqrt((x - AX[c])*(x - AX[c]) + (y - AY)*(y - AY));
+                best = fmax(best, RAD[c] - rho);
+            }
+            f[(size_t)k*DIM[0]*DIM[1] + (size_t)j*DIM[0] + i] = (float)fmax(0.0, best);
+        }
+        field.data = f.data();
+        for (int a = 0; a < 3; ++a) {
+            field.dim[a] = DIM[a];
+            field.spacing[a] = H;
+            field.origin[a] = 0.0f;
+            field.pbc[a] = false;
+        }
+    }
+};
+const int DrilledBlock::DIM[3] = { 180, 180, 120 };
+constexpr double DrilledBlock::AX[3];
+constexpr double DrilledBlock::RAD[3];
+
+}  // namespace
+
+UTEST(viamd_channels, percolation_finds_the_widest_hole_and_where_it_is) {
+    // The critical radius is the widest hole, and - unlike a bisection, which returns a number and
+    // nothing else - the pass also says which voxel it belongs to. That voxel has to sit on the axis
+    // of the widest hole, because that is the only place with clearance 7.
+    md_allocator_i* alloc = md_get_heap_allocator();
+    DrilledBlock b;
+
+    channel_percolation_t perc;
+    ASSERT_TRUE(channel_percolate(&perc, &b.field, 0.5, 64, alloc));
+
+    ASSERT_TRUE(perc.has_r_c);
+    EXPECT_NEAR(7.0, perc.r_c, 0.02);
+    EXPECT_NEAR(DrilledBlock::AX[2], perc.throat[0], 0.6);
+    EXPECT_NEAR(DrilledBlock::AY,    perc.throat[1], 0.6);
+
+    // Agreement with the bisection, which asks a threshold question about the same field and shares
+    // no code with this.
+    const double rc_bisect = channel_critical_radius(&b.field, 0.5, 12.0, 0.005, alloc);
+    EXPECT_NEAR(rc_bisect, perc.r_c, 0.02);
+
+    // The count curve is the step function the sweep reports, recovered from the same pass.
+    for (size_t i = 0; i < md_array_size(perc.radius); ++i) {
+        const double r = perc.radius[i];
+        uint32_t want = 0;
+        if (r <= 3.0) want = 3; else if (r <= 5.0) want = 2; else if (r <= 7.0) want = 1;
+        // Only away from the radii themselves, where a voxel either side is a coin toss
+        if (fabs(r - 3.0) < 0.2 || fabs(r - 5.0) < 0.2 || fabs(r - 7.0) < 0.2) continue;
+        EXPECT_EQ(want, perc.num_spanning[i]);
+    }
+
+    channel_percolation_free(&perc);
+}
+
+UTEST(viamd_channels, percolation_curves_are_ordered_and_monotone) {
+    // Properties that hold whatever the geometry. A spanning component is open and an open one is
+    // void, so the three fractions nest; all three can only grow as the probe shrinks; and the two
+    // penetration depths are what the spanning flag is made of, so they must meet exactly where it
+    // turns on.
+    md_allocator_i* alloc = md_get_heap_allocator();
+    DrilledBlock b;
+
+    channel_percolation_t perc;
+    ASSERT_TRUE(channel_percolate(&perc, &b.field, 0.5, 96, alloc));
+
+    const size_t n = md_array_size(perc.radius);
+    ASSERT_TRUE(n > 8);
+
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_TRUE(perc.frac_void[i] >= perc.frac_open[i] - 1.0e-12);
+        EXPECT_TRUE(perc.frac_open[i] >= perc.frac_spanning[i] - 1.0e-12);
+        EXPECT_TRUE(perc.num_spanning[i] <= perc.num_components[i]);
+        if (i > 0) {
+            EXPECT_TRUE(perc.radius[i] > perc.radius[i - 1]);
+            // Ascending in radius, so the sets shrink
+            EXPECT_TRUE(perc.frac_void[i] <= perc.frac_void[i - 1] + 1.0e-12);
+            EXPECT_TRUE(perc.frac_open[i] <= perc.frac_open[i - 1] + 1.0e-12);
+            EXPECT_TRUE(perc.z_from_top[i]    >= perc.z_from_top[i - 1]    - 1.0e-9);
+            EXPECT_TRUE(perc.z_from_bottom[i] <= perc.z_from_bottom[i - 1] + 1.0e-9);
+        }
+        // Spanning is exactly "the two penetration fronts have met"
+        const bool fronts_met = perc.z_from_top[i] <= perc.z_from_bottom[i] + 1.0e-9;
+        EXPECT_EQ(fronts_met, perc.num_spanning[i] > 0);
+        EXPECT_EQ(perc.radius[i] <= perc.r_c, perc.num_spanning[i] > 0);
+    }
+
+    channel_percolation_free(&perc);
+}
+
+UTEST(viamd_channels, percolation_separates_a_sealed_cavity_from_the_open_pore) {
+    // One tube through the block plus a sealed spherical cavity that touches nothing. The cavity is
+    // wider than the tube, so an accessible-volume measure counts it first and a probe can never
+    // reach it. Open porosity is what tells them apart, and this is the flood fill the design
+    // document lists as owed - it falls out of the ordering rather than needing a second pass.
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    const float h = 0.5f;
+    const int dim[3] = { 120, 120, 120 };
+    const double tube_x = 30.25, tube_y = 30.25, tube_r = 4.0;
+    const double cav_x = 45.25, cav_y = 45.25, cav_z = 30.25, cav_r = 6.0;
+
+    std::vector<float> f((size_t)dim[0]*dim[1]*dim[2], 0.0f);
+    for (int k = 0; k < dim[2]; ++k) {
+        const double z = (k + 0.5) * h;
+        for (int j = 0; j < dim[1]; ++j) {
+            const double y = (j + 0.5) * h;
+            for (int i = 0; i < dim[0]; ++i) {
+                const double x = (i + 0.5) * h;
+                const double tube = tube_r - sqrt((x-tube_x)*(x-tube_x) + (y-tube_y)*(y-tube_y));
+                const double cav  = cav_r  - sqrt((x-cav_x)*(x-cav_x) + (y-cav_y)*(y-cav_y) + (z-cav_z)*(z-cav_z));
+                f[(size_t)k*dim[0]*dim[1] + (size_t)j*dim[0] + i] = (float)fmax(0.0, fmax(tube, cav));
+            }
+        }
+    }
+
+    channel_field_t field = {};
+    field.data = f.data();
+    for (int a = 0; a < 3; ++a) {
+        field.dim[a] = dim[a]; field.spacing[a] = h; field.origin[a] = 0.0f; field.pbc[a] = false;
+    }
+
+    channel_percolation_t perc;
+    ASSERT_TRUE(channel_percolate(&perc, &field, 0.25, 128, alloc));
+
+    // The cavity is the widest thing in the box, but nothing gets through above the tube radius.
+    ASSERT_TRUE(perc.has_r_c);
+    EXPECT_NEAR(tube_r, perc.r_c, 0.2);
+    EXPECT_TRUE(perc.r_c < cav_r - 1.0);
+
+    // Between the tube radius and the cavity radius the only void left is the sealed cavity: void
+    // volume with nothing open and nothing spanning.
+    bool checked = false;
+    for (size_t i = 0; i < md_array_size(perc.radius); ++i) {
+        const double r = perc.radius[i];
+        if (r < tube_r + 0.5 || r > cav_r - 0.5) continue;
+        EXPECT_TRUE(perc.frac_void[i] > 0.0);
+        EXPECT_NEAR(0.0, perc.frac_open[i], 1.0e-12);
+        EXPECT_EQ(0u, perc.num_spanning[i]);
+        checked = true;
+    }
+    EXPECT_TRUE(checked);
+
+    // And below the tube radius the cavity is still closed: the gap between void and open is it.
+    const double probe = 2.0;
+    size_t at = 0;
+    for (size_t i = 0; i < md_array_size(perc.radius); ++i) if (perc.radius[i] <= probe) at = i;
+    EXPECT_TRUE(perc.frac_void[at] - perc.frac_open[at] > 0.0);
+
+    channel_percolation_free(&perc);
+}
+
+UTEST(viamd_channels, traced_route_is_one_a_probe_could_follow) {
+    // The route, not a representative centreline. Every point on it has to clear the probe, it has
+    // to start at one face and end at the other, and consecutive points have to be reachable from
+    // each other - which is what the straightening step is allowed to assume and has to preserve.
+    md_allocator_i* alloc = md_get_heap_allocator();
+    DrilledBlock b;
+
+    const double r = 6.0;            // Fits the widest hole only
+    md_array(vec4_t) path = 0;
+    double length = 0.0;
+    ASSERT_TRUE(channel_trace_path(&path, &length, &b.field, r, alloc));
+
+    const size_t n = md_array_size(path);
+    ASSERT_TRUE(n > 1);
+
+    const double z_top = (DrilledBlock::DIM[2] - 0.5) * DrilledBlock::H;
+    EXPECT_NEAR(z_top, path[0].z, 1.0e-4);
+    EXPECT_NEAR(0.5 * DrilledBlock::H, path[n - 1].z, 1.0e-4);
+
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_TRUE(path[i].w >= (float)r);
+        // Only the widest hole admits a probe this size
+        EXPECT_NEAR(DrilledBlock::AX[2], path[i].x, DrilledBlock::RAD[2] - r + 0.5);
+    }
+
+    // A straight bore, so the straightened route is the depth of the block.
+    EXPECT_NEAR(z_top - 0.5 * DrilledBlock::H, length, 0.5);
+
+    // Resampled densely along the straightened polyline: every step is about half a voxel. That is
+    // what lets a renderer size each sphere from the clearance at its own centre, instead of
+    // interpolating between anchors which straightening is free to leave sixty voxels apart - and a
+    // width interpolated between two anchors is widest exactly where it was never measured.
+    EXPECT_TRUE(n > 100);
+    for (size_t i = 1; i < n; ++i) {
+        const double dx = path[i].x - path[i-1].x;
+        const double dy = path[i].y - path[i-1].y;
+        const double dz = path[i].z - path[i-1].z;
+        EXPECT_TRUE(sqrt(dx*dx + dy*dy + dz*dz) <= (double)DrilledBlock::H + 1.0e-4);
+    }
+
+    // Nothing fits above the critical radius, and the trace has to say so rather than returning a
+    // route through solid.
+    md_array(vec4_t) none = 0;
+    EXPECT_FALSE(channel_trace_path(&none, nullptr, &b.field, 7.5, alloc));
+    md_array_free(none, alloc);
+
+    md_array_free(path, alloc);
+}
+
+UTEST(viamd_channels, traced_route_follows_a_bent_pore) {
+    // A tube whose axis swings across the box, so the staircase a breadth first search returns is
+    // nothing like the route. The straightened length has to come back near the true arc length,
+    // and every point still has to clear the probe.
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    const float h = 0.5f;
+    const int dim[3] = { 160, 40, 120 };
+    const double R = 5.0, swing = 20.0;
+    const double zmax = dim[2] * h;
+
+    std::vector<float> f((size_t)dim[0]*dim[1]*dim[2], 0.0f);
+    for (int k = 0; k < dim[2]; ++k) {
+        const double z = (k + 0.5) * h;
+        const double cx = 40.0 + swing * (z / zmax);
+        for (int j = 0; j < dim[1]; ++j) {
+            const double y = (j + 0.5) * h;
+            for (int i = 0; i < dim[0]; ++i) {
+                const double x = (i + 0.5) * h;
+                f[(size_t)k*dim[0]*dim[1] + (size_t)j*dim[0] + i] =
+                    (float)fmax(0.0, R - sqrt((x - cx)*(x - cx) + (y - 10.25)*(y - 10.25)));
+            }
+        }
+    }
+
+    channel_field_t field = {};
+    field.data = f.data();
+    for (int a = 0; a < 3; ++a) {
+        field.dim[a] = dim[a]; field.spacing[a] = h; field.origin[a] = 0.0f; field.pbc[a] = false;
+    }
+
+    md_array(vec4_t) path = 0;
+    double length = 0.0;
+    ASSERT_TRUE(channel_trace_path(&path, &length, &field, 3.0, alloc));
+
+    for (size_t i = 0; i < md_array_size(path); ++i) {
+        EXPECT_TRUE(path[i].w >= 3.0f);
+    }
+
+    // The axis is a straight slanted line, so its length is hypot(swing, depth). A six connected
+    // staircase would report swing + depth instead, which is 13% longer here - far outside this.
+    const double depth = zmax - h;
+    const double want  = sqrt(swing * swing + depth * depth);
+    EXPECT_NEAR(want, length, 0.06 * want);
+    EXPECT_TRUE(length < swing + depth - 1.0);
+
+    md_array_free(path, alloc);
+}
+
+UTEST(viamd_channels, percolation_and_route_cross_the_periodic_seam) {
+    // The box is periodic in x and the only tube through it drifts far enough to leave one x face
+    // and come back through the other. If the wrap is not honoured the tube is two blind pores and
+    // nothing gets through - so this pins the periodic neighbour handling in the percolation pass
+    // and in the trace at once. It is the same wrap md_spatial_acc applies when it builds the field
+    // in the first place; here it is asserted rather than assumed.
+    md_allocator_i* alloc = md_get_heap_allocator();
+
+    const float h = 0.5f;
+    const int dim[3] = { 120, 40, 120 };
+    const double Lx = dim[0] * h, Ly = dim[1] * h;
+    const double R = 4.0, x0 = 50.0, drift = 40.0;
+    const double zmax = dim[2] * h;
+
+    std::vector<float> f((size_t)dim[0]*dim[1]*dim[2], 0.0f);
+    for (int k = 0; k < dim[2]; ++k) {
+        const double z = (k + 0.5) * h;
+        const double cx = x0 + drift * (z / zmax);       // 50 -> 90, i.e. straight across the seam at 60
+        for (int j = 0; j < dim[1]; ++j) {
+            const double y = (j + 0.5) * h;
+            for (int i = 0; i < dim[0]; ++i) {
+                const double x = (i + 0.5) * h;
+                double dx = x - cx;    dx -= Lx * round(dx / Lx);
+                double dy = y - 10.25; dy -= Ly * round(dy / Ly);
+                f[(size_t)k*dim[0]*dim[1] + (size_t)j*dim[0] + i] = (float)fmax(0.0, R - sqrt(dx*dx + dy*dy));
+            }
+        }
+    }
+
+    channel_field_t field = {};
+    field.data = f.data();
+    for (int a = 0; a < 3; ++a) { field.dim[a] = dim[a]; field.spacing[a] = h; field.origin[a] = 0.0f; }
+    field.pbc[0] = true; field.pbc[1] = true; field.pbc[2] = false;
+
+    channel_percolation_t perc;
+    ASSERT_TRUE(channel_percolate(&perc, &field, 0.25, 64, alloc));
+    ASSERT_TRUE(perc.has_r_c);
+
+    // Comfortably inside the tube, so the wrap is genuinely being followed, and never wider than the
+    // tube itself. It measures ~3.58 rather than 4, and that is the grid rather than an error: the
+    // axis drifts a third of a voxel in x per step in z, so a six connected route cannot follow it
+    // without stepping sideways onto a voxel further from the axis than the one it left. The same
+    // discretization that closes narrow gaps early - biasing r_c up - biases it down whenever the
+    // route is not axis aligned, and a tube through a real network is never axis aligned.
+    EXPECT_TRUE(perc.r_c > 3.0);
+    EXPECT_TRUE(perc.r_c <= R + 0.05);
+
+    md_array(vec4_t) path = 0;
+    double length = 0.0;
+    ASSERT_TRUE(channel_trace_path(&path, &length, &field, 2.0, alloc));
+    for (size_t i = 0; i < md_array_size(path); ++i) {
+        EXPECT_TRUE(path[i].w >= 2.0f);
+        // Every point is wrapped back inside the box, which is what makes it drawable
+        EXPECT_TRUE(path[i].x >= 0.0f && path[i].x <= (float)(Lx + h));
+    }
+    // It has to cover the drift as well as the depth, which it can only do by going through the seam
+    EXPECT_NEAR(sqrt(drift * drift + zmax * zmax), length, 0.1 * zmax);
+
+    md_array_free(path, alloc);
+    channel_percolation_free(&perc);
+
+    // Turn the wrap off and the same field is cut at the seam: nothing through, and nothing to trace.
+    field.pbc[0] = false;
+    channel_percolation_t flat;
+    ASSERT_TRUE(channel_percolate(&flat, &field, 0.25, 64, alloc));
+    EXPECT_FALSE(flat.has_r_c);
+    channel_percolation_free(&flat);
+
+    md_array(vec4_t) none = 0;
+    EXPECT_FALSE(channel_trace_path(&none, nullptr, &field, 2.0, alloc));
+    md_array_free(none, alloc);
+}

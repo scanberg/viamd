@@ -307,6 +307,512 @@ bool channel_sweep(channel_tree_t* out, const channel_field_t* field, double pro
     return true;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Percolation: one pass in order of decreasing clearance
+// ---------------------------------------------------------------------------------------------
+
+#define PERC_INVALID 0xFFFFFFFFu
+#define CHANNEL_FLAG_BOTH (CHANNEL_FLAG_TOP | CHANNEL_FLAG_BOTTOM)
+
+typedef struct perc_ctx_t {
+    // Union find over the active voxels, indexed by position in the clearance-ordered list. That
+    // ordering is what does the work: an id smaller than the one being inserted is, by construction,
+    // a voxel that is already in - so "have I seen this neighbour" is a comparison, not a lookup.
+    uint32_t* parent;
+    uint32_t* size;
+    uint8_t*  flags;
+    uint16_t* min_k;
+    uint16_t* max_k;
+
+    // Running totals, maintained through the unions rather than recomputed per sample. A component
+    // leaves the totals before it is merged and the merged one re-enters, so every sample is a read
+    // of four integers.
+    uint64_t open_voxels;
+    uint64_t span_voxels;
+    uint32_t num_roots;
+    uint32_t num_spanning;
+
+    // Monotone: a component's reach only grows and components only merge, so these never need to be
+    // taken back out.
+    int32_t deepest_top;
+    int32_t highest_bot;
+} perc_ctx_t;
+
+static uint32_t perc_find(perc_ctx_t* c, uint32_t x) {
+    while (c->parent[x] != x) {
+        c->parent[x] = c->parent[c->parent[x]];   // path halving
+        x = c->parent[x];
+    }
+    return x;
+}
+
+static void perc_enter(perc_ctx_t* c, uint32_t r) {
+    const uint8_t f = c->flags[r];
+    if (f) c->open_voxels += c->size[r];
+    if (f == CHANNEL_FLAG_BOTH) {
+        c->span_voxels += c->size[r];
+        c->num_spanning += 1;
+    }
+    if (f & CHANNEL_FLAG_TOP)    c->deepest_top = MIN(c->deepest_top, (int32_t)c->min_k[r]);
+    if (f & CHANNEL_FLAG_BOTTOM) c->highest_bot = MAX(c->highest_bot, (int32_t)c->max_k[r]);
+}
+
+static void perc_leave(perc_ctx_t* c, uint32_t r) {
+    const uint8_t f = c->flags[r];
+    if (f) c->open_voxels -= c->size[r];
+    if (f == CHANNEL_FLAG_BOTH) {
+        c->span_voxels -= c->size[r];
+        c->num_spanning -= 1;
+    }
+}
+
+// Returns true when this union is what made a component touch both faces for the first time.
+static bool perc_union(perc_ctx_t* c, uint32_t a, uint32_t b) {
+    uint32_t ra = perc_find(c, a);
+    uint32_t rb = perc_find(c, b);
+    if (ra == rb) return false;
+
+    const bool was_spanning = (c->flags[ra] == CHANNEL_FLAG_BOTH) || (c->flags[rb] == CHANNEL_FLAG_BOTH);
+
+    perc_leave(c, ra);
+    perc_leave(c, rb);
+
+    if (c->size[ra] < c->size[rb]) { const uint32_t t = ra; ra = rb; rb = t; }
+    c->parent[rb] = ra;
+    c->size[ra]  += c->size[rb];
+    c->flags[ra]  = (uint8_t)(c->flags[ra] | c->flags[rb]);
+    c->min_k[ra]  = MIN(c->min_k[ra], c->min_k[rb]);
+    c->max_k[ra]  = MAX(c->max_k[ra], c->max_k[rb]);
+    c->num_roots -= 1;
+
+    perc_enter(c, ra);
+    return !was_spanning && c->flags[ra] == CHANNEL_FLAG_BOTH;
+}
+
+void channel_percolation_free(channel_percolation_t* perc) {
+    if (!perc || !perc->alloc) return;
+    md_array_free(perc->radius, perc->alloc);
+    md_array_free(perc->frac_void, perc->alloc);
+    md_array_free(perc->frac_open, perc->alloc);
+    md_array_free(perc->frac_spanning, perc->alloc);
+    md_array_free(perc->z_from_top, perc->alloc);
+    md_array_free(perc->z_from_bottom, perc->alloc);
+    md_array_free(perc->num_components, perc->alloc);
+    md_array_free(perc->num_spanning, perc->alloc);
+    MEMSET(perc, 0, sizeof(channel_percolation_t));
+}
+
+bool channel_percolate(channel_percolation_t* out, const channel_field_t* field, double r_min, uint32_t num_samples, struct md_allocator_i* alloc) {
+    ASSERT(out);
+    ASSERT(field);
+    ASSERT(alloc);
+
+    MEMSET(out, 0, sizeof(channel_percolation_t));
+    out->alloc = alloc;
+
+    if (!field->data) return false;
+    if (field->pbc[2]) return false;                       // The sweep axis has to have two faces
+    const int nx = field->dim[0], ny = field->dim[1], nz = field->dim[2];
+    if (nx <= 0 || ny <= 0 || nz <= 0) return false;
+    if (nz > 65535) return false;                          // min_k / max_k are uint16
+
+    const size_t plane = (size_t)nx * (size_t)ny;
+    const size_t N     = plane * (size_t)nz;
+    if (N > 0xFFFFFFF0u) return false;                     // Voxel indices are uint32 throughout
+
+    const float rmin = (float)r_min;
+
+    // What the run is sized by, and the widest clearance the curves have to reach.
+    float  d_max = rmin;
+    size_t M     = 0;
+    for (size_t i = 0; i < N; ++i) {
+        const float d = field->data[i];
+        if (d >= rmin) {
+            M += 1;
+            if (d > d_max) d_max = d;
+        }
+    }
+    out->num_active = M;
+    if (M == 0) return false;
+
+    const uint32_t ns  = (uint32_t)CLAMP((int)num_samples, 2, 4096);
+    // Internal buckets are far finer than the reported samples. The bucket width is what bounds the
+    // error on r_c, and at these counts it lands orders of magnitude below the grid's own limit -
+    // half a voxel of unresolved gap - so the grid stays the thing that limits the answer.
+    const uint32_t per = MAX(1u, (4096u + ns - 1u) / ns);
+    const uint32_t NB  = ns * per;
+
+    const double span  = MAX(1.0e-6, (double)d_max - (double)rmin);
+    const double width = span / (double)NB;
+
+    const size_t bytes = N * sizeof(uint32_t)
+                       + M * (sizeof(uint32_t) * 3 + sizeof(uint8_t) + sizeof(uint16_t) * 2)
+                       + (size_t)NB * sizeof(uint32_t) * 2;
+    out->bytes = bytes;
+
+    uint32_t* cid = (uint32_t*)md_alloc(alloc, N * sizeof(uint32_t));
+    uint32_t* vox = (uint32_t*)md_alloc(alloc, M * sizeof(uint32_t));
+    uint32_t* off = (uint32_t*)md_alloc(alloc, (size_t)NB * sizeof(uint32_t));
+    uint32_t* cur = (uint32_t*)md_alloc(alloc, (size_t)NB * sizeof(uint32_t));
+
+    perc_ctx_t c;
+    MEMSET(&c, 0, sizeof(c));
+    c.parent = (uint32_t*)md_alloc(alloc, M * sizeof(uint32_t));
+    c.size   = (uint32_t*)md_alloc(alloc, M * sizeof(uint32_t));
+    c.flags  = (uint8_t*) md_alloc(alloc, M * sizeof(uint8_t));
+    c.min_k  = (uint16_t*)md_alloc(alloc, M * sizeof(uint16_t));
+    c.max_k  = (uint16_t*)md_alloc(alloc, M * sizeof(uint16_t));
+    c.deepest_top = INT32_MAX;
+    c.highest_bot = INT32_MIN;
+
+    if (!cid || !vox || !off || !cur || !c.parent || !c.size || !c.flags || !c.min_k || !c.max_k) {
+        md_free(alloc, cid, N * sizeof(uint32_t));
+        md_free(alloc, vox, M * sizeof(uint32_t));
+        md_free(alloc, off, (size_t)NB * sizeof(uint32_t));
+        md_free(alloc, cur, (size_t)NB * sizeof(uint32_t));
+        md_free(alloc, c.parent, M * sizeof(uint32_t));
+        md_free(alloc, c.size,   M * sizeof(uint32_t));
+        md_free(alloc, c.flags,  M * sizeof(uint8_t));
+        md_free(alloc, c.min_k,  M * sizeof(uint16_t));
+        md_free(alloc, c.max_k,  M * sizeof(uint16_t));
+        return false;
+    }
+
+    MEMSET(off, 0, (size_t)NB * sizeof(uint32_t));
+
+    // Counting sort by clearance, descending. A comparison sort of a hundred million voxels would
+    // cost more than the union find it feeds.
+    for (size_t i = 0; i < N; ++i) {
+        cid[i] = PERC_INVALID;
+        const float d = field->data[i];
+        if (d < rmin) continue;
+        int b = (int)(((double)d - (double)rmin) / width);
+        b = CLAMP(b, 0, (int)NB - 1);
+        off[b] += 1;
+    }
+    {   // Bucket NB-1 is widest and goes first, so the offsets accumulate downward
+        uint32_t acc = 0;
+        for (int b = (int)NB - 1; b >= 0; --b) {
+            const uint32_t n = off[b];
+            off[b] = acc;
+            cur[b] = acc;
+            acc += n;
+        }
+    }
+    for (size_t i = 0; i < N; ++i) {
+        const float d = field->data[i];
+        if (d < rmin) continue;
+        int b = (int)(((double)d - (double)rmin) / width);
+        b = CLAMP(b, 0, (int)NB - 1);
+        const uint32_t p = cur[b]++;
+        vox[p] = (uint32_t)i;
+        cid[i] = p;
+    }
+
+    md_array_resize(out->radius,         ns, alloc);
+    md_array_resize(out->frac_void,      ns, alloc);
+    md_array_resize(out->frac_open,      ns, alloc);
+    md_array_resize(out->frac_spanning,  ns, alloc);
+    md_array_resize(out->z_from_top,     ns, alloc);
+    md_array_resize(out->z_from_bottom,  ns, alloc);
+    md_array_resize(out->num_components, ns, alloc);
+    md_array_resize(out->num_spanning,   ns, alloc);
+
+    const double z_lo   = (double)field->origin[2];
+    const double z_hi   = (double)field->origin[2] + (double)field->spacing[2] * (double)nz;
+    const double inv_N  = 1.0 / (double)N;
+
+    uint32_t p = 0;
+    for (int b = (int)NB - 1; b >= 0; --b) {
+        const uint32_t end = (b > 0) ? off[b - 1] : (uint32_t)M;
+
+        for (; p < end; ++p) {
+            const uint32_t v = vox[p];
+            const int k = (int)((size_t)v / plane);
+            const int y = (int)(((size_t)v % plane) / (size_t)nx);
+            const int x = (int)((size_t)v % (size_t)nx);
+
+            c.parent[p] = p;
+            c.size[p]   = 1;
+            c.min_k[p]  = (uint16_t)k;
+            c.max_k[p]  = (uint16_t)k;
+            c.flags[p]  = (uint8_t)(((k == nz - 1) ? CHANNEL_FLAG_TOP : 0) | ((k == 0) ? CHANNEL_FLAG_BOTTOM : 0));
+            c.num_roots += 1;
+            perc_enter(&c, p);
+
+            bool connected = (!out->has_r_c && c.flags[p] == CHANNEL_FLAG_BOTH);
+
+            // Six neighbours. An id below p is a voxel already inserted, since the list is in
+            // insertion order - no separate "visited" mark is needed or kept.
+            //
+            // Both wrap directions are probed even though either alone would do: a seam pair is the
+            // same pair seen from both sides, and whichever voxel is inserted second makes the
+            // union. Keeping the loop symmetric costs two comparisons and means the periodic case
+            // reads the same as the interior one.
+            uint32_t nb[6];
+            int      nn = 0;
+            if (x > 0)               nb[nn++] = cid[(size_t)v - 1];
+            else if (field->pbc[0] && nx > 1) nb[nn++] = cid[(size_t)v + (nx - 1)];
+            if (x < nx - 1)          nb[nn++] = cid[(size_t)v + 1];
+            else if (field->pbc[0] && nx > 1) nb[nn++] = cid[(size_t)v - (nx - 1)];
+            if (y > 0)               nb[nn++] = cid[(size_t)v - nx];
+            else if (field->pbc[1] && ny > 1) nb[nn++] = cid[(size_t)v + (size_t)(ny - 1) * nx];
+            if (y < ny - 1)          nb[nn++] = cid[(size_t)v + nx];
+            else if (field->pbc[1] && ny > 1) nb[nn++] = cid[(size_t)v - (size_t)(ny - 1) * nx];
+            if (k > 0)               nb[nn++] = cid[(size_t)v - plane];
+            if (k < nz - 1)          nb[nn++] = cid[(size_t)v + plane];
+
+            for (int q = 0; q < nn; ++q) {
+                if (nb[q] == PERC_INVALID || nb[q] >= p) continue;
+                if (perc_union(&c, p, nb[q])) connected = true;
+            }
+
+            if (connected && !out->has_r_c) {
+                // The voxel whose insertion joined the two faces is the tightest point of the widest
+                // route, and its clearance is the critical radius. Bisecting on "does anything span"
+                // brackets this number and never tells you which voxel it was.
+                out->has_r_c   = true;
+                out->r_c       = (double)field->data[v];
+                out->throat[0] = field->origin[0] + ((float)x + 0.5f) * field->spacing[0];
+                out->throat[1] = field->origin[1] + ((float)y + 0.5f) * field->spacing[1];
+                out->throat[2] = field->origin[2] + ((float)k + 0.5f) * field->spacing[2];
+            }
+        }
+
+        if ((uint32_t)b % per == 0) {
+            const uint32_t s = (uint32_t)b / per;
+            out->radius[s]         = (double)rmin + (double)b * width;
+            out->frac_void[s]      = (double)p * inv_N;
+            out->frac_open[s]      = (double)c.open_voxels * inv_N;
+            out->frac_spanning[s]  = (double)c.span_voxels * inv_N;
+            out->num_components[s] = c.num_roots;
+            out->num_spanning[s]   = c.num_spanning;
+            out->z_from_top[s]     = (c.deepest_top == INT32_MAX) ? z_hi
+                                   : (double)field->origin[2] + ((double)c.deepest_top + 0.5) * (double)field->spacing[2];
+            out->z_from_bottom[s]  = (c.highest_bot == INT32_MIN) ? z_lo
+                                   : (double)field->origin[2] + ((double)c.highest_bot + 0.5) * (double)field->spacing[2];
+        }
+    }
+
+    md_free(alloc, cid, N * sizeof(uint32_t));
+    md_free(alloc, vox, M * sizeof(uint32_t));
+    md_free(alloc, off, (size_t)NB * sizeof(uint32_t));
+    md_free(alloc, cur, (size_t)NB * sizeof(uint32_t));
+    md_free(alloc, c.parent, M * sizeof(uint32_t));
+    md_free(alloc, c.size,   M * sizeof(uint32_t));
+    md_free(alloc, c.flags,  M * sizeof(uint8_t));
+    md_free(alloc, c.min_k,  M * sizeof(uint16_t));
+    md_free(alloc, c.max_k,  M * sizeof(uint16_t));
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tracing a route
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+const int PATH_DIR[6][3] = { {-1,0,0}, {1,0,0}, {0,-1,0}, {0,1,0}, {0,0,-1}, {0,0,1} };
+const uint8_t PATH_SEED  = 7;
+
+// Voxel index of an integer lattice point, wrapping x and y where the field is periodic. Returns
+// false for a point off a non periodic face.
+inline bool path_voxel(const channel_field_t* f, long ix, long iy, long ik, size_t* out) {
+    const long nx = f->dim[0], ny = f->dim[1], nz = f->dim[2];
+    if (f->pbc[0]) { ix = ((ix % nx) + nx) % nx; } else if (ix < 0 || ix >= nx) return false;
+    if (f->pbc[1]) { iy = ((iy % ny) + ny) % ny; } else if (iy < 0 || iy >= ny) return false;
+    if (ik < 0 || ik >= nz) return false;
+    *out = ((size_t)ik * (size_t)ny + (size_t)iy) * (size_t)nx + (size_t)ix;
+    return true;
+}
+
+// Does the straight segment between two lattice points stay inside {d >= r}? Sampled at half a
+// voxel, which is the finest statement the field itself supports.
+bool path_segment_clear(const channel_field_t* f, float r, const double a[3], const double b[3]) {
+    const double dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    const double len = sqrt(dx * dx + dy * dy + dz * dz);
+    const int steps = (int)(2.0 * len) + 1;
+    for (int i = 0; i <= steps; ++i) {
+        const double t = (double)i / (double)steps;
+        size_t v;
+        if (!path_voxel(f, lround(a[0] + t * dx), lround(a[1] + t * dy), lround(a[2] + t * dz), &v)) return false;
+        if (f->data[v] < r) return false;
+    }
+    return true;
+}
+
+// One sample of the route: the wrapped world position, with the clearance the field actually
+// reports there rather than an interpolation between two distant anchors.
+void path_emit(md_array(vec4_t)* out, const channel_field_t* f, double sx, double sy, double sz, struct md_allocator_i* alloc) {
+    size_t v = 0;
+    if (!path_voxel(f, lround(sx), lround(sy), lround(sz), &v)) return;
+    double wx = sx, wy = sy;
+    if (f->pbc[0]) { wx = fmod(sx, (double)f->dim[0]); if (wx < 0.0) wx += (double)f->dim[0]; }
+    if (f->pbc[1]) { wy = fmod(sy, (double)f->dim[1]); if (wy < 0.0) wy += (double)f->dim[1]; }
+    vec4_t pt;
+    pt.x = f->origin[0] + (float)(wx + 0.5) * f->spacing[0];
+    pt.y = f->origin[1] + (float)(wy + 0.5) * f->spacing[1];
+    pt.z = f->origin[2] + (float)(sz + 0.5) * f->spacing[2];
+    pt.w = f->data[v];
+    md_array_push(*out, pt, alloc);
+}
+
+}  // namespace
+
+bool channel_trace_path(md_array(vec4_t)* out_path, double* out_length, const channel_field_t* field, double r, struct md_allocator_i* alloc) {
+    ASSERT(out_path);
+    ASSERT(field);
+    ASSERT(alloc);
+
+    if (!field->data) return false;
+    if (field->pbc[2]) return false;
+    const int nx = field->dim[0], ny = field->dim[1], nz = field->dim[2];
+    if (nx <= 0 || ny <= 0 || nz <= 0) return false;
+
+    const size_t plane = (size_t)nx * (size_t)ny;
+    const size_t N     = plane * (size_t)nz;
+    const float  rr    = (float)r;
+
+    // One byte per voxel: which way we arrived. A parent index would be four, and the direction is
+    // all a backtrace needs.
+    uint8_t* from = (uint8_t*)md_alloc(alloc, N);
+    if (!from) return false;
+    MEMSET(from, 0, N);
+
+    md_array(uint32_t) queue = 0;
+    size_t head = 0;
+    size_t found = N;
+
+    for (size_t i = 0; i < plane; ++i) {
+        const size_t v = (size_t)(nz - 1) * plane + i;
+        if (field->data[v] < rr) continue;
+        from[v] = PATH_SEED;
+        if (nz == 1) { found = v; break; }
+        md_array_push(queue, (uint32_t)v, alloc);
+    }
+
+    while (found == N && head < md_array_size(queue)) {
+        const size_t v = (size_t)queue[head++];
+        const int k = (int)(v / plane);
+        const int y = (int)((v % plane) / (size_t)nx);
+        const int x = (int)(v % (size_t)nx);
+
+        for (int d = 0; d < 6; ++d) {
+            size_t w;
+            if (!path_voxel(field, (long)x + PATH_DIR[d][0], (long)y + PATH_DIR[d][1], (long)k + PATH_DIR[d][2], &w)) continue;
+            if (from[w] || field->data[w] < rr) continue;
+            from[w] = (uint8_t)(d + 1);
+            if (w < plane) { found = w; break; }        // Reached the bottom face
+            md_array_push(queue, (uint32_t)w, alloc);
+        }
+    }
+
+    md_array_free(queue, alloc);
+
+    if (found == N) {
+        md_free(alloc, from, N);
+        return false;
+    }
+
+    // Backtrace, then reverse, carrying unwrapped lattice coordinates so a route that leaves through
+    // a periodic face keeps going in a straight line instead of jumping the box.
+    md_array(int32_t) chain = 0;                        // Directions, bottom to top
+    {
+        size_t v = found;
+        while (from[v] != PATH_SEED) {
+            const int d = (int)from[v] - 1;
+            md_array_push(chain, (int32_t)d, alloc);
+            size_t w;
+            const int k = (int)(v / plane);
+            const int y = (int)((v % plane) / (size_t)nx);
+            const int x = (int)(v % (size_t)nx);
+            if (!path_voxel(field, (long)x - PATH_DIR[d][0], (long)y - PATH_DIR[d][1], (long)k - PATH_DIR[d][2], &w)) break;
+            v = w;
+        }
+        // v is now the seed at the top face; rebuild the route downward from it
+        md_array(double) pts = 0;
+        long ix = (long)(v % (size_t)nx);
+        long iy = (long)((v % plane) / (size_t)nx);
+        long ik = (long)(v / plane);
+        md_array_push(pts, (double)ix, alloc);
+        md_array_push(pts, (double)iy, alloc);
+        md_array_push(pts, (double)ik, alloc);
+        for (size_t i = md_array_size(chain); i > 0; --i) {
+            const int d = (int)chain[i - 1];
+            ix += PATH_DIR[d][0];
+            iy += PATH_DIR[d][1];
+            ik += PATH_DIR[d][2];
+            md_array_push(pts, (double)ix, alloc);
+            md_array_push(pts, (double)iy, alloc);
+            md_array_push(pts, (double)ik, alloc);
+        }
+        md_array_free(chain, alloc);
+        md_free(alloc, from, N);
+
+        const size_t n = md_array_size(pts) / 3;
+
+        // Straighten it. Breadth first through a six connected grid returns a staircase: it is the
+        // shortest route in voxel steps, which overstates the length of anything not axis aligned by
+        // up to sqrt(3). Replacing a run by the straight segment between its ends, where that segment
+        // stays inside the set, recovers a length worth quoting and a route worth looking at.
+        const size_t LOOKAHEAD = 64;
+        md_array(double) anchor = 0;
+        for (size_t i = 0; ; ) {
+            md_array_push(anchor, pts[i*3+0], alloc);
+            md_array_push(anchor, pts[i*3+1], alloc);
+            md_array_push(anchor, pts[i*3+2], alloc);
+            if (i + 1 >= n) break;
+
+            size_t best = i + 1;
+            const size_t far = MIN(n - 1, i + LOOKAHEAD);
+            for (size_t j = far; j > i + 1; --j) {
+                const double a[3] = { pts[i*3+0], pts[i*3+1], pts[i*3+2] };
+                const double b[3] = { pts[j*3+0], pts[j*3+1], pts[j*3+2] };
+                if (path_segment_clear(field, rr, a, b)) { best = j; break; }
+            }
+            i = best;
+        }
+        md_array_free(pts, alloc);
+
+        const size_t na = md_array_size(anchor) / 3;
+
+        double length = 0.0;
+        for (size_t i = 1; i < na; ++i) {
+            const double dx = (anchor[i*3+0] - anchor[(i-1)*3+0]) * (double)field->spacing[0];
+            const double dy = (anchor[i*3+1] - anchor[(i-1)*3+1]) * (double)field->spacing[1];
+            const double dz = (anchor[i*3+2] - anchor[(i-1)*3+2]) * (double)field->spacing[2];
+            length += sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        if (out_length) *out_length = length;
+
+        // Resample the straightened route at half a voxel, reading the clearance at each sample.
+        //
+        // The anchors alone are not something to draw with. Straightening is free to leave them
+        // sixty voxels apart, and the clearance between two of them is whatever the field says, not
+        // the interpolation of its endpoints - so anything drawn from the anchors is at its widest
+        // exactly where its width was never measured. Sampling also keeps every step short, which is
+        // what lets a caller drop the one segment that crosses a periodic face without leaving a
+        // visible gap in the rest.
+        md_array_shrink(*out_path, 0);
+        for (size_t i = 0; i + 1 < na; ++i) {
+            const double ax = anchor[i*3+0],     ay = anchor[i*3+1],     az = anchor[i*3+2];
+            const double dx = anchor[(i+1)*3+0] - ax;
+            const double dy = anchor[(i+1)*3+1] - ay;
+            const double dz = anchor[(i+1)*3+2] - az;
+            const int steps = MAX(1, (int)(2.0 * sqrt(dx * dx + dy * dy + dz * dz)));
+            for (int t = 0; t < steps; ++t) {
+                const double u = (double)t / (double)steps;
+                path_emit(out_path, field, ax + u * dx, ay + u * dy, az + u * dz, alloc);
+            }
+        }
+        path_emit(out_path, field, anchor[(na-1)*3+0], anchor[(na-1)*3+1], anchor[(na-1)*3+2], alloc);
+        md_array_free(anchor, alloc);
+    }
+
+    return md_array_size(*out_path) > 1;
+}
+
 float channel_tree_layout(float* out_slot, const channel_tree_t* tree, struct md_allocator_i* alloc) {
     ASSERT(out_slot);
     ASSERT(tree);
