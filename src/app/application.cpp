@@ -31,6 +31,7 @@
 #include <app/IconsFontAwesome6.h>
 
 #include <stdio.h> // snprintf
+#include <stdint.h> // uint64_t
 #include <stdlib.h> // free
 
 namespace application {
@@ -42,20 +43,147 @@ static struct {
 
 static void error_callback(int error, const char* description) { MD_LOG_ERROR("%d: %s\n", error, description); }
 
+static const char* gl_debug_source_str(GLenum v) {
+    switch (v) {
+    case GL_DEBUG_SOURCE_API:             return "API";
+    case GL_DEBUG_SOURCE_WINDOW_SYSTEM:   return "WINDOW_SYSTEM";
+    case GL_DEBUG_SOURCE_SHADER_COMPILER: return "SHADER_COMPILER";
+    case GL_DEBUG_SOURCE_THIRD_PARTY:     return "THIRD_PARTY";
+    case GL_DEBUG_SOURCE_APPLICATION:     return "APPLICATION";
+    default:                              return "OTHER";
+    }
+}
+
+static const char* gl_debug_type_str(GLenum v) {
+    switch (v) {
+    case GL_DEBUG_TYPE_ERROR:               return "ERROR";
+    case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR: return "DEPRECATED";
+    case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:  return "UNDEFINED";
+    case GL_DEBUG_TYPE_PORTABILITY:         return "PORTABILITY";
+    case GL_DEBUG_TYPE_PERFORMANCE:         return "PERFORMANCE";
+    case GL_DEBUG_TYPE_MARKER:              return "MARKER";
+    case GL_DEBUG_TYPE_PUSH_GROUP:          return "PUSH_GROUP";
+    case GL_DEBUG_TYPE_POP_GROUP:           return "POP_GROUP";
+    default:                                return "OTHER";
+    }
+}
+
+static const char* gl_debug_severity_str(GLenum v) {
+    switch (v) {
+    case GL_DEBUG_SEVERITY_HIGH:         return "HIGH";
+    case GL_DEBUG_SEVERITY_MEDIUM:       return "MEDIUM";
+    case GL_DEBUG_SEVERITY_LOW:          return "LOW";
+    case GL_DEBUG_SEVERITY_NOTIFICATION: return "NOTIFICATION";
+    default:                             return "UNKNOWN";
+    }
+}
+
+// KHR_debug leaves the behaviour of calling any GL or window system function from
+// inside the debug callback undefined, so everything below works from the message
+// itself plus state we track ourselves. Context identification is logged once at
+// startup instead (see initialize()).
+#define GL_DEBUG_GROUP_STACK_SIZE 8
+#define GL_DEBUG_GROUP_LABEL_LEN  48
+
+static struct {
+    char     group[GL_DEBUG_GROUP_STACK_SIZE][GL_DEBUG_GROUP_LABEL_LEN];
+    int      depth;
+    GLuint   last_id;
+    uint64_t repeat;
+} gl_debug_state = {};
+
+// Renders the active PUSH_GPU_SECTION labels as "G-buffer > Postprocessing", which is
+// what tells us where in the frame the message came from.
+static void gl_debug_group_path(char* buf, size_t cap) {
+    size_t off = 0;
+    buf[0] = '\0';
+    int depth = MIN(gl_debug_state.depth, GL_DEBUG_GROUP_STACK_SIZE);
+    for (int i = 0; i < depth; ++i) {
+        int n = snprintf(buf + off, cap - off, "%s%s", (i > 0) ? " > " : "", gl_debug_state.group[i]);
+        if (n < 0 || (size_t)n >= cap - off) break;
+        off += (size_t)n;
+    }
+}
+
+static bool is_power_of_ten(uint64_t v) {
+    uint64_t p = 1;
+    while (p < v) {
+        uint64_t next = p * 10;
+        if (next < p) return false;  // overflow
+        p = next;
+    }
+    return p == v;
+}
+
 static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message,
                                  const void* userParam) {
-    (void)source;
-    (void)type;
-    (void)id;
-    (void)severity;
-    (void)length;
     (void)userParam;
 
-    if (severity == GL_DEBUG_SEVERITY_HIGH) {
-        MD_LOG_ERROR("A SEVERE GL ERROR HAS OCCURED: %s", message);
-        ASSERT(false);
+    // glPushDebugGroup / glPopDebugGroup are reported through this same callback, so
+    // mirror the stack here. Depth is tracked past the array bound so pushes and pops
+    // stay balanced even if we stop recording labels.
+    if (type == GL_DEBUG_TYPE_PUSH_GROUP) {
+        if (gl_debug_state.depth >= 0 && gl_debug_state.depth < GL_DEBUG_GROUP_STACK_SIZE) {
+            char* dst = gl_debug_state.group[gl_debug_state.depth];
+            if (length > 0) {
+                snprintf(dst, GL_DEBUG_GROUP_LABEL_LEN, "%.*s", (int)length, message);
+            } else {
+                snprintf(dst, GL_DEBUG_GROUP_LABEL_LEN, "%s", message);
+            }
+        }
+        gl_debug_state.depth += 1;
+        return;
+    }
+    if (type == GL_DEBUG_TYPE_POP_GROUP) {
+        if (gl_debug_state.depth > 0) gl_debug_state.depth -= 1;
+        return;
+    }
+
+    // Drivers disagree on severity -- the same GL_INVALID_ENUM is reported HIGH by one
+    // vendor and LOW by another -- so classify on type and log everything that is not
+    // notification spam. A bug report from a machine we do not have is close to
+    // useless without the source/type/id triplet and the frame location.
+    if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) {
+        return;
+    }
+
+    // A bad call inside the render loop repeats every frame. Report the 1st, 10th,
+    // 100th ... occurrence of a given id and drop the rest, so a persistent error
+    // stays visible without burying everything else.
+    if (id == gl_debug_state.last_id) {
+        gl_debug_state.repeat += 1;
+        if (!is_power_of_ten(gl_debug_state.repeat)) return;
     } else {
-        //MD_LOG_INFO("%s", message);
+        gl_debug_state.last_id = id;
+        gl_debug_state.repeat  = 1;
+    }
+
+    char where[256];
+    gl_debug_group_path(where, sizeof(where));
+
+    char count[32];
+    count[0] = '\0';
+    if (gl_debug_state.repeat > 1) {
+        snprintf(count, sizeof(count), " (repeated %llux)", (unsigned long long)gl_debug_state.repeat);
+    }
+
+    const char* src_str  = gl_debug_source_str(source);
+    const char* type_str = gl_debug_type_str(type);
+    const char* sev_str  = gl_debug_severity_str(severity);
+    const char* msg      = message ? message : "(no message)";
+
+    if (type == GL_DEBUG_TYPE_ERROR || severity == GL_DEBUG_SEVERITY_HIGH) {
+        MD_LOG_ERROR("GL %s [%s/%s] (id %u) during '%s'%s: %s",
+                     type_str, src_str, sev_str, (unsigned int)id,
+                     where[0] ? where : "no active debug group", count, msg);
+    } else {
+        MD_LOG_INFO("GL %s [%s/%s] (id %u) during '%s'%s: %s",
+                    type_str, src_str, sev_str, (unsigned int)id,
+                    where[0] ? where : "no active debug group", count, msg);
+    }
+
+    if (severity == GL_DEBUG_SEVERITY_HIGH) {
+        ASSERT(false);
     }
 }
 
@@ -99,6 +227,29 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     if (gl3wInit() != GL3W_OK) {
         MD_LOG_ERROR("Could not load gl functions.");
         return false;
+    }
+
+    // Log the context identity unconditionally: every later GL message in the log is
+    // only actionable if we know which driver produced it, and this is the first thing
+    // to ask for in a bug report.
+    {
+        auto gl_str = [](GLenum name) -> const char* {
+            const char* s = (const char*)glGetString(name);
+            return s ? s : "(unavailable)";
+        };
+        MD_LOG_INFO("GL_VENDOR:   %s", gl_str(GL_VENDOR));
+        MD_LOG_INFO("GL_RENDERER: %s", gl_str(GL_RENDERER));
+        MD_LOG_INFO("GL_VERSION:  %s", gl_str(GL_VERSION));
+        MD_LOG_INFO("GL_SHADING_LANGUAGE_VERSION: %s", gl_str(GL_SHADING_LANGUAGE_VERSION));
+
+        if (glDispatchCompute) {
+            GLint shared_mem = 0;
+            GLint max_draw_buffers = 0;
+            glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, &shared_mem);
+            glGetIntegerv(GL_MAX_DRAW_BUFFERS, &max_draw_buffers);
+            MD_LOG_INFO("GL_MAX_COMPUTE_SHARED_MEMORY_SIZE: %i", shared_mem);
+            MD_LOG_INFO("GL_MAX_DRAW_BUFFERS: %i", max_draw_buffers);
+        }
     }
 
     if (glDebugMessageCallback) {

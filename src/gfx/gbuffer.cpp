@@ -2,10 +2,19 @@
 
 #include <gfx/gl_utils.h>
 
+#include <core/md_log.h>
 #include <core/md_vec_math.h>
 
 void gbuffer_init(GBuffer* gbuf, int width, int height) {
     ASSERT(gbuf);
+
+    // A 0x0 framebuffer -- an iconified window, or a window manager that reports no
+    // size yet at startup -- gives zero-sized attachments and an incomplete FBO, which
+    // then turns every subsequent draw into GL_INVALID_FRAMEBUFFER_OPERATION. render()
+    // already refuses to resize to 0x0, but the initial call at startup does not, so
+    // clamp here and let the first frame that reports real dimensions resize us.
+    width  = MAX(width,  1);
+    height = MAX(height, 1);
 
     bool attach_textures_deferred = false;
     if (!gbuf->fbo) {
@@ -22,7 +31,12 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     if (!gbuf->tex.history) glGenTextures(1, &gbuf->tex.history);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    // A DEPTH_STENCIL internal format requires format GL_DEPTH_STENCIL and type
+    // GL_UNSIGNED_INT_24_8. Passing GL_DEPTH_COMPONENT/GL_FLOAT here is a mismatched
+    // combination; NVIDIA, AMD and Mesa accept it, but stricter drivers reject it with
+    // GL_INVALID_OPERATION, which leaves the depth texture unallocated and the whole
+    // G-buffer incomplete.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -86,8 +100,11 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->fbo);
     if (attach_textures_deferred) {
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gbuf->tex.depth, 0);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, gbuf->tex.depth, 0);
+        // Attach the packed depth-stencil texture through GL_DEPTH_STENCIL_ATTACHMENT
+        // rather than binding it separately to GL_DEPTH_ATTACHMENT and
+        // GL_STENCIL_ATTACHMENT. Both are legal since GL 3.0, but the separate form has
+        // a long history of yielding incomplete framebuffers on older drivers.
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, gbuf->tex.depth, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_COLOR, GL_TEXTURE_2D, gbuf->tex.color, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_NORMAL, GL_TEXTURE_2D, gbuf->tex.normal, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_VELOCITY, GL_TEXTURE_2D, gbuf->tex.velocity, 0);
@@ -95,7 +112,13 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_TRANSPARENCY, GL_TEXTURE_2D, gbuf->tex.transparency, 0);
     }
 
-    ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    // Not wrapped in ASSERT: that macro expands to nothing in release builds, so the
+    // check would not run at all and an incomplete G-buffer would silently turn every
+    // later draw into GL_INVALID_FRAMEBUFFER_OPERATION.
+    GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        MD_LOG_ERROR("G-buffer framebuffer is incomplete (0x%04X) at %ix%i", (unsigned int)status, width, height);
+    }
     glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
     glClearColor(0, 0, 0, 0);
     glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
@@ -105,7 +128,10 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     glGenFramebuffers(1, &clear_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, clear_fbo);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbuf->tex.history, 0);
-    ASSERT(glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+    GLenum clear_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+    if (clear_status != GL_FRAMEBUFFER_COMPLETE) {
+        MD_LOG_ERROR("History clear framebuffer is incomplete (0x%04X)", (unsigned int)clear_status);
+    }
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
