@@ -237,10 +237,15 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
             const char* s = (const char*)glGetString(name);
             return s ? s : "(unavailable)";
         };
-        MD_LOG_INFO("GL_VENDOR:   %s", gl_str(GL_VENDOR));
-        MD_LOG_INFO("GL_RENDERER: %s", gl_str(GL_RENDERER));
-        MD_LOG_INFO("GL_VERSION:  %s", gl_str(GL_VERSION));
-        MD_LOG_INFO("GL_SHADING_LANGUAGE_VERSION: %s", gl_str(GL_SHADING_LANGUAGE_VERSION));
+        MD_LOG_INFO(
+            "GL_VENDOR:   %s\n"
+            "GL_RENDERER: %s\n"
+            "GL_VERSION:  %s\n"
+            "GL_SHADING_LANGUAGE_VERSION: %s",
+            gl_str(GL_VENDOR),
+            gl_str(GL_RENDERER),
+            gl_str(GL_VERSION),
+            gl_str(GL_SHADING_LANGUAGE_VERSION));
 
         if (glDispatchCompute) {
             GLint shared_mem = 0;
