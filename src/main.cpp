@@ -44,6 +44,7 @@
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volumerender_utils.h>
 
+#include <app_settings.h>
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 #include <task_system.h>
@@ -335,6 +336,32 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
 
 static void create_screenshot(str_t path);
 
+// The sizes offered in the Settings menu. The stored setting is the size itself, not an
+// index into this table, so the table can change without invalidating anyone's .ini.
+static const float font_sizes[] = { 10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f, 30.0f, 36.0f, 48.0f, 64.0f, 72.0f };
+static const char* font_size_names[] = { "10", "12", "14", "16", "18", "20", "24", "30", "36", "48", "64", "72" };
+
+static int nearest_font_size_index(float size) {
+    int   best_idx  = 0;
+    float best_dist = FLT_MAX;
+    for (int i = 0; i < (int)ARRAY_SIZE(font_sizes); ++i) {
+        const float dist = fabsf(font_sizes[i] - size);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_idx  = i;
+        }
+    }
+    return best_idx;
+}
+
+// Also the app_settings apply hook, so a size read from the .ini takes effect on the first frame.
+static void apply_font_size(void* user_data) {
+    ApplicationState* state = (ApplicationState*)user_data;
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.FontSizeBase = state->settings.font_size;
+    style._NextFrameFontSizeBase = style.FontSizeBase;  // From the demo, seems like a temporary fix
+}
+
 static void modify_selection(ApplicationState* state, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(state);
     modify_field(&state->selection.selection_mask, atom_mask, op);
@@ -427,6 +454,13 @@ int main(int argc, char** argv) {
         VIAMD_LOG_ERROR("Could not initialize application...\n");
         return -1;
     }
+
+    // Application settings live in the ImGui .ini. Bind first, then initialize: that call
+    // reads the file, so the bound values are current by the time the loop starts.
+    app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
+    app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
+    app_settings::on_apply(apply_font_size, &state);
+    app_settings::initialize();
 
 #if MD_ENABLE_GPU
     VIAMD_LOG_DEBUG("Initializing GPU device...");
@@ -2118,20 +2152,17 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
-            ImGui::Checkbox("Prefetch Frames", &data->settings.prefetch_frames);
-            ImGui::SetItemTooltip("Prefetch frames during animation\n");
-            ImGui::Checkbox("Keep Representations", &data->settings.keep_representations);
-            ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
+            if (ImGui::Checkbox("Keep Representations", &data->settings.keep_representations)) {
+                app_settings::mark_dirty();
+            }
+            ImGui::SetItemTooltip("Keep representations when loading new topology (does not apply for workspaces)\n");
 
             // Font
-            ImGuiStyle& style = ImGui::GetStyle();
-            static const float font_sizes[] = { 10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f, 30.0f, 36.0f, 48.0f, 64.0f, 72.0f };
-            static const char* font_size_names[] = { "10", "12", "14", "16", "18", "20", "24", "30", "36", "48", "64", "72" };
-            static int current_font_size_idx = 4;
-
-            if (ImGui::Combo("Font Size", &current_font_size_idx, font_size_names, (int)ARRAY_SIZE(font_size_names))) {
-                style.FontSizeBase = font_sizes[current_font_size_idx];
-                style._NextFrameFontSizeBase = style.FontSizeBase; // From Demo, seems like a temporary fix
+            int font_size_idx = nearest_font_size_index(data->settings.font_size);
+            if (ImGui::Combo("Font Size", &font_size_idx, font_size_names, (int)ARRAY_SIZE(font_size_names))) {
+                data->settings.font_size = font_sizes[font_size_idx];
+                apply_font_size(data);
+                app_settings::mark_dirty();
             }
 
             /*

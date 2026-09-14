@@ -136,6 +136,7 @@ endif()
 # belongs in one; src/deprecated is where that goes and it is not globbed.
 
 set(SRC_FILES
+    src/app_settings.cpp
     src/color_utils.cpp
     src/event.cpp
     src/image.cpp
@@ -147,6 +148,7 @@ set(SRC_FILES
     src/task_system.cpp
     src/viamd.cpp
 
+    src/app_settings.h
     src/color_utils.h
     src/event.h
     src/image.h

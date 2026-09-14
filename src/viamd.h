@@ -1506,9 +1506,10 @@ struct ApplicationState {
 
     } operations;
 
+    // Persisted in the ImGui .ini; see app_settings.h. Bound in main().
     struct {
         bool keep_representations = false;
-        bool prefetch_frames = true;
+        float font_size = 18.0f;    // Matches the size the default font is baked at.
     } settings;
 
     // Views onto the temporal attributes, plus the one array still owned here.
