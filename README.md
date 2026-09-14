@@ -29,6 +29,14 @@ For macOS, we recommend using the latest binary available on the [release page](
 ### Building for Ubuntu and macOS
 To [build](https://github.com/scanberg/viamd/wiki/0.-Building) VIAMD on your machine, you can follow the procedure described in detail in the wiki for [Linux](https://github.com/scanberg/viamd/wiki/0.-Building#linux) and [MacOS](https://github.com/scanberg/viamd/wiki/0.-Building#mac).
 
+On macOS, VIAMD builds without Xcode: CMake and the macOS Command Line Tools are
+enough. If Apple's Metal compiler happens to be available, the Metal compute
+kernels are compiled to `.metallib` during the build; otherwise VIAMD embeds the
+shader source and compiles it with Metal's runtime shader compiler on first use,
+which costs a fraction of a second at startup and is otherwise identical. Xcode
+is only needed if you are changing the offline Metal shader compilation pipeline
+itself.
+
 ## Documentation
 Documentation about VIAMD is available on the github [wiki](https://github.com/scanberg/viamd/wiki). The first two chapters relate to the [visual](https://github.com/scanberg/viamd/wiki/1.-Visual) and [analysis](https://github.com/scanberg/viamd/wiki/2.-Analysis) features, respectively, where we highlight the interactive part of the software. The third chapter focuses on the VIAMD [language](https://github.com/scanberg/viamd/wiki/3.-Language) used for scripting, and the fourth chapter proposes a series of [tutorial](https://github.com/scanberg/viamd/wiki/4.-Tutorials) (under construction). 
 
