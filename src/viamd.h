@@ -1764,6 +1764,11 @@ static inline void single_selection_sequence_clear(SingleSelectionSequence* seq)
 static inline void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
     ASSERT(seq);
     for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+        // Already in the sequence: keep the position it was first picked at. Appending it again
+        // would desync the sequence from the selection mask, which is an OR and does not grow.
+        if (seq->idx[i] == idx) {
+            break;
+        }
         if (seq->idx[i] == -1) {
             seq->idx[i] = idx;
             break;

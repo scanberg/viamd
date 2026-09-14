@@ -747,6 +747,9 @@ int main(int argc, char** argv) {
                         md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
                     }
                     md_bitfield_clear(&state.selection.highlight_mask);
+                    // A region select is not a sequence of individual picks, so whatever order was
+                    // recorded before no longer describes the selection.
+                    single_selection_sequence_clear(&state.selection.single_selection_sequence);
                 }
             } else if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
                 ImGui::OpenPopup("Context Popup");
@@ -2255,9 +2258,10 @@ static void draw_main_menu(ApplicationState* data) {
                 app_settings::mark_dirty();
             }
 
-            ImGui::SeparatorText("Units");
-            ImGui::SetItemTooltip("The units MD quantities are shown in. Views with a context of their own,\nsuch as quantum chemistry energies, keep their own units.\n");
-            display_units::draw_settings_menu_items();
+			if (ImGui::TreeNode("Units")) {
+                display_units::draw_settings_menu_items();
+				ImGui::TreePop();
+			}
 
             ImGui::EndMenu();
         }
