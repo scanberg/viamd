@@ -11,6 +11,7 @@
 #include <event.h>
 #include <loader.h>
 #include <color_utils.h>
+#include <display_units.h>
 #include <serialization_utils.h>
 
 #include <gfx/gl_utils.h>
@@ -481,8 +482,16 @@ void init_trajectory_data(ApplicationState* data) {
         init_frame_cache(&data->mold.frame_cache, data->mold.sys.atom.count, data->allocator.persistent);
 
         ASSERT(header.frame_times);
-        double min_time = header.frame_times[0];
-        double max_time = header.frame_times[num_frames - 1];
+
+        // The timeline carries time in the unit the user asked to see it in. Everything downstream
+        // reads x_values and view_range, so this is the one place the conversion happens; a later
+        // change to the preference is picked up by update_timeline_time_unit in main.cpp.
+        const double time_scl = display_units::factor(&data->timeline.time_unit, md_trajectory_time_unit(data->mold.sys.trajectory));
+        data->timeline.time_scale    = time_scl;
+        data->timeline.units_version = display_units::version();
+
+        double min_time = header.frame_times[0] * time_scl;
+        double max_time = header.frame_times[num_frames - 1] * time_scl;
 
         data->timeline.view_range = {min_time, max_time};
         data->timeline.filter.beg_frame = (double)min_frame;
@@ -490,7 +499,7 @@ void init_trajectory_data(ApplicationState* data) {
 
         md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
         for (size_t i = 0; i < num_frames; ++i) {
-            data->timeline.x_values[i] = (float)header.frame_times[i];
+            data->timeline.x_values[i] = (float)(header.frame_times[i] * time_scl);
         }
 
         // The COORDINATE for the frame axis, published as an ordinary attribute rather than as

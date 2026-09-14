@@ -342,8 +342,16 @@ struct DisplayProperty {
 
     int num_bins = 128;         // Requested number of bins for histogram
 
+    // 'unit' is what the property's SOURCE gave each axis; 'unit_str' is what that axis is shown
+    // in once the display preference is applied, and 'unit_scale' the factor taking a raw value
+    // there. The getters and print_value callbacks below apply unit_scale[1] to y. The x axis of a
+    // temporal property is timeline.x_values, which is already converted, so unit_scale[0] is 1
+    // for those and unit_str[0] is the timeline's own unit.
+    // display_property_update_units in main.cpp derives the latter three from the first.
     md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
+    double unit_scale[2] = {1.0, 1.0};
     char unit_str[2][32] = {"",""};
+    uint64_t units_version = 0;     // display_units generation the three above were derived at
 
     const md_script_eval_t* eval = NULL;
 
@@ -1369,8 +1377,17 @@ struct ApplicationState {
             double end_x = 1;
         } view_range;
 
-        // Holds the timestamps for each frame
+        // Holds the timestamps for each frame, in 'time_unit' rather than in the trajectory's own
+        // unit. Converting here rather than at each view is what lets the animation window, the
+        // timeline plot, the tooltips and the frame/time mapping agree without any of them knowing
+        // about display_units: they all read these values.
         md_array(float) x_values = 0;
+
+        // What the trajectory's time unit became once the display preference was applied,
+        // the factor that took it there, and the preference generation that produced both.
+        md_unit_t time_unit     = md_unit_none();
+        double    time_scale    = 1.0;
+        uint64_t  units_version = 0;
 
         bool show_window = false;
     } timeline;
