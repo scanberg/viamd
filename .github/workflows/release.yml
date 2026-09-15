@@ -9,30 +9,6 @@ permissions:
   contents: write
   actions: write
 
-env:
-  MDLIB_VCPKG_MANIFEST_DIR: ${{ github.workspace }}/ext/mdlib
-
-  # These are intentionally strings here. On Windows they are converted to
-  # PowerShell arrays before being passed to cmake, so each -D option becomes
-  # a separate native command-line argument.
-  VIAMD_CMAKE_FLAGS: >-
-    -DVIAMD_ENABLE_QM=ON
-    -DMD_ENABLE_VLX=ON
-    -DMD_ENABLE_TREXIO=ON
-    -DMD_BENCHMARK=OFF
-    -DMD_UNITTEST=OFF
-
-  STATIC_CMAKE_FLAGS: >-
-    -DBUILD_SHARED_LIBS=OFF
-    -DBUILD_STATIC_LIBS=ON
-
-  AVX2_CMAKE_FLAGS: >-
-    -DMD_ENABLE_AVX=ON
-    -DMD_ENABLE_AVX2=ON
-    -DMD_ENABLE_AVX512=OFF
-    -DMD_ENABLE_FMA=ON
-
-
 jobs:
 
   # ---------------------------------------------------------------------------
@@ -40,7 +16,7 @@ jobs:
   # ---------------------------------------------------------------------------
 
   build-macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +27,7 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
+          manifest-dir: ${{ github.workspace }}/ext/mdlib
           triplet: arm64-osx-release
           token: ${{ github.token }}
           github-binarycache: true
@@ -60,11 +36,11 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.toolchainFile }}" \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
             -DVCPKG_TARGET_TRIPLET=arm64-osx-release \
             -DVCPKG_MANIFEST_MODE=OFF \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_STATIC_LIBS=ON \
@@ -75,19 +51,15 @@ jobs:
             -DMD_UNITTEST=OFF
 
       - name: Build
-        run: |
-          cmake --build build --config Release --parallel 4
+        run: cmake --build build --config Release --parallel 4
 
       - name: Code sign
-        run: |
-          codesign --deep --force --verbose \
-            --sign - \
-            build/VIAMD.app
+        run: codesign --deep --force --verbose --sign - build/bin/viamd.app
 
       - name: Package
         run: |
-          cd build
-          zip -r ../viamd_macos_arm64.zip VIAMD.app
+          cd build/bin
+          zip -r ../../viamd_macos_arm64.zip viamd.app
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -96,11 +68,11 @@ jobs:
 
 
   # ---------------------------------------------------------------------------
-  # macOS x64
+  # macOS x64 (AVX2)
   # ---------------------------------------------------------------------------
 
   build-macos-x64:
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - uses: actions/checkout@v4
@@ -111,7 +83,7 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
+          manifest-dir: ${{ github.workspace }}/ext/mdlib
           triplet: x64-osx-release
           token: ${{ github.token }}
           github-binarycache: true
@@ -120,11 +92,11 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.toolchainFile }}" \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
             -DVCPKG_TARGET_TRIPLET=x64-osx-release \
             -DVCPKG_MANIFEST_MODE=OFF \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_STATIC_LIBS=ON \
@@ -139,19 +111,15 @@ jobs:
             -DMD_ENABLE_FMA=ON
 
       - name: Build
-        run: |
-          cmake --build build --config Release --parallel 4
+        run: cmake --build build --config Release --parallel 4
 
       - name: Code sign
-        run: |
-          codesign --deep --force --verbose \
-            --sign - \
-            build/VIAMD.app
+        run: codesign --deep --force --verbose --sign - build/bin/viamd.app
 
       - name: Package
         run: |
-          cd build
-          zip -r ../viamd_macos_x64_avx2.zip VIAMD.app
+          cd build/bin
+          zip -r ../../viamd_macos_x64_avx2.zip viamd.app
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -160,7 +128,7 @@ jobs:
 
 
   # ---------------------------------------------------------------------------
-  # Windows x64
+  # Windows x64 (AVX2)
   # ---------------------------------------------------------------------------
 
   build-windows-x64:
@@ -175,7 +143,7 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
+          manifest-dir: ${{ github.workspace }}/ext/mdlib
           triplet: x64-windows-static-release
           token: ${{ github.token }}
           github-binarycache: true
@@ -183,34 +151,30 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          # Each env var contains multiple -D flags. If PowerShell passes a
-          # whole flag string through as one argument, CMake sees
-          # BUILD_SHARED_LIBS as the truthy value "OFF -DBUILD_STATIC_LIBS=ON"
-          # and starts generating DLL targets instead of static libraries.
-          $static_flags = $env:STATIC_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
-          $common_flags = $env:VIAMD_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
-          $avx2_flags   = $env:AVX2_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
-
-          $cmake_args = @(
-            "-DCMAKE_TOOLCHAIN_FILE=${{ steps.vcpkg.outputs.toolchainFile }}"
-            '-DVCPKG_TARGET_TRIPLET=x64-windows-static-release'
-            '-DVCPKG_MANIFEST_MODE=OFF'
-            '-DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF'
-          ) + $static_flags + $avx2_flags + $common_flags + '.'
-
-          & cmake @cmake_args
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_STATIC_LIBS=ON `
+            -DVIAMD_ENABLE_QM=ON `
+            -DMD_ENABLE_VLX=ON `
+            -DMD_ENABLE_TREXIO=ON `
+            -DMD_BENCHMARK=OFF `
+            -DMD_UNITTEST=OFF `
+            -DMD_ENABLE_AVX=ON `
+            -DMD_ENABLE_AVX2=ON `
+            -DMD_ENABLE_AVX512=OFF `
+            -DMD_ENABLE_FMA=ON
 
       - name: Build
         shell: pwsh
-        run: |
-          cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+        run: cmake --build build --config Release -- /nologo /verbosity:minimal /maxcpucount:4
 
       - name: Package
         shell: pwsh
-        run: |
-          Compress-Archive `
-            -Path bin/Release/* `
-            -DestinationPath viamd_windows_x64_avx2.zip
+        run: Compress-Archive -Path build/bin/Release/* -DestinationPath viamd_windows_x64_avx2.zip
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -220,10 +184,21 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Windows ARM64
+  #
+  # Cross compiled from the x64 runner: the VS 2022 image ships the ARM64 cross
+  # tools (Microsoft.VisualStudio.Component.VC.Tools.ARM64), selected with
+  # -A ARM64, and vcpkg builds the ARM64 dependencies with its x64 host tools.
+  # Nothing in the build runs a target binary, so there is no emulation needed.
+  #
+  # The AVX feature checks are answered up front. mdlib's FindAVX.cmake probes with
+  # check_c_source_runs, i.e. try_run, which has no honest answer when the target is
+  # not the host - so the HAVE_* cache entries are pre-seeded (a defined result makes
+  # check_c_source_runs skip the probe entirely) and the MD_ENABLE_* options are
+  # pinned to match. ARM64 has no AVX either way.
   # ---------------------------------------------------------------------------
 
   build-windows-arm64:
-    runs-on: windows-11-vs2026-arm
+    runs-on: windows-2022
 
     steps:
       - uses: actions/checkout@v4
@@ -234,7 +209,7 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
+          manifest-dir: ${{ github.workspace }}/ext/mdlib
           triplet: arm64-windows-static-release
           token: ${{ github.token }}
           github-binarycache: true
@@ -242,29 +217,34 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          $static_flags = $env:STATIC_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
-          $common_flags = $env:VIAMD_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
-
-          $cmake_args = @(
-            "-DCMAKE_TOOLCHAIN_FILE=${{ steps.vcpkg.outputs.toolchainFile }}"
-            '-DVCPKG_TARGET_TRIPLET=arm64-windows-static-release'
-            '-DVCPKG_MANIFEST_MODE=OFF'
-            '-DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF'
-          ) + $static_flags + $common_flags + '.'
-
-          & cmake @cmake_args
+          cmake -S . -B build -G "Visual Studio 17 2022" -A ARM64 `
+            "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=arm64-windows-static-release `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_STATIC_LIBS=ON `
+            -DVIAMD_ENABLE_QM=ON `
+            -DMD_ENABLE_VLX=ON `
+            -DMD_ENABLE_TREXIO=ON `
+            -DMD_BENCHMARK=OFF `
+            -DMD_UNITTEST=OFF `
+            -DHAVE_AVX_EXTENSIONS=OFF `
+            -DHAVE_AVX2_EXTENSIONS=OFF `
+            -DHAVE_AVX512_EXTENSIONS=OFF `
+            -DHAVE_FMA_EXTENSIONS=OFF `
+            -DMD_ENABLE_AVX=OFF `
+            -DMD_ENABLE_AVX2=OFF `
+            -DMD_ENABLE_AVX512=OFF `
+            -DMD_ENABLE_FMA=OFF
 
       - name: Build
         shell: pwsh
-        run: |
-          cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+        run: cmake --build build --config Release -- /nologo /verbosity:minimal /maxcpucount:4
 
       - name: Package
         shell: pwsh
-        run: |
-          Compress-Archive `
-            -Path bin/Release/* `
-            -DestinationPath viamd_windows_arm64.zip
+        run: Compress-Archive -Path build/bin/Release/* -DestinationPath viamd_windows_arm64.zip
 
       - name: Release
         uses: softprops/action-gh-release@v2

@@ -2,9 +2,15 @@
 # Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
-# Must be set before project() so the toolchain picks it up
+# Must be set before project() so the toolchain picks it up.
+#
+# 13.0 is the floor the code actually holds to: the Metal backend guards its one
+# macOS 13 API with @available and reaches MTLResidencySet (macOS 15) through
+# NSClassFromString/performSelector precisely so it can be built against an older
+# target. release.yml passes the same value, so a local build and a released build
+# agree on what they are allowed to call.
 if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS deployment version")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment version")
 endif()
 
 project(viamd LANGUAGES C CXX)
