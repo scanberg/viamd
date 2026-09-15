@@ -36,6 +36,10 @@ enum LoaderType_ {
 #if MD_VLX
     LoaderType_VLX_H5,
 #endif
+    LoaderType_MOLDEN,
+#if MD_TREXIO
+    LoaderType_TREXIO,
+#endif
     LoaderType_COUNT
 };
 

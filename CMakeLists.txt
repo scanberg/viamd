@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.26)
+﻿cmake_minimum_required(VERSION 3.26)
 # Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
@@ -75,10 +75,13 @@ set(VIAMD_NUM_WORKER_THREADS "0" CACHE STRING "Number of worker threads (Decreas
 set(MD_LINK_STDLIB_STATIC ${VIAMD_LINK_STDLIB_STATIC} CACHE BOOL "" FORCE)
 
 if (VIAMD_ENABLE_QM)
-    # VeloxChem h5 is the one QM reader mdlib currently has, so enabling the module enables it.
-    # A second reader would be turned on beside this, not instead of it.
+    # The QM readers mdlib has, turned on beside each other rather than instead of each other.
+    # TREXIO reads its own HDF5 back end directly, so it costs the dependency VeloxChem already
+    # brings in and no new one. Molden needs nothing at all and is built unconditionally, which is
+    # why it is not named here.
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
     set(MD_VLX_BASIS_FOLDER "basis")
+    set(MD_ENABLE_TREXIO ON CACHE BOOL "" FORCE)
 endif ()
 
 find_package(OpenGL REQUIRED)
