@@ -6,7 +6,9 @@ on:
       - 'v*.*.*'
 
 env:
-  # Common VIAMD + mdlib configuration
+  # These are intentionally strings here. On Windows they are converted to
+  # PowerShell arrays before being passed to cmake, so each -D option becomes
+  # a separate native command-line argument.
   VIAMD_CMAKE_FLAGS: >-
     -DVIAMD_ENABLE_QM=ON
     -DMD_ENABLE_VLX=ON
@@ -14,12 +16,10 @@ env:
     -DMD_BENCHMARK=OFF
     -DMD_UNITTEST=OFF
 
-  # Static library configuration
   STATIC_CMAKE_FLAGS: >-
     -DBUILD_SHARED_LIBS=OFF
     -DBUILD_STATIC_LIBS=ON
 
-  # x86-specific SIMD configuration
   AVX2_CMAKE_FLAGS: >-
     -DMD_ENABLE_AVX=ON
     -DMD_ENABLE_AVX2=ON
@@ -28,6 +28,11 @@ env:
 
 
 jobs:
+
+  # ---------------------------------------------------------------------------
+  # macOS ARM64
+  # ---------------------------------------------------------------------------
+
   build-macos-arm64:
     runs-on: macos-14
 
@@ -42,46 +47,50 @@ jobs:
         with:
           pkgs: hdf5
           triplet: arm64-osx-release
-          token: ${{ github.token }}
-          github-binarycache: true
+          cache: true
 
-      - name: cmake
+      - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.toolchainFile }}" \
             -DVCPKG_TARGET_TRIPLET=arm64-osx-release \
             -DVCPKG_MANIFEST_MODE=OFF \
-            -DHDF5_USE_STATIC_LIBRARIES=TRUE \
-            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13 \
             -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
-            $STATIC_CMAKE_FLAGS \
-            $VIAMD_CMAKE_FLAGS
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DVIAMD_ENABLE_QM=ON \
+            -DMD_ENABLE_VLX=ON \
+            -DMD_ENABLE_TREXIO=ON \
+            -DMD_BENCHMARK=OFF \
+            -DMD_UNITTEST=OFF
 
-      - name: build
+      - name: Build
         run: |
-          cmake --build build --target viamd
+          cmake --build build --config Release --parallel 4
 
-      - name: codesign
+      - name: Code sign
         run: |
-          APP="build/bin/viamd.app"
-          codesign --force --deep --sign - "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --deep --force --verbose \
+            --sign - \
+            build/VIAMD.app
 
-      - name: archive
+      - name: Package
         run: |
-          ditto -c -k --keepParent --sequesterRsrc \
-            build/bin/viamd.app \
-            viamd_macos_arm64.zip
+          cd build
+          zip -r ../viamd_macos_arm64.zip VIAMD.app
 
-      - name: release
-        uses: softprops/action-gh-release@v1
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            viamd_macos_arm64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: viamd_macos_arm64.zip
 
+
+  # ---------------------------------------------------------------------------
+  # macOS x64
+  # ---------------------------------------------------------------------------
 
   build-macos-x64:
     runs-on: macos-14
@@ -97,48 +106,54 @@ jobs:
         with:
           pkgs: hdf5
           triplet: x64-osx-release
-          token: ${{ github.token }}
-          github-binarycache: true
+          cache: true
 
-      - name: cmake
+      - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.toolchainFile }}" \
             -DVCPKG_TARGET_TRIPLET=x64-osx-release \
             -DVCPKG_MANIFEST_MODE=OFF \
-            -DHDF5_USE_STATIC_LIBRARIES=TRUE \
-            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13 \
             -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
-            $STATIC_CMAKE_FLAGS \
-            $VIAMD_CMAKE_FLAGS \
-            $AVX2_CMAKE_FLAGS
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DVIAMD_ENABLE_QM=ON \
+            -DMD_ENABLE_VLX=ON \
+            -DMD_ENABLE_TREXIO=ON \
+            -DMD_BENCHMARK=OFF \
+            -DMD_UNITTEST=OFF \
+            -DMD_ENABLE_AVX=ON \
+            -DMD_ENABLE_AVX2=ON \
+            -DMD_ENABLE_AVX512=OFF \
+            -DMD_ENABLE_FMA=ON
 
-      - name: build
+      - name: Build
         run: |
-          cmake --build build --target viamd
+          cmake --build build --config Release --parallel 4
 
-      - name: codesign
+      - name: Code sign
         run: |
-          APP="build/bin/viamd.app"
-          codesign --force --deep --sign - "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --deep --force --verbose \
+            --sign - \
+            build/VIAMD.app
 
-      - name: archive
+      - name: Package
         run: |
-          ditto -c -k --keepParent --sequesterRsrc \
-            build/bin/viamd.app \
-            viamd_macos_x64_avx2.zip
+          cd build
+          zip -r ../viamd_macos_x64_avx2.zip VIAMD.app
 
-      - name: release
-        uses: softprops/action-gh-release@v1
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            viamd_macos_x64_avx2.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: viamd_macos_x64_avx2.zip
 
+
+  # ---------------------------------------------------------------------------
+  # Windows x64
+  # ---------------------------------------------------------------------------
 
   build-windows-x64:
     runs-on: windows-2022
@@ -154,32 +169,49 @@ jobs:
         with:
           pkgs: hdf5
           triplet: x64-windows-static-release
-          token: ${{ github.token }}
-          github-binarycache: true
+          cache: true
 
-      - name: cmake
+      - name: Configure
+        shell: pwsh
         run: |
-          cmake -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-release -DVCPKG_MANIFEST_MODE=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF $env:STATIC_CMAKE_FLAGS $env:AVX2_CMAKE_FLAGS $env:VIAMD_CMAKE_FLAGS
+          # Convert the shared flag strings into actual PowerShell arrays.
+          # This is important: passing $env:STATIC_CMAKE_FLAGS directly to
+          # cmake would pass the complete string as one argument.
+          $static_flags = $env:STATIC_CMAKE_FLAGS -split '\s+'
+          $common_flags = $env:VIAMD_CMAKE_FLAGS -split '\s+'
+          $avx2_flags   = $env:AVX2_CMAKE_FLAGS -split '\s+'
 
-      - name: build
+          cmake `
+            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.toolchainFile }}" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
+            @static_flags `
+            @avx2_flags `
+            @common_flags `
+            .
+
+      - name: Build
+        shell: pwsh
         run: |
           cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
 
-      - name: archive
-        uses: thedoctor0/zip-release@main
-        with:
-          type: 'zip'
-          filename: 'viamd_win_x64_avx2.zip'
-          path: 'bin/Release/.'
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path bin/Release/* `
+            -DestinationPath viamd_windows_x64_avx2.zip
 
-      - name: release
-        uses: softprops/action-gh-release@v1
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            viamd_win_x64_avx2.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: viamd_windows_x64_avx2.zip
 
+
+  # ---------------------------------------------------------------------------
+  # Windows ARM64
+  # ---------------------------------------------------------------------------
 
   build-windows-arm64:
     runs-on: windows-11-vs2026-arm
@@ -195,28 +227,36 @@ jobs:
         with:
           pkgs: hdf5
           triplet: arm64-windows-static-release
-          token: ${{ github.token }}
-          github-binarycache: true
+          cache: true
 
-      - name: cmake
+      - name: Configure
+        shell: pwsh
         run: |
-          cmake -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=arm64-windows-static-release -DVCPKG_MANIFEST_MODE=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF $env:STATIC_CMAKE_FLAGS $env:VIAMD_CMAKE_FLAGS
+          $static_flags = $env:STATIC_CMAKE_FLAGS -split '\s+'
+          $common_flags = $env:VIAMD_CMAKE_FLAGS -split '\s+'
 
-      - name: build
+          cmake `
+            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.toolchainFile }}" `
+            -DVCPKG_TARGET_TRIPLET=arm64-windows-static-release `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
+            @static_flags `
+            @common_flags `
+            .
+
+      - name: Build
+        shell: pwsh
         run: |
           cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
 
-      - name: archive
-        uses: thedoctor0/zip-release@main
-        with:
-          type: 'zip'
-          filename: 'viamd_win_arm64.zip'
-          path: 'bin/Release/.'
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path bin/Release/* `
+            -DestinationPath viamd_windows_arm64.zip
 
-      - name: release
-        uses: softprops/action-gh-release@v1
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            viamd_win_arm64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: viamd_windows_arm64.zip
