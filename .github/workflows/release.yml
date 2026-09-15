@@ -5,7 +5,13 @@ on:
     tags:
       - 'v*.*.*'
 
+permissions:
+  contents: write
+  actions: write
+
 env:
+  MDLIB_VCPKG_MANIFEST_DIR: ${{ github.workspace }}/ext/mdlib
+
   # These are intentionally strings here. On Windows they are converted to
   # PowerShell arrays before being passed to cmake, so each -D option becomes
   # a separate native command-line argument.
@@ -45,9 +51,10 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          pkgs: hdf5
+          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
           triplet: arm64-osx-release
-          cache: true
+          token: ${{ github.token }}
+          github-binarycache: true
 
       - name: Configure
         run: |
@@ -104,9 +111,10 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          pkgs: hdf5
+          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
           triplet: x64-osx-release
-          cache: true
+          token: ${{ github.token }}
+          github-binarycache: true
 
       - name: Configure
         run: |
@@ -167,9 +175,10 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          pkgs: hdf5
+          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
           triplet: x64-windows-static-release
-          cache: true
+          token: ${{ github.token }}
+          github-binarycache: true
 
       - name: Configure
         shell: pwsh
@@ -225,9 +234,10 @@ jobs:
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          pkgs: hdf5
+          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
           triplet: arm64-windows-static-release
-          cache: true
+          token: ${{ github.token }}
+          github-binarycache: true
 
       - name: Configure
         shell: pwsh
