@@ -173,11 +173,11 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     const char* msg      = message ? message : "(no message)";
 
     if (type == GL_DEBUG_TYPE_ERROR || severity == GL_DEBUG_SEVERITY_HIGH) {
-        MD_LOG_ERROR("GL %s [%s/%s] (id %u) during '%s'%s: %s",
+        MD_LOG_DEBUG("GL %s [%s/%s] (id %u) during '%s'%s: %s",
                      type_str, src_str, sev_str, (unsigned int)id,
                      where[0] ? where : "no active debug group", count, msg);
     } else {
-        MD_LOG_INFO("GL %s [%s/%s] (id %u) during '%s'%s: %s",
+        MD_LOG_DEBUG("GL %s [%s/%s] (id %u) during '%s'%s: %s",
                     type_str, src_str, sev_str, (unsigned int)id,
                     where[0] ? where : "no active debug group", count, msg);
     }
