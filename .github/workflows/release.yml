@@ -8,13 +8,16 @@ on:
 env:
   # Common VIAMD + mdlib configuration
   VIAMD_CMAKE_FLAGS: >-
-    -DBUILD_SHARED_LIBS=OFF
-    -DBUILD_STATIC_LIBS=ON
     -DVIAMD_ENABLE_QM=ON
     -DMD_ENABLE_VLX=ON
     -DMD_ENABLE_TREXIO=ON
     -DMD_BENCHMARK=OFF
     -DMD_UNITTEST=OFF
+
+  # Static library configuration
+  STATIC_CMAKE_FLAGS: >-
+    -DBUILD_SHARED_LIBS=OFF
+    -DBUILD_STATIC_LIBS=ON
 
   # x86-specific SIMD configuration
   AVX2_CMAKE_FLAGS: >-
@@ -51,6 +54,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
+            $STATIC_CMAKE_FLAGS \
             $VIAMD_CMAKE_FLAGS
 
       - name: Build
@@ -104,6 +108,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13 \
             -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
+            $STATIC_CMAKE_FLAGS \
             $VIAMD_CMAKE_FLAGS \
             $AVX2_CMAKE_FLAGS
 
@@ -148,12 +153,14 @@ jobs:
           github-binarycache: true
 
       - name: Configure
+        shell: pwsh
         run: |
           cmake -S . -B build `
-            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
             -DVCPKG_MANIFEST_MODE=OFF `
             -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
+            $env:STATIC_CMAKE_FLAGS `
             $env:VIAMD_CMAKE_FLAGS `
             $env:AVX2_CMAKE_FLAGS
 
@@ -421,12 +428,14 @@ jobs:
           github-binarycache: true
 
       - name: Configure
+        shell: pwsh
         run: |
           cmake -S . -B build `
-            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=arm64-windows-static-release `
             -DVCPKG_MANIFEST_MODE=OFF `
             -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
+            $env:STATIC_CMAKE_FLAGS `
             $env:VIAMD_CMAKE_FLAGS
 
       - name: Build
