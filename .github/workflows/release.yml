@@ -36,15 +36,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build dependencies
+      - name: vcpkg build
         uses: johnwason/vcpkg-action@v6
+        id: vcpkg
         with:
           pkgs: hdf5
           triplet: arm64-osx-release
           token: ${{ github.token }}
           github-binarycache: true
 
-      - name: Configure
+      - name: cmake
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
@@ -57,26 +58,27 @@ jobs:
             $STATIC_CMAKE_FLAGS \
             $VIAMD_CMAKE_FLAGS
 
-      - name: Build
+      - name: build
         run: |
           cmake --build build --target viamd
 
-      - name: Codesign
+      - name: codesign
         run: |
           APP="build/bin/viamd.app"
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
-      - name: Archive
+      - name: archive
         run: |
           ditto -c -k --keepParent --sequesterRsrc \
             build/bin/viamd.app \
             viamd_macos_arm64.zip
 
-      - name: Release
+      - name: release
         uses: softprops/action-gh-release@v1
         with:
-          files: viamd_macos_arm64.zip
+          files: |
+            viamd_macos_arm64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -89,15 +91,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build dependencies
+      - name: vcpkg build
         uses: johnwason/vcpkg-action@v6
+        id: vcpkg
         with:
           pkgs: hdf5
           triplet: x64-osx-release
           token: ${{ github.token }}
           github-binarycache: true
 
-      - name: Configure
+      - name: cmake
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
@@ -112,26 +115,27 @@ jobs:
             $VIAMD_CMAKE_FLAGS \
             $AVX2_CMAKE_FLAGS
 
-      - name: Build
+      - name: build
         run: |
           cmake --build build --target viamd
 
-      - name: Codesign
+      - name: codesign
         run: |
           APP="build/bin/viamd.app"
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
-      - name: Archive
+      - name: archive
         run: |
           ditto -c -k --keepParent --sequesterRsrc \
             build/bin/viamd.app \
             viamd_macos_x64_avx2.zip
 
-      - name: Release
+      - name: release
         uses: softprops/action-gh-release@v1
         with:
-          files: viamd_macos_x64_avx2.zip
+          files: |
+            viamd_macos_x64_avx2.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -144,41 +148,35 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build dependencies
+      - name: vcpkg build
         uses: johnwason/vcpkg-action@v6
+        id: vcpkg
         with:
           pkgs: hdf5
           triplet: x64-windows-static-release
           token: ${{ github.token }}
           github-binarycache: true
 
-      - name: Configure
-        shell: pwsh
+      - name: cmake
         run: |
-          cmake -S . -B build `
-            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
-            -DVCPKG_MANIFEST_MODE=OFF `
-            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
-            $env:STATIC_CMAKE_FLAGS `
-            $env:VIAMD_CMAKE_FLAGS `
-            $env:AVX2_CMAKE_FLAGS
+          cmake -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static-release -DVCPKG_MANIFEST_MODE=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF $env:STATIC_CMAKE_FLAGS $env:AVX2_CMAKE_FLAGS $env:VIAMD_CMAKE_FLAGS
 
-      - name: Build
+      - name: build
         run: |
-          cmake --build build --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+          cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
 
-      - name: Archive
+      - name: archive
         uses: thedoctor0/zip-release@main
         with:
-          type: zip
-          filename: viamd_win_x64_avx2.zip
-          path: build/bin/Release/.
+          type: 'zip'
+          filename: 'viamd_win_x64_avx2.zip'
+          path: 'bin/Release/.'
 
-      - name: Release
+      - name: release
         uses: softprops/action-gh-release@v1
         with:
-          files: viamd_win_x64_avx2.zip
+          files: |
+            viamd_win_x64_avx2.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -191,39 +189,34 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build dependencies
+      - name: vcpkg build
         uses: johnwason/vcpkg-action@v6
+        id: vcpkg
         with:
           pkgs: hdf5
           triplet: arm64-windows-static-release
           token: ${{ github.token }}
           github-binarycache: true
 
-      - name: Configure
-        shell: pwsh
+      - name: cmake
         run: |
-          cmake -S . -B build `
-            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=arm64-windows-static-release `
-            -DVCPKG_MANIFEST_MODE=OFF `
-            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
-            $env:STATIC_CMAKE_FLAGS `
-            $env:VIAMD_CMAKE_FLAGS
+          cmake -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=arm64-windows-static-release -DVCPKG_MANIFEST_MODE=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF $env:STATIC_CMAKE_FLAGS $env:VIAMD_CMAKE_FLAGS
 
-      - name: Build
+      - name: build
         run: |
-          cmake --build build --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+          cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
 
-      - name: Archive
+      - name: archive
         uses: thedoctor0/zip-release@main
         with:
-          type: zip
-          filename: viamd_win_arm64.zip
-          path: build/bin/Release/.
+          type: 'zip'
+          filename: 'viamd_win_arm64.zip'
+          path: 'bin/Release/.'
 
-      - name: Release
+      - name: release
         uses: softprops/action-gh-release@v1
         with:
-          files: viamd_win_arm64.zip
+          files: |
+            viamd_win_arm64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
