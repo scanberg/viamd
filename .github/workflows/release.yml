@@ -174,22 +174,22 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          # Convert the shared flag strings into actual PowerShell arrays.
-          # This is important: passing $env:STATIC_CMAKE_FLAGS directly to
-          # cmake would pass the complete string as one argument.
-          $static_flags = $env:STATIC_CMAKE_FLAGS -split '\s+'
-          $common_flags = $env:VIAMD_CMAKE_FLAGS -split '\s+'
-          $avx2_flags   = $env:AVX2_CMAKE_FLAGS -split '\s+'
+          # Each env var contains multiple -D flags. If PowerShell passes a
+          # whole flag string through as one argument, CMake sees
+          # BUILD_SHARED_LIBS as the truthy value "OFF -DBUILD_STATIC_LIBS=ON"
+          # and starts generating DLL targets instead of static libraries.
+          $static_flags = $env:STATIC_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
+          $common_flags = $env:VIAMD_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
+          $avx2_flags   = $env:AVX2_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
 
-          cmake `
-            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.toolchainFile }}" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
-            -DVCPKG_MANIFEST_MODE=OFF `
-            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
-            @static_flags `
-            @avx2_flags `
-            @common_flags `
-            .
+          $cmake_args = @(
+            "-DCMAKE_TOOLCHAIN_FILE=${{ steps.vcpkg.outputs.toolchainFile }}"
+            '-DVCPKG_TARGET_TRIPLET=x64-windows-static-release'
+            '-DVCPKG_MANIFEST_MODE=OFF'
+            '-DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF'
+          ) + $static_flags + $avx2_flags + $common_flags + '.'
+
+          & cmake @cmake_args
 
       - name: Build
         shell: pwsh
@@ -232,17 +232,17 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          $static_flags = $env:STATIC_CMAKE_FLAGS -split '\s+'
-          $common_flags = $env:VIAMD_CMAKE_FLAGS -split '\s+'
+          $static_flags = $env:STATIC_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
+          $common_flags = $env:VIAMD_CMAKE_FLAGS -split '\s+' | Where-Object { $_ }
 
-          cmake `
-            -DCMAKE_TOOLCHAIN_FILE="${{ steps.vcpkg.outputs.toolchainFile }}" `
-            -DVCPKG_TARGET_TRIPLET=arm64-windows-static-release `
-            -DVCPKG_MANIFEST_MODE=OFF `
-            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
-            @static_flags `
-            @common_flags `
-            .
+          $cmake_args = @(
+            "-DCMAKE_TOOLCHAIN_FILE=${{ steps.vcpkg.outputs.toolchainFile }}"
+            '-DVCPKG_TARGET_TRIPLET=arm64-windows-static-release'
+            '-DVCPKG_MANIFEST_MODE=OFF'
+            '-DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF'
+          ) + $static_flags + $common_flags + '.'
+
+          & cmake @cmake_args
 
       - name: Build
         shell: pwsh
