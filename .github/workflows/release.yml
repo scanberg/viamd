@@ -48,7 +48,8 @@ jobs:
             -DMD_ENABLE_VLX=ON \
             -DMD_ENABLE_TREXIO=ON \
             -DMD_BENCHMARK=OFF \
-            -DMD_UNITTEST=OFF
+            -DMD_UNITTEST=OFF \
+            -DVIAMD_UNITTEST=OFF
 
       - name: Build
         run: cmake --build build --config Release --parallel 4
@@ -105,6 +106,7 @@ jobs:
             -DMD_ENABLE_TREXIO=ON \
             -DMD_BENCHMARK=OFF \
             -DMD_UNITTEST=OFF \
+            -DVIAMD_UNITTEST=OFF \
             -DMD_ENABLE_AVX=ON \
             -DMD_ENABLE_AVX2=ON \
             -DMD_ENABLE_AVX512=OFF \
@@ -163,6 +165,7 @@ jobs:
             -DMD_ENABLE_TREXIO=ON `
             -DMD_BENCHMARK=OFF `
             -DMD_UNITTEST=OFF `
+            -DVIAMD_UNITTEST=OFF `
             -DMD_ENABLE_AVX=ON `
             -DMD_ENABLE_AVX2=ON `
             -DMD_ENABLE_AVX512=OFF `
@@ -229,6 +232,7 @@ jobs:
             -DMD_ENABLE_TREXIO=ON `
             -DMD_BENCHMARK=OFF `
             -DMD_UNITTEST=OFF `
+            -DVIAMD_UNITTEST=OFF `
             -DHAVE_AVX_EXTENSIONS=OFF `
             -DHAVE_AVX2_EXTENSIONS=OFF `
             -DHAVE_AVX512_EXTENSIONS=OFF `

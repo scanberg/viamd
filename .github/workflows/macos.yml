@@ -16,3 +16,6 @@ jobs:
         - name: build
           run: |
             make -j 4
+        - name: test
+          run: |
+            ctest -R '^viamd_test$' --output-on-failure --no-tests=error
