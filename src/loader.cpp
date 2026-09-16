@@ -14,6 +14,7 @@
 #include <md_util.h>
 
 #include <md_molden.h>
+#include <md_itp.h>
 
 #if MD_VLX
 #include <md_vlx.h>
@@ -45,6 +46,7 @@ static const str_t loader_name[LoaderType_COUNT] = {
 #if MD_TREXIO
         STR_LIT("TREXIO (trexio)"),
 #endif
+        STR_LIT("Gromacs Topology (itp/top)"),
 };
 
 static const str_t loader_ext[LoaderType_COUNT] = {
@@ -67,6 +69,7 @@ static const str_t loader_ext[LoaderType_COUNT] = {
 #if MD_TREXIO
         STR_LIT("trexio"),
 #endif
+        STR_LIT("itp"),
 };
 
 static const LoaderFlags loader_flags[LoaderType_COUNT] = {
@@ -89,6 +92,7 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
 #if MD_TREXIO
         LoaderFlag_System | LoaderFlag_QM,                          // TREXIO
 #endif
+        LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS topology
 };
 
 void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
@@ -210,6 +214,8 @@ bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& 
         case LoaderType_VLX_H5:
             return md_vlx_system_supplement_from_file(out_sys, filepath);
 #endif
+        case LoaderType_ITP:
+            return md_itp_system_supplement_from_file(out_sys, filepath);
         default:
             return false;
     }
@@ -237,6 +243,10 @@ LoaderFlags type_flags(LoaderType type) {
 }
 
 LoaderType type_from_ext(str_t ext) {
+    // One loader, two extensions: a .top is an .itp with a [ molecules ] section
+    if (str_eq_ignore_case(ext, STR_LIT("top"))) {
+        return LoaderType_ITP;
+    }
     for (size_t i = 1; i < LoaderType_COUNT; ++i) {
         if (str_eq_ignore_case(ext, loader_ext[i])) {
             return (LoaderType)i;

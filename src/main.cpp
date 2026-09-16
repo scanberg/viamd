@@ -2341,13 +2341,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             state.loader_idx = 0;
             str_t ext;
             if (extract_ext(&ext, path)) {
-                for (int i = 0; i < loader_count; ++i) {
-					LoaderType type = (LoaderType)i;
-                    if (str_eq_ignore_case(ext, loader::type_ext(type))) {
-                        state.loader_idx = i;
-                        break;
-                    }
-                }
+                state.loader_idx = (int)loader::type_from_ext(ext);
             }
         }
 

@@ -40,6 +40,7 @@ enum LoaderType_ {
 #if MD_TREXIO
     LoaderType_TREXIO,
 #endif
+    LoaderType_ITP,     // GROMACS topology (.itp / .top), supplements a loaded system
     LoaderType_COUNT
 };
 

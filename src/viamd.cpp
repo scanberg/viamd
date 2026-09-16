@@ -180,7 +180,9 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
                 {MD_BOND_FLAG_AROMATIC,     "AROMATIC"},
                 {MD_BOND_FLAG_COORDINATE,   "COORD"},
 				{MD_BOND_FLAG_METAL,        "METAL"},
+				{MD_BOND_FLAG_INFERRED,     "INFERRED"},
 				{MD_BOND_FLAG_USER_DEFINED, "USER"},
+				{MD_BOND_FLAG_TOPOLOGY,     "TOPOLOGY"},
             };
 
             for (size_t i = 0; i < ARRAY_SIZE(bond_flag_map); ++i) {
@@ -830,6 +832,8 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             // 'success' stays false on purpose: it is what tells the caller a system was loaded,
             // and it resets the camera and the animation when it is true.
             if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state)) {
+                // A topology replaces bonds (and with them structures), which the GPU holds a copy of
+                state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 VIAMD_LOG_SUCCESS("Successfully loaded supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
             } else {
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
@@ -4334,7 +4338,8 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
             prio = 1;
         } else if (loader_flags & LoaderFlag_System) {
             prio = 2;
-        } else if (loader_flags & LoaderFlag_Trajectory) {
+        } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental)) {
+            // A supplemental file (a topology) needs the system in place, same as a trajectory
             prio = 3;
         } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
             prio = 4;
