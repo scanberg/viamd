@@ -342,8 +342,16 @@ struct DisplayProperty {
 
     int num_bins = 128;         // Requested number of bins for histogram
 
+    // 'unit' is what the property's SOURCE gave each axis; 'unit_str' is what that axis is shown
+    // in once the display preference is applied, and 'unit_scale' the factor taking a raw value
+    // there. The getters and print_value callbacks below apply unit_scale[1] to y. The x axis of a
+    // temporal property is timeline.x_values, which is already converted, so unit_scale[0] is 1
+    // for those and unit_str[0] is the timeline's own unit.
+    // display_property_update_units in main.cpp derives the latter three from the first.
     md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
+    double unit_scale[2] = {1.0, 1.0};
     char unit_str[2][32] = {"",""};
+    uint64_t units_version = 0;     // display_units generation the three above were derived at
 
     const md_script_eval_t* eval = NULL;
 
@@ -1369,8 +1377,17 @@ struct ApplicationState {
             double end_x = 1;
         } view_range;
 
-        // Holds the timestamps for each frame
+        // Holds the timestamps for each frame, in 'time_unit' rather than in the trajectory's own
+        // unit. Converting here rather than at each view is what lets the animation window, the
+        // timeline plot, the tooltips and the frame/time mapping agree without any of them knowing
+        // about display_units: they all read these values.
         md_array(float) x_values = 0;
+
+        // What the trajectory's time unit became once the display preference was applied,
+        // the factor that took it there, and the preference generation that produced both.
+        md_unit_t time_unit     = md_unit_none();
+        double    time_scale    = 1.0;
+        uint64_t  units_version = 0;
 
         bool show_window = false;
     } timeline;
@@ -1506,9 +1523,10 @@ struct ApplicationState {
 
     } operations;
 
+    // Persisted in the ImGui .ini; see app_settings.h. Bound in main().
     struct {
         bool keep_representations = false;
-        bool prefetch_frames = true;
+        float font_size = 18.0f;    // Matches the size the default font is baked at.
     } settings;
 
     // Views onto the temporal attributes, plus the one array still owned here.
@@ -1746,6 +1764,11 @@ static inline void single_selection_sequence_clear(SingleSelectionSequence* seq)
 static inline void single_selection_sequence_push_idx(SingleSelectionSequence* seq, int32_t idx) {
     ASSERT(seq);
     for (size_t i = 0; i < ARRAY_SIZE(seq->idx); ++i) {
+        // Already in the sequence: keep the position it was first picked at. Appending it again
+        // would desync the sequence from the selection mask, which is an OR and does not grow.
+        if (seq->idx[i] == idx) {
+            break;
+        }
         if (seq->idx[i] == -1) {
             seq->idx[i] = idx;
             break;
@@ -1798,7 +1821,7 @@ static inline size_t single_selection_sequence_count(const SingleSelectionSequen
 }
 
 static inline uint64_t generate_fingerprint() {
-    return (uint64_t)md_time_now();
+    return (uint64_t)md_tick_now();
 }
 
 void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state);

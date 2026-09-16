@@ -64,7 +64,17 @@ static void record_gl_reset_state(GLResetState* state) {
 
 static void reset_gl_state(const GLResetState& state) {
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state.fbo);
-	glDrawBuffers(state.fbo == 0 ? 1 : (int)ARRAY_SIZE(state.draw_buffers), (const GLenum*)state.draw_buffers);
+	if (state.fbo == 0) {
+		// For the default framebuffer glDrawBuffers only accepts NONE, FRONT_LEFT,
+		// FRONT_RIGHT, BACK_LEFT and BACK_RIGHT -- FRONT, BACK, LEFT, RIGHT and
+		// FRONT_AND_BACK are not accepted, even though glDrawBuffer takes them and
+		// the GL_DRAW_BUFFER0 query reports them straight back (glDrawBuffer(GL_BACK)
+		// reads back as GL_BACK). Feeding that value to glDrawBuffers is INVALID_ENUM
+		// on a strict driver, so restore it through glDrawBuffer instead.
+		glDrawBuffer((GLenum)state.draw_buffers[0]);
+	} else {
+		glDrawBuffers((int)ARRAY_SIZE(state.draw_buffers), (const GLenum*)state.draw_buffers);
+	}
 	glViewport(state.viewport[0], state.viewport[1], state.viewport[2], state.viewport[3]);
 	glScissor(state.scissor_rect[0], state.scissor_rect[1], state.scissor_rect[2], state.scissor_rect[3]);
 }
@@ -1048,8 +1058,9 @@ void initialize(int32_t width, int32_t height) {
         glGenTextures(1, &gl.velocity.tex_neighbormax);
     }
 
-    gl.velocity.tex_width  = width  / VEL_TILE_SIZE;
-    gl.velocity.tex_height = height / VEL_TILE_SIZE;
+    // Clamp to at least one texel: a zero-sized attachment makes the FBO incomplete.
+    gl.velocity.tex_width  = MAX(width  / VEL_TILE_SIZE, 1);
+    gl.velocity.tex_height = MAX(height / VEL_TILE_SIZE, 1);
 
     glBindTexture(GL_TEXTURE_2D, gl.velocity.tex_tilemax);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, gl.velocity.tex_width, gl.velocity.tex_height, 0, GL_RG, GL_FLOAT, nullptr);
@@ -2161,7 +2172,9 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
 namespace postprocess_pipeline {
 
 void initialize(int width, int height) {
-    postprocessing::initialize(width, height);
+    // glTexStorage2D rejects zero dimensions outright (GL_INVALID_VALUE), so guard the
+    // 0x0 startup/iconified case here as well. See gbuffer_init().
+    postprocessing::initialize(MAX(width, 1), MAX(height, 1));
 }
 
 void shutdown() {

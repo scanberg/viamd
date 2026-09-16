@@ -1,10 +1,10 @@
-name: Windows (MSVC)
+name: Windows ARM64 (MSVC)
 
 on: [push]
 
 jobs:
     ci:
-        runs-on: windows-2022
+        runs-on: windows-11-arm
         steps:
         - uses: actions/checkout@v4
         - name: prepare

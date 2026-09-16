@@ -44,6 +44,9 @@
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volumerender_utils.h>
 
+#include <resource_path.h>
+#include <app_settings.h>
+#include <display_units.h>
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 #include <task_system.h>
@@ -335,6 +338,85 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
 
 static void create_screenshot(str_t path);
 
+// The sizes offered in the Settings menu. The stored setting is the size itself, not an
+// index into this table, so the table can change without invalidating anyone's .ini.
+static const float font_sizes[] = { 10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f, 30.0f, 36.0f, 48.0f, 64.0f, 72.0f };
+static const char* font_size_names[] = { "10", "12", "14", "16", "18", "20", "24", "30", "36", "48", "64", "72" };
+
+static int nearest_font_size_index(float size) {
+    int   best_idx  = 0;
+    float best_dist = FLT_MAX;
+    for (int i = 0; i < (int)ARRAY_SIZE(font_sizes); ++i) {
+        const float dist = fabsf(font_sizes[i] - size);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_idx  = i;
+        }
+    }
+    return best_idx;
+}
+
+// Also the app_settings apply hook, so a size read from the .ini takes effect on the first frame.
+static void apply_font_size(void* user_data) {
+    ApplicationState* state = (ApplicationState*)user_data;
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.FontSizeBase = state->settings.font_size;
+    style._NextFrameFontSizeBase = style.FontSizeBase;  // From the demo, seems like a temporary fix
+}
+
+// Works out what a property's two axes are shown in, from the units its source gave them. The x
+// axis of a temporal property is timeline.x_values, which already holds converted time, so it takes
+// its label from there and leaves the getter nothing to scale.
+static void display_property_update_units(DisplayProperty* dp, md_unit_t timeline_time_unit) {
+    ASSERT(dp);
+
+    for (int i = 0; i < 2; ++i) {
+        md_unit_t shown_unit;
+        dp->unit_scale[i] = display_units::factor(&shown_unit, dp->unit[i]);
+        md_unit_print(dp->unit_str[i], sizeof(dp->unit_str[i]), shown_unit);
+    }
+
+    if (dp->type == DisplayProperty::Type_Temporal) {
+        dp->unit_scale[0] = 1.0;
+        md_unit_print(dp->unit_str[0], sizeof(dp->unit_str[0]), timeline_time_unit);
+    }
+
+    dp->units_version = display_units::version();
+}
+
+// timeline.x_values and view_range are stored in display units, so a change to the time preference
+// has to be carried into them. The raw frame times are still with the trajectory, so this re-derives
+// rather than compounding factors, and the visible range is moved by the ratio so the user keeps
+// looking at the same stretch of trajectory.
+static void update_timeline_time_unit(ApplicationState* state) {
+    ASSERT(state);
+
+    if (state->timeline.units_version == display_units::version()) {
+        return;
+    }
+    state->timeline.units_version = display_units::version();
+
+    const double prev_scl = state->timeline.time_scale;
+    const double time_scl = display_units::factor(&state->timeline.time_unit, md_trajectory_time_unit(state->mold.sys.trajectory));
+    state->timeline.time_scale = time_scl;
+
+    if (time_scl == prev_scl) {
+        return;
+    }
+
+    const double* frame_times = md_trajectory_frame_times(state->mold.sys.trajectory);
+    const size_t  num_frames  = md_array_size(state->timeline.x_values);
+    if (frame_times) {
+        for (size_t i = 0; i < num_frames; ++i) {
+            state->timeline.x_values[i] = (float)(frame_times[i] * time_scl);
+        }
+    }
+
+    const double ratio = prev_scl != 0.0 ? time_scl / prev_scl : 1.0;
+    state->timeline.view_range.beg_x *= ratio;
+    state->timeline.view_range.end_x *= ratio;
+}
+
 static void modify_selection(ApplicationState* state, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(state);
     modify_field(&state->selection.selection_mask, atom_mask, op);
@@ -353,7 +435,7 @@ int main(int argc, char** argv) {
     struct NotificationState {
         md_mutex_t lock;
         uint64_t hash;
-        md_timestamp_t time;
+        md_tick_t time;
     };
 
     NotificationState notification_state = {
@@ -368,10 +450,10 @@ int main(int argc, char** argv) {
             NotificationState& state = *(NotificationState*)inst;            
 
             // Prevent spamming the logger with the same message by comparing its hash
-            const md_timestamp_t time = md_time_now();
+            const md_tick_t time = md_tick_now();
             const uint64_t hash = md_hash64(msg, strlen(msg), 0);
 
-            if (md_time_as_seconds(time - state.time) < 1.0 && hash == state.hash) {
+            if (md_tick_to_seconds(time - state.time) < 1.0 && hash == state.hash) {
                 return;
             }
             state.hash = hash;
@@ -427,6 +509,14 @@ int main(int argc, char** argv) {
         VIAMD_LOG_ERROR("Could not initialize application...\n");
         return -1;
     }
+
+    // Application settings live in the ImGui .ini. Bind first, then initialize: that call
+    // reads the file, so the bound values are current by the time the loop starts.
+    app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
+    app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
+    app_settings::on_apply(apply_font_size, &state);
+    display_units::register_settings();
+    app_settings::initialize();
 
 #if MD_ENABLE_GPU
     VIAMD_LOG_DEBUG("Initializing GPU device...");
@@ -517,16 +607,10 @@ int main(int argc, char** argv) {
     state.editor.SetPalette(TextEditor::GetDarkPalette());
 
     {
-#ifdef VIAMD_DATASET_DIR
-        char exe[1024];
-        size_t len = md_path_write_exe(exe, sizeof(exe));
-        if (len) {
+#ifdef VIAMD_DEFAULT_DATASET
+        {
             md_strb_t sb = md_strb_create(frame_alloc);
-            str_t folder;
-            extract_folder_path(&folder, {exe, len});
-            sb += folder;
-            sb += VIAMD_DATASET_DIR "/1ALA-500.pdb";
-            str_t path = md_strb_to_str(sb);
+            str_t path = viamd::resource_path(&sb, STR_LIT(VIAMD_DEFAULT_DATASET));
             if (md_path_is_valid(path)) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
                 // The motivation is that the dataset may reside in a shared folder on the system that has no write access.
@@ -658,6 +742,9 @@ int main(int argc, char** argv) {
                         md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
                     }
                     md_bitfield_clear(&state.selection.highlight_mask);
+                    // A region select is not a sequence of individual picks, so whatever order was
+                    // recorded before no longer describes the selection.
+                    single_selection_sequence_clear(&state.selection.single_selection_sequence);
                 }
             } else if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
                 ImGui::OpenPopup("Context Popup");
@@ -1002,10 +1089,10 @@ int main(int argc, char** argv) {
                             });
                             
 #if MEASURE_EVALUATION_TIME
-                            uint64_t time = (uint64_t)md_time_now();
+                            uint64_t time = (uint64_t)md_tick_now();
                             task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [t0 = time]() {
-                                uint64_t t1 = md_time_now();
-                                double s = md_time_as_seconds(t1 - t0);
+                                uint64_t t1 = md_tick_now();
+                                double s = md_tick_to_seconds(t1 - t0);
                                 VIAMD_LOG_INFO("Evaluation completed in: %.3fs", s);
                             });
 #endif
@@ -1071,10 +1158,25 @@ int main(int argc, char** argv) {
 
                 size_t num_text = md_array_size(state.script.vis.text);
                 for (size_t i = 0; i < num_text; ++i) {
-                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(state.script.vis.text[i].pos, 1.0f));
+                    const md_script_vis_text_t& vis_text = state.script.vis.text[i];
+
+                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(vis_text.pos, 1.0f));
                     const vec4_t c = p / p.w;
 
-                    str_t str = state.script.vis.text[i].str;
+                    // A label carrying a unit is a quantity, so it is shown in the same unit as the
+                    // plots and re-formatted here rather than taken as mdlib spelled it. Anything
+                    // else is drawn as it came.
+                    char buf[64];
+                    str_t str = vis_text.str;
+                    if (!md_unit_is_none(vis_text.unit)) {
+                        char unit_buf[32];
+                        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), vis_text.unit);
+                        // The degree sign hugs the number the way the convention has it, everything else takes a space.
+                        const char* sep = strcmp(unit_buf, "\xC2\xB0") == 0 ? "" : " ";
+                        const int len = snprintf(buf, sizeof(buf), "%.2f%s%s", vis_text.value * scl, sep, unit_buf);
+                        str = {buf, (size_t)CLAMP(len, 0, (int)sizeof(buf) - 1)};
+                    }
+
                     const ImVec2 text_size = ImGui::CalcTextSize(str.beg(), str.end());
 
                     if (-1 < c.x && c.x < 1 && -1 < c.y && c.y < 1 && -1 < c.z && c.z < 1) {
@@ -1082,7 +1184,7 @@ int main(int argc, char** argv) {
                         ImVec2 p0 = tc - text_size * 0.5f;
                         ImVec2 p1 = tc + text_size * 0.5f;
                         dl->AddRectFilled(p0 - rect_padding, p1 + rect_padding, rect_color, rect_rounding);
-                        dl->AddText(p0, text_color, state.script.vis.text[i].str.beg(), state.script.vis.text[i].str.end());
+                        dl->AddText(p0, text_color, str.beg(), str.end());
                     }
                 }
             }
@@ -1200,6 +1302,7 @@ int main(int argc, char** argv) {
         viamd::event_system_process_event_queue();
 
         update_md_buffers(&state);
+        update_timeline_time_unit(&state);
         update_display_properties(&state);
 
         render(&state);
@@ -1338,8 +1441,7 @@ static void init_display_properties(ApplicationState* data) {
             item.hist.alloc = persistent_alloc;
             item.partial_evaluation = partial_evaluation;
 
-            md_unit_print(item.unit_str[0], sizeof(item.unit_str), item.unit[0]);
-            md_unit_print(item.unit_str[1], sizeof(item.unit_str), item.unit[1]);
+            display_property_update_units(&item, data->timeline.time_unit);
 
             if (prop_flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 // Create a special distribution from the temporal (since we can)
@@ -1347,9 +1449,10 @@ static void init_display_properties(ApplicationState* data) {
                     DisplayProperty item_dist_raw = item;
                     item_dist_raw.type = DisplayProperty::Type_Distribution;
                     item_dist_raw.plot_type = DisplayProperty::PlotType_Line;
+                    // Binning a temporal property puts its VALUES on the x axis.
                     item_dist_raw.unit[0] = item.unit[1];
                     item_dist_raw.unit[1] = md_unit_none();
-                    MEMCPY(item.unit_str[0], item.unit_str[1], sizeof(item.unit_str[0]));
+                    display_property_update_units(&item_dist_raw, data->timeline.time_unit);
 
                     item_dist_raw.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
                         DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
@@ -1402,7 +1505,7 @@ static void init_display_properties(ApplicationState* data) {
                         int dim = data->display_prop->dim;
                         const float* y_values = data->display_prop->prop_data->values;
                         const float* x_values = data->display_prop->x_values;
-                        return ImPlotPoint(x_values[sample_idx], y_values[sample_idx * dim + dim_idx]);
+                        return ImPlotPoint(x_values[sample_idx], y_values[sample_idx * dim + dim_idx] * data->display_prop->unit_scale[1]);
                     };
                     display_property_copy_param_from_old(item_raw, old_items, md_array_size(old_items));
                     md_array_push(new_items, item_raw, frame_alloc);
@@ -1418,11 +1521,12 @@ static void init_display_properties(ApplicationState* data) {
                             DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
                             const float* y_values = data->prop_data->aggregate->population_mean;
                             const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], y_values[sample_idx]);
+                            return ImPlotPoint(x_values[sample_idx], y_values[sample_idx] * data->unit_scale[1]);
                         };
                         item_mean.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
-                            const float* y_mean = payload->display_prop->prop_data->aggregate->population_mean;
-                            return snprintf(buf, cap, "%.2f", y_mean[sample_idx]);
+                            const DisplayProperty* dp = payload->display_prop;
+                            const float* y_mean = dp->prop_data->aggregate->population_mean;
+                            return snprintf(buf, cap, "%.2f", y_mean[sample_idx] * dp->unit_scale[1]);
                         };
                         display_property_copy_param_from_old(item_mean, old_items, md_array_size(old_items));
                         md_array_push(new_items, item_mean, frame_alloc);
@@ -1438,18 +1542,19 @@ static void init_display_properties(ApplicationState* data) {
                             const float* y_mean = data->prop_data->aggregate->population_mean;
                             const float* y_var  = data->prop_data->aggregate->population_var;
                             const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], y_mean[sample_idx] - y_var[sample_idx]);
+                            return ImPlotPoint(x_values[sample_idx], (y_mean[sample_idx] - y_var[sample_idx]) * data->unit_scale[1]);
                             };
                         item_var.getter[1] = [](int sample_idx, void* payload) -> ImPlotPoint {
                             DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
                             const float* y_mean = data->prop_data->aggregate->population_mean;
                             const float* y_var  = data->prop_data->aggregate->population_var;
                             const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], y_mean[sample_idx] + y_var[sample_idx]);
+                            return ImPlotPoint(x_values[sample_idx], (y_mean[sample_idx] + y_var[sample_idx]) * data->unit_scale[1]);
                             };
                         item_var.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
-                            const float* y_var = payload->display_prop->prop_data->aggregate->population_var;
-                            return snprintf(buf, cap, "%.2f", y_var[sample_idx]);
+                            const DisplayProperty* dp = payload->display_prop;
+                            const float* y_var = dp->prop_data->aggregate->population_var;
+                            return snprintf(buf, cap, "%.2f", y_var[sample_idx] * dp->unit_scale[1]);
                             };
                         display_property_copy_param_from_old(item_var, old_items, md_array_size(old_items));
                         md_array_push(new_items, item_var, frame_alloc);
@@ -1464,17 +1569,18 @@ static void init_display_properties(ApplicationState* data) {
                             DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
                             const vec2_t* y_ext = data->prop_data->aggregate->population_ext;
                             const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], y_ext[sample_idx].x);
+                            return ImPlotPoint(x_values[sample_idx], y_ext[sample_idx].x * data->unit_scale[1]);
                             };
                         item_ext.getter[1] = [](int sample_idx, void* payload) -> ImPlotPoint {
                             DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
                             const vec2_t* y_ext = data->prop_data->aggregate->population_ext;
                             const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], y_ext[sample_idx].y);
+                            return ImPlotPoint(x_values[sample_idx], y_ext[sample_idx].y * data->unit_scale[1]);
                             };
                         item_ext.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
-                            const vec2_t* y_ext = payload->display_prop->prop_data->aggregate->population_ext;
-                            return snprintf(buf, cap, "%.2f, %.2f", y_ext[sample_idx].x, y_ext[sample_idx].y);
+                            const DisplayProperty* dp = payload->display_prop;
+                            const vec2_t* y_ext = dp->prop_data->aggregate->population_ext;
+                            return snprintf(buf, cap, "%.2f, %.2f", y_ext[sample_idx].x * dp->unit_scale[1], y_ext[sample_idx].y * dp->unit_scale[1]);
                             };
                         display_property_copy_param_from_old(item_ext, old_items, md_array_size(old_items));
                         md_array_push(new_items, item_ext, frame_alloc);
@@ -1484,6 +1590,9 @@ static void init_display_properties(ApplicationState* data) {
                 DisplayProperty item_dist = item;
                 item_dist.type = DisplayProperty::Type_Distribution;
                 item_dist.plot_type = DisplayProperty::PlotType_Line;
+                // Copied from 'item' while that was still temporal, so the x axis has to be redone
+                // now that it is the property's own x and not the timeline's.
+                display_property_update_units(&item_dist, data->timeline.time_unit);
                 item_dist.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
                     DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
 
@@ -1531,6 +1640,13 @@ static void update_display_properties(ApplicationState* data) {
 
     for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
         DisplayProperty& dp = data->display_properties[i];
+
+        if (dp.units_version != display_units::version()) {
+            display_property_update_units(&dp, data->timeline.time_unit);
+            // The histogram's x axis is the value axis, so its bin edges are stale too.
+            dp.prop_fingerprint = 0;
+        }
+
         if (dp.type == DisplayProperty::Type_Distribution) {
             if (dp.prop_fingerprint != dp.prop_data->fingerprint || dp.num_bins != dp.hist.num_bins) {
                 dp.prop_fingerprint = dp.prop_data->fingerprint;
@@ -1550,6 +1666,12 @@ static void update_display_properties(ApplicationState* data) {
                     hist.dim = 1;
                     downsample_histogram(hist.bins, hist.num_bins, dp.prop_data->values, dp.prop_data->weights, dp.prop_data->dim[2]);
                 }
+
+                // Binned in the property's own unit, shown in the user's, so the bin edges move
+                // and the curve keeps its shape. The bins themselves are left alone: the y axis of
+                // a distribution here is relative, not a density anyone reads a number off.
+                dp.hist.x_min *= dp.unit_scale[0];
+                dp.hist.x_max *= dp.unit_scale[0];
             }
         }
     }
@@ -2118,62 +2240,23 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
-            ImGui::Checkbox("Prefetch Frames", &data->settings.prefetch_frames);
-            ImGui::SetItemTooltip("Prefetch frames during animation\n");
-            ImGui::Checkbox("Keep Representations", &data->settings.keep_representations);
-            ImGui::SetItemTooltip("Keep representations when loading new topology (Does not apply for workspaces)\n");
+            if (ImGui::Checkbox("Keep Representations", &data->settings.keep_representations)) {
+                app_settings::mark_dirty();
+            }
+            ImGui::SetItemTooltip("Keep representations when loading new topology (does not apply for workspaces)\n");
 
             // Font
-            ImGuiStyle& style = ImGui::GetStyle();
-            static const float font_sizes[] = { 10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f, 30.0f, 36.0f, 48.0f, 64.0f, 72.0f };
-            static const char* font_size_names[] = { "10", "12", "14", "16", "18", "20", "24", "30", "36", "48", "64", "72" };
-            static int current_font_size_idx = 4;
-
-            if (ImGui::Combo("Font Size", &current_font_size_idx, font_size_names, (int)ARRAY_SIZE(font_size_names))) {
-                style.FontSizeBase = font_sizes[current_font_size_idx];
-                style._NextFrameFontSizeBase = style.FontSizeBase; // From Demo, seems like a temporary fix
+            int font_size_idx = nearest_font_size_index(data->settings.font_size);
+            if (ImGui::Combo("Font Size", &font_size_idx, font_size_names, (int)ARRAY_SIZE(font_size_names))) {
+                data->settings.font_size = font_sizes[font_size_idx];
+                apply_font_size(data);
+                app_settings::mark_dirty();
             }
 
-            /*
-            ImGui::Text("Units");
-            char buf[64];
-
-            unit_print_long(buf, sizeof(buf), {.base = { .length = data->mold.unit_base.length }, .dim = { .length = 1 }});
-            if (ImGui::BeginCombo("length", buf)) {
-                for (uint32_t i = 0; i < UNIT_LENGTH_COUNT; ++i) {
-                    unit_print_long(buf, sizeof(buf), {.base = { .length = i }, .dim = { .length = 1 }});
-                    ImGui::PushID((int)i);
-                    if (ImGui::Selectable(buf, i == data->mold.unit_base.length))
-                        data->mold.unit_base.length = i;
-                    ImGui::PopID();
-                }
-                ImGui::EndCombo();
-            }
-
-            unit_print_long(buf, sizeof(buf), {.base = { .time = data->mold.unit_base.time }, .dim = {.time = 1 }});
-            if (ImGui::BeginCombo("time", buf)) {
-                for (uint32_t i = 0; i < UNIT_TIME_COUNT; ++i) {
-                    unit_print_long(buf, sizeof(buf), {.base = { .time = i }, .dim = {.time = 1}});
-                    ImGui::PushID((int)i);
-                    if (ImGui::Selectable(buf, i == data->mold.unit_base.time))
-                        data->mold.unit_base.time = i;
-                    ImGui::PopID();
-                }
-                ImGui::EndCombo();
-            }
-
-            unit_print_long(buf, sizeof(buf), {.base = { .angle = data->mold.unit_base.angle }, .dim = {.angle = 1 }});
-            if (ImGui::BeginCombo("angle", buf)) {
-                for (uint32_t i = 0; i < UNIT_ANGLE_COUNT; ++i) {
-                    unit_print_long(buf, sizeof(buf), {.base = { .angle = i }, .dim = {.angle = 1 }});
-                    ImGui::PushID((int)i);
-                    if (ImGui::Selectable(buf, i == data->mold.unit_base.angle))
-                        data->mold.unit_base.angle = i;
-                    ImGui::PopID();
-                }
-                ImGui::EndCombo();
-            }
-            */
+			if (ImGui::TreeNode("Units")) {
+                display_units::draw_settings_menu_items();
+				ImGui::TreePop();
+			}
 
             ImGui::EndMenu();
         }
@@ -2258,13 +2341,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             state.loader_idx = 0;
             str_t ext;
             if (extract_ext(&ext, path)) {
-                for (int i = 0; i < loader_count; ++i) {
-					LoaderType type = (LoaderType)i;
-                    if (str_eq_ignore_case(ext, loader::type_ext(type))) {
-                        state.loader_idx = i;
-                        break;
-                    }
-                }
+                state.loader_idx = (int)loader::type_from_ext(ext);
             }
         }
 
@@ -3195,7 +3272,7 @@ static void draw_animation_window(ApplicationState* data) {
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::Text("Num Frames: %zu", num_frames);
-        md_unit_t time_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
+        md_unit_t time_unit = data->timeline.time_unit;
         double t   = frame_to_time(data->animation.frame, *data);
         double min = data->timeline.x_values[0];
         double max = data->timeline.x_values[num_frames - 1];
@@ -4291,7 +4368,7 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
             int frame_idx = CLAMP((int)(time_to_frame(time, data.timeline.x_values) + 0.5), 0, (int)md_array_size(data.timeline.x_values)-1);
             len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "time: %.2f", time);
 
-            md_unit_t time_unit = md_trajectory_time_unit(data.mold.sys.trajectory);
+            md_unit_t time_unit = data.timeline.time_unit;
             if (!md_unit_is_none(time_unit)) {
                 char unit_buf[32];
                 md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
@@ -4481,7 +4558,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
             char x_label[64] = "Frame";
             char x_unit_str[32] = "";
-            md_unit_t x_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
+            md_unit_t x_unit = data->timeline.time_unit;
             if (!md_unit_is_none(x_unit)) {
                 md_unit_print(x_unit_str, sizeof(x_unit_str), x_unit);
                 snprintf(x_label, sizeof(x_label), "Time (%s)", x_unit_str);
@@ -4498,25 +4575,24 @@ static void draw_timeline_window(ApplicationState* data) {
                         axis_flags_x |= ImPlotAxisFlags_NoTickLabels;
                     }
 
-                    // Check and see if every property within the current subplot share the same unit, if so, use it as y_label
-                    md_unit_t y_unit = md_unit_none();
+                    // Check and see if every property within the current subplot share the same unit, if so, use it as
+                    // y_label. It is what they are SHOWN in that has to agree, which is what unit_str holds.
+                    char y_unit_str[32] = "";
                     for (int j = 0; j < num_props; ++j) {
                         DisplayProperty& prop = data->display_properties[j];
                         if (prop.temporal_subplot_mask & (1 << i)) {
-                            if (md_unit_is_none(y_unit)) {
-                                y_unit = prop.unit[1];
-                            } else if (!md_unit_equal(y_unit, prop.unit[1])) {
+                            if (y_unit_str[0] == '\0') {
+                                str_copy_to_char_buf(y_unit_str, sizeof(y_unit_str), str_from_cstr(prop.unit_str[1]));
+                            } else if (strcmp(y_unit_str, prop.unit_str[1]) != 0) {
                                 // unit conflict, drop it
-                                y_unit = md_unit_none();
+                                y_unit_str[0] = '\0';
                                 break;
                             }
                         }
                     }
 
                     char y_label[64] = "";
-                    char y_unit_str[32] = "";
-                    if (!md_unit_is_none(y_unit)) {
-                        md_unit_print(y_unit_str, sizeof(y_unit_str), y_unit);
+                    if (y_unit_str[0] != '\0') {
                         snprintf(y_label, sizeof(y_label), "(%s)", y_unit_str);
                     }
 
@@ -5055,34 +5131,25 @@ static void draw_distribution_window(ApplicationState* data) {
             for (int i = 0; i < num_subplots; ++i) {
                 if (ImPlot::BeginPlot("", ImVec2(-1,0), plot_flags)) {
 
-                    md_unit_t x_unit = md_unit_none();
-                    md_unit_t y_unit = md_unit_none();
+                    // Labelled with what the properties are SHOWN in, which is what unit_str
+                    // holds; an empty label means either no unit or a subplot mixing several.
+                    char x_label[64] = "";
+                    char y_label[64] = "";
                     for (int j = 0; j < num_props; ++j) {
                         DisplayProperty& prop = data->display_properties[j];
                         if (prop.type != DisplayProperty::Type_Distribution) continue;
                         if (!(prop.distribution_subplot_mask & (1 << i))) continue;
 
-                        if (md_unit_is_none(x_unit)) {
-                            x_unit = prop.unit[0];
-                        } else if (!md_unit_equal(x_unit, prop.unit[0])) {
-                            // Set to unitless
-                            x_unit = md_unit_none();
+                        if (x_label[0] == '\0') {
+                            str_copy_to_char_buf(x_label, sizeof(x_label), str_from_cstr(prop.unit_str[0]));
+                        } else if (strcmp(x_label, prop.unit_str[0]) != 0) {
+                            x_label[0] = '\0';
                         }
-                        if (md_unit_is_none(y_unit)) {
-                            y_unit = prop.unit[1];
-                        } else if (!md_unit_equal(y_unit, prop.unit[1])) {
-                            // Set to unitless
-                            y_unit = md_unit_none();
+                        if (y_label[0] == '\0') {
+                            str_copy_to_char_buf(y_label, sizeof(y_label), str_from_cstr(prop.unit_str[1]));
+                        } else if (strcmp(y_label, prop.unit_str[1]) != 0) {
+                            y_label[0] = '\0';
                         }
-                    }
-
-                    char x_label[64] = "";
-                    if (!md_unit_is_none(x_unit)) {
-                        md_unit_print(x_label, sizeof(x_label), x_unit);
-                    }
-                    char y_label[64] = "";
-                    if (!md_unit_is_none(y_unit)) {
-                        md_unit_print(y_label, sizeof(y_label), y_unit);
                     }
 
                     ImPlot::SetupAxes(x_label, y_label, axis_flags_x, axis_flags_y);
@@ -6066,23 +6133,24 @@ static void draw_property_export_window(ApplicationState* data) {
                         if (dp.type == DisplayProperty::Type_Temporal) {
                             const double* traj_times = md_trajectory_frame_times(data->mold.sys.trajectory);
                             const size_t  num_frames = md_trajectory_num_frames(data->mold.sys.trajectory);
+                            // Exported in the units the plot shows, so a column and its axis label agree.
+                            const double time_scl  = data->timeline.time_scale;
+                            const double value_scl = dp.unit_scale[1];
+
                             md_array(float) time = md_array_create(float, num_frames, alloc);
                             for (size_t i = 0; i < num_frames; ++i) {
-                                time[i] = (float)traj_times[i];
+                                time[i] = (float)(traj_times[i] * time_scl);
                             }
 
                             str_t x_label = STR_LIT("Frame");
                             str_t y_label = str_from_cstr(dp.label);
 
                             if (!md_unit_is_none(dp.unit[1])) {
-                                y_label = str_printf(alloc, "%s (%s)", dp.label, dp.unit_str);
+                                y_label = str_printf(alloc, "%s (%s)", dp.label, dp.unit_str[1]);
                             }
 
-                            md_unit_t time_unit = md_trajectory_time_unit(data->mold.sys.trajectory);
-                            if (!md_unit_is_none(time_unit)) {
-                                char time_buf[64];
-                                size_t len = md_unit_print(time_buf, sizeof(time_buf), time_unit);
-                                x_label = str_printf(alloc, "Time (" STR_FMT ")", len, time_buf);
+                            if (!md_unit_is_none(data->timeline.time_unit)) {
+                                x_label = str_printf(alloc, "Time (%s)", dp.unit_str[0]);
                             }
 
                             md_array_push(column_data, time, alloc);
@@ -6093,14 +6161,18 @@ static void draw_property_export_window(ApplicationState* data) {
                                     str_t  legend = str_printf(alloc, "%s[%i]", dp.label, i + 1);
                                     float* values = (float*)md_alloc(alloc, sizeof(float) * num_frames);
                                     for (size_t j = 0; j < num_frames; ++j) {
-                                        values[j] = dp.y_values[j * dp.dim + i];
+                                        values[j] = (float)(dp.y_values[j * dp.dim + i] * value_scl);
                                     }
                                     md_array_push(column_data, values, alloc);
                                     md_array_push(legends, legend, alloc);
                                     md_array_push(column_labels, legend, alloc);
                                 }
                             } else {
-                                md_array_push(column_data, dp.y_values, alloc);
+                                float* values = (float*)md_alloc(alloc, sizeof(float) * num_frames);
+                                for (size_t j = 0; j < num_frames; ++j) {
+                                    values[j] = (float)(dp.y_values[j] * value_scl);
+                                }
+                                md_array_push(column_data, values, alloc);
                                 md_array_push(column_labels, y_label, alloc);
                             }
 
@@ -6118,7 +6190,7 @@ static void draw_property_export_window(ApplicationState* data) {
                             str_t x_label = str_from_cstr(dp.unit_str[0]);
                             str_t y_label = str_from_cstr(dp.label);
                             if (strlen(dp.unit_str[1]) > 0) {
-                                y_label = str_printf(frame_alloc, "%s (%s)", dp.label, dp.unit_str);
+                                y_label = str_printf(frame_alloc, "%s (%s)", dp.label, dp.unit_str[1]);
                             }
 
                             md_array_push(column_data, x_values, alloc);

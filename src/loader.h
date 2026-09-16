@@ -36,6 +36,11 @@ enum LoaderType_ {
 #if MD_VLX
     LoaderType_VLX_H5,
 #endif
+    LoaderType_MOLDEN,
+#if MD_TREXIO
+    LoaderType_TREXIO,
+#endif
+    LoaderType_ITP,     // GROMACS topology (.itp / .top), supplements a loaded system
     LoaderType_COUNT
 };
 

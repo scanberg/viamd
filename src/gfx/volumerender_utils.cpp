@@ -479,6 +479,20 @@ void render_volume(const RenderDesc& desc) {
         }
     }
 
+    // For the default framebuffer glDrawBuffers rejects the FRONT/BACK/LEFT/RIGHT
+    // tokens that glDrawBuffer accepts and that GL_DRAW_BUFFER0 reports back, so the
+    // restore has to go through glDrawBuffer there. See reset_gl_state() in
+    // postprocessing_utils.cpp for the same fix.
+    auto restore_draw_buffers = [](GLint fbo, const GLint* buffers, GLint count) {
+        if (fbo == 0) {
+            glDrawBuffer(count > 0 ? (GLenum)buffers[0] : GL_NONE);
+        } else if (count > 0) {
+            glDrawBuffers(count, (const GLenum*)buffers);
+        } else {
+            glDrawBuffer(GL_NONE);
+        }
+    };
+
     GLint bound_fbo;
     GLint bound_viewport[4];
     GLint bound_draw_buffer[8] = {0};
@@ -616,6 +630,10 @@ void render_volume(const RenderDesc& desc) {
         ASSERT(glIsTexture(desc.render_target.color));
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        GLenum vol_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (vol_status != GL_FRAMEBUFFER_COMPLETE) {
+            MD_LOG_ERROR("Volume render target framebuffer is incomplete (0x%04X)", (unsigned int)vol_status);
+        }
         if (desc.render_target.clear_color) {
             glClearColor(0, 0, 0, 0);
             glClear(GL_COLOR_BUFFER_BIT);
@@ -623,7 +641,7 @@ void render_volume(const RenderDesc& desc) {
     } else {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
         glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
-        glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
+        restore_draw_buffers(bound_fbo, bound_draw_buffer, bound_draw_buffer_count);
     }
 
     PUSH_GPU_SECTION("VOLUME RAYCASTING")
@@ -686,11 +704,7 @@ void render_volume(const RenderDesc& desc) {
     if (desc.render_target.color) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
         glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
-        if (bound_draw_buffer_count > 0) {
-            glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
-        } else {
-            glDrawBuffer(GL_NONE);
-        }
+        restore_draw_buffers(bound_fbo, bound_draw_buffer, bound_draw_buffer_count);
     }
 
 }

@@ -13,8 +13,15 @@
 #include <md_trajectory.h>
 #include <md_util.h>
 
+#include <md_molden.h>
+#include <md_itp.h>
+
 #if MD_VLX
 #include <md_vlx.h>
+#endif
+
+#if MD_TREXIO
+#include <md_trexio.h>
 #endif
 
 namespace loader {
@@ -33,8 +40,13 @@ static const str_t loader_name[LoaderType_COUNT] = {
         STR_LIT("Gromacs Lossless Trajectory (trr)"),
         STR_LIT("DCD Trajectory (dcd)"),
 #if MD_VLX
-        STR_LIT("VeloxChem (h5)")
+        STR_LIT("VeloxChem (h5)"),
 #endif
+        STR_LIT("Molden (molden)"),
+#if MD_TREXIO
+        STR_LIT("TREXIO (trexio)"),
+#endif
+        STR_LIT("Gromacs Topology (itp/top)"),
 };
 
 static const str_t loader_ext[LoaderType_COUNT] = {
@@ -51,8 +63,13 @@ static const str_t loader_ext[LoaderType_COUNT] = {
         STR_LIT("trr"),
         STR_LIT("dcd"),
 #if MD_VLX
-        STR_LIT("h5")
+        STR_LIT("h5"),
 #endif
+        STR_LIT("molden"),
+#if MD_TREXIO
+        STR_LIT("trexio"),
+#endif
+        STR_LIT("itp"),
 };
 
 static const LoaderFlags loader_flags[LoaderType_COUNT] = {
@@ -71,6 +88,11 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
 #if MD_VLX
         LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM | LoaderFlag_QM,  // Veloxchem (h5)
 #endif
+        LoaderFlag_System | LoaderFlag_QM,                          // Molden
+#if MD_TREXIO
+        LoaderFlag_System | LoaderFlag_QM,                          // TREXIO
+#endif
+        LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS topology
 };
 
 void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
@@ -93,6 +115,16 @@ void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
                     state->flags |= LoaderFlag_RequiresDialogue;
                 }
             }
+#if MD_TREXIO
+            // .h5 is not one format. A TREXIO file has a nucleus group and a VeloxChem one does
+            // not, so the extension picks the reader and the CONTENT corrects it - which is also
+            // why md_trexio_file_is_trexio exists.
+            if (state->type == LoaderType_TREXIO || (state->type == LoaderType_VLX_H5 && md_trexio_file_is_trexio(filepath))) {
+                state->type  = LoaderType_TREXIO;
+                state->flags = loader_flags[LoaderType_TREXIO];
+                return;
+            }
+#endif
 #if MD_VLX
             if (state->type == LoaderType_VLX_H5 && sys) {
                 // Send check to vlx to see if we can supplement the existing system with qm data
@@ -104,6 +136,15 @@ void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
             return;
         }
     }
+
+    // A Molden file is commonly called .molden.input or .mold, and .input is not an extension worth
+    // claiming, so the one case where looking inside the file is cheaper than guessing.
+    if (md_molden_file_is_molden(filepath)) {
+        state->type  = LoaderType_MOLDEN;
+        state->flags = loader_flags[LoaderType_MOLDEN];
+        return;
+    }
+
     MD_LOG_INFO("Could not determine loader type from file extension '" STR_FMT "'", STR_ARG(ext));
     state->flags |= LoaderFlag_RequiresDialogue;
 }
@@ -154,6 +195,12 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
         case LoaderType_VLX_H5:
             return md_vlx_system_init_from_file(out_sys, out_state, filepath);
 #endif
+        case LoaderType_MOLDEN:
+            return md_molden_system_init_from_file(out_sys, out_state, filepath);
+#if MD_TREXIO
+        case LoaderType_TREXIO:
+            return md_trexio_system_init_from_file(out_sys, out_state, filepath);
+#endif
         default:
             return false;
     }
@@ -167,6 +214,8 @@ bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& 
         case LoaderType_VLX_H5:
             return md_vlx_system_supplement_from_file(out_sys, filepath);
 #endif
+        case LoaderType_ITP:
+            return md_itp_system_supplement_from_file(out_sys, filepath);
         default:
             return false;
     }
@@ -194,6 +243,10 @@ LoaderFlags type_flags(LoaderType type) {
 }
 
 LoaderType type_from_ext(str_t ext) {
+    // One loader, two extensions: a .top is an .itp with a [ molecules ] section
+    if (str_eq_ignore_case(ext, STR_LIT("top"))) {
+        return LoaderType_ITP;
+    }
     for (size_t i = 1; i < LoaderType_COUNT; ++i) {
         if (str_eq_ignore_case(ext, loader_ext[i])) {
             return (LoaderType)i;

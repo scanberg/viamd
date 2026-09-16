@@ -11,6 +11,7 @@
 #include <event.h>
 #include <loader.h>
 #include <color_utils.h>
+#include <display_units.h>
 #include <serialization_utils.h>
 
 #include <gfx/gl_utils.h>
@@ -179,7 +180,9 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
                 {MD_BOND_FLAG_AROMATIC,     "AROMATIC"},
                 {MD_BOND_FLAG_COORDINATE,   "COORD"},
 				{MD_BOND_FLAG_METAL,        "METAL"},
+				{MD_BOND_FLAG_INFERRED,     "INFERRED"},
 				{MD_BOND_FLAG_USER_DEFINED, "USER"},
+				{MD_BOND_FLAG_TOPOLOGY,     "TOPOLOGY"},
             };
 
             for (size_t i = 0; i < ARRAY_SIZE(bond_flag_map); ++i) {
@@ -481,8 +484,16 @@ void init_trajectory_data(ApplicationState* data) {
         init_frame_cache(&data->mold.frame_cache, data->mold.sys.atom.count, data->allocator.persistent);
 
         ASSERT(header.frame_times);
-        double min_time = header.frame_times[0];
-        double max_time = header.frame_times[num_frames - 1];
+
+        // The timeline carries time in the unit the user asked to see it in. Everything downstream
+        // reads x_values and view_range, so this is the one place the conversion happens; a later
+        // change to the preference is picked up by update_timeline_time_unit in main.cpp.
+        const double time_scl = display_units::factor(&data->timeline.time_unit, md_trajectory_time_unit(data->mold.sys.trajectory));
+        data->timeline.time_scale    = time_scl;
+        data->timeline.units_version = display_units::version();
+
+        double min_time = header.frame_times[0] * time_scl;
+        double max_time = header.frame_times[num_frames - 1] * time_scl;
 
         data->timeline.view_range = {min_time, max_time};
         data->timeline.filter.beg_frame = (double)min_frame;
@@ -490,7 +501,7 @@ void init_trajectory_data(ApplicationState* data) {
 
         md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
         for (size_t i = 0; i < num_frames; ++i) {
-            data->timeline.x_values[i] = (float)header.frame_times[i];
+            data->timeline.x_values[i] = (float)(header.frame_times[i] * time_scl);
         }
 
         // The COORDINATE for the frame axis, published as an ordinary attribute rather than as
@@ -651,7 +662,7 @@ void init_trajectory_data(ApplicationState* data) {
                 }
             });
 
-            uint64_t time = (uint64_t)md_time_now();
+            uint64_t time = (uint64_t)md_tick_now();
             task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time, num_frames]() {
                 secondary_structure_render_denoise(
                     data->trajectory_data.secondary_structure_render.data,
@@ -659,8 +670,8 @@ void init_trajectory_data(ApplicationState* data) {
                     num_frames,
                     data->trajectory_data.secondary_structure.stride);
 
-                uint64_t t1 = (uint64_t)md_time_now();
-                double elapsed = md_time_as_seconds(t1 - t0);
+                uint64_t t1 = (uint64_t)md_tick_now();
+                double elapsed = md_tick_to_seconds(t1 - t0);
                 MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
                 // The fill is finished, so the two temporal attributes have changed - which is the
                 // one moment a consumer caching something derived from them needs to hear about.
@@ -821,6 +832,8 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             // 'success' stays false on purpose: it is what tells the caller a system was loaded,
             // and it resets the camera and the animation when it is true.
             if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state)) {
+                // A topology replaces bonds (and with them structures), which the GPU holds a copy of
+                state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                 VIAMD_LOG_SUCCESS("Successfully loaded supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
             } else {
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
@@ -4325,7 +4338,8 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
             prio = 1;
         } else if (loader_flags & LoaderFlag_System) {
             prio = 2;
-        } else if (loader_flags & LoaderFlag_Trajectory) {
+        } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental)) {
+            // A supplemental file (a topology) needs the system in place, same as a trajectory
             prio = 3;
         } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
             prio = 4;
@@ -4550,16 +4564,6 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         int32_t atom_idx = surf->hit.local_idx;
                         if (atom_idx >= 0 && (size_t)atom_idx < state->mold.sys.atom.count) {
                             md_bitfield_set_bit(&state->selection.highlight_mask, atom_idx);
-                            if (surf->selection_mode == InteractionSelectionMode::Append) {
-                                single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
-                            }
-                            else if (surf->selection_mode == InteractionSelectionMode::Remove) {
-                                single_selection_sequence_pop_idx(&state->selection.single_selection_sequence, atom_idx);
-                            }
-                            else if (surf->selection_mode == InteractionSelectionMode::None) {
-                                single_selection_sequence_clear(&state->selection.single_selection_sequence);
-                                single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
-                            }
                         }
                     } else if (surf->hit.domain == PickingDomain_Bond) {
                         size_t bond_idx = surf->hit.local_idx;
@@ -4571,6 +4575,26 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     
                     // Commit to selection mask upon click release, for hover we only update the highlight mask
                     if (surf->kind == InteractionSurfaceEventKind::Click) {
+                        // The single selection sequence records the order in which individual atoms were picked
+                        // and is what the context menu turns into script suggestions. Only a real click advances
+                        // it: a Hover event always carries selection_mode None, so doing this above would reset
+                        // the sequence to the atom under the cursor on every frame the mouse crosses the molecule.
+                        if (surf->hit.domain == PickingDomain_Atom) {
+                            int32_t atom_idx = surf->hit.local_idx;
+                            if (atom_idx >= 0 && (size_t)atom_idx < state->mold.sys.atom.count) {
+                                if (surf->selection_mode == InteractionSelectionMode::Append) {
+                                    single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
+                                }
+                                else if (surf->selection_mode == InteractionSelectionMode::Remove) {
+                                    single_selection_sequence_pop_idx(&state->selection.single_selection_sequence, atom_idx);
+                                }
+                                else if (surf->selection_mode == InteractionSelectionMode::None) {
+                                    single_selection_sequence_clear(&state->selection.single_selection_sequence);
+                                    single_selection_sequence_push_idx(&state->selection.single_selection_sequence, atom_idx);
+                                }
+                            }
+                        }
+
                         if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond) {
                             grow_mask_by_selection_granularity(&state->selection.highlight_mask, state->selection.granularity, state->mold.sys);
                             if (surf->selection_mode == InteractionSelectionMode::Append) {

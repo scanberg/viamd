@@ -1,10 +1,16 @@
-cmake_minimum_required(VERSION 3.26)
+﻿cmake_minimum_required(VERSION 3.26)
 # Use VCPKG to find and resolve HDF5-static on windows mainly, so we need to check for that before the project() call
 include(ext/mdlib/cmake/CheckVCPKG.cmake)
 
-# Must be set before project() so the toolchain picks it up
+# Must be set before project() so the toolchain picks it up.
+#
+# 13.0 is the floor the code actually holds to: the Metal backend guards its one
+# macOS 13 API with @available and reaches MTLResidencySet (macOS 15) through
+# NSClassFromString/performSelector precisely so it can be built against an older
+# target. release.yml passes the same value, so a local build and a released build
+# agree on what they are allowed to call.
 if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS deployment version")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment version")
 endif()
 
 project(viamd LANGUAGES C CXX)
@@ -59,6 +65,7 @@ option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_QM "Enable the Quantum Chemistry module" OFF)
+option(VIAMD_UNITTEST "Enable viamd unittests" ON)
 
 # Renamed from VIAMD_ENABLE_VELOXCHEM when the module stopped being VeloxChem specific. The old
 # name still works so that an existing build directory, script or CI job does not silently produce
@@ -75,13 +82,22 @@ set(VIAMD_NUM_WORKER_THREADS "0" CACHE STRING "Number of worker threads (Decreas
 set(MD_LINK_STDLIB_STATIC ${VIAMD_LINK_STDLIB_STATIC} CACHE BOOL "" FORCE)
 
 if (VIAMD_ENABLE_QM)
-    # VeloxChem h5 is the one QM reader mdlib currently has, so enabling the module enables it.
-    # A second reader would be turned on beside this, not instead of it.
+    # The QM readers mdlib has, turned on beside each other rather than instead of each other.
+    # TREXIO reads its own HDF5 back end directly, so it costs the dependency VeloxChem already
+    # brings in and no new one. Molden needs nothing at all and is built unconditionally, which is
+    # why it is not named here.
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
-    set(MD_VLX_BASIS_FOLDER "basis")
+    set(MD_ENABLE_TREXIO ON CACHE BOOL "" FORCE)
 endif ()
 
 find_package(OpenGL REQUIRED)
+
+# Before the add_subdirectory() calls, and unconditionally. enable_testing() applies to this
+# directory and the ones added below it, and ctest only descends from a CTestTestfile.cmake at
+# the build root - which is generated only if testing was enabled in the top-level scope. mdlib
+# calls enable_testing() itself, but that is its own scope: without this line, ctest run from a
+# viamd build directory reports "Total Tests: 0" and finds neither suite.
+enable_testing()
 
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
@@ -138,7 +154,9 @@ endif()
 
 
 set(SRC_FILES
+    src/app_settings.cpp
     src/color_utils.cpp
+    src/display_units.cpp
     src/event.cpp
     src/image.cpp
     src/imgui_widgets.cpp
@@ -149,7 +167,9 @@ set(SRC_FILES
     src/task_system.cpp
     src/viamd.cpp
 
+    src/app_settings.h
     src/color_utils.h
+    src/display_units.h
     src/event.h
     src/image.h
     src/imgui_widgets.h
@@ -310,7 +330,9 @@ if (VIAMD_ENABLE_DEFAULT_DATASET)
         create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
         add_dependencies(viamd viamd_copy_datasets)
     endif()
-    set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DATASET_DIR=\"datasets\")
+    # The resource names itself completely: the folder and the file were split between this
+    # file and main.cpp, so the identity of the default dataset lived in two places.
+    set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DEFAULT_DATASET=\"datasets/1ALA-500.pdb\")
 endif()
 
 target_compile_definitions(viamd PRIVATE

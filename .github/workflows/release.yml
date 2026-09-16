@@ -1,120 +1,256 @@
 name: Build and Release
+
 on:
   push:
     tags:
       - 'v*.*.*'
-env:
-  VCPKG_GIT_REVISION: 216bb6975d5cccd35c27a14fb39acec3ae0e8285
-  MDLIB_VCPKG_MANIFEST_DIR: ${{ github.workspace }}/ext/mdlib
+
 permissions:
   contents: write
   actions: write
+
 jobs:
+
+  # ---------------------------------------------------------------------------
+  # macOS ARM64
+  # ---------------------------------------------------------------------------
+
   build-macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-15
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
       - name: vcpkg build
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
+          manifest-dir: ${{ github.workspace }}/ext/mdlib
           triplet: arm64-osx-release
-          revision: ${{ env.VCPKG_GIT_REVISION }}
           token: ${{ github.token }}
           github-binarycache: true
-      - name: cmake
+
+      - name: Configure
         run: |
-          cmake -S . -B build -G Ninja ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} -DHDF5_USE_STATIC_LIBRARIES=TRUE -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DVIAMD_CREATE_MACOSX_BUNDLE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_QM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF
-      - name: build
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=arm64-osx-release \
+            -DVCPKG_MANIFEST_MODE=OFF \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DVIAMD_ENABLE_QM=ON \
+            -DMD_ENABLE_VLX=ON \
+            -DMD_ENABLE_TREXIO=ON \
+            -DMD_BENCHMARK=OFF \
+            -DMD_UNITTEST=OFF \
+            -DVIAMD_UNITTEST=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Code sign
+        run: codesign --deep --force --verbose --sign - build/bin/viamd.app
+
+      - name: Package
         run: |
-          cmake --build build --target viamd
-      - name: codesign
-        run: |
-          APP="build/bin/viamd.app"
-          codesign --force --deep --sign - "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-      - name: archive
-        run: |
-          ditto -c -k --keepParent --sequesterRsrc build/bin/viamd.app viamd_macos_arm64.zip
-      - name: release
-        uses: softprops/action-gh-release@v1
+          cd build/bin
+          zip -r ../../viamd_macos_arm64.zip viamd.app
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            viamd_macos_arm64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: viamd_macos_arm64.zip
+
+
+  # ---------------------------------------------------------------------------
+  # macOS x64 (AVX2)
+  # ---------------------------------------------------------------------------
 
   build-macos-x64:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: vcpkg build
-        uses: johnwason/vcpkg-action@v6
-        id: vcpkg
-        with:
-          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
-          triplet: x64-osx-release
-          revision: ${{ env.VCPKG_GIT_REVISION }}
-          token: ${{ github.token }}
-          github-binarycache: true
-      - name: cmake
-        run: |
-          cmake -S . -B build -G Ninja ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} -DHDF5_USE_STATIC_LIBRARIES=TRUE -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13 -DMD_ENABLE_AVX=ON -DMD_ENABLE_AVX2=ON -DMD_ENABLE_AVX512=OFF -DMD_ENABLE_FMA=ON -DVIAMD_CREATE_MACOSX_BUNDLE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_QM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF
-      - name: build
-        run: |
-          cmake --build build --target viamd
-      - name: codesign
-        run: |
-          APP="build/bin/viamd.app"
-          codesign --force --deep --sign - "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-      - name: archive
-        run: |
-          ditto -c -k --keepParent --sequesterRsrc build/bin/viamd.app viamd_macos_x64.zip
-      - name: release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            viamd_macos_x64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: macos-15
 
-  build-windows:
-    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
       - name: vcpkg build
         uses: johnwason/vcpkg-action@v6
         id: vcpkg
         with:
-          manifest-dir: ${{ env.MDLIB_VCPKG_MANIFEST_DIR }}
-          triplet: x64-windows-static-release
-          revision: ${{ env.VCPKG_GIT_REVISION }}
+          manifest-dir: ${{ github.workspace }}/ext/mdlib
+          triplet: x64-osx-release
           token: ${{ github.token }}
           github-binarycache: true
-      - name: cmake
+
+      - name: Configure
         run: |
-          cmake ${{ steps.vcpkg.outputs.vcpkg-cmake-config }} -DBUILD_SHARED_LIBS=OFF -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF -DBUILD_STATIC_LIBS=ON -DVIAMD_ENABLE_QM=ON -DMD_UNITTEST=OFF -DMD_ENABLE_VLX=ON -DMD_BENCHMARK=OFF . 
-      - name: build
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=x64-osx-release \
+            -DVCPKG_MANIFEST_MODE=OFF \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DVIAMD_ENABLE_QM=ON \
+            -DMD_ENABLE_VLX=ON \
+            -DMD_ENABLE_TREXIO=ON \
+            -DMD_BENCHMARK=OFF \
+            -DMD_UNITTEST=OFF \
+            -DVIAMD_UNITTEST=OFF \
+            -DMD_ENABLE_AVX=ON \
+            -DMD_ENABLE_AVX2=ON \
+            -DMD_ENABLE_AVX512=OFF \
+            -DMD_ENABLE_FMA=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Code sign
+        run: codesign --deep --force --verbose --sign - build/bin/viamd.app
+
+      - name: Package
         run: |
-          cmake --build . --config Release -- /nologo /verbosity:minimal /maxcpucount:4
-      - name: archive
-        uses: thedoctor0/zip-release@main
+          cd build/bin
+          zip -r ../../viamd_macos_x64_avx2.zip viamd.app
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          type: 'zip'
-          filename: 'viamd_win_x64_avx2.zip'
-          path: 'bin/Release/.'
-      - name: release
-        uses: softprops/action-gh-release@v1
+          files: viamd_macos_x64_avx2.zip
+
+
+  # ---------------------------------------------------------------------------
+  # Windows x64 (AVX2)
+  # ---------------------------------------------------------------------------
+
+  build-windows-x64:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
         with:
-          files: |
-            viamd_win_x64_avx2.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+
+      - name: vcpkg build
+        uses: johnwason/vcpkg-action@v6
+        id: vcpkg
+        with:
+          manifest-dir: ${{ github.workspace }}/ext/mdlib
+          triplet: x64-windows-static-release
+          token: ${{ github.token }}
+          github-binarycache: true
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_STATIC_LIBS=ON `
+            -DVIAMD_ENABLE_QM=ON `
+            -DMD_ENABLE_VLX=ON `
+            -DMD_ENABLE_TREXIO=ON `
+            -DMD_BENCHMARK=OFF `
+            -DMD_UNITTEST=OFF `
+            -DVIAMD_UNITTEST=OFF `
+            -DMD_ENABLE_AVX=ON `
+            -DMD_ENABLE_AVX2=ON `
+            -DMD_ENABLE_AVX512=OFF `
+            -DMD_ENABLE_FMA=ON
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path build/bin/Release/* -DestinationPath viamd_windows_x64_avx2.zip
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: viamd_windows_x64_avx2.zip
+
+
+  # ---------------------------------------------------------------------------
+  # Windows ARM64
+  #
+  # Cross compiled from the x64 runner: the VS 2022 image ships the ARM64 cross
+  # tools (Microsoft.VisualStudio.Component.VC.Tools.ARM64), selected with
+  # -A ARM64, and vcpkg builds the ARM64 dependencies with its x64 host tools.
+  # Nothing in the build runs a target binary, so there is no emulation needed.
+  #
+  # The AVX feature checks are answered up front. mdlib's FindAVX.cmake probes with
+  # check_c_source_runs, i.e. try_run, which has no honest answer when the target is
+  # not the host - so the HAVE_* cache entries are pre-seeded (a defined result makes
+  # check_c_source_runs skip the probe entirely) and the MD_ENABLE_* options are
+  # pinned to match. ARM64 has no AVX either way.
+  # ---------------------------------------------------------------------------
+
+  build-windows-arm64:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: vcpkg build
+        uses: johnwason/vcpkg-action@v6
+        id: vcpkg
+        with:
+          manifest-dir: ${{ github.workspace }}/ext/mdlib
+          triplet: arm64-windows-static-release
+          token: ${{ github.token }}
+          github-binarycache: true
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A ARM64 `
+            "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=arm64-windows-static-release `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_STATIC_LIBS=ON `
+            -DVIAMD_ENABLE_QM=ON `
+            -DMD_ENABLE_VLX=ON `
+            -DMD_ENABLE_TREXIO=ON `
+            -DMD_BENCHMARK=OFF `
+            -DMD_UNITTEST=OFF `
+            -DVIAMD_UNITTEST=OFF `
+            -DHAVE_AVX_EXTENSIONS=OFF `
+            -DHAVE_AVX2_EXTENSIONS=OFF `
+            -DHAVE_AVX512_EXTENSIONS=OFF `
+            -DHAVE_FMA_EXTENSIONS=OFF `
+            -DMD_ENABLE_AVX=OFF `
+            -DMD_ENABLE_AVX2=OFF `
+            -DMD_ENABLE_AVX512=OFF `
+            -DMD_ENABLE_FMA=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release -- /nologo /verbosity:minimal /maxcpucount:4
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path build/bin/Release/* -DestinationPath viamd_windows_arm64.zip
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: viamd_windows_arm64.zip

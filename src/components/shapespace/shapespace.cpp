@@ -453,8 +453,9 @@ struct Shapespace : viamd::EventHandler {
             md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
             defer { md_temp_end(temp_scope); };
 
-            // @TODO: add unit to time (if available)
-            md_unit_t time_unit = md_trajectory_time_unit(app_state->mold.sys.trajectory);
+            // The time column below is timeline.x_values, which is held in display units, so the
+            // label has to come from the same place rather than from the trajectory.
+            md_unit_t time_unit = app_state->timeline.time_unit;
 
             str_t x_label = STR_LIT("Frame");
             if (!md_unit_is_none(time_unit)) {
