@@ -59,7 +59,9 @@ void event_system_process_event_queue() {
 	}
 
 	Event* beg = event_system.queue;
-	std::sort(beg, beg + num_events, [](const Event& a, const Event& b) {
+	// Stable: events enqueued within the same tick share a timestamp and must keep their enqueue
+	// order. The tick is coarse enough for that to happen routinely on macOS (microseconds).
+	std::stable_sort(beg, beg + num_events, [](const Event& a, const Event& b) {
 		return a.process_time < b.process_time;
 	});
 	
@@ -79,7 +81,7 @@ void event_system_process_event_queue() {
 		}
 		size_t num_events_left = num_events - num_events_to_process;
 		if (num_events_left) {
-			MEMCPY(beg, beg + num_events_to_process, sizeof(Event) * num_events_left);
+			MEMMOVE(beg, beg + num_events_to_process, sizeof(Event) * num_events_left);  // ranges overlap
 		}
 		md_array_shrink(event_system.queue, num_events_left);
 	}
