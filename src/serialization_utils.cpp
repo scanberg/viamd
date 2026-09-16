@@ -110,7 +110,11 @@ void write_bitfield(serialization_state_t& state, str_t ident, const md_bitfield
 		size_t base64_size = md_base64_encode(base64_data, serialized_data, serialized_size);
 		if (base64_size) {
 			str_t base64 = {base64_data, base64_size};
-			md_strb_fmt(&state.sb, STR_FMT "=###" STR_FMT "###", STR_ARG(ident), STR_ARG(base64));
+			// The trailing newline is not cosmetic. Every other writer here terminates its line, and
+			// next_entry() splits a line at its first '='. Without it the following entry is glued
+			// onto the end of this one and silently swallowed - which is how every group label
+			// after the first went missing from a saved workspace.
+			md_strb_fmt(&state.sb, STR_FMT "=###" STR_FMT "###\n", STR_ARG(ident), STR_ARG(base64));
 		}
 	}
 }

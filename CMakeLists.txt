@@ -65,6 +65,7 @@ option(VIAMD_IMGUI_ENABLE_DOCKSPACE "Enable ImGui Dockspace in main window" OFF)
 option(VIAMD_CREATE_MACOSX_BUNDLE "Build a macosx bundle instead of just an executable" OFF)
 option(VIAMD_LINK_STDLIB_STATIC "Link against stdlib statically" ON)
 option(VIAMD_ENABLE_QM "Enable the Quantum Chemistry module" OFF)
+option(VIAMD_UNITTEST "Enable viamd unittests" ON)
 
 # Renamed from VIAMD_ENABLE_VELOXCHEM when the module stopped being VeloxChem specific. The old
 # name still works so that an existing build directory, script or CI job does not silently produce
@@ -86,11 +87,17 @@ if (VIAMD_ENABLE_QM)
     # brings in and no new one. Molden needs nothing at all and is built unconditionally, which is
     # why it is not named here.
     set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
-    set(MD_VLX_BASIS_FOLDER "basis")
     set(MD_ENABLE_TREXIO ON CACHE BOOL "" FORCE)
 endif ()
 
 find_package(OpenGL REQUIRED)
+
+# Before the add_subdirectory() calls, and unconditionally. enable_testing() applies to this
+# directory and the ones added below it, and ctest only descends from a CTestTestfile.cmake at
+# the build root - which is generated only if testing was enabled in the top-level scope. mdlib
+# calls enable_testing() itself, but that is its own scope: without this line, ctest run from a
+# viamd build directory reports "Total Tests: 0" and finds neither suite.
+enable_testing()
 
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
@@ -321,7 +328,9 @@ if (VIAMD_ENABLE_DEFAULT_DATASET)
         create_copy_resource_dir_target(viamd_copy_datasets "${CMAKE_CURRENT_SOURCE_DIR}/datasets" "${VIAMD_BIN_DIR}/datasets")
         add_dependencies(viamd viamd_copy_datasets)
     endif()
-    set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DATASET_DIR=\"datasets\")
+    # The resource names itself completely: the folder and the file were split between this
+    # file and main.cpp, so the identity of the default dataset lived in two places.
+    set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DEFAULT_DATASET=\"datasets/1ALA-500.pdb\")
 endif()
 
 target_compile_definitions(viamd PRIVATE

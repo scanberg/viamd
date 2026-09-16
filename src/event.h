@@ -12,7 +12,7 @@ typedef uint32_t EventPayloadType;
 struct Event {
 	EventType	type;
 	EventPayloadType payload_type;
-	uint64_t    timestamp;
+	uint64_t    process_time;
 	const void* payload;
 };
 

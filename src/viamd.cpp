@@ -660,7 +660,7 @@ void init_trajectory_data(ApplicationState* data) {
                 }
             });
 
-            uint64_t time = (uint64_t)md_time_now();
+            uint64_t time = (uint64_t)md_tick_now();
             task_system::ID main_task = task_system::create_main_task(STR_LIT("Update Trajectory Data"), [data, t0 = time, num_frames]() {
                 secondary_structure_render_denoise(
                     data->trajectory_data.secondary_structure_render.data,
@@ -668,8 +668,8 @@ void init_trajectory_data(ApplicationState* data) {
                     num_frames,
                     data->trajectory_data.secondary_structure.stride);
 
-                uint64_t t1 = (uint64_t)md_time_now();
-                double elapsed = md_time_as_seconds(t1 - t0);
+                uint64_t t1 = (uint64_t)md_tick_now();
+                double elapsed = md_tick_to_seconds(t1 - t0);
                 MD_LOG_INFO("Finished computing trajectory data (%.2fs)", elapsed);
                 // The fill is finished, so the two temporal attributes have changed - which is the
                 // one moment a consumer caching something derived from them needs to hear about.

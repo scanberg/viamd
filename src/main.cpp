@@ -44,6 +44,7 @@
 #include <gfx/postprocessing_utils.h>
 #include <gfx/volumerender_utils.h>
 
+#include <resource_path.h>
 #include <app_settings.h>
 #include <display_units.h>
 #include <imgui_widgets.h>
@@ -434,7 +435,7 @@ int main(int argc, char** argv) {
     struct NotificationState {
         md_mutex_t lock;
         uint64_t hash;
-        md_timestamp_t time;
+        md_tick_t time;
     };
 
     NotificationState notification_state = {
@@ -449,10 +450,10 @@ int main(int argc, char** argv) {
             NotificationState& state = *(NotificationState*)inst;            
 
             // Prevent spamming the logger with the same message by comparing its hash
-            const md_timestamp_t time = md_time_now();
+            const md_tick_t time = md_tick_now();
             const uint64_t hash = md_hash64(msg, strlen(msg), 0);
 
-            if (md_time_as_seconds(time - state.time) < 1.0 && hash == state.hash) {
+            if (md_tick_to_seconds(time - state.time) < 1.0 && hash == state.hash) {
                 return;
             }
             state.hash = hash;
@@ -606,16 +607,10 @@ int main(int argc, char** argv) {
     state.editor.SetPalette(TextEditor::GetDarkPalette());
 
     {
-#ifdef VIAMD_DATASET_DIR
-        char exe[1024];
-        size_t len = md_path_write_exe(exe, sizeof(exe));
-        if (len) {
+#ifdef VIAMD_DEFAULT_DATASET
+        {
             md_strb_t sb = md_strb_create(frame_alloc);
-            str_t folder;
-            extract_folder_path(&folder, {exe, len});
-            sb += folder;
-            sb += VIAMD_DATASET_DIR "/1ALA-500.pdb";
-            str_t path = md_strb_to_str(sb);
+            str_t path = viamd::resource_path(&sb, STR_LIT(VIAMD_DEFAULT_DATASET));
             if (md_path_is_valid(path)) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
                 // The motivation is that the dataset may reside in a shared folder on the system that has no write access.
@@ -1094,10 +1089,10 @@ int main(int argc, char** argv) {
                             });
                             
 #if MEASURE_EVALUATION_TIME
-                            uint64_t time = (uint64_t)md_time_now();
+                            uint64_t time = (uint64_t)md_tick_now();
                             task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [t0 = time]() {
-                                uint64_t t1 = md_time_now();
-                                double s = md_time_as_seconds(t1 - t0);
+                                uint64_t t1 = md_tick_now();
+                                double s = md_tick_to_seconds(t1 - t0);
                                 VIAMD_LOG_INFO("Evaluation completed in: %.3fs", s);
                             });
 #endif

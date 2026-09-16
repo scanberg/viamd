@@ -1821,7 +1821,7 @@ static inline size_t single_selection_sequence_count(const SingleSelectionSequen
 }
 
 static inline uint64_t generate_fingerprint() {
-    return (uint64_t)md_time_now();
+    return (uint64_t)md_tick_now();
 }
 
 void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state);
