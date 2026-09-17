@@ -1410,11 +1410,13 @@ struct QuantumChemistry : viamd::EventHandler {
         picking_surface_init(&orb.picking_surface, interaction_surface_orb);
         orb.target = default_view;
         orb.camera = orb.target;
-        orb.mo_idx = homo_idx[0];
-        orb.scroll_to_idx = homo_idx[0];
+        // homo_idx is -1 when the file carries no occupations, which is not an orbital to open on.
+        const int initial_mo = (homo_idx[0] >= 0 && (size_t)homo_idx[0] < num_mos) ? homo_idx[0] : 0;
+        orb.mo_idx = initial_mo;
+        orb.scroll_to_idx = initial_mo;
 
         // Export
-        export_state.mo.idx = homo_idx[0];
+        export_state.mo.idx = initial_mo;
 
         // CriPoAl
         md_bitfield_init(&critical_points.selection_mask, arena);
@@ -3902,6 +3904,17 @@ struct QuantumChemistry : viamd::EventHandler {
         return attribute_series_f64(&count, sys, path) ? count : 0;
     }
 
+    // A series that is only handed out when it covers the index space the caller is going to read it
+    // over. Presence alone is not enough: an optional column is indexed with a count that came from
+    // somewhere else (the coefficient matrix, the frequency axis), and a file that publishes a
+    // shorter column - or a reader that fills it differently - would otherwise be read past its end.
+    // NULL when absent, not a plain F64 series, or shorter than 'required'.
+    static const double* attribute_series_f64_covering(const md_system_t& sys, str_t path, size_t required) {
+        size_t count = 0;
+        const double* data = attribute_series_f64(&count, sys, path);
+        return (data && count >= required) ? data : nullptr;
+    }
+
     // A rank 2 {R,C} block of doubles, straight out of the table's storage. NULL when the path is
     // absent, computed, or not that shape. Same opt-in as attribute_series_f64 above and for the
     // same reason: these are resident F64 and the callers want them at that precision.
@@ -3944,12 +3957,13 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     // One row of it - one normal mode's displacements, one optimisation step's geometry. NULL when
-    // the row is out of range.
-    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, str_t path, size_t row) {
+    // the row is out of range, or when a row holds fewer than min_cols entries: every caller walks
+    // the row over the QM atoms, so a row that does not cover them is not one to read.
+    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, str_t path, size_t row, size_t min_cols) {
         size_t num_rows = 0;
         size_t num_cols = 0;
         const dvec3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
-        if (!data || row >= num_rows) return nullptr;
+        if (!data || row >= num_rows || num_cols < min_cols) return nullptr;
         return data + row * num_cols;
     }
 
@@ -4287,7 +4301,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     static int prev_idx = -1;
                     if (opt.selected != prev_idx) {
                         prev_idx = opt.selected;
-                        set_atom_coordinates(state, attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected));
+                        set_atom_coordinates(state, attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, qm.count));
                     }
                 }
             }
@@ -4300,7 +4314,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected);
+                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
                     const dvec3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
                     const uint8_t* atom_nr    = qm.atomic_number;
 
@@ -4350,15 +4364,22 @@ struct QuantumChemistry : viamd::EventHandler {
                             }
                         }
 
+                        // Both columns are optional members of the QM atom domain (see es_qm_atoms).
                         ImGui::TableNextColumn();
-                        str_t sym = md_util_element_symbol(atom_nr[row_n]);
-                        ImGui::Text(STR_FMT, STR_ARG(sym));
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", atom_coord[row_n].x);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", atom_coord[row_n].y);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", atom_coord[row_n].z);
+                        if (atom_nr) {
+                            str_t sym = md_util_element_symbol(atom_nr[row_n]);
+                            ImGui::Text(STR_FMT, STR_ARG(sym));
+                        } else {
+                            ImGui::TextUnformatted("-");
+                        }
+                        for (int c = 0; c < 3; ++c) {
+                            ImGui::TableNextColumn();
+                            if (atom_coord) {
+                                ImGui::Text("%12.6f", atom_coord[row_n].elem[c]);
+                            } else {
+                                ImGui::TextUnformatted("-");
+                            }
+                        }
 
                         ImGui::PopStyleColor(1);
                                 
@@ -4915,21 +4936,23 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::Combo("X unit", (int*)(&rsp.x_unit), x_unit_full_str, X_UNIT_COUNT);
                 ImGui::PopItemWidth();
 
+                // Every y column below is indexed over the frequency axis, so one shorter than it is
+                // treated as absent rather than read past its end.
                 // Samples are only used in CPP RSP, these hold intermediate results, i.e. converted to the selected x unit.
                 size_t num_samples = 0;
                 double* x_samples = NULL;
-                const double* y_samples_sigma = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/sigma"));
-                const double* y_samples_delta_epsilons = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"));
-                const double* y_samples_ord = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/optical_rotation"));
-                const double* y_samples_cs = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/cross_section"));
+                const double* y_samples_sigma = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/sigma"), num_frequencies);
+                const double* y_samples_delta_epsilons = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"), num_frequencies);
+                const double* y_samples_ord = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/optical_rotation"), num_frequencies);
+                const double* y_samples_cs = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/cross_section"), num_frequencies);
 
                 // Peaks are only used in LINEAR RSP, not in CPP
 				size_t num_peaks = 0;
 				double* x_peaks = NULL;
-                const double* y_peaks_osc = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/oscillator_strength"));
-                const double* y_peaks_cgs = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/rotatory_strength"));
-                const double* y_peaks_tpa_trans_linear = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/linear"));
-                const double* y_peaks_tpa_trans_circular = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/circular"));
+                const double* y_peaks_osc = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/oscillator_strength"), num_frequencies);
+                const double* y_peaks_cgs = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/rotatory_strength"), num_frequencies);
+                const double* y_peaks_tpa_trans_linear = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/linear"), num_frequencies);
+                const double* y_peaks_tpa_trans_circular = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/circular"), num_frequencies);
 
                 bool refit = false;
 
@@ -5510,8 +5533,9 @@ struct QuantumChemistry : viamd::EventHandler {
 						getter = spectrum_getter_gaussian;
 					}
 
-                    const double* x_peaks_raw = attribute_series_f64(nullptr, sys, STR_LIT("vlx/vib/frequency"));
-                    const double* y_peaks_ir = attribute_series_f64(nullptr, sys, STR_LIT("vlx/vib/ir_intensity"));
+                    const double* x_peaks_raw = attribute_series_f64_covering(sys, STR_LIT("vlx/vib/frequency"), num_normal_modes);
+                    // Optional, and indexed over the normal modes - dropped when it does not cover them.
+                    const double* y_peaks_ir = attribute_series_f64_covering(sys, STR_LIT("vlx/vib/ir_intensity"), num_normal_modes);
 
                     size_t num_external_frequencies = 0;
                     const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, STR_LIT("vlx/vib/external_frequency"));
@@ -5790,7 +5814,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (vib.selected != -1) {
                         // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const dvec3_t* norm_modes = attribute_vec3_row(sys, STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected);
+                        const dvec3_t* norm_modes = attribute_vec3_row(sys, STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
 
                         // Both columns are needed: the displacement is added to the reference
                         // geometry, and qm/atom/coordinate is not guaranteed to be published.
@@ -5823,10 +5847,15 @@ struct QuantumChemistry : viamd::EventHandler {
 
 #else
                             const double scl = vib.displacement_amp_scl * 0.25 * sin(vib.t);
+                            // Through the QM atom map and bounded by the system state, exactly as
+                            // set_atom_coordinates writes: QM atom i is system atom i only when the
+                            // calculation covers the whole system.
                             for (size_t i = 0; i < num_atoms; i++) {
-                                state.mold.state.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                state.mold.state.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                state.mold.state.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                const size_t idx = qm_to_system_atom(qm, i);
+                                if (idx >= state.mold.state.num_atoms) continue;
+                                state.mold.state.x[idx] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                state.mold.state.y[idx] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                state.mold.state.z[idx] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
                             if (vib.displace_aos) {
                             }
@@ -5847,10 +5876,14 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                     // If all is deselected, reset coords once
                     else if (vib.coord_modified) {
-                        for (size_t i = 0; i < num_atoms; i++) {
-                            state.mold.state.x[i] = (float)atom_coord[i].x;
-                            state.mold.state.y[i] = (float)atom_coord[i].y;
-                            state.mold.state.z[i] = (float)atom_coord[i].z;
+                        // coord_modified is only ever set with atom_coord present, but the column
+                        // is re-read every frame and the guard costs nothing.
+                        for (size_t i = 0; atom_coord && i < num_atoms; i++) {
+                            const size_t idx = qm_to_system_atom(qm, i);
+                            if (idx >= state.mold.state.num_atoms) continue;
+                            state.mold.state.x[idx] = (float)atom_coord[i].x;
+                            state.mold.state.y[idx] = (float)atom_coord[i].y;
+                            state.mold.state.z[idx] = (float)atom_coord[i].z;
                         }
                         viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
                         state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
@@ -5892,10 +5925,15 @@ struct QuantumChemistry : viamd::EventHandler {
         if (ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
 
             // The neutral names, which mdlib already aliases onto whatever the reader called them.
-            const double* occ_alpha = attribute_series_f64(nullptr, state.mold.sys, es_path::alpha_occupation);
-            const double* occ_beta  = attribute_series_f64(nullptr, state.mold.sys, es_path::beta_occupation);
-            const double* ene_alpha = attribute_series_f64(nullptr, state.mold.sys, es_path::alpha_energy);
-            const double* ene_beta  = attribute_series_f64(nullptr, state.mold.sys, es_path::beta_energy);
+            // Every one of these is optional - a TREXIO file, for one, need not carry orbital energies -
+            // and each is indexed by mo index over the coefficient matrix's row count, so a column is
+            // only used when it covers all of those rows. Everything below reads a null as "show no
+            // value", never as a column to index.
+            const size_t num_mo_rows = num_molecular_orbitals();
+            const double* occ_alpha = attribute_series_f64_covering(state.mold.sys, es_path::alpha_occupation, num_mo_rows);
+            const double* occ_beta  = attribute_series_f64_covering(state.mold.sys, es_path::beta_occupation,  num_mo_rows);
+            const double* ene_alpha = attribute_series_f64_covering(state.mold.sys, es_path::alpha_energy,     num_mo_rows);
+            const double* ene_beta  = attribute_series_f64_covering(state.mold.sys, es_path::beta_energy,      num_mo_rows);
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
 
@@ -6347,15 +6385,18 @@ struct QuantumChemistry : viamd::EventHandler {
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
+                    // The energy label is dropped, not faked, when the file carries no energies
+                    // for this panel's spin.
+                    const double* ene = ene_alpha;
                     if (unrestricted) {
                         draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (i & 1) ? (const char*)u8"α" : (const char*)u8"β");
-                        snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
+                        ene = (i & 1) ? ene_alpha : ene_beta;
                     }
-                    else {
-                        snprintf(buf, sizeof(buf), "%.4f", ene_alpha[mo_idx]);
+                    if (ene) {
+                        snprintf(buf, sizeof(buf), "%.4f", ene[mo_idx]);
+                        float width = ImGui::CalcTextSize(buf).x;
+                        draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0, 0, 0), buf);
                     }
-                    float width = ImGui::CalcTextSize(buf).x;
-                    draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0, 0, 0), buf);
                 }
             }
 
