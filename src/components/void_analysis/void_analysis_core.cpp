@@ -1,11 +1,388 @@
-﻿#include "channels.h"
+﻿#include "void_analysis_core.h"
 
 #include <core/md_allocator.h>
 #include <core/md_common.h>
+#include <core/md_grid.h>
+#include <core/md_spatial_acc.h>
+#include <core/md_coord_stream.h>
+#include <md_types.h>
 
 #include <float.h>
 #include <math.h>
 #include <string.h>
+
+// =================================================================================================
+// Porosity and accessible volume
+// =================================================================================================
+
+namespace {
+
+// Clamp a half open slab range to the profile. Returns false when nothing is left of it, which is
+// the one case every reduction below has to short circuit rather than divide by.
+bool clamp_range(const void_profile_t* prof, uint32_t* beg, uint32_t* end) {
+    if (!void_profile_valid(prof)) return false;
+    uint32_t b = *beg;
+    uint32_t e = *end;
+    if (b > prof->num_slabs) b = prof->num_slabs;
+    if (e > prof->num_slabs) e = prof->num_slabs;
+    if (b >= e) return false;
+    *beg = b;
+    *end = e;
+    return true;
+}
+
+}  // namespace
+
+bool void_profile_valid(const void_profile_t* prof) {
+    return prof && prof->hist && prof->solid && prof->total &&
+           prof->num_slabs > 0 && prof->num_bins > 0 && prof->bin_width > 0.0;
+}
+
+double void_profile_z_lo(const void_profile_t* prof, uint32_t slab) {
+    if (!prof) return 0.0;
+    return prof->z_min + (double)slab * prof->slab_height;
+}
+
+double void_profile_z_hi(const void_profile_t* prof, uint32_t slab) {
+    if (!prof) return 0.0;
+    return prof->z_min + (double)(slab + 1) * prof->slab_height;
+}
+
+uint32_t void_profile_slab_at(const void_profile_t* prof, double z) {
+    if (!prof || prof->num_slabs == 0 || !(prof->slab_height > 0.0)) return 0;
+    const double s = floor((z - prof->z_min) / prof->slab_height);
+    if (s <= 0.0) return 0;
+    if (s >= (double)(prof->num_slabs - 1)) return prof->num_slabs - 1;
+    return (uint32_t)s;
+}
+
+uint64_t void_profile_num_total(const void_profile_t* prof, uint32_t slab_beg, uint32_t slab_end) {
+    if (!clamp_range(prof, &slab_beg, &slab_end)) return 0;
+    uint64_t n = 0;
+    for (uint32_t s = slab_beg; s < slab_end; ++s) n += prof->total[s];
+    return n;
+}
+
+uint64_t void_profile_num_solid(const void_profile_t* prof, uint32_t slab_beg, uint32_t slab_end) {
+    if (!clamp_range(prof, &slab_beg, &slab_end)) return 0;
+    uint64_t n = 0;
+    for (uint32_t s = slab_beg; s < slab_end; ++s) n += prof->solid[s];
+    return n;
+}
+
+double void_profile_count_above(const void_profile_t* prof, uint32_t slab_beg, uint32_t slab_end, double r) {
+    if (!clamp_range(prof, &slab_beg, &slab_end)) return 0.0;
+
+    // Where r falls in the binning. Everything at or below bin b0 except the tail of b0 itself is
+    // excluded; the tail is what the linear split recovers, on the assumption that d is uniform
+    // within a bin. At a bin width well below the voxel spacing that assumption costs less than the
+    // voxelization already does.
+    const double u = (r > 0.0) ? r / prof->bin_width : 0.0;
+    if (u >= (double)prof->num_bins) return 0.0;
+
+    const uint32_t b0   = (uint32_t)u;
+    const double   frac = u - (double)b0;
+
+    double count = 0.0;
+    for (uint32_t s = slab_beg; s < slab_end; ++s) {
+        const uint64_t* h = prof->hist + (size_t)s * prof->num_bins;
+        uint64_t whole = 0;
+        for (uint32_t b = b0 + 1; b < prof->num_bins; ++b) whole += h[b];
+        count += (double)whole + (1.0 - frac) * (double)h[b0];
+    }
+    return count;
+}
+
+double void_profile_accessible_volume(const void_profile_t* prof, uint32_t slab_beg, uint32_t slab_end, double r) {
+    return void_profile_count_above(prof, slab_beg, slab_end, r) * (prof ? prof->voxel_volume : 0.0);
+}
+
+double void_profile_accessible_fraction(const void_profile_t* prof, uint32_t slab_beg, uint32_t slab_end, double r) {
+    const uint64_t total = void_profile_num_total(prof, slab_beg, slab_end);
+    if (total == 0) return 0.0;
+    return void_profile_count_above(prof, slab_beg, slab_end, r) / (double)total;
+}
+
+double void_profile_porosity(const void_profile_t* prof, uint32_t slab_beg, uint32_t slab_end) {
+    return void_profile_accessible_fraction(prof, slab_beg, slab_end, 0.0);
+}
+
+double void_profile_density(const void_profile_t* prof, uint32_t slab_beg, uint32_t slab_end, double r, double min_width) {
+    if (!void_profile_valid(prof)) return 0.0;
+    const double w  = (min_width > prof->bin_width) ? min_width : prof->bin_width;
+    const double hi = r + 0.5 * w;
+    const double lo = (r - 0.5 * w > 0.0) ? r - 0.5 * w : 0.0;
+    if (!(hi > lo)) return 0.0;
+    const double n_lo = void_profile_count_above(prof, slab_beg, slab_end, lo);
+    const double n_hi = void_profile_count_above(prof, slab_beg, slab_end, hi);
+    return (n_lo - n_hi) / (hi - lo);
+}
+
+double void_profile_solid_fraction(const void_profile_t* prof, uint32_t slab) {
+    if (!void_profile_valid(prof) || slab >= prof->num_slabs) return 0.0;
+    const uint64_t t = prof->total[slab];
+    return t ? (double)prof->solid[slab] / (double)t : 0.0;
+}
+
+double void_profile_solid_fraction_smooth(const void_profile_t* prof, uint32_t slab) {
+    if (!void_profile_valid(prof) || slab >= prof->num_slabs) return 0.0;
+    // Edge clamped [1 2 1]/4. A single noisy slab should not be able to move a surface by its own
+    // width, and at the free surface of a rough film exactly one slab is usually the noisy one.
+    const uint32_t lo = (slab > 0) ? slab - 1 : 0;
+    const uint32_t hi = (slab + 1 < prof->num_slabs) ? slab + 1 : prof->num_slabs - 1;
+    return 0.25 * void_profile_solid_fraction(prof, lo)
+         + 0.50 * void_profile_solid_fraction(prof, slab)
+         + 0.25 * void_profile_solid_fraction(prof, hi);
+}
+
+bool void_profile_film_extent(const void_profile_t* prof, double frac, uint32_t* out_slab_beg, uint32_t* out_slab_end, double* out_interior_solid_fraction) {
+    if (!void_profile_valid(prof)) return false;
+
+    // The interior value is taken as the peak of the smoothed profile rather than an average over
+    // some assumed interior, because which slabs are interior is precisely what is being decided.
+    double peak = 0.0;
+    for (uint32_t s = 0; s < prof->num_slabs; ++s) {
+        const double v = void_profile_solid_fraction_smooth(prof, s);
+        if (v > peak) peak = v;
+    }
+    if (out_interior_solid_fraction) *out_interior_solid_fraction = peak;
+    if (!(peak > 0.0)) return false;
+
+    const double thr = frac * peak;
+
+    // Outermost crossings, not the first contiguous run: an internal void large enough to drop the
+    // solid fraction below the threshold is part of the film, not a gap between two films.
+    uint32_t beg = prof->num_slabs;
+    uint32_t end = 0;
+    for (uint32_t s = 0; s < prof->num_slabs; ++s) {
+        if (void_profile_solid_fraction_smooth(prof, s) >= thr) {
+            if (s < beg) beg = s;
+            end = s + 1;
+        }
+    }
+    if (beg >= end) return false;
+
+    if (out_slab_beg) *out_slab_beg = beg;
+    if (out_slab_end) *out_slab_end = end;
+    return true;
+}
+
+// =================================================================================================
+// The distance field
+// =================================================================================================
+
+bool void_field_grid(md_grid_t* out_grid, const md_unitcell_t* cell, const float* x, const float* y, const float* z, size_t count, float spacing) {
+    if (!out_grid || !(spacing > 0.0f)) return false;
+
+    const uint32_t flags = cell ? md_unitcell_flags(cell) : (uint32_t)MD_UNITCELL_NONE;
+
+    vec3_t origin = {0, 0, 0};
+    vec3_t extent = {0, 0, 0};
+
+    if (flags != MD_UNITCELL_NONE) {
+        // Cartesian bounds of the cell parallelepiped: the sum of the positive components of the basis vectors
+        double A[3][3];
+        md_unitcell_A_extract_double(A, cell);
+        for (int r = 0; r < 3; ++r) {
+            double lo = 0.0, hi = 0.0;
+            for (int c = 0; c < 3; ++c) {
+                const double v = A[c][r];
+                if (v < 0.0) lo += v; else hi += v;
+            }
+            origin.elem[r] = (float)lo;
+            extent.elem[r] = (float)(hi - lo);
+        }
+    } else {
+        if (count == 0 || !x || !y || !z) return false;
+        vec3_t aabb_min = { FLT_MAX,  FLT_MAX,  FLT_MAX};
+        vec3_t aabb_max = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+        for (size_t i = 0; i < count; ++i) {
+            const vec3_t p = {x[i], y[i], z[i]};
+            aabb_min = vec3_min(aabb_min, p);
+            aabb_max = vec3_max(aabb_max, p);
+        }
+        const float margin = 2.0f * spacing;
+        for (int a = 0; a < 3; ++a) {
+            origin.elem[a] = aabb_min.elem[a] - margin;
+            extent.elem[a] = (aabb_max.elem[a] - aabb_min.elem[a]) + 2.0f * margin;
+        }
+    }
+
+    for (int a = 0; a < 3; ++a) {
+        const int dim = (int)round((double)extent.elem[a] / (double)spacing);
+        out_grid->dim[a] = MAX(1, dim);
+        out_grid->spacing.elem[a] = extent.elem[a] / (float)out_grid->dim[a];
+    }
+    out_grid->origin = origin;
+    out_grid->orientation = mat3_ident();
+
+    return md_grid_num_points(out_grid) > 0;
+}
+
+uint32_t void_field_num_tiles(const md_grid_t* grid) {
+    if (!grid) return 0;
+    uint32_t n = 1;
+    for (int a = 0; a < 3; ++a) {
+        if (grid->dim[a] <= 0) return 0;
+        n *= (uint32_t)((grid->dim[a] + VOID_FIELD_TILE_DIM - 1) / VOID_FIELD_TILE_DIM);
+    }
+    return n;
+}
+
+void void_field_accum_reset(void_field_accum_t* accum, uint32_t num_slabs, uint32_t num_bins) {
+    if (!accum) return;
+    if (accum->hist)  MEMSET(accum->hist,  0, (size_t)num_slabs * num_bins * sizeof(uint64_t));
+    if (accum->solid) MEMSET(accum->solid, 0, (size_t)num_slabs * sizeof(uint64_t));
+    if (accum->total) MEMSET(accum->total, 0, (size_t)num_slabs * sizeof(uint64_t));
+    accum->num_clamped = 0;
+    accum->d_min =  FLT_MAX;
+    accum->d_max = -FLT_MAX;
+}
+
+void void_field_accum_merge(void_field_accum_t* dst, const void_field_accum_t* src, uint32_t num_slabs, uint32_t num_bins) {
+    if (!dst || !src) return;
+    const size_t stride = (size_t)num_slabs * num_bins;
+    for (size_t i = 0; i < stride; ++i) dst->hist[i] += src->hist[i];
+    for (uint32_t s = 0; s < num_slabs; ++s) {
+        dst->solid[s] += src->solid[s];
+        dst->total[s] += src->total[s];
+    }
+    dst->num_clamped += src->num_clamped;
+    dst->d_min = MIN(dst->d_min, src->d_min);
+    dst->d_max = MAX(dst->d_max, src->d_max);
+}
+
+void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* desc, uint32_t tile_beg, uint32_t tile_end) {
+    if (!accum || !desc || !desc->acc || !desc->grid) return;
+    if (desc->num_slabs == 0 || desc->num_bins == 0) return;
+
+    const md_grid_t& grid = *desc->grid;
+    const int TD = VOID_FIELD_TILE_DIM;
+    const int tiles[3] = {
+        (grid.dim[0] + TD - 1) / TD,
+        (grid.dim[1] + TD - 1) / TD,
+        (grid.dim[2] + TD - 1) / TD,
+    };
+    tile_end = MIN(tile_end, void_field_num_tiles(desc->grid));
+
+    const uint32_t num_slabs = desc->num_slabs;
+    const uint32_t num_bins  = desc->num_bins;
+    const float    max_dist  = (float)desc->max_dist;
+
+    // Bin edges over [0, max_dist], which is exactly the range the query resolves - a voxel with no
+    // bead within max_dist comes back at max_dist and lands in the last bin.
+    const double bin_width = desc->max_dist / (double)num_bins;
+
+    // A triclinic cell is covered by a grid over its bounding box, and the query wraps the corners
+    // which stick out back into the cell. Those voxels are periodic images of voxels already counted,
+    // so including them would weight part of the cell twice and quietly bias every fraction read off
+    // the profile. Test the fractional coordinate and leave them out of the statistics. The field is
+    // still written for them, since the channel sweep wants a complete grid.
+    double Icell[3][3] = {};
+    uint32_t cell_flags = 0;
+    if (desc->cell) {
+        cell_flags = md_unitcell_flags(desc->cell);
+        md_unitcell_I_extract_double(Icell, desc->cell);
+    }
+    const bool mask_cell = (cell_flags & MD_UNITCELL_TRICLINIC) != 0;
+    const bool pbc_axis[3] = {
+        (cell_flags & MD_UNITCELL_PBC_X) != 0,
+        (cell_flags & MD_UNITCELL_PBC_Y) != 0,
+        (cell_flags & MD_UNITCELL_PBC_Z) != 0,
+    };
+
+    enum { TILE_SIZE = VOID_FIELD_TILE_DIM * VOID_FIELD_TILE_DIM * VOID_FIELD_TILE_DIM };
+    float qx[TILE_SIZE], qy[TILE_SIZE], qz[TILE_SIZE];
+    float dist[TILE_SIZE];
+    int   vi[TILE_SIZE], vj[TILE_SIZE], vk[TILE_SIZE];
+
+    for (uint32_t t = tile_beg; t < tile_end; ++t) {
+        const int tx = (int)(t % (uint32_t)tiles[0]);
+        const int ty = (int)((t / (uint32_t)tiles[0]) % (uint32_t)tiles[1]);
+        const int tz = (int)(t / ((uint32_t)tiles[0] * (uint32_t)tiles[1]));
+
+        // A tile is a compact block of voxels, which is what the batched query is efficient at
+        int n = 0;
+        for (int k = 0; k < TD; ++k) {
+            const int z = tz * TD + k;
+            if (z >= grid.dim[2]) break;
+            for (int j = 0; j < TD; ++j) {
+                const int y = ty * TD + j;
+                if (y >= grid.dim[1]) break;
+                for (int i = 0; i < TD; ++i) {
+                    const int x = tx * TD + i;
+                    if (x >= grid.dim[0]) break;
+                    qx[n] = grid.origin.x + ((float)x + 0.5f) * grid.spacing.x;
+                    qy[n] = grid.origin.y + ((float)y + 0.5f) * grid.spacing.y;
+                    qz[n] = grid.origin.z + ((float)z + 0.5f) * grid.spacing.z;
+                    vi[n] = x;
+                    vj[n] = y;
+                    vk[n] = z;
+                    n += 1;
+                }
+            }
+        }
+        if (n == 0) continue;
+
+        md_coord_stream_t pts = md_coord_stream_from_soa(qx, qy, qz, NULL, (size_t)n);
+        md_spatial_acc_query_nearest(desc->acc, &pts, desc->max_dist, NULL, dist);
+
+        for (int p = 0; p < n; ++p) {
+            const float d = dist[p];
+
+            if (desc->field) {
+                const size_t idx = ((size_t)vk[p] * (size_t)grid.dim[1] + (size_t)vj[p]) * (size_t)grid.dim[0] + (size_t)vi[p];
+                desc->field[idx] = MAX(0.0f, d);
+            }
+
+            if (mask_cell) {
+                bool outside = false;
+                for (int a = 0; a < 3 && !outside; ++a) {
+                    if (!pbc_axis[a]) continue;
+                    const double f = Icell[0][a] * (double)qx[p]
+                                   + Icell[1][a] * (double)qy[p]
+                                   + Icell[2][a] * (double)qz[p];
+                    outside = (f < 0.0 || f >= 1.0);
+                }
+                if (outside) continue;
+            }
+
+            const uint32_t slab = void_profile_slab_of(vk[p], grid.dim[2], num_slabs);
+
+            accum->total[slab] += 1;
+            accum->d_min = MIN(accum->d_min, d);
+            accum->d_max = MAX(accum->d_max, d);
+            if (d >= max_dist) accum->num_clamped += 1;
+
+            if (d <= 0.0f) {
+                accum->solid[slab] += 1;
+            } else {
+                const uint32_t bin = void_profile_bin_of((double)d, bin_width, num_bins);
+                accum->hist[(size_t)slab * num_bins + bin] += 1;
+            }
+        }
+    }
+}
+
+void_profile_t void_field_profile(const void_field_accum_t* accum, const void_field_desc_t* desc) {
+    void_profile_t p = {};
+    if (!accum || !desc || !desc->grid || desc->num_slabs == 0 || desc->num_bins == 0) return p;
+    const md_grid_t& grid = *desc->grid;
+    p.hist         = accum->hist;
+    p.solid        = accum->solid;
+    p.total        = accum->total;
+    p.num_slabs    = desc->num_slabs;
+    p.num_bins     = desc->num_bins;
+    p.bin_width    = desc->max_dist / (double)desc->num_bins;
+    p.z_min        = (double)grid.origin.z;
+    p.slab_height  = (double)grid.spacing.z * (double)grid.dim[2] / (double)desc->num_slabs;
+    p.voxel_volume = (double)grid.spacing.x * (double)grid.spacing.y * (double)grid.spacing.z;
+    return p;
+}
+
+// =================================================================================================
+// Channels
+// =================================================================================================
 
 #define CHANNEL_FLAG_TOP    0x1
 #define CHANNEL_FLAG_BOTTOM 0x2

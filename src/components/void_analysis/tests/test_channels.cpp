@@ -1,6 +1,6 @@
 ﻿#include "utest.h"
 
-#include <channels.h>
+#include <void_analysis/void_analysis_core.h>
 
 #include <core/md_allocator.h>
 

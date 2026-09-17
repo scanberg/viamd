@@ -21,25 +21,17 @@
 #include <implot_internal.h>
 #include <implot3d.h>
 
-#include "channels.h"
-#include "void_profile.h"
+#include "void_analysis_core.h"
 
 #include <float.h>
 
 /*
-    Void and nanopore characterization: the distance field stage.
+    Void and nanopore characterization: the component.
 
-    For every voxel of a regular grid this computes the additively weighted distance to the nearest bead surface,
-
-        d(p) = min_i ( |p - c_i| - R_i ),
-
-    which is the radius of the largest probe sphere that fits at p. The work is done by the weighted nearest query
-    on md_spatial_acc, so the field is exact everywhere rather than banded, and periodicity is whatever the unit cell
-    of the system says it is - periodic in x and y and open in z for a supported film, for instance.
-
-    Everything downstream of the field - thresholding, connected components, the percolation threshold radius, pore
-    size distributions - is deliberately absent here. This stage is what those need, and it is what the analytic
-    test cases in mdlib validate.
+    The computation lives in void_analysis_core.h - the distance field, the profile it is summarized into and the
+    reductions of it, and connectivity through z - and is tested on its own under tests/. This file owns what needs
+    an application: the window and its parameters, reading the system, spreading the field pass over the task
+    system, and the 3D overlay.
 
     Residency: statistics are accumulated per tile while the tile is still in cache, so the full field is only
     materialized when explicitly asked for. At 0.5 nm voxels a 670 x 670 x 175 nm box is 2.4e9 voxels, which is
@@ -48,8 +40,6 @@
 
 namespace {
 
-constexpr int   TILE_DIM  = 8;                        // Voxels per tile along each axis
-constexpr int   TILE_SIZE = TILE_DIM * TILE_DIM * TILE_DIM;
 constexpr int   NUM_BINS  = 512;                      // Distance bins of the profile histogram
 constexpr int   MAX_SLABS = 512;                      // Upper bound on the z resolution of the profile
 constexpr int   SASA_MAX_POINTS = 1024;
@@ -146,7 +136,7 @@ struct Stats {
 
     // The field summarized as a histogram of the distance, resolved along z. Porosity, accessible
     // volume and the coarea surface area are all reductions of this one array, so they cannot
-    // disagree with each other the way three separate passes could. See void_profile.h.
+    // disagree with each other the way three separate passes could. See void_analysis_core.h.
     md_array(uint64_t) hist       = 0;   // [slab * NUM_BINS + bin], void voxels only
     md_array(uint64_t) slab_solid = 0;   // [slab]
     md_array(uint64_t) slab_total = 0;   // [slab]
@@ -406,48 +396,7 @@ struct VoidAnalysis : viamd::EventHandler {
     // Axis aligned grid covering the unit cell, or the atoms when there is no cell.
     // The voxel count is chosen so the grid tiles the box exactly, which keeps a periodic field seamless.
     bool setup_grid(md_grid_t* out_grid, const md_system_state_t& state) {
-        double A[3][3];
-        md_unitcell_A_extract_double(A, &state.unitcell);
-        const uint32_t flags = md_unitcell_flags(&state.unitcell);
-
-        vec3_t origin = {0, 0, 0};
-        vec3_t extent = {0, 0, 0};
-
-        if (flags != MD_UNITCELL_NONE) {
-            // Cartesian bounds of the cell parallelepiped: the sum of the positive components of the basis vectors
-            for (int r = 0; r < 3; ++r) {
-                double lo = 0.0, hi = 0.0;
-                for (int c = 0; c < 3; ++c) {
-                    const double v = A[c][r];
-                    if (v < 0.0) lo += v; else hi += v;
-                }
-                origin.elem[r] = (float)lo;
-                extent.elem[r] = (float)(hi - lo);
-            }
-        } else {
-            vec3_t aabb_min = { FLT_MAX,  FLT_MAX,  FLT_MAX};
-            vec3_t aabb_max = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-            for (size_t i = 0; i < state.num_atoms; ++i) {
-                const vec3_t p = {state.x[i], state.y[i], state.z[i]};
-                aabb_min = vec3_min(aabb_min, p);
-                aabb_max = vec3_max(aabb_max, p);
-            }
-            const float margin = 2.0f * voxel_spacing;
-            for (int a = 0; a < 3; ++a) {
-                origin.elem[a] = aabb_min.elem[a] - margin;
-                extent.elem[a] = (aabb_max.elem[a] - aabb_min.elem[a]) + 2.0f * margin;
-            }
-        }
-
-        for (int a = 0; a < 3; ++a) {
-            const int dim = (int)round((double)extent.elem[a] / (double)voxel_spacing);
-            out_grid->dim[a] = MAX(1, dim);
-            out_grid->spacing.elem[a] = extent.elem[a] / (float)out_grid->dim[a];
-        }
-        out_grid->origin = origin;
-        out_grid->orientation = mat3_ident();
-
-        return md_grid_num_points(out_grid) > 0;
+        return void_field_grid(out_grid, &state.unitcell, state.x, state.y, state.z, state.num_atoms, voxel_spacing);
     }
 
     void compute() {
@@ -477,7 +426,7 @@ struct VoidAnalysis : viamd::EventHandler {
             md_array_resize(field, num_voxels, arena);
         }
 
-        const md_timestamp_t t0 = md_time_now();
+        const md_tick_t t0 = md_tick_now();
 
         md_temp_scope_t temp_scope = md_temp_begin();
         defer { md_temp_end(temp_scope); };
@@ -499,136 +448,40 @@ struct VoidAnalysis : viamd::EventHandler {
         md_spatial_acc_init_desc(&acc, &desc);
         defer { md_spatial_acc_free(&acc); };
 
-        const int tiles[3] = {
-            (grid.dim[0] + TILE_DIM - 1) / TILE_DIM,
-            (grid.dim[1] + TILE_DIM - 1) / TILE_DIM,
-            (grid.dim[2] + TILE_DIM - 1) / TILE_DIM,
-        };
-        const uint32_t num_tiles = (uint32_t)tiles[0] * (uint32_t)tiles[1] * (uint32_t)tiles[2];
+        const uint32_t num_tiles = void_field_num_tiles(&grid);
 
         // z resolution of the profile. Never finer than the grid: a slab thinner than a plane of
         // voxels is either empty or a duplicate of its neighbour, and neither is a measurement.
         const uint32_t num_slabs = (uint32_t)CLAMP(z_slabs, 1, MIN(grid.dim[2], MAX_SLABS));
 
-        // Bin edges over [0, max_dist], which is exactly the range the query resolves - a voxel with
-        // no bead within max_dist comes back at max_dist and lands in the last bin. The bins are the
-        // resolution in R of every accessible volume reported later, so they are deliberately finer
-        // than the voxel spacing: R is a continuous parameter and the voxelization, not the binning,
-        // is what should be limiting. The coarea derivative is the one reader that needs a coarser
-        // window, and it widens its own rather than making everyone else share it.
-        const double bin_width  = (double)max_dist / (double)NUM_BINS;
+        // The bins are the resolution in R of every accessible volume reported later, so they are
+        // deliberately finer than the voxel spacing: R is a continuous parameter and the voxelization,
+        // not the binning, is what should be limiting. The coarea derivative is the one reader that
+        // needs a coarser window, and it widens its own rather than making everyone else share it.
+        void_field_desc_t fdesc = {};
+        fdesc.acc       = &acc;
+        fdesc.cell      = &state.unitcell;
+        fdesc.grid      = &grid;
+        fdesc.max_dist  = (double)max_dist;
+        fdesc.num_slabs = num_slabs;
+        fdesc.num_bins  = NUM_BINS;
+        fdesc.field     = field;
 
         // Per thread accumulators, merged once the range task has completed. Nothing is shared while it runs.
         const size_t num_threads = MAX((size_t)1, task_system::pool_num_threads() + 1);
         const size_t hist_stride = (size_t)num_slabs * NUM_BINS;
-        uint64_t* hist    = (uint64_t*)md_temp_alloc(temp_scope, num_threads * hist_stride * sizeof(uint64_t));
-        uint64_t* solid   = (uint64_t*)md_temp_alloc(temp_scope, num_threads * num_slabs * sizeof(uint64_t));
-        uint64_t* total   = (uint64_t*)md_temp_alloc(temp_scope, num_threads * num_slabs * sizeof(uint64_t));
-        uint64_t* clamped = (uint64_t*)md_temp_alloc(temp_scope, num_threads * sizeof(uint64_t));
-        float*    d_lo    = (float*)   md_temp_alloc(temp_scope, num_threads * sizeof(float));
-        float*    d_hi    = (float*)   md_temp_alloc(temp_scope, num_threads * sizeof(float));
-        MEMSET(hist,    0, num_threads * hist_stride * sizeof(uint64_t));
-        MEMSET(solid,   0, num_threads * num_slabs * sizeof(uint64_t));
-        MEMSET(total,   0, num_threads * num_slabs * sizeof(uint64_t));
-        MEMSET(clamped, 0, num_threads * sizeof(uint64_t));
+        void_field_accum_t* accum = (void_field_accum_t*)md_temp_alloc(temp_scope, num_threads * sizeof(void_field_accum_t));
         for (size_t i = 0; i < num_threads; ++i) {
-            d_lo[i] =  FLT_MAX;
-            d_hi[i] = -FLT_MAX;
+            accum[i].hist  = (uint64_t*)md_temp_alloc(temp_scope, hist_stride * sizeof(uint64_t));
+            accum[i].solid = (uint64_t*)md_temp_alloc(temp_scope, num_slabs * sizeof(uint64_t));
+            accum[i].total = (uint64_t*)md_temp_alloc(temp_scope, num_slabs * sizeof(uint64_t));
+            void_field_accum_reset(&accum[i], num_slabs, NUM_BINS);
         }
-
-        // A triclinic cell is covered by a grid over its bounding box, and the query wraps the
-        // corners which stick out back into the cell. Those voxels are periodic images of voxels
-        // already counted, so including them would weight part of the cell twice and quietly bias
-        // every fraction below. Test the fractional coordinate and leave them out of the statistics.
-        // The field is still written for them, since the channel sweep wants a complete grid.
-        double Icell[3][3];
-        md_unitcell_I_extract_double(Icell, &state.unitcell);
-        const uint32_t cell_flags = md_unitcell_flags(&state.unitcell);
-        const bool mask_cell = (cell_flags & MD_UNITCELL_TRICLINIC) != 0;
-        const bool pbc_axis[3] = {
-            (cell_flags & MD_UNITCELL_PBC_X) != 0,
-            (cell_flags & MD_UNITCELL_PBC_Y) != 0,
-            (cell_flags & MD_UNITCELL_PBC_Z) != 0,
-        };
 
         task_system::ID task = task_system::create_pool_task(STR_LIT("Void distance field"), num_tiles,
             [&](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 const uint32_t ti = MIN((uint32_t)(num_threads - 1), thread_num);
-                uint64_t* my_hist  = hist  + (size_t)ti * hist_stride;
-                uint64_t* my_solid = solid + (size_t)ti * num_slabs;
-                uint64_t* my_total = total + (size_t)ti * num_slabs;
-
-                float qx[TILE_SIZE], qy[TILE_SIZE], qz[TILE_SIZE];
-                float dist[TILE_SIZE];
-                int   vi[TILE_SIZE], vj[TILE_SIZE], vk[TILE_SIZE];
-
-                for (uint32_t t = range_beg; t < range_end; ++t) {
-                    const int tx = (int)(t % (uint32_t)tiles[0]);
-                    const int ty = (int)((t / (uint32_t)tiles[0]) % (uint32_t)tiles[1]);
-                    const int tz = (int)(t / ((uint32_t)tiles[0] * (uint32_t)tiles[1]));
-
-                    // A tile is a compact block of voxels, which is what the batched query is efficient at
-                    int n = 0;
-                    for (int k = 0; k < TILE_DIM; ++k) {
-                        const int z = tz * TILE_DIM + k;
-                        if (z >= grid.dim[2]) break;
-                        for (int j = 0; j < TILE_DIM; ++j) {
-                            const int y = ty * TILE_DIM + j;
-                            if (y >= grid.dim[1]) break;
-                            for (int i = 0; i < TILE_DIM; ++i) {
-                                const int x = tx * TILE_DIM + i;
-                                if (x >= grid.dim[0]) break;
-                                qx[n] = grid.origin.x + ((float)x + 0.5f) * grid.spacing.x;
-                                qy[n] = grid.origin.y + ((float)y + 0.5f) * grid.spacing.y;
-                                qz[n] = grid.origin.z + ((float)z + 0.5f) * grid.spacing.z;
-                                vi[n] = x;
-                                vj[n] = y;
-                                vk[n] = z;
-                                n += 1;
-                            }
-                        }
-                    }
-                    if (n == 0) continue;
-
-                    md_coord_stream_t pts = md_coord_stream_from_soa(qx, qy, qz, NULL, (size_t)n);
-                    md_spatial_acc_query_nearest(&acc, &pts, (double)max_dist, NULL, dist);
-
-                    for (int p = 0; p < n; ++p) {
-                        const float d = dist[p];
-
-                        if (field) {
-                            // Output contract: unsigned distance in the void, clamped inside the solid
-                            const size_t idx = ((size_t)vk[p] * grid.dim[1] + (size_t)vj[p]) * grid.dim[0] + (size_t)vi[p];
-                            field[idx] = MAX(0.0f, d);
-                        }
-
-                        if (mask_cell) {
-                            bool outside = false;
-                            for (int a = 0; a < 3 && !outside; ++a) {
-                                if (!pbc_axis[a]) continue;
-                                const double f = Icell[0][a] * (double)qx[p]
-                                               + Icell[1][a] * (double)qy[p]
-                                               + Icell[2][a] * (double)qz[p];
-                                outside = (f < 0.0 || f >= 1.0);
-                            }
-                            if (outside) continue;
-                        }
-
-                        const uint32_t slab = void_profile_slab_of(vk[p], grid.dim[2], num_slabs);
-
-                        my_total[slab] += 1;
-                        d_lo[ti] = MIN(d_lo[ti], d);
-                        d_hi[ti] = MAX(d_hi[ti], d);
-                        if (d >= max_dist) clamped[ti] += 1;
-
-                        if (d <= 0.0f) {
-                            my_solid[slab] += 1;
-                        } else {
-                            const uint32_t bin = void_profile_bin_of((double)d, bin_width, NUM_BINS);
-                            my_hist[(size_t)slab * NUM_BINS + bin] += 1;
-                        }
-                    }
-                }
+                void_field_eval_tiles(&accum[ti], &fdesc, range_beg, range_end);
             }, 1);
 
         task_system::enqueue_task(task);
@@ -637,41 +490,40 @@ struct VoidAnalysis : viamd::EventHandler {
         md_array_resize(stats.hist, hist_stride, arena);
         md_array_resize(stats.slab_solid, num_slabs, arena);
         md_array_resize(stats.slab_total, num_slabs, arena);
-        MEMSET(stats.hist,       0, hist_stride * sizeof(uint64_t));
-        MEMSET(stats.slab_solid, 0, num_slabs * sizeof(uint64_t));
-        MEMSET(stats.slab_total, 0, num_slabs * sizeof(uint64_t));
+
+        void_field_accum_t merged = {};
+        merged.hist  = stats.hist;
+        merged.solid = stats.slab_solid;
+        merged.total = stats.slab_total;
+        void_field_accum_reset(&merged, num_slabs, NUM_BINS);
+        for (size_t t = 0; t < num_threads; ++t) {
+            void_field_accum_merge(&merged, &accum[t], num_slabs, NUM_BINS);
+        }
+
+        const void_profile_t prof = void_field_profile(&merged, &fdesc);
 
         stats.num_grid    = num_voxels;
         stats.num_voxels  = 0;
         stats.num_solid   = 0;
-        stats.num_clamped = 0;
-        stats.d_min       =  DBL_MAX;
-        stats.d_max       = -DBL_MAX;
-        for (size_t t = 0; t < num_threads; ++t) {
-            stats.num_clamped += clamped[t];
-            if (d_lo[t] !=  FLT_MAX) stats.d_min = MIN(stats.d_min, (double)d_lo[t]);
-            if (d_hi[t] != -FLT_MAX) stats.d_max = MAX(stats.d_max, (double)d_hi[t]);
-            for (size_t i = 0; i < hist_stride; ++i) stats.hist[i] += hist[t * hist_stride + i];
-            for (uint32_t sl = 0; sl < num_slabs; ++sl) {
-                stats.slab_solid[sl] += solid[t * num_slabs + sl];
-                stats.slab_total[sl] += total[t * num_slabs + sl];
-            }
-        }
         for (uint32_t sl = 0; sl < num_slabs; ++sl) {
-            stats.num_voxels += stats.slab_total[sl];
-            stats.num_solid  += stats.slab_solid[sl];
+            stats.num_voxels += merged.total[sl];
+            stats.num_solid  += merged.solid[sl];
         }
-        if (stats.d_min == DBL_MAX) {
+        stats.num_clamped = merged.num_clamped;
+        if (merged.d_min <= merged.d_max) {
+            stats.d_min = (double)merged.d_min;
+            stats.d_max = (double)merged.d_max;
+        } else {
             stats.d_min = 0.0;
             stats.d_max = 0.0;
         }
 
         stats.num_slabs    = num_slabs;
-        stats.bin_width    = bin_width;
-        stats.z_min        = (double)grid.origin.z;
-        stats.slab_height  = (double)grid.spacing.z * (double)grid.dim[2] / (double)num_slabs;
-        stats.voxel_volume = (double)grid.spacing.x * (double)grid.spacing.y * (double)grid.spacing.z;
-        stats.seconds      = md_time_as_seconds(md_time_now() - t0);
+        stats.bin_width    = prof.bin_width;
+        stats.z_min        = prof.z_min;
+        stats.slab_height  = prof.slab_height;
+        stats.voxel_volume = prof.voxel_volume;
+        stats.seconds      = md_tick_to_seconds(md_tick_now() - t0);
 
         has_result = true;
 
@@ -942,7 +794,7 @@ struct VoidAnalysis : viamd::EventHandler {
             return;
         }
 
-        const md_timestamp_t t0 = md_time_now();
+        const md_tick_t t0 = md_tick_now();
 
         md_temp_scope_t temp_scope = md_temp_begin();
         defer { md_temp_end(temp_scope); };
@@ -1076,7 +928,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
         sasa.probe   = (double)probe_radius;
         sasa.t_layer = (double)t_layer;
-        sasa.seconds = md_time_as_seconds(md_time_now() - t0);
+        sasa.seconds = md_tick_to_seconds(md_tick_now() - t0);
 
         has_sasa = true;
     }
@@ -1113,7 +965,7 @@ struct VoidAnalysis : viamd::EventHandler {
             return;
         }
 
-        const md_timestamp_t t0 = md_time_now();
+        const md_tick_t t0 = md_tick_now();
 
         if (!channel_percolate(&perc, &f, (double)channel_r_min, (uint32_t)CLAMP(channel_num_radii, 8, 512), md_get_heap_allocator())) {
             snprintf(error, sizeof(error), "Nothing at or above %.2f nm to analyse", channel_r_min / ANGSTROM_PER_NM);
@@ -1127,7 +979,7 @@ struct VoidAnalysis : viamd::EventHandler {
         // route that merely happens to fit.
         if (perc.has_r_c) trace_route(perc.r_c);
 
-        perc_seconds = md_time_as_seconds(md_time_now() - t0);
+        perc_seconds = md_tick_to_seconds(md_tick_now() - t0);
         build_perc_curves();
     }
 
@@ -1198,10 +1050,10 @@ struct VoidAnalysis : viamd::EventHandler {
             return;
         }
 
-        const md_timestamp_t t0 = md_time_now();
+        const md_tick_t t0 = md_tick_now();
         channel_sweep(&channels, &f, (double)probe_radius, true, arena);
         layout_channel_tree();
-        channel_seconds = md_time_as_seconds(md_time_now() - t0);
+        channel_seconds = md_tick_to_seconds(md_tick_now() - t0);
         has_channels = true;
     }
 
