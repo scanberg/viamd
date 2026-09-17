@@ -478,6 +478,25 @@ struct QuantumChemistry : viamd::EventHandler {
         bool show_coordinate_system_widget = true;
     } nto;
 
+    // One excited state's attachment and detachment densities in the AO basis.
+    //
+    // Both are VIRTUAL attributes: every read rebuilds the matrix from the response solution
+    // vector and the MO coefficients, which is by far the most expensive thing this component
+    // does. Selecting a state asks for exactly the same two matrices twice in the same frame -
+    // once for the Mulliken group attribution in update_nto_derived_data, once for the two
+    // volumes the Transition Analysis window evaluates - and the export window asks for a third
+    // copy. Rebuilt once here and held until the state or the dataset changes.
+    //
+    // Allocated from 'arena'; reset_data() rewinds that arena, so the pointers are dropped rather
+    // than freed there. The difference density is not cached: it is one subtraction away from the
+    // two that are, and only the export window asks for it.
+    struct TransitionDensityCache {
+        int     state_idx = -1;     // which excited state, -1 when nothing is cached
+        size_t  dim       = 0;      // atomic orbitals per side
+        double* attach    = nullptr;
+        double* detach    = nullptr;
+    } td_cache;
+
     // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
     //
     // Separate window, separate state, but the SAME group definitions as the NTO window - asking
@@ -1200,6 +1219,9 @@ struct QuantumChemistry : viamd::EventHandler {
         critical_points.raw_graph.alloc = arena;
         critical_points.simp_graph.alloc = arena;
         basis = {};  // arena reset above invalidates allocations; zero the struct
+        // Same as basis: the arena reset above released these, so the struct is zeroed rather
+        // than freed through td_cache_free().
+        td_cache = TransitionDensityCache{};
         atom_xyzw = nullptr;
         orb = QuantumChemistry::Orb{};
         nto = QuantumChemistry::Nto{};
@@ -1272,6 +1294,9 @@ struct QuantumChemistry : viamd::EventHandler {
         // The one number kept: see num_qm_atoms above for why the pointers are not.
         num_qm_atoms = qm.count;
         const size_t num_atoms = qm.count;
+
+        // A new dataset: whatever state index was cached names a different state now.
+        td_cache_free();
 
         num_mos = 0;
         es_orbital_extent(state.mold.sys, &num_mos, nullptr);
@@ -1448,18 +1473,97 @@ struct QuantumChemistry : viamd::EventHandler {
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
 
-    bool evaluate_transition_density(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t state_idx, ElectronicStructureTransitionDensityComponent component) {
-        str_t path = es_path::attachment_density;
-        switch (component) {
-        case ElectronicStructureTransitionDensityComponent::Detachment: path = es_path::detachment_density; break;
-        case ElectronicStructureTransitionDensityComponent::Difference: path = es_path::transition_diff;    break;
-        case ElectronicStructureTransitionDensityComponent::Attachment:
-        default: break;
+    // Releases what the cache holds. Only valid while the arena it was allocated from is alive -
+    // reset_data() rewinds that arena and zeroes the struct instead of calling this.
+    void td_cache_free() {
+        if (td_cache.attach) {
+            md_free(arena, td_cache.attach, sizeof(double) * td_cache.dim * td_cache.dim);
         }
-        // The attribute is VIRTUAL and {S,A,A}: the slice is what tells the provider to reconstruct
-        // this one state instead of every state, which is the only reason asking is affordable.
+        if (td_cache.detach) {
+            md_free(arena, td_cache.detach, sizeof(double) * td_cache.dim * td_cache.dim);
+        }
+        td_cache = TransitionDensityCache{};
+    }
+
+    // Both matrices for one excited state, rebuilding them only when the state asked for is not
+    // the one already held. False when the system carries no transition densities, or when the two
+    // do not agree on their dimension - the callers then draw and attribute nothing, which is what
+    // they did when the extract itself failed.
+    bool td_cache_ensure(const md_system_t& sys, int state_idx) {
+        if (state_idx < 0) {
+            return false;
+        }
+        if (td_cache.state_idx == state_idx && td_cache.attach && td_cache.detach) {
+            return true;
+        }
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state_idx);
-        return density_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_OP_SET);
+
+        size_t a_dim = 0;
+        size_t d_dim = 0;
+        const double* attach = density_matrix_extract(&a_dim, temp, sys, es_path::attachment_density, &slice);
+        const double* detach = density_matrix_extract(&d_dim, temp, sys, es_path::detachment_density, &slice);
+        if (!attach || !detach || a_dim == 0 || a_dim != d_dim) {
+            // Whatever is held is for a state that is no longer the one being asked about, so it
+            // is dropped rather than left to answer the next call.
+            td_cache_free();
+            return false;
+        }
+
+        if (td_cache.dim != a_dim || !td_cache.attach || !td_cache.detach) {
+            td_cache_free();
+            const size_t bytes = sizeof(double) * a_dim * a_dim;
+            td_cache.attach = (double*)md_alloc(arena, bytes);
+            td_cache.detach = (double*)md_alloc(arena, bytes);
+            if (!td_cache.attach || !td_cache.detach) {
+                td_cache_free();
+                return false;
+            }
+            td_cache.dim = a_dim;
+        }
+
+        const size_t bytes = sizeof(double) * a_dim * a_dim;
+        MEMCPY(td_cache.attach, attach, bytes);
+        MEMCPY(td_cache.detach, detach, bytes);
+        td_cache.state_idx = state_idx;
+        return true;
+    }
+
+    bool evaluate_transition_density(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t state_idx, ElectronicStructureTransitionDensityComponent component) {
+        // Out of the cache rather than out of the attribute: see TransitionDensityCache. The
+        // difference is the one component the table would have reconstructed a third matrix for,
+        // and it is the subtraction the provider performs anyway.
+        if (!td_cache_ensure(state.mold.sys, (int)state_idx)) {
+            return false;
+        }
+
+        const size_t dim = td_cache.dim;
+        const double* density_matrix = td_cache.attach;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        switch (component) {
+        case ElectronicStructureTransitionDensityComponent::Detachment:
+            density_matrix = td_cache.detach;
+            break;
+        case ElectronicStructureTransitionDensityComponent::Difference: {
+            double* diff = md_temp_alloc_array(temp, double, dim * dim);
+            for (size_t i = 0; i < dim * dim; ++i) {
+                diff[i] = td_cache.attach[i] - td_cache.detach[i];
+            }
+            density_matrix = diff;
+            break;
+        }
+        case ElectronicStructureTransitionDensityComponent::Attachment:
+        default:
+            break;
+        }
+
+        return density_matrix_evaluate(&state, vol_tex, grid, density_matrix, dim, MD_GTO_OP_SET);
     }
 
     bool evaluate_electron_density(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, ElectronicStructureSpin spin, md_gto_op_t op) {
@@ -9822,21 +9926,21 @@ struct QuantumChemistry : viamd::EventHandler {
 					// hole charges  <- detachment density (D-)
 					// part charges  <- attachment density (D+)
 					//
-					// Both are VIRTUAL attributes indexed by excited state, so the slice is what
-					// asks the table to reconstruct this one rather than every state.
-					const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)nto_idx);
+					// Both are VIRTUAL attributes indexed by excited state, and the Transition
+					// Analysis window wants the same two matrices in this same frame - so they
+					// come from the component's cache, which rebuilds them once per state.
+					const bool have_td = td_cache_ensure(sys, (int)nto_idx);
 
-					size_t a_dim = 0;
-					size_t d_dim = 0;
 					size_t s_dim = 0;
-					const double* D_attach = density_matrix_extract(&a_dim, temp, sys, es_path::attachment_density, &slice);
-					const double* D_detach = density_matrix_extract(&d_dim, temp, sys, es_path::detachment_density, &slice);
+					const double* D_attach = have_td ? td_cache.attach : nullptr;
+					const double* D_detach = have_td ? td_cache.detach : nullptr;
+					// The overlap is STORED, so extracting it is a copy and not a reconstruction.
 					const double* S        = density_matrix_extract(&s_dim, temp, sys, es_path::overlap, nullptr);
 
 					const size_t num_aos = s_dim;
 
 					if (num_aos > 0 && S && D_attach && D_detach) {
-						if (a_dim == num_aos && d_dim == num_aos) {
+						if (td_cache.dim == num_aos) {
 							double group_density_part[MAX_NTO_GROUPS] = {0};
 							double group_density_hole[MAX_NTO_GROUPS] = {0};
 

@@ -2081,6 +2081,13 @@ bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
                          const vec3_t* atom_pos, size_t num_atom_pos,
                          str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op);
 
+// The same, over a matrix the caller already has in hand rather than a path to extract it from.
+// The transition densities are VIRTUAL and are rebuilt from the response solution on every read,
+// so a caller which needs one twice holds on to it and calls this instead.
+bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                                const vec3_t* atom_pos, size_t num_atom_pos,
+                                const double* density_matrix, size_t dim, md_gto_op_t op);
+
 // ---------------------------------------------------------------------------
 // The attribute paths an electronic structure representation draws from
 // ---------------------------------------------------------------------------
@@ -2158,6 +2165,10 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t density_path,
                       const md_attribute_slice_t* slice, md_gto_op_t op);
 
+// density_evaluate over a matrix the caller already holds - see density_matrix_evaluate_gl.
+bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
+                             const double* density_matrix, size_t dim, md_gto_op_t op);
+
 #if MD_ENABLE_GPU
 // The first half of density_evaluate: evaluates into the DEVICE scratch volume (ApplicationState::
 // gpu_volume) and leaves it there, for a consumer which records another kernel over it on the same
@@ -2165,6 +2176,10 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 // is no scratch volume to run anything over and the caller wants the GL path instead.
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
                                     const md_attribute_slice_t* slice, md_gto_op_t op);
+
+// The same, over a matrix the caller already holds - see density_matrix_evaluate_gl.
+bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
+                                           const double* density_matrix, size_t dim, md_gto_op_t op);
 #endif
 
 // Points a representation at an attribute and seeds its drawing range from that attribute's own
