@@ -949,7 +949,10 @@ struct QuantumChemistry : viamd::EventHandler {
                             if (event->hit.domain == PickingDomain_CriticalPoints) {
                                 md_bitfield_set_bit(&critical_points.highlight_mask, event->hit.local_idx);
                             }
-                            if (event->selection_mode == InteractionSelectionMode::Append) {
+                            if (event->kind == InteractionSurfaceEventKind::Click && event->selection_mode == InteractionSelectionMode::None && event->hit.domain == 0) {
+                                // A plain click on empty space clears the selection
+                                md_bitfield_clear(&critical_points.selection_mask);
+                            } else if (event->selection_mode == InteractionSelectionMode::Append) {
                                 md_bitfield_or_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
                             } else if (event->selection_mode == InteractionSelectionMode::Remove) {
                                 if (event->hit.domain == PickingDomain_CriticalPoints) {

@@ -4609,7 +4609,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             }
                         }
                         else if (surf->hit.domain == 0) {
-                            if (surf->selection_mode == InteractionSelectionMode::Remove) {
+                            // A plain click (no modifier, no drag) or a remove-click on empty space clears the selection
+                            if (surf->selection_mode == InteractionSelectionMode::None || surf->selection_mode == InteractionSelectionMode::Remove) {
                                 md_bitfield_clear(&state->selection.selection_mask);
                                 single_selection_sequence_clear(&state->selection.single_selection_sequence);
                             }
