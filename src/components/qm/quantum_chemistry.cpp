@@ -1644,6 +1644,86 @@ struct QuantumChemistry : viamd::EventHandler {
         draw_list->AddText(aligned_text_pos(text, pos, alignment), ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
     }
 
+
+    // --- Ribbon label placement -----------------------------------------------------------
+    //
+    // A ribbon may carry a percentage label. Labels are placed at discrete slots ALONG the
+    // ribbon's own centre-line bezier, in order of decreasing flow magnitude, and a label that
+    // finds no free slot is either left overlapping or dropped - it is never pushed somewhere
+    // else.
+    //
+    // The cost is bounded by construction: num_labels * num_slots rectangle tests, one pass, no
+    // iteration towards a fixed point. The previous scheme - repeatedly pushing every pair of
+    // overlapping labels apart along their curve directions until nothing overlapped - had no
+    // such bound and could not terminate at all whenever two labels shared (or mirrored) a
+    // direction: they then translated in lockstep and stayed overlapped forever. Straight-up
+    // parallel ribbons (every self-flow is vertical) make that the common case rather than the
+    // pathological one. It also had nothing tying a label to its ribbon or to the plot area, so
+    // even when it did converge it could converge to labels off screen.
+
+    struct FlowLabel {
+        ImVec2 bezier[4];   // ribbon centre-line
+        float  value;       // flow fraction; doubles as priority
+        ImVec2 pos;         // out: label centre
+        bool   visible;     // out
+    };
+
+    // drop_unplaceable: a label with no free slot is omitted rather than drawn on top of another.
+    static inline void layout_flow_labels(FlowLabel* labels, size_t num_labels, ImVec2 text_size, ImVec2 padding, bool drop_unplaceable, md_temp_scope_t temp) {
+        if (num_labels == 0) return;
+
+        // Slot positions along the curve, ideal (the middle) first, alternating outwards. Kept
+        // well inside [0,1] so a displaced label still sits on its own ribbon, between the bars.
+        static const float slot_t[] = { 0.5f, 0.40f, 0.60f, 0.31f, 0.69f, 0.23f, 0.77f, 0.16f, 0.84f };
+
+        const ImVec2 half = text_size * 0.5f + padding;
+
+        int* order = md_temp_alloc_array(temp, int, num_labels);
+        for (size_t i = 0; i < num_labels; ++i) {
+            order[i] = (int)i;
+        }
+        // Biggest flow gets first pick of the slots, so what gets dropped is what matters least.
+        std::sort(order, order + num_labels, [labels](int a, int b) {
+            return labels[a].value > labels[b].value;
+        });
+
+        ImRect* placed = md_temp_alloc_array(temp, ImRect, num_labels);
+        size_t num_placed = 0;
+
+        for (size_t i = 0; i < num_labels; ++i) {
+            FlowLabel& label = labels[order[i]];
+            label.pos = ImBezierCubicCalc(label.bezier[0], label.bezier[1], label.bezier[2], label.bezier[3], slot_t[0]);
+            label.visible = false;
+
+            for (size_t s = 0; s < ARRAY_SIZE(slot_t); ++s) {
+                const ImVec2 pos = ImBezierCubicCalc(label.bezier[0], label.bezier[1], label.bezier[2], label.bezier[3], slot_t[s]);
+                const ImRect rect = { pos - half, pos + half };
+
+                bool slot_free = true;
+                for (size_t p = 0; p < num_placed; ++p) {
+                    if (rect.Overlaps(placed[p])) {
+                        slot_free = false;
+                        break;
+                    }
+                }
+
+                if (slot_free) {
+                    label.pos = pos;
+                    label.visible = true;
+                    placed[num_placed++] = rect;
+                    break;
+                }
+            }
+
+            if (!label.visible && !drop_unplaceable) {
+                // Every slot is taken, but the caller asked for all the labels. Leave this one at
+                // its ideal position and let it overlap.
+                label.visible = true;
+                placed[num_placed++] = ImRect{ label.pos - half, label.pos + half };
+            }
+        }
+    }
+
     static inline void vg_sankey_diagram(md_vg_scene_t* scene, ImRect area, Nto* nto, bool hide_text_overlaps) {
         if (!scene) return;
         if (!nto->transition_density_hole) return;
@@ -1707,9 +1787,8 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
 
-        ImVec2* curve_midpoints  = md_temp_alloc_array(temp, ImVec2, nto->group.count * nto->group.count);
-        ImVec2* curve_directions = md_temp_alloc_array(temp, ImVec2, nto->group.count * nto->group.count);
-        float* curve_percentages = md_temp_alloc_array(temp, float,  nto->group.count * nto->group.count);
+        FlowLabel* flow_labels = md_temp_alloc_array(temp, FlowLabel, nto->group.count * nto->group.count);
+        size_t num_flow_labels = 0;
 
         const float font_size = ImGui::GetFontSize();
         const md_vg_color_t text_color = MD_VG_COLOR_RGB(0, 0, 0);
@@ -1747,13 +1826,14 @@ struct QuantumChemistry : viamd::EventHandler {
                 char label[32];
                 snprintf(label, sizeof(label), "%3.2f%%", percentage * 100.0f);
                 const ImVec2 label_size = ImGui::CalcTextSize(label);
+                // A ribbon narrower than its own label cannot carry one at all.
                 if (width > label_size.x) {
-                    const ImVec2 midpoint = (start_pos + end_pos) * 0.5f + ImVec2{ width * 0.5f, 0.0f };
-                    const vec2_t direction = vec2_normalize({ start_pos.x - end_pos.x, start_pos.y - end_pos.y });
-                    const size_t idx = beg_i * nto->group.count + end_i;
-                    curve_midpoints[idx] = midpoint;
-                    curve_directions[idx] = { direction.x, direction.y };
-                    curve_percentages[idx] = percentage;
+                    FlowLabel& fl = flow_labels[num_flow_labels++];
+                    fl.bezier[0] = p1;
+                    fl.bezier[1] = p2;
+                    fl.bezier[2] = p3;
+                    fl.bezier[3] = p4;
+                    fl.value     = percentage;
                 }
 
                 start_pos.x += width;
@@ -1761,49 +1841,15 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
 
-        bool text_overlap = true;
-        ImVec2 curve_text_size = ImGui::CalcTextSize("99.99%");
-        const float text_spacing = 4.0f;
+        layout_flow_labels(flow_labels, num_flow_labels, ImGui::CalcTextSize("99.99%"), { 2.0f, 1.0f }, hide_text_overlaps, temp);
 
-        while (text_overlap) {
-            text_overlap = false;
-            for (size_t beg_i = 0; beg_i < nto->group.count; ++beg_i) {
-                for (size_t end_i = 0; end_i < nto->group.count; ++end_i) {
-                    const size_t index1 = beg_i * nto->group.count + end_i;
-                    ImRect rect1 = { curve_midpoints[index1] - curve_text_size * 0.5f, curve_midpoints[index1] + curve_text_size * 0.5f };
+        for (size_t i = 0; i < num_flow_labels; ++i) {
+            if (!flow_labels[i].visible) continue;
 
-                    for (size_t beg_j = 0; beg_j < nto->group.count; ++beg_j) {
-                        for (size_t end_j = 0; end_j < nto->group.count; ++end_j) {
-                            const size_t index2 = beg_j * nto->group.count + end_j;
-                            if (index1 == index2) continue;
-
-                            ImRect rect2 = { curve_midpoints[index2] - curve_text_size * 0.5f, curve_midpoints[index2] + curve_text_size * 0.5f };
-                            if (curve_midpoints[index1].y == 0.0f || curve_midpoints[index2].y == 0.0f) continue;
-
-                            while (rect1.Overlaps(rect2)) {
-                                text_overlap = true;
-                                curve_midpoints[index1] += curve_directions[index1] * curve_text_size.y * text_spacing;
-                                curve_midpoints[index2] -= curve_directions[index2] * curve_text_size.y * text_spacing;
-                                rect1 = { curve_midpoints[index1] - curve_text_size * 0.5f, curve_midpoints[index1] + curve_text_size * 0.5f };
-                                rect2 = { curve_midpoints[index2] - curve_text_size * 0.5f, curve_midpoints[index2] + curve_text_size * 0.5f };
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for (size_t beg_i = 0; beg_i < nto->group.count; ++beg_i) {
-            for (size_t end_i = 0; end_i < nto->group.count; ++end_i) {
-                const size_t index = beg_i * nto->group.count + end_i;
-                const float percentage = curve_percentages[index];
-                if (percentage <= 0.0f) continue;
-
-                char label[16];
-                snprintf(label, sizeof(label), "%3.2f%%", percentage * 100.0f);
-                const ImVec2 pos = aligned_text_pos(label, curve_midpoints[index], { 0.5f, 0.5f });
-                md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, str_from_cstr(label));
-            }
+            char label[16];
+            snprintf(label, sizeof(label), "%3.2f%%", flow_labels[i].value * 100.0f);
+            const ImVec2 pos = aligned_text_pos(label, flow_labels[i].pos, { 0.5f, 0.5f });
+            md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, str_from_cstr(label));
         }
 
         bool* show_start_text = md_temp_alloc_array(temp, bool, nto->group.count);
@@ -1831,7 +1877,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; ++i) {
                 for (int j = i - 1; j >= 0; --j) {
-                    if (hole_percentages[i] == 0.0f) {
+                    if (hole_percentages[size_order[i]] == 0.0f) {
                         show_start_text[size_order[i]] = false;
                         break;
                     }
@@ -1854,7 +1900,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; ++i) {
                 for (int j = i - 1; j >= 0; --j) {
-                    if (hole_percentages[i] == 0.0f) {
+                    if (hole_percentages[size_order[i]] == 0.0f) {
                         show_end_text[size_order[i]] = false;
                         break;
                     }
@@ -2029,10 +2075,8 @@ struct QuantumChemistry : viamd::EventHandler {
         const float min_test_width = 1.0f;
 
         //Draw curves
-        float* curve_widths      = md_temp_alloc_array(temp, float, nto->group.count * nto->group.count);
-        ImVec2* curve_midpoints  = md_temp_alloc_array(temp, ImVec2, nto->group.count * nto->group.count);
-        ImVec2* curve_directions = md_temp_alloc_array(temp, ImVec2, nto->group.count * nto->group.count);
-        float* curve_percentages = md_temp_alloc_array(temp, float, nto->group.count * nto->group.count);
+        FlowLabel* flow_labels = md_temp_alloc_array(temp, FlowLabel, nto->group.count * nto->group.count);
+        size_t num_flow_labels = 0;
 
         for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
             if (hole_percentages[beg_i] != 0.0) {
@@ -2075,14 +2119,11 @@ struct QuantumChemistry : viamd::EventHandler {
                             MEMCPY(mouse_label, label, sizeof(label));
                         }
 
+                        // A ribbon narrower than its own label cannot carry one at all.
                         if (width > label_size.x) {
-                            ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
-                            ImVec2 direction = vec_cast(vec2_normalize(vec_cast(start_pos - end_pos)));
-                            curve_midpoints[beg_i * nto->group.count + end_i] = midpoint;
-                            curve_directions[beg_i * nto->group.count + end_i] = direction;
-                            curve_widths[beg_i * nto->group.count + end_i] = width;
-                            curve_percentages[beg_i * nto->group.count + end_i] = percentage;
-                            //draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
+                            FlowLabel& fl = flow_labels[num_flow_labels++];
+                            compute_vertical_sankey_bezier(&fl.bezier[0], &fl.bezier[1], &fl.bezier[2], &fl.bezier[3], start_pos, end_pos, width);
+                            fl.value = percentage;
                         }
 
                         start_pos.x += width;
@@ -2092,56 +2133,15 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
 
-        //Draw Curve Text
-        //For every midpoint, we check if another midpoint is to close to that midpoint
-        bool text_overlap = true;
-        ImVec2 text_size = ImGui::CalcTextSize("99.99%");
-        float text_spacing = 4;
+        // Place the ribbon labels. Bounded, single pass - see layout_flow_labels.
+        layout_flow_labels(flow_labels, num_flow_labels, ImGui::CalcTextSize("99.99%"), { 2.0f, 1.0f }, hide_text_overlaps, temp);
 
-        while (text_overlap) {
-            text_overlap = false;
-            for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
-                for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                    size_t index1 = beg_i * nto->group.count + end_i;
-                    ImVec2 midpoint1 = curve_midpoints[index1];
-                    ImVec2 direction1 = curve_directions[index1];
-                    ImRect rect1 = { midpoint1 - (text_size / 2), midpoint1 + (text_size / 2) };
+        for (size_t i = 0; i < num_flow_labels; ++i) {
+            if (!flow_labels[i].visible) continue;
 
-                    for (size_t beg_j = 0; beg_j < nto->group.count; beg_j++) {
-                        for (size_t end_j = 0; end_j < nto->group.count; end_j++) {
-                            size_t index2 = (beg_j * nto->group.count + end_j);
-                            if (index1 != index2) {
-                                ImVec2 midpoint2 = curve_midpoints[index2];
-                                ImVec2 direction2 = curve_directions[index2] * -1.0;
-                                ImRect rect2 = { midpoint2 - (text_size / 2), midpoint2 + (text_size / 2) };
-                    
-                                if ((midpoint1.y != 0 && midpoint2.y != 0)) {
-                                    while (rect1.Overlaps(rect2)){
-                                        text_overlap = true;
-                                        curve_midpoints[index1] += direction1 * text_size.y * text_spacing;
-                                        curve_midpoints[index2] += direction2 * text_size.y * text_spacing;
-                                        rect1 = { curve_midpoints[index1] - (text_size / 2), curve_midpoints[index1] + (text_size / 2) };
-                                        rect2 = { curve_midpoints[index2] - (text_size / 2), curve_midpoints[index2] + (text_size / 2) };
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
-            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                size_t index = beg_i * nto->group.count + end_i;
-                ImVec2 midpoint = curve_midpoints[index];
-                float percentage = curve_percentages[index];
-                if (percentage > 0) {
-                    char label[16];
-                    snprintf(label, sizeof(label), "%3.2f%%", curve_percentages[beg_i * nto->group.count + end_i] * 100);
-                    draw_aligned_text(draw_list, label, midpoint, {0.5, 0.5});
-                }
-            }
+            char label[16];
+            snprintf(label, sizeof(label), "%3.2f%%", flow_labels[i].value * 100.0f);
+            draw_aligned_text(draw_list, label, flow_labels[i].pos, { 0.5f, 0.5f });
         }
 
         // Some flow is hovered, So we render a new flow on top of the existing ones to ensure that this is rendered on top
@@ -2177,7 +2177,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0 ; j--) {//The bigger ones
-                    if (hole_percentages[i] == 0.0f) {
+                    if (hole_percentages[size_order[i]] == 0.0f) {
                         show_start_text[size_order[i]] = false;
                         break;
                     }
@@ -2202,7 +2202,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0; j--) {//The bigger ones
-                    if (hole_percentages[i] == 0.0f) {
+                    if (hole_percentages[size_order[i]] == 0.0f) {
                         show_end_text[size_order[i]] = false;
                         break;
                     }
@@ -2223,11 +2223,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 char end_label1[16]; 
                 snprintf(start_label1, sizeof(start_label1), "%3.2f%%", hole_percentages[i] * 100);
                 snprintf(end_label1, sizeof(end_label1), "%3.2f%%", part_percentages[i] * 100);
-
-                char start_label2[16];
-                char end_label2[16];
-                snprintf(start_label2, sizeof(start_label2), "%3.2f%%", hole_percentages[i + 1] * 100);
-                snprintf(end_label2, sizeof(end_label2), "%3.2f%%", part_percentages[i + 1] * 100);
 
                 //Calculate start
                 ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
