@@ -21,6 +21,9 @@
 #include <implot_internal.h>
 #include <implot3d.h>
 
+#include <gfx/gl_utils.h>
+#include <gfx/volumerender_utils.h>
+
 #include "void_analysis_core.h"
 
 #include <float.h>
@@ -29,9 +32,9 @@
     Void and nanopore characterization: the component.
 
     The computation lives in void_analysis_core.h - the distance field, the profile it is summarized into and the
-    reductions of it, and connectivity through z - and is tested on its own under tests/. This file owns what needs
-    an application: the window and its parameters, reading the system, spreading the field pass over the task
-    system, and the 3D overlay.
+    reductions of it, the surface topography, and connectivity through z - and is tested on its own under tests/.
+    This file owns what needs an application: the window and its parameters, reading the system, spreading the
+    field and topography passes over the task system, the volume rendering of the field, and the 3D overlay.
 
     Residency: statistics are accumulated per tile while the tile is still in cache, so the full field is only
     materialized when explicitly asked for. At 0.5 nm voxels a 670 x 670 x 175 nm box is 2.4e9 voxels, which is
@@ -48,6 +51,23 @@ constexpr double PI_D = 3.14159265358979323846;
 
 // Angstrom^2 per Dalton to m^2 per gram
 constexpr double SPECIFIC_AREA_SCALE = 1.0e-20 / 1.66053906892e-24;
+
+// Dalton per Angstrom^3 to kg/m^3: 1.66053906892e-27 kg over 1e-30 m^3
+constexpr double DA_PER_A3_TO_KG_PER_M3 = 1660.53906892;
+
+// The percolation analysis and the traced route. Compiled out of the window and the overlay; the
+// code behind it is kept, and so are its tests in the core.
+#define VOID_ANALYSIS_PERCOLATION 0
+
+// Largest 3D texture edge the field is uploaded at for volume rendering. A larger field is averaged
+// down by a whole number of voxels per axis, which keeps the texture within what any GL 4 driver
+// accepts and within a few hundred megabytes of video memory.
+constexpr int VOL_MAX_DIM = 512;
+constexpr int VOL_TF_RES  = 1024;    // Fine enough that the cut at R is sharp to a small fraction of a voxel
+
+// Topography display: past this many columns per axis the heat map is averaged down, as the V(R,z)
+// surface is. The statistics are always taken over every column.
+constexpr uint32_t HEIGHT_MAX_DIM = 256;
 
 // Opacity of the channel ribbon. The overlay pass blends on source alpha, so this is how much of the
 // structure is still read through the tube.
@@ -121,6 +141,21 @@ const char* surface_value_lbl[SurfaceValue_Count] = {
     "V(R,z) in nm^3",
 };
 
+// Which face of the film the topography map shows. The thickness is the one of the three which does
+// not depend on where the film happens to sit in the box.
+enum HeightView {
+    HeightView_Top = 0,
+    HeightView_Bottom,
+    HeightView_Thickness,
+    HeightView_Count,
+};
+
+const char* height_view_lbl[HeightView_Count] = {
+    "Top surface",
+    "Bottom surface",
+    "Thickness",
+};
+
 // The surface is a quad per grid cell, drawn every frame. The slab and radius counts are the user's
 // to raise and this is not the place to pay for it: past this many points per axis the grid is
 // sampled rather than drawn whole, which changes nothing visible and keeps the plot interactive.
@@ -140,6 +175,10 @@ struct Stats {
     md_array(uint64_t) hist       = 0;   // [slab * NUM_BINS + bin], void voxels only
     md_array(uint64_t) slab_solid = 0;   // [slab]
     md_array(uint64_t) slab_total = 0;   // [slab]
+    md_array(double)   slab_mass  = 0;   // [slab], Dalton, binned on the same division of z
+    md_array(double)   slab_count = 0;   // [slab], atoms
+    double   mass_total    = 0.0;        // Of the atoms that landed in a slab
+    double   count_total   = 0.0;
     uint32_t num_slabs     = 0;
 
     double   bin_width     = 0.0;
@@ -155,7 +194,6 @@ struct SasaResult {
     double specific_area = 0.0;      // m^2/g
     double area_density  = 0.0;      // Angstrom^2 per Angstrom^3
     double probe         = 0.0;      // The probe radius the result belongs to
-    double t_layer       = 0.0;
     size_t num_sampled   = 0;
     md_array(double) type_area = 0;  // Per atom type, extrapolated
     double seconds       = 0.0;
@@ -169,7 +207,6 @@ struct VoidAnalysis : viamd::EventHandler {
     // Parameters, all in Angstrom to match the rest of mdlib. The design document is written in nm, so the UI
     // presents nm and converts on the way in.
     float voxel_spacing = 5.0f;      // 0.5 nm
-    float t_layer       = 0.0f;      // Bound water layer added to every bead radius, swept rather than fitted
     float probe_radius  = 1.4f;      // Water sized by default
     float max_dist      = 320.0f;    // 32 nm, the range the field is resolved over
     float uniform_radius = 5.0f;
@@ -228,7 +265,7 @@ struct VoidAnalysis : viamd::EventHandler {
     // when the result or the region changes rather than every frame; the per slab accessible
     // fraction is one sweep of the bins and can follow the probe slider.
     int    acc_num_radii = 64;
-    SurfaceView  surface_view  = SurfaceView_Surface;
+    SurfaceView  surface_view  = SurfaceView_Hidden;    // Opt in: the 3D surface is drawn every frame
     SurfaceValue surface_value = SurfaceValue_Fraction;
     bool   curves_dirty  = true;
     bool   probe_dirty   = true;
@@ -246,8 +283,47 @@ struct VoidAnalysis : viamd::EventHandler {
     md_array(double) prof_z   = 0;   // Slab centres, nm
     md_array(double) prof_phi = 0;   // Porosity per slab
     md_array(double) prof_acc = 0;   // V(R,z)/V(z) per slab at the current probe
+    md_array(double) prof_rho = 0;   // Density per slab, in density_unit()
+    double z_link[2] = {0.0, 1.0};   // Shared z axis of the two profiles against z, nm
     md_array(double) hist_x   = 0;   // Distance histogram of the region, nm
     md_array(double) hist_y   = 0;
+
+    // Surface topography, as a probe of the current radius finds it from above and below. Computed
+    // along with the field, and again when the probe radius is changed, since unlike the profile it
+    // cannot be read off a histogram: it is a property of the geometry at one R.
+    bool   has_height       = false;
+    bool   height_pending   = false;    // The probe radius changed since the map was made
+    double height_probe     = 0.0;      // R the map belongs to
+    double height_seconds   = 0.0;
+    HeightView height_view  = HeightView_Top;
+    md_array(float) height_top  = 0;    // [x + y * dim_x], world z of the probe apex, NaN where open
+    md_array(float) height_bot  = 0;
+    md_array(float) height_thk  = 0;    // top - bottom
+    void_heightmap_stats_t height_stats[HeightView_Count] = {};
+    bool   height_disp_dirty = true;
+    uint32_t height_nx = 0;             // Display grid, averaged down from the columns
+    uint32_t height_ny = 0;
+    md_array(float) height_disp = 0;    // [(ny - 1 - j) * nx + i], nm, row 0 is the largest y
+    double height_lo = 0.0, height_hi = 1.0;   // Colour scale, nm
+
+    // The distance field as a volume. The transfer function is transparent below the probe radius,
+    // so what is drawn is exactly the set a probe centre of that size can occupy, coloured by how
+    // much room it has there.
+    bool     show_volume   = false;
+    float    vol_opacity   = 0.1f;
+    float    vol_upper     = 0.0f;      // Transparent above this clearance, Angstrom; 0 until a result sets it
+    bool     vol_clip_region = true;    // Clip z to the reporting region
+    int      vol_colormap  = ImPlotColormap_Viridis;
+    bool     vol_dirty     = false;     // Field changed, texture needs uploading
+    bool     vol_tf_dirty  = true;
+    uint32_t vol_tex       = 0;
+    uint32_t vol_tf_tex    = 0;
+    int      vol_dim[3]    = {0, 0, 0};
+    int      vol_stride    = 1;
+    vec3_t   vol_spacing   = {};
+    mat4_t   vol_model     = {};
+    float    vol_z0        = 0.0f;      // World z extent the texture covers, for the region clip
+    float    vol_z1        = 1.0f;
 
     // Surface area
     int   sasa_points   = 256;
@@ -278,6 +354,7 @@ struct VoidAnalysis : viamd::EventHandler {
                 // The percolation result and the traced route are on the heap rather than the arena,
                 // so destroying the arena does not take them with it.
                 clear_percolation();
+                free_volume();
                 md_arena_allocator_destroy(arena);
                 arena = nullptr;
                 break;
@@ -292,8 +369,14 @@ struct VoidAnalysis : viamd::EventHandler {
                 clear_sasa();
                 break;
             case viamd::EventType_ViamdRenderTransparent: {
-                if (!show_window) break;
                 if (e.payload_type != viamd::EventPayloadType_ApplicationState) break;
+                // The volume is an explicit toggle and stays up with the window closed, like any
+                // other representation. The overlay below is a readout of the window and does not.
+                if (show_volume && has_result) {
+                    draw_volume(*(const ApplicationState*)e.payload);
+                }
+#if VOID_ANALYSIS_PERCOLATION
+                if (!show_window) break;
                 const bool want_route  = show_route && (has_route || (has_perc && perc.has_r_c));
                 const bool want_branch = has_channels && hovered_node != CHANNEL_INVALID_INDEX;
                 if (!want_route && !want_branch) break;
@@ -304,6 +387,7 @@ struct VoidAnalysis : viamd::EventHandler {
                 const vec3_t cam_axis = vec3_normalize(vec3_from_vec4(state.view.param.matrix.inv.view.col[2]));
                 if (want_route)  draw_route_3d(scope);
                 if (want_branch) draw_channel_path_3d(scope, hovered_node, cam_axis);
+#endif
                 break;
             }
             default:
@@ -318,6 +402,8 @@ struct VoidAnalysis : viamd::EventHandler {
         md_array_free(stats.hist, arena);
         md_array_free(stats.slab_solid, arena);
         md_array_free(stats.slab_total, arena);
+        md_array_free(stats.slab_mass, arena);
+        md_array_free(stats.slab_count, arena);
         stats = {};
         md_array_free(acc_r, arena);
         md_array_free(acc_frac, arena);
@@ -328,20 +414,45 @@ struct VoidAnalysis : viamd::EventHandler {
         md_array_free(prof_z, arena);
         md_array_free(prof_phi, arena);
         md_array_free(prof_acc, arena);
+        md_array_free(prof_rho, arena);
         md_array_free(hist_x, arena);
         md_array_free(hist_y, arena);
         acc_r = 0; acc_frac = 0; acc_heat = 0;
         surf_x = 0; surf_y = 0; surf_z = 0;
         surf_nx = surf_ny = 0;
-        prof_z = 0; prof_phi = 0; prof_acc = 0;
+        prof_z = 0; prof_phi = 0; prof_acc = 0; prof_rho = 0;
         hist_x = 0; hist_y = 0;
         region_beg = region_end = 0;
         has_film = false;
         curves_dirty = true;
         probe_dirty  = true;
         has_result = false;
+        clear_height();
+        vol_dirty = false;
         clear_percolation();
         clear_channels();
+    }
+
+    void clear_height() {
+        md_array_free(height_top, arena);
+        md_array_free(height_bot, arena);
+        md_array_free(height_thk, arena);
+        md_array_free(height_disp, arena);
+        height_top = 0; height_bot = 0; height_thk = 0; height_disp = 0;
+        height_nx = height_ny = 0;
+        MEMSET(height_stats, 0, sizeof(height_stats));
+        has_height = false;
+        height_pending = false;
+        height_disp_dirty = true;
+    }
+
+    void free_volume() {
+        if (vol_tex)    gl::free_texture(&vol_tex);
+        if (vol_tf_tex) gl::free_texture(&vol_tf_tex);
+        vol_tex = 0;
+        vol_tf_tex = 0;
+        vol_dim[0] = vol_dim[1] = vol_dim[2] = 0;
+        vol_tf_dirty = true;
     }
 
     void clear_channels() {
@@ -382,15 +493,16 @@ struct VoidAnalysis : viamd::EventHandler {
         has_sasa = false;
     }
 
-    // Radii the geometry is actually built from: the bead, its bound water layer, and optionally a probe.
-    // A colloid cannot displace the bound layer, so the excluded surface is bead plus layer.
+    // Radii the geometry is actually built from: the bead, and optionally a probe.
     void fill_radii(float* out_radii, const md_system_t& sys, size_t count, double extra) const {
         if (radius_source == RadiusSource_Vdw) {
             md_atom_extract_radii(out_radii, 0, count, &sys.atom);
         } else {
             for (size_t i = 0; i < count; ++i) out_radii[i] = uniform_radius;
         }
-        for (size_t i = 0; i < count; ++i) out_radii[i] += (float)((double)t_layer + extra);
+        if (extra != 0.0) {
+            for (size_t i = 0; i < count; ++i) out_radii[i] += (float)extra;
+        }
     }
 
     // Axis aligned grid covering the unit cell, or the atoms when there is no cell.
@@ -431,8 +543,8 @@ struct VoidAnalysis : viamd::EventHandler {
         md_temp_scope_t temp_scope = md_temp_begin();
         defer { md_temp_end(temp_scope); };
 
-        // Bead radii, offset by the hydration layer. A colloid cannot displace the bound layer, so the excluded
-        // surface is the bead plus the layer, and every reported quantity is a function of it.
+        // Bead radii. Every reported quantity is a function of them, so the radius source is a choice
+        // worth stating next to any number quoted from here.
         float* radii = (float*)md_temp_alloc(temp_scope, state.num_atoms * sizeof(float));
         fill_radii(radii, sys, state.num_atoms, 0.0);
 
@@ -523,9 +635,35 @@ struct VoidAnalysis : viamd::EventHandler {
         stats.z_min        = prof.z_min;
         stats.slab_height  = prof.slab_height;
         stats.voxel_volume = prof.voxel_volume;
+
+        // Mass along z, on the same slabs as the histogram so that a density and a porosity quoted
+        // for a slab range are about the same volume. z is wrapped only when the cell says it is
+        // periodic; on an open axis an atom outside the grid is outside what is being measured.
+        {
+            const bool pbc_z = (md_unitcell_flags(&state.unitcell) & MD_UNITCELL_PBC_Z) != 0;
+            float* masses = (float*)md_temp_alloc(temp_scope, state.num_atoms * sizeof(float));
+            md_atom_extract_masses(masses, 0, state.num_atoms, &sys.atom);
+            md_array_resize(stats.slab_mass,  num_slabs, arena);
+            md_array_resize(stats.slab_count, num_slabs, arena);
+            stats.mass_total  = void_profile_bin_mass(stats.slab_mass,  &prof, state.z, masses, state.num_atoms, pbc_z);
+            stats.count_total = void_profile_bin_mass(stats.slab_count, &prof, state.z, NULL,   state.num_atoms, pbc_z);
+        }
+
         stats.seconds      = md_tick_to_seconds(md_tick_now() - t0);
 
         has_result = true;
+
+        // The topography reuses the structure the field was just evaluated with
+        compute_height(&acc);
+
+        // A new field needs uploading, and the colour range follows the new distances unless the
+        // user had narrowed it to something the new result still covers.
+        vol_dirty    = (field != nullptr);
+        vol_tf_dirty = true;
+        if (!(vol_upper > 0.0f) || vol_upper > (float)stats.d_max) vol_upper = (float)stats.d_max;
+
+        z_link[0] = grid.origin.z / (double)ANGSTROM_PER_NM;
+        z_link[1] = (grid.origin.z + grid.spacing.z * (float)grid.dim[2]) / (double)ANGSTROM_PER_NM;
 
         // A manual range the user has already set survives a recompute; an unset one starts as the
         // whole grid so dragging it narrows rather than starting from nothing.
@@ -611,6 +749,11 @@ struct VoidAnalysis : viamd::EventHandler {
             prof_phi[sl] = void_profile_porosity(&p, sl, sl + 1);
         }
 
+        md_array_resize(prof_rho, ns, arena);
+        for (uint32_t sl = 0; sl < ns; ++sl) {
+            prof_rho[sl] = density_over(sl, sl + 1);
+        }
+
         // The V(R,z) grid: a histogram of the accessible volume per z slab over every radius. Both
         // views read from this - a surface over (z, R) and, transposed and flipped, a heatmap - so
         // rotating one to check a value against the other is comparing a quantity with itself.
@@ -676,6 +819,317 @@ struct VoidAnalysis : viamd::EventHandler {
         }
     }
 
+    // --- Density ------------------------------------------------------------------------------
+    //
+    // Mass over the volume the profile considered, on the same slabs as the porosity. A coarse
+    // grained model without masses still has a meaningful number density, so that is what is shown
+    // when there is no mass to speak of rather than a column of zeros.
+
+    bool has_mass() const { return stats.mass_total > 0.0; }
+
+    const char* density_unit() const { return has_mass() ? "kg/m^3" : "atoms/nm^3"; }
+
+    double density_over(uint32_t slab_beg, uint32_t slab_end) const {
+        if (!has_result) return 0.0;
+        const void_profile_t p = make_profile();
+        if (has_mass()) {
+            return void_profile_mass_density(&p, stats.slab_mass, slab_beg, slab_end) * DA_PER_A3_TO_KG_PER_M3;
+        }
+        return void_profile_mass_density(&p, stats.slab_count, slab_beg, slab_end) * 1000.0;
+    }
+
+    // --- Surface topography -------------------------------------------------------------------
+
+    // Heights of the probe apex over every column of the grid, from above and from below, at the
+    // current probe radius. acc is the structure the field was built with, or one built the same way.
+    void compute_height(const md_spatial_acc_t* acc) {
+        clear_height();
+        if (!has_result || !acc) return;
+
+        const size_t n = (size_t)grid.dim[0] * (size_t)grid.dim[1];
+        if (n == 0) return;
+
+        if (!((double)probe_radius < (double)max_dist)) {
+            snprintf(error, sizeof(error), "Probe radius must be below the max distance for the topography");
+            return;
+        }
+
+        const md_tick_t t0 = md_tick_now();
+
+        md_array_resize(height_top, n, arena);
+        md_array_resize(height_bot, n, arena);
+        md_array_resize(height_thk, n, arena);
+
+        void_heightmap_desc_t desc = {};
+        desc.acc          = acc;
+        desc.grid         = &grid;
+        desc.probe_radius = (double)probe_radius;
+        desc.max_dist     = (double)max_dist;
+
+        float* top = height_top;
+        float* bot = height_bot;
+        task_system::ID task = task_system::create_pool_task(STR_LIT("Void surface topography"), void_heightmap_num_patches(&grid),
+            [top, bot, &desc](uint32_t range_beg, uint32_t range_end, uint32_t) {
+                void_heightmap_eval_patches(top, bot, &desc, range_beg, range_end);
+            }, 1);
+        task_system::enqueue_task(task);
+        task_system::task_wait_for(task);
+
+        for (size_t i = 0; i < n; ++i) {
+            const float t = height_top[i];
+            const float b = height_bot[i];
+            height_thk[i] = (isfinite(t) && isfinite(b)) ? t - b : NAN;
+        }
+
+        void_heightmap_stats(&height_stats[HeightView_Top],       height_top, n);
+        void_heightmap_stats(&height_stats[HeightView_Bottom],    height_bot, n);
+        void_heightmap_stats(&height_stats[HeightView_Thickness], height_thk, n);
+
+        height_probe      = (double)probe_radius;
+        height_seconds    = md_tick_to_seconds(md_tick_now() - t0);
+        has_height        = true;
+        height_pending    = false;
+        height_disp_dirty = true;
+    }
+
+    // The same outside of compute(), for when only the probe radius has changed: the structure is
+    // rebuilt, which is a small fraction of what the field costs, and the field is not touched.
+    void refresh_height() {
+        height_pending = false;
+        if (!has_result || !app_state) return;
+
+        const md_system_t&       sys   = app_state->mold.sys;
+        const md_system_state_t& state = app_state->mold.state;
+        if (state.num_atoms == 0) return;
+
+        md_temp_scope_t temp_scope = md_temp_begin();
+        defer { md_temp_end(temp_scope); };
+
+        float* radii = (float*)md_temp_alloc(temp_scope, state.num_atoms * sizeof(float));
+        fill_radii(radii, sys, state.num_atoms, 0.0);
+
+        md_coord_stream_t coords = md_coord_stream_from_soa(state.x, state.y, state.z, NULL, state.num_atoms);
+
+        md_spatial_acc_t acc = {};
+        acc.alloc = md_temp_allocator(temp_scope);
+        md_spatial_acc_desc_t desc = {};
+        desc.coords   = &coords;
+        desc.radii    = radii;
+        desc.cell_ext = cell_ext;
+        desc.unitcell = &state.unitcell;
+        md_spatial_acc_init_desc(&acc, &desc);
+        defer { md_spatial_acc_free(&acc); };
+
+        compute_height(&acc);
+    }
+
+    const float* height_source(HeightView v) const {
+        switch (v) {
+        case HeightView_Top:       return height_top;
+        case HeightView_Bottom:    return height_bot;
+        case HeightView_Thickness: return height_thk;
+        default:                   return nullptr;
+        }
+    }
+
+    // Average the selected map down to at most HEIGHT_MAX_DIM per axis for the heat map. An open
+    // column has no height, and ImPlot has no way to leave a cell empty, so it is drawn at the bottom
+    // of the colour scale: the deepest thing on the map, which is what a hole is. For the thickness
+    // that is zero, which is exactly right.
+    void update_height_display() {
+        height_disp_dirty = false;
+        if (!has_height) return;
+        const float* src = height_source(height_view);
+        if (!src) return;
+
+        const double nm = (double)ANGSTROM_PER_NM;
+        const void_heightmap_stats_t& st = height_stats[height_view];
+        if (st.num_valid > 0) {
+            height_lo = st.min / nm;
+            height_hi = st.max / nm;
+        } else {
+            height_lo = 0.0;
+            height_hi = 1.0;
+        }
+        if (height_view == HeightView_Thickness) height_lo = 0.0;
+        if (!(height_hi > height_lo)) height_hi = height_lo + 1.0e-3;
+
+        const uint32_t dx = (uint32_t)grid.dim[0];
+        const uint32_t dy = (uint32_t)grid.dim[1];
+        const uint32_t sx = (dx + HEIGHT_MAX_DIM - 1) / HEIGHT_MAX_DIM;
+        const uint32_t sy = (dy + HEIGHT_MAX_DIM - 1) / HEIGHT_MAX_DIM;
+        height_nx = (dx + sx - 1) / sx;
+        height_ny = (dy + sy - 1) / sy;
+        md_array_resize(height_disp, (size_t)height_nx * height_ny, arena);
+
+        for (uint32_t j = 0; j < height_ny; ++j) {
+            for (uint32_t i = 0; i < height_nx; ++i) {
+                double sum = 0.0;
+                uint32_t cnt = 0;
+                for (uint32_t y = j * sy; y < MIN(dy, (j + 1) * sy); ++y) {
+                    for (uint32_t x = i * sx; x < MIN(dx, (i + 1) * sx); ++x) {
+                        const float v = src[(size_t)y * dx + x];
+                        if (isfinite(v)) { sum += (double)v; cnt += 1; }
+                    }
+                }
+                const double v = cnt ? (sum / (double)cnt) / nm : height_lo;
+                height_disp[(size_t)(height_ny - 1 - j) * height_nx + i] = (float)v;
+            }
+        }
+    }
+
+    // --- Volume rendering of the field --------------------------------------------------------
+
+    // Upload the materialized field as a 3D texture, averaged down to VOL_MAX_DIM per axis. The
+    // texture covers a whole number of blocks, so when the stride does not divide the grid it runs
+    // a fraction of a block past the far faces; those texels average only the voxels that exist.
+    void upload_volume() {
+        vol_dirty = false;
+        if (!field || !has_result) return;
+
+        const int* d = grid.dim;
+        const int maxd = MAX(d[0], MAX(d[1], d[2]));
+        const int s = MAX(1, (maxd + VOL_MAX_DIM - 1) / VOL_MAX_DIM);
+        const int dd[3] = { (d[0] + s - 1) / s, (d[1] + s - 1) / s, (d[2] + s - 1) / s };
+
+        if (!gl::init_texture_3D(&vol_tex, dd[0], dd[1], dd[2], GL_R16F)) {
+            MD_LOG_ERROR("Void analysis: could not create a %i x %i x %i volume texture", dd[0], dd[1], dd[2]);
+            return;
+        }
+
+        if (s == 1) {
+            gl::set_texture_3D_data(vol_tex, 0, field, GL_R32F);
+        } else {
+            const size_t count = (size_t)dd[0] * dd[1] * dd[2];
+            const size_t bytes = count * sizeof(float);
+            float* buf = (float*)md_alloc(md_get_heap_allocator(), bytes);
+            defer { md_free(md_get_heap_allocator(), buf, bytes); };
+
+            const float* src = field;
+            task_system::ID task = task_system::create_pool_task(STR_LIT("Void field downsample"), (uint32_t)dd[2],
+                [buf, src, d, dd, s](uint32_t range_beg, uint32_t range_end, uint32_t) {
+                    for (uint32_t k = range_beg; k < range_end; ++k) {
+                        for (int j = 0; j < dd[1]; ++j) {
+                            for (int i = 0; i < dd[0]; ++i) {
+                                double sum = 0.0;
+                                int cnt = 0;
+                                for (int z = (int)k * s; z < MIN(d[2], ((int)k + 1) * s); ++z) {
+                                    for (int y = j * s; y < MIN(d[1], (j + 1) * s); ++y) {
+                                        const float* row = src + ((size_t)z * d[1] + y) * d[0];
+                                        for (int x = i * s; x < MIN(d[0], (i + 1) * s); ++x) {
+                                            sum += (double)row[x];
+                                            cnt += 1;
+                                        }
+                                    }
+                                }
+                                buf[((size_t)k * dd[1] + j) * dd[0] + i] = cnt ? (float)(sum / (double)cnt) : 0.0f;
+                            }
+                        }
+                    }
+                }, 1);
+            task_system::enqueue_task(task);
+            task_system::task_wait_for(task);
+
+            gl::set_texture_3D_data(vol_tex, 0, buf, GL_R32F);
+        }
+
+        vol_stride = s;
+        MEMCPY(vol_dim, dd, sizeof(dd));
+        vol_spacing = vec3_t{ grid.spacing.x * (float)s, grid.spacing.y * (float)s, grid.spacing.z * (float)s };
+        const vec3_t min_aabb = grid.origin;
+        const vec3_t max_aabb = {
+            grid.origin.x + vol_spacing.x * (float)dd[0],
+            grid.origin.y + vol_spacing.y * (float)dd[1],
+            grid.origin.z + vol_spacing.z * (float)dd[2],
+        };
+        vol_model = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
+        vol_z0 = min_aabb.z;
+        vol_z1 = max_aabb.z;
+    }
+
+    // Clearance range the colours span. The lower end is always zero, so a colour means the same
+    // clearance whatever the probe is; the probe only decides where the transparency ends.
+    double vol_tf_max() const {
+        return MAX((double)vol_upper, 1.0e-3);
+    }
+
+    // Transparent below the probe radius - those are places a probe centre of that size cannot be -
+    // and above the upper limit, which by default is the query range, so vacuum no bead is within
+    // reach of is not drawn as the largest void in the box. In between the opacity rises with the
+    // clearance, so wide cavities read as the body of the pore space and the margins as a haze.
+    void update_tf() {
+        vol_tf_dirty = false;
+        uint32_t px[VOL_TF_RES];
+        const double tf_max = vol_tf_max();
+        const double R = (double)probe_radius;
+        for (int i = 0; i < VOL_TF_RES; ++i) {
+            const float  t = (float)i / (float)(VOL_TF_RES - 1);
+            const double d = (double)t * tf_max;
+            ImVec4 c = ImPlot::SampleColormap(t, vol_colormap);
+            float a = 0.0f;
+            if (d >= R && i < VOL_TF_RES - 1) {
+                const double u = (tf_max > R) ? (d - R) / (tf_max - R) : 1.0;
+                a = vol_opacity * (float)(0.25 + 0.75 * u);
+            }
+            c.w = CLAMP(a, 0.0f, 1.0f);
+            px[i] = ImGui::ColorConvertFloat4ToU32(c);
+        }
+        gl::init_texture_2D(&vol_tf_tex, VOL_TF_RES, 1, GL_RGBA8);
+        gl::set_texture_2D_data(vol_tf_tex, 0, px, GL_RGBA8);
+    }
+
+    void draw_volume(const ApplicationState& state) {
+        // The texture belongs to the last materialized field; without one it would be a stale picture
+        if (!field) return;
+        if (vol_dirty)    upload_volume();
+        if (vol_tf_dirty) update_tf();
+        if (!vol_tex || !vol_tf_tex) return;
+
+        // The reporting region, as a clip in the texture's z. The texture may run past the grid by
+        // part of a block, which is why this is taken against its own extent.
+        vec3_t clip_min = {0, 0, 0};
+        vec3_t clip_max = {1, 1, 1};
+        if (vol_clip_region && region_end > region_beg && (region_beg > 0 || region_end < stats.num_slabs) && vol_z1 > vol_z0) {
+            const void_profile_t p = make_profile();
+            clip_min.z = CLAMP((float)((void_profile_z_lo(&p, region_beg)     - vol_z0) / (vol_z1 - vol_z0)), 0.0f, 1.0f);
+            clip_max.z = CLAMP((float)((void_profile_z_hi(&p, region_end - 1) - vol_z0) / (vol_z1 - vol_z0)), 0.0f, 1.0f);
+        }
+
+        volume::RenderDesc desc = {};
+        desc.render_target.depth  = state.gbuffer.tex.depth;
+        desc.render_target.color  = state.gbuffer.tex.transparency;
+        desc.render_target.width  = state.gbuffer.width;
+        desc.render_target.height = state.gbuffer.height;
+
+        desc.texture.density_volume    = vol_tex;
+        desc.texture.transfer_function = vol_tf_tex;
+
+        desc.matrix.model    = vol_model;
+        desc.matrix.view     = state.view.param.matrix.curr.view;
+        desc.matrix.proj     = state.view.param.matrix.curr.proj;
+        desc.matrix.inv_proj = state.view.param.matrix.inv.proj;
+
+        desc.clip_volume.min = clip_min;
+        desc.clip_volume.max = clip_max;
+
+        desc.temporal.enabled = state.visuals.temporal_aa.enabled;
+
+        desc.dvr.enabled      = true;
+        desc.dvr.min_tf_value = 0.0f;
+        desc.dvr.max_tf_value = (float)vol_tf_max();
+
+        desc.shading.env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f;
+        desc.shading.roughness    = 0.3f;
+        desc.shading.dir_radiance = {10, 10, 10};
+        desc.shading.ior          = 1.5f;
+        desc.shading.exposure     = state.visuals.tonemapping.exposure;
+        desc.shading.gamma        = state.visuals.tonemapping.gamma;
+
+        desc.voxel_spacing = vol_spacing;
+
+        volume::render_volume(desc);
+    }
+
     // A(r) = -dV_acc/dr, and with |grad d| = 1 almost everywhere the coarea formula makes that
     // derivative the density of the distance histogram at r. One field therefore already carries the
     // accessible surface area at every probe radius, for the cost of a division.
@@ -713,13 +1167,13 @@ struct VoidAnalysis : viamd::EventHandler {
         const double nm3 = nm * nm * nm;
 
         md_file_printf(file, "# VIAMD void analysis, z profile\n");
-        md_file_printf(file, "# hydration_layer_nm,%.6f\n", (double)t_layer / nm);
         md_file_printf(file, "# probe_radius_nm,%.6f\n",    (double)probe_radius / nm);
         md_file_printf(file, "# region_slabs,%u,%u\n", region_beg, region_end);
-        md_file_printf(file, "z_lo_nm,z_hi_nm,n_voxels,n_solid,porosity,accessible_fraction,void_volume_nm3,accessible_volume_nm3\n");
+        md_file_printf(file, "# density_unit,%s\n", density_unit());
+        md_file_printf(file, "z_lo_nm,z_hi_nm,n_voxels,n_solid,porosity,accessible_fraction,void_volume_nm3,accessible_volume_nm3,density\n");
         for (uint32_t sl = 0; sl < stats.num_slabs; ++sl) {
             const double v_slab = (double)void_profile_num_total(&p, sl, sl + 1) * stats.voxel_volume;
-            md_file_printf(file, "%.6f,%.6f,%llu,%llu,%.8f,%.8f,%.8f,%.8f\n",
+            md_file_printf(file, "%.6f,%.6f,%llu,%llu,%.8f,%.8f,%.8f,%.8f,%.8f\n",
                 void_profile_z_lo(&p, sl) / nm,
                 void_profile_z_hi(&p, sl) / nm,
                 (unsigned long long)void_profile_num_total(&p, sl, sl + 1),
@@ -727,7 +1181,8 @@ struct VoidAnalysis : viamd::EventHandler {
                 void_profile_porosity(&p, sl, sl + 1),
                 void_profile_accessible_fraction(&p, sl, sl + 1, (double)probe_radius),
                 v_slab * void_profile_porosity(&p, sl, sl + 1) / nm3,
-                void_profile_accessible_volume(&p, sl, sl + 1, (double)probe_radius) / nm3);
+                void_profile_accessible_volume(&p, sl, sl + 1, (double)probe_radius) / nm3,
+                density_over(sl, sl + 1));
         }
     }
 
@@ -751,7 +1206,6 @@ struct VoidAnalysis : viamd::EventHandler {
         const size_t nr  = md_array_size(acc_r);
 
         md_file_printf(file, "# VIAMD void analysis, accessible volume V(R,z)\n");
-        md_file_printf(file, "# hydration_layer_nm,%.6f\n", (double)t_layer / nm);
         md_file_printf(file, "# z_slab -1 is the reporting region as a whole\n");
         md_file_printf(file, "z_slab,z_center_nm,R_nm,accessible_fraction,accessible_volume_nm3\n");
         for (size_t i = 0; i < nr; ++i) {
@@ -927,7 +1381,6 @@ struct VoidAnalysis : viamd::EventHandler {
         sasa.area_density = (vol > 0.0) ? sasa.total_area / vol : 0.0;
 
         sasa.probe   = (double)probe_radius;
-        sasa.t_layer = (double)t_layer;
         sasa.seconds = md_tick_to_seconds(md_tick_now() - t0);
 
         has_sasa = true;
@@ -1347,8 +1800,8 @@ struct VoidAnalysis : viamd::EventHandler {
 
         ImGui::Text("Porosity: %.4f", phi);
         ImGui::SetItemTooltip("Void volume fraction of the region: the share of it a point sized probe can occupy.\n"
-                              "The solid it is measured against is the bead plus its hydration layer, so this moves\n"
-                              "with that layer like everything else here - sweep it rather than fitting it once.");
+                              "The solid it is measured against is the union of the bead spheres, so this moves with\n"
+                              "the radius source like everything else here.");
         ImGui::SameLine();
         ImGui::TextDisabled("(solid %.4f, void volume %.4g nm^3)", 1.0 - phi, phi * v_region / nm3);
 
@@ -1356,39 +1809,93 @@ struct VoidAnalysis : viamd::EventHandler {
         ImGui::SetItemTooltip("Volume whose distance to the nearest bead surface exceeds R, i.e. where the CENTRE of a\n"
                               "probe of radius R fits. Not the volume the probe body fills, which is that set dilated\n"
                               "by R and is larger, and not a statement that the volume can be reached from outside -\n"
-                              "a closed cavity counts here and is invisible to infiltration. The channel sweep below\n"
-                              "is what answers reachability.");
+                              "a closed cavity counts here and is invisible to infiltration.");
         ImGui::SameLine();
         ImGui::TextDisabled("(%.1f%% of the pore space)", (phi > 0.0) ? 100.0 * phi_acc / phi : 0.0);
+
+        const double rho = density_over(region_beg, region_end);
+        ImGui::Text("Density: %.4g %s", rho, density_unit());
+        if (has_mass()) {
+            ImGui::SetItemTooltip("Mass of the atoms in the region over the volume of the region - the same volume the\n"
+                                  "porosity is a fraction of. With a periodic z the atoms are wrapped into the box;\n"
+                                  "with an open z an atom outside the grid is outside the region and not counted.");
+            // Bulk density is the skeletal density diluted by the pore space, rho = (1 - phi) rho_s,
+            // so the skeletal one is what the solid itself weighs per volume it occupies.
+            ImGui::SameLine();
+            ImGui::TextDisabled("(skeletal %.4g kg/m^3)", (phi < 1.0) ? rho / (1.0 - phi) : 0.0);
+            ImGui::SetItemTooltip("Mass over the solid volume alone: rho / (1 - porosity). For a bead model this says\n"
+                                  "how heavy the chosen radii make the solid, which is a check on the radii.");
+        } else {
+            ImGui::SetItemTooltip("No atom carries a mass, so this is the number density instead.");
+        }
 
         ImGui::SliderInt("Radius samples", &acc_num_radii, 8, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemDeactivatedAfterEdit()) curves_dirty = true;
 
-        // V(R)/V against R. Porosity is its left endpoint and the probe radius reads off it, so the
-        // two scalars above are two points on this curve and the curve is the actual result.
-        if (md_array_size(acc_r) > 1 && ImPlot::BeginPlot("##acc_curve", ImVec2(-1, 180))) {
-            ImPlot::SetupAxes("Probe radius R (nm)", "V(R) / V");
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, MAX(1.0e-4, phi * 1.05), ImPlotCond_Always);
-            ImPlot::PlotLine("V(R)/V", acc_r, acc_frac, (int)md_array_size(acc_r));
-            double r_nm = probe_radius / nm;
-            ImPlot::DragLineX(0, &r_nm, ImVec4(1, 0.6f, 0.2f, 1), 1.0f, ImPlotDragToolFlags_NoInputs);
-            ImPlot::EndPlot();
-        }
+        // Three views side by side. V(R)/V against R, whose left endpoint is the porosity and which the
+        // probe radius reads off; the same against z, where the R = 0 curve is the porosity profile
+        // and the gap to the probe curve is the pore volume the probe is too large for; and the
+        // density against z on the same slabs, which is what says where the film actually is. The
+        // two z plots share their axis, so zooming one zooms the other.
+        const bool have_rows = md_array_size(prof_z) > 1 && md_array_size(prof_acc) == md_array_size(prof_z) &&
+                               md_array_size(prof_rho) == md_array_size(prof_z);
+        if (ImGui::BeginTable("##profiles", 3, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings)) {
+            const float plot_h = 220.0f;
+            ImGui::TableNextRow();
 
-        // The same against z. The R = 0 curve is the porosity profile, so the gap between the two
-        // lines is the pore volume the probe is too large for, slab by slab.
-        if (md_array_size(prof_z) > 1 && md_array_size(prof_acc) == md_array_size(prof_z) &&
-            ImPlot::BeginPlot("##z_profile", ImVec2(-1, 180))) {
-            ImPlot::SetupAxes("z (nm)", "Volume fraction");
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 1.0, ImPlotCond_Once);
-            ImPlot::PlotLine("Porosity", prof_z, prof_phi, (int)md_array_size(prof_z));
-            ImPlot::PlotLine("V(R,z)/V(z)", prof_z, prof_acc, (int)md_array_size(prof_z));
-            if (region_end > region_beg && (region_beg > 0 || region_end < stats.num_slabs)) {
-                double rz[2] = { void_profile_z_lo(&p, region_beg) / nm, void_profile_z_hi(&p, region_end - 1) / nm };
-                ImPlot::DragLineX(1, &rz[0], ImVec4(1, 0.6f, 0.2f, 0.7f), 1.0f, ImPlotDragToolFlags_NoInputs);
-                ImPlot::DragLineX(2, &rz[1], ImVec4(1, 0.6f, 0.2f, 0.7f), 1.0f, ImPlotDragToolFlags_NoInputs);
+            ImGui::TableSetColumnIndex(0);
+            if (md_array_size(acc_r) > 1 && ImPlot::BeginPlot("##acc_curve", ImVec2(-1, plot_h))) {
+                ImPlot::SetupAxes("Probe radius R (nm)", "V(R) / V");
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, MAX(1.0e-4, phi * 1.05), ImPlotCond_Always);
+                ImPlot::PlotLine("V(R)/V", acc_r, acc_frac, (int)md_array_size(acc_r));
+                double r_nm = probe_radius / nm;
+                ImPlot::DragLineX(0, &r_nm, ImVec4(1, 0.6f, 0.2f, 1), 1.0f, ImPlotDragToolFlags_NoInputs);
+                ImPlot::EndPlot();
             }
-            ImPlot::EndPlot();
+
+            double rz[2] = { 0.0, 0.0 };
+            const bool show_region = region_end > region_beg && (region_beg > 0 || region_end < stats.num_slabs);
+            if (show_region) {
+                rz[0] = void_profile_z_lo(&p, region_beg) / nm;
+                rz[1] = void_profile_z_hi(&p, region_end - 1) / nm;
+            }
+
+            ImGui::TableSetColumnIndex(1);
+            if (have_rows && ImPlot::BeginPlot("##z_profile", ImVec2(-1, plot_h))) {
+                ImPlot::SetupAxes("z (nm)", "Volume fraction");
+                ImPlot::SetupAxisLinks(ImAxis_X1, &z_link[0], &z_link[1]);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 1.0, ImPlotCond_Once);
+                ImPlot::PlotLine("Porosity", prof_z, prof_phi, (int)md_array_size(prof_z));
+                ImPlot::PlotLine("V(R,z)/V(z)", prof_z, prof_acc, (int)md_array_size(prof_z));
+                if (show_region) {
+                    ImPlot::DragLineX(1, &rz[0], ImVec4(1, 0.6f, 0.2f, 0.7f), 1.0f, ImPlotDragToolFlags_NoInputs);
+                    ImPlot::DragLineX(2, &rz[1], ImVec4(1, 0.6f, 0.2f, 0.7f), 1.0f, ImPlotDragToolFlags_NoInputs);
+                }
+                ImPlot::EndPlot();
+            }
+
+            ImGui::TableSetColumnIndex(2);
+            if (have_rows && ImPlot::BeginPlot("##density_profile", ImVec2(-1, plot_h))) {
+                char y_lbl[64];
+                snprintf(y_lbl, sizeof(y_lbl), "Density (%s)", density_unit());
+                ImPlot::SetupAxes("z (nm)", y_lbl);
+                ImPlot::SetupAxisLinks(ImAxis_X1, &z_link[0], &z_link[1]);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 1.0, ImPlotCond_Once);
+                ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
+                ImPlot::PlotShaded("##density_fill", prof_z, prof_rho, (int)md_array_size(prof_z), 0.0);
+                ImPlot::PlotLine("Density", prof_z, prof_rho, (int)md_array_size(prof_z));
+                if (show_region) {
+                    ImPlot::DragLineX(3, &rz[0], ImVec4(1, 0.6f, 0.2f, 0.7f), 1.0f, ImPlotDragToolFlags_NoInputs);
+                    ImPlot::DragLineX(4, &rz[1], ImVec4(1, 0.6f, 0.2f, 0.7f), 1.0f, ImPlotDragToolFlags_NoInputs);
+                }
+                // The region's value as a level: the global density is the mean of this curve over
+                // the region's slabs, weighted by their volume.
+                double rho_mean = rho;
+                ImPlot::DragLineY(5, &rho_mean, ImVec4(0.7f, 0.7f, 0.7f, 0.7f), 1.0f, ImPlotDragToolFlags_NoInputs);
+                ImPlot::EndPlot();
+            }
+
+            ImGui::EndTable();
         }
 
         // V(R,z): the accessible volume of every z slab over every probe radius, in one picture. A
@@ -1467,10 +1974,153 @@ struct VoidAnalysis : viamd::EventHandler {
         ImGui::SetItemTooltip("Long form: one row per radius and slab, plus the region as a whole at slab -1.");
     }
 
+    // The topography of each face as a heat map over (x, y), with the roughness numbers that
+    // summarize it. The map is of the probe apex, so it is the surface a probe of the current radius
+    // would feel, not the bead surface - they coincide only at R = 0.
+    void draw_height_section() {
+        const double nm = (double)ANGSTROM_PER_NM;
+
+        ImGui::SeparatorText("Surface topography");
+
+        if (!has_height) {
+            ImGui::TextDisabled("No topography - the probe radius must be below the max distance.");
+            return;
+        }
+
+        if (ImGui::BeginCombo("Map", height_view_lbl[height_view])) {
+            for (int i = 0; i < HeightView_Count; ++i) {
+                if (ImGui::Selectable(height_view_lbl[i], height_view == i)) {
+                    height_view = (HeightView)i;
+                    height_disp_dirty = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Top: where a probe lowered from above first touches, as the height of its apex.\n"
+                              "Bottom: the same from below. Thickness: the two subtracted, column by column.");
+
+        if (height_disp_dirty) update_height_display();
+
+        ImGui::TextDisabled("At probe %.2f nm, %.2f s over %i x %i columns",
+                            height_probe / nm, height_seconds, grid.dim[0], grid.dim[1]);
+        if (height_pending) {
+            ImGui::SameLine();
+            ImGui::TextColored({1.0f, 0.8f, 0.35f, 1.0f}, "(updates on release)");
+        }
+
+        const void_heightmap_stats_t& st = height_stats[height_view];
+        const uint64_t n_cols = st.num_valid + st.num_open;
+        if (st.num_valid > 0) {
+            ImGui::Text("Mean %.3f nm, range %.3f to %.3f nm", st.mean / nm, st.min / nm, st.max / nm);
+            ImGui::Text("Roughness Rq %.3f nm, Ra %.3f nm, peak to valley %.3f nm",
+                        st.rq / nm, st.ra / nm, (st.max - st.min) / nm);
+            ImGui::SetItemTooltip("Rq is the RMS deviation from the mean height, Ra the mean absolute deviation.\n"
+                                  "Both are of the surface the probe feels, so they fall as the probe grows and\n"
+                                  "stops reaching into the narrower dips.");
+        }
+        if (st.num_open > 0) {
+            ImGui::Text("Open columns: %.2f%%", 100.0 * (double)st.num_open / (double)MAX((uint64_t)1, n_cols));
+            ImGui::SetItemTooltip("Columns the probe falls straight through without touching anything: a pore that\n"
+                                  "runs the full height of the box at this radius. Drawn at the bottom of the\n"
+                                  "colour scale and left out of every statistic above.");
+        }
+
+        if (height_nx > 0 && height_ny > 0) {
+            const double x0 = grid.origin.x / nm;
+            const double y0 = grid.origin.y / nm;
+            const double x1 = (grid.origin.x + grid.spacing.x * (float)grid.dim[0]) / nm;
+            const double y1 = (grid.origin.y + grid.spacing.y * (float)grid.dim[1]) / nm;
+
+            const float h = 320.0f;
+            ImPlot::PushColormap(ImPlotColormap_Viridis);
+            if (ImPlot::BeginPlot("##height_map", ImVec2(-80, h), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText | ImPlotFlags_Equal)) {
+                ImPlot::SetupAxes("x (nm)", "y (nm)");
+                ImPlot::SetupAxesLimits(x0, x1, y0, y1, ImPlotCond_Once);
+                ImPlot::PlotHeatmap("##height", height_disp, (int)height_ny, (int)height_nx, height_lo, height_hi, nullptr,
+                                    ImPlotPoint(x0, y0), ImPlotPoint(x1, y1));
+
+                // Read the full resolution map under the cursor, not the averaged display
+                if (ImPlot::IsPlotHovered()) {
+                    const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+                    const int ix = (int)floor((mp.x * nm - grid.origin.x) / grid.spacing.x);
+                    const int iy = (int)floor((mp.y * nm - grid.origin.y) / grid.spacing.y);
+                    const float* src = height_source(height_view);
+                    if (src && ix >= 0 && iy >= 0 && ix < grid.dim[0] && iy < grid.dim[1]) {
+                        const float v = src[(size_t)iy * grid.dim[0] + ix];
+                        if (isfinite(v)) {
+                            ImGui::SetTooltip("x %.2f, y %.2f nm\n%s %.3f nm", mp.x, mp.y,
+                                              height_view == HeightView_Thickness ? "thickness" : "height", v / nm);
+                        } else {
+                            ImGui::SetTooltip("x %.2f, y %.2f nm\nopen: the probe falls through", mp.x, mp.y);
+                        }
+                    }
+                }
+                ImPlot::EndPlot();
+            }
+            ImGui::SameLine();
+            ImPlot::ColormapScale("##height_scale", height_lo, height_hi, ImVec2(70, h), "%.2f");
+            ImPlot::PopColormap();
+            if (height_nx < (uint32_t)grid.dim[0] || height_ny < (uint32_t)grid.dim[1]) {
+                ImGui::TextDisabled("Shown averaged to %u x %u; the statistics and the tooltip use every column.", height_nx, height_ny);
+            }
+        }
+    }
+
+    void draw_volume_section() {
+        ImGui::SeparatorText("Volume rendering");
+
+        ImGui::Checkbox("Show distance field", &show_volume);
+        ImGui::SetItemTooltip("Ray casts the distance field in the 3D view. It is transparent wherever the clearance\n"
+                              "is below the probe radius, so what remains is exactly where a probe centre of that\n"
+                              "size fits, coloured by how much room it has there.");
+        if (!show_volume) return;
+
+        if (!has_result || !field) {
+            ImGui::TextDisabled("Needs a result computed with 'Materialize field' enabled.");
+            return;
+        }
+
+        const double nm = (double)ANGSTROM_PER_NM;
+
+        if (ImGui::BeginCombo("Colormap", ImPlot::GetColormapName(vol_colormap))) {
+            for (int i = 0; i < ImPlot::GetColormapCount(); ++i) {
+                if (ImGui::Selectable(ImPlot::GetColormapName(i), vol_colormap == i)) {
+                    vol_colormap = i;
+                    vol_tf_dirty = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        if (ImGui::SliderFloat("Opacity", &vol_opacity, 0.001f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic)) {
+            vol_tf_dirty = true;
+        }
+        ImGui::SetItemTooltip("Opacity at the widest clearance shown, per reference step. It falls to a quarter\n"
+                              "of that at the probe radius, so the margins of the pore space read as a haze.");
+
+        float upper_nm = vol_upper / (float)nm;
+        const float lo_nm = probe_radius / (float)nm;
+        const float hi_nm = MAX(lo_nm + 0.01f, (float)(stats.d_max / nm));
+        if (ImGui::SliderFloat("Upper limit (nm)", &upper_nm, lo_nm, hi_nm, "%.2f")) {
+            vol_upper = upper_nm * (float)nm;
+            vol_tf_dirty = true;
+        }
+        ImGui::SetItemTooltip("Transparent above this clearance too, and the top of the colour scale. The default\n"
+                              "is the largest distance in the field, which hides only what no bead was found within\n"
+                              "the max distance of - the vacuum around a film, typically.");
+
+        ImGui::Checkbox("Clip to the reporting region", &vol_clip_region);
+
+        ImGui::TextDisabled("Colour spans 0 to %.2f nm, transparent below %.2f nm", vol_tf_max() / nm, probe_radius / nm);
+        if (vol_stride > 1) {
+            ImGui::TextDisabled("Uploaded at %i x %i x %i, averaged over %i^3 voxels", vol_dim[0], vol_dim[1], vol_dim[2], vol_stride);
+        }
+    }
+
     void draw_window() {
         if (!show_window) return;
 
-        ImGui::SetNextWindowSize({420, 520}, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize({900, 720}, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Void Analysis", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             const bool has_system = app_state && app_state->mold.state.num_atoms > 0;
 
@@ -1517,24 +2167,26 @@ struct VoidAnalysis : viamd::EventHandler {
                 }
             }
 
-            float t_layer_nm = t_layer / ANGSTROM_PER_NM;
-            if (ImGui::SliderFloat("Hydration layer (nm)", &t_layer_nm, 0.0f, 1.0f, "%.2f")) {
-                t_layer = t_layer_nm * ANGSTROM_PER_NM;
-            }
-            ImGui::SetItemTooltip("Added to every bead radius. Sweep it rather than fitting it once:\n"
-                                  "in a network with 2 nm gaps, 0.3 nm per side removes a third of the gap.");
-
             float probe_nm = probe_radius / ANGSTROM_PER_NM;
             if (ImGui::SliderFloat("Probe radius (nm)", &probe_nm, 0.0f, 10.0f, "%.2f")) {
                 probe_radius = probe_nm * ANGSTROM_PER_NM;
                 probe_dirty  = true;
+                vol_tf_dirty = true;
+                if (has_height) height_pending = true;
             }
-            ImGui::SetItemTooltip("Water sized (0.14 nm) for sorption, colloid sized for exclusion.");
+            // The profile and the volume follow the slider; the topography is a geometric pass of its
+            // own and waits until the value is let go.
+            if (ImGui::IsItemDeactivatedAfterEdit() && has_height) {
+                refresh_height();
+            }
+            ImGui::SetItemTooltip("Water sized (0.14 nm) for sorption, colloid sized for exclusion.\n"
+                                  "The accessible volume, the volume rendering and the topography all follow it.");
 
             ImGui::SeparatorText("Output");
 
             ImGui::Checkbox("Materialize field", &materialize);
-            ImGui::SetItemTooltip("Keep the full voxel grid in memory. Statistics alone do not need it.");
+            ImGui::SetItemTooltip("Keep the full voxel grid in memory. Statistics and the topography do not need it;\n"
+                                  "the volume rendering does.");
 
             if (has_system) {
                 md_grid_t preview = {};
@@ -1580,8 +2232,12 @@ struct VoidAnalysis : viamd::EventHandler {
                 }
 
                 draw_porosity_section();
+                draw_height_section();
             }
 
+            draw_volume_section();
+
+#if VOID_ANALYSIS_PERCOLATION
             ImGui::SeparatorText("Percolation through z");
 
             ImGui::TextDisabled("Along z, which is treated as open at both ends.");
@@ -1726,7 +2382,9 @@ struct VoidAnalysis : viamd::EventHandler {
                     draw_channel_tree(ImVec2(ImGui::GetContentRegionAvail().x, 220.0f));
                 }
             }
+#endif
 
+#if 0
             ImGui::SeparatorText("Accessible surface area");
 
             ImGui::SliderInt("Points per bead", &sasa_points, 32, SASA_MAX_POINTS);
@@ -1759,8 +2417,7 @@ struct VoidAnalysis : viamd::EventHandler {
                 if (sasa.specific_area > 0.0) {
                     ImGui::Text("Specific area: %.4g m^2/g", sasa.specific_area);
                 }
-                ImGui::TextDisabled("At probe %.2f nm, hydration layer %.2f nm",
-                                    sasa.probe / (double)ANGSTROM_PER_NM, sasa.t_layer / (double)ANGSTROM_PER_NM);
+                ImGui::TextDisabled("At probe %.2f nm", sasa.probe / (double)ANGSTROM_PER_NM);
 
                 // Independent cross check. The two estimators share almost no code path, so agreement within a few
                 // percent is evidence; a larger gap means one of them is wrong, and the coarea one is the discretized
@@ -1798,6 +2455,7 @@ struct VoidAnalysis : viamd::EventHandler {
                     }
                 }
             }
+#endif
         }
         ImGui::End();
     }

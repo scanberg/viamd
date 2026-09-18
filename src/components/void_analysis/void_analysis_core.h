@@ -9,6 +9,7 @@
 //
 //   porosity and accessible volume   the profile the field is summarized into, and its reductions
 //   the distance field               grid, tiles, and the pass that fills a profile
+//   surface topography               the height a probe of radius R finds, from above and below
 //   channels                         connectivity through z, from a materialized field
 
 #include <core/md_array.h>
@@ -151,6 +152,19 @@ double void_profile_solid_fraction_smooth(const void_profile_t* prof, uint32_t s
 // Returns false when the profile carries no solid at all, in which case the outputs are untouched.
 bool void_profile_film_extent(const void_profile_t* prof, double frac, uint32_t* out_slab_beg, uint32_t* out_slab_end, double* out_interior_solid_fraction);
 
+// Mass per slab, binned along the same uniform division of z the profile uses, so a density read off
+// it and a porosity read off the histogram describe the same slab. A position below or above the
+// profile's z range is wrapped into it when periodic_z is set and dropped otherwise - an atom outside
+// an open axis is outside the volume the density is taken over, and folding it into the edge slab
+// would invent a spike there. mass may be NULL, in which case every position counts as one, which
+// is the number density. out_slab_mass is overwritten, [num_slabs]. Returns what was binned.
+double void_profile_bin_mass(double* out_slab_mass, const void_profile_t* prof, const float* z, const float* mass, size_t count, bool periodic_z);
+
+// Binned mass over the slab range divided by the volume the profile considered there, i.e. the same
+// volume the porosity of that range is a fraction of. Units are whatever the mass and the profile
+// were given in, per world volume.
+double void_profile_mass_density(const void_profile_t* prof, const double* slab_mass, uint32_t slab_beg, uint32_t slab_end);
+
 #ifdef __cplusplus
 }
 #endif
@@ -178,7 +192,7 @@ bool void_profile_film_extent(const void_profile_t* prof, double frac, uint32_t*
 #define VOID_FIELD_TILE_DIM 8
 
 typedef struct void_field_desc_t {
-    const struct md_spatial_acc_t* acc;     // Built over the beads, radii already offset by any layer
+    const struct md_spatial_acc_t* acc;     // Built over the beads, one radius per bead
     const struct md_unitcell_t*    cell;    // The cell acc was built with, or NULL. Drives the in-cell mask.
     const struct md_grid_t*        grid;    // Axis aligned, see void_field_grid
 
@@ -221,6 +235,68 @@ void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* d
 // A profile over an accumulator, with the geometry filled in from the description. It points into
 // the accumulator's arrays and does not own them.
 void_profile_t void_field_profile(const void_field_accum_t* accum, const void_field_desc_t* desc);
+
+#ifdef __cplusplus
+}
+#endif
+
+// =================================================================================================
+// Surface topography
+// =================================================================================================
+//
+// The height of the structure as a spherical probe of radius R, lowered straight down along z,
+// finds it: for every (x, y) column, the lowest z the probe centre reaches from the top before
+// d(p) = R, minus R, which is the height of the probe apex at contact. The same from below gives the
+// lower face. This is exactly what an AFM tip of that radius records, and it is what "respects the
+// probe radius" means here: the reported surface is the structure dilated by R and eroded back,
+// so a gap narrower than 2R is bridged and a cavity the probe cannot enter is not part of the
+// topography at all. At R = 0 it is the bead surface itself.
+//
+// No field is needed. d is a lower bound on the distance to the union of the beads, so it is
+// 1-Lipschitz, and descending by d - R per step can never step past a contact - this is sphere
+// tracing on the same weighted nearest query the field pass uses. Near a contact the step is held
+// at no less than tol and the crossing interpolated, so a column grazing the flank of a bead lands
+// on it rather than creeping towards it. A column costs a handful of
+// queries rather than a voxel per plane, which is what lets this run on a grid the field could not
+// be materialized for.
+//
+// Columns are walked in patches of VOID_FIELD_TILE_DIM^2 so that each batched query stays spatially
+// compact. Evaluation is serial and a patch range touches only its own columns, so a caller
+// parallelises by handing out disjoint patch ranges, as with the field.
+
+typedef struct void_heightmap_desc_t {
+    const struct md_spatial_acc_t* acc;     // Built over the beads, one radius per bead
+    const struct md_grid_t*        grid;    // Columns at its xy voxel centres; the scan spans its z extent
+
+    double probe_radius;    // R, world units, >= 0
+    double max_dist;        // Range of the query, must exceed probe_radius
+    double tol;             // Contact tolerance, world units. <= 0 picks 1% of the smallest spacing
+} void_heightmap_desc_t;
+
+// Summary of one height map over the columns which found a contact.
+typedef struct void_heightmap_stats_t {
+    uint64_t num_valid;     // Columns with a contact
+    uint64_t num_open;      // Columns the probe fell straight through
+    double   mean;
+    double   min;
+    double   max;
+    double   rq;            // RMS deviation from the mean, the usual Rq roughness
+    double   ra;            // Mean absolute deviation, Ra
+} void_heightmap_stats_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+uint32_t void_heightmap_num_patches(const struct md_grid_t* grid);
+
+// Evaluate the patches [patch_beg, patch_end). out_top and out_bot hold grid->dim[0] * grid->dim[1]
+// heights, x fastest, in world z; either may be NULL. A column the probe passes all the way through
+// is written as NaN in both - it is an open pore, not a surface at the bottom of the box.
+void void_heightmap_eval_patches(float* out_top, float* out_bot, const void_heightmap_desc_t* desc, uint32_t patch_beg, uint32_t patch_end);
+
+// Statistics over the finite entries of h. NaN entries are counted as open.
+void void_heightmap_stats(void_heightmap_stats_t* out, const float* h, size_t count);
 
 #ifdef __cplusplus
 }

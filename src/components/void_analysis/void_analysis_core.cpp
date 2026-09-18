@@ -171,6 +171,37 @@ bool void_profile_film_extent(const void_profile_t* prof, double frac, uint32_t*
 // The distance field
 // =================================================================================================
 
+double void_profile_bin_mass(double* out_slab_mass, const void_profile_t* prof, const float* z, const float* mass, size_t count, bool periodic_z) {
+    if (!out_slab_mass || !prof || prof->num_slabs == 0 || !(prof->slab_height > 0.0)) return 0.0;
+    memset(out_slab_mass, 0, prof->num_slabs * sizeof(double));
+    if (!z) return 0.0;
+
+    const double H = prof->slab_height * (double)prof->num_slabs;
+    double total = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+        double u = (double)z[i] - prof->z_min;
+        if (periodic_z) {
+            u -= H * floor(u / H);
+        } else if (u < 0.0 || u >= H) {
+            continue;
+        }
+        uint32_t s = (uint32_t)(u / prof->slab_height);
+        if (s >= prof->num_slabs) s = prof->num_slabs - 1;
+        const double m = mass ? (double)mass[i] : 1.0;
+        out_slab_mass[s] += m;
+        total += m;
+    }
+    return total;
+}
+
+double void_profile_mass_density(const void_profile_t* prof, const double* slab_mass, uint32_t slab_beg, uint32_t slab_end) {
+    if (!slab_mass || !clamp_range(prof, &slab_beg, &slab_end)) return 0.0;
+    double m = 0.0;
+    for (uint32_t s = slab_beg; s < slab_end; ++s) m += slab_mass[s];
+    const double v = (double)void_profile_num_total(prof, slab_beg, slab_end) * prof->voxel_volume;
+    return (v > 0.0) ? m / v : 0.0;
+}
+
 bool void_field_grid(md_grid_t* out_grid, const md_unitcell_t* cell, const float* x, const float* y, const float* z, size_t count, float spacing) {
     if (!out_grid || !(spacing > 0.0f)) return false;
 
@@ -378,6 +409,187 @@ void_profile_t void_field_profile(const void_field_accum_t* accum, const void_fi
     p.slab_height  = (double)grid.spacing.z * (double)grid.dim[2] / (double)desc->num_slabs;
     p.voxel_volume = (double)grid.spacing.x * (double)grid.spacing.y * (double)grid.spacing.z;
     return p;
+}
+
+// =================================================================================================
+// Surface topography
+// =================================================================================================
+
+namespace {
+
+// Past this many steps a column is taken to be in contact where it stands. Sphere tracing only
+// slows down when the ray grazes a bead, and there the remaining error is along a wall that is
+// nearly vertical, so this bounds the cost without moving an answer by anything measurable.
+constexpr int HEIGHTMAP_MAX_ITER = 4096;
+
+// March a patch of columns from z_start towards z_end (dir = -1 downwards, +1 upwards) and write the
+// probe apex height at contact, or NaN for a column the probe clears entirely.
+//
+// Each step is the gap d - R, never less than tol. Stepping by the gap alone converges only
+// asymptotically where the column grazes a bead, and stopping once the gap is below tol would then
+// report a contact up to sqrt(2 R tol) too high on the flank of every bead. Taking at least tol
+// instead lets the column cross into contact, and the crossing is located by interpolating the gap
+// between the last step outside and the first inside, which is exact for a head on approach.
+void heightmap_march(float* out, const size_t* col, const float* cx, const float* cy, int n,
+                     double z_start, double z_end, double dir, const void_heightmap_desc_t* desc, double tol) {
+    enum { N = VOID_FIELD_TILE_DIM * VOID_FIELD_TILE_DIM };
+    float  qx[N], qy[N], qz[N], dist[N];
+    double z[N], z_prev[N], g_prev[N];
+    int    act[N];
+
+    const double R = desc->probe_radius;
+    int num_act = n;
+    for (int i = 0; i < n; ++i) {
+        z[i]      = z_start;
+        z_prev[i] = z_start;
+        g_prev[i] = -1.0;      // No step taken yet
+        act[i]    = i;
+    }
+
+    for (int iter = 0; iter < HEIGHTMAP_MAX_ITER && num_act > 0; ++iter) {
+        for (int a = 0; a < num_act; ++a) {
+            const int i = act[a];
+            qx[a] = cx[i];
+            qy[a] = cy[i];
+            qz[a] = (float)z[i];
+        }
+        md_coord_stream_t pts = md_coord_stream_from_soa(qx, qy, qz, NULL, (size_t)num_act);
+        md_spatial_acc_query_nearest(desc->acc, &pts, desc->max_dist, NULL, dist);
+
+        int keep = 0;
+        for (int a = 0; a < num_act; ++a) {
+            const int    i   = act[a];
+            const double gap = (double)dist[a] - R;
+            if (gap <= 0.0) {
+                double zc = z[i];
+                if (g_prev[i] > 0.0) {
+                    // The gap changed sign between the last two samples
+                    const double t = g_prev[i] / (g_prev[i] - gap);
+                    zc = z_prev[i] + t * (z[i] - z_prev[i]);
+                }
+                // A column which starts in contact stays where it started
+                out[col[i]] = (float)(zc + dir * R);
+                continue;
+            }
+            z_prev[i] = z[i];
+            g_prev[i] = gap;
+            z[i] += dir * (gap > tol ? gap : tol);
+            if ((dir < 0.0 && z[i] < z_end) || (dir > 0.0 && z[i] > z_end)) {
+                out[col[i]] = NAN;
+                continue;
+            }
+            act[keep++] = i;
+        }
+        num_act = keep;
+    }
+
+    for (int a = 0; a < num_act; ++a) {
+        const int i = act[a];
+        out[col[i]] = (float)(z[i] + dir * R);
+    }
+}
+
+}  // namespace
+
+uint32_t void_heightmap_num_patches(const md_grid_t* grid) {
+    if (!grid || grid->dim[0] <= 0 || grid->dim[1] <= 0) return 0;
+    const uint32_t TD = VOID_FIELD_TILE_DIM;
+    return (((uint32_t)grid->dim[0] + TD - 1) / TD) * (((uint32_t)grid->dim[1] + TD - 1) / TD);
+}
+
+void void_heightmap_eval_patches(float* out_top, float* out_bot, const void_heightmap_desc_t* desc, uint32_t patch_beg, uint32_t patch_end) {
+    if (!desc || !desc->acc || !desc->grid) return;
+    if (!out_top && !out_bot) return;
+    const md_grid_t& grid = *desc->grid;
+    if (grid.dim[0] <= 0 || grid.dim[1] <= 0 || grid.dim[2] <= 0) return;
+
+    const int TD = VOID_FIELD_TILE_DIM;
+    const int px = (grid.dim[0] + TD - 1) / TD;
+    patch_end = MIN(patch_end, void_heightmap_num_patches(desc->grid));
+
+    const double R = desc->probe_radius > 0.0 ? desc->probe_radius : 0.0;
+    const double min_spacing = MIN((double)grid.spacing.x, MIN((double)grid.spacing.y, (double)grid.spacing.z));
+    const double tol = (desc->tol > 0.0) ? desc->tol : 0.01 * min_spacing;
+
+    const double z_lo = (double)grid.origin.z;
+    const double z_hi = (double)grid.origin.z + (double)grid.spacing.z * (double)grid.dim[2];
+
+    // A probe the query cannot resolve reports every column as touching at once. Say nothing rather
+    // than something wrong.
+    const bool resolvable = desc->max_dist > R;
+
+    enum { N = VOID_FIELD_TILE_DIM * VOID_FIELD_TILE_DIM };
+    float  cx[N], cy[N];
+    size_t col[N];
+
+    for (uint32_t t = patch_beg; t < patch_end; ++t) {
+        const int tx = (int)(t % (uint32_t)px);
+        const int ty = (int)(t / (uint32_t)px);
+
+        int n = 0;
+        for (int j = 0; j < TD; ++j) {
+            const int y = ty * TD + j;
+            if (y >= grid.dim[1]) break;
+            for (int i = 0; i < TD; ++i) {
+                const int x = tx * TD + i;
+                if (x >= grid.dim[0]) break;
+                cx[n]  = grid.origin.x + ((float)x + 0.5f) * grid.spacing.x;
+                cy[n]  = grid.origin.y + ((float)y + 0.5f) * grid.spacing.y;
+                col[n] = (size_t)y * (size_t)grid.dim[0] + (size_t)x;
+                n += 1;
+            }
+        }
+        if (n == 0) continue;
+
+        if (!resolvable) {
+            for (int i = 0; i < n; ++i) {
+                if (out_top) out_top[col[i]] = NAN;
+                if (out_bot) out_bot[col[i]] = NAN;
+            }
+            continue;
+        }
+
+        if (out_top) heightmap_march(out_top, col, cx, cy, n, z_hi, z_lo, -1.0, desc, tol);
+        if (out_bot) heightmap_march(out_bot, col, cx, cy, n, z_lo, z_hi, +1.0, desc, tol);
+    }
+}
+
+void void_heightmap_stats(void_heightmap_stats_t* out, const float* h, size_t count) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!h) return;
+
+    double sum = 0.0;
+    double lo  = DBL_MAX;
+    double hi  = -DBL_MAX;
+    for (size_t i = 0; i < count; ++i) {
+        const float v = h[i];
+        if (!isfinite(v)) {
+            out->num_open += 1;
+            continue;
+        }
+        out->num_valid += 1;
+        sum += (double)v;
+        lo = MIN(lo, (double)v);
+        hi = MAX(hi, (double)v);
+    }
+    if (out->num_valid == 0) return;
+
+    // Two passes: the deviations are small against the heights, which sit at world z
+    const double mean = sum / (double)out->num_valid;
+    double s2 = 0.0, s1 = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+        const float v = h[i];
+        if (!isfinite(v)) continue;
+        const double d = (double)v - mean;
+        s2 += d * d;
+        s1 += fabs(d);
+    }
+    out->mean = mean;
+    out->min  = lo;
+    out->max  = hi;
+    out->rq   = sqrt(s2 / (double)out->num_valid);
+    out->ra   = s1 / (double)out->num_valid;
 }
 
 // =================================================================================================
