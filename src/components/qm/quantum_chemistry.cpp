@@ -478,6 +478,25 @@ struct QuantumChemistry : viamd::EventHandler {
         bool show_coordinate_system_widget = true;
     } nto;
 
+    // One excited state's attachment and detachment densities in the AO basis.
+    //
+    // Both are VIRTUAL attributes: every read rebuilds the matrix from the response solution
+    // vector and the MO coefficients, which is by far the most expensive thing this component
+    // does. Selecting a state asks for exactly the same two matrices twice in the same frame -
+    // once for the Mulliken group attribution in update_nto_derived_data, once for the two
+    // volumes the Transition Analysis window evaluates - and the export window asks for a third
+    // copy. Rebuilt once here and held until the state or the dataset changes.
+    //
+    // Allocated from 'arena'; reset_data() rewinds that arena, so the pointers are dropped rather
+    // than freed there. The difference density is not cached: it is one subtraction away from the
+    // two that are, and only the export window asks for it.
+    struct TransitionDensityCache {
+        int     state_idx = -1;     // which excited state, -1 when nothing is cached
+        size_t  dim       = 0;      // atomic orbitals per side
+        double* attach    = nullptr;
+        double* detach    = nullptr;
+    } td_cache;
+
     // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
     //
     // Separate window, separate state, but the SAME group definitions as the NTO window - asking
@@ -949,7 +968,10 @@ struct QuantumChemistry : viamd::EventHandler {
                             if (event->hit.domain == PickingDomain_CriticalPoints) {
                                 md_bitfield_set_bit(&critical_points.highlight_mask, event->hit.local_idx);
                             }
-                            if (event->selection_mode == InteractionSelectionMode::Append) {
+                            if (event->kind == InteractionSurfaceEventKind::Click && event->selection_mode == InteractionSelectionMode::None && event->hit.domain == 0) {
+                                // A plain click on empty space clears the selection
+                                md_bitfield_clear(&critical_points.selection_mask);
+                            } else if (event->selection_mode == InteractionSelectionMode::Append) {
                                 md_bitfield_or_inplace(&critical_points.selection_mask, &critical_points.highlight_mask);
                             } else if (event->selection_mode == InteractionSelectionMode::Remove) {
                                 if (event->hit.domain == PickingDomain_CriticalPoints) {
@@ -1197,6 +1219,9 @@ struct QuantumChemistry : viamd::EventHandler {
         critical_points.raw_graph.alloc = arena;
         critical_points.simp_graph.alloc = arena;
         basis = {};  // arena reset above invalidates allocations; zero the struct
+        // Same as basis: the arena reset above released these, so the struct is zeroed rather
+        // than freed through td_cache_free().
+        td_cache = TransitionDensityCache{};
         atom_xyzw = nullptr;
         orb = QuantumChemistry::Orb{};
         nto = QuantumChemistry::Nto{};
@@ -1269,6 +1294,9 @@ struct QuantumChemistry : viamd::EventHandler {
         // The one number kept: see num_qm_atoms above for why the pointers are not.
         num_qm_atoms = qm.count;
         const size_t num_atoms = qm.count;
+
+        // A new dataset: whatever state index was cached names a different state now.
+        td_cache_free();
 
         num_mos = 0;
         es_orbital_extent(state.mold.sys, &num_mos, nullptr);
@@ -1407,11 +1435,13 @@ struct QuantumChemistry : viamd::EventHandler {
         picking_surface_init(&orb.picking_surface, interaction_surface_orb);
         orb.target = default_view;
         orb.camera = orb.target;
-        orb.mo_idx = homo_idx[0];
-        orb.scroll_to_idx = homo_idx[0];
+        // homo_idx is -1 when the file carries no occupations, which is not an orbital to open on.
+        const int initial_mo = (homo_idx[0] >= 0 && (size_t)homo_idx[0] < num_mos) ? homo_idx[0] : 0;
+        orb.mo_idx = initial_mo;
+        orb.scroll_to_idx = initial_mo;
 
         // Export
-        export_state.mo.idx = homo_idx[0];
+        export_state.mo.idx = initial_mo;
 
         // CriPoAl
         md_bitfield_init(&critical_points.selection_mask, arena);
@@ -1443,18 +1473,97 @@ struct QuantumChemistry : viamd::EventHandler {
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
 
-    bool evaluate_transition_density(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t state_idx, ElectronicStructureTransitionDensityComponent component) {
-        str_t path = es_path::attachment_density;
-        switch (component) {
-        case ElectronicStructureTransitionDensityComponent::Detachment: path = es_path::detachment_density; break;
-        case ElectronicStructureTransitionDensityComponent::Difference: path = es_path::transition_diff;    break;
-        case ElectronicStructureTransitionDensityComponent::Attachment:
-        default: break;
+    // Releases what the cache holds. Only valid while the arena it was allocated from is alive -
+    // reset_data() rewinds that arena and zeroes the struct instead of calling this.
+    void td_cache_free() {
+        if (td_cache.attach) {
+            md_free(arena, td_cache.attach, sizeof(double) * td_cache.dim * td_cache.dim);
         }
-        // The attribute is VIRTUAL and {S,A,A}: the slice is what tells the provider to reconstruct
-        // this one state instead of every state, which is the only reason asking is affordable.
+        if (td_cache.detach) {
+            md_free(arena, td_cache.detach, sizeof(double) * td_cache.dim * td_cache.dim);
+        }
+        td_cache = TransitionDensityCache{};
+    }
+
+    // Both matrices for one excited state, rebuilding them only when the state asked for is not
+    // the one already held. False when the system carries no transition densities, or when the two
+    // do not agree on their dimension - the callers then draw and attribute nothing, which is what
+    // they did when the extract itself failed.
+    bool td_cache_ensure(const md_system_t& sys, int state_idx) {
+        if (state_idx < 0) {
+            return false;
+        }
+        if (td_cache.state_idx == state_idx && td_cache.attach && td_cache.detach) {
+            return true;
+        }
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state_idx);
-        return density_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_OP_SET);
+
+        size_t a_dim = 0;
+        size_t d_dim = 0;
+        const double* attach = density_matrix_extract(&a_dim, temp, sys, es_path::attachment_density, &slice);
+        const double* detach = density_matrix_extract(&d_dim, temp, sys, es_path::detachment_density, &slice);
+        if (!attach || !detach || a_dim == 0 || a_dim != d_dim) {
+            // Whatever is held is for a state that is no longer the one being asked about, so it
+            // is dropped rather than left to answer the next call.
+            td_cache_free();
+            return false;
+        }
+
+        if (td_cache.dim != a_dim || !td_cache.attach || !td_cache.detach) {
+            td_cache_free();
+            const size_t bytes = sizeof(double) * a_dim * a_dim;
+            td_cache.attach = (double*)md_alloc(arena, bytes);
+            td_cache.detach = (double*)md_alloc(arena, bytes);
+            if (!td_cache.attach || !td_cache.detach) {
+                td_cache_free();
+                return false;
+            }
+            td_cache.dim = a_dim;
+        }
+
+        const size_t bytes = sizeof(double) * a_dim * a_dim;
+        MEMCPY(td_cache.attach, attach, bytes);
+        MEMCPY(td_cache.detach, detach, bytes);
+        td_cache.state_idx = state_idx;
+        return true;
+    }
+
+    bool evaluate_transition_density(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t state_idx, ElectronicStructureTransitionDensityComponent component) {
+        // Out of the cache rather than out of the attribute: see TransitionDensityCache. The
+        // difference is the one component the table would have reconstructed a third matrix for,
+        // and it is the subtraction the provider performs anyway.
+        if (!td_cache_ensure(state.mold.sys, (int)state_idx)) {
+            return false;
+        }
+
+        const size_t dim = td_cache.dim;
+        const double* density_matrix = td_cache.attach;
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+
+        switch (component) {
+        case ElectronicStructureTransitionDensityComponent::Detachment:
+            density_matrix = td_cache.detach;
+            break;
+        case ElectronicStructureTransitionDensityComponent::Difference: {
+            double* diff = md_temp_alloc_array(temp, double, dim * dim);
+            for (size_t i = 0; i < dim * dim; ++i) {
+                diff[i] = td_cache.attach[i] - td_cache.detach[i];
+            }
+            density_matrix = diff;
+            break;
+        }
+        case ElectronicStructureTransitionDensityComponent::Attachment:
+        default:
+            break;
+        }
+
+        return density_matrix_evaluate(&state, vol_tex, grid, density_matrix, dim, MD_GTO_OP_SET);
     }
 
     bool evaluate_electron_density(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, ElectronicStructureSpin spin, md_gto_op_t op) {
@@ -1535,6 +1644,86 @@ struct QuantumChemistry : viamd::EventHandler {
         draw_list->AddText(aligned_text_pos(text, pos, alignment), ImGui::ColorConvertFloat4ToU32({ 0,0,0,1 }), text);
     }
 
+
+    // --- Ribbon label placement -----------------------------------------------------------
+    //
+    // A ribbon may carry a percentage label. Labels are placed at discrete slots ALONG the
+    // ribbon's own centre-line bezier, in order of decreasing flow magnitude, and a label that
+    // finds no free slot is either left overlapping or dropped - it is never pushed somewhere
+    // else.
+    //
+    // The cost is bounded by construction: num_labels * num_slots rectangle tests, one pass, no
+    // iteration towards a fixed point. The previous scheme - repeatedly pushing every pair of
+    // overlapping labels apart along their curve directions until nothing overlapped - had no
+    // such bound and could not terminate at all whenever two labels shared (or mirrored) a
+    // direction: they then translated in lockstep and stayed overlapped forever. Straight-up
+    // parallel ribbons (every self-flow is vertical) make that the common case rather than the
+    // pathological one. It also had nothing tying a label to its ribbon or to the plot area, so
+    // even when it did converge it could converge to labels off screen.
+
+    struct FlowLabel {
+        ImVec2 bezier[4];   // ribbon centre-line
+        float  value;       // flow fraction; doubles as priority
+        ImVec2 pos;         // out: label centre
+        bool   visible;     // out
+    };
+
+    // drop_unplaceable: a label with no free slot is omitted rather than drawn on top of another.
+    static inline void layout_flow_labels(FlowLabel* labels, size_t num_labels, ImVec2 text_size, ImVec2 padding, bool drop_unplaceable, md_temp_scope_t temp) {
+        if (num_labels == 0) return;
+
+        // Slot positions along the curve, ideal (the middle) first, alternating outwards. Kept
+        // well inside [0,1] so a displaced label still sits on its own ribbon, between the bars.
+        static const float slot_t[] = { 0.5f, 0.40f, 0.60f, 0.31f, 0.69f, 0.23f, 0.77f, 0.16f, 0.84f };
+
+        const ImVec2 half = text_size * 0.5f + padding;
+
+        int* order = md_temp_alloc_array(temp, int, num_labels);
+        for (size_t i = 0; i < num_labels; ++i) {
+            order[i] = (int)i;
+        }
+        // Biggest flow gets first pick of the slots, so what gets dropped is what matters least.
+        std::sort(order, order + num_labels, [labels](int a, int b) {
+            return labels[a].value > labels[b].value;
+        });
+
+        ImRect* placed = md_temp_alloc_array(temp, ImRect, num_labels);
+        size_t num_placed = 0;
+
+        for (size_t i = 0; i < num_labels; ++i) {
+            FlowLabel& label = labels[order[i]];
+            label.pos = ImBezierCubicCalc(label.bezier[0], label.bezier[1], label.bezier[2], label.bezier[3], slot_t[0]);
+            label.visible = false;
+
+            for (size_t s = 0; s < ARRAY_SIZE(slot_t); ++s) {
+                const ImVec2 pos = ImBezierCubicCalc(label.bezier[0], label.bezier[1], label.bezier[2], label.bezier[3], slot_t[s]);
+                const ImRect rect = { pos - half, pos + half };
+
+                bool slot_free = true;
+                for (size_t p = 0; p < num_placed; ++p) {
+                    if (rect.Overlaps(placed[p])) {
+                        slot_free = false;
+                        break;
+                    }
+                }
+
+                if (slot_free) {
+                    label.pos = pos;
+                    label.visible = true;
+                    placed[num_placed++] = rect;
+                    break;
+                }
+            }
+
+            if (!label.visible && !drop_unplaceable) {
+                // Every slot is taken, but the caller asked for all the labels. Leave this one at
+                // its ideal position and let it overlap.
+                label.visible = true;
+                placed[num_placed++] = ImRect{ label.pos - half, label.pos + half };
+            }
+        }
+    }
+
     static inline void vg_sankey_diagram(md_vg_scene_t* scene, ImRect area, Nto* nto, bool hide_text_overlaps) {
         if (!scene) return;
         if (!nto->transition_density_hole) return;
@@ -1598,9 +1787,8 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
 
-        ImVec2* curve_midpoints  = md_temp_alloc_array(temp, ImVec2, nto->group.count * nto->group.count);
-        ImVec2* curve_directions = md_temp_alloc_array(temp, ImVec2, nto->group.count * nto->group.count);
-        float* curve_percentages = md_temp_alloc_array(temp, float,  nto->group.count * nto->group.count);
+        FlowLabel* flow_labels = md_temp_alloc_array(temp, FlowLabel, nto->group.count * nto->group.count);
+        size_t num_flow_labels = 0;
 
         const float font_size = ImGui::GetFontSize();
         const md_vg_color_t text_color = MD_VG_COLOR_RGB(0, 0, 0);
@@ -1638,13 +1826,14 @@ struct QuantumChemistry : viamd::EventHandler {
                 char label[32];
                 snprintf(label, sizeof(label), "%3.2f%%", percentage * 100.0f);
                 const ImVec2 label_size = ImGui::CalcTextSize(label);
+                // A ribbon narrower than its own label cannot carry one at all.
                 if (width > label_size.x) {
-                    const ImVec2 midpoint = (start_pos + end_pos) * 0.5f + ImVec2{ width * 0.5f, 0.0f };
-                    const vec2_t direction = vec2_normalize({ start_pos.x - end_pos.x, start_pos.y - end_pos.y });
-                    const size_t idx = beg_i * nto->group.count + end_i;
-                    curve_midpoints[idx] = midpoint;
-                    curve_directions[idx] = { direction.x, direction.y };
-                    curve_percentages[idx] = percentage;
+                    FlowLabel& fl = flow_labels[num_flow_labels++];
+                    fl.bezier[0] = p1;
+                    fl.bezier[1] = p2;
+                    fl.bezier[2] = p3;
+                    fl.bezier[3] = p4;
+                    fl.value     = percentage;
                 }
 
                 start_pos.x += width;
@@ -1652,49 +1841,15 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
 
-        bool text_overlap = true;
-        ImVec2 curve_text_size = ImGui::CalcTextSize("99.99%");
-        const float text_spacing = 4.0f;
+        layout_flow_labels(flow_labels, num_flow_labels, ImGui::CalcTextSize("99.99%"), { 2.0f, 1.0f }, hide_text_overlaps, temp);
 
-        while (text_overlap) {
-            text_overlap = false;
-            for (size_t beg_i = 0; beg_i < nto->group.count; ++beg_i) {
-                for (size_t end_i = 0; end_i < nto->group.count; ++end_i) {
-                    const size_t index1 = beg_i * nto->group.count + end_i;
-                    ImRect rect1 = { curve_midpoints[index1] - curve_text_size * 0.5f, curve_midpoints[index1] + curve_text_size * 0.5f };
+        for (size_t i = 0; i < num_flow_labels; ++i) {
+            if (!flow_labels[i].visible) continue;
 
-                    for (size_t beg_j = 0; beg_j < nto->group.count; ++beg_j) {
-                        for (size_t end_j = 0; end_j < nto->group.count; ++end_j) {
-                            const size_t index2 = beg_j * nto->group.count + end_j;
-                            if (index1 == index2) continue;
-
-                            ImRect rect2 = { curve_midpoints[index2] - curve_text_size * 0.5f, curve_midpoints[index2] + curve_text_size * 0.5f };
-                            if (curve_midpoints[index1].y == 0.0f || curve_midpoints[index2].y == 0.0f) continue;
-
-                            while (rect1.Overlaps(rect2)) {
-                                text_overlap = true;
-                                curve_midpoints[index1] += curve_directions[index1] * curve_text_size.y * text_spacing;
-                                curve_midpoints[index2] -= curve_directions[index2] * curve_text_size.y * text_spacing;
-                                rect1 = { curve_midpoints[index1] - curve_text_size * 0.5f, curve_midpoints[index1] + curve_text_size * 0.5f };
-                                rect2 = { curve_midpoints[index2] - curve_text_size * 0.5f, curve_midpoints[index2] + curve_text_size * 0.5f };
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for (size_t beg_i = 0; beg_i < nto->group.count; ++beg_i) {
-            for (size_t end_i = 0; end_i < nto->group.count; ++end_i) {
-                const size_t index = beg_i * nto->group.count + end_i;
-                const float percentage = curve_percentages[index];
-                if (percentage <= 0.0f) continue;
-
-                char label[16];
-                snprintf(label, sizeof(label), "%3.2f%%", percentage * 100.0f);
-                const ImVec2 pos = aligned_text_pos(label, curve_midpoints[index], { 0.5f, 0.5f });
-                md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, str_from_cstr(label));
-            }
+            char label[16];
+            snprintf(label, sizeof(label), "%3.2f%%", flow_labels[i].value * 100.0f);
+            const ImVec2 pos = aligned_text_pos(label, flow_labels[i].pos, { 0.5f, 0.5f });
+            md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, str_from_cstr(label));
         }
 
         bool* show_start_text = md_temp_alloc_array(temp, bool, nto->group.count);
@@ -1722,7 +1877,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; ++i) {
                 for (int j = i - 1; j >= 0; --j) {
-                    if (hole_percentages[i] == 0.0f) {
+                    if (hole_percentages[size_order[i]] == 0.0f) {
                         show_start_text[size_order[i]] = false;
                         break;
                     }
@@ -1745,7 +1900,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; ++i) {
                 for (int j = i - 1; j >= 0; --j) {
-                    if (hole_percentages[i] == 0.0f) {
+                    if (hole_percentages[size_order[i]] == 0.0f) {
                         show_end_text[size_order[i]] = false;
                         break;
                     }
@@ -1920,10 +2075,8 @@ struct QuantumChemistry : viamd::EventHandler {
         const float min_test_width = 1.0f;
 
         //Draw curves
-        float* curve_widths      = md_temp_alloc_array(temp, float, nto->group.count * nto->group.count);
-        ImVec2* curve_midpoints  = md_temp_alloc_array(temp, ImVec2, nto->group.count * nto->group.count);
-        ImVec2* curve_directions = md_temp_alloc_array(temp, ImVec2, nto->group.count * nto->group.count);
-        float* curve_percentages = md_temp_alloc_array(temp, float, nto->group.count * nto->group.count);
+        FlowLabel* flow_labels = md_temp_alloc_array(temp, FlowLabel, nto->group.count * nto->group.count);
+        size_t num_flow_labels = 0;
 
         for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
             if (hole_percentages[beg_i] != 0.0) {
@@ -1966,14 +2119,11 @@ struct QuantumChemistry : viamd::EventHandler {
                             MEMCPY(mouse_label, label, sizeof(label));
                         }
 
+                        // A ribbon narrower than its own label cannot carry one at all.
                         if (width > label_size.x) {
-                            ImVec2 midpoint = (start_pos + end_pos) * 0.5 + ImVec2{ width / 2, 0 };
-                            ImVec2 direction = vec_cast(vec2_normalize(vec_cast(start_pos - end_pos)));
-                            curve_midpoints[beg_i * nto->group.count + end_i] = midpoint;
-                            curve_directions[beg_i * nto->group.count + end_i] = direction;
-                            curve_widths[beg_i * nto->group.count + end_i] = width;
-                            curve_percentages[beg_i * nto->group.count + end_i] = percentage;
-                            //draw_aligned_text(draw_list, label, midpoint, { 0.5, 0.5 });
+                            FlowLabel& fl = flow_labels[num_flow_labels++];
+                            compute_vertical_sankey_bezier(&fl.bezier[0], &fl.bezier[1], &fl.bezier[2], &fl.bezier[3], start_pos, end_pos, width);
+                            fl.value = percentage;
                         }
 
                         start_pos.x += width;
@@ -1983,56 +2133,15 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
 
-        //Draw Curve Text
-        //For every midpoint, we check if another midpoint is to close to that midpoint
-        bool text_overlap = true;
-        ImVec2 text_size = ImGui::CalcTextSize("99.99%");
-        float text_spacing = 4;
+        // Place the ribbon labels. Bounded, single pass - see layout_flow_labels.
+        layout_flow_labels(flow_labels, num_flow_labels, ImGui::CalcTextSize("99.99%"), { 2.0f, 1.0f }, hide_text_overlaps, temp);
 
-        while (text_overlap) {
-            text_overlap = false;
-            for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
-                for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                    size_t index1 = beg_i * nto->group.count + end_i;
-                    ImVec2 midpoint1 = curve_midpoints[index1];
-                    ImVec2 direction1 = curve_directions[index1];
-                    ImRect rect1 = { midpoint1 - (text_size / 2), midpoint1 + (text_size / 2) };
+        for (size_t i = 0; i < num_flow_labels; ++i) {
+            if (!flow_labels[i].visible) continue;
 
-                    for (size_t beg_j = 0; beg_j < nto->group.count; beg_j++) {
-                        for (size_t end_j = 0; end_j < nto->group.count; end_j++) {
-                            size_t index2 = (beg_j * nto->group.count + end_j);
-                            if (index1 != index2) {
-                                ImVec2 midpoint2 = curve_midpoints[index2];
-                                ImVec2 direction2 = curve_directions[index2] * -1.0;
-                                ImRect rect2 = { midpoint2 - (text_size / 2), midpoint2 + (text_size / 2) };
-                    
-                                if ((midpoint1.y != 0 && midpoint2.y != 0)) {
-                                    while (rect1.Overlaps(rect2)){
-                                        text_overlap = true;
-                                        curve_midpoints[index1] += direction1 * text_size.y * text_spacing;
-                                        curve_midpoints[index2] += direction2 * text_size.y * text_spacing;
-                                        rect1 = { curve_midpoints[index1] - (text_size / 2), curve_midpoints[index1] + (text_size / 2) };
-                                        rect2 = { curve_midpoints[index2] - (text_size / 2), curve_midpoints[index2] + (text_size / 2) };
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        for (size_t beg_i = 0; beg_i < nto->group.count; beg_i++) {
-            for (size_t end_i = 0; end_i < nto->group.count; end_i++) {
-                size_t index = beg_i * nto->group.count + end_i;
-                ImVec2 midpoint = curve_midpoints[index];
-                float percentage = curve_percentages[index];
-                if (percentage > 0) {
-                    char label[16];
-                    snprintf(label, sizeof(label), "%3.2f%%", curve_percentages[beg_i * nto->group.count + end_i] * 100);
-                    draw_aligned_text(draw_list, label, midpoint, {0.5, 0.5});
-                }
-            }
+            char label[16];
+            snprintf(label, sizeof(label), "%3.2f%%", flow_labels[i].value * 100.0f);
+            draw_aligned_text(draw_list, label, flow_labels[i].pos, { 0.5f, 0.5f });
         }
 
         // Some flow is hovered, So we render a new flow on top of the existing ones to ensure that this is rendered on top
@@ -2068,7 +2177,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0 ; j--) {//The bigger ones
-                    if (hole_percentages[i] == 0.0f) {
+                    if (hole_percentages[size_order[i]] == 0.0f) {
                         show_start_text[size_order[i]] = false;
                         break;
                     }
@@ -2093,7 +2202,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 1; i < (int)nto->group.count; i++) { //First one is always drawn
                 for (int j = i - 1; j >= 0; j--) {//The bigger ones
-                    if (hole_percentages[i] == 0.0f) {
+                    if (hole_percentages[size_order[i]] == 0.0f) {
                         show_end_text[size_order[i]] = false;
                         break;
                     }
@@ -2114,11 +2223,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 char end_label1[16]; 
                 snprintf(start_label1, sizeof(start_label1), "%3.2f%%", hole_percentages[i] * 100);
                 snprintf(end_label1, sizeof(end_label1), "%3.2f%%", part_percentages[i] * 100);
-
-                char start_label2[16];
-                char end_label2[16];
-                snprintf(start_label2, sizeof(start_label2), "%3.2f%%", hole_percentages[i + 1] * 100);
-                snprintf(end_label2, sizeof(end_label2), "%3.2f%%", part_percentages[i + 1] * 100);
 
                 //Calculate start
                 ImVec2 start_p0 = { start_positions[i], plot_area.Max.y - bar_height };
@@ -3899,6 +4003,17 @@ struct QuantumChemistry : viamd::EventHandler {
         return attribute_series_f64(&count, sys, path) ? count : 0;
     }
 
+    // A series that is only handed out when it covers the index space the caller is going to read it
+    // over. Presence alone is not enough: an optional column is indexed with a count that came from
+    // somewhere else (the coefficient matrix, the frequency axis), and a file that publishes a
+    // shorter column - or a reader that fills it differently - would otherwise be read past its end.
+    // NULL when absent, not a plain F64 series, or shorter than 'required'.
+    static const double* attribute_series_f64_covering(const md_system_t& sys, str_t path, size_t required) {
+        size_t count = 0;
+        const double* data = attribute_series_f64(&count, sys, path);
+        return (data && count >= required) ? data : nullptr;
+    }
+
     // A rank 2 {R,C} block of doubles, straight out of the table's storage. NULL when the path is
     // absent, computed, or not that shape. Same opt-in as attribute_series_f64 above and for the
     // same reason: these are resident F64 and the callers want them at that precision.
@@ -3941,12 +4056,13 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     // One row of it - one normal mode's displacements, one optimisation step's geometry. NULL when
-    // the row is out of range.
-    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, str_t path, size_t row) {
+    // the row is out of range, or when a row holds fewer than min_cols entries: every caller walks
+    // the row over the QM atoms, so a row that does not cover them is not one to read.
+    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, str_t path, size_t row, size_t min_cols) {
         size_t num_rows = 0;
         size_t num_cols = 0;
         const dvec3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
-        if (!data || row >= num_rows) return nullptr;
+        if (!data || row >= num_rows || num_cols < min_cols) return nullptr;
         return data + row * num_cols;
     }
 
@@ -4284,7 +4400,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     static int prev_idx = -1;
                     if (opt.selected != prev_idx) {
                         prev_idx = opt.selected;
-                        set_atom_coordinates(state, attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected));
+                        set_atom_coordinates(state, attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, qm.count));
                     }
                 }
             }
@@ -4297,7 +4413,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected);
+                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
                     const dvec3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
                     const uint8_t* atom_nr    = qm.atomic_number;
 
@@ -4347,15 +4463,22 @@ struct QuantumChemistry : viamd::EventHandler {
                             }
                         }
 
+                        // Both columns are optional members of the QM atom domain (see es_qm_atoms).
                         ImGui::TableNextColumn();
-                        str_t sym = md_util_element_symbol(atom_nr[row_n]);
-                        ImGui::Text(STR_FMT, STR_ARG(sym));
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", atom_coord[row_n].x);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", atom_coord[row_n].y);
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%12.6f", atom_coord[row_n].z);
+                        if (atom_nr) {
+                            str_t sym = md_util_element_symbol(atom_nr[row_n]);
+                            ImGui::Text(STR_FMT, STR_ARG(sym));
+                        } else {
+                            ImGui::TextUnformatted("-");
+                        }
+                        for (int c = 0; c < 3; ++c) {
+                            ImGui::TableNextColumn();
+                            if (atom_coord) {
+                                ImGui::Text("%12.6f", atom_coord[row_n].elem[c]);
+                            } else {
+                                ImGui::TextUnformatted("-");
+                            }
+                        }
 
                         ImGui::PopStyleColor(1);
                                 
@@ -4912,21 +5035,23 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::Combo("X unit", (int*)(&rsp.x_unit), x_unit_full_str, X_UNIT_COUNT);
                 ImGui::PopItemWidth();
 
+                // Every y column below is indexed over the frequency axis, so one shorter than it is
+                // treated as absent rather than read past its end.
                 // Samples are only used in CPP RSP, these hold intermediate results, i.e. converted to the selected x unit.
                 size_t num_samples = 0;
                 double* x_samples = NULL;
-                const double* y_samples_sigma = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/sigma"));
-                const double* y_samples_delta_epsilons = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"));
-                const double* y_samples_ord = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/cpp/optical_rotation"));
-                const double* y_samples_cs = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/cross_section"));
+                const double* y_samples_sigma = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/sigma"), num_frequencies);
+                const double* y_samples_delta_epsilons = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"), num_frequencies);
+                const double* y_samples_ord = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/optical_rotation"), num_frequencies);
+                const double* y_samples_cs = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/cross_section"), num_frequencies);
 
                 // Peaks are only used in LINEAR RSP, not in CPP
 				size_t num_peaks = 0;
 				double* x_peaks = NULL;
-                const double* y_peaks_osc = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/oscillator_strength"));
-                const double* y_peaks_cgs = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/rotatory_strength"));
-                const double* y_peaks_tpa_trans_linear = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/linear"));
-                const double* y_peaks_tpa_trans_circular = attribute_series_f64(nullptr, sys, STR_LIT("vlx/rsp/tpa/circular"));
+                const double* y_peaks_osc = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/oscillator_strength"), num_frequencies);
+                const double* y_peaks_cgs = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/rotatory_strength"), num_frequencies);
+                const double* y_peaks_tpa_trans_linear = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/linear"), num_frequencies);
+                const double* y_peaks_tpa_trans_circular = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/circular"), num_frequencies);
 
                 bool refit = false;
 
@@ -5507,8 +5632,9 @@ struct QuantumChemistry : viamd::EventHandler {
 						getter = spectrum_getter_gaussian;
 					}
 
-                    const double* x_peaks_raw = attribute_series_f64(nullptr, sys, STR_LIT("vlx/vib/frequency"));
-                    const double* y_peaks_ir = attribute_series_f64(nullptr, sys, STR_LIT("vlx/vib/ir_intensity"));
+                    const double* x_peaks_raw = attribute_series_f64_covering(sys, STR_LIT("vlx/vib/frequency"), num_normal_modes);
+                    // Optional, and indexed over the normal modes - dropped when it does not cover them.
+                    const double* y_peaks_ir = attribute_series_f64_covering(sys, STR_LIT("vlx/vib/ir_intensity"), num_normal_modes);
 
                     size_t num_external_frequencies = 0;
                     const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, STR_LIT("vlx/vib/external_frequency"));
@@ -5787,7 +5913,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (vib.selected != -1) {
                         // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const dvec3_t* norm_modes = attribute_vec3_row(sys, STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected);
+                        const dvec3_t* norm_modes = attribute_vec3_row(sys, STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
 
                         // Both columns are needed: the displacement is added to the reference
                         // geometry, and qm/atom/coordinate is not guaranteed to be published.
@@ -5820,10 +5946,15 @@ struct QuantumChemistry : viamd::EventHandler {
 
 #else
                             const double scl = vib.displacement_amp_scl * 0.25 * sin(vib.t);
+                            // Through the QM atom map and bounded by the system state, exactly as
+                            // set_atom_coordinates writes: QM atom i is system atom i only when the
+                            // calculation covers the whole system.
                             for (size_t i = 0; i < num_atoms; i++) {
-                                state.mold.state.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                state.mold.state.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                state.mold.state.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                const size_t idx = qm_to_system_atom(qm, i);
+                                if (idx >= state.mold.state.num_atoms) continue;
+                                state.mold.state.x[idx] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                state.mold.state.y[idx] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                state.mold.state.z[idx] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
                             if (vib.displace_aos) {
                             }
@@ -5844,10 +5975,14 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                     // If all is deselected, reset coords once
                     else if (vib.coord_modified) {
-                        for (size_t i = 0; i < num_atoms; i++) {
-                            state.mold.state.x[i] = (float)atom_coord[i].x;
-                            state.mold.state.y[i] = (float)atom_coord[i].y;
-                            state.mold.state.z[i] = (float)atom_coord[i].z;
+                        // coord_modified is only ever set with atom_coord present, but the column
+                        // is re-read every frame and the guard costs nothing.
+                        for (size_t i = 0; atom_coord && i < num_atoms; i++) {
+                            const size_t idx = qm_to_system_atom(qm, i);
+                            if (idx >= state.mold.state.num_atoms) continue;
+                            state.mold.state.x[idx] = (float)atom_coord[i].x;
+                            state.mold.state.y[idx] = (float)atom_coord[i].y;
+                            state.mold.state.z[idx] = (float)atom_coord[i].z;
                         }
                         viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
                         state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
@@ -5889,10 +6024,15 @@ struct QuantumChemistry : viamd::EventHandler {
         if (ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
 
             // The neutral names, which mdlib already aliases onto whatever the reader called them.
-            const double* occ_alpha = attribute_series_f64(nullptr, state.mold.sys, es_path::alpha_occupation);
-            const double* occ_beta  = attribute_series_f64(nullptr, state.mold.sys, es_path::beta_occupation);
-            const double* ene_alpha = attribute_series_f64(nullptr, state.mold.sys, es_path::alpha_energy);
-            const double* ene_beta  = attribute_series_f64(nullptr, state.mold.sys, es_path::beta_energy);
+            // Every one of these is optional - a TREXIO file, for one, need not carry orbital energies -
+            // and each is indexed by mo index over the coefficient matrix's row count, so a column is
+            // only used when it covers all of those rows. Everything below reads a null as "show no
+            // value", never as a column to index.
+            const size_t num_mo_rows = num_molecular_orbitals();
+            const double* occ_alpha = attribute_series_f64_covering(state.mold.sys, es_path::alpha_occupation, num_mo_rows);
+            const double* occ_beta  = attribute_series_f64_covering(state.mold.sys, es_path::beta_occupation,  num_mo_rows);
+            const double* ene_alpha = attribute_series_f64_covering(state.mold.sys, es_path::alpha_energy,     num_mo_rows);
+            const double* ene_beta  = attribute_series_f64_covering(state.mold.sys, es_path::beta_energy,      num_mo_rows);
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
 
@@ -6344,15 +6484,18 @@ struct QuantumChemistry : viamd::EventHandler {
                     draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
+                    // The energy label is dropped, not faked, when the file carries no energies
+                    // for this panel's spin.
+                    const double* ene = ene_alpha;
                     if (unrestricted) {
                         draw_list->AddText(text_pos_tl, ImColor(0, 0, 0), (i & 1) ? (const char*)u8"α" : (const char*)u8"β");
-                        snprintf(buf, sizeof(buf), "%.4f", (i & 1) ? ene_alpha[mo_idx] : ene_beta[mo_idx]);
+                        ene = (i & 1) ? ene_alpha : ene_beta;
                     }
-                    else {
-                        snprintf(buf, sizeof(buf), "%.4f", ene_alpha[mo_idx]);
+                    if (ene) {
+                        snprintf(buf, sizeof(buf), "%.4f", ene[mo_idx]);
+                        float width = ImGui::CalcTextSize(buf).x;
+                        draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0, 0, 0), buf);
                     }
-                    float width = ImGui::CalcTextSize(buf).x;
-                    draw_list->AddText(text_pos_br - ImVec2(width, 0), ImColor(0, 0, 0), buf);
                 }
             }
 
@@ -9778,21 +9921,21 @@ struct QuantumChemistry : viamd::EventHandler {
 					// hole charges  <- detachment density (D-)
 					// part charges  <- attachment density (D+)
 					//
-					// Both are VIRTUAL attributes indexed by excited state, so the slice is what
-					// asks the table to reconstruct this one rather than every state.
-					const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)nto_idx);
+					// Both are VIRTUAL attributes indexed by excited state, and the Transition
+					// Analysis window wants the same two matrices in this same frame - so they
+					// come from the component's cache, which rebuilds them once per state.
+					const bool have_td = td_cache_ensure(sys, (int)nto_idx);
 
-					size_t a_dim = 0;
-					size_t d_dim = 0;
 					size_t s_dim = 0;
-					const double* D_attach = density_matrix_extract(&a_dim, temp, sys, es_path::attachment_density, &slice);
-					const double* D_detach = density_matrix_extract(&d_dim, temp, sys, es_path::detachment_density, &slice);
+					const double* D_attach = have_td ? td_cache.attach : nullptr;
+					const double* D_detach = have_td ? td_cache.detach : nullptr;
+					// The overlap is STORED, so extracting it is a copy and not a reconstruction.
 					const double* S        = density_matrix_extract(&s_dim, temp, sys, es_path::overlap, nullptr);
 
 					const size_t num_aos = s_dim;
 
 					if (num_aos > 0 && S && D_attach && D_detach) {
-						if (a_dim == num_aos && d_dim == num_aos) {
+						if (td_cache.dim == num_aos) {
 							double group_density_part[MAX_NTO_GROUPS] = {0};
 							double group_density_hole[MAX_NTO_GROUPS] = {0};
 

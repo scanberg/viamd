@@ -2395,6 +2395,30 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
     return dst;
 }
 
+bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                                const vec3_t* atom_pos, size_t num_atom_pos,
+                                const double* density_matrix, size_t dim, md_gto_op_t op) {
+    if (!density_matrix || dim == 0) {
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    md_gto_basis_t basis = {};
+    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
+        return false;
+    }
+
+    if (md_gto_basis_num_ao(&basis) != dim) {
+        MD_LOG_ERROR("The basis spans %zu atomic orbitals and the density matrix %zu", md_gto_basis_num_ao(&basis), dim);
+        return false;
+    }
+
+    md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), density_matrix, false, op);
+    return true;
+}
+
 bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
                          const vec3_t* atom_pos, size_t num_atom_pos,
                          str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op) {
@@ -2407,18 +2431,7 @@ bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
         return false;
     }
 
-    md_gto_basis_t basis = {};
-    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
-        return false;
-    }
-
-    if (md_gto_basis_num_ao(&basis) != dim) {
-        MD_LOG_ERROR("The basis spans %zu atomic orbitals and '" STR_FMT "' %zu", md_gto_basis_num_ao(&basis), STR_ARG(density_path), dim);
-        return false;
-    }
-
-    md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), density_matrix, false, op);
-    return true;
+    return density_matrix_evaluate_gl(vol_tex, grid, sys, atom_pos, num_atom_pos, density_matrix, dim, op);
 }
 
 static bool es_attribute_exists(const md_system_t& sys, str_t path) {
@@ -2686,28 +2699,19 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 }
 
 #if MD_ENABLE_GPU
-bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
-                                    const md_attribute_slice_t* slice, md_gto_op_t op) {
+bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
+                                           const double* density_matrix, size_t dim, md_gto_op_t op) {
     ASSERT(state);
-    if (!gpu_evaluation_ready(state)) {
+    if (!density_matrix || dim == 0 || !gpu_evaluation_ready(state)) {
         return false;
     }
 
     const md_system_t&       sys       = state->mold.sys;
     const md_system_state_t& sys_state = state->mold.state;
 
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-
-    size_t dim = 0;
-    const double* density_matrix = density_matrix_extract(&dim, temp, sys, density_path, slice);
-    if (!density_matrix) {
-        return false;
-    }
-
     const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
     if (num_cgtos != dim) {
-        MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and '" STR_FMT "' %zu", num_cgtos, STR_ARG(density_path), dim);
+        MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the density matrix %zu", num_cgtos, dim);
         return false;
     }
     if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
@@ -2733,7 +2737,53 @@ bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& gr
     md_gto_gpu_density_launch(state->gpu_stream, &desc);
     return true;
 }
+
+bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
+                                    const md_attribute_slice_t* slice, md_gto_op_t op) {
+    ASSERT(state);
+    if (!gpu_evaluation_ready(state)) {
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    size_t dim = 0;
+    const double* density_matrix = density_matrix_extract(&dim, temp, state->mold.sys, density_path, slice);
+    if (!density_matrix) {
+        return false;
+    }
+
+    return density_matrix_evaluate_to_gpu_volume(state, grid, density_matrix, dim, op);
+}
 #endif
+
+// The backend choice, over a density matrix the caller already holds. density_evaluate below is
+// this plus the extract, and a caller which has cached the matrix - the QM component does, because
+// the transition densities are rebuilt on every read - calls this one and skips the rebuild.
+bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
+                             const double* density_matrix, size_t dim, md_gto_op_t op) {
+    ASSERT(state);
+    if (!density_matrix || dim == 0) {
+        return false;
+    }
+
+#if MD_ENABLE_GPU
+    if (density_matrix_evaluate_to_gpu_volume(state, grid, density_matrix, dim, op)) {
+        return gpu_volume_readback(state, vol_tex, grid);
+    }
+    if (gpu_evaluation_ready(state)) {
+        return false;   // the GPU path was available and failed; the GL one would fail the same way
+    }
+#endif
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+
+    size_t num_atom_pos = 0;
+    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
+    return density_matrix_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_matrix, dim, op);
+}
 
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t density_path,
                       const md_attribute_slice_t* slice, md_gto_op_t op) {
@@ -4609,7 +4659,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                             }
                         }
                         else if (surf->hit.domain == 0) {
-                            if (surf->selection_mode == InteractionSelectionMode::Remove) {
+                            // A plain click (no modifier, no drag) or a remove-click on empty space clears the selection
+                            if (surf->selection_mode == InteractionSelectionMode::None || surf->selection_mode == InteractionSelectionMode::Remove) {
                                 md_bitfield_clear(&state->selection.selection_mask);
                                 single_selection_sequence_clear(&state->selection.single_selection_sequence);
                             }

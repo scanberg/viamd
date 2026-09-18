@@ -20,7 +20,7 @@ UTEST(viamd_loader, every_type_has_a_name_and_an_extension) {
         EXPECT_FALSE(str_empty(loader::type_name(t)));
         EXPECT_FALSE(str_empty(loader::type_ext(t)));
         /* A type that can load nothing would never be reachable. */
-        EXPECT_NE(0u, loader::type_flags(t) & (LoaderFlag_System | LoaderFlag_Trajectory));
+        EXPECT_NE(0u, loader::type_flags(t) & (LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_Supplemental));
     }
 }
 
