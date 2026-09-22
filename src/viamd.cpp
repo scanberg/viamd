@@ -149,6 +149,7 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             if (flags & MD_FLAG_SP2)            { *sb += "SP2 "; }
             if (flags & MD_FLAG_SP3)            { *sb += "SP3 "; }
             if (flags & MD_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
+            if (flags & MD_FLAG_COARSE_GRAINED) { *sb += "COARSE-GRAINED "; }
             *sb += "\n";
         }
         /*
@@ -858,6 +859,12 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             state->files.coarse_grained = load_state.flags & LoaderFlag_CoarseGrained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
             md_infer_flags_t flags = state->files.coarse_grained ? MD_UTIL_INFER_NONE : MD_UTIL_INFER_ALL;
+            if (load_state.flags & LoaderFlag_Topology) {
+                // The file's bonds are the force field's; inferring would replace them with a guess.
+                // Structures and rings are still derived, from those bonds.
+                flags &= ~MD_UTIL_INFER_BOND_BIT;
+                flags |= MD_UTIL_INFER_STRUCTURE_BIT;
+            }
             md_util_system_infer(&state->mold.sys, &state->mold.state, flags);
             init_system_data(state);
 
