@@ -1,72 +1,54 @@
-### NATIVEFILEDIALOG ###
-project(nativefiledialoglib LANGUAGES C)
-
 cmake_minimum_required(VERSION 3.10)
-                  
-set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_common.c)
-set(LIB "")
-set(INC "")
-set(DEF "")
-set(OPT "")
+project(nativefiledialog-extended VERSION 1.4.0)
 
-if(UNIX AND NOT APPLE)
-    option(NATIVEFILEDIALOG_USE_GTK "Use GTK for window handling, fallback is Zenity" OFF)
-    if (NATIVEFILEDIALOG_USE_GTK)
-	    set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-        message(${CMAKE_MODULE_PATH})
-        #include(cmake/FindGTK3.cmake)
-        #find_package(GTK3 REQUIRED gtk)
-        find_package(PkgConfig REQUIRED)
-        
-        #PKG_CHECK_MODULES(GTK REQUIRED gtk+-3.0)
-        #pkg_check_modules(GTK REQUIRED gtk+-3.0)
-        find_package(GTK3 3.0 REQUIRED gtk)
+set(nfd_ROOT_PROJECT OFF)
+if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+  set(nfd_ROOT_PROJECT ON)
+endif ()
 
-        set(SRC
-            ${SRC}
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_gtk.c)
-        set(INC ${GTK3_INCLUDE_DIRS})
-        set(LIB ${GTK3_LIBRARIES})
-        set(DEF ${GTK3_CFLAGS_OTHER})
-    else()
-        set(SRC
-            ${SRC}
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_zenity.c)
-    endif()
-    set(OPT "-w")
+option(BUILD_SHARED_LIBS "Build a shared library instead of static" OFF)
+option(NFD_BUILD_TESTS "Build tests for nfd" ${nfd_ROOT_PROJECT})
+option(NFD_BUILD_SDL2_TESTS "Build SDL2 tests for nfd" OFF)
+option(NFD_BUILD_SDL3_TESTS "Build SDL3 tests for nfd" OFF)
+option(NFD_BUILD_GLFW3_TESTS "Build GLFW3 tests for nfd" OFF)
+option(NFD_INSTALL "Generate install target for nfd" ${nfd_ROOT_PROJECT})
+
+set(nfd_PLATFORM Undefined)
+if(WIN32)
+  set(nfd_PLATFORM PLATFORM_WIN32)
 elseif(APPLE)
-    find_library(APPKIT_LIBRARY AppKit)
-    set(SRC
-        ${SRC}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_cocoa.m)
-    set(LIB ${APPKIT_LIBRARY})
-    set(OPT "-w")
-else() #windows
-    set(SRC
-        ${SRC}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/nfd_win.cpp)
-		set(DEF "_CRT_SECURE_NO_WARNINGS")
-	if(MSVC)
-		set(OPT "/W3" "/wd4245")
-	endif()
+  set(nfd_PLATFORM PLATFORM_MACOS)
+elseif(UNIX AND NOT APPLE)
+  set(nfd_PLATFORM PLATFORM_LINUX)
 endif()
 
-add_library(nativefiledialog ${SRC})
+message("nfd Platform: ${nfd_PLATFORM}")
 
-target_include_directories(nativefiledialog
-	PUBLIC
-		$<INSTALL_INTERFACE:/src/include>
-		$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
-	PRIVATE
-		${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${INC}
-)
+set(nfd_COMPILER Undefined)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+  # This is clang-cl, which has different compiler options
+  set(nfd_COMPILER COMPILER_CLANGCL)
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  set(nfd_COMPILER COMPILER_MSVC)
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+  set(nfd_COMPILER COMPILER_GNU)
+endif()
 
-target_compile_options(nativefiledialog
-	PRIVATE ${OPT})
+message("nfd Compiler: ${nfd_COMPILER}")
 
-target_compile_definitions(nativefiledialog
-    PRIVATE ${DEF})
+# Use latest C++ by default (should be the best one), but let user override it
+if(NOT DEFINED CMAKE_CXX_STANDARD)
+  if(CMAKE_VERSION VERSION_LESS "3.12")
+    set (CMAKE_CXX_STANDARD 17)
+  elseif(CMAKE_VERSION VERSION_LESS "3.20")
+    set (CMAKE_CXX_STANDARD 20)
+  else()
+    set (CMAKE_CXX_STANDARD 23)
+  endif()
+endif()
 
-target_link_libraries(nativefiledialog
-	PRIVATE ${LIB} ${VIAMD_STDLIBS})
+add_subdirectory(src)
+
+if(${NFD_BUILD_TESTS} OR ${NFD_BUILD_SDL2_TESTS} OR ${NFD_BUILD_SDL3_TESTS} OR ${NFD_BUILD_GLFW3_TESTS})
+  add_subdirectory(test)
+endif()

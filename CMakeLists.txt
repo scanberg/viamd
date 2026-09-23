@@ -102,6 +102,25 @@ enable_testing()
 add_subdirectory(ext/mdlib)
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
+
+if (UNIX AND NOT APPLE)
+    # nativefiledialog-extended (ext/nativefiledialog) build options for Linux.
+    #
+    # Wayland support pulls in an extra wayland-protocols dependency (wayland-scanner +
+    # generated headers) that VIAMD doesn't otherwise need; ThinLinc / X11-forwarded remote
+    # sessions (e.g. PDC's Dardel) are X11, not Wayland, so leave it off.
+    set(NFD_WAYLAND OFF CACHE BOOL "" FORCE)
+
+    # GTK3 file dialogs run in-process (gtk_dialog_run), so opening one can never hang VIAMD on
+    # a stuck child process the way the old zenity-via-fork() backend could. The xdg-desktop-
+    # portal (D-Bus) backend is the alternative, but it depends on a portal service being
+    # registered on the session bus, which most remote-desktop/HPC ThinLinc sessions do not run
+    # -- so it trades one hang-prone dependency for another. Default to GTK3; flip this on only
+    # if GTK3 dev headers aren't available wherever you're building.
+    option(VIAMD_NFD_USE_PORTAL "Use the xdg-desktop-portal D-Bus backend instead of GTK3 for native file dialogs on Linux" OFF)
+    set(NFD_PORTAL ${VIAMD_NFD_USE_PORTAL} CACHE BOOL "" FORCE)
+endif()
+
 add_subdirectory(ext/nativefiledialog)
 add_subdirectory(ext/stb)
 add_subdirectory(ext/enkiTS)
@@ -368,7 +387,7 @@ endif()
 target_link_options(viamd PRIVATE ${VIAMD_LINK_FLAGS} $<$<CONFIG:Debug>:${VIAMD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${VIAMD_LINK_FLAGS_REL}>)
 target_link_libraries(viamd
     glfw
-    nativefiledialog
+    nfd
     mdlib
     stb
     enkiTS

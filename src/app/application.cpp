@@ -16,8 +16,12 @@
 #if MD_PLATFORM_WINDOWS
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#elif MD_PLATFORM_LINUX
+#define GLFW_EXPOSE_NATIVE_X11
+#include <GLFW/glfw3native.h>
 #endif
 #include <nfd.h>
+#include <nfd_glfw3.h>
 
 #include <imgui.h>
 #include <implot.h>
@@ -370,12 +374,18 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
 #endif
 
+    if (NFD_Init() != NFD_OKAY) {
+        MD_LOG_ERROR("Failed to initialize NativeFileDialog: %s", NFD_GetError());
+    }
+
     MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
 
     return true;
 }
 
 void shutdown(Context* ctx) {
+    NFD_Quit();
+
     glfwDestroyWindow((GLFWwindow*)data.internal_ctx.window.ptr);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
@@ -450,23 +460,44 @@ void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr);
 
 bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filter) {    
     md_temp_scope_t temp = md_temp_begin();
-    nfdchar_t* out_path = NULL;
+    nfdu8char_t* out_path = NULL;
     defer {
         md_temp_end(temp);
-        if (out_path) free(out_path);
+        if (out_path) NFD_FreePathU8(out_path);
     };
 
     nfdresult_t result = NFD_ERROR;
 
-    const char* default_path = 0;
-
     // Zero terminated variant
     str_t zfilt = str_copy(filter, md_temp_allocator(temp));
 
+    // NFD(e)'s filter spec is a comma-separated list of extensions without the leading dot
+    // (e.g. "png,jpg,jpeg"), which is exactly the format callers already pass as `filter` here.
+    const nfdu8filteritem_t filter_item = { "Files", zfilt.ptr };
+    const nfdfiltersize_t filter_count = zfilt.len > 0 ? 1 : 0;
+    const nfdu8filteritem_t* filter_list = filter_count ? &filter_item : NULL;
+
+    // Associate the dialog with our window so the window manager (and the portal backend, if
+    // enabled) parents and positions it correctly instead of it popping up as an unrelated
+    // top-level window. Degrades to "no parent" (matching prior behavior) on platforms where
+    // native window exposure isn't wired up above.
+    nfdwindowhandle_t win_handle{};
+    NFD_GetNativeWindowFromGLFWWindow((GLFWwindow*)data.internal_ctx.window.ptr, &win_handle);
+
     if (flags & FileDialogFlag_Open) {
-        result = NFD_OpenDialog(zfilt.ptr, default_path, &out_path);
+        nfdopendialogu8args_t args{};
+        args.filterList = filter_list;
+        args.filterCount = filter_count;
+        args.parentWindow = win_handle;
+        args.title = "Open File";
+        result = NFD_OpenDialogU8_With(&out_path, &args);
     } else if (flags & FileDialogFlag_Save) {
-        result = NFD_SaveDialog(zfilt.ptr, default_path, &out_path);
+        nfdsavedialogu8args_t args{};
+        args.filterList = filter_list;
+        args.filterCount = filter_count;
+        args.parentWindow = win_handle;
+        args.title = "Save File";
+        result = NFD_SaveDialogU8_With(&out_path, &args);
     }
 
     if (result == NFD_OKAY) {
