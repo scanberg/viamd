@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gisaxs_fit_cross_section.py -- fit a fibril cross-section template for the VIAMD GISAXS component.
+gisaxs_fit_cross_section.py -- fit a fibril cross-section template for the VIAMD scattering component (GISAXS / GISANS).
 
 Input: an electron density of one fibril slice (Gaussian cube file) and, optionally, the positions of the
 coarse grained beads of that slice (in the same coordinates, in slice order as in the MD topology).
