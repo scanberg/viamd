@@ -51,7 +51,6 @@ struct DensityVolume : viamd::EventHandler {
         uint32_t id = 0;
         bool dirty = false;
         int  dim[3] = {0};
-        float max_value = 1.f;
     } volume_texture;
 
 
@@ -130,9 +129,9 @@ struct DensityVolume : viamd::EventHandler {
             }
         }
 
-        const md_script_property_data_t* prop_data = 0;
+        const md_attribute_t* prop_attr = 0;
         const md_script_vis_payload_o* vis_payload = 0;
-        uint64_t data_fingerprint = 0;
+        uint64_t data_version = 0;
 
         bool reset_view = false;
         static int64_t s_selected_property = 0;
@@ -146,9 +145,10 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         if (selected_property != -1) {
-            prop_data = state->display_properties[selected_property].prop_data;
-            vis_payload = state->display_properties[selected_property].vis_payload;
-            data_fingerprint = state->display_properties[selected_property].prop_data->fingerprint;
+            const DisplayProperty& dp = state->display_properties[selected_property];
+            prop_attr = (dp.attr && dp.attr->data && dp.attr->format.rank == 3) ? dp.attr : NULL;
+            vis_payload = dp.vis_payload;
+            data_version = prop_attr ? md_attributes_version(md_script_eval_attributes(dp.eval), prop_attr->id) : 0;
         }
         show_density_volume = selected_property != -1;
 
@@ -159,9 +159,9 @@ struct DensityVolume : viamd::EventHandler {
             dirty_rep = true;
         }
 
-        static uint64_t s_data_fingerprint = 0;
-        if (s_data_fingerprint != data_fingerprint) {
-            s_data_fingerprint = data_fingerprint;
+        static uint64_t s_data_version = 0;
+        if (s_data_version != data_version) {
+            s_data_version = data_version;
             dirty_vol = true;
         }
 
@@ -172,7 +172,7 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         if (dirty_rep) {
-            if (prop_data && vis_payload) {
+            if (prop_attr && vis_payload) {
                 dirty_rep = false;
                 size_t num_reps = 0;
                 bool result = false;
@@ -194,7 +194,8 @@ struct DensityVolume : viamd::EventHandler {
                         vec3_t min_aabb = vec3_set1(-s);
                         vec3_t max_aabb = vec3_set1( s);
                         model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
-                        voxel_spacing = vec3_t{2*s / prop_data->dim[1], 2*s / prop_data->dim[2], 2*s / prop_data->dim[3]};
+                        const uint32_t* dim = prop_attr->format.shape;
+                        voxel_spacing = vec3_t{2*s / dim[0], 2*s / dim[1], 2*s / dim[2]};
                         default_view = compute_optimal_view((min_aabb + max_aabb) * 0.5f, (max_aabb - min_aabb) * 0.5f);
                         if (reset_view) {
                             target = default_view;
@@ -272,15 +273,14 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         if (dirty_vol) {
-            if (prop_data) {
+            if (prop_attr) {
                 dirty_vol = false;
                 if (!volume_texture.id) {
-                    int dim[3] = { prop_data->dim[1], prop_data->dim[2], prop_data->dim[3] };
+                    int dim[3] = { (int)prop_attr->format.shape[0], (int)prop_attr->format.shape[1], (int)prop_attr->format.shape[2] };
                     gl::init_texture_3D(&volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
                     MEMCPY(volume_texture.dim, dim, sizeof(dim));
-                    volume_texture.max_value = prop_data->max_value;
                 }
-                gl::set_texture_3D_data(volume_texture.id, 0, prop_data->values, GL_R32F);
+                gl::set_texture_3D_data(volume_texture.id, 0, prop_attr->data, GL_R32F);
             }
         }
     }

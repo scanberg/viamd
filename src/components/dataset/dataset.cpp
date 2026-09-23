@@ -90,7 +90,8 @@ struct AtomTypeLoadState {
 // are buffered here and applied once the atom types actually exist (see apply_pending_atom_type_overrides).
 struct AtomTypeOverride {
     char name[32] = "";             // Name of the atom type
-    md_atomic_number_t load_z = 0;  // Element the type was assigned upon load, together with name it identifies the type
+    char ff_type[64] = "";          // Force field type, empty when the type has none
+    md_atomic_number_t load_z = 0;  // Element the type was assigned upon load. Name, force field type and element identify the type
 
     // Only the fields which were present in the section are applied
     bool has_z              = false;
@@ -214,8 +215,15 @@ struct Dataset : viamd::EventHandler {
         // Map atom types into dataset items
         for (size_t i = 0; i < type_count; ++i) {
             str_t atom_type_name = md_atom_type_name(&sys.atom.type, i);
+            str_t ff_type = md_atom_type_ff_type(&sys.atom.type, i);
             DatasetItem item = { .key = i };
-            snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(atom_type_name));
+            if (!str_empty(ff_type) && !str_eq(ff_type, atom_type_name)) {
+                // The force field type is what tells apart types of the same name (a Martini SC1 is a
+                // different bead in every residue), so it is shown whenever it adds something
+                snprintf(item.label, sizeof(item.label), STR_FMT " (" STR_FMT ")", STR_ARG(atom_type_name), STR_ARG(ff_type));
+            } else {
+                snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(atom_type_name));
+            }
 
             // Snapshot what the loader assigned, so that we can tell later on what the user has changed
             item.load.z      = sys.atom.type.z[i];
@@ -485,6 +493,10 @@ struct Dataset : viamd::EventHandler {
 
             viamd::write_section_header(state, STR_LIT("AtomType"));
             viamd::write_str(state, STR_LIT("Name"), md_atom_type_name(&type, i));
+            const str_t ff_type = md_atom_type_ff_type(&type, i);
+            if (!str_empty(ff_type)) {
+                viamd::write_str(state, STR_LIT("ForceFieldType"), ff_type);
+            }
             viamd::write_int(state, STR_LIT("LoadedElement"), item.load.z);
 
             if (delta.elem)     viamd::write_int (state, STR_LIT("Element"),       type.z[i]);
@@ -511,6 +523,8 @@ struct Dataset : viamd::EventHandler {
         while (viamd::next_entry(ident, arg, state)) {
             if (str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
+            } else if (str_eq_cstr(ident, "ForceFieldType")) {
+                viamd::extract_to_char_buf(ovr.ff_type, sizeof(ovr.ff_type), arg);
             } else if (str_eq_cstr(ident, "LoadedElement")) {
                 int z;
                 if (viamd::extract_int(z, arg)) {
@@ -570,13 +584,17 @@ struct Dataset : viamd::EventHandler {
         for (size_t j = 0; j < num_overrides; ++j) {
             const AtomTypeOverride& ovr = pending_overrides[j];
             str_t name = str_from_cstr(ovr.name);
+            str_t ff_type = str_from_cstr(ovr.ff_type);
 
-            // Identify the type by its name plus the element it had upon load
+            // Identify the type by its name, its force field type (empty for sources without one, which
+            // is also what a workspace written before force field types existed holds) and the element
+            // it had upon load
             bool matched = false;
             for (size_t i = 0; i < type_count; ++i) {
                 DatasetItem& item = atom_types[i];
                 if (item.load.z != ovr.load_z) continue;
                 if (!str_eq(md_atom_type_name(&type, i), name)) continue;
+                if (!str_eq(md_atom_type_ff_type(&type, i), ff_type)) continue;
 
                 if (ovr.has_z) {
                     type.z[i] = ovr.z;

@@ -1413,12 +1413,20 @@ static void init_display_properties(ApplicationState* data) {
         for (size_t i = 0; i < num_props; ++i) {
             str_t prop_name = prop_names[i];
             md_script_property_flags_t prop_flags = md_script_ir_property_flags(ir, prop_name);
-            const md_script_property_data_t* prop_data = md_script_eval_property_data(eval, prop_name);
 
-            if (!prop_data) {
-                MD_LOG_DEBUG("Failed to extract property data from property!");
+            const md_attributes_t* attributes = md_script_eval_attributes(eval);
+            char path[256];
+            auto find_attr = [&](const char* suffix) -> const md_attribute_t* {
+                int len = snprintf(path, sizeof(path), "script/" STR_FMT "%s", STR_ARG(prop_name), suffix);
+                return md_attributes_find(attributes, str_t{path, (size_t)len});
+            };
+
+            const md_attribute_t* attr = find_attr("");
+            if (!attr || !attr->data) {
+                MD_LOG_DEBUG("Failed to find the evaluated property '" STR_FMT "'", STR_ARG(prop_name));
                 continue;
             }
+            const md_attribute_t* attr_bin = find_attr("/bin");
 
             DisplayProperty item;
             if (!str_empty(eval_label)) {
@@ -1427,13 +1435,16 @@ static void init_display_properties(ApplicationState* data) {
                 snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(prop_name));
             }
             item.color = ImGui::ColorConvertU32ToFloat4(PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)]);
-            item.unit[0] = prop_data->unit[0];
-            item.unit[1] = prop_data->unit[1];
+            // x is the bin axis for a distribution; a temporal x is the timeline and set from it.
+            item.unit[0] = attr_bin ? attr_bin->unit : md_unit_none();
+            item.unit[1] = attr->unit;
             item.prop_flags = prop_flags;
-            item.prop_data = prop_data;
+            item.attr = attr;
+            item.attr_range  = find_attr("/range");
+            item.attr_weight = find_attr("/weight");
             item.vis_payload = md_script_ir_property_vis_payload(ir, prop_name);
             item.eval = eval;
-            item.prop_fingerprint = 0;
+            item.attr_version = 0;
             item.population_mask.set();
             item.temporal_subplot_mask = 0;
             item.distribution_subplot_mask = 0;
@@ -1480,7 +1491,8 @@ static void init_display_properties(ApplicationState* data) {
                     display_property_copy_param_from_old(item_dist_raw, old_items, md_array_size(old_items));
                     md_array_push(new_items, item_dist_raw, frame_alloc);
 
-                    if (prop_data->dim[1] > 1) {
+                    const int population = (int)attr->format.shape[1];
+                    if (population > 1) {
                         DisplayProperty item_dist_agg = item_dist_raw;
                         item_dist_agg.type = DisplayProperty::Type_Distribution;
                         snprintf(item_dist_agg.label, sizeof(item_dist_agg.label), "%s (agg)", item.label);
@@ -1494,39 +1506,39 @@ static void init_display_properties(ApplicationState* data) {
                 if (!partial_evaluation) {
                     item.num_samples = (int)md_array_size(data->timeline.x_values);
                     item.x_values = data->timeline.x_values;
-                    item.y_values = item.prop_data->values;
+                    item.y_values = (const float*)attr->data;
 
                     DisplayProperty item_raw = item;
-                    item_raw.dim        = prop_data->dim[1];
+                    item_raw.dim        = (int)attr->format.shape[1];
                     item_raw.plot_type  = DisplayProperty::PlotType_Line;
                     item_raw.getter[0]  = [](int sample_idx, void* payload) -> ImPlotPoint {
                         DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
                         int dim_idx = data->dim_idx;
                         int dim = data->display_prop->dim;
-                        const float* y_values = data->display_prop->prop_data->values;
+                        const float* y_values = data->display_prop->y_values;
                         const float* x_values = data->display_prop->x_values;
                         return ImPlotPoint(x_values[sample_idx], y_values[sample_idx * dim + dim_idx] * data->display_prop->unit_scale[1]);
                     };
                     display_property_copy_param_from_old(item_raw, old_items, md_array_size(old_items));
                     md_array_push(new_items, item_raw, frame_alloc);
 
-                    if (prop_data->aggregate) {
-                        // Create 'pseudo' display properties which maps to the aggregate data
+                    const md_attribute_t* attr_mean = find_attr("/mean");
+                    const md_attribute_t* attr_var  = find_attr("/variance");
+                    const md_attribute_t* attr_ext  = find_attr("/extent");
+                    if (attr_mean && attr_var && attr_ext) {
+                        // Create 'pseudo' display properties which maps to the per frame summary over the population
                         DisplayProperty item_mean = item;
                         snprintf(item_mean.label, sizeof(item_mean.label), "%s (mean)", item.label);
                         item_mean.dim = 1;
-                        item_mean.y_values = item_mean.prop_data->aggregate->population_mean;
+                        item_mean.y_values = (const float*)attr_mean->data;
                         item_mean.plot_type = DisplayProperty::PlotType_Line;
                         item_mean.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
-                            const float* y_values = data->prop_data->aggregate->population_mean;
-                            const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], y_values[sample_idx] * data->unit_scale[1]);
+                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
+                            return ImPlotPoint(dp->x_values[sample_idx], dp->y_values[sample_idx] * dp->unit_scale[1]);
                         };
                         item_mean.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
                             const DisplayProperty* dp = payload->display_prop;
-                            const float* y_mean = dp->prop_data->aggregate->population_mean;
-                            return snprintf(buf, cap, "%.2f", y_mean[sample_idx] * dp->unit_scale[1]);
+                            return snprintf(buf, cap, "%.2f", dp->y_values[sample_idx] * dp->unit_scale[1]);
                         };
                         display_property_copy_param_from_old(item_mean, old_items, md_array_size(old_items));
                         md_array_push(new_items, item_mean, frame_alloc);
@@ -1534,54 +1546,44 @@ static void init_display_properties(ApplicationState* data) {
                         DisplayProperty item_var = item;
                         snprintf(item_var.label, sizeof(item_var.label), "%s (var)", item.label);
                         item_var.dim = 1;
-                        item_var.y_values = item_mean.prop_data->aggregate->population_var;
+                        item_var.y_values = (const float*)attr_var->data;
+                        item_var.y_center = (const float*)attr_mean->data;
                         item_var.color.w *= 0.4f;
                         item_var.plot_type = DisplayProperty::PlotType_Area;
                         item_var.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
-                            const float* y_mean = data->prop_data->aggregate->population_mean;
-                            const float* y_var  = data->prop_data->aggregate->population_var;
-                            const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], (y_mean[sample_idx] - y_var[sample_idx]) * data->unit_scale[1]);
-                            };
+                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
+                            return ImPlotPoint(dp->x_values[sample_idx], (dp->y_center[sample_idx] - dp->y_values[sample_idx]) * dp->unit_scale[1]);
+                        };
                         item_var.getter[1] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
-                            const float* y_mean = data->prop_data->aggregate->population_mean;
-                            const float* y_var  = data->prop_data->aggregate->population_var;
-                            const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], (y_mean[sample_idx] + y_var[sample_idx]) * data->unit_scale[1]);
-                            };
+                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
+                            return ImPlotPoint(dp->x_values[sample_idx], (dp->y_center[sample_idx] + dp->y_values[sample_idx]) * dp->unit_scale[1]);
+                        };
                         item_var.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
                             const DisplayProperty* dp = payload->display_prop;
-                            const float* y_var = dp->prop_data->aggregate->population_var;
-                            return snprintf(buf, cap, "%.2f", y_var[sample_idx] * dp->unit_scale[1]);
-                            };
+                            return snprintf(buf, cap, "%.2f", dp->y_values[sample_idx] * dp->unit_scale[1]);
+                        };
                         display_property_copy_param_from_old(item_var, old_items, md_array_size(old_items));
                         md_array_push(new_items, item_var, frame_alloc);
 
+                        // Two components per frame: (min, max)
                         DisplayProperty item_ext = item;
                         snprintf(item_ext.label, sizeof(item_ext.label), "%s (min/max)", item.label);
                         item_ext.dim = 2;
-                        item_ext.y_values = (const float*)item_mean.prop_data->aggregate->population_ext;
+                        item_ext.y_values = (const float*)attr_ext->data;
                         item_ext.color.w *= 0.2f;
                         item_ext.plot_type = DisplayProperty::PlotType_Area;
                         item_ext.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
-                            const vec2_t* y_ext = data->prop_data->aggregate->population_ext;
-                            const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], y_ext[sample_idx].x * data->unit_scale[1]);
-                            };
+                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
+                            return ImPlotPoint(dp->x_values[sample_idx], dp->y_values[sample_idx * 2 + 0] * dp->unit_scale[1]);
+                        };
                         item_ext.getter[1] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            DisplayProperty* data = ((DisplayProperty::Payload*)payload)->display_prop;
-                            const vec2_t* y_ext = data->prop_data->aggregate->population_ext;
-                            const float* x_values = data->x_values;
-                            return ImPlotPoint(x_values[sample_idx], y_ext[sample_idx].y * data->unit_scale[1]);
-                            };
+                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
+                            return ImPlotPoint(dp->x_values[sample_idx], dp->y_values[sample_idx * 2 + 1] * dp->unit_scale[1]);
+                        };
                         item_ext.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
                             const DisplayProperty* dp = payload->display_prop;
-                            const vec2_t* y_ext = dp->prop_data->aggregate->population_ext;
-                            return snprintf(buf, cap, "%.2f, %.2f", y_ext[sample_idx].x * dp->unit_scale[1], y_ext[sample_idx].y * dp->unit_scale[1]);
-                            };
+                            return snprintf(buf, cap, "%.2f, %.2f", dp->y_values[sample_idx * 2 + 0] * dp->unit_scale[1], dp->y_values[sample_idx * 2 + 1] * dp->unit_scale[1]);
+                        };
                         display_property_copy_param_from_old(item_ext, old_items, md_array_size(old_items));
                         md_array_push(new_items, item_ext, frame_alloc);
                     }
@@ -1644,27 +1646,35 @@ static void update_display_properties(ApplicationState* data) {
         if (dp.units_version != display_units::version()) {
             display_property_update_units(&dp, data->timeline.time_unit);
             // The histogram's x axis is the value axis, so its bin edges are stale too.
-            dp.prop_fingerprint = 0;
+            dp.attr_version = 0;
         }
 
         if (dp.type == DisplayProperty::Type_Distribution) {
-            if (dp.prop_fingerprint != dp.prop_data->fingerprint || dp.num_bins != dp.hist.num_bins) {
-                dp.prop_fingerprint = dp.prop_data->fingerprint;
-        
+            const uint64_t version = md_attributes_version(md_script_eval_attributes(dp.eval), dp.attr->id);
+            if (dp.attr_version != version || dp.num_bins != dp.hist.num_bins) {
+                dp.attr_version = version;
+
+                // The domain the property is binned over: the range of the values for a temporal
+                // property, the range of the bin axis for a distribution.
+                float range[2] = {0, 0};
+                if (dp.attr_range) {
+                    md_attribute_extract_f32(range, 2, dp.attr_range, md_unit_none());
+                }
+
+                DisplayProperty::Histogram& hist = dp.hist;
+                const float* values = (const float*)dp.attr->data;
                 if (dp.prop_flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                    DisplayProperty::Histogram& hist = dp.hist;
-                    compute_histogram_masked(&hist, dp.num_bins, dp.prop_data->min_range[0], dp.prop_data->max_range[0], dp.prop_data->values, dp.prop_data->dim[1], md_script_eval_frame_mask(dp.eval), dp.aggregate_histogram);
+                    const int population = (int)dp.attr->format.shape[1];
+                    compute_histogram_masked(&hist, dp.num_bins, range[0], range[1], values, population, md_script_eval_frame_mask(dp.eval), dp.aggregate_histogram);
                 }
                 else if (dp.prop_flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-                    DisplayProperty::Histogram& hist = dp.hist;
+                    const float* weights = dp.attr_weight ? (const float*)dp.attr_weight->data : NULL;
                     md_array_resize(hist.bins, (size_t)dp.num_bins, hist.alloc);
                     hist.num_bins = dp.num_bins;
-                    hist.x_min = dp.prop_data->min_range[0];
-                    hist.x_max = dp.prop_data->max_range[0];
-                    hist.y_min = dp.prop_data->min_range[1];
-                    hist.y_max = dp.prop_data->max_range[1];
+                    hist.x_min = range[0];
+                    hist.x_max = range[1];
                     hist.dim = 1;
-                    downsample_histogram(hist.bins, hist.num_bins, dp.prop_data->values, dp.prop_data->weights, dp.prop_data->dim[2]);
+                    downsample_histogram(hist.bins, hist.num_bins, values, weights, (int)dp.attr->format.shape[0]);
                 }
 
                 // Binned in the property's own unit, shown in the user's, so the bin edges move
@@ -5885,11 +5895,11 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     return true;
 }
 
-static bool export_cube(const ApplicationState& data, const md_script_property_data_t* prop_data, const md_script_vis_payload_o* vis_payload, str_t filename) {
+static bool export_cube(const ApplicationState& data, const md_attribute_t* attr, const md_script_vis_payload_o* vis_payload, str_t filename) {
     // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
-    if (!prop_data) {
+    if (!attr || !attr->data || attr->format.rank != 3) {
         VIAMD_LOG_ERROR("Export Cube: The property to be exported did not exist");
         return false;
     }
@@ -5939,7 +5949,8 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
             mat4_t M = vis.sdf.matrices[0];
             const md_bitfield_t* bf = &vis.sdf.structures[0];
             const int num_atoms = (int)md_bitfield_popcount(bf);
-            const int vol_dim[3] = {prop_data->dim[1], prop_data->dim[2], prop_data->dim[3]};
+            const int vol_dim[3] = {(int)attr->format.shape[0], (int)attr->format.shape[1], (int)attr->format.shape[2]};
+            const float* values = (const float*)attr->data;
             const double extent = vis.sdf.extent * 2.0 * angstrom_to_bohr;
             const double voxel_ext[3] = {
                 (double)extent / (double)vol_dim[0],
@@ -5977,7 +5988,7 @@ static bool export_cube(const ApplicationState& data, const md_script_property_d
                 for (int y = 0; y < vol_dim[1]; ++y) {
                     for (int z = 0; z < vol_dim[2]; ++z) {
                         int idx = z * vol_dim[0] * vol_dim[1] + y * vol_dim[0] + x;
-                        float val = prop_data->values[idx];
+                        float val = values[idx];
                         md_file_printf(file, " %12.6E", val);
                         if (++count % 6 == 0) md_file_printf(file, "\n");
                     }
@@ -6122,7 +6133,7 @@ static void draw_property_export_window(ApplicationState* data) {
                 str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
                 if (dp.type == DisplayProperty::Type_Volume) {
                     if (str_eq(file_extension, STR_LIT("cube"))) {
-                        if (export_cube(*data, dp.prop_data, dp.vis_payload, path)) {
+                        if (export_cube(*data, dp.attr, dp.vis_payload, path)) {
                             VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", dp.label, STR_ARG(path));
                         }
                     }

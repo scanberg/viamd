@@ -18,6 +18,7 @@ enum LoaderFlag_ {
     LoaderFlag_MM = 32, // Molecular Mechanics data
     LoaderFlag_QM = 64, // Quantum Mechanics data
     LoaderFlag_Supplemental = 128, // May contain supplemental data to existing system
+    LoaderFlag_Topology = 256, // The format supplies a complete topology: its bonds are not to be inferred
 };
 
 enum LoaderType_ {
@@ -41,6 +42,7 @@ enum LoaderType_ {
     LoaderType_TREXIO,
 #endif
     LoaderType_ITP,     // GROMACS topology (.itp / .top), supplements a loaded system
+    LoaderType_TPR,     // GROMACS run input, topology and coordinates
     LoaderType_COUNT
 };
 

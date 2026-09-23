@@ -4,6 +4,7 @@
 
 #include <md_pdb.h>
 #include <md_gro.h>
+#include <md_tpr.h>
 #include <md_xtc.h>
 #include <md_trr.h>
 #include <md_xyz.h>
@@ -47,6 +48,7 @@ static const str_t loader_name[LoaderType_COUNT] = {
         STR_LIT("TREXIO (trexio)"),
 #endif
         STR_LIT("Gromacs Topology (itp/top)"),
+        STR_LIT("Gromacs Run Input (tpr)"),
 };
 
 static const str_t loader_ext[LoaderType_COUNT] = {
@@ -70,6 +72,7 @@ static const str_t loader_ext[LoaderType_COUNT] = {
         STR_LIT("trexio"),
 #endif
         STR_LIT("itp"),
+        STR_LIT("tpr"),
 };
 
 static const LoaderFlags loader_flags[LoaderType_COUNT] = {
@@ -93,6 +96,7 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
         LoaderFlag_System | LoaderFlag_QM,                          // TREXIO
 #endif
         LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS topology
+        LoaderFlag_System | LoaderFlag_MM | LoaderFlag_Topology,    // GROMACS run input
 };
 
 void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
@@ -168,6 +172,8 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
         }
         case LoaderType_GRO:
             return md_gro_system_init_from_file(out_sys, out_state, filepath);
+        case LoaderType_TPR:
+            return md_tpr_system_init_from_file(out_sys, out_state, filepath);
         case LoaderType_XYZ:
         case LoaderType_XMOL:
         case LoaderType_ARC: {

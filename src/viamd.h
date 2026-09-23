@@ -356,10 +356,20 @@ struct DisplayProperty {
     const md_script_eval_t* eval = NULL;
 
     md_script_property_flags_t prop_flags = MD_SCRIPT_PROPERTY_FLAG_NONE;
-    const md_script_property_data_t* prop_data = NULL;
     const md_script_vis_payload_o* vis_payload = NULL;
 
-    uint64_t prop_fingerprint = 0;
+    // The property as published in eval's attribute table (see md_script_eval_attributes). The
+    // table is fixed for the lifetime of the evaluation, so holding the pointers is safe for as
+    // long as eval is.
+    const md_attribute_t* attr = NULL;          // script/<ident>: the values
+    const md_attribute_t* attr_range  = NULL;   // script/<ident>/range, temporal and distribution
+    const md_attribute_t* attr_weight = NULL;   // script/<ident>/weight, distribution only
+
+    // A band drawn around a centre line (variance around the mean) needs that centre as well
+    const float* y_center = 0;
+
+    // md_attributes_version of attr when the histogram was last computed
+    uint64_t attr_version = 0;
 
     // Encodes which temporal subplots this property is visible in
     uint32_t temporal_subplot_mask = 0;
