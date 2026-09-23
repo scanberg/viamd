@@ -767,7 +767,7 @@ int main(int argc, char** argv) {
                 reset_transform.orientation = state.view.camera.orientation;
                 reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
             } else {
-                reset_view(&reset_transform, state.mold.state);
+                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask);
             }
             state.view.target = reset_transform;
         }

@@ -4,6 +4,7 @@
 
 #include <float.h>
 #include <math.h>
+#include <stdlib.h>
 
 static vec4_t projection_extents(float fov_y, int width, int height, float texel_offset_x, float texel_offset_y) {
     const float aspect_ratio = (float)width / (float)height;
@@ -291,4 +292,401 @@ void camera_animate(ViewTransform* current, const ViewTransform& target, double 
     quat_t ori[2] = {current->orientation, target.orientation};
     float dist[2] = {current->distance, target.distance};
     camera_interpolate_look_at(&current->position, &current->orientation, &current->distance, pos, ori, dist, interpolation_factor);
+}
+
+// -----------------------------------------------------------------------------------------------------------
+// Default view
+//
+// What makes a good default view depends on whether the world axes mean anything.
+//
+// * A system that fills its periodic cell (spans it along at least two of the cell axes) was built in a frame
+//   that means something: membranes and slabs are set up with their normal along Z and the box edges lie
+//   along the axes. Z is up, and the whole system is shown in the world view: X towards the viewer and
+//   slightly to the left, seen a little from above. A structure inside such a system keeps Z up and only
+//   turns about it to show its broad side. A cell the atoms do not fill - a crystallographic cell around a
+//   protein, a placeholder CRYST1 - says nothing about the frame and is ignored.
+// * A large, flat system without a cell saying so - a membrane patch or a surface - is a slab: its normal is
+//   up (snapped to a world axis when close to one) and it is seen from the side like the world view.
+// * Anything else is a molecule whose coordinates carry no preferred direction. A small one gets the view in
+//   which the most of its atoms can be seen: sampled directions are scored by the visible share of each
+//   atom, in the spirit of viewpoint entropy. That finds face-on for planar molecules and avoids looking
+//   down bonds or along rows where atoms eclipse each other. A large one is too dense for visibility to
+//   discriminate - only its surface shows from any side - so it is shown by its shape: broad side towards
+//   the viewer, long axis across the screen.
+//
+// Signs and in-plane rotations that the shape leaves open are settled by the world view, so the same input
+// always gives the same view. In every case the view is centered on the projected extent and the camera is
+// backed off until every atom fits.
+
+static const float  DV_AZIMUTH          = 25.0f * (3.14159265f / 180.0f); // Swing from the face towards screen right
+static const float  DV_ELEVATION        = 20.0f * (3.14159265f / 180.0f); // Swing up from the horizontal
+static const float  DV_ATOM_RADIUS      = 1.0f;
+static const float  DV_FILL             = 0.9f;   // Fraction of the view the fitted atoms may fill
+static const float  DV_MIN_DISTANCE     = 15.0f;
+static const float  DV_CELL_SPAN_MIN    = 0.75f;  // Span of the atoms along a cell axis, in cell lengths, that counts as filling it
+static const float  DV_CELL_SPAN_MAX    = 1.5f;   // Beyond this the cell is too small to be the box of the system (placeholder)
+static const float  DV_SLAB_FLATNESS    = 0.6f;   // A slab's thickness is at most this fraction of its middle extent...
+static const float  DV_SLAB_MIN_SIZE    = 50.0f;  // ...and its middle extent is at least this long (Ångström)
+static const float  DV_SNAP_COS         = 0.966f; // cos(15 deg): a slab normal this close to a world axis is snapped to it
+static const float  DV_ANISOTROPY       = 1.2f;   // Extent ratio above which an axis of a shape is trusted
+static const size_t DV_SEARCH_MAX_ATOMS = 1500;   // Above this, a molecule is shown by its shape rather than by visibility
+static const int    DV_SEARCH_DIRS      = 192;
+
+static const vec3_t DV_X = {1, 0, 0};
+static const vec3_t DV_Y = {0, 1, 0};
+static const vec3_t DV_Z = {0, 0, 1};
+
+struct DvFrame {
+    vec3_t face;  // Towards the viewer, before the swing
+    vec3_t right;
+    vec3_t up;
+    bool   swing;
+};
+
+// The part of v orthogonal to the unit vector n, normalized. False when v is (nearly) parallel to n.
+static bool dv_reject(vec3_t* out, vec3_t v, vec3_t n) {
+    const vec3_t r = vec3_sub(v, vec3_mul1(n, vec3_dot(v, n)));
+    const float  l = vec3_length(r);
+    if (l < 1.0e-3f) return false;
+    *out = vec3_div1(r, l);
+    return true;
+}
+
+static vec3_t dv_orient(vec3_t v, vec3_t pref) {
+    return vec3_dot(v, pref) < 0.0f ? vec3_mul1(v, -1.0f) : v;
+}
+
+static vec3_t dv_swing(const DvFrame& f) {
+    if (!f.swing) return f.face;
+    const float ca = cosf(DV_AZIMUTH),   sa = sinf(DV_AZIMUTH);
+    const float ce = cosf(DV_ELEVATION), se = sinf(DV_ELEVATION);
+    return vec3_normalize(vec3_add(vec3_add(vec3_mul1(f.face, ce * ca), vec3_mul1(f.right, ce * sa)), vec3_mul1(f.up, se)));
+}
+
+// The world view's camera frame (b towards the camera, s screen right, u screen up). It has a component along
+// every world axis, which is what makes it a tie breaker for vectors lying exactly along one.
+static void dv_world_camera(vec3_t* b, vec3_t* s, vec3_t* u) {
+    const DvFrame world = {DV_X, DV_Y, DV_Z, true};
+    *b = dv_swing(world);
+    *s = vec3_normalize(vec3_cross(DV_Z, *b));
+    *u = vec3_cross(*b, *s);
+}
+
+// A unit vector orthogonal to the unit vector n, as close to the world X (or Y) as possible
+static vec3_t dv_perp(vec3_t n) {
+    vec3_t v;
+    if (!dv_reject(&v, DV_X, n)) dv_reject(&v, DV_Y, n);
+    return v;
+}
+
+static vec3_t dv_load(const float* x, const float* y, const float* z, const int32_t* indices, size_t i) {
+    const size_t idx = indices ? (size_t)indices[i] : i;
+    return vec3_set(x[idx], y[idx], z[idx]);
+}
+
+// Does the system fill its cell, i.e. span it along at least two cell axes?
+static bool dv_fills_cell(const float* x, const float* y, const float* z, size_t num_atoms, const mat3_t& A) {
+    if (!num_atoms || fabsf(mat3_determinant(A)) < 1.0e-6f) return false;
+    const mat3_t I = mat3_inverse(A);
+    vec3_t fmin = vec3_set1( FLT_MAX);
+    vec3_t fmax = vec3_set1(-FLT_MAX);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        const vec3_t f = mat3_mul_vec3(I, vec3_set(x[i], y[i], z[i]));
+        fmin = vec3_min(fmin, f);
+        fmax = vec3_max(fmax, f);
+    }
+    int filled = 0;
+    for (int k = 0; k < 3; ++k) {
+        const float span = fmax.elem[k] - fmin.elem[k];
+        filled += (DV_CELL_SPAN_MIN <= span && span <= DV_CELL_SPAN_MAX) ? 1 : 0;
+    }
+    return filled >= 2;
+}
+
+// With up given: the face that shows the broad side of a shape with covariance C, when it has one about up.
+// Otherwise the world X, as seen from the world view.
+static vec3_t dv_face_about_up(vec3_t up, const mat3_t* C) {
+    vec3_t pref_b, pref_s, pref_u;
+    dv_world_camera(&pref_b, &pref_s, &pref_u);
+
+    const vec3_t e1 = dv_perp(up);
+    const vec3_t e2 = vec3_cross(up, e1);
+    vec3_t face = e1;
+    if (C) {
+        const float a = vec3_dot(e1, mat3_mul_vec3(*C, e1));
+        const float b = vec3_dot(e1, mat3_mul_vec3(*C, e2));
+        const float c = vec3_dot(e2, mat3_mul_vec3(*C, e2));
+        const float h = 0.5f * (a + c);
+        const float r = sqrtf(MAX(0.0f, 0.25f * (a - c) * (a - c) + b * b));
+        const float l_major = h + r;
+        const float l_minor = h - r;
+        if (l_major > l_minor * DV_ANISOTROPY * DV_ANISOTROPY) {
+            // Eigenvector of the minor eigenvalue; of the two equivalent forms take the better conditioned
+            const vec2_t v0 = {b, l_minor - a};
+            const vec2_t v1 = {l_minor - c, b};
+            const vec2_t v  = (v0.x * v0.x + v0.y * v0.y > v1.x * v1.x + v1.y * v1.y) ? v0 : v1;
+            face = vec3_normalize(vec3_add(vec3_mul1(e1, v.x), vec3_mul1(e2, v.y)));
+        }
+    }
+    return dv_orient(face, pref_b);
+}
+
+// Score of a view along d (towards the camera): the sum over atoms of the square root of their visible
+// share of the projected disc. Concave, so that seeing every atom partly beats seeing some fully and others
+// not at all, and never saturating, so that a view with less overlap always scores higher. Orthographic,
+// rasterized with sphere depth.
+struct DvRaster {
+    int      dim;
+    float    px;
+    float    R;
+    float*   zbuf;
+    int32_t* ibuf;
+    int32_t* disc;
+    int32_t* vis;
+};
+
+static float dv_visibility(DvRaster& r, const vec3_t* p, size_t n, vec3_t d) {
+    const vec3_t s = dv_perp(d);
+    const vec3_t u = vec3_cross(d, s);
+    const int    dim = r.dim;
+    const float  rad = DV_ATOM_RADIUS;
+
+    for (int k = 0; k < dim * dim; ++k) { r.zbuf[k] = -FLT_MAX; r.ibuf[k] = -1; }
+    for (size_t i = 0; i < n; ++i) { r.disc[i] = 0; r.vis[i] = 0; }
+
+    for (size_t i = 0; i < n; ++i) {
+        const float sx = vec3_dot(p[i], s);
+        const float sy = vec3_dot(p[i], u);
+        const float sz = vec3_dot(p[i], d);
+        const int x0 = MAX(0,       (int)floorf((sx - rad + r.R) / r.px));
+        const int x1 = MIN(dim - 1, (int)floorf((sx + rad + r.R) / r.px));
+        const int y0 = MAX(0,       (int)floorf((sy - rad + r.R) / r.px));
+        const int y1 = MIN(dim - 1, (int)floorf((sy + rad + r.R) / r.px));
+        for (int py = y0; py <= y1; ++py) {
+            const float dy = (py + 0.5f) * r.px - r.R - sy;
+            for (int px = x0; px <= x1; ++px) {
+                const float dx = (px + 0.5f) * r.px - r.R - sx;
+                const float rho2 = dx * dx + dy * dy;
+                if (rho2 > rad * rad) continue;
+                r.disc[i] += 1;
+                const float depth = sz + sqrtf(rad * rad - rho2);
+                const int   k = py * dim + px;
+                if (depth > r.zbuf[k]) {
+                    r.zbuf[k] = depth;
+                    r.ibuf[k] = (int32_t)i;
+                }
+            }
+        }
+    }
+    for (int k = 0; k < dim * dim; ++k) {
+        if (r.ibuf[k] >= 0) r.vis[r.ibuf[k]] += 1;
+    }
+    float score = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        if (r.disc[i] > 0) score += sqrtf((float)r.vis[i] / (float)r.disc[i]);
+    }
+    return score;
+}
+
+// The direction (towards the camera) from which the most of the atoms p (relative to their center) are seen.
+static vec3_t dv_best_direction(const vec3_t* p, size_t n, const vec3_t axis[3]) {
+    vec3_t pref_b, pref_s, pref_u;
+    dv_world_camera(&pref_b, &pref_s, &pref_u);
+
+    float R = 0.0f;
+    for (size_t i = 0; i < n; ++i) R = MAX(R, vec3_length(p[i]));
+    R += DV_ATOM_RADIUS;
+
+    DvRaster r = {};
+    r.dim  = CLAMP((int)ceilf(2.0f * R / (DV_ATOM_RADIUS / 3.0f)), 32, 256);
+    r.px   = 2.0f * R / (float)r.dim;
+    r.R    = R;
+    r.zbuf = (float*)  malloc(sizeof(float)   * r.dim * r.dim);
+    r.ibuf = (int32_t*)malloc(sizeof(int32_t) * r.dim * r.dim);
+    r.disc = (int32_t*)malloc(sizeof(int32_t) * n);
+    r.vis  = (int32_t*)malloc(sizeof(int32_t) * n);
+
+    // The principal axes first, with a small bonus: an exact face-on or edge-on view beats a sampled
+    // direction a few degrees off it that scores the same
+    vec3_t best = pref_b;
+    float  best_score = -1.0f;
+    for (int k = 0; k < 6; ++k) {
+        const vec3_t d = vec3_mul1(axis[k / 2], (k & 1) ? -1.0f : 1.0f);
+        const float  score = dv_visibility(r, p, n, d) * 1.01f;
+        if (score > best_score) { best_score = score; best = d; }
+    }
+    // Then the sphere, evenly (Fibonacci)
+    const float golden_angle = 2.39996323f;
+    for (int k = 0; k < DV_SEARCH_DIRS; ++k) {
+        const float cz = 1.0f - (2.0f * k + 1.0f) / (float)DV_SEARCH_DIRS;
+        const float sr = sqrtf(MAX(0.0f, 1.0f - cz * cz));
+        const vec3_t d = vec3_set(sr * cosf(golden_angle * k), sr * sinf(golden_angle * k), cz);
+        const float  score = dv_visibility(r, p, n, d);
+        if (score > best_score) { best_score = score; best = d; }
+    }
+    // Symmetric molecules score the same from both sides: then take the side facing the world view
+    if (vec3_dot(best, pref_b) < 0.0f) {
+        const vec3_t flip = vec3_mul1(best, -1.0f);
+        if (dv_visibility(r, p, n, flip) >= best_score * 0.995f) best = flip;
+    }
+
+    free(r.zbuf);
+    free(r.ibuf);
+    free(r.disc);
+    free(r.vis);
+    return best;
+}
+
+// Given the view direction b: right along the long axis of the projection, up following from it, upright
+// with respect to the world view where the sign is free.
+static DvFrame dv_frame_about_face(vec3_t b, const vec3_t* p, size_t n) {
+    vec3_t pref_b, pref_s, pref_u;
+    dv_world_camera(&pref_b, &pref_s, &pref_u);
+
+    const vec3_t e1 = dv_perp(b);
+    const vec3_t e2 = vec3_cross(b, e1);
+    float a = 0, c = 0, bb = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const float x = vec3_dot(p[i], e1);
+        const float y = vec3_dot(p[i], e2);
+        a += x * x; bb += x * y; c += y * y;
+    }
+    const float h = 0.5f * (a + c);
+    const float r = sqrtf(MAX(0.0f, 0.25f * (a - c) * (a - c) + bb * bb));
+    const float l_major = h + r;
+    const float l_minor = h - r;
+
+    DvFrame f = {b, e1, e2, false};
+    if (l_major > l_minor * DV_ANISOTROPY * DV_ANISOTROPY) {
+        const vec2_t v0 = {bb, l_major - a};
+        const vec2_t v1 = {l_major - c, bb};
+        const vec2_t v  = (v0.x * v0.x + v0.y * v0.y > v1.x * v1.x + v1.y * v1.y) ? v0 : v1;
+        f.right = dv_orient(vec3_normalize(vec3_add(vec3_mul1(e1, v.x), vec3_mul1(e2, v.y))), pref_s);
+        f.up    = vec3_cross(b, f.right);
+    } else if (dv_reject(&f.up, pref_u, b)) {
+        f.right = vec3_cross(f.up, b);
+    } else {
+        dv_reject(&f.right, pref_s, b);
+        f.up = vec3_cross(b, f.right);
+    }
+    if (vec3_dot(f.up, pref_u) < 0.0f) {
+        // Upright takes priority over the sign of right: half a turn about the view direction
+        f.up    = vec3_mul1(f.up,    -1.0f);
+        f.right = vec3_mul1(f.right, -1.0f);
+    }
+    return f;
+}
+
+float camera_fit_distance(const float* x, const float* y, const float* z, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y) {
+    const vec3_t s = quat_mul_vec3(orientation, DV_X);
+    const vec3_t u = quat_mul_vec3(orientation, DV_Y);
+    const vec3_t b = quat_mul_vec3(orientation, DV_Z);
+    const float tan_half_fov = tanf(fov_y * 0.5f) * DV_FILL;
+    float dist = DV_MIN_DISTANCE;
+    for (size_t i = 0; i < count; ++i) {
+        const vec3_t p = vec3_sub(dv_load(x, y, z, indices, i), look_at);
+        const float lateral = MAX(fabsf(vec3_dot(p, s)), fabsf(vec3_dot(p, u))) + DV_ATOM_RADIUS;
+        dist = MAX(dist, vec3_dot(p, b) + lateral / tan_half_fov);
+    }
+    return dist;
+}
+
+ViewTransform camera_compute_default_view(const float* x, const float* y, const float* z, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y) {
+    ViewTransform result = {};
+    if (!indices) count = num_atoms;
+    if (!count) return result;
+
+    // Shape: covariance and principal axes about the mean, extents along them
+    vec3_t mean = {0, 0, 0};
+    for (size_t i = 0; i < count; ++i) mean = vec3_add(mean, dv_load(x, y, z, indices, i));
+    mean = vec3_div1(mean, (float)count);
+    const mat3_t C   = mat3_covariance_matrix(x, y, z, nullptr, indices, count, mean);
+    const mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(mat3_eigen(C).vectors));
+    const mat3_t basis = mat3_transpose(PCA); // Axis i is column i of basis (row i of PCA)
+
+    vec3_t pmin = vec3_set1( FLT_MAX);
+    vec3_t pmax = vec3_set1(-FLT_MAX);
+    for (size_t i = 0; i < count; ++i) {
+        const vec3_t q = mat3_mul_vec3(PCA, dv_load(x, y, z, indices, i));
+        pmin = vec3_min(pmin, q);
+        pmax = vec3_max(pmax, q);
+    }
+    // Sorted longest first; the atom radius keeps a flat or linear shape from reading as infinitely anisotropic
+    int l[3] = {0, 1, 2};
+    float e[3];
+    for (int k = 0; k < 3; ++k) e[k] = (pmax.elem[k] - pmin.elem[k]) + 2.0f * DV_ATOM_RADIUS;
+    for (int pass = 0; pass < 2; ++pass)
+        for (int k = 0; k < 2; ++k)
+            if (e[l[k]] < e[l[k + 1]]) { int t = l[k]; l[k] = l[k + 1]; l[k + 1] = t; }
+    const vec3_t axis[3] = {basis.col[l[0]], basis.col[l[1]], basis.col[l[2]]};
+    const float  ext[3]  = {e[l[0]], e[l[1]], e[l[2]]};
+
+    vec3_t pref_b, pref_s, pref_u;
+    dv_world_camera(&pref_b, &pref_s, &pref_u);
+
+    DvFrame f = {DV_X, DV_Y, DV_Z, true};
+    const bool whole = (indices == nullptr) || count == num_atoms;
+    const bool slab  = ext[2] <= ext[1] * DV_SLAB_FLATNESS && ext[1] >= DV_SLAB_MIN_SIZE;
+
+    if (cell_A && dv_fills_cell(x, y, z, num_atoms, *cell_A)) {
+        // The world frame means something: Z up
+        if (!whole) f.face = dv_face_about_up(DV_Z, &C);
+    } else if (slab) {
+        // Membrane or surface: its normal is up, seen from the side
+        vec3_t up = axis[2];
+        const vec3_t world[3] = {DV_X, DV_Y, DV_Z};
+        for (int k = 0; k < 3; ++k) {
+            if (fabsf(vec3_dot(up, world[k])) >= DV_SNAP_COS) up = world[k];
+        }
+        f.up   = dv_orient(up, DV_Z);
+        f.face = dv_face_about_up(f.up, &C);
+    } else if (count <= DV_SEARCH_MAX_ATOMS) {
+        // Small molecule: the view that shows the most of it
+        vec3_t* p = (vec3_t*)malloc(sizeof(vec3_t) * count);
+        for (size_t i = 0; i < count; ++i) p[i] = vec3_sub(dv_load(x, y, z, indices, i), mean);
+        const vec3_t b = dv_best_direction(p, count, axis);
+        f = dv_frame_about_face(b, p, count);
+        free(p);
+    } else if (ext[0] > ext[2] * DV_ANISOTROPY) {
+        // Large molecule: by its shape
+        f.face  = dv_orient(axis[2], pref_b);
+        f.right = dv_orient(axis[0], pref_s);
+        f.up    = vec3_cross(f.face, f.right);
+        if (vec3_dot(f.up, pref_u) < 0.0f) {
+            f.up    = vec3_mul1(f.up,    -1.0f);
+            f.right = vec3_mul1(f.right, -1.0f);
+        }
+    }
+    // else: a large, round molecule shows the same from any side - the world view
+
+    if (f.swing) {
+        // Complete the frame from face and up (right handed: face = right x up)
+        f.right = vec3_normalize(vec3_cross(f.up, f.face));
+        f.up    = vec3_cross(f.face, f.right);
+    }
+
+    // Camera frame: b from the look-at towards the camera, s screen right, u screen up
+    const vec3_t b = dv_swing(f);
+    const vec3_t s = vec3_normalize(vec3_cross(f.up, b));
+    const vec3_t u = vec3_cross(b, s);
+
+    // Center on the middle of the extent as seen in that frame
+    vec3_t vmin = vec3_set1( FLT_MAX);
+    vec3_t vmax = vec3_set1(-FLT_MAX);
+    for (size_t i = 0; i < count; ++i) {
+        const vec3_t q = vec3_sub(dv_load(x, y, z, indices, i), mean);
+        const vec3_t v = vec3_set(vec3_dot(q, s), vec3_dot(q, u), vec3_dot(q, b));
+        vmin = vec3_min(vmin, v);
+        vmax = vec3_max(vmax, v);
+    }
+    const vec3_t mid    = vec3_mul1(vec3_add(vmin, vmax), 0.5f);
+    const vec3_t center = vec3_add(mean, vec3_add(vec3_add(vec3_mul1(s, mid.x), vec3_mul1(u, mid.y)), vec3_mul1(b, mid.z)));
+
+    const quat_t orientation = quat_from_mat4(mat4_look_at(vec3_add(center, b), center, u));
+    const float  dist = camera_fit_distance(x, y, z, indices, count, center, orientation, fov_y);
+
+    result.orientation = orientation;
+    result.position    = vec3_add(center, vec3_mul1(b, dist));
+    result.distance    = dist;
+    return result;
 }

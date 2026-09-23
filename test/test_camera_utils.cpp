@@ -179,3 +179,108 @@ UTEST(viamd_camera, interpolation_reproduces_its_endpoints) {
     const float len = sqrtf(ori.x*ori.x + ori.y*ori.y + ori.z*ori.z + ori.w*ori.w);
     EXPECT_NEAR(1.0f, len, 1.0e-4f);
 }
+
+/* Default view. These pin the behaviour rather than the numbers: what is up, what faces the viewer, and
+ * that everything fits. Synthetic systems, deterministic (a fixed LCG, not rand()). */
+
+struct DvSys {
+    float x[4096], y[4096], z[4096];
+    size_t n = 0;
+    void add(vec3_t p) { x[n] = p.x; y[n] = p.y; z[n] = p.z; ++n; }
+};
+
+static float dv_rand(uint32_t* s) { *s = *s * 1664525u + 1013904223u; return (float)(*s >> 8) / 16777216.0f; }
+
+static vec3_t dv_view_dir(const ViewTransform& v) { return quat_mul_vec3(v.orientation, vec3_set(0, 0, 1)); }
+static vec3_t dv_view_up (const ViewTransform& v) { return quat_mul_vec3(v.orientation, vec3_set(0, 1, 0)); }
+
+static bool dv_all_in_view(const DvSys& s, const ViewTransform& v, float fov_y) {
+    const mat4_t V = camera_world_to_view_matrix(v);
+    const float t = tanf(fov_y * 0.5f);
+    for (size_t i = 0; i < s.n; ++i) {
+        const vec4_t p = mat4_mul_vec4(V, vec4_set(s.x[i], s.y[i], s.z[i], 1.0f));
+        if (p.z >= 0.0f) return false;
+        if (fabsf(p.x) > t * -p.z || fabsf(p.y) > t * -p.z) return false;
+    }
+    return true;
+}
+
+UTEST(viamd_camera, default_view_of_a_filled_box_is_the_world_view) {
+    static DvSys s; s.n = 0;
+    uint32_t seed = 1;
+    for (int i = 0; i < 4000; ++i) s.add(vec3_set(60 * dv_rand(&seed), 60 * dv_rand(&seed), 60 * dv_rand(&seed)));
+    mat3_t A = {};
+    A.elem[0][0] = A.elem[1][1] = A.elem[2][2] = 60.0f;
+    const float fov = 0.785f;
+    const ViewTransform v = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, &A, fov);
+    const vec3_t b = dv_view_dir(v);   /* towards the camera */
+    const vec3_t u = dv_view_up(v);
+    EXPECT_GT(u.z, 0.9f);              /* Z up */
+    EXPECT_GT(b.x, 0.8f);              /* X towards the viewer... */
+    EXPECT_GT(b.y, 0.0f);              /* ...and to the left: the camera is swung towards +Y */
+    EXPECT_GT(b.z, 0.0f);              /* seen a little from above */
+    EXPECT_TRUE(dv_all_in_view(s, v, fov));
+}
+
+UTEST(viamd_camera, default_view_of_a_membrane_without_a_cell_keeps_its_normal_up) {
+    /* A bilayer-sized slab whose normal is 10 degrees off Z: snapped to Z, seen from the side */
+    static DvSys s; s.n = 0;
+    uint32_t seed = 2;
+    const float c = cosf(0.1745f), sn = sinf(0.1745f);
+    for (int i = 0; i < 4000; ++i) {
+        const float px = 80 * dv_rand(&seed), py = 80 * dv_rand(&seed) - 40, pz = 40 * dv_rand(&seed) - 20;
+        s.add(vec3_set(px, c * py - sn * pz, sn * py + c * pz));
+    }
+    const ViewTransform v = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, NULL, 0.785f);
+    EXPECT_GT(dv_view_up(v).z, 0.9f);
+    EXPECT_LT(fabsf(dv_view_dir(v).z), 0.5f);
+}
+
+UTEST(viamd_camera, default_view_of_a_planar_molecule_is_face_on) {
+    /* Benzene, in an arbitrary orientation */
+    static DvSys s; s.n = 0;
+    const vec3_t n  = vec3_normalize(vec3_set(0.3f, -0.5f, 0.8f));
+    const vec3_t e1 = vec3_normalize(vec3_cross(n, vec3_set(1, 0, 0)));
+    const vec3_t e2 = vec3_cross(n, e1);
+    for (int k = 0; k < 6; ++k) {
+        const float a = k * 1.0471976f;
+        s.add(vec3_add(vec3_mul1(e1, 1.39f * cosf(a)), vec3_mul1(e2, 1.39f * sinf(a))));
+        s.add(vec3_add(vec3_mul1(e1, 2.47f * cosf(a)), vec3_mul1(e2, 2.47f * sinf(a))));
+    }
+    const ViewTransform v = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, NULL, 0.785f);
+    EXPECT_GT(fabsf(vec3_dot(dv_view_dir(v), n)), 0.99f);
+}
+
+UTEST(viamd_camera, default_view_does_not_look_down_a_bond) {
+    /* Staggered ethane: looking down C-C hides one carbon behind the other */
+    static DvSys s; s.n = 0;
+    const vec3_t ax = vec3_normalize(vec3_set(0.6f, 0.2f, -0.7f));
+    const vec3_t e1 = vec3_normalize(vec3_cross(ax, vec3_set(0, 1, 0)));
+    const vec3_t e2 = vec3_cross(ax, e1);
+    for (int c = 0; c < 2; ++c) {
+        const float h = c ? 0.765f : -0.765f;
+        s.add(vec3_mul1(ax, h));
+        for (int k = 0; k < 3; ++k) {
+            const float a = k * 2.0943951f + (c ? 1.0471976f : 0.0f);
+            s.add(vec3_add(vec3_mul1(ax, h + (c ? 0.36f : -0.36f)), vec3_add(vec3_mul1(e1, 1.03f * cosf(a)), vec3_mul1(e2, 1.03f * sinf(a)))));
+        }
+    }
+    const ViewTransform v = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, NULL, 0.785f);
+    EXPECT_LT(fabsf(vec3_dot(dv_view_dir(v), ax)), 0.8f);
+}
+
+UTEST(viamd_camera, default_view_is_independent_of_the_structure_sign) {
+    /* The same elongated structure mirrored through its center must not flip the view upside down */
+    static DvSys s; s.n = 0;
+    static DvSys m; m.n = 0;
+    uint32_t seed = 3;
+    for (int i = 0; i < 2000; ++i) {
+        const vec3_t p = vec3_set(40 * (dv_rand(&seed) - 0.5f), 20 * (dv_rand(&seed) - 0.5f), 10 * (dv_rand(&seed) - 0.5f));
+        s.add(p);
+        m.add(vec3_mul1(p, -1.0f));
+    }
+    const ViewTransform a = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, NULL, 0.785f);
+    const ViewTransform b = camera_compute_default_view(m.x, m.y, m.z, m.n, NULL, m.n, NULL, 0.785f);
+    EXPECT_GT(vec3_dot(dv_view_up(a), dv_view_up(b)), 0.99f);
+    EXPECT_GT(vec3_dot(dv_view_dir(a), dv_view_dir(b)), 0.99f);
+}
