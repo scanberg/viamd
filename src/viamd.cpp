@@ -4517,68 +4517,43 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
 
-    size_t popcount = 0;
+    // A mask that selects nothing or everything is the whole system
+    const int32_t* indices = nullptr;
+    size_t count = state.num_atoms;
     if (mask) {
-        popcount = md_bitfield_popcount(mask);
-    }
-
-    int32_t* indices = nullptr;
-    if (0 < popcount && popcount < state.num_atoms) {
-        indices = md_temp_alloc_array(temp, int32_t, popcount);
-        size_t len = md_bitfield_iter_extract_indices(indices, popcount, md_bitfield_iter_create(mask));
-        if (len > popcount || len > state.num_atoms) {
-            MD_LOG_DEBUG("Error: Invalid number of indices");
-            len = MIN(popcount, state.num_atoms);
+        const size_t popcount = md_bitfield_popcount(mask);
+        if (0 < popcount && popcount < state.num_atoms) {
+            int32_t* idx = md_temp_alloc_array(temp, int32_t, popcount);
+            size_t len = md_bitfield_iter_extract_indices(idx, popcount, md_bitfield_iter_create(mask));
+            if (len > popcount || len > state.num_atoms) {
+                MD_LOG_DEBUG("Error: Invalid number of indices");
+                len = MIN(popcount, state.num_atoms);
+            }
+            indices = idx;
+            count   = len;
         }
     }
 
-    size_t count = popcount ? popcount : state.num_atoms;
-    vec3_t com = md_util_com_compute(state.x, state.y, state.z, nullptr, indices, count, &state.unitcell);
-
-    mat3_t PCA = mat3_ident();
-    if (count > 4) {
-        mat3_t C = mat3_covariance_matrix(state.x, state.y, state.z, nullptr, indices, count, com);
-        mat3_eigen_t eigen = mat3_eigen(C);
-        PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-    }
-
-    // Compute min and maximum extent along the PCA axes
-    vec4_t min_ext = vec4_set1( FLT_MAX);
-    vec4_t max_ext = vec4_set1(-FLT_MAX);
-    mat4_t Ri  = mat4_from_mat3(PCA);
-
-    // Transform the atom (x,y,z,radius) into the PCA frame to find the min and max extend within it
-    for (size_t i = 0; i < count; ++i) {
-        int32_t idx = indices ? indices[i] : (int32_t)i;
-        vec4_t xyz1 = { state.x[idx], state.y[idx], state.z[idx], 1.0f };
-
-        vec4_t p = mat4_mul_vec4(Ri, xyz1);
-        min_ext = vec4_min(min_ext, p);
-        max_ext = vec4_max(max_ext, p);
-    }
-
-    const float radius = 1.0f;
-    min_ext -= vec4_set1(radius);
-    max_ext += vec4_set1(radius);
-
-    mat3_t basis = mat3_transpose(PCA);
-    vec3_t half_ext = (vec3_from_vec4(max_ext) - vec3_from_vec4(min_ext)) * 0.5f;
-
+    // The world is drawn translated so that the center of the unit cell is at the origin
     mat3_t A = {};
     md_unitcell_A_extract(A.elem, &state.unitcell);
-    mat4_t unitcell_transform = mat4_translate_vec3(-mat3_mul_vec3(A, vec3_set1(0.5f)));
-    com = mat4_mul_vec3(unitcell_transform, com, 1.0f);
+    const bool   has_cell    = (md_unitcell_flags(&state.unitcell) & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) != 0;
+    const vec3_t cell_offset = -mat3_mul_vec3(A, vec3_set1(0.5f));
+    const float  fov_y       = Camera().fov_y;
 
-    ViewTransform opt_view = compute_optimal_view(com, half_ext, basis);
-
-    if (count <= 4) {
-        // Apply same as double click camera reset, but center on COM of target, also use optimal distance but keep current orientation
-        transform->distance = opt_view.distance;
-        transform->position = com + transform->orientation * vec3_set(0, 0, transform->distance);
-    } else {
-        // Copy full optimal view
-        *transform = opt_view;
+    if (indices && count <= 4) {
+        // A handful of atoms has no meaningful shape: center on them, keep the current orientation, fit the distance
+        vec3_t aabb_min = {}, aabb_max = {};
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.x, state.y, state.z, nullptr, indices, count);
+        const vec3_t center = (aabb_min + aabb_max) * 0.5f;
+        transform->distance = camera_fit_distance(state.x, state.y, state.z, indices, count, center, transform->orientation, fov_y);
+        transform->position = center + cell_offset + transform->orientation * vec3_set(0, 0, transform->distance);
+        return;
     }
+
+    // See camera_compute_default_view for what it considers a good view of what
+    *transform = camera_compute_default_view(state.x, state.y, state.z, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y);
+    transform->position = transform->position + cell_offset;
 }
 
 void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_events) {
@@ -4620,7 +4595,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     if (surf->hit.domain == PickingDomain_Atom) {
                         int32_t atom_idx = surf->hit.local_idx;
                         if (atom_idx >= 0 && (size_t)atom_idx < state->mold.sys.atom.count) {
-                            md_bitfield_set_bit(&state->selection.highlight_mask, atom_idx);
+                            // Grow the hovered atom by the current granularity so hover feedback matches what a click would select
+                            mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)atom_idx, state->selection.granularity, state->mold.sys);
                         }
                     } else if (surf->hit.domain == PickingDomain_Bond) {
                         size_t bond_idx = surf->hit.local_idx;
@@ -4653,7 +4629,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         }
 
                         if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond) {
-                            grow_mask_by_selection_granularity(&state->selection.highlight_mask, state->selection.granularity, state->mold.sys);
+                            if (surf->hit.domain == PickingDomain_Bond) {
+                                // Atom hits are already grown by granularity above
+                                grow_mask_by_selection_granularity(&state->selection.highlight_mask, state->selection.granularity, state->mold.sys);
+                            }
                             if (surf->selection_mode == InteractionSelectionMode::Append) {
                                 md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
                             }

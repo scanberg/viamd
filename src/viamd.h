@@ -1766,6 +1766,36 @@ static inline void grow_mask_by_selection_granularity(md_bitfield_t* mask, Selec
     }
 }
 
+// Sets the bits of the entity (atom, component or instance) containing atom_idx, according to granularity.
+// Cheaper than setting a single bit followed by grow_mask_by_selection_granularity, as it only looks up the owning entity.
+static inline void mask_set_atom_by_selection_granularity(md_bitfield_t* mask, size_t atom_idx, SelectionGranularity granularity, const md_system_t& sys) {
+    ASSERT(mask);
+    if (atom_idx >= sys.atom.count) return;
+
+    md_urange_t range = {(uint32_t)atom_idx, (uint32_t)atom_idx + 1};
+    switch (granularity) {
+    case SelectionGranularity::Atom:
+        break;
+    case SelectionGranularity::Component: {
+        md_component_idx_t comp_idx = md_system_component_find_by_atom_idx(&sys, atom_idx);
+        if (comp_idx >= 0) {
+            range = md_system_component_atom_range(&sys, comp_idx);
+        }
+        break;
+    }
+    case SelectionGranularity::Instance: {
+        md_instance_idx_t inst_idx = md_system_instance_find_by_atom_idx(&sys, atom_idx);
+        if (inst_idx >= 0) {
+            range = md_system_instance_atom_range(&sys, inst_idx);
+        }
+        break;
+    }
+    default:
+        ASSERT(false);
+    }
+    md_bitfield_set_range(mask, range.beg, range.end);
+}
+
 static inline void single_selection_sequence_clear(SingleSelectionSequence* seq) {
     ASSERT(seq);
     MEMSET(seq->idx, -1, sizeof(seq->idx));
