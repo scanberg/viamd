@@ -9,7 +9,6 @@
 #include <md_system.h>
 #include <md_gto.h>
 #include <core/md_grid.h>
-#include <md_trajectory.h>
 #include <md_script.h>
 #include <md_gl.h>
 
@@ -85,7 +84,6 @@ constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
 constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F1;
 
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
-constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
 
 typedef uint64_t PickingDomainID;
 typedef uint64_t PickingSourceID;
@@ -1261,6 +1259,16 @@ struct ApplicationState {
 
 		mat4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
 
+        // "run/<name>": where the loaded trajectory, and everything sampled along it, lives in
+        // sys.attributes (see RUNS in md_system.h). Empty while no trajectory is loaded. The run's
+        // frame axis is "<run>/time"; freeing the trajectory removes everything under the prefix.
+        char                run[128] = {0};
+
+        // Playback's extraction contexts, one per pool thread and indexed by the task system's thread
+        // number, so each keeps its own files open across the frames it loads. Made on first use,
+        // ended with the trajectory (free_trajectory_data), since the files they hold are its.
+        md_system_extract_t* frame_extract[64] = {};
+
         FrameCache          frame_cache;
 
         vec3_t              sys_aabb_min = {};
@@ -1613,6 +1621,7 @@ struct ApplicationState {
     } structure_export;
 
     bool show_script_window = true;
+    bool show_script_reference_window = false;
     bool show_debug_window = false;
     bool show_property_export_window = false;
 
@@ -1625,7 +1634,6 @@ struct ViamdEventHandler : viamd::EventHandler {
     explicit ViamdEventHandler(ApplicationState* s) : state(s) {
         ASSERT(state);
         viamd::event_system_register_handler(*this);
-    bool show_script_reference_window = false;
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final;
@@ -1874,7 +1882,27 @@ void interrupt_async_tasks(ApplicationState* state);
 // Dataset loading
 bool load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
 void init_system_data(ApplicationState* app);
-void init_trajectory_data(ApplicationState* app);
+// Publishes the trajectory as the loaded run and sets up everything that follows it. The trajectory
+// is files.trajectory, or the structure file itself when that holds several frames. traj_flags
+// takes MD_RUN_FLAG_DISABLE_CACHE_WRITE to leave no index beside the file.
+void init_trajectory_data(ApplicationState* app, uint32_t traj_flags = 0);
+
+// The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64) and their
+// unit, which is none when the file does not know time and the values are frame ordinals. NULL,
+// zero and empty without a trajectory.
+const md_attribute_t* run_time_axis(const ApplicationState* app);
+size_t                run_num_frames(const ApplicationState* app);
+const double*         run_frame_times(const ApplicationState* app);
+md_unit_t             run_time_unit(const ApplicationState* app);
+
+// One frame of the loaded run into out: coordinates when out has storage for them, and the cell.
+// For a single frame now and then; anything that walks many frames keeps an extraction context of
+// its own (md_system_extract_begin) so the files stay open across them.
+bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out);
+
+// "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
+// Empty when no trajectory is loaded, or when it does not fit in buf.
+str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);
 
 // Frame cache operations
 void clear_system_frame_cache(ApplicationState* app);
@@ -2373,9 +2401,7 @@ static inline vec2_t world_to_surface_project(
 
 void point_set_region_mask_compute(
     md_bitfield_t* mask,
-    const float x[],
-    const float y[],
-    const float z[],
+    const vec3_t xyz[],
     size_t count,
     const md_bitfield_t* candidate_mask,
     const mat4_t& world_to_clip,

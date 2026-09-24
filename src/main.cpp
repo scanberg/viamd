@@ -16,7 +16,6 @@
 #include <md_filter.h>
 #include <md_script.h>
 #include <md_system.h>
-#include <md_trajectory.h>
 #include <md_xvg.h>
 #include <md_csv.h>
 #include <md_lammps.h>
@@ -400,14 +399,14 @@ static void update_timeline_time_unit(ApplicationState* state) {
     state->timeline.units_version = display_units::version();
 
     const double prev_scl = state->timeline.time_scale;
-    const double time_scl = display_units::factor(&state->timeline.time_unit, md_trajectory_time_unit(state->mold.sys.trajectory));
+    const double time_scl = display_units::factor(&state->timeline.time_unit, run_time_unit(state));
     state->timeline.time_scale = time_scl;
 
     if (time_scl == prev_scl) {
         return;
     }
 
-    const double* frame_times = md_trajectory_frame_times(state->mold.sys.trajectory);
+    const double* frame_times = run_frame_times(state);
     const size_t  num_frames  = md_array_size(state->timeline.x_values);
     if (frame_times) {
         for (size_t i = 0; i < num_frames; ++i) {
@@ -652,7 +651,7 @@ int main(int argc, char** argv) {
         ImGui::CreateDockspace();
 #endif
 
-        const size_t num_frames  = md_trajectory_num_frames(state.mold.sys.trajectory);
+        const size_t num_frames  = run_num_frames(&state);
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
         const double   max_frame = (double)last_frame;
 
@@ -733,7 +732,7 @@ int main(int argc, char** argv) {
                     candidate_mask = &state.selection.selection_mask;
                 }
                 point_set_region_mask_compute(&state.selection.highlight_mask,
-                    state.mold.state.x, state.mold.state.y, state.mold.state.z, state.mold.state.num_atoms,
+                    state.mold.state.xyz, state.mold.state.num_atoms,
                     candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
 
                 grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
@@ -901,7 +900,7 @@ int main(int argc, char** argv) {
 
         if (state.mold.interpolate_system_state) {
 			state.mold.interpolate_system_state = false;
-            if (state.mold.sys.trajectory) {
+            if (run_num_frames(&state) > 0) {
                 PUSH_CPU_SECTION("Interpolate System State")
                 interpolate_system_state(&state);
                 POP_CPU_SECTION()
@@ -1089,7 +1088,7 @@ int main(int argc, char** argv) {
                         if (md_script_ir_property_count(state.script.eval_ir) > 0) {
                             state.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&state](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
                                 (void)thread_num;
-                                md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, frame_beg, frame_end);
+                                md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, str_from_cstr(state.mold.run), frame_beg, frame_end);
                             });
                             
 #if MEASURE_EVALUATION_TIME
@@ -1118,13 +1117,13 @@ int main(int argc, char** argv) {
                         md_script_eval_clear_data(state.script.filt_eval);
 
                         if (md_script_ir_property_count(state.script.eval_ir) > 0) {
-                            const uint32_t traj_frames = (uint32_t)md_trajectory_num_frames(state.mold.sys.trajectory);
+                            const uint32_t traj_frames = (uint32_t)run_num_frames(&state);
                             const uint32_t beg_frame = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, traj_frames-1);
                             const uint32_t end_frame = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
                             if (beg_frame != end_frame) {
                                 state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                     (void)thread_num;
-                                    md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, offset + beg, offset + end);
+                                    md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, str_from_cstr(state.mold.run), offset + beg, offset + end);
                                 });
                                 task_system::enqueue_task(state.tasks.evaluate_filt);
                             }
@@ -1195,7 +1194,8 @@ int main(int argc, char** argv) {
             POP_CPU_SECTION();
         }
 
-        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
+        // F1 in the script editor looks up the word under the cursor instead (see draw_script_editor_window)
+        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT) && !state.editor.IsFocused()) {
 			ViewFitRequest fit_request = {
 				.app = state,
 				.surface_id = interaction_surface_main,
@@ -2193,10 +2193,7 @@ static void draw_main_menu(ApplicationState* data) {
                 task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)data->mold.state.num_atoms, [T, data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     size_t count = range_end - range_beg;
-                    float* x = data->mold.state.x + range_beg;
-                    float* y = data->mold.state.y + range_beg;
-                    float* z = data->mold.state.z + range_beg;
-                    mat4_batch_transform_inplace(x, y, z, 1.0f, count, T);
+                    mat4_batch_transform_inplace(data->mold.state.xyz + range_beg, 1.0f, count, T);
                 }, grain_size);
                 task_system::enqueue_task(apply_transform_task);
                 task_system::task_wait_for(apply_transform_task);
@@ -2217,31 +2214,27 @@ static void draw_main_menu(ApplicationState* data) {
                 if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
                     const auto& mol = data->mold.sys;
 
-                    float* x = NULL;
-					float* y = NULL;
-					float* z = NULL;
+                    vec3_t* xyz = NULL;
 
-                    if (data->mold.sys.trajectory) {
+                    if (run_num_frames(data) > 0) {
                         // Closest frame to the current animation time
                         uint32_t frame_idx = (uint32_t)(data->animation.frame + 0.5);
                         md_temp_scope_t temp_pos = md_temp_begin_in(frame_alloc);
                         defer { md_temp_end(temp_pos); };
 
-                        x = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                        y = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                        z = (float*)md_vm_arena_push(frame_alloc, mol.atom.count * sizeof(float));
-                        md_system_state_t frame_state = { mol.atom.count, x, y, z, {} };
-                        if (!md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &frame_state)) {
+                        xyz = (vec3_t*)md_vm_arena_push(frame_alloc, ALIGN_TO(mol.atom.count, 16) * sizeof(vec3_t));
+                        md_system_state_t frame_state = {};
+                        frame_state.num_atoms = mol.atom.count;
+                        frame_state.xyz = xyz;
+                        if (!extract_frame(data, frame_idx, &frame_state)) {
                             MD_LOG_ERROR("Failed to extract frame data");
                         } 
                     } else {
 						// No trajectory, use current positions
-						x = data->mold.state.x;
-						y = data->mold.state.y;
-						z = data->mold.state.z;
+						xyz = data->mold.state.xyz;
                     }
 
-                    if (x && y && z) {
+                    if (xyz) {
                         MD_LOG_DEBUG("RECALCULATING BONDS");
                         md_util_infer_covalent_bonds(&data->mold.sys.bond, &data->mold.state, &data->mold.sys, data->mold.sys.alloc);
                         md_bond_build_connectivity(&data->mold.sys.bond, data->mold.sys.atom.count, data->mold.sys.alloc);
@@ -3278,7 +3271,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
 static void draw_animation_window(ApplicationState* data) {
     ASSERT(data);
-    size_t num_frames = md_trajectory_num_frames(data->mold.sys.trajectory);
+    size_t num_frames = run_num_frames(data);
     if (num_frames == 0) return;
 
     ASSERT(data->timeline.x_values);
@@ -5802,7 +5795,7 @@ static void draw_script_editor_window(ApplicationState* state) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().ItemSpacing.y);
 
-        const bool valid = md_script_ir_valid(state->script.ir) && md_trajectory_num_frames(state->mold.sys.trajectory) > 0;  
+        const bool valid = md_script_ir_valid(state->script.ir) && run_num_frames(state) > 0;  
         if (!valid) ImGui::PushDisabled();
         if (ImGui::Button(btn_text, btn_size)) {
             eval = true;
@@ -5961,7 +5954,7 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
 
     const md_system_t& sys = data.mold.sys;
     md_system_state_t state = { .alloc = temp.arena };
-    if (!md_trajectory_load_frame(data.mold.sys.trajectory, 0, &state)) {
+    if (!extract_frame(&data, 0, &state)) {
         return false;
     }
 
@@ -6189,8 +6182,8 @@ static void draw_property_export_window(ApplicationState* data) {
                     if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                         str_t out_str = {};
                         if (dp.type == DisplayProperty::Type_Temporal) {
-                            const double* traj_times = md_trajectory_frame_times(data->mold.sys.trajectory);
-                            const size_t  num_frames = md_trajectory_num_frames(data->mold.sys.trajectory);
+                            const double* traj_times = run_frame_times(data);
+                            const size_t  num_frames = run_num_frames(data);
                             // Exported in the units the plot shows, so a column and its axis label agree.
                             const double time_scl  = data->timeline.time_scale;
                             const double value_scl = dp.unit_scale[1];
@@ -6299,7 +6292,7 @@ static void xyz_write_frame(md_file_t file, const int* atomic_nr, const md_syste
     md_file_printf(file, "XYZ format exported from VIAMD\n");
     for (size_t i = 0; i < num_atoms; ++i) {
         int idx = atom_indices ? atom_indices[i] : (int)i;
-        md_file_printf(file, "%-2d %12.6f %12.6f %12.6f\n", atomic_nr[idx], state->x[idx], state->y[idx], state->z[idx]);
+        md_file_printf(file, "%-2d %12.6f %12.6f %12.6f\n", atomic_nr[idx], state->xyz[idx].x, state->xyz[idx].y, state->xyz[idx].z);
     }
 }
 
@@ -6312,7 +6305,7 @@ void draw_structure_export_window(ApplicationState* data) {
 
         const md_system_t* sys = &data->mold.sys;
         const md_system_state_t* state = &data->mold.state;
-        const md_trajectory_i* traj = data->mold.sys.trajectory;
+        const bool traj = run_num_frames(data) > 0;
         auto& struct_exp = data->structure_export;
 
         static const char* atom_mask_options[] = {
@@ -6437,7 +6430,7 @@ void draw_structure_export_window(ApplicationState* data) {
             if (traj) {
                 switch (struct_exp.selected_traj_filter) {
                 case 0: { // All Frames
-                    size_t num_frames = md_trajectory_num_frames(traj);
+                    size_t num_frames = run_num_frames(data);
                     for (size_t i = 0; i < num_frames; ++i) {
                         md_array_push(frame_indices, (int32_t)i, frame_alloc);
                     }
@@ -6480,7 +6473,7 @@ void draw_structure_export_window(ApplicationState* data) {
                                 // frame, which is delivered on the state.
                                 md_system_state_t frame_state = {};
                                 int first_frame = md_array_size(frame_indices) > 0 ? frame_indices[0] : 0;
-                                if (md_trajectory_load_frame(traj, first_frame, &frame_state)) {
+                                if (extract_frame(data, first_frame, &frame_state)) {
                                     if (frame_state.unitcell.flags != 0) {
                                         double a, b, c, alpha, beta, gamma;
                                         md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &frame_state.unitcell);
@@ -6511,10 +6504,15 @@ void draw_structure_export_window(ApplicationState* data) {
                     if (num_frames > 0) {
 						md_system_state_t frame_state = { .alloc = frame_alloc };
                         md_system_state_init(&frame_state, sys->atom.count);
-                        
+
+                        // Many frames: one context for all of them, so the run's files stay open.
+                        const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+                        md_system_extract_t* ex = md_system_extract_begin(sys, str_from_cstr(data->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
+                        defer { md_system_extract_end(ex); };
+
                         for (size_t f = 0; f < num_frames; ++f) {
                             int frame_idx = frame_indices[f];
-                            if (!md_trajectory_load_frame(traj, frame_idx, &frame_state)) {
+                            if (!ex || !md_system_extract_frame(ex, frame_idx, &frame_state)) {
                                 VIAMD_LOG_ERROR("Failed to load frame %d from trajectory for structure export.", frame_idx);
                                 continue;
                             }
@@ -6561,12 +6559,12 @@ static void update_md_buffers(ApplicationState* data) {
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
         vec3_t pbc_ext = { 0 };
         md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
-        md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)state.num_atoms, state.x, state.y, state.z, 0);
+        md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)state.num_atoms, state.xyz);
         if (!(data->mold.dirty_gpu_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
         }
 #if EXPERIMENTAL_GFX_API
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, (uint32_t)state.num_atoms, state.x, state.y, state.z, 0);
+        md_gfx_structure_set_atom_position(data->mold.gfx_structure, state.xyz, (uint32_t)state.num_atoms, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &data->mold.sys_aabb_min, &data->mold.sys_aabb_max);
 #endif
     }

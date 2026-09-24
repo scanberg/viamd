@@ -11,11 +11,13 @@
 #include <md_mmcif.h>
 #include <md_lammps.h>
 #include <md_dcd.h>
-#include <md_trajectory.h>
 #include <md_util.h>
 
 #include <md_molden.h>
 #include <md_itp.h>
+#include <md_edr.h>
+#include <md_xvg.h>
+#include <md_csv.h>
 
 #if MD_VLX
 #include <md_vlx.h>
@@ -49,6 +51,9 @@ static const str_t loader_name[LoaderType_COUNT] = {
 #endif
         STR_LIT("Gromacs Topology (itp/top)"),
         STR_LIT("Gromacs Run Input (tpr)"),
+        STR_LIT("Gromacs Energy (edr)"),
+        STR_LIT("xmgrace columns (xvg)"),
+        STR_LIT("Comma separated values (csv)"),
 };
 
 static const str_t loader_ext[LoaderType_COUNT] = {
@@ -73,6 +78,9 @@ static const str_t loader_ext[LoaderType_COUNT] = {
 #endif
         STR_LIT("itp"),
         STR_LIT("tpr"),
+        STR_LIT("edr"),
+        STR_LIT("xvg"),
+        STR_LIT("csv"),
 };
 
 static const LoaderFlags loader_flags[LoaderType_COUNT] = {
@@ -97,6 +105,9 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
 #endif
         LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS topology
         LoaderFlag_System | LoaderFlag_MM | LoaderFlag_Topology,    // GROMACS run input
+        LoaderFlag_Supplemental | LoaderFlag_Temporal | LoaderFlag_MM, // GROMACS energy
+        LoaderFlag_Supplemental | LoaderFlag_Temporal,                 // XVG
+        LoaderFlag_Supplemental | LoaderFlag_Temporal,                 // CSV
 };
 
 void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
@@ -157,11 +168,6 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
     ASSERT(out_sys);
     ASSERT(out_state);
 
-    md_trajectory_flags_t traj_flags = MD_TRAJECTORY_FLAG_NONE;
-    if (state.flags & LoaderFlag_DisableCacheWrite) {
-        traj_flags |= MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE;
-    }
-
     switch (state.type) {
         case LoaderType_PDB: {
             md_pdb_options_t options = MD_PDB_OPTION_NONE;
@@ -190,13 +196,12 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
             return md_lammps_system_init_from_file(out_sys, out_state, filepath, format);
         }
         case LoaderType_LAMMPSTRJ:
-            return md_lammps_trajectory_attach_from_file(out_sys, filepath, traj_flags);
         case LoaderType_XTC:
-            return md_xtc_attach_from_file(out_sys, filepath, traj_flags);
         case LoaderType_TRR:
-            return md_trr_attach_from_file(out_sys, filepath, traj_flags);
         case LoaderType_DCD:
-            return md_dcd_attach_from_file(out_sys, filepath, traj_flags);
+            // A trajectory is not loaded into the system: it is published as a run (publish_run).
+            MD_LOG_ERROR("'" STR_FMT "' is a trajectory; it is opened with publish_run, not loaded", STR_ARG(filepath));
+            return false;
 #if MD_VLX
         case LoaderType_VLX_H5:
             return md_vlx_system_init_from_file(out_sys, out_state, filepath);
@@ -212,7 +217,7 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
     }
 }
 
-bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& state) {
+bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& state, str_t run) {
     ASSERT(out_sys);
 
     switch (state.type) {
@@ -222,6 +227,12 @@ bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& 
 #endif
         case LoaderType_ITP:
             return md_itp_system_supplement_from_file(out_sys, filepath);
+        case LoaderType_EDR:
+            return md_edr_system_supplement_from_file(out_sys, filepath, run);
+        case LoaderType_XVG:
+            return md_xvg_system_supplement_from_file(out_sys, filepath, run);
+        case LoaderType_CSV:
+            return md_csv_system_supplement_from_file(out_sys, filepath, run);
         default:
             return false;
     }
@@ -246,6 +257,24 @@ LoaderFlags type_flags(LoaderType type) {
         return loader_flags[type];
     }
     return loader_flags[LoaderType_Undefined];
+}
+
+bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags) {
+    str_t ext = {0};
+    if (!extract_ext(&ext, filepath)) {
+        return false;
+    }
+    switch (type_from_ext(ext)) {
+    case LoaderType_XTC:       return md_xtc_system_publish_run(sys, filepath, run, flags);
+    case LoaderType_TRR:       return md_trr_system_publish_run(sys, filepath, run, flags);
+    case LoaderType_DCD:       return md_dcd_system_publish_run(sys, filepath, run, flags);
+    case LoaderType_PDB:       return md_pdb_system_publish_run(sys, filepath, run, flags);
+    case LoaderType_XYZ:
+    case LoaderType_XMOL:
+    case LoaderType_ARC:       return md_xyz_system_publish_run(sys, filepath, run, flags);
+    case LoaderType_LAMMPSTRJ: return md_lammps_system_publish_run(sys, filepath, run, flags);
+    default:                   return false;
+    }
 }
 
 LoaderType type_from_ext(str_t ext) {

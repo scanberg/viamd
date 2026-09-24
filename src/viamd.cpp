@@ -22,15 +22,6 @@
 #include <implot.h>
 #include <implot_internal.h>
 
-static const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
-    for (size_t i = 0; i < len; ++i) {
-        if (str_eq(arr[i], str)) {
-            return &arr[i];
-        }
-    }
-    return NULL;
-}
-
 void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
     ASSERT(vol);
     MEMCPY(vol->dim, grid.dim, sizeof(vol->dim));
@@ -283,17 +274,13 @@ static inline void init_frame_cache(FrameCache* cache, size_t num_atoms, md_allo
     clear_frame_cache(cache);
     size_t capacity = ALIGN_TO(num_atoms, 16);
     for (size_t i = 0; i < FRAME_CACHE_SIZE; ++i) {
-        md_array_resize(cache->states[i].x, capacity, alloc);
-        md_array_resize(cache->states[i].y, capacity, alloc);
-        md_array_resize(cache->states[i].z, capacity, alloc);
+        md_array_resize(cache->states[i].xyz, capacity, alloc);
     }
 }
 
 static inline void free_frame_cache(FrameCache* cache, md_allocator_i* alloc) {
     for (size_t i = 0; i < FRAME_CACHE_SIZE; ++i) {
-        md_array_free(cache->states[i].x, alloc);
-        md_array_free(cache->states[i].y, alloc);
-        md_array_free(cache->states[i].z, alloc);
+        md_array_free(cache->states[i].xyz, alloc);
     }
     clear_frame_cache(cache);
 }
@@ -442,13 +429,94 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
 }
 
 // #trajectorydata
+
+str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf) {
+    ASSERT(buf && cap > 0);
+    buf[0] = '\0';
+    if (app->mold.run[0] == '\0') {
+        return {};
+    }
+    const int len = snprintf(buf, cap, "%s/" STR_FMT, app->mold.run, STR_ARG(leaf));
+    if (len <= 0 || (size_t)len >= cap) {
+        buf[0] = '\0';
+        return {};
+    }
+    return {buf, (size_t)len};
+}
+
+const md_attribute_t* run_time_axis(const ApplicationState* app) {
+    ASSERT(app);
+    char buf[256];
+    const str_t path = run_attribute_path(buf, sizeof(buf), app, STR_LIT("time"));
+    if (str_empty(path)) return nullptr;
+    const md_attribute_t* axis = md_attributes_find(&app->mold.sys.attributes, path);
+    return (axis && axis->format.type == MD_ATTRIBUTE_TYPE_F64 && axis->data) ? axis : nullptr;
+}
+
+size_t run_num_frames(const ApplicationState* app) {
+    const md_attribute_t* axis = run_time_axis(app);
+    return axis ? axis->format.shape[0] : 0;
+}
+
+const double* run_frame_times(const ApplicationState* app) {
+    const md_attribute_t* axis = run_time_axis(app);
+    return axis ? (const double*)axis->data : nullptr;
+}
+
+md_unit_t run_time_unit(const ApplicationState* app) {
+    const md_attribute_t* axis = run_time_axis(app);
+    return axis ? axis->unit : md_unit_none();
+}
+
+static const str_t frame_extract_paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+
+bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out) {
+    ASSERT(app && out);
+    md_system_extract_t* ex = md_system_extract_begin(&app->mold.sys, str_from_cstr(app->mold.run),
+        frame_extract_paths, ARRAY_SIZE(frame_extract_paths), md_get_heap_allocator());
+    if (!ex) {
+        return false;
+    }
+    const bool ok = md_system_extract_frame(ex, frame, out);
+    md_system_extract_end(ex);
+    return ok;
+}
+
+static void end_frame_extracts(ApplicationState* app) {
+    for (size_t i = 0; i < ARRAY_SIZE(app->mold.frame_extract); ++i) {
+        md_system_extract_end(app->mold.frame_extract[i]);
+        app->mold.frame_extract[i] = nullptr;
+    }
+}
+
+// "run/<stem>" for a trajectory file. The stem is folded to letters, digits, '_' and '-' so that it
+// is one path segment whatever the file is called, and it is taken from the file name alone so the
+// same file gives the same run - and the same attribute ids - every time it is loaded.
+static void run_path_from_file(char* buf, size_t cap, str_t path) {
+    str_t file = path;
+    extract_file(&file, path);
+    size_t dot;
+    if (str_rfind_char(&dot, file, '.') && dot > 0) {
+        file = str_substr(file, 0, dot);
+    }
+    size_t len = (size_t)snprintf(buf, cap, "run/");
+    for (size_t i = 0; i < file.len && len + 1 < cap; ++i) {
+        const char c = file.ptr[i];
+        const bool keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        buf[len++] = keep ? c : '_';
+    }
+    if (len == 4) {
+        len += (size_t)snprintf(buf + len, cap - len, "trajectory");
+    }
+    buf[MIN(len, cap - 1)] = '\0';
+}
+
 void free_trajectory_data(ApplicationState* state) {
     ASSERT(state);
 
-    if (state->mold.sys.trajectory) {
-        md_trajectory_free(state->mold.sys.trajectory);
-        state->mold.sys.trajectory = nullptr;
-    }
+    // Before anything they read goes: the contexts hold the run's files open.
+    end_frame_extracts(state);
+
     state->files.trajectory[0] = '\0';
 
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
@@ -471,30 +539,52 @@ void free_trajectory_data(ApplicationState* state) {
     // The denoised render copy is still an ordinary array owned here.
     md_array_free(state->trajectory_data.secondary_structure_render.data,    state->allocator.persistent);
 
+    // The views above are dropped first; now the storage they pointed at goes with the run - its
+    // frame axis, the quantities derived per frame, and whatever was loaded against it.
+    if (state->mold.run[0]) {
+        md_attributes_remove_prefix(&state->mold.sys.attributes, str_from_cstr(state->mold.run));
+        state->mold.run[0] = '\0';
+    }
+
     free_frame_cache(&state->mold.frame_cache, state->allocator.persistent);
 }
 
-void init_trajectory_data(ApplicationState* data) {
-    size_t num_frames = md_trajectory_num_frames(data->mold.sys.trajectory);
+void init_trajectory_data(ApplicationState* data, uint32_t traj_flags) {
+    // The trajectory is a RUN in the attribute table: "<run>/time" is its frame axis, and everything
+    // sampled along it lives below the same prefix - the positions streamed from the file, the per
+    // frame backbone data below, an energy file loaded later - so that freeing the trajectory is
+    // removing the prefix. A trajectory that came inside the structure file (a multi model PDB) is
+    // named after that; a structure of one frame publishes nothing and has no run.
+    {
+        const char* traj_file = data->files.trajectory[0] ? data->files.trajectory : data->files.molecule;
+        run_path_from_file(data->mold.run, sizeof(data->mold.run), str_from_cstr(traj_file));
+        const str_t run = str_from_cstr(data->mold.run);
+        if (!loader::publish_run(&data->mold.sys, str_from_cstr(traj_file), run, traj_flags)) {
+            md_attributes_remove_prefix(&data->mold.sys.attributes, run);
+            data->mold.run[0] = '\0';
+        }
+    }
+
+    size_t num_frames = run_num_frames(data);
     if (num_frames > 0) {
         size_t min_frame = 0;
         size_t max_frame = num_frames - 1;
-        md_trajectory_header_t header = {};
-        md_trajectory_get_header(data->mold.sys.trajectory, &header);
+        const double* frame_times = run_frame_times(data);
+        char path_buf[256];
 
         init_frame_cache(&data->mold.frame_cache, data->mold.sys.atom.count, data->allocator.persistent);
 
-        ASSERT(header.frame_times);
+        ASSERT(frame_times);
 
         // The timeline carries time in the unit the user asked to see it in. Everything downstream
         // reads x_values and view_range, so this is the one place the conversion happens; a later
         // change to the preference is picked up by update_timeline_time_unit in main.cpp.
-        const double time_scl = display_units::factor(&data->timeline.time_unit, md_trajectory_time_unit(data->mold.sys.trajectory));
+        const double time_scl = display_units::factor(&data->timeline.time_unit, run_time_unit(data));
         data->timeline.time_scale    = time_scl;
         data->timeline.units_version = display_units::version();
 
-        double min_time = header.frame_times[0] * time_scl;
-        double max_time = header.frame_times[num_frames - 1] * time_scl;
+        double min_time = frame_times[0] * time_scl;
+        double max_time = frame_times[num_frames - 1] * time_scl;
 
         data->timeline.view_range = {min_time, max_time};
         data->timeline.filter.beg_frame = (double)min_frame;
@@ -502,61 +592,13 @@ void init_trajectory_data(ApplicationState* data) {
 
         md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
         for (size_t i = 0; i < num_frames; ++i) {
-            data->timeline.x_values[i] = (float)(header.frame_times[i] * time_scl);
-        }
-
-        // The COORDINATE for the frame axis, published as an ordinary attribute rather than as
-        // axis metadata on every temporal quantity. This is the ANCHORING idea applied to an index
-        // axis: a dipole publishes its origin as a sibling, and a quantity indexed by frame gets
-        // its frame times the same way - one attribute serving every temporal attribute in the
-        // table, since they all share that axis.
-        //
-        // It also retires a convention. md_trajectory_header_t documents that an EMPTY time_unit
-        // means the format could not tell us real time and the values are ordinals standing in for
-        // it. Here that is structural: the unit is on the attribute, and a reader that cannot
-        // express time simply publishes none.
-        {
-            data->mold.sys.attributes.num_frames = (uint32_t)num_frames;
-
-            const md_attribute_desc_t time_desc = {
-                .path   = STR_LIT("frame/time"),
-                .format = {
-                    .type = MD_ATTRIBUTE_TYPE_F64, .components = 1,
-                    .rank = 1, .shape = { (uint32_t)num_frames },
-                },
-                // Temporal AND resident: the frame axis is its only axis, and a whole extract is a
-                // copy of a few hundred kilobytes, which is exactly what a plot of the time axis
-                // wants. That is why the whole-extract rule is about cost rather than the axis.
-                .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
-                .unit   = header.time_unit,
-                .label  = STR_LIT("Time"),
-                .data   = header.frame_times,
-                .byte_size = num_frames * sizeof(double),
-            };
-            md_attributes_replace(&data->mold.sys.attributes, &time_desc);
-
-            if (header.frame_steps) {
-                const md_attribute_desc_t step_desc = {
-                    .path   = STR_LIT("frame/step"),
-                    .format = {
-                        .type = MD_ATTRIBUTE_TYPE_I64, .components = 1,
-                        .rank = 1, .shape = { (uint32_t)num_frames },
-                    },
-                    .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
-                    .unit   = md_unit_none(),
-                    .label  = STR_LIT("Step"),
-                    .description = STR_LIT("The file's own notion of where a frame sits in the run, not the frame ordinal"),
-                    .data   = header.frame_steps,
-                    .byte_size = num_frames * sizeof(int64_t),
-                };
-                md_attributes_replace(&data->mold.sys.attributes, &step_desc);
-            }
+            data->timeline.x_values[i] = (float)(frame_times[i] * time_scl);
         }
 
         data->animation.frame = CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
 
-        md_trajectory_load_frame(data->mold.sys.trajectory, frame_idx, &data->mold.state);
+        extract_frame(data, frame_idx, &data->mold.state);
 
         if (data->mold.sys.protein_backbone.segment.count > 0) {
             // The angles and the per frame secondary structure are TEMPORAL attributes: the table
@@ -574,16 +616,15 @@ void init_trajectory_data(ApplicationState* data) {
             const size_t num_segments = data->mold.sys.protein_backbone.segment.count;
             md_attributes_t* attributes = &data->mold.sys.attributes;
 
-            // What the TEMPORAL tag is checked against. Set before anything temporal is published,
-            // so a declaration whose outermost extent disagrees is refused at the point the mistake
-            // is made rather than surviving until something reads past the end of it.
-            attributes->num_frames = (uint32_t)num_frames;
+            // Both are checked against "<run>/time", published above, so a declaration whose
+            // outermost extent disagrees is refused at the point the mistake is made rather than
+            // surviving until something reads past the end of it.
 
             // md_secondary_structure_t is a 4 byte enum, so I32 is the storage and the PATH is what
             // tells a consumer these are labels rather than numbers to average - which is the rule
             // md_system.h already states for integral attributes.
             const md_attribute_desc_t ss_desc = {
-                .path   = STR_LIT("backbone/secondary_structure"),
+                .path   = run_attribute_path(path_buf, sizeof(path_buf), data, STR_LIT("backbone/secondary_structure")),
                 .format = {
                     .type = MD_ATTRIBUTE_TYPE_I32, .components = 1,
                     .rank = 2, .shape = { (uint32_t)num_frames, (uint32_t)num_segments },
@@ -603,7 +644,7 @@ void init_trajectory_data(ApplicationState* data) {
                 .rank = 2, .shape = { (uint32_t)num_frames, (uint32_t)num_segments },
             };
             const md_attribute_desc_t angle_desc = {
-                .path   = STR_LIT("backbone/angle"),
+                .path   = run_attribute_path(path_buf, sizeof(path_buf), data, STR_LIT("backbone/angle")),
                 .format = angle_format,
                 .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
                 .unit   = md_unit_radian(),
@@ -630,37 +671,31 @@ void init_trajectory_data(ApplicationState* data) {
 
             data->tasks.backbone_computations = task_system::create_pool_task(STR_LIT("Backbone Operations"), (uint32_t)num_frames, [data](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
-                // Create copy here of molecule since we use the full structure as input
-                md_system_t sys = data->mold.sys;
-                md_trajectory_i* traj = data->mold.sys.trajectory;
+                const md_system_t* sys = &data->mold.sys;
 
                 md_temp_scope_t temp = md_temp_begin();
                 defer { md_temp_end(temp); };
 
                 md_system_state_t frame_state = { .alloc = temp.arena };
-				md_system_state_init(&frame_state, sys.atom.count);
+				md_system_state_init(&frame_state, sys->atom.count);
 
-                md_trajectory_reader_i reader;
-                if (md_trajectory_reader_init(&reader, traj)) {
-                    for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                        md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
-                        md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
-                        
-                        md_trajectory_reader_load_frame(reader, frame_idx, &frame_state);
-                        md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
-                        md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
-                    }
-					md_trajectory_reader_free(&reader);
-                } else {
-                    for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
-                        md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
-                        md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
-                        
-                        md_trajectory_load_frame(traj, frame_idx, &frame_state);
-                        md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
-                        md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.x, frame_state.y, frame_state.z, &frame_state.unitcell, &sys.protein_backbone);
-                    }
+                // One context for the range, so the run's files stay open across its frames.
+                md_system_extract_t* ex = md_system_extract_begin(sys, str_from_cstr(data->mold.run),
+                    frame_extract_paths, ARRAY_SIZE(frame_extract_paths), md_get_heap_allocator());
+                if (!ex) {
+                    return;
                 }
+                for (uint32_t frame_idx = range_beg; frame_idx < range_end; ++frame_idx) {
+                    md_backbone_angles_t* bb_dst = data->trajectory_data.backbone_angles.data + data->trajectory_data.backbone_angles.stride * frame_idx;
+                    md_secondary_structure_t* ss_dst = data->trajectory_data.secondary_structure.data + data->trajectory_data.secondary_structure.stride * frame_idx;
+
+                    if (!md_system_extract_frame(ex, frame_idx, &frame_state)) {
+                        continue;
+                    }
+                    md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
+                    md_util_backbone_secondary_structure_infer(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
+                }
+                md_system_extract_end(ex);
             });
 
             uint64_t time = (uint64_t)md_tick_now();
@@ -680,8 +715,9 @@ void init_trajectory_data(ApplicationState* data) {
                 // because a stamp that lives next to storage the table owns is a second answer
                 // waiting to disagree with it.
                 md_attributes_t* attributes = &data->mold.sys.attributes;
-                md_attributes_touch(attributes, md_attributes_id_from_path(STR_LIT("backbone/angle")));
-                md_attributes_touch(attributes, md_attributes_id_from_path(STR_LIT("backbone/secondary_structure")));
+                char buf[256];
+                md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), data, STR_LIT("backbone/angle"))));
+                md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), data, STR_LIT("backbone/secondary_structure"))));
                 data->trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
 
 				data->mold.interpolate_system_state = true;
@@ -725,7 +761,7 @@ void init_system_data(ApplicationState* data) {
 
         vec3_t aabb_min = {};
         vec3_t aabb_max = {};
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, data->mold.state.x, data->mold.state.y, data->mold.state.z, nullptr, nullptr, data->mold.state.num_atoms);
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, data->mold.state.xyz, nullptr, nullptr, data->mold.state.num_atoms);
 
         const vec3_t cell_ext = mat3_mul_vec3(A, vec3_set1(1.0f));
         const float max_cell_ext = vec3_reduce_max(cell_ext);
@@ -832,10 +868,34 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             //
             // 'success' stays false on purpose: it is what tells the caller a system was loaded,
             // and it resets the camera and the animation when it is true.
-            if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state)) {
+            const str_t run = str_from_cstr(state->mold.run);
+            if ((load_state.flags & LoaderFlag_Temporal) && str_empty(run)) {
+                VIAMD_LOG_ERROR("'" STR_FMT "' holds data along a trajectory; load the trajectory first", STR_ARG(path_to_file));
+                return false;
+            }
+
+            // The table is about to be written to, and worker threads read it: script evaluation
+            // (attr() and its frames), the backbone task and playback's frame loads, all through
+            // extraction contexts. The evaluations are interrupted, since the script is recompiled
+            // below and they would start over anyway; the rest are left to FINISH rather than
+            // interrupted - an interrupted backbone task leaves a just loaded trajectory without its
+            // backbone data.
+            if (state->script.full_eval) md_script_eval_interrupt(state->script.full_eval);
+            if (state->script.filt_eval) md_script_eval_interrupt(state->script.filt_eval);
+            task_system::pool_wait_for_completion();
+
+            if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state, run)) {
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of
                 state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                VIAMD_LOG_SUCCESS("Successfully loaded supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
+                // attr() in the script resolves against the table when it is compiled.
+                state->script.compile_ir = true;
+                if (load_state.flags & LoaderFlag_Temporal) {
+                    const char* hint = (load_state.type == LoaderType_EDR) ? "edr/<term>" :
+                                       (load_state.type == LoaderType_XVG) ? "xvg/<file>/<legend>" : "csv/<file>/<column>";
+                    VIAMD_LOG_SUCCESS("Loaded '" STR_FMT "' into '" STR_FMT "'; read it in the script with attr(\"%s\")", STR_ARG(path_to_file), STR_ARG(run), hint);
+                } else {
+                    VIAMD_LOG_SUCCESS("Successfully loaded supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
+                }
             } else {
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
@@ -868,7 +928,8 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             md_util_system_infer(&state->mold.sys, &state->mold.state, flags);
             init_system_data(state);
 
-            init_trajectory_data(state);
+            // A structure file of several frames (a multi model PDB, an XYZ trajectory) is its own run.
+            init_trajectory_data(state, (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0);
         } else if (load_state.flags & LoaderFlag_Trajectory) {
             if (!state->mold.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
@@ -878,12 +939,15 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             free_trajectory_data(state);
             state->animation.frame = 0;
 
-            success = loader::load(&state->mold.sys, &state->mold.state, path_to_file, load_state);
+            // Publishing the run IS opening the trajectory: the run is named after the file, and its
+            // positions are read from it frame by frame from here on.
+            str_copy_to_char_buf(state->files.trajectory, sizeof(state->files.trajectory), path_to_file);
+            init_trajectory_data(state, (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0);
+            success = run_num_frames(state) > 0;
             if (success) {
-                init_trajectory_data(state);
-                str_copy_to_char_buf(state->files.trajectory, sizeof(state->files.trajectory), path_to_file);
                 VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             } else {
+                state->files.trajectory[0] = '\0';
                 VIAMD_LOG_ERROR("Failed to open trajectory from file '" STR_FMT "'", STR_ARG(path_to_file));
             }
         }
@@ -931,6 +995,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     str_t new_molecule_file   = {};
     str_t new_trajectory_file = {};
+    str_t new_energy_file     = {};
+    md_array(str_t) new_series_files = 0;
     bool  new_coarse_grained  = false;
     double new_frame = 0;
 
@@ -969,6 +1035,28 @@ void load_workspace(ApplicationState* data, str_t filename) {
                         }
                         path += file;
                         new_trajectory_file = md_path_make_canonical(path, temp_alloc);
+                    }
+                } else if (str_eq(ident, STR_LIT("EnergyFile"))) {
+                    str_t file;
+                    viamd::extract_str(file, arg);
+                    if (!str_empty(file)) {
+                        md_strb_t path = md_strb_create(temp_alloc);
+                        if (!md_path_is_absolute(file)) {
+                            path += folder;
+                        }
+                        path += file;
+                        new_energy_file = md_path_make_canonical(path, temp_alloc);
+                    }
+                } else if (str_eq(ident, STR_LIT("SeriesFile"))) {
+                    str_t file;
+                    viamd::extract_str(file, arg);
+                    if (!str_empty(file)) {
+                        md_strb_t path = md_strb_create(temp_alloc);
+                        if (!md_path_is_absolute(file)) {
+                            path += folder;
+                        }
+                        path += file;
+                        md_array_push(new_series_files, md_path_make_canonical(path, temp_alloc), temp_alloc);
                     }
                 } else if (str_eq(ident, STR_LIT("CoarseGrained"))) {
                     viamd::extract_bool(new_coarse_grained, arg);
@@ -1206,6 +1294,16 @@ void load_workspace(ApplicationState* data, str_t filename) {
         data->files.trajectory[0] = '\0';
     }
 
+    // Joins the trajectory's run, so it can only go in once the trajectory is there
+    if (new_energy_file) {
+        loader::init(&loader_state, new_energy_file, &data->mold.sys);
+        load_data_from_file(data, new_energy_file, loader_state);
+    }
+    for (size_t i = 0; i < md_array_size(new_series_files); ++i) {
+        loader::init(&loader_state, new_series_files[i], &data->mold.sys);
+        load_data_from_file(data, new_series_files[i], loader_state);
+    }
+
     // Add user bonds
     size_t num_user_bonds = md_array_size(user_bonds);
     if (num_user_bonds > 0) {
@@ -1278,6 +1376,36 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_section_header(state, STR_LIT("Files"));
     viamd::write_str(state, STR_LIT("MoleculeFile"), mol_file);
     viamd::write_str(state, STR_LIT("TrajectoryFile"), traj_file);
+
+    // An energy file is only in the session while its data is: the source path is published beside
+    // the energies and removed with them, so what is written here cannot name a file that was
+    // dropped with an earlier trajectory.
+    {
+        char path_buf[256];
+        const md_attribute_t* src = md_attributes_find(&app_state->mold.sys.attributes, run_attribute_path(path_buf, sizeof(path_buf), app_state, STR_LIT("edr/source")));
+        if (src) {
+            viamd::write_str(state, STR_LIT("EnergyFile"), workspace_relative_path(md_attribute_str(&app_state->mold.sys.attributes, src, 0).ptr));
+        }
+
+        // Series loaded along the run (.xvg, .csv), the same way: "<run>/<kind>/<name>/source"
+        const md_attributes_t* attributes = &app_state->mold.sys.attributes;
+        const str_t kinds[] = { STR_LIT("xvg"), STR_LIT("csv") };
+        for (size_t k = 0; k < ARRAY_SIZE(kinds); ++k) {
+            char group_buf[256];
+            const str_t group = run_attribute_path(group_buf, sizeof(group_buf), app_state, kinds[k]);
+            if (str_empty(group)) continue;
+            str_t names[64];
+            const size_t num = MIN(md_attributes_query_children(names, ARRAY_SIZE(names), attributes, group), ARRAY_SIZE(names));
+            for (size_t i = 0; i < num; ++i) {
+                char src_buf[512];
+                const int len = snprintf(src_buf, sizeof(src_buf), STR_FMT "/" STR_FMT "/source", STR_ARG(group), STR_ARG(names[i]));
+                const md_attribute_t* series_src = (len > 0 && (size_t)len < sizeof(src_buf)) ? md_attributes_find(attributes, (str_t){src_buf, (size_t)len}) : nullptr;
+                if (series_src) {
+                    viamd::write_str(state, STR_LIT("SeriesFile"), workspace_relative_path(md_attribute_str(attributes, series_src, 0).ptr));
+                }
+            }
+        }
+    }
     viamd::write_int(state, STR_LIT("CoarseGrained"), app_state->files.coarse_grained);
 
     viamd::write_section_header(state, STR_LIT("Animation"));
@@ -2050,7 +2178,7 @@ static size_t basis_atom_positions_gather(vec3_t* dst, size_t cap, const md_syst
     }
     // Checked here rather than at each call site: this is the only place the state is read, so this
     // is the only place that can be wrong about it.
-    if (state.num_atoms == 0 || !state.x || !state.y || !state.z) {
+    if (state.num_atoms == 0 || !state.xyz) {
         return 0;
     }
 
@@ -2067,7 +2195,7 @@ static size_t basis_atom_positions_gather(vec3_t* dst, size_t cap, const md_syst
             MD_LOG_ERROR("Basis atom %zu is system atom %zu and the state holds %zu", i, idx, state.num_atoms);
             return 0;
         }
-        dst[i] = vec3_set(state.x[idx], state.y[idx], state.z[idx]) * (float)ANGSTROM_TO_BOHR;
+        dst[i] = vec3_set(state.xyz[idx].x, state.xyz[idx].y, state.xyz[idx].z) * (float)ANGSTROM_TO_BOHR;
     }
     return num_basis_atoms;
 }
@@ -2557,7 +2685,7 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
     if (!point_xyzw || !point_colors) {
         return;
     }
-    if (sys_state.num_atoms == 0 || !sys_state.x || !sys_state.y || !sys_state.z) {
+    if (sys_state.num_atoms == 0 || !sys_state.xyz) {
         return;
     }
     for (size_t i = 0; i < num_points; ++i) {
@@ -2568,7 +2696,7 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
         // Angstrom and not Bohr: these are world coordinates for the splatting pass, which shares
         // the Volume's transforms, unlike the grid the density was evaluated on.
         const float radius = md_atom_radius(&sys.atom, idx);
-        point_xyzw[i]   = vec4_set(sys_state.x[idx], sys_state.y[idx], sys_state.z[idx], radius);
+        point_xyzw[i]   = vec4_set(sys_state.xyz[idx].x, sys_state.xyz[idx].y, sys_state.xyz[idx].z, radius);
         point_colors[i] = atom_colors[idx];
     }
 
@@ -3280,9 +3408,10 @@ void interpolate_system_state(ApplicationState* app) {
 	const auto& sys  = app->mold.sys;
 
 	size_t num_atoms = app->mold.state.num_atoms;
-    if (num_atoms == 0 || !md_trajectory_num_frames(sys.trajectory)) return;
+    const size_t num_frames = run_num_frames(app);
+    if (num_atoms == 0 || num_frames == 0) return;
 
-    const int64_t last_frame = MAX(0LL, (int64_t)md_trajectory_num_frames(sys.trajectory) - 1);
+    const int64_t last_frame = MAX(0LL, (int64_t)num_frames - 1);
     // This is not actually time, but the fractional frame representation
     const double time = CLAMP(app->animation.frame, 0.0, double(last_frame));
 
@@ -3349,7 +3478,7 @@ void interpolate_system_state(ApplicationState* app) {
     };
 
     // Stamp the destination with the frame it is about to represent. The interpolated state is not
-    // loaded through md_trajectory_reader_load_frame, so nothing else would fill this in, and a
+    // written by a run extraction, so nothing else would fill this in, and a
     // stale value is worse than an absent one. Nearest snaps to a whole frame; the other modes land
     // between two, which is exactly what the fractional part is for.
     app->mold.state.frame = (mode == InterpolationMode::Nearest) ? (double)nearest_frame : time;
@@ -3405,12 +3534,22 @@ void interpolate_system_state(ApplicationState* app) {
 
     task_system::ID load_task = task_system::create_pool_task(STR_LIT("## Load Frames"), num_frames_to_load,
         [data = &payload, frame_cache_load_slot](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-            (void)thread_num;
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int slot_idx = frame_cache_load_slot[i];
                 int frame_idx = data->app->mold.frame_cache.frame_idx[slot_idx];
                 md_system_state_t* state = &data->app->mold.frame_cache.states[slot_idx];
-                md_trajectory_load_frame(data->app->mold.sys.trajectory, frame_idx, state);
+                // This thread's own context, kept for as long as the trajectory, so playback opens
+                // the run's files once rather than once per frame.
+                md_system_extract_t** ex = (thread_num < ARRAY_SIZE(data->app->mold.frame_extract)) ? &data->app->mold.frame_extract[thread_num] : nullptr;
+                if (ex && !*ex) {
+                    *ex = md_system_extract_begin(&data->app->mold.sys, str_from_cstr(data->app->mold.run),
+                        frame_extract_paths, ARRAY_SIZE(frame_extract_paths), md_get_heap_allocator());
+                }
+                if (ex && *ex) {
+                    md_system_extract_frame(*ex, frame_idx, state);
+                } else {
+                    extract_frame(data->app, frame_idx, state);
+                }
             }
         }
     );
@@ -3421,9 +3560,7 @@ void interpolate_system_state(ApplicationState* app) {
         case InterpolationMode::Nearest: {
             task_system::ID interp_task = task_system::create_pool_task(STR_LIT("## Interpolate"), [data = &payload]() {
                 data->dst_state->unitcell = data->src_states[0]->unitcell;
-                MEMCPY(data->dst_state->x, data->src_states[0]->x, sizeof(float) * data->dst_state->num_atoms);
-                MEMCPY(data->dst_state->y, data->src_states[0]->y, sizeof(float) * data->dst_state->num_atoms);
-                MEMCPY(data->dst_state->z, data->src_states[0]->z, sizeof(float) * data->dst_state->num_atoms);
+                MEMCPY(data->dst_state->xyz, data->src_states[0]->xyz, sizeof(vec3_t) * data->dst_state->num_atoms);
             });
             tasks[num_tasks++] = interp_task;
             break;
@@ -3442,14 +3579,10 @@ void interpolate_system_state(ApplicationState* app) {
             task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 size_t count = range_end - range_beg;
-                float* dst_x = data->dst_state->x + range_beg;
-                float* dst_y = data->dst_state->y + range_beg;
-                float* dst_z = data->dst_state->z + range_beg;
-                const float* src_x[2] = { data->src_states[0]->x + range_beg, data->src_states[1]->x + range_beg};
-                const float* src_y[2] = { data->src_states[0]->y + range_beg, data->src_states[1]->y + range_beg};
-                const float* src_z[2] = { data->src_states[0]->z + range_beg, data->src_states[1]->z + range_beg};
+                vec3_t* dst = data->dst_state->xyz + range_beg;
+                const vec3_t* src[2] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg };
 
-                md_util_interpolate_linear(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->dst_state->unitcell, data->t);
+                md_util_interpolate_linear(dst, src, count, &data->dst_state->unitcell, data->t);
             }, grain_size);
 
 			tasks[num_tasks++] = iterp_cell_task;
@@ -3471,14 +3604,10 @@ void interpolate_system_state(ApplicationState* app) {
             task_system::ID interp_coord_task = task_system::create_pool_task(STR_LIT("## Interp Coord Data"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                 (void)thread_num;
                 size_t count = range_end - range_beg;
-                float* dst_x = data->dst_state->x + range_beg;
-                float* dst_y = data->dst_state->y + range_beg;
-                float* dst_z = data->dst_state->z + range_beg;
-                const float* src_x[4] = { data->src_states[0]->x + range_beg, data->src_states[1]->x + range_beg, data->src_states[2]->x + range_beg, data->src_states[3]->x + range_beg};
-                const float* src_y[4] = { data->src_states[0]->y + range_beg, data->src_states[1]->y + range_beg, data->src_states[2]->y + range_beg, data->src_states[3]->y + range_beg};
-                const float* src_z[4] = { data->src_states[0]->z + range_beg, data->src_states[1]->z + range_beg, data->src_states[2]->z + range_beg, data->src_states[3]->z + range_beg};
+                vec3_t* dst = data->dst_state->xyz + range_beg;
+                const vec3_t* src[4] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg, data->src_states[2]->xyz + range_beg, data->src_states[3]->xyz + range_beg };
 
-                md_util_interpolate_cubic_spline(dst_x, dst_y, dst_z, src_x, src_y, src_z, count, &data->dst_state->unitcell, data->t, data->s);
+                md_util_interpolate_cubic_spline(dst, src, count, &data->dst_state->unitcell, data->t, data->s);
             }, grain_size);
 
             tasks[num_tasks++] = iterp_cell_task;
@@ -3495,9 +3624,7 @@ void interpolate_system_state(ApplicationState* app) {
         // Calculate a global AABB for the molecule
         task_system::ID aabb_task = task_system::create_pool_task(STR_LIT("## Compute AABB"), (uint32_t)num_atoms, [data = &payload](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             size_t range_len = range_end - range_beg;
-            const float* x = data->dst_state->x + range_beg;
-            const float* y = data->dst_state->y + range_beg;
-            const float* z = data->dst_state->z + range_beg;
+            const vec3_t* xyz = data->dst_state->xyz + range_beg;
 
             md_temp_scope_t temp = md_temp_begin();
             defer { md_temp_end(temp); };
@@ -3506,7 +3633,7 @@ void interpolate_system_state(ApplicationState* app) {
 
             vec3_t aabb_min = vec3_set1(FLT_MAX);
             vec3_t aabb_max = vec3_set1(-FLT_MAX);
-            md_util_aabb_compute(aabb_min.elem, aabb_max.elem, x, y, z, r, 0, range_len);
+            md_util_aabb_compute(aabb_min.elem, aabb_max.elem, xyz, r, 0, range_len);
 
             data->aabb_min[thread_num] = aabb_min;
             data->aabb_max[thread_num] = aabb_max;
@@ -3818,7 +3945,7 @@ void recenter_update(ApplicationState* state) {
 }
 
 void recenter_update_target_data(ApplicationState* state) {
-    if (!state->mold.sys.trajectory) return;
+    if (run_num_frames(state) == 0) return;
 
     const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
     const uint64_t target_version = recenter_get_active_target_version(state);
@@ -3834,23 +3961,19 @@ void recenter_update_target_data(ApplicationState* state) {
         if (state->operations.initial_frame.rel_xyzw && count > 0) {
             // Fetch initial frame data required for orienting the structure
             size_t num_atoms = state->mold.sys.atom.count;
-            float* temp_x = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
-            float* temp_y = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
-            float* temp_z = (float*)md_vm_arena_push(state->allocator.frame, sizeof(float) * num_atoms);
+            vec3_t* temp_xyz = (vec3_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec3_t) * ALIGN_TO(num_atoms, 16));
 
             md_system_state_t temp_state = { 0 };
             temp_state.num_atoms = num_atoms;
-            temp_state.x = temp_x;
-            temp_state.y = temp_y;
-            temp_state.z = temp_z;
-            md_trajectory_load_frame(state->mold.sys.trajectory, 0, &temp_state);
+            temp_state.xyz = temp_xyz;
+            extract_frame(state, 0, &temp_state);
 
             md_bitfield_iter_t it = md_bitfield_iter_create(&target_mask);
             int dst_idx = 0;
             while (md_bitfield_iter_next(&it)) {
                 uint64_t src_idx = md_bitfield_iter_idx(&it);
                 float mass = md_atom_mass(&state->mold.sys.atom, src_idx);
-                state->operations.initial_frame.rel_xyzw[dst_idx++] = vec4_set(temp_x[src_idx], temp_y[src_idx], temp_z[src_idx], mass);
+                state->operations.initial_frame.rel_xyzw[dst_idx++] = vec4_from_vec3(temp_xyz[src_idx], mass);
             }
 
 			state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.rel_xyzw, NULL, count, &temp_state.unitcell);
@@ -4324,9 +4447,7 @@ void interaction_surface_event_extract(InteractionSurfaceEvent* event, const Int
 }
 
 void point_set_region_mask_compute(md_bitfield_t* mask,
-    const float x[],
-    const float y[],
-    const float z[],
+    const vec3_t xyz[],
     size_t count,
     const md_bitfield_t* candidate_mask,
     const mat4_t& world_to_clip,
@@ -4335,9 +4456,7 @@ void point_set_region_mask_compute(md_bitfield_t* mask,
     const vec2_t& surface_size)
 {
     ASSERT(mask);
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
+    ASSERT(xyz);
 
     md_bitfield_clear(mask);
 
@@ -4349,7 +4468,7 @@ void point_set_region_mask_compute(md_bitfield_t* mask,
 
         while (md_bitfield_iter_next(&it)) {
             size_t idx = md_bitfield_iter_idx(&it);
-            vec4_t xyz1 = { x[idx], y[idx], z[idx], 1.0f };
+            vec4_t xyz1 = vec4_from_vec3(xyz[idx], 1.0f);
             vec4_t coord = mat4_mul_vec4(world_to_clip, xyz1);
             vec2_t surf_coord = {( coord.x / coord.w * 0.5f + 0.5f) * surface_size.x,
                                     (-coord.y / coord.w * 0.5f + 0.5f) * surface_size.y};
@@ -4361,7 +4480,7 @@ void point_set_region_mask_compute(md_bitfield_t* mask,
     } else {
         // Do for full set
         for (size_t i = 0; i < count; ++i) {
-            vec4_t xyz1 = { x[i], y[i], z[i], 1.0f };
+            vec4_t xyz1 = vec4_from_vec3(xyz[i], 1.0f);
             vec4_t coord = mat4_mul_vec4(world_to_clip, xyz1);
             vec2_t surf_coord = {( coord.x / coord.w * 0.5f + 0.5f) * surface_size.x,
                                     (-coord.y / coord.w * 0.5f + 0.5f) * surface_size.y};
@@ -4395,11 +4514,12 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
             prio = 1;
         } else if (loader_flags & LoaderFlag_System) {
             prio = 2;
+        } else if (loader_flags & LoaderFlag_Temporal) {
+            // Joins the trajectory's run, so it goes after the trajectory when both are dropped
+            prio = 4;
         } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental)) {
             // A supplemental file (a topology) needs the system in place, same as a trajectory
             prio = 3;
-        } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
-            prio = 4;
         } else {
             flags |= FileFlags_ShowDialogue;
         }
@@ -4441,40 +4561,10 @@ void file_queue_process(ApplicationState* state) {
 
         str_t ext;
         extract_ext(&ext, e.path);
-        const str_t* res = 0;
 
         if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
             load_workspace(state, e.path);
             reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask);
-        } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
-            char buf[1024];
-            str_t base_path = {};
-            if (state->files.workspace[0] != '\0') {
-                base_path = str_from_cstr(state->files.workspace);
-            } else if (state->files.trajectory[0] != '\0') {
-                base_path = str_from_cstr(state->files.trajectory);
-            } else if (state->files.molecule[0] != '\0') {
-                base_path = str_from_cstr(state->files.molecule);
-            } else {
-                md_path_write_cwd(buf, sizeof(buf));
-                base_path = str_from_cstr(buf);
-            }
-
-            str_t rel_path = md_path_make_relative(base_path, e.path, state->allocator.frame);
-            MD_LOG_DEBUG("Attempting to make relative path from '" STR_FMT "' to '" STR_FMT "'", STR_ARG(base_path), STR_ARG(e.path));
-            MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
-            if (str_empty(rel_path)) {
-                // No relative path exists between the two (a separate volume on windows)
-                rel_path = md_path_make_canonical(e.path, state->allocator.frame);
-            }
-            if (!str_empty(rel_path)) {
-                snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_ARG(rel_path));
-                TextEditor::Coordinates pos = state->editor.GetCursorPosition();
-                pos.mLine += 1;
-                state->editor.SetCursorPosition({0,0});
-                state->editor.InsertText(buf);
-                state->editor.SetCursorPosition(pos);
-            }
         } else {
             loader::LoaderState loader_state = {};
             loader::init(&loader_state, e.path, &state->mold.sys);
@@ -4544,15 +4634,15 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     if (indices && count <= 4) {
         // A handful of atoms has no meaningful shape: center on them, keep the current orientation, fit the distance
         vec3_t aabb_min = {}, aabb_max = {};
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.x, state.y, state.z, nullptr, indices, count);
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, indices, count);
         const vec3_t center = (aabb_min + aabb_max) * 0.5f;
-        transform->distance = camera_fit_distance(state.x, state.y, state.z, indices, count, center, transform->orientation, fov_y);
+        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y);
         transform->position = center + cell_offset + transform->orientation * vec3_set(0, 0, transform->distance);
         return;
     }
 
     // See camera_compute_default_view for what it considers a good view of what
-    *transform = camera_compute_default_view(state.x, state.y, state.z, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y);
+    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y);
     transform->position = transform->position + cell_offset;
 }
 
@@ -4723,19 +4813,20 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 // because it would overwrite the bond data while we are reading it
                 int64_t nearest_frame = (int64_t)(app->animation.frame + 0.5);
                 if (!task_system::task_is_running(app->tasks.evaluate_full) && !task_system::task_is_running(app->tasks.evaluate_filt)) {
-                    if (app->mold.sys.trajectory == NULL || (cur_nearest_frame != nearest_frame)) {
+                    const bool has_frames = run_num_frames(app) > 0;
+                    if (!has_frames || (cur_nearest_frame != nearest_frame)) {
                         cur_nearest_frame = nearest_frame;
-                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [&sys, app, &nearest_frame]() {
+                        task_system::ID recalc_bond_task = task_system::create_pool_task(STR_LIT("## Recalc bond task"), [&sys, app, &nearest_frame, has_frames]() {
                             md_temp_scope_t temp = md_temp_begin();
                             defer { md_temp_end(temp); };
 
 							md_system_state_t ref_state = sys.reference;
 
-                            if (sys.trajectory) {
+                            if (has_frames) {
                                 // Use state from frame closest to the current animation time
                                 md_system_state_t frame_state = { .alloc = temp.arena };
 								md_system_state_init(&frame_state, sys.atom.count);
-                                if (!md_trajectory_load_frame(sys.trajectory, nearest_frame, &frame_state)) {
+                                if (!extract_frame(app, nearest_frame, &frame_state)) {
                                     MD_LOG_ERROR("Failed to extract frame data");
                                 }
                             }
@@ -4764,10 +4855,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     task_system::ID apply_transform_task = task_system::create_pool_task(STR_LIT("## Recenter"), (uint32_t)sys.atom.count, [&sys_state, &recenter_transform](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                         (void)thread_num;
                         size_t count = range_end - range_beg;
-                        float* x = sys_state.x + range_beg;
-                        float* y = sys_state.y + range_beg;
-                        float* z = sys_state.z + range_beg;
-                        mat4_batch_transform_inplace(x, y, z, 1.0f, count, recenter_transform);
+                        mat4_batch_transform_inplace(sys_state.xyz + range_beg, 1.0f, count, recenter_transform);
                     }, 1024);
 
                     tasks[num_tasks++] = calc_transform_task;
@@ -4780,10 +4868,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 task_system::ID pbc_task = task_system::create_pool_task(STR_LIT("## Apply PBC"), (uint32_t)sys.atom.count, [&sys_state](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
                     (void)thread_num;
                     size_t count = range_end - range_beg;
-                    float* x = sys_state.x + range_beg;
-                    float* y = sys_state.y + range_beg;
-                    float* z = sys_state.z + range_beg;
-                    md_util_pbc(x, y, z, NULL, count, &sys_state.unitcell);
+                    md_util_pbc(sys_state.xyz + range_beg, NULL, count, &sys_state.unitcell);
                 });
                 tasks[num_tasks++] = pbc_task;
                 coords_modified = true;

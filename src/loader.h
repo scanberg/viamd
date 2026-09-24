@@ -19,6 +19,7 @@ enum LoaderFlag_ {
     LoaderFlag_QM = 64, // Quantum Mechanics data
     LoaderFlag_Supplemental = 128, // May contain supplemental data to existing system
     LoaderFlag_Topology = 256, // The format supplies a complete topology: its bonds are not to be inferred
+    LoaderFlag_Temporal = 512, // Supplemental data sampled along a trajectory: it joins the trajectory's run, so that has to be loaded first
 };
 
 enum LoaderType_ {
@@ -43,6 +44,9 @@ enum LoaderType_ {
 #endif
     LoaderType_ITP,     // GROMACS topology (.itp / .top), supplements a loaded system
     LoaderType_TPR,     // GROMACS run input, topology and coordinates
+    LoaderType_EDR,     // GROMACS energy file, supplements a loaded trajectory
+    LoaderType_XVG,     // xmgrace columns (GROMACS analysis output), a series along the loaded trajectory
+    LoaderType_CSV,     // comma separated columns, a series along the loaded trajectory
     LoaderType_COUNT
 };
 
@@ -70,7 +74,16 @@ namespace loader {
     // Supplemental, set by init above). Its data lands in the system's attribute table; the atoms
     // and the coordinates are left alone, which is why there is no out_state. Returns false for a
     // loader type with nothing supplemental to contribute.
-    bool load_supplemental(md_system_t* sys, str_t filepath, const LoaderState& state);
+    //
+    // run is the "run/<name>" of the loaded trajectory. A LoaderFlag_Temporal file publishes into
+    // it and fails without one; every other loader ignores it.
+    bool load_supplemental(md_system_t* sys, str_t filepath, const LoaderState& state, str_t run);
+
+    // Publish the trajectory in filepath as the run "run/<name>" (see md_run_publish in mdlib's
+    // md_system.h): frame axis, cells and positions streamed from the file. filepath is the file the
+    // frames are in - the structure file itself for a multi model PDB or a multi frame XYZ. False for
+    // a format that does not publish runs yet, and for a file with a single frame.
+    bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags);
 
     // To help enlist supported loader type
     str_t       type_name(LoaderType type);
