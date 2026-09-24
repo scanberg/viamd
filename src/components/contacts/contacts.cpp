@@ -9,8 +9,8 @@
 // with every other group, as the
 // simulation computed it (md_nonbonded). Pairs within a group are not contacts and are skipped.
 //
-// The energy is there when the system carries its force field, which for now means it was loaded from a tpr. It is
-// read once, by the first computation, and then either available or not.
+// The energy is there when the system carries its non-bonded force field (md_system_t::nonbonded), which the loader
+// provides when the file has it (a tpr). Otherwise there is no energy.
 //
 // A prototype: computed on demand in a background task from a copy of the coordinates.
 
@@ -24,7 +24,6 @@
 #include <md_system.h>
 #include <md_contact.h>
 #include <md_nonbonded.h>
-#include <md_tpr.h>
 
 #include <viamd_event.h>
 #include <viamd.h>
@@ -51,32 +50,6 @@ enum GroupBy {
 
 static const char* group_by_lbl[] = { "Residue", "Molecule / chain" };
 
-// The force field of the system, from a tpr: what each particle is, and how pairs interact
-struct ForceField {
-    bool loaded = false;
-    char info[256] = "";
-    md_nb_potential_t pot = {};
-    size_t num_types = 0;
-    std::vector<md_tpr_lj_t> lj;        // num_types^2
-    std::vector<uint16_t> type;         // Per particle
-    std::vector<float>    charge;       // Per particle
-    // Exclusions: per particle its molecule's first particle and molecule type
-    std::vector<uint32_t> mol_beg;
-    std::vector<uint32_t> mol_type;
-    std::vector<std::vector<uint32_t>> excl_off;
-    std::vector<std::vector<uint32_t>> excl;
-
-    bool excluded(uint32_t a, uint32_t b) const {
-        if (mol_beg[a] != mol_beg[b]) return false;
-        const uint32_t t = mol_type[a];
-        if (excl_off[t].empty()) return false;
-        const uint32_t la = a - mol_beg[a], lb = b - mol_beg[a];
-        const uint32_t* beg = excl[t].data() + excl_off[t][la];
-        const uint32_t* end = excl[t].data() + excl_off[t][la + 1];
-        return std::binary_search(beg, end, lb);
-    }
-};
-
 struct GroupResult {
     uint32_t contacts = 0;      // Groups in contact with
     uint64_t pairs = 0;         // Particle pairs within the contact cutoff
@@ -99,7 +72,7 @@ struct Result {
 };
 
 struct StreamCtx {
-    const ForceField* ff;
+    const md_nb_forcefield_t* ff;
     const uint32_t* label;
     const float* radius;        // Per particle, Å
     float cutoff;
@@ -120,12 +93,8 @@ static void stream_pairs(const uint32_t* a, const uint32_t* b, const float* r, s
             s->keys->push_back(((uint64_t)std::min(gi, gj) << 32) | std::max(gi, gj));
         }
         if (s->ff) {
-            const ForceField& ff = *s->ff;
-            if (ff.excluded(i, j)) continue;
-            const double r2 = (double)r[k] * r[k] * 0.01;   // Å² -> nm²
-            const md_tpr_lj_t p = ff.lj[ff.type[i] * ff.num_types + ff.type[j]];
-            const double elj = md_nb_lj_energy(&ff.pot, p.c6, p.c12, r2);
-            const double ec  = md_nb_coulomb_energy(&ff.pot, (double)ff.charge[i] * ff.charge[j], r2);
+            double elj, ec;
+            md_nb_forcefield_pair_energy(s->ff, i, j, (double)r[k] * r[k] * 0.01, &elj, &ec);   // Å² -> nm²
             res.groups[gi].e_lj += elj;   res.groups[gj].e_lj += elj;
             res.groups[gi].e_coul += ec;  res.groups[gj].e_coul += ec;
             res.e_lj += elj;
@@ -146,10 +115,6 @@ struct Contacts : viamd::EventHandler {
     // Settings
     GroupBy group_by = GroupBy_Residue;
     float cutoff = 1.0f;                // Å, gap between van der Waals surfaces
-
-    // The force field of the system, read by the first computation. Only the task touches it until ff_read is set.
-    ForceField ff;
-    std::atomic<bool> ff_read = false;
 
     // Computation
     task_system::ID task = 0;
@@ -184,8 +149,6 @@ struct Contacts : viamd::EventHandler {
                 // A new system: whatever was computed or loaded belongs to the old one
                 if (task) task_system::task_interrupt_and_wait_for(task);
                 result = Result{};
-                ff = ForceField{};
-                ff_read = false;
                 break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
@@ -214,63 +177,6 @@ struct Contacts : viamd::EventHandler {
                 break;
             }
         }
-    }
-
-    // The force field of the system, if it has one: from the tpr it was loaded from
-    void read_force_field() {
-        ff = ForceField{};
-        const md_system_t& sys = app_state->mold.sys;
-        const str_t path = str_from_cstr(app_state->files.molecule);
-        if (!str_ends_with(path, STR_LIT(".tpr"))) {
-            snprintf(ff.info, sizeof(ff.info), "Energy: not available, the system was not loaded with its force field (a tpr)");
-            return;
-        }
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
-        md_tpr_data_t tpr = {};
-        if (!md_tpr_data_parse_file(&tpr, path, arena)) {
-            snprintf(ff.info, sizeof(ff.info), "Energy: not available, the tpr could not be read");
-        } else if (tpr.num_atoms != sys.atom.count) {
-            snprintf(ff.info, sizeof(ff.info), "Energy: not available, the tpr has %zu particles and the system %zu", tpr.num_atoms, (size_t)sys.atom.count);
-        } else if (!md_nb_potential_init_from_tpr(&ff.pot, &tpr)) {
-            snprintf(ff.info, sizeof(ff.info), "Energy: not available, the non-bonded interactions of the tpr are not supported (see the log)");
-        } else {
-            const size_t N = tpr.num_atoms;
-            ff.num_types = tpr.num_nb_types;
-            ff.lj.assign(tpr.lj, tpr.lj + ff.num_types * ff.num_types);
-            ff.type.resize(N);
-            ff.charge.resize(N);
-            ff.mol_beg.resize(N);
-            ff.mol_type.resize(N);
-            ff.excl_off.resize(tpr.num_moltypes);
-            ff.excl.resize(tpr.num_moltypes);
-            for (size_t t = 0; t < tpr.num_moltypes; ++t) {
-                const md_tpr_moltype_t& mt = tpr.moltypes[t];
-                if (mt.excl_offset) {
-                    ff.excl_off[t].assign(mt.excl_offset, mt.excl_offset + mt.num_atoms + 1);
-                    ff.excl[t].assign(mt.excl, mt.excl + mt.excl_offset[mt.num_atoms]);
-                }
-            }
-            size_t n = 0;
-            for (size_t b = 0; b < tpr.num_molblocks; ++b) {
-                const uint32_t t = (uint32_t)tpr.molblocks[b].moltype;
-                const md_tpr_moltype_t& mt = tpr.moltypes[t];
-                for (int32_t m = 0; m < tpr.molblocks[b].nmol; ++m) {
-                    const uint32_t beg = (uint32_t)n;
-                    for (size_t a = 0; a < mt.num_atoms; ++a, ++n) {
-                        ff.type[n] = mt.atoms[a].type_idx;
-                        ff.charge[n] = mt.atoms[a].charge;
-                        ff.mol_beg[n] = beg;
-                        ff.mol_type[n] = t;
-                    }
-                }
-            }
-            static const char* mod_lbl[] = { "plain cut-off", "potential-shift", "potential-switch", "force-switch" };
-            static const char* coul_lbl[] = { "none", "cut-off", "reaction field", "Ewald real space" };
-            snprintf(ff.info, sizeof(ff.info), "Energy: %zu particle types, LJ %s, Coulomb %s, pairs within %.2f nm",
-                ff.num_types, mod_lbl[ff.pot.lj_modifier], coul_lbl[ff.pot.coulomb], md_nb_potential_cutoff(&ff.pot));
-            ff.loaded = true;
-        }
-        md_arena_allocator_destroy(arena);
     }
 
     void compute() {
@@ -308,12 +214,9 @@ struct Contacts : viamd::EventHandler {
             const size_t N = sys.atom.count;
             Result& res = pending;
             const md_tick_t t0 = md_tick_now();
-            if (!ff_read) {
-                read_force_field();
-                ff_read = true;
-            }
-            res.has_energy = ff.loaded;
-            res.energy_cutoff = res.has_energy ? md_nb_potential_cutoff(&ff.pot) * 10.0 : 0.0;
+            const md_nb_forcefield_t* ff = sys.nonbonded;
+            res.has_energy = ff != nullptr;
+            res.energy_cutoff = ff ? md_nb_potential_cutoff(&ff->potential) * 10.0 : 0.0;
 
             // Van der Waals radii: of the elements, and for coarse grained beads what their force field implies
             std::vector<float> radius(N);
@@ -338,7 +241,7 @@ struct Contacts : viamd::EventHandler {
             md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
             std::vector<uint64_t> keys;
             if (md_contact_pairs_init(&pairs, &desc, &sys, arena)) {
-                StreamCtx ctx = { res.has_energy ? &ff : nullptr, label.data(), radius.data(), (float)res.cutoff, &res, &keys };
+                StreamCtx ctx = { ff, label.data(), radius.data(), (float)res.cutoff, &res, &keys };
                 if (md_contact_pairs_for_each(&pairs, &frame, stream_pairs, &ctx)) {
                     std::sort(keys.begin(), keys.end());
                     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
@@ -377,12 +280,13 @@ struct Contacts : viamd::EventHandler {
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");
             ImGui::PopItemWidth();
 
-            if (ff_read) {
-                ImGui::TextDisabled("%s", ff.info);
-            } else if (str_ends_with(str_from_cstr(app_state->files.molecule), STR_LIT(".tpr"))) {
-                ImGui::TextDisabled("Energy: from the force field of the system (tpr), read by the first computation");
+            if (const md_nb_forcefield_t* ff = app_state->mold.sys.nonbonded) {
+                static const char* mod_lbl[]  = { "plain cut-off", "potential-shift", "potential-switch", "force-switch" };
+                static const char* coul_lbl[] = { "none", "cut-off", "reaction field", "Ewald real space" };
+                ImGui::TextDisabled("Energy: from the force field of the system: %zu particle types, LJ %s, Coulomb %s, pairs within %.2f nm",
+                    ff->num_types, mod_lbl[ff->potential.lj_modifier], coul_lbl[ff->potential.coulomb], md_nb_potential_cutoff(&ff->potential));
             } else {
-                ImGui::TextDisabled("Energy: not available, the system was not loaded with its force field (a tpr)");
+                ImGui::TextDisabled("Energy: not available, the system carries no non-bonded force field");
             }
 
             ImGui::BeginDisabled(busy);
