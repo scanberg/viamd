@@ -22,15 +22,6 @@
 #include <implot.h>
 #include <implot_internal.h>
 
-static const str_t* find_in_arr(str_t str, const str_t arr[], size_t len) {
-    for (size_t i = 0; i < len; ++i) {
-        if (str_eq(arr[i], str)) {
-            return &arr[i];
-        }
-    }
-    return NULL;
-}
-
 void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
     ASSERT(vol);
     MEMCPY(vol->dim, grid.dim, sizeof(vol->dim));
@@ -4398,8 +4389,6 @@ void file_queue_push(FileQueue* queue, str_t path, FileFlags flags) {
         } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental)) {
             // A supplemental file (a topology) needs the system in place, same as a trajectory
             prio = 3;
-        } else if (find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS))) {
-            prio = 4;
         } else {
             flags |= FileFlags_ShowDialogue;
         }
@@ -4441,40 +4430,10 @@ void file_queue_process(ApplicationState* state) {
 
         str_t ext;
         extract_ext(&ext, e.path);
-        const str_t* res = 0;
 
         if (str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
             load_workspace(state, e.path);
             reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask);
-        } else if ((res = find_in_arr(ext, SCRIPT_IMPORT_FILE_EXTENSIONS, ARRAY_SIZE(SCRIPT_IMPORT_FILE_EXTENSIONS)))) {
-            char buf[1024];
-            str_t base_path = {};
-            if (state->files.workspace[0] != '\0') {
-                base_path = str_from_cstr(state->files.workspace);
-            } else if (state->files.trajectory[0] != '\0') {
-                base_path = str_from_cstr(state->files.trajectory);
-            } else if (state->files.molecule[0] != '\0') {
-                base_path = str_from_cstr(state->files.molecule);
-            } else {
-                md_path_write_cwd(buf, sizeof(buf));
-                base_path = str_from_cstr(buf);
-            }
-
-            str_t rel_path = md_path_make_relative(base_path, e.path, state->allocator.frame);
-            MD_LOG_DEBUG("Attempting to make relative path from '" STR_FMT "' to '" STR_FMT "'", STR_ARG(base_path), STR_ARG(e.path));
-            MD_LOG_DEBUG("Relative path: '" STR_FMT "'", STR_ARG(rel_path));
-            if (str_empty(rel_path)) {
-                // No relative path exists between the two (a separate volume on windows)
-                rel_path = md_path_make_canonical(e.path, state->allocator.frame);
-            }
-            if (!str_empty(rel_path)) {
-                snprintf(buf, sizeof(buf), "table = import(\"%.*s\");\n", STR_ARG(rel_path));
-                TextEditor::Coordinates pos = state->editor.GetCursorPosition();
-                pos.mLine += 1;
-                state->editor.SetCursorPosition({0,0});
-                state->editor.InsertText(buf);
-                state->editor.SetCursorPosition(pos);
-            }
         } else {
             loader::LoaderState loader_state = {};
             loader::init(&loader_state, e.path, &state->mold.sys);

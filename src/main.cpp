@@ -126,13 +126,6 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 
 constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
-enum MarkerType_{
-    MarkerType_None,
-    MarkerType_Error,
-    MarkerType_Warning,
-    MarkerType_Visualization,
-};
-
 static void free_histogram(DisplayProperty::Histogram* hist) {
     ASSERT(hist);
     ASSERT(hist->alloc);
@@ -606,8 +599,9 @@ int main(int argc, char** argv) {
 
     ImGui::init_theme();
 
-    state.editor.SetLanguageDefinition(TextEditor::LanguageDefinition::VIAMD());
+    state.editor.SetLanguage(script_editor::language());
     state.editor.SetPalette(TextEditor::GetDarkPalette());
+    state.editor.SetInsertSpacesOnTabs(true);
 
     {
 #ifdef VIAMD_DEFAULT_DATASET
@@ -917,8 +911,7 @@ int main(int argc, char** argv) {
         if (state.script.compile_ir) {
             state.script.time_since_last_change += state.app.timing.delta_s;
 
-            state.editor.ClearMarkers();
-            state.editor.ClearErrorMarkers();
+            script_editor::markers_clear(&state.editor_markers);
 
             if (state.script.time_since_last_change > COMPILATION_TIME_DELAY_IN_SECONDS) {
                 // We cannot recompile while it is evaluating.
@@ -974,60 +967,28 @@ int main(int argc, char** argv) {
                     if (src_str) {
                         md_script_ir_compile_from_source(state.script.ir, src_str, &state.mold.sys, NULL);
 
+                        // The markers copy what they need from the IR (it is freed below if it did not compile)
+                        script_editor::Markers* markers = &state.editor_markers;
+                        script_editor::markers_set_source(markers, src_str);
+
                         const size_t num_errors = md_script_ir_num_errors(state.script.ir);
                         const md_log_token_t* errors = md_script_ir_errors(state.script.ir);
-                        
                         for (size_t i = 0; i < num_errors; ++i) {
-                            TextEditor::Marker marker = {0};
-                            auto first = state.editor.GetCharacterCoordinates(errors[i].range.beg);
-                            auto last  = state.editor.GetCharacterCoordinates(errors[i].range.end);
-                            marker.type = MarkerType_Error;
-                            marker.begCol = first.mColumn;
-                            marker.endCol = last.mColumn;
-                            marker.prio = INT32_MAX;   // Ensures marker is rendered on top
-                            marker.bgColor = IM_COL32(255, 0, 0, 128);
-                            marker.hoverBgColor = 0;
-                            marker.text = std::string(errors[i].text.ptr, errors[i].text.len);
-                            marker.payload = errors[i].context;
-                            marker.line = first.mLine + 1;
-                            state.editor.AddMarker(marker);
+                            // Errors win over everything they overlap
+                            script_editor::markers_add(markers, script_editor::MarkerType_Error, INT32_MAX, errors[i].range, errors[i].text, errors[i].context);
                         }
 
                         const size_t num_warnings = md_script_ir_num_warnings(state.script.ir);
                         const md_log_token_t* warnings = md_script_ir_warnings(state.script.ir);
                         for (size_t i = 0; i < num_warnings; ++i) {
-                            TextEditor::Marker marker = {0};
-                            auto first = state.editor.GetCharacterCoordinates(warnings[i].range.beg);
-                            auto last  = state.editor.GetCharacterCoordinates(warnings[i].range.end);
-                            marker.type = MarkerType_Warning;
-                            marker.begCol = first.mColumn;
-                            marker.endCol = last.mColumn;
-                            marker.prio = INT32_MAX - 1;   // Ensures marker is rendered on top (but bellow an error)
-                            marker.bgColor = IM_COL32(255, 255, 0, 128);
-                            marker.hoverBgColor = 0;
-                            marker.text = std::string(warnings[i].text.ptr, warnings[i].text.len);
-                            marker.payload = warnings[i].context;
-                            marker.line = first.mLine + 1;
-                            state.editor.AddMarker(marker);
+                            script_editor::markers_add(markers, script_editor::MarkerType_Warning, INT32_MAX - 1, warnings[i].range, warnings[i].text, warnings[i].context);
                         }
 
                         const size_t num_tokens = md_script_ir_num_vis_tokens(state.script.ir);
                         const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(state.script.ir);
                         for (size_t i = 0; i < num_tokens; ++i) {
-                            const md_script_vis_token_t& vis_tok = vis_tokens[i];
-                            TextEditor::Marker marker = {0};
-                            auto first = state.editor.GetCharacterCoordinates(vis_tok.range.beg);
-                            auto last  = state.editor.GetCharacterCoordinates(vis_tok.range.end);
-                            marker.type = MarkerType_Visualization;
-                            marker.begCol = first.mColumn;
-                            marker.endCol = last.mColumn;
-                            marker.prio = vis_tok.depth;
-                            marker.bgColor = 0;
-                            marker.hoverBgColor = IM_COL32(255, 255, 255, 128);
-                            marker.text = std::string(vis_tok.text.ptr, vis_tok.text.len);
-                            marker.payload = (void*)vis_tok.payload;
-                            marker.line = first.mLine + 1;
-                            state.editor.AddMarker(marker);
+                            const md_script_vis_token_t& tok = vis_tokens[i];
+                            script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.payload);
                         }
 
                         if (md_script_ir_valid(state.script.ir)) {
@@ -1195,7 +1156,8 @@ int main(int argc, char** argv) {
             POP_CPU_SECTION();
         }
 
-        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
+        // F1 in the script editor looks up the word under the cursor instead (see draw_script_editor_window)
+        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT) && !state.editor_focused) {
 			ViewFitRequest fit_request = {
 				.app = state,
 				.surface_id = interaction_surface_main,
@@ -2890,8 +2852,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
                     snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1);
                     if (ImGui::MenuItem(buf)) {
-                        state->editor.AppendText("\n");
-                        state->editor.AppendText(buf);
+                        script_editor::append_line(state->editor, str_from_cstr(buf));
                         ImGui::CloseCurrentPopup();
                     }
                     if (ImGui::IsItemHovered()) {
@@ -2906,8 +2867,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
                         snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            state->editor.AppendText("\n");
-                            state->editor.AppendText(buf);
+                            script_editor::append_line(state->editor, str_from_cstr(buf));
                             ImGui::CloseCurrentPopup();
                         }
                         if (ImGui::IsItemHovered()) {
@@ -2918,8 +2878,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         const int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            state->editor.AppendText("\n");
-                            state->editor.AppendText(buf);
+                            script_editor::append_line(state->editor, str_from_cstr(buf));
                             ImGui::CloseCurrentPopup();
                         }
                         if (ImGui::IsItemHovered()) {
@@ -2931,8 +2890,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = distance(%i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
-                                state->editor.AppendText("\n");
-                                state->editor.AppendText(buf);
+                                script_editor::append_line(state->editor, str_from_cstr(buf));
                                 ImGui::CloseCurrentPopup();
                             }
                             if (ImGui::IsItemHovered()) {
@@ -2947,8 +2905,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
                     snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1);
                     if (ImGui::MenuItem(buf)) {
-                        state->editor.AppendText("\n");
-                        state->editor.AppendText(buf);
+                        script_editor::append_line(state->editor, str_from_cstr(buf));
                         ImGui::CloseCurrentPopup();
                     }
                     if (ImGui::IsItemHovered()) {
@@ -2964,8 +2921,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
                         snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            state->editor.AppendText("\n");
-                            state->editor.AppendText(buf);
+                            script_editor::append_line(state->editor, str_from_cstr(buf));
                             ImGui::CloseCurrentPopup();
                         }
                         if (ImGui::IsItemHovered()) {
@@ -2976,8 +2932,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            state->editor.AppendText("\n");
-                            state->editor.AppendText(buf);
+                            script_editor::append_line(state->editor, str_from_cstr(buf));
                             ImGui::CloseCurrentPopup();
                         }
                         if (ImGui::IsItemHovered()) {
@@ -2989,8 +2944,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = angle(%i, %i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
-                                state->editor.AppendText("\n");
-                                state->editor.AppendText(buf);
+                                script_editor::append_line(state->editor, str_from_cstr(buf));
                                 ImGui::CloseCurrentPopup();
                             }
                             if (ImGui::IsItemHovered()) {
@@ -3005,8 +2959,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
                     snprintf(buf, sizeof(buf), "%.*s = dihedral(%i, %i, %i, %i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1);
                     if (ImGui::MenuItem(buf)) {
-                        state->editor.AppendText("\n");
-                        state->editor.AppendText(buf);
+                        script_editor::append_line(state->editor, str_from_cstr(buf));
                         ImGui::CloseCurrentPopup();
                     }
                     if (ImGui::IsItemHovered()) {
@@ -3023,8 +2976,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
                         snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in residue(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, res_idx+1);
                         if (ImGui::MenuItem(buf)) {
-                            state->editor.AppendText("\n");
-                            state->editor.AppendText(buf);
+                            script_editor::append_line(state->editor, str_from_cstr(buf));
                             ImGui::CloseCurrentPopup();
                         }
                         if (ImGui::IsItemHovered()) {
@@ -3035,8 +2987,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         int32_t resid = md_component_seq_id(&state->mold.sys.component, res_idx);
                         snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resid(%i);", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, resid);
                         if (ImGui::MenuItem(buf)) {
-                            state->editor.AppendText("\n");
-                            state->editor.AppendText(buf);
+                            script_editor::append_line(state->editor, str_from_cstr(buf));
                             ImGui::CloseCurrentPopup();
                         }
                         if (ImGui::IsItemHovered()) {
@@ -3048,8 +2999,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         if (resname) {
                             snprintf(buf, sizeof(buf), STR_FMT " = dihedral(%i, %i, %i, %i) in resname(\"" STR_FMT "\");", STR_ARG(ident), idx[0]+1, idx[1]+1, idx[2]+1, idx[3]+1, STR_ARG(resname));
                             if (ImGui::MenuItem(buf)) {
-                                state->editor.AppendText("\n");
-                                state->editor.AppendText(buf);
+                                script_editor::append_line(state->editor, str_from_cstr(buf));
                                 ImGui::CloseCurrentPopup();
                             }
                             if (ImGui::IsItemHovered()) {
@@ -3075,8 +3025,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 						ptr = buf;
                     }
                     if (ImGui::MenuItem(ptr)) {
-                        state->editor.AppendText("\n");
-                        state->editor.AppendText(s.ptr);
+                        script_editor::append_line(state->editor, s);
                         ImGui::CloseCurrentPopup();
                     }
                 }
@@ -5674,8 +5623,7 @@ static void draw_script_reference_window(ApplicationState* state) {
     const script_reference::Action action = script_reference::draw_window(&state->show_script_reference_window);
     if (!str_empty(action.insert_code)) {
         // Examples go in as whole lines at the cursor of the script editor
-        if (state->editor.GetCursorPosition().mColumn > 0) state->editor.InsertText("\n");
-        state->editor.InsertText(action.insert_code.ptr);
+        script_editor::insert_lines_at_cursor(state->editor, action.insert_code);
         state->show_script_window = true;
     }
 }
@@ -5716,31 +5664,34 @@ static void draw_script_editor_window(ApplicationState* state) {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Edit")) {
-                bool ro = state->editor.IsReadOnly();
+                bool ro = state->editor.IsReadOnlyEnabled();
                 if (ImGui::MenuItem("Read-only mode", nullptr, &ro))
-                    state->editor.SetReadOnly(ro);
+                    state->editor.SetReadOnlyEnabled(ro);
                 ImGui::Separator();
 
-                if (ImGui::MenuItem("Undo", "ALT-Backspace", nullptr, !ro && state->editor.CanUndo()))
+                const bool sel = state->editor.AnyCursorHasSelection();
+                if (ImGui::MenuItem("Undo", "Ctrl-Z", nullptr, !ro && state->editor.CanUndo()))
                     state->editor.Undo();
                 if (ImGui::MenuItem("Redo", "Ctrl-Y", nullptr, !ro && state->editor.CanRedo()))
                     state->editor.Redo();
 
                 ImGui::Separator();
 
-                if (ImGui::MenuItem("Copy", "Ctrl-C", nullptr, state->editor.HasSelection()))
+                if (ImGui::MenuItem("Copy", "Ctrl-C", nullptr, sel))
                     state->editor.Copy();
-                if (ImGui::MenuItem("Cut", "Ctrl-X", nullptr, !ro && state->editor.HasSelection()))
+                if (ImGui::MenuItem("Cut", "Ctrl-X", nullptr, !ro && sel))
                     state->editor.Cut();
-                if (ImGui::MenuItem("Delete", "Del", nullptr, !ro && state->editor.HasSelection()))
-                    state->editor.Delete();
+                if (ImGui::MenuItem("Delete", "Del", nullptr, !ro && sel))
+                    state->editor.ReplaceTextInAllCursors("");
                 if (ImGui::MenuItem("Paste", "Ctrl-V", nullptr, !ro && ImGui::GetClipboardText() != nullptr))
                     state->editor.Paste();
 
                 ImGui::Separator();
 
-                if (ImGui::MenuItem("Select all", nullptr, nullptr))
-                    state->editor.SetSelection(TextEditor::Coordinates(), TextEditor::Coordinates(state->editor.GetTotalLines(), 0));
+                if (ImGui::MenuItem("Select all", "Ctrl-A"))
+                    state->editor.SelectAll();
+                if (ImGui::MenuItem("Find / Replace", "Ctrl-F"))
+                    state->editor.OpenFindReplaceWindow();
 
                 ImGui::EndMenu();
             }
@@ -5750,7 +5701,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 if (ImGui::MenuItem("Light palette"))
                     state->editor.SetPalette(TextEditor::GetLightPalette());
                 if (ImGui::MenuItem("Retro blue palette"))
-                    state->editor.SetPalette(TextEditor::GetRetroBluePalette());
+                    state->editor.SetPalette(script_editor::retro_blue_palette());
                 ImGui::Separator();
                 ImGui::ColorEdit4("Point Color",    state->script.point_color.elem);
                 ImGui::ColorEdit4("Line Color",     state->script.line_color.elem);
@@ -5763,7 +5714,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 if (ImGui::MenuItem("Script reference", "F1")) {
                     open_script_reference(state, {});
                 }
-                const std::string word = state->editor.GetWordAtCursor();
+                const std::string word = script_editor::word_at_cursor(state->editor);
                 char label[128];
                 if (word.empty()) snprintf(label, sizeof(label), "Look up word under cursor");
                 else snprintf(label, sizeof(label), "Look up '%s'", word.c_str());
@@ -5776,27 +5727,39 @@ static void draw_script_editor_window(ApplicationState* state) {
             ImGui::EndMenuBar();
         }
 
-        if (state->editor.IsTextChanged()) {
-            state->script.compile_ir = true;
-            state->script.time_since_last_change = 0;
-        }
-
         const ImVec2 content_size = ImGui::GetContentRegionAvail();
         const char* btn_text = "Evaluate";
         const ImVec2 label_size = ImGui::CalcTextSize(btn_text, NULL, true) * ImVec2(1.4, 1.0);
         const ImVec2 btn_size = ImGui::CalcItemSize(ImVec2(0,0), label_size.x + ImGui::GetStyle().FramePadding.x * 2.0f, label_size.y + ImGui::GetStyle().FramePadding.y * 2.0f);
         const ImVec2 text_size(content_size - ImVec2(0, btn_size.y + ImGui::GetStyle().ItemSpacing.y));
 
-        state->editor.Render("TextEditor", text_size);
-        bool editor_hovered = ImGui::IsItemHovered();
-        if (state->editor.IsFocused() && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
-            // F1 looks up the word under the cursor in the script reference
-            const std::string word = state->editor.GetWordAtCursor();
-            open_script_reference(state, {word.data(), word.size()});
-        }
+        // Shift+Enter evaluates the script. The editor binds it to "insert line above", so claim it before the editor
+        // sees it (shortcut routes are resolved from the previous frame, hence the focus from the last draw).
         bool eval = false;
-        if (state->editor.IsFocused() && ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
+        if (state->editor_focused &&
+            ImGui::Shortcut(KEY_SCRIPT_EVALUATE_MOD | KEY_SCRIPT_EVALUATE, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_RouteOverFocused)) {
             eval = true;
+        }
+
+        // While a visualization is hovered, the mouse wheel steps through its elements instead of scrolling
+        const script_editor::Marker* prev_hovered = script_editor::markers_hovered(&state->editor_markers);
+        ImGuiWindowFlags editor_flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar;
+        if (prev_hovered && prev_hovered->type == script_editor::MarkerType_Visualization) {
+            editor_flags |= ImGuiWindowFlags_NoScrollWithMouse;
+        }
+
+        if (state->editor.Render("TextEditor", text_size, ImGuiChildFlags_None, editor_flags)) {
+            state->script.compile_ir = true;
+            state->script.time_since_last_change = 0;
+        }
+        const bool editor_hovered = ImGui::IsItemHovered();
+        state->editor_focused = script_editor::has_focus_after_render();
+        const script_editor::Marker* hovered_marker = script_editor::markers_update(&state->editor_markers, &state->editor, editor_hovered);
+
+        if (state->editor_focused && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+            // F1 looks up the word under the cursor in the script reference
+            const std::string word = script_editor::word_at_cursor(state->editor);
+            open_script_reference(state, {word.data(), word.size()});
         }
 
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
@@ -5817,26 +5780,25 @@ static void draw_script_editor_window(ApplicationState* state) {
             md_bitfield_clear(&state->selection.highlight_mask);
         }
 
-        const TextEditor::Marker* hovered_marker = state->editor.GetHoveredMarker();
         if (hovered_marker) {
-            if (!hovered_marker->text.empty()) {
+            if (!str_empty(hovered_marker->text)) {
                 ImGui::BeginTooltip();
-                ImGui::Text("%.*s", (int)hovered_marker->text.length(), hovered_marker->text.c_str());
+                ImGui::Text(STR_FMT, STR_ARG(hovered_marker->text));
                 if (state->script.sub_idx != -1) {
                     ImGui::Text("Currently inspected idx: %i", state->script.sub_idx + 1);
                 }
                 ImGui::EndTooltip();
             }
-            if (hovered_marker->payload) {
-                if (hovered_marker->type == MarkerType_Error || hovered_marker->type == MarkerType_Warning) {
-                    const md_bitfield_t* bf = (const md_bitfield_t*)hovered_marker->payload;
-                    md_bitfield_copy(&state->selection.highlight_mask, bf);
+            if (hovered_marker->atoms || hovered_marker->payload) {
+                if (hovered_marker->atoms) {
+                    // Errors and warnings: the atoms the message is about
+                    md_bitfield_copy(&state->selection.highlight_mask, hovered_marker->atoms);
                 }
-                else if (hovered_marker->type == MarkerType_Visualization) {
+                else if (hovered_marker->type == script_editor::MarkerType_Visualization) {
                     // Clear hovered property
                     script_set_hovered_property(state, STR_LIT(""));
                     if (md_script_ir_valid(state->script.ir)) {
-                        const md_script_vis_payload_o* payload = (const md_script_vis_payload_o*)hovered_marker->payload;
+                        const md_script_vis_payload_o* payload = hovered_marker->payload;
                         str_t payload_ident = md_script_payload_ident(payload);
                         int payload_dim  = md_script_payload_dim(payload); 
 

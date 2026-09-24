@@ -32,7 +32,7 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-#include <TextEditor.h>
+#include <script_editor.h>
 #include <implot.h>
 #include <imgui_notify.h>
 
@@ -85,7 +85,6 @@ constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
 constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F1;
 
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
-constexpr str_t SCRIPT_IMPORT_FILE_EXTENSIONS[] = { STR_LIT("edr"), STR_LIT("xvg"), STR_LIT("csv") };
 
 typedef uint64_t PickingDomainID;
 typedef uint64_t PickingSourceID;
@@ -1618,7 +1617,11 @@ struct ApplicationState {
     bool show_debug_window = false;
     bool show_property_export_window = false;
 
+    bool show_script_reference_window = false;
+
     TextEditor editor = {};
+    script_editor::Markers editor_markers = {};
+    bool editor_focused = false;    // the script editor had keyboard focus when it was last drawn
 };
 
 struct ViamdEventHandler : viamd::EventHandler {
@@ -1627,7 +1630,6 @@ struct ViamdEventHandler : viamd::EventHandler {
     explicit ViamdEventHandler(ApplicationState* s) : state(s) {
         ASSERT(state);
         viamd::event_system_register_handler(*this);
-    bool show_script_reference_window = false;
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final;
