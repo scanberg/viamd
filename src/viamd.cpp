@@ -4858,6 +4858,15 @@ void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flag
 }
 
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx) {
-    state->hovered_display_property_label = label;
+    // The label is copied. A label too long to fit cannot name a display property (their labels are shorter), so it
+    // is the same as none.
+    char* dst = state->hovered_display_property_label;
+    const size_t cap = sizeof(state->hovered_display_property_label);
+    if (label.ptr && label.len < cap) {
+        MEMCPY(dst, label.ptr, label.len);
+        dst[label.len] = '\0';
+    } else {
+        dst[0] = '\0';
+    }
     state->hovered_display_property_pop_idx = population_idx;
 }
