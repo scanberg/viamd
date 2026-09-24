@@ -34,34 +34,45 @@
 
 namespace {
 
-void append_utf8(std::string& s, unsigned cp) {
+// Writes the UTF-8 encoding of cp to out (room for 4 bytes) and returns its length.
+int encode_utf8(char* out, unsigned cp) {
 	if (cp < 0x80) {
-		s += (char)cp;
+		out[0] = (char)cp;
+		return 1;
 	} else if (cp < 0x800) {
-		s += (char)(0xC0 | (cp >> 6));
-		s += (char)(0x80 | (cp & 0x3F));
+		out[0] = (char)(0xC0 | (cp >> 6));
+		out[1] = (char)(0x80 | (cp & 0x3F));
+		return 2;
 	} else if (cp < 0x10000) {
-		s += (char)(0xE0 | (cp >> 12));
-		s += (char)(0x80 | ((cp >> 6) & 0x3F));
-		s += (char)(0x80 | (cp & 0x3F));
-	} else {
-		s += (char)(0xF0 | (cp >> 18));
-		s += (char)(0x80 | ((cp >> 12) & 0x3F));
-		s += (char)(0x80 | ((cp >> 6) & 0x3F));
-		s += (char)(0x80 | (cp & 0x3F));
+		out[0] = (char)(0xE0 | (cp >> 12));
+		out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+		out[2] = (char)(0x80 | (cp & 0x3F));
+		return 3;
+	} else if (cp < 0x110000) {
+		out[0] = (char)(0xF0 | (cp >> 18));
+		out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+		out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+		out[3] = (char)(0x80 | (cp & 0x3F));
+		return 4;
 	}
+	return 0;
 }
 
-// Decodes "&name;" / "&#123;" / "&#x1F;". Returns an empty string for entities we do not know.
-std::string decode_entity(const char* str, const char* end) {
-	std::string out;
-	if (end - str < 3 || str[0] != '&' || end[-1] != ';') return out;
-	const std::string name(str + 1, end - 1);
+// Decodes "&name;" / "&#123;" / "&#x1F;" into out (room for 4 bytes) and returns the length, 0 for entities we do
+// not know.
+int decode_entity(char* out, const char* str, const char* end) {
+	if (end - str < 3 || str[0] != '&' || end[-1] != ';') return 0;
+	const char* name = str + 1;
+	const size_t len = (size_t)(end - 1 - name);
 	if (name[0] == '#') {
-		const bool hex = name.size() > 1 && (name[1] == 'x' || name[1] == 'X');
-		const unsigned cp = (unsigned)strtoul(name.c_str() + (hex ? 2 : 1), nullptr, hex ? 16 : 10);
-		if (cp) append_utf8(out, cp);
-		return out;
+		const bool hex = len > 1 && (name[1] == 'x' || name[1] == 'X');
+		char digits[16];
+		const size_t skip = hex ? 2 : 1;
+		if (len <= skip || len - skip >= sizeof(digits)) return 0;
+		memcpy(digits, name + skip, len - skip);
+		digits[len - skip] = 0;
+		const unsigned cp = (unsigned)strtoul(digits, nullptr, hex ? 16 : 10);
+		return cp ? encode_utf8(out, cp) : 0;
 	}
 	static const struct { const char* name; unsigned cp; } table[] = {
 		{"amp", '&'}, {"lt", '<'}, {"gt", '>'}, {"quot", '"'}, {"apos", '\''}, {"nbsp", ' '},
@@ -70,9 +81,9 @@ std::string decode_entity(const char* str, const char* end) {
 		{"le", 0x2264}, {"ge", 0x2265}, {"pi", 0x3C0}, {"Aring", 0xC5},
 	};
 	for (const auto& e : table) {
-		if (name == e.name) { append_utf8(out, e.cp); return out; }
+		if (strlen(e.name) == len && memcmp(e.name, name, len) == 0) return encode_utf8(out, e.cp);
 	}
-	return out;
+	return 0;
 }
 
 ImVec4 mix(const ImVec4& a, const ImVec4& b, float t) {
@@ -90,7 +101,8 @@ ImVec4 emphasize(const ImVec4& c, float t) {
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TablePrepass {
-	std::vector<std::vector<float>>* out = nullptr;
+	std::vector<float>* weights = nullptr;
+	std::vector<int>*   offsets = nullptr;
 	int   col     = 0;
 	float len     = 0.0f;
 	bool  in_cell = false;
@@ -120,9 +132,11 @@ imgui_md::imgui_md()
 void imgui_md::prepass_tables(const char* str, const char* str_end)
 {
 	m_table_weights.clear();
+	m_table_offsets.clear();
 
 	TablePrepass state;
-	state.out = &m_table_weights;
+	state.weights = &m_table_weights;
+	state.offsets = &m_table_offsets;
 
 	MD_PARSER p = {};
 	p.abi_version = 0;
@@ -130,7 +144,8 @@ void imgui_md::prepass_tables(const char* str, const char* str_end)
 	p.enter_block = [](MD_BLOCKTYPE t, void* d, void* u) {
 		TablePrepass& s = *(TablePrepass*)u;
 		if (t == MD_BLOCK_TABLE) {
-			s.out->emplace_back((size_t)((MD_BLOCK_TABLE_DETAIL*)d)->col_count, kMinColumnWeight);
+			s.offsets->push_back((int)s.weights->size());
+			s.weights->resize(s.weights->size() + ((MD_BLOCK_TABLE_DETAIL*)d)->col_count, kMinColumnWeight);
 		} else if (t == MD_BLOCK_TR) {
 			s.col = 0;
 		} else if (t == MD_BLOCK_TH || t == MD_BLOCK_TD) {
@@ -142,9 +157,10 @@ void imgui_md::prepass_tables(const char* str, const char* str_end)
 	p.leave_block = [](MD_BLOCKTYPE t, void*, void* u) {
 		TablePrepass& s = *(TablePrepass*)u;
 		if (t == MD_BLOCK_TH || t == MD_BLOCK_TD) {
-			auto& w = s.out->back();
-			if ((size_t)s.col < w.size()) {
-				w[s.col] = std::max(w[s.col], std::min(s.len, kMaxColumnWeight));
+			const size_t i = (size_t)s.offsets->back() + (size_t)s.col;
+			if (i < s.weights->size()) {
+				float& w = (*s.weights)[i];
+				w = std::max(w, std::min(s.len, kMaxColumnWeight));
 			}
 			++s.col;
 			s.in_cell = false;
@@ -220,9 +236,9 @@ float imgui_md::get_block_gap() const
 	return ImGui::GetFontSize() * 0.3f;
 }
 
-void imgui_md::open_url(const std::string&) {}
+void imgui_md::open_url(const char*, const char*) {}
 
-void imgui_md::on_heading(int, const std::string&, float) {}
+void imgui_md::on_heading(int, float) {}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Layout helpers
@@ -306,7 +322,7 @@ void imgui_md::render_text(const char* str, const char* end)
 				c = emphasize(c, 0.35f);
 				ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 				if (m_href[0] != '#') ImGui::SetTooltip("%s", m_href.c_str());
-				if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) open_url(m_href);
+				if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) open_url(m_href.c_str(), m_href.c_str() + m_href.size());
 			} else {
 				c.w *= 0.55f;
 			}
@@ -336,10 +352,10 @@ void imgui_md::render_text(const char* str, const char* end)
 
 bool imgui_md::render_entity(const char* str, const char* end)
 {
-	const std::string s = decode_entity(str, end);
-	if (s.empty()) return false;
-	if (m_hlevel) m_heading_text += s;
-	render_text(s.data(), s.data() + s.size());
+	char buf[4];
+	const int len = decode_entity(buf, str, end);
+	if (len == 0) return false;
+	render_text(buf, buf + len);
 	return true;
 }
 
@@ -443,10 +459,9 @@ void imgui_md::BLOCK_H(const MD_BLOCK_H_DETAIL* d, bool e)
 			ImGui::Dummy(ImVec2(0.0f, get_block_gap() * (d->level <= 3 ? 1.5f : 0.5f)));
 		}
 		m_hlevel = d->level;
-		m_heading_text.clear();
 		m_heading_y = ImGui::GetCursorScreenPos().y;
 	} else {
-		on_heading((int)d->level, m_heading_text, m_heading_y);
+		on_heading((int)d->level, m_heading_y);
 		m_hlevel = 0;
 		end_line();
 		if (d->level <= 2) ImGui::Separator();
@@ -465,23 +480,25 @@ void imgui_md::BLOCK_CODE(const MD_BLOCK_CODE_DETAIL* d, bool e)
 		if (!m_skip) {
 			block_gap();
 			ImGui::PushID(m_code_index);
-			render_code_block(m_code_lang, m_code_buf);
+			const char* lang = m_code_lang.c_str();
+			const char* code = m_code_buf.c_str();
+			render_code_block(lang, lang + m_code_lang.size(), code, code + m_code_buf.size());
 			ImGui::PopID();
 		}
 		++m_code_index;
 	}
 }
 
-void imgui_md::render_code_block(const std::string&, const std::string& code)
+void imgui_md::render_code_block(const char*, const char*, const char* code, const char* code_end)
 {
 	const ImGuiStyle& style = ImGui::GetStyle();
 	const float pad = style.FramePadding.y + 2.0f;
-	const ImVec2 sz = ImGui::CalcTextSize(code.c_str(), code.c_str() + code.size());
+	const ImVec2 sz = ImGui::CalcTextSize(code, code_end);
 	const ImVec2 p = ImGui::GetCursorScreenPos();
 	const float w = ImGui::GetContentRegionAvail().x;
 	ImDrawList* dl = ImGui::GetWindowDrawList();
 	dl->AddRectFilled(p, ImVec2(p.x + w, p.y + sz.y + pad * 2.0f), ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
-	dl->AddText(ImVec2(p.x + pad, p.y + pad), ImGui::GetColorU32(ImGuiCol_Text), code.c_str(), code.c_str() + code.size());
+	dl->AddText(ImVec2(p.x + pad, p.y + pad), ImGui::GetColorU32(ImGuiCol_Text), code, code_end);
 	ImGui::Dummy(ImVec2(w, sz.y + pad * 2.0f));
 }
 
@@ -503,14 +520,15 @@ void imgui_md::BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL* d, bool e)
 		++m_table_index;
 		m_table_ncols = (int)d->col_count;
 		char id[32];
-		snprintf(id, sizeof(id), "##mdtable%d", m_table_counter++);
+		snprintf(id, sizeof(id), "##mdtable%d", m_table_index);
 		const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoSavedSettings;
 		if (ImGui::BeginTable(id, m_table_ncols, flags)) {
 			m_in_table = true;
 			for (int c = 0; c < m_table_ncols; ++c) {
 				float w = kMinColumnWeight;
-				if ((size_t)m_table_index < m_table_weights.size() && (size_t)c < m_table_weights[m_table_index].size()) {
-					w = m_table_weights[m_table_index][c];
+				if ((size_t)m_table_index < m_table_offsets.size()) {
+					const size_t i = (size_t)m_table_offsets[m_table_index] + (size_t)c;
+					if (i < m_table_weights.size()) w = m_table_weights[i];
 				}
 				ImGui::TableSetupColumn(nullptr, ImGuiTableColumnFlags_WidthStretch, w);
 			}
@@ -582,17 +600,14 @@ int imgui_md::text(MD_TEXTTYPE type, const char* str, const char* str_end)
 	switch (type) {
 	case MD_TEXT_NORMAL:
 	case MD_TEXT_CODE:
-		if (m_hlevel) m_heading_text.append(str, str_end);
 		render_text(str, str_end);
 		break;
 	case MD_TEXT_ENTITY:
 		if (!render_entity(str, str_end)) {
-			if (m_hlevel) m_heading_text.append(str, str_end);
 			render_text(str, str_end);
 		}
 		break;
 	case MD_TEXT_SOFTBR:
-		if (m_hlevel) m_heading_text += ' ';
 		render_text(" ", " " + 1);
 		break;
 	case MD_TEXT_BR:

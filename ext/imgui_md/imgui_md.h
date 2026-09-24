@@ -13,6 +13,8 @@
  *   - Code blocks are collected and handed to render_code_block(), which derived classes can override to add
  *     syntax colouring, copy buttons, etc.
  *   - Headings report themselves through on_heading() so a host can scroll to them.
+ *   - Hooks take [begin, end) ranges instead of std::string. Keep one instance alive and call print() every frame:
+ *     its buffers are reused, so drawing does not allocate once they have grown to fit the document.
  *   - Lists, block quotes, entities, and a few inline HTML tags (<br>) are handled; other HTML is ignored.
  *   - Images are not rendered.
  */
@@ -63,15 +65,18 @@ protected:
 	////////////////////////////////////////////////////////////////////////////
 	// Hooks for derived classes
 
+	// Strings passed to the hooks are [begin, end) ranges that are only valid during the call. They are also zero
+	// terminated at 'end', so they can be handed to functions that expect a C string.
+
 	// Draw a fenced / indented code block. 'lang' is the info string (may be empty).
 	// Default: a framed, non-scrolling monospace box.
-	virtual void render_code_block(const std::string& lang, const std::string& code);
+	virtual void render_code_block(const char* lang, const char* lang_end, const char* code, const char* code_end);
 
 	// Called when a heading has been laid out. 'screen_y' is the y position (screen space) of its top.
-	virtual void on_heading(int level, const std::string& text, float screen_y);
+	virtual void on_heading(int level, float screen_y);
 
 	// A link was clicked. 'url' is the raw destination ("#anchor", "https://...").
-	virtual void open_url(const std::string& url);
+	virtual void open_url(const char* url, const char* url_end);
 
 	// Font size multiplier and text colour for the *current* state (m_hlevel, m_is_strong, m_is_code, m_href, ...).
 	virtual float  get_text_scale() const;
@@ -115,8 +120,7 @@ private:
 	bool  m_skip        = false; // inside a table that is completely clipped
 
 	// Headings
-	std::string m_heading_text;
-	float       m_heading_y = 0.0f;
+	float m_heading_y = 0.0f;
 
 	// Code blocks
 	bool        m_in_code_block = false;
@@ -136,11 +140,11 @@ private:
 	std::vector<float> m_quote_stack;
 
 	// Tables
-	int                                m_table_counter = 0;
-	int                                m_table_index   = 0;  // index of the table being drawn (document order)
-	bool                               m_in_table      = false;
-	int                                m_table_ncols   = 0;
-	std::vector<std::vector<float>>    m_table_weights;      // per table, per column
+	int                m_table_index = 0;    // index of the table being drawn (document order), also its ImGui id
+	bool               m_in_table    = false;
+	int                m_table_ncols = 0;
+	std::vector<float> m_table_weights;      // column weights of all tables, back to back
+	std::vector<int>   m_table_offsets;      // per table: index of its first column in m_table_weights
 
 	void prepass_tables(const char* str, const char* str_end);
 
