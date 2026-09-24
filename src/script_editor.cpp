@@ -8,6 +8,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <vector>
+
 namespace script_editor {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -26,26 +28,17 @@ const TextEditor::Language* language() {
         lang.hasDoubleQuotedStrings = true;
         lang.stringEscape = '\\';
 
-        static const char* const keywords[] = {
-            "and", "or", "not", "in", "out",
-        };
-        for (const char* k : keywords) lang.keywords.insert(k);
-
-        static const char* const identifiers[] = {
-            "sqrt", "cbrt", "abs", "floor", "ceil", "cos", "sin", "asin", "acos", "atan", "log", "exp", "log2", "exp2", "log10", "atan", "atan2", "pow",
-            "dot", "cross", "mul", "vec2", "vec3", "vec4",
-            "atoms", "residues", "chains",
-            "all", "type", "name", "label", "element", "atom",
-            "resname", "residue", "resid",
-            "chain",
-            "x", "y", "z", "within",
-            "distance", "distance_min", "distance_max", "distance_pair",
-            "angle", "dihedral",
-            "rmsd",
-            "rdf", "sdf",
-            "com", "plane",
-        };
-        for (const char* id : identifiers) lang.identifiers.insert(id);
+        // Keywords and built-in names come from mdlib, so the colouring follows the language
+        const str_t* keywords = md_script_keywords();
+        for (size_t i = 0; i < md_script_num_keywords(); ++i) {
+            lang.keywords.emplace(keywords[i].ptr, keywords[i].len);
+        }
+        const size_t num_identifiers = md_script_builtin_identifiers(nullptr, 0);
+        std::vector<str_t> identifiers(num_identifiers);
+        md_script_builtin_identifiers(identifiers.data(), identifiers.size());
+        for (str_t id : identifiers) {
+            lang.identifiers.emplace(id.ptr, id.len);
+        }
 
         // mdscript identifiers, numbers and punctuation follow C, so reuse the editor's own C tokenizers
         const TextEditor::Language* c = TextEditor::Language::C();
