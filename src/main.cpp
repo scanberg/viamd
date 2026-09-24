@@ -64,6 +64,7 @@
 #include <string>
 
 #include <viamd.h>
+#include <script_reference.h>
 #include <viamd_event.h>
 #include <event.h>
 
@@ -324,6 +325,8 @@ static void draw_timeline_window(ApplicationState* state);
 static void draw_distribution_window(ApplicationState* state);
 static void draw_async_task_window(ApplicationState* state);
 static void draw_script_editor_window(ApplicationState* state);
+static void draw_script_reference_window(ApplicationState* state);
+static void open_script_reference(ApplicationState* state, const std::string& topic);
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
 
 static void draw_debug_window(ApplicationState* state);
@@ -675,6 +678,7 @@ int main(int argc, char** argv) {
 
         // GUI
         if (state.show_script_window) draw_script_editor_window(&state);
+        if (state.show_script_reference_window) draw_script_reference_window(&state);
         if (state.load_dataset.show_window) draw_load_dataset_window(&state);
         if (state.representation.show_window) draw_representations_window(&state);
         if (state.distributions.show_window) draw_distribution_window(&state);
@@ -1907,6 +1911,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Animation", &data->animation.show_window);
             ImGui::Checkbox("Representations", &data->representation.show_window);
             ImGui::Checkbox("Script Editor", &data->show_script_window);
+            ImGui::Checkbox("Script Reference", &data->show_script_reference_window);
             ImGui::Checkbox("Timelines", &data->timeline.show_window);
             ImGui::Checkbox("Distributions", &data->distributions.show_window);
             ImGui::Checkbox("Structure Export", &data->structure_export.show_window);
@@ -5651,6 +5656,31 @@ static void draw_debug_window(ApplicationState* data) {
     ImGui::End();
 }
 
+static void open_script_reference(ApplicationState* state, const std::string& topic) {
+    ASSERT(state);
+    ScriptReference& ref = script_reference();
+    if (!topic.empty() && !ref.show(topic.c_str())) {
+        ref.search(topic.c_str());  // not a known name: show what mentions it instead
+    }
+    if (topic.empty()) ref.focus_search();
+    state->show_script_reference_window = true;
+    ImGui::SetWindowFocus("Script Reference");
+}
+
+static void draw_script_reference_window(ApplicationState* state) {
+    ASSERT(state);
+    ScriptReference& ref = script_reference();
+    // Example blocks have an Insert button which puts the code at the cursor of the script editor
+    ref.on_insert_code = [state](const std::string& code) {
+        std::string text = code;
+        if (text.empty() || text.back() != '\n') text += '\n';
+        if (state->editor.GetCursorPosition().mColumn > 0) text.insert(text.begin(), '\n');
+        state->editor.InsertText(text);
+        state->show_script_window = true;
+    };
+    ref.draw_window(&state->show_script_reference_window, "Script Reference");
+}
+
 static void draw_script_editor_window(ApplicationState* state) {
     ASSERT(state);
 
@@ -5730,6 +5760,17 @@ static void draw_script_editor_window(ApplicationState* state) {
                 ImGui::ColorEdit4("Text Bg Color",  state->script.text_bg_color.elem);
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Help")) {
+                if (ImGui::MenuItem("Script reference", "F1")) {
+                    open_script_reference(state, "");
+                }
+                const std::string word = state->editor.GetWordAtCursor();
+                const std::string label = word.empty() ? std::string("Look up word under cursor") : "Look up '" + word + "'";
+                if (ImGui::MenuItem(label.c_str(), "F1", nullptr, !word.empty())) {
+                    open_script_reference(state, word);
+                }
+                ImGui::EndMenu();
+            }
 
             ImGui::EndMenuBar();
         }
@@ -5747,6 +5788,10 @@ static void draw_script_editor_window(ApplicationState* state) {
 
         state->editor.Render("TextEditor", text_size);
         bool editor_hovered = ImGui::IsItemHovered();
+        if (state->editor.IsFocused() && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+            // F1 looks up the word under the cursor in the script reference
+            open_script_reference(state, state->editor.GetWordAtCursor());
+        }
         bool eval = false;
         if (state->editor.IsFocused() && ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
             eval = true;

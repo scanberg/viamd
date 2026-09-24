@@ -1625,6 +1625,7 @@ struct ViamdEventHandler : viamd::EventHandler {
     explicit ViamdEventHandler(ApplicationState* s) : state(s) {
         ASSERT(state);
         viamd::event_system_register_handler(*this);
+    bool show_script_reference_window = false;
     }
 
     void process_events(const viamd::Event* events, size_t num_events) final;

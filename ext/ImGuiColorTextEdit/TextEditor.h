@@ -244,6 +244,7 @@ public:
 	void SetColorizerEnable(bool aValue);
 
 	Coordinates GetCursorPosition() const { return GetActualCursorCoordinates(); }
+	std::string GetWordAtCursor() const { return GetWordUnderCursor(); }
 	void SetCursorPosition(const Coordinates& aPosition);
 
 	Coordinates GetCharacterCoordinates(int aLinearIndex) const;
