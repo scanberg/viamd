@@ -1288,7 +1288,9 @@ struct ApplicationState {
     } mold;
 
     DisplayProperty* display_properties = nullptr;
-    str_t hovered_display_property_label = STR_LIT("");
+    // A copy, not a view: the labels it is set from live in display_properties and the script IR, which are
+    // rebuilt when the script recompiles, and the hover outlives that. Longer than any DisplayProperty::label.
+    char  hovered_display_property_label[64] = "";
     int   hovered_display_property_pop_idx = -1;
 
     // --- ASYNC TASKS HANDLES ---

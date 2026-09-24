@@ -1002,7 +1002,7 @@ int main(int argc, char** argv) {
                             marker.bgColor = IM_COL32(255, 255, 0, 128);
                             marker.hoverBgColor = 0;
                             marker.text = std::string(warnings[i].text.ptr, warnings[i].text.len);
-                            marker.payload = errors[i].context;
+                            marker.payload = warnings[i].context;
                             marker.line = first.mLine + 1;
                             state.editor.AddMarker(marker);
                         }
@@ -4769,11 +4769,11 @@ static void draw_timeline_window(ApplicationState* data) {
                             snprintf(hovered_label + len, (int)sizeof(hovered_label) - len, " %s", y_label);
                         }
                     } else {
-                        if (!str_empty(data->hovered_display_property_label)) {
+                        if (data->hovered_display_property_label[0] != '\0') {
                             for (int j = 0; j < num_props; ++j) {
                                 DisplayProperty& dp = data->display_properties[j];
                                 if (dp.type != DisplayProperty::Type_Temporal) continue;
-                                if (str_eq_cstr(data->hovered_display_property_label, dp.label)) {
+                                if (strcmp(data->hovered_display_property_label, dp.label) == 0) {
                                     hovered_prop_idx = j;
                                     hovered_pop_idx = data->hovered_display_property_pop_idx;
                                     break;
@@ -5333,11 +5333,11 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                         }
                     } else {
-                        if (!str_empty(data->hovered_display_property_label)) {
+                        if (data->hovered_display_property_label[0] != '\0') {
                             for (size_t j = 0; j < md_array_size(data->display_properties); ++j) {
                                 DisplayProperty& dp = data->display_properties[j];
                                 if (dp.type != DisplayProperty::Type_Distribution) continue;
-                                if (str_eq_cstr(data->hovered_display_property_label, dp.label)) {
+                                if (strcmp(data->hovered_display_property_label, dp.label) == 0) {
                                     hovered_prop_idx = (int)j;
                                     hovered_pop_idx = data->hovered_display_property_pop_idx;
                                     break;
