@@ -1,8 +1,17 @@
-// GISAXS component
+// Scattering component (grazing incidence small-angle scattering: GISAXS and GISANS)
 //
-// Computes the rotationally (azimuthally) averaged GISAXS intensity I(q_par, q_z) of the current system state.
-// The electron density is approximated with one Gaussian per particle (bead / atom). The heavy lifting is done
-// in mdlib (md_gisaxs), see md_gisaxs.h for a description of the method.
+// Computes the rotationally (azimuthally) averaged grazing incidence intensity I(q_par, q_z) of the current system
+// state, for X-rays (GISAXS) or neutrons (GISANS). The scattering density is approximated with one Gaussian per
+// particle (bead / atom). The heavy lifting is done in mdlib (md_gisaxs, which only sees scattering weights and
+// SLDs and is therefore radiation neutral), see md_gisaxs.h for a description of the method.
+//
+// The radiation only decides what the particle weights and the media are:
+//   X-rays:   weight = electrons, SLD = r_e * electron density. The background enters as a uniform contrast factor
+//             (see below), the particle material is characterized by its electron density.
+//   Neutrons: weight = excess coherent scattering length b - SLD_bg * V (neutron_core.h). The contrast is exact per
+//             particle, which is required for mixtures, partial deuteration, H/D exchange with the solvent and
+//             contrast matching, and it is why the background is part of the structure stage for neutrons.
+//             Optionally a flat (Born) incoherent background from the hydrogen content is added.
 //
 // The computation is split in two stages:
 //   1. Structure stage (heavy): slices, FFTs and ring averaged cross spectral matrices. Depends on the particle
@@ -10,10 +19,12 @@
 //   2. Model stage (cheap): DWBA / Born evaluation on top of stage 1. Depends on the beam, substrate and
 //      background (ambient) medium. Re-evaluated automatically when any of those change.
 //
-// The background medium enters in two places: as the ambient medium in the DWBA (refraction/reflection at the
-// substrate) and as a contrast factor for the particles, where every particle is assumed to displace a volume
+// X-rays: the background medium enters in two places: as the ambient medium in the DWBA (refraction/reflection at
+// the substrate) and as a contrast factor for the particles, where every particle is assumed to displace a volume
 // of background given by electrons / material electron density. With a common material density for all particles,
 // this is a uniform scale (1 - rho_bg / rho_mat)^2 of the intensity, which is why it lives in the cheap stage.
+// Neutrons: the background SLD is part of the particle weights (structure stage), the ambient medium of the DWBA
+// is in the model stage as for X-rays.
 
 #include <core/md_log.h>
 #include <core/md_allocator.h>
@@ -29,6 +40,7 @@
 #include <md_csv.h>
 
 #include "fibril_core.h"
+#include "neutron_core.h"
 
 #include <viamd_event.h>
 #include <viamd.h>
@@ -76,6 +88,38 @@ const MediumPreset substrate_presets[] = {
 };
 constexpr int SUB_CUSTOM = 2;
 
+enum Radiation : int { Radiation_Xray = 0, Radiation_Neutron = 1 };
+const char* radiation_lbl[] = {"X-rays (GISAXS)", "Neutrons (GISANS)"};
+
+// Neutron media, SLD and absorption SLD (imaginary part) in 10^-6 Å^-2. The absorption SLD is wavelength
+// independent (sigma_a ~ lambda), see neutron::absorption_sld. Incoherent attenuation is not included.
+struct SldPreset {
+    const char* name;
+    double sld;
+    double abs;
+};
+
+const SldPreset neutron_background_presets[] = {
+    {"Vacuum / air",     0.0, 0.0},
+    {"Water (H2O/D2O)",  0.0, 0.0},    // SLD from the D2O fraction
+    {"Custom",           0.0, 0.0},
+};
+constexpr int NBG_WATER = 1;
+constexpr int NBG_CUSTOM = 2;
+
+const SldPreset neutron_substrate_presets[] = {
+    {"Silicon",             2.07, 2.4e-5},  // 2.329 g/cm^3
+    {"SiO2 (fused silica)", 3.47, 1.1e-5},  // 2.2 g/cm^3
+    {"Quartz",              4.18, 1.3e-5},  // 2.65 g/cm^3
+    {"Sapphire (Al2O3)",    5.71, 3.0e-5},  // 3.98 g/cm^3
+    {"Gold",                4.50, 1.6e-2},  // 19.32 g/cm^3
+    {"Custom",              2.07, 0.0},
+};
+constexpr int NSUB_CUSTOM = 5;
+
+enum NeutronWeight : int { NeutronWeight_Constant = 0, NeutronWeight_Element = 1 };
+const char* neutron_weight_lbl[] = {"Constant per particle", "Per element (Sears 1992)"};
+
 // Experimental setups. Applying a preset sets the beam, the substrate optical constants, the q-range covered by the
 // detector and the default cut positions. Substrate optical constants are given as delta / beta at the preset's
 // wavelength, delta is converted to an electron density through delta = lambda^2 r_e rho_e / (2 pi).
@@ -104,6 +148,7 @@ struct BeamPreset {
     int    bs_specular_px;      // specular beamstop (square, px)
     // Film material
     double material_beta;
+    int    radiation = Radiation_Xray;
 };
 
 const BeamPreset beam_presets[] = {
@@ -170,9 +215,13 @@ enum ComputeState : int {
 
 }  // namespace
 
-struct Gisaxs : viamd::EventHandler {
+struct ScatteringComponent : viamd::EventHandler {
     ApplicationState* app_state = nullptr;
     bool show_window = false;
+
+    // --- Radiation ---
+    int radiation = Radiation_Xray;
+    int ctx_radiation = Radiation_Xray;          // Radiation the current ctx (particle weights) was computed for
 
     // --- Selection ---
     char filter[256] = "all";
@@ -186,6 +235,29 @@ struct Gisaxs : viamd::EventHandler {
     float sigma_constant = 6.0f;                 // Å
     float material_density = 0.478f;             // e/Å^3 (cellulose ~1.5 g/cm^3)
     float electrons_per_dalton = 0.530f;         // cellulose C6H10O5: 86 e / 162.14 Da
+
+    // --- Neutron particle model --- (defaults: one sCG bead of 22 anhydroglucose units, cellulose at 1.5 g/cm^3)
+    int   neu_weight_mode = NeutronWeight_Constant;
+    float neu_b_protiated = 693.0f;              // fm per particle with every H as 1H (22 x 31.50 fm)
+    float neu_n_h = 154.0f;                      // non-exchangeable H per particle (22 x 7)
+    float neu_n_ex = 66.0f;                      // exchangeable H per particle (22 x 3 hydroxyl)
+    float neu_volume = 3949.0f;                  // Å^3 per particle (22 x 179.5 Å^3)
+    float neu_mass_density = 1.5f;               // g/cm^3, per element: particle volume = mass / density
+    float neu_deuteration = 0.0f;                // D fraction of the non-exchangeable H
+    bool  neu_exchange = true;                   // H bound to N, O, S exchange with the reservoir
+    bool  neu_exchange_follow = true;            // Reservoir = background water (D2O fraction)
+    float neu_exchange_d = 0.0f;                 // D fraction of the reservoir when not following the background
+    bool  neu_incoherent = true;                 // Add the flat incoherent background
+
+    // Summary of the selection at the last compute (neutrons)
+    double neu_sum_b = 0.0;                      // fm, coherent scattering length (not excess)
+    double neu_sum_v = 0.0;                      // Å^3
+    double neu_sum_inc = 0.0;                    // barn
+    double neu_bg_sld_used = 0.0;                // 10^-6 Å^-2, background SLD the weights were computed with
+    size_t neu_num_unknown = 0;                  // particles with an element not in the table (b = 0)
+    size_t neu_num_exchangeable = 0;
+    double inc_level = 0.0;                      // Flat incoherent background (sr^-1) of the current ctx
+    double eval_inc = 0.0;                       // Incoherent background of the evaluation in flight
 
     // --- Density model ---
     int   density_model = DensityModel_Beads;
@@ -220,15 +292,24 @@ struct Gisaxs : viamd::EventHandler {
     bool   film_graded = true;                   // Laterally averaged film as part of the DWBA reference medium
     double material_beta = 2.0e-9;               // Absorption of the particle material at material_density
 
+    // --- Neutron media (SLD in 10^-6 Å^-2) ---
+    int    neu_bg_preset = 0;
+    double neu_bg_sld = 0.0;                     // Custom background
+    float  neu_d2o = 1.0f;                       // D2O volume fraction of a water background
+    int    neu_sub_preset = 0;
+    double neu_sub_sld = neutron_substrate_presets[0].sld;
+    double neu_sub_abs = neutron_substrate_presets[0].abs;
+
     // --- Beam ---
-    float energy_kev = 12.0f;
+    float energy_kev = 12.0f;                    // X-rays
+    float neu_wavelength = 6.0f;                 // Neutrons (Å)
     float alpha_i_deg = 0.20f;
 
     // --- q-grid (nm^-1 in the UI) ---
     float q_par_max_nm = 2.0f;
     float q_z_max_nm = 2.0f;
-    float oversampling = 2.0f;
-    int   num_qz = 256;
+    float oversampling = 3.0f;
+    int   num_qz = 512;
     int   max_slices = 1024;
 
     // --- Display ---
@@ -246,7 +327,7 @@ struct Gisaxs : viamd::EventHandler {
     double det_qy_min = 0, det_qy_max = 1, det_qz_min = 0, det_qz_max = 1;   // nm^-1, approximate axis bounds
     uint64_t res_version = 0;
     float decades = 6.0f;
-    ImPlotColormap colormap = ImPlotColormap_Viridis;
+    ImPlotColormap colormap = ImPlotColormap_Jet;
     bool  show_profile = false;
 
     // --- Cuts (positions in nm^-1) ---
@@ -315,7 +396,7 @@ struct Gisaxs : viamd::EventHandler {
 
     md_allocator_i* alloc = nullptr;
 
-    Gisaxs() { viamd::event_system_register_handler(*this); }
+    ScatteringComponent() { viamd::event_system_register_handler(*this); }
 
     // ---------------------------------------------------------------------------------------------
     // Events
@@ -339,7 +420,7 @@ struct Gisaxs : viamd::EventHandler {
                 draw_window();
                 break;
             case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("GISAXS", &show_window);
+                ImGui::Checkbox("Scattering (GISAXS / GISANS)", &show_window);
                 break;
             case viamd::EventType_ViamdSystemFree:
                 cancel_all();
@@ -358,7 +439,9 @@ struct Gisaxs : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(state), STR_LIT("GISAXS"))) {
+                // "GISAXS" is the section name before the component was generalized
+                const str_t header = viamd::section_header(state);
+                if (str_eq(header, STR_LIT("Scattering")) || str_eq(header, STR_LIT("GISAXS"))) {
                     deserialize(state);
                 }
                 break;
@@ -373,23 +456,53 @@ struct Gisaxs : viamd::EventHandler {
     // Derived quantities
     // ---------------------------------------------------------------------------------------------
 
-    double wavelength() const { return HC_KEV_ANGSTROM / MAX(energy_kev, 1.0e-3f); }
+    bool is_neutron() const { return radiation == Radiation_Neutron; }
+
+    double wavelength() const {
+        return is_neutron() ? (double)MAX(neu_wavelength, 0.1f) : HC_KEV_ANGSTROM / MAX(energy_kev, 1.0e-3f);
+    }
 
     // X-ray SLD (1/Å^2) from electron density (e/Å^3)
-    static double sld(double rho_e) { return MD_GISAXS_R_E * rho_e; }
+    static double xray_sld(double rho_e) { return MD_GISAXS_R_E * rho_e; }
+
+    // Neutron background SLD (10^-6 Å^-2)
+    double neutron_bg_sld() const {
+        return neu_bg_preset == NBG_WATER ? neutron::water_sld(neu_d2o) : neu_bg_sld;
+    }
+
+    // D fraction of the exchangeable hydrogen reservoir
+    double neutron_exchange_d() const {
+        return (neu_exchange_follow && neu_bg_preset == NBG_WATER) ? (double)neu_d2o : (double)neu_exchange_d;
+    }
+
+    // SLDs of the media (1/Å^2)
+    double sld_ambient() const   { return is_neutron() ? neutron_bg_sld() * 1.0e-6 : xray_sld(bg_density); }
+    double sld_substrate() const { return is_neutron() ? neu_sub_sld * 1.0e-6 : xray_sld(sub_density); }
+    double sld_substrate_abs() const {
+        const double lambda = wavelength();
+        return is_neutron() ? neu_sub_abs * 1.0e-6 : 2.0 * 3.14159265358979323846 * sub_beta / (lambda * lambda);
+    }
+
+    // Scattering length per unit particle weight (Å): r_e per electron, or fm -> Å
+    double weight_length() const { return is_neutron() ? neutron::FM_TO_ANGSTROM : MD_GISAXS_R_E; }
 
     // Critical angle (rad) of the substrate relative to the ambient
     double critical_angle() const {
         const double lambda = wavelength();
-        const double d_sld = sld(sub_density) - sld(bg_density);
+        const double d_sld = sld_substrate() - sld_ambient();
         if (d_sld <= 0.0) return 0.0;
         const double k0 = 2.0 * 3.14159265358979323846 / lambda;
         return asin(MIN(1.0, sqrt(4.0 * 3.14159265358979323846 * d_sld) / k0));
     }
 
+    // Uniform contrast (amplitude) of the particles against the background. Neutrons: 1, the contrast is in the weights.
+    double contrast_amplitude() const {
+        if (is_neutron() || material_density <= 0.0f) return 1.0;
+        return 1.0 - bg_density / (double)material_density;
+    }
+
     double contrast_factor() const {
-        if (material_density <= 0.0f) return 1.0;
-        const double f = 1.0 - bg_density / (double)material_density;
+        const double f = contrast_amplitude();
         return f * f;
     }
 
@@ -399,15 +512,22 @@ struct Gisaxs : viamd::EventHandler {
 
     uint64_t hash_structure_inputs() const {
         uint64_t h = md_hash64(filter, strnlen(filter, sizeof(filter)), 0x6153u);
-        h = md_hash64(&electron_mode, sizeof(electron_mode), h);
-        h = md_hash64(&electrons_per_particle, sizeof(electrons_per_particle), h);
+        h = md_hash64(&radiation, sizeof(radiation), h);
+        if (is_neutron()) {
+            const double v[] = { (double)neu_weight_mode, neu_b_protiated, neu_n_h, neu_n_ex, neu_volume, neu_mass_density,
+                                 neu_deuteration, (double)neu_exchange, neutron_exchange_d(), neutron_bg_sld() };
+            h = md_hash64(v, sizeof(v), h);
+        } else {
+            h = md_hash64(&electron_mode, sizeof(electron_mode), h);
+            h = md_hash64(&electrons_per_particle, sizeof(electrons_per_particle), h);
+            h = md_hash64(&electrons_per_dalton, sizeof(electrons_per_dalton), h);
+        }
         h = md_hash64(&sigma_mode, sizeof(sigma_mode), h);
         h = md_hash64(&sigma_constant, sizeof(sigma_constant), h);
         h = md_hash64(&q_par_max_nm, sizeof(q_par_max_nm), h);
         h = md_hash64(&q_z_max_nm, sizeof(q_z_max_nm), h);
         h = md_hash64(&oversampling, sizeof(oversampling), h);
         h = md_hash64(&max_slices, sizeof(max_slices), h);
-        h = md_hash64(&electrons_per_dalton, sizeof(electrons_per_dalton), h);
         h = md_hash64(&density_model, sizeof(density_model), h);
         if (density_model == DensityModel_Fibril) {
             h = md_hash64(fib_center_name, strnlen(fib_center_name, sizeof(fib_center_name)), h);
@@ -429,17 +549,18 @@ struct Gisaxs : viamd::EventHandler {
         m.alpha_i = alpha_i_deg * DEG_TO_RAD;
         m.dwba = dwba;
         m.z_substrate = substrate_z();
-        m.sld_ambient = sld(bg_density);
-        m.sld_substrate = sld(sub_density);
-        m.sld_substrate_abs = 2.0 * 3.14159265358979323846 * sub_beta / (lambda * lambda);
+        m.sld_ambient = sld_ambient();
+        m.sld_substrate = sld_substrate();
+        m.sld_substrate_abs = sld_substrate_abs();
         m.substrate_roughness = sub_roughness;
-        // Graded film: the laterally averaged particle density, contrast corrected like the particles themselves
+        // Graded film: the laterally averaged particle density, contrast corrected like the particles themselves.
+        // For neutrons the profile is already the excess scattering length density relative to the background.
         m.graded = film_graded;
-        const double contrast_amp = material_density > 0.0f ? 1.0 - bg_density / (double)material_density : 1.0;
-        m.profile_sld_scale = MD_GISAXS_R_E * contrast_amp;
-        m.profile_abs_scale = material_density > 0.0f ? 2.0 * 3.14159265358979323846 * material_beta / (lambda * lambda * material_density) : 0.0;
-        // dsigma/dOmega per unit area (sr^-1): r_e^2 * <|F|^2> / A, with the displaced background as contrast
-        m.intensity_scale = MD_GISAXS_R_E * MD_GISAXS_R_E * contrast_factor();
+        const double L = weight_length();
+        m.profile_sld_scale = L * contrast_amplitude();
+        m.profile_abs_scale = (!is_neutron() && material_density > 0.0f) ? 2.0 * 3.14159265358979323846 * material_beta / (lambda * lambda * material_density) : 0.0;
+        // dsigma/dOmega per unit area (sr^-1): L^2 * <|F|^2> / A, with the displaced background as contrast
+        m.intensity_scale = L * L * contrast_factor();
         return m;
     }
 
@@ -448,10 +569,17 @@ struct Gisaxs : viamd::EventHandler {
                                 m.sld_substrate, m.sld_substrate_abs, m.substrate_roughness, m.profile_sld_scale,
                                 m.profile_abs_scale, m.intensity_scale };
         uint64_t h = md_hash64(vals, sizeof(vals), 0x4d6fu);
+        const double inc = incoherent_level();
+        h = md_hash64(&inc, sizeof(inc), h);
         h = md_hash64(&num_qz, sizeof(num_qz), h);
         h = md_hash64(&ctx, sizeof(ctx), h);
         h = md_hash64(&structure_hash, sizeof(structure_hash), h);
         return h;
+    }
+
+    // Flat incoherent background (sr^-1) added to the result, neutrons only
+    double incoherent_level() const {
+        return (ctx_radiation == Radiation_Neutron && neu_incoherent) ? inc_level : 0.0;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -496,7 +624,9 @@ struct Gisaxs : viamd::EventHandler {
     void apply_preset(int idx) {
         if (idx < 0 || idx >= (int)ARRAY_SIZE(beam_presets)) return;
         const BeamPreset& p = beam_presets[idx];
+        if (p.radiation != Radiation_Xray) return;   // Presets carry X-ray optical constants (delta, beta)
         const PresetValues v = preset_values(p);
+        radiation    = Radiation_Xray;
         energy_kev   = v.energy_kev;
         alpha_i_deg  = v.alpha_i_deg;
         q_par_max_nm = v.q_par_max_nm;
@@ -613,7 +743,8 @@ struct Gisaxs : viamd::EventHandler {
 
     // Detects slices (groups of fib_stride consecutive beads containing one center bead) and chains of consecutive
     // slices, and sweeps the cross-section template along them.
-    // x, y, z, w are the gathered (selected) particles, atom_idx their atom indices (ascending).
+    // x, y, z, w are the gathered (selected) particles, atom_idx their atom indices (ascending). w must be positive, it
+    // is used for the slice centroids and orientations as well as for the distribution of the scattering weight.
     bool build_fibrils(FibrilOutput* out, const std::vector<uint32_t>& atom_idx, const float* x, const float* y, const float* z, const float* w, const md_unitcell_t& cell) {
         const md_system_t& sys = app_state->mold.sys;
         const int S = fib_stride;
@@ -762,14 +893,14 @@ struct Gisaxs : viamd::EventHandler {
             if ((int)tmpl.anchor_u.size() != S) {
                 // No (or incompatible) anchors in the file, orient with the mean bead layout
                 if (!tmpl.anchor_u.empty()) {
-                    MD_LOG_INFO("GISAXS fibrils: template has %zu anchors, expected %i, orienting with the mean MD layout instead", tmpl.anchor_u.size(), S);
+                    MD_LOG_INFO("Scattering fibrils: template has %zu anchors, expected %i, orienting with the mean MD layout instead", tmpl.anchor_u.size(), S);
                 }
                 tmpl.anchor_u = mu;
                 tmpl.anchor_v = mv;
             } else {
                 double rms = 0.0;
                 const bool mirrored = fibril_template_match_handedness(tmpl, mu, mv, &rms);
-                MD_LOG_INFO("GISAXS fibrils: template anchors match the mean MD slice layout to %.2f Å RMS%s", rms, mirrored ? " (template mirrored)" : "");
+                MD_LOG_INFO("Scattering fibrils: template anchors match the mean MD slice layout to %.2f Å RMS%s", rms, mirrored ? " (template mirrored)" : "");
             }
             break;
         default:
@@ -784,7 +915,7 @@ struct Gisaxs : viamd::EventHandler {
         const FibrilStats& st = out->stats;
         snprintf(fib_info, sizeof(fib_info), "%zu slices in %zu chains (%s), spacing %.1f Å, bead radius %.1f Å, %zu template Gaussians, %zu points",
             num_slices, in.num_chains, use_bonds ? "bonds" : "distance", st.mean_spacing, st.mean_radius, tmpl.gauss.size(), st.num_points);
-        MD_LOG_INFO("GISAXS fibrils: %s (electrons %.6g -> %.6g, RMS axial bead offset %.2f Å)", fib_info, st.electrons_in, st.electrons_out, st.mean_axial_offset);
+        MD_LOG_INFO("Scattering fibrils: %s (weight %.6g -> %.6g, RMS axial bead offset %.2f Å)", fib_info, st.electrons_in, st.electrons_out, st.mean_axial_offset);
         return true;
     }
 
@@ -824,19 +955,44 @@ struct Gisaxs : viamd::EventHandler {
         }
 
         // Gather particles (temporary copies, md_gisaxs_create keeps its own sorted copy)
+        // w:  scattering weight (X-rays: electrons, neutrons: excess scattering length in fm)
+        // gw: positive weight for the fibril geometry (X-rays: electrons, neutrons: volume)
         md_array(float) x = nullptr; md_array(float) y = nullptr; md_array(float) z = nullptr;
-        md_array(float) w = nullptr; md_array(float) s = nullptr;
+        md_array(float) w = nullptr; md_array(float) s = nullptr; md_array(float) gw = nullptr;
         std::vector<uint32_t> atom_idx;
         atom_idx.reserve(count);
         defer {
             md_array_free(x, alloc); md_array_free(y, alloc); md_array_free(z, alloc);
-            md_array_free(w, alloc); md_array_free(s, alloc);
+            md_array_free(w, alloc); md_array_free(s, alloc); md_array_free(gw, alloc);
         };
         md_array_resize(x, count, alloc);
         md_array_resize(y, count, alloc);
         md_array_resize(z, count, alloc);
         md_array_resize(w, count, alloc);
         md_array_resize(s, count, alloc);
+        md_array_resize(gw, count, alloc);
+
+        // Neutron scattering model
+        const bool neutron_mode = is_neutron();
+        neutron::HydrogenModel hmodel;
+        hmodel.deuteration = neu_deuteration;
+        hmodel.exchange = neu_exchange;
+        hmodel.exchange_d = neutron_exchange_d();
+        const double bg_sld = neutron_bg_sld();
+        neutron::Particle neu_particle;
+        neu_particle.b_protiated = neu_b_protiated;
+        neu_particle.n_h = neu_n_h;
+        neu_particle.n_ex = neu_n_ex;
+        neu_particle.volume = neu_volume;
+        const neutron::Scattering neu_const = neutron::particle(neu_particle, hmodel);
+        const bool per_element = neutron_mode && neu_weight_mode == NeutronWeight_Element;
+        const bool has_bonds = sys.bond.count > 0 && sys.bond.conn.offset != nullptr;
+        const bool has_types = sys.atom.type_idx != nullptr;
+        if (per_element && neu_exchange && !has_bonds) {
+            MD_LOG_INFO("Scattering: the system has no bonds, no hydrogen is treated as exchangeable");
+        }
+        neu_sum_b = neu_sum_v = neu_sum_inc = 0.0;
+        neu_num_unknown = neu_num_exchangeable = 0;
 
         size_t n = 0;
         size_t num_zero_weight = 0;
@@ -848,12 +1004,36 @@ struct Gisaxs : viamd::EventHandler {
             y[n] = state.xyz[idx].y;
             z[n] = state.xyz[idx].z;
             atom_idx.push_back((uint32_t)idx);
-            if (electron_mode == ElectronMode_AtomicNumber) {
-                w[n] = (float)md_atom_atomic_number(&sys.atom, idx);
-            } else if (electron_mode == ElectronMode_Mass) {
-                w[n] = md_atom_mass(&sys.atom, idx) * electrons_per_dalton;
+            if (neutron_mode) {
+                neutron::Scattering sc = neu_const;
+                if (per_element) {
+                    const int zn = (int)md_atom_atomic_number(&sys.atom, idx);
+                    const double mass = has_types ? md_atom_mass(&sys.atom, idx) : 0.0;
+                    // Hydrogen bound to N, O or S is exchangeable
+                    bool exch = false;
+                    if (zn == 1 && neu_exchange && has_bonds) {
+                        for (md_bond_iter_t bit = md_bond_iter(&sys.bond, idx); md_bond_iter_has_next(&bit); md_bond_iter_next(&bit)) {
+                            const int zo = (int)md_atom_atomic_number(&sys.atom, md_bond_iter_atom_index(&bit));
+                            if (zo == 7 || zo == 8 || zo == 16) { exch = true; break; }
+                        }
+                    }
+                    if (!neutron::atom(&sc, zn, mass, exch, hmodel, neu_mass_density)) neu_num_unknown += 1;
+                    if (exch) neu_num_exchangeable += 1;
+                }
+                w[n]  = (float)neutron::excess(sc, bg_sld);
+                gw[n] = (float)sc.volume;
+                neu_sum_b   += sc.b;
+                neu_sum_v   += sc.volume;
+                neu_sum_inc += sc.sigma_inc;
             } else {
-                w[n] = electrons_per_particle;
+                if (electron_mode == ElectronMode_AtomicNumber) {
+                    w[n] = (float)md_atom_atomic_number(&sys.atom, idx);
+                } else if (electron_mode == ElectronMode_Mass) {
+                    w[n] = has_types ? md_atom_mass(&sys.atom, idx) * electrons_per_dalton : 0.0f;
+                } else {
+                    w[n] = electrons_per_particle;
+                }
+                gw[n] = w[n];
             }
             if (w[n] == 0.0f) num_zero_weight += 1;
             if (sigma_mode == SigmaMode_Radius) {
@@ -863,7 +1043,25 @@ struct Gisaxs : viamd::EventHandler {
             }
             ++n;
         }
-        if (num_zero_weight == n) {
+        if (neutron_mode) {
+            neu_bg_sld_used = bg_sld;
+            if (per_element && neu_num_unknown == n) {
+                snprintf(status, sizeof(status), "No particle has an element with a tabulated scattering length, use a constant scattering length per particle");
+                return false;
+            }
+            if (neu_sum_v <= 0.0) {
+                snprintf(status, sizeof(status), per_element ? "Particle volumes are zero (masses missing?), use a constant scattering length per particle"
+                                                             : "The particle volume must be positive");
+                return false;
+            }
+            if (num_zero_weight == n) {
+                snprintf(status, sizeof(status), "The selection is contrast matched to the background (zero excess scattering length)");
+                return false;
+            }
+            if (neu_num_unknown) {
+                MD_LOG_INFO("Scattering: %zu particles have an element without a tabulated neutron scattering length (b = 0)", neu_num_unknown);
+            }
+        } else if (num_zero_weight == n) {
             snprintf(status, sizeof(status), "All particles have zero electrons (atomic numbers or masses missing?), use a constant electron count");
             return false;
         }
@@ -886,8 +1084,16 @@ struct Gisaxs : viamd::EventHandler {
         FibrilOutput fib;
         fib_info[0] = '\0';
         if (density_model == DensityModel_Fibril) {
-            if (!build_fibrils(&fib, atom_idx, x, y, z, w, cell)) {
+            if (!build_fibrils(&fib, atom_idx, x, y, z, gw, cell)) {
                 return false;
+            }
+            if (neutron_mode) {
+                // The geometry was swept with the volumes; carry the excess scattering length with the mean excess SLD
+                // of the selection, consistent with the template being a homogeneous cross-section.
+                double sum_w = 0.0;
+                for (size_t i = 0; i < n; ++i) sum_w += w[i];
+                const float ratio = (float)(sum_w / neu_sum_v);
+                for (float& fw : fib.w) fw *= ratio;
             }
         }
 
@@ -919,9 +1125,12 @@ struct Gisaxs : viamd::EventHandler {
 
         ctx = md_gisaxs_create(&input, &params, alloc);
         if (!ctx) {
-            snprintf(status, sizeof(status), "Failed to initialize GISAXS computation (see log)");
+            snprintf(status, sizeof(status), "Failed to initialize the scattering computation (see log)");
             return false;
         }
+        ctx_radiation = radiation;
+        // Flat incoherent background: sum sigma_inc / (4 pi A), per unit area and solid angle like the coherent part
+        inc_level = neutron_mode ? neu_sum_inc * neutron::BARN_TO_A2 / (4.0 * 3.14159265358979323846 * cell.x * cell.y) : 0.0;
         ctx_q_z_max = params.q_z_max;
         particle_z_min = md_gisaxs_particle_z_min(ctx);
         structure_hash = hash_structure_inputs();
@@ -929,7 +1138,7 @@ struct Gisaxs : viamd::EventHandler {
 
         md_gisaxs_info_t info;
         md_gisaxs_get_info(ctx, &info);
-        MD_LOG_INFO("GISAXS: %zu particles, grid %i x %i (dx %.2f Å), %zu slices (dz %.2f Å), %zu rings, %zu classes, %.1f MB spectra, %.1f MB matrices",
+        MD_LOG_INFO("Scattering: %zu particles, grid %i x %i (dx %.2f Å), %zu slices (dz %.2f Å), %zu rings, %zu classes, %.1f MB spectra, %.1f MB matrices",
             info.num_particles, info.nx, info.ny, info.dx, info.num_slices, info.dz, info.num_rings, info.num_classes,
             info.spectra_bytes / (1024.0 * 1024.0), info.matrix_bytes / (1024.0 * 1024.0));
 
@@ -946,7 +1155,7 @@ struct Gisaxs : viamd::EventHandler {
         const uint32_t num_slices = (uint32_t)info.num_slices;
         const uint32_t num_rings  = (uint32_t)info.num_rings;
 
-        task_slices = task_system::create_pool_task(STR_LIT("GISAXS slices"), num_slices, [this](uint32_t beg, uint32_t end, uint32_t thread_num) {
+        task_slices = task_system::create_pool_task(STR_LIT("Scattering slices"), num_slices, [this](uint32_t beg, uint32_t end, uint32_t thread_num) {
             if (compute_cancel) return;
             if (thread_num >= md_array_size(scratch)) return;   // Should not happen
             if (!scratch[thread_num]) {
@@ -956,12 +1165,12 @@ struct Gisaxs : viamd::EventHandler {
             md_gisaxs_compute_slices(ctx, beg, end, scratch[thread_num]);
         });
 
-        task_rings = task_system::create_pool_task(STR_LIT("GISAXS rings"), num_rings, [this](uint32_t beg, uint32_t end, uint32_t) {
+        task_rings = task_system::create_pool_task(STR_LIT("Scattering rings"), num_rings, [this](uint32_t beg, uint32_t end, uint32_t) {
             if (compute_cancel) return;
             md_gisaxs_compute_rings(ctx, beg, end);
         });
 
-        task_finish = task_system::create_pool_task(STR_LIT("GISAXS finalize"), [this]() {
+        task_finish = task_system::create_pool_task(STR_LIT("Scattering finalize"), [this]() {
             md_gisaxs_release_spectra(ctx);
             compute_state = compute_cancel ? ComputeState_Failed : ComputeState_Done;
         });
@@ -988,13 +1197,14 @@ struct Gisaxs : viamd::EventHandler {
             eval_qz[i] = ctx_q_z_max * (double)i / (double)(Nq - 1);
         }
         eval_model = model;
+        eval_inc = incoherent_level();
         eval_hash_pending = hash;
         eval_ready = false;
 
-        task_eval = task_system::create_pool_task(STR_LIT("GISAXS evaluate"), (uint32_t)Nq, [this](uint32_t beg, uint32_t end, uint32_t) {
+        task_eval = task_system::create_pool_task(STR_LIT("Scattering evaluate"), (uint32_t)Nq, [this](uint32_t beg, uint32_t end, uint32_t) {
             md_gisaxs_evaluate_range(ctx, &eval_model, eval_qz, beg, end, eval_out);
         }, 4);
-        const task_system::ID done = task_system::create_pool_task(STR_LIT("GISAXS evaluate done"), [this]() {
+        const task_system::ID done = task_system::create_pool_task(STR_LIT("Scattering evaluate done"), [this]() {
             eval_ready = true;
         });
         task_system::set_task_dependency(done, task_eval);
@@ -1009,6 +1219,14 @@ struct Gisaxs : viamd::EventHandler {
         res_cols = R;
         md_array_resize(res_raw, Nq * R, alloc);
         MEMCPY(res_raw, eval_out, sizeof(float) * Nq * R);
+        if (eval_inc > 0.0) {
+            // Flat incoherent background, above the sample horizon only when there is a substrate
+            const double horizon = eval_model.dwba ? horizon_qz_nm() * 0.1 : -DBL_MAX;
+            for (size_t i = 0; i < Nq; ++i) {
+                if (eval_qz[i] < horizon) continue;
+                for (size_t c = 0; c < R; ++c) res_raw[i * R + c] += (float)eval_inc;
+            }
+        }
 
         const double dq = R > 0 ? md_gisaxs_ring_q(ctx)[0] : 0.0;
         md_gisaxs_info_t info;
@@ -1122,7 +1340,8 @@ struct Gisaxs : viamd::EventHandler {
             accept_eval();
         }
 
-        if (compute_state.load() == ComputeState_Done && ctx) {
+        // The particle weights depend on the radiation, a result computed for the other one is not re-evaluated
+        if (compute_state.load() == ComputeState_Done && ctx && ctx_radiation == radiation) {
             if (!task_system::task_is_running(task_eval) && !eval_ready.load()) {
                 const md_gisaxs_model_t model = build_model();
                 const uint64_t h = hash_model(model);
@@ -1352,22 +1571,83 @@ struct Gisaxs : viamd::EventHandler {
         if (!show_window) return;
 
         ImGui::SetNextWindowSize({900, 600}, ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("GISAXS", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        char title[64];
+        snprintf(title, sizeof(title), "Scattering (%s)###Scattering", is_neutron() ? "GISANS" : "GISAXS");
+        if (!ImGui::Begin(title, &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             ImGui::End();
             return;
         }
 
         const float settings_w = 330.0f;
-        ImGui::BeginChild("##gisaxs_settings", ImVec2(settings_w, 0), ImGuiChildFlags_Borders);
+        ImGui::BeginChild("##scat_settings", ImVec2(settings_w, 0), ImGuiChildFlags_Borders);
         draw_settings();
         ImGui::EndChild();
 
         ImGui::SameLine();
-        ImGui::BeginChild("##gisaxs_plot", ImVec2(0, 0));
+        ImGui::BeginChild("##scat_plot", ImVec2(0, 0));
         draw_plot();
         ImGui::EndChild();
 
         ImGui::End();
+    }
+
+    void draw_neutron_particles() {
+        if (ImGui::BeginCombo("Scattering length", neutron_weight_lbl[neu_weight_mode])) {
+            for (int i = 0; i < (int)ARRAY_SIZE(neutron_weight_lbl); ++i) {
+                if (ImGui::Selectable(neutron_weight_lbl[i], neu_weight_mode == i)) neu_weight_mode = i;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Coherent scattering length b of each particle. The scattering weight is the excess\n"
+                              "b - SLD_background * V, exact per particle (mixtures, labelling, contrast matching).");
+        if (neu_weight_mode == NeutronWeight_Constant) {
+            ImGui::InputFloat("b, all ¹H (fm)", &neu_b_protiated, 0, 0, "%.2f");
+            ImGui::SetItemTooltip("Coherent scattering length per particle with every hydrogen as ¹H (including the\n"
+                                  "exchangeable ones). Cellulose: 31.50 fm per anhydroglucose unit (C6H10O5).");
+            ImGui::InputFloat("Non-exchangeable H", &neu_n_h, 0, 0, "%.1f");
+            ImGui::SetItemTooltip("Hydrogens bound to C per particle, labelled by the deuteration. Cellulose: 7 per unit.");
+            ImGui::InputFloat("Exchangeable H", &neu_n_ex, 0, 0, "%.1f");
+            ImGui::SetItemTooltip("Hydrogens bound to N, O or S per particle, which exchange with the reservoir.\n"
+                                  "Cellulose: 3 (hydroxyl) per anhydroglucose unit.");
+            ImGui::InputFloat("Volume (Å³)", &neu_volume, 0, 0, "%.1f");
+            ImGui::SetItemTooltip("Volume displaced by one particle. Cellulose: 179.5 Å³ per anhydroglucose unit at 1.5 g/cm³.");
+            neu_n_h = MAX(neu_n_h, 0.0f);
+            neu_n_ex = MAX(neu_n_ex, 0.0f);
+            neu_volume = MAX(neu_volume, 0.0f);
+        } else {
+            ImGui::InputFloat("Mass density (g/cm³)", &neu_mass_density, 0, 0, "%.3f");
+            ImGui::SetItemTooltip("Volume of each atom = mass / density (hydrogen isotopes with the ¹H mass).\n"
+                                  "Hydrogen with a deuterium mass in the topology is taken as D. Hydrogen bound\n"
+                                  "to N, O or S (from the bonds) is exchangeable.");
+            neu_mass_density = MAX(neu_mass_density, 0.01f);
+        }
+        ImGui::SliderFloat("Deuteration", &neu_deuteration, 0.0f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("D fraction of the non-exchangeable hydrogen (synthetic labelling)");
+        ImGui::Checkbox("H/D exchange", &neu_exchange);
+        ImGui::SetItemTooltip("Exchangeable hydrogen (bound to N, O or S) takes the D fraction of the reservoir:\n"
+                              "the background water, or e.g. D2O vapour for films measured in a humidity cell.");
+        if (neu_exchange) {
+            const bool water = neu_bg_preset == NBG_WATER;
+            if (water) ImGui::Checkbox("Exchange with the background", &neu_exchange_follow);
+            if (!water || !neu_exchange_follow) {
+                ImGui::SliderFloat("Reservoir D fraction", &neu_exchange_d, 0.0f, 1.0f, "%.3f");
+            } else {
+                ImGui::TextDisabled("Reservoir D fraction: %.3f", neu_d2o);
+            }
+        }
+        ImGui::Checkbox("Incoherent background", &neu_incoherent);
+        ImGui::SetItemTooltip("Flat (Born) incoherent background sum(sigma_inc) / (4 pi A), dominated by ¹H (80 b).\n"
+                              "Added above the sample horizon. Transmission (DWBA) factors are not applied to it.");
+        if (ctx && ctx_radiation == Radiation_Neutron && neu_sum_v > 0.0) {
+            const double sld_sel = neutron::sld(neu_sum_b, neu_sum_v);
+            ImGui::TextDisabled("Selection SLD: %.3f x 10⁻⁶ Å⁻²", sld_sel);
+            ImGui::TextDisabled("Contrast: %.3f x 10⁻⁶ Å⁻²", sld_sel - neu_bg_sld_used);
+            ImGui::SetItemTooltip("Mean SLD of the selection minus the background SLD, at the last compute");
+            if (inc_level > 0.0) ImGui::TextDisabled("Incoherent: %.3e sr⁻¹", inc_level);
+            if (neu_weight_mode == NeutronWeight_Element) {
+                ImGui::TextDisabled("%zu exchangeable H, %zu unknown elements", neu_num_exchangeable, neu_num_unknown);
+            }
+        }
     }
 
     void draw_settings() {
@@ -1408,20 +1688,34 @@ struct Gisaxs : viamd::EventHandler {
 
         ImGui::PushItemWidth(item_w);
 
+        // --- Radiation ---
+        if (ImGui::BeginCombo("Radiation", radiation_lbl[radiation])) {
+            for (int i = 0; i < (int)ARRAY_SIZE(radiation_lbl); ++i) {
+                if (ImGui::Selectable(radiation_lbl[i], radiation == i)) radiation = i;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("X-rays scatter from the electron density, neutrons from the nuclear scattering length\n"
+                              "density. Each has its own particle model, media and beam settings.");
+
         // --- Particles ---
         if (ImGui::CollapsingHeader("Particles", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::InputQuery("Selection", filter, sizeof(filter), filter_valid, filter_err);
-            if (ImGui::BeginCombo("Electrons", electron_mode_lbl[electron_mode])) {
-                for (int i = 0; i < (int)ARRAY_SIZE(electron_mode_lbl); ++i) {
-                    if (ImGui::Selectable(electron_mode_lbl[i], electron_mode == i)) electron_mode = i;
+            if (is_neutron()) {
+                draw_neutron_particles();
+            } else {
+                if (ImGui::BeginCombo("Electrons", electron_mode_lbl[electron_mode])) {
+                    for (int i = 0; i < (int)ARRAY_SIZE(electron_mode_lbl); ++i) {
+                        if (ImGui::Selectable(electron_mode_lbl[i], electron_mode == i)) electron_mode = i;
+                    }
+                    ImGui::EndCombo();
                 }
-                ImGui::EndCombo();
-            }
-            if (electron_mode == ElectronMode_Constant) {
-                ImGui::InputFloat("e / particle", &electrons_per_particle, 0, 0, "%.1f");
-            } else if (electron_mode == ElectronMode_Mass) {
-                ImGui::InputFloat("e / Da", &electrons_per_dalton, 0, 0, "%.4f");
-                ImGui::SetItemTooltip("Electrons per dalton of mass. Cellulose 0.530, water 0.555, pure C/N/O 0.5");
+                if (electron_mode == ElectronMode_Constant) {
+                    ImGui::InputFloat("e / particle", &electrons_per_particle, 0, 0, "%.1f");
+                } else if (electron_mode == ElectronMode_Mass) {
+                    ImGui::InputFloat("e / Da", &electrons_per_dalton, 0, 0, "%.4f");
+                    ImGui::SetItemTooltip("Electrons per dalton of mass. Cellulose 0.530, water 0.555, pure C/N/O 0.5");
+                }
             }
             if (ImGui::BeginCombo("Gaussian width", sigma_mode_lbl[sigma_mode])) {
                 for (int i = 0; i < 2; ++i) {
@@ -1433,10 +1727,14 @@ struct Gisaxs : viamd::EventHandler {
                 ImGui::InputFloat("Sigma (Å)", &sigma_constant, 0, 0, "%.2f");
                 sigma_constant = MAX(sigma_constant, 0.0f);
             }
-            ImGui::InputFloat("Material density (e/Å³)", &material_density, 0, 0, "%.4f");
-            ImGui::SetItemTooltip("Electron density of the particle material. Each particle displaces\n"
-                                  "a volume (electrons / material density) of the background medium.");
-            ImGui::InputDouble("Material beta", &material_beta, 0, 0, "%.3e");
+            if (!is_neutron()) {
+                ImGui::InputFloat("Material density (e/Å³)", &material_density, 0, 0, "%.4f");
+                ImGui::SetItemTooltip("Electron density of the particle material. Each particle displaces\n"
+                                      "a volume (electrons / material density) of the background medium.");
+                ImGui::InputDouble("Material beta", &material_beta, 0, 0, "%.3e");
+                ImGui::SetItemTooltip("Absorption (imaginary part of the refractive index) of the particle material at the\n"
+                                      "material density. Only used for the film in the graded DWBA. Cellulose ~2e-9 at 12.8 keV.");
+            }
 
             ImGui::Separator();
             if (ImGui::BeginCombo("Density model", density_model_lbl[density_model])) {
@@ -1448,7 +1746,9 @@ struct Gisaxs : viamd::EventHandler {
             ImGui::SetItemTooltip("Beads: one isotropic Gaussian per particle.\n"
                                   "Fibrils: slices of beads (one center bead + surrounding beads) define a centerline and an\n"
                                   "orientation, and a cross-section template is swept continuously along it. Removes the\n"
-                                  "artificial scattering of discrete beads (high-q plateau, peak at 2 pi / bead spacing).");
+                                  "artificial scattering of discrete beads (high-q plateau, peak at 2 pi / bead spacing).\n"
+                                  "Neutrons: the geometry is swept with the particle volumes and carries the mean excess\n"
+                                  "scattering length density of the selection (a homogeneous cross-section).");
             if (density_model == DensityModel_Fibril) {
                 ImGui::InputText("Center bead", fib_center_name, sizeof(fib_center_name));
                 ImGui::InputInt("Beads per slice", &fib_stride);
@@ -1491,26 +1791,48 @@ struct Gisaxs : viamd::EventHandler {
                     ImGui::PopTextWrapPos();
                 }
             }
-            ImGui::SetItemTooltip("Absorption (imaginary part of the refractive index) of the particle material at the\n"
-                                  "material density. Only used for the film in the graded DWBA. Cellulose ~2e-9 at 12.8 keV.");
         }
 
         // --- Background ---
         if (ImGui::CollapsingHeader("Background medium", ImGuiTreeNodeFlags_DefaultOpen)) {
-            if (ImGui::BeginCombo("Medium", background_presets[bg_preset].name)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(background_presets); ++i) {
-                    if (ImGui::Selectable(background_presets[i].name, bg_preset == i)) {
-                        bg_preset = i;
-                        if (i != BG_CUSTOM) bg_density = background_presets[i].electron_density;
+            if (is_neutron()) {
+                if (ImGui::BeginCombo("Medium", neutron_background_presets[neu_bg_preset].name)) {
+                    for (int i = 0; i < (int)ARRAY_SIZE(neutron_background_presets); ++i) {
+                        if (ImGui::Selectable(neutron_background_presets[i].name, neu_bg_preset == i)) {
+                            neu_bg_preset = i;
+                            if (i != NBG_CUSTOM && i != NBG_WATER) neu_bg_sld = neutron_background_presets[i].sld;
+                        }
                     }
+                    ImGui::EndCombo();
                 }
-                ImGui::EndCombo();
+                if (neu_bg_preset == NBG_WATER) {
+                    ImGui::SliderFloat("D2O fraction", &neu_d2o, 0.0f, 1.0f, "%.3f");
+                    ImGui::SetItemTooltip("Volume fraction of D2O in H2O/D2O. The SLD is linear from %.2f (H2O) to %.2f (D2O) x 10⁻⁶ Å⁻².",
+                                          neutron::SLD_H2O, neutron::SLD_D2O);
+                }
+                ImGui::BeginDisabled(neu_bg_preset != NBG_CUSTOM);
+                double shown = neutron_bg_sld();
+                if (ImGui::InputDouble("SLD (10⁻⁶ Å⁻²)", &shown, 0, 0, "%.4f") && neu_bg_preset == NBG_CUSTOM) neu_bg_sld = shown;
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("Part of the particle contrast (recompute)");
+                ImGui::SetItemTooltip("For neutrons the particle weights are the excess scattering lengths b - SLD * V,\n"
+                                      "so the background is part of the structure stage.");
+            } else {
+                if (ImGui::BeginCombo("Medium", background_presets[bg_preset].name)) {
+                    for (int i = 0; i < (int)ARRAY_SIZE(background_presets); ++i) {
+                        if (ImGui::Selectable(background_presets[i].name, bg_preset == i)) {
+                            bg_preset = i;
+                            if (i != BG_CUSTOM) bg_density = background_presets[i].electron_density;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::BeginDisabled(bg_preset != BG_CUSTOM);
+                ImGui::InputDouble("Density (e/Å³)", &bg_density, 0, 0, "%.5f");
+                ImGui::EndDisabled();
+                bg_density = MAX(bg_density, 0.0);
+                ImGui::TextDisabled("Contrast factor: %.4f", contrast_factor());
             }
-            ImGui::BeginDisabled(bg_preset != BG_CUSTOM);
-            ImGui::InputDouble("Density (e/Å³)", &bg_density, 0, 0, "%.5f");
-            ImGui::EndDisabled();
-            bg_density = MAX(bg_density, 0.0);
-            ImGui::TextDisabled("Contrast factor: %.4f", contrast_factor());
         }
 
         // --- Substrate ---
@@ -1518,23 +1840,45 @@ struct Gisaxs : viamd::EventHandler {
             ImGui::Checkbox("Enable substrate (DWBA)", &dwba);
             ImGui::SetItemTooltip("Unchecked: Born approximation without a substrate");
             ImGui::BeginDisabled(!dwba);
-            if (ImGui::BeginCombo("Material", substrate_presets[sub_preset].name)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(substrate_presets); ++i) {
-                    if (ImGui::Selectable(substrate_presets[i].name, sub_preset == i)) {
-                        sub_preset = i;
-                        if (i != SUB_CUSTOM) {
-                            sub_density = substrate_presets[i].electron_density;
-                            sub_beta = substrate_presets[i].beta;
+            if (is_neutron()) {
+                if (ImGui::BeginCombo("Material", neutron_substrate_presets[neu_sub_preset].name)) {
+                    for (int i = 0; i < (int)ARRAY_SIZE(neutron_substrate_presets); ++i) {
+                        if (ImGui::Selectable(neutron_substrate_presets[i].name, neu_sub_preset == i)) {
+                            neu_sub_preset = i;
+                            if (i != NSUB_CUSTOM) {
+                                neu_sub_sld = neutron_substrate_presets[i].sld;
+                                neu_sub_abs = neutron_substrate_presets[i].abs;
+                            }
                         }
                     }
+                    ImGui::EndCombo();
                 }
-                ImGui::EndCombo();
+                ImGui::BeginDisabled(neu_sub_preset != NSUB_CUSTOM);
+                ImGui::InputDouble("SLD (10⁻⁶ Å⁻²)##sub", &neu_sub_sld, 0, 0, "%.4f");
+                ImGui::InputDouble("Absorption (10⁻⁶ Å⁻²)", &neu_sub_abs, 0, 0, "%.3e");
+                ImGui::SetItemTooltip("Imaginary part of the SLD, N sigma_a / (2 lambda), which is wavelength independent\n"
+                                      "for 1/v absorbers. Negligible for Si and SiO2.");
+                ImGui::EndDisabled();
+                neu_sub_abs = MAX(neu_sub_abs, 0.0);
+            } else {
+                if (ImGui::BeginCombo("Material", substrate_presets[sub_preset].name)) {
+                    for (int i = 0; i < (int)ARRAY_SIZE(substrate_presets); ++i) {
+                        if (ImGui::Selectable(substrate_presets[i].name, sub_preset == i)) {
+                            sub_preset = i;
+                            if (i != SUB_CUSTOM) {
+                                sub_density = substrate_presets[i].electron_density;
+                                sub_beta = substrate_presets[i].beta;
+                            }
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::BeginDisabled(sub_preset != SUB_CUSTOM);
+                ImGui::InputDouble("Density (e/Å³)##sub", &sub_density, 0, 0, "%.4f");
+                ImGui::InputDouble("Beta", &sub_beta, 0, 0, "%.3e");
+                ImGui::SetItemTooltip("Imaginary part of the refractive index. Presets are for ~12 keV.");
+                ImGui::EndDisabled();
             }
-            ImGui::BeginDisabled(sub_preset != SUB_CUSTOM);
-            ImGui::InputDouble("Density (e/Å³)##sub", &sub_density, 0, 0, "%.4f");
-            ImGui::InputDouble("Beta", &sub_beta, 0, 0, "%.3e");
-            ImGui::SetItemTooltip("Imaginary part of the refractive index. Presets are for ~12 keV.");
-            ImGui::EndDisabled();
             ImGui::Checkbox("Place below lowest particle", &sub_auto_z);
             if (sub_auto_z) {
                 ImGui::InputFloat("Offset (Å)", &sub_z_offset, 0, 0, "%.2f");
@@ -1546,7 +1890,13 @@ struct Gisaxs : viamd::EventHandler {
             ImGui::InputFloat("Roughness (Å)", &sub_roughness, 0, 0, "%.2f");
             sub_roughness = MAX(sub_roughness, 0.0f);
             ImGui::SetItemTooltip("RMS roughness of the substrate interface (Nevot-Croce factor)");
-            ImGui::TextDisabled("Critical angle: %.3f°", critical_angle() * RAD_TO_DEG);
+            if (sld_substrate() > sld_ambient()) {
+                ImGui::TextDisabled("Critical angle: %.3f°", critical_angle() * RAD_TO_DEG);
+            } else {
+                ImGui::TextDisabled("No total reflection (substrate SLD below the ambient)");
+                ImGui::SetItemTooltip("The beam enters from the ambient side. Geometries where the beam enters through the\n"
+                                      "substrate (e.g. a solid/liquid interface) are not modelled.");
+            }
             ImGui::Checkbox("Film in reference medium (graded DWBA)", &film_graded);
             ImGui::SetItemTooltip("Include the laterally averaged density of the particles (the density profile)\n"
                                   "in the DWBA reference medium: vacuum / graded film / substrate.\n"
@@ -1561,28 +1911,41 @@ struct Gisaxs : viamd::EventHandler {
 
         // --- Beam ---
         if (ImGui::CollapsingHeader("Beam", ImGuiTreeNodeFlags_DefaultOpen)) {
-            const bool preset_valid = beam_preset >= 0 && beam_preset < (int)ARRAY_SIZE(beam_presets);
-            char preview[128];
-            if (preset_valid) {
-                snprintf(preview, sizeof(preview), "%s%s", beam_presets[beam_preset].name, preset_matches(beam_presets[beam_preset]) ? "" : " (modified)");
-            } else {
-                snprintf(preview, sizeof(preview), "Custom");
-            }
-            if (ImGui::BeginCombo("Preset", preview)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(beam_presets); ++i) {
-                    if (ImGui::Selectable(beam_presets[i].name, beam_preset == i)) {
-                        apply_preset(i);
-                    }
-                    ImGui::SetItemTooltip("%s", beam_presets[i].description);
+            // Presets of the current radiation only
+            bool any_preset = false;
+            for (const BeamPreset& p : beam_presets) any_preset |= p.radiation == radiation;
+            const bool preset_valid = beam_preset >= 0 && beam_preset < (int)ARRAY_SIZE(beam_presets) && beam_presets[beam_preset].radiation == radiation;
+            if (any_preset) {
+                char preview[128];
+                if (preset_valid) {
+                    snprintf(preview, sizeof(preview), "%s%s", beam_presets[beam_preset].name, preset_matches(beam_presets[beam_preset]) ? "" : " (modified)");
+                } else {
+                    snprintf(preview, sizeof(preview), "Custom");
                 }
-                ImGui::EndCombo();
+                if (ImGui::BeginCombo("Preset", preview)) {
+                    for (int i = 0; i < (int)ARRAY_SIZE(beam_presets); ++i) {
+                        if (beam_presets[i].radiation != radiation) continue;
+                        if (ImGui::Selectable(beam_presets[i].name, beam_preset == i)) {
+                            apply_preset(i);
+                        }
+                        ImGui::SetItemTooltip("%s", beam_presets[i].description);
+                    }
+                    ImGui::EndCombo();
+                }
+                if (preset_valid) {
+                    ImGui::SetItemTooltip("%s", beam_presets[beam_preset].description);
+                }
             }
-            if (preset_valid) {
-                ImGui::SetItemTooltip("%s", beam_presets[beam_preset].description);
+            if (is_neutron()) {
+                ImGui::InputFloat("Wavelength (Å)", &neu_wavelength, 0, 0, "%.3f");
+                neu_wavelength = CLAMP(neu_wavelength, 0.5f, 50.0f);
+                // E = h^2 / (2 m lambda^2) = 81.8042 meV Å^2 / lambda^2, v = h / (m lambda) = 3956 m/s Å / lambda
+                ImGui::TextDisabled("Energy: %.3f meV, %.0f m/s", 81.8042 / (neu_wavelength * neu_wavelength), 3956.03 / neu_wavelength);
+            } else {
+                ImGui::InputFloat("Energy (keV)", &energy_kev, 0, 0, "%.3f");
+                energy_kev = CLAMP(energy_kev, 0.1f, 1000.0f);
+                ImGui::TextDisabled("Wavelength: %.4f Å", wavelength());
             }
-            ImGui::InputFloat("Energy (keV)", &energy_kev, 0, 0, "%.3f");
-            energy_kev = CLAMP(energy_kev, 0.1f, 1000.0f);
-            ImGui::TextDisabled("Wavelength: %.4f Å", wavelength());
             ImGui::SliderFloat("Incidence (°)", &alpha_i_deg, 0.01f, 2.0f, "%.3f");
         }
 
@@ -1827,12 +2190,12 @@ struct Gisaxs : viamd::EventHandler {
             STR_LIT("alpha_f [deg]"),
         };
         if (!md_csv_write_to_file(cols, names, 3, n, path)) {
-            MD_LOG_ERROR("GISAXS: failed to write '%.*s'", (int)path.len, path.ptr);
+            MD_LOG_ERROR("Scattering: failed to write '%.*s'", (int)path.len, path.ptr);
         }
     }
 
     void draw_detector(float w, float h, ImVec4 col_h, ImVec4 col_v) {
-        if (!ImPlot::BeginPlot("##gisaxs_detector", ImVec2(w, h), ImPlotFlags_NoLegend | ImPlotFlags_Equal)) return;
+        if (!ImPlot::BeginPlot("##scat_detector", ImVec2(w, h), ImPlotFlags_NoLegend | ImPlotFlags_Equal)) return;
         ImPlot::SetupAxis(ImAxis_X1, "q_y [nm⁻¹]");
         ImPlot::SetupAxis(ImAxis_Y1, "q_z [nm⁻¹]");
         ImPlot::SetupAxesLimits(det_qy_min, det_qy_max, det_qz_min, det_qz_max, ImPlotCond_Once);
@@ -1917,7 +2280,7 @@ struct Gisaxs : viamd::EventHandler {
 
         if (view_detector && det_rows && det_cols) {
             draw_detector(map_w, map_h, col_h, col_v);
-        } else if (ImPlot::BeginPlot("##gisaxs_map", ImVec2(map_w, map_h), ImPlotFlags_NoLegend)) {
+        } else if (ImPlot::BeginPlot("##scat_map", ImVec2(map_w, map_h), ImPlotFlags_NoLegend)) {
             ImPlot::SetupAxis(ImAxis_X1, "q_par [nm⁻¹]");
             ImPlot::SetupAxis(ImAxis_Y1, "q_z [nm⁻¹]");
             ImPlot::SetupAxesLimits(res_qpar_min, res_qpar_max, res_qz_min, res_qz_max, ImPlotCond_Once);
@@ -2013,7 +2376,7 @@ struct Gisaxs : viamd::EventHandler {
                     // Born self scattering of the discrete beads: sum_j w_j^2 exp(-(q_par^2 + q_z^2) sigma_j^2) / A.
                     // Where the computed curve approaches it, the signal is dominated by bead discreteness.
                     const double qz_a = cut_qz * 0.1;
-                    const double scl = MD_GISAXS_R_E * MD_GISAXS_R_E * contrast_factor() / bead_self_area;
+                    const double scl = eval_model.intensity_scale / bead_self_area;   // L^2 x contrast, as the result
                     md_array(double) selfI = nullptr;
                     md_array_resize(selfI, res_cols, alloc);
                     for (size_t c = 0; c < res_cols; ++c) {
@@ -2076,11 +2439,22 @@ struct Gisaxs : viamd::EventHandler {
 
         if (show_profile && prof_z && md_array_size(prof_z)) {
             if (!first) ImGui::SameLine();
-            if (ImPlot::BeginPlot("Density profile##gisaxs_profile", ImVec2(plot_w, lower_h), ImPlotFlags_NoLegend)) {
+            if (ImPlot::BeginPlot("Density profile##scat_profile", ImVec2(plot_w, lower_h), ImPlotFlags_NoLegend)) {
+                const bool neu = ctx_radiation == Radiation_Neutron;
                 ImPlot::SetupAxis(ImAxis_X1, "z [Å]");
-                ImPlot::SetupAxis(ImAxis_Y1, "rho_e [e/Å³]", ImPlotAxisFlags_AutoFit);
+                ImPlot::SetupAxis(ImAxis_Y1, neu ? "ΔSLD [10⁻⁶ Å⁻²]" : "rho_e [e/Å³]", ImPlotAxisFlags_AutoFit);
                 ImPlot::SetupFinish();
-                ImPlot::PlotLine("Profile", prof_z, prof_rho, (int)md_array_size(prof_z));
+                if (neu) {
+                    // Excess scattering length density, fm/Å^3 -> 10^-6 Å^-2
+                    const size_t np = md_array_size(prof_z);
+                    md_array(double) sld = nullptr;
+                    md_array_resize(sld, np, alloc);
+                    for (size_t i = 0; i < np; ++i) sld[i] = prof_rho[i] / neutron::SLD_E6_TO_FM_PER_A3;
+                    ImPlot::PlotLine("Profile", prof_z, sld, (int)np);
+                    md_array_free(sld, alloc);
+                } else {
+                    ImPlot::PlotLine("Profile", prof_z, prof_rho, (int)md_array_size(prof_z));
+                }
                 if (eval_model.dwba) {
                     const double zs = eval_model.z_substrate;
                     ImPlot::SetNextLineStyle(ImVec4(1, 0.6f, 0.2f, 0.8f), 1.0f);
@@ -2096,8 +2470,27 @@ struct Gisaxs : viamd::EventHandler {
     // ---------------------------------------------------------------------------------------------
 
     void serialize(viamd::serialization_state_t& state) {
-        viamd::write_section_header(state, STR_LIT("GISAXS"));
+        viamd::write_section_header(state, STR_LIT("Scattering"));
         viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(filter));
+        viamd::write_int(state, STR_LIT("Radiation"), radiation);
+        viamd::write_int(state, STR_LIT("NeuWeightMode"), neu_weight_mode);
+        viamd::write_flt(state, STR_LIT("NeuBProtiated"), neu_b_protiated);
+        viamd::write_flt(state, STR_LIT("NeuNH"), neu_n_h);
+        viamd::write_flt(state, STR_LIT("NeuNEx"), neu_n_ex);
+        viamd::write_flt(state, STR_LIT("NeuVolume"), neu_volume);
+        viamd::write_flt(state, STR_LIT("NeuMassDensity"), neu_mass_density);
+        viamd::write_flt(state, STR_LIT("NeuDeuteration"), neu_deuteration);
+        viamd::write_bool(state, STR_LIT("NeuExchange"), neu_exchange);
+        viamd::write_bool(state, STR_LIT("NeuExchangeFollow"), neu_exchange_follow);
+        viamd::write_flt(state, STR_LIT("NeuExchangeD"), neu_exchange_d);
+        viamd::write_bool(state, STR_LIT("NeuIncoherent"), neu_incoherent);
+        viamd::write_int(state, STR_LIT("NeuBackgroundPreset"), neu_bg_preset);
+        viamd::write_dbl(state, STR_LIT("NeuBackgroundSld"), neu_bg_sld);
+        viamd::write_flt(state, STR_LIT("NeuD2O"), neu_d2o);
+        viamd::write_int(state, STR_LIT("NeuSubstratePreset"), neu_sub_preset);
+        viamd::write_dbl(state, STR_LIT("NeuSubstrateSld"), neu_sub_sld);
+        viamd::write_dbl(state, STR_LIT("NeuSubstrateAbs"), neu_sub_abs);
+        viamd::write_flt(state, STR_LIT("NeuWavelength"), neu_wavelength);
         viamd::write_int(state, STR_LIT("ElectronMode"), electron_mode);
         viamd::write_flt(state, STR_LIT("Electrons"), electrons_per_particle);
         viamd::write_int(state, STR_LIT("SigmaMode"), sigma_mode);
@@ -2167,6 +2560,25 @@ struct Gisaxs : viamd::EventHandler {
         str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
             if      (str_eq(ident, STR_LIT("Filter")))            viamd::extract_to_char_buf(filter, sizeof(filter), arg);
+            else if (str_eq(ident, STR_LIT("Radiation")))         viamd::extract_int(radiation, arg);
+            else if (str_eq(ident, STR_LIT("NeuWeightMode")))     viamd::extract_int(neu_weight_mode, arg);
+            else if (str_eq(ident, STR_LIT("NeuBProtiated")))     viamd::extract_flt(neu_b_protiated, arg);
+            else if (str_eq(ident, STR_LIT("NeuNH")))             viamd::extract_flt(neu_n_h, arg);
+            else if (str_eq(ident, STR_LIT("NeuNEx")))            viamd::extract_flt(neu_n_ex, arg);
+            else if (str_eq(ident, STR_LIT("NeuVolume")))         viamd::extract_flt(neu_volume, arg);
+            else if (str_eq(ident, STR_LIT("NeuMassDensity")))    viamd::extract_flt(neu_mass_density, arg);
+            else if (str_eq(ident, STR_LIT("NeuDeuteration")))    viamd::extract_flt(neu_deuteration, arg);
+            else if (str_eq(ident, STR_LIT("NeuExchange")))       viamd::extract_bool(neu_exchange, arg);
+            else if (str_eq(ident, STR_LIT("NeuExchangeFollow"))) viamd::extract_bool(neu_exchange_follow, arg);
+            else if (str_eq(ident, STR_LIT("NeuExchangeD")))      viamd::extract_flt(neu_exchange_d, arg);
+            else if (str_eq(ident, STR_LIT("NeuIncoherent")))     viamd::extract_bool(neu_incoherent, arg);
+            else if (str_eq(ident, STR_LIT("NeuBackgroundPreset"))) viamd::extract_int(neu_bg_preset, arg);
+            else if (str_eq(ident, STR_LIT("NeuBackgroundSld")))  viamd::extract_dbl(neu_bg_sld, arg);
+            else if (str_eq(ident, STR_LIT("NeuD2O")))            viamd::extract_flt(neu_d2o, arg);
+            else if (str_eq(ident, STR_LIT("NeuSubstratePreset"))) viamd::extract_int(neu_sub_preset, arg);
+            else if (str_eq(ident, STR_LIT("NeuSubstrateSld")))   viamd::extract_dbl(neu_sub_sld, arg);
+            else if (str_eq(ident, STR_LIT("NeuSubstrateAbs")))   viamd::extract_dbl(neu_sub_abs, arg);
+            else if (str_eq(ident, STR_LIT("NeuWavelength")))     viamd::extract_flt(neu_wavelength, arg);
             else if (str_eq(ident, STR_LIT("ElectronMode")))      viamd::extract_int(electron_mode, arg);
             else if (str_eq(ident, STR_LIT("Electrons")))         viamd::extract_flt(electrons_per_particle, arg);
             else if (str_eq(ident, STR_LIT("SigmaMode")))         viamd::extract_int(sigma_mode, arg);
@@ -2232,6 +2644,10 @@ struct Gisaxs : viamd::EventHandler {
             else if (str_eq(ident, STR_LIT("CutWidthQpar")))      viamd::extract_flt(cut_width_qpar, arg);
         }
         electron_mode = CLAMP(electron_mode, 0, (int)ARRAY_SIZE(electron_mode_lbl) - 1);
+        radiation = CLAMP(radiation, 0, (int)ARRAY_SIZE(radiation_lbl) - 1);
+        neu_weight_mode = CLAMP(neu_weight_mode, 0, (int)ARRAY_SIZE(neutron_weight_lbl) - 1);
+        neu_bg_preset = CLAMP(neu_bg_preset, 0, (int)ARRAY_SIZE(neutron_background_presets) - 1);
+        neu_sub_preset = CLAMP(neu_sub_preset, 0, (int)ARRAY_SIZE(neutron_substrate_presets) - 1);
         density_model = CLAMP(density_model, 0, (int)ARRAY_SIZE(density_model_lbl) - 1);
         fib_template = CLAMP(fib_template, 0, (int)ARRAY_SIZE(fibril_template_lbl) - 1);
         sigma_mode = CLAMP(sigma_mode, 0, 1);
@@ -2242,4 +2658,4 @@ struct Gisaxs : viamd::EventHandler {
     }
 };
 
-static Gisaxs instance;
+static ScatteringComponent instance;

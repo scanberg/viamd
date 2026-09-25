@@ -56,6 +56,12 @@ not the file boundary but what it forces: a core that knows about a clearance fi
 and nothing about viamd, can be checked against cases with closed-form answers rather than by
 loading a system and looking at it.
 
+`void_analysis` is the worked example. Its core holds the distance field pass, the profile it fills
+and the channel analysis; `void_analysis.cpp` keeps the window, reads the system and spreads the
+field pass over the task system. That last part is the pattern for anything parallel: the core
+evaluates a range serially into an accumulator it is handed, and the component decides how ranges
+map to threads, so the tests can split the work arbitrarily and require the same answer.
+
 A component's tests include its headers through the component root, as `<foo/foo_core.h>`, so two
 components may name their headers alike without colliding.
 
