@@ -45,7 +45,15 @@ static struct {
     Context internal_ctx{};
 } data;
 
-static void error_callback(int error, const char* description) { MD_LOG_ERROR("%d: %s\n", error, description); }
+static void error_callback(int error, const char* description) {
+    // The clipboard holding something other than text (an image, a file, nothing) is not a fault: GLFW reports it
+    // when ImGui asks for the clipboard string on paste, and the paste simply does nothing.
+    if (error == GLFW_FORMAT_UNAVAILABLE) {
+        MD_LOG_DEBUG("%d: %s", error, description);
+        return;
+    }
+    MD_LOG_ERROR("%d: %s\n", error, description);
+}
 
 static const char* gl_debug_source_str(GLenum v) {
     switch (v) {
