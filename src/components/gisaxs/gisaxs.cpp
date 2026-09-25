@@ -795,7 +795,7 @@ struct Gisaxs : viamd::EventHandler {
         const md_system_t& sys = app_state->mold.sys;
         const md_system_state_t& state = app_state->mold.state;
         const size_t num_atoms = sys.atom.count;
-        if (num_atoms == 0 || !state.x) {
+        if (num_atoms == 0 || !state.xyz) {
             snprintf(status, sizeof(status), "No system loaded");
             return false;
         }
@@ -844,9 +844,9 @@ struct Gisaxs : viamd::EventHandler {
         while (md_bitfield_iter_next(&it)) {
             const size_t idx = md_bitfield_iter_idx(&it);
             if (idx >= num_atoms) continue;
-            x[n] = state.x[idx];
-            y[n] = state.y[idx];
-            z[n] = state.z[idx];
+            x[n] = state.xyz[idx].x;
+            y[n] = state.xyz[idx].y;
+            z[n] = state.xyz[idx].z;
             atom_idx.push_back((uint32_t)idx);
             if (electron_mode == ElectronMode_AtomicNumber) {
                 w[n] = (float)md_atom_atomic_number(&sys.atom, idx);

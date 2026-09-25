@@ -267,7 +267,7 @@ struct Contacts : viamd::EventHandler {
             ImGui::PushItemWidth(200);
             int gb = (int)group_by;
             if (ImGui::Combo("Groups", &gb, group_by_lbl, GroupBy_Count)) group_by = (GroupBy)gb;
-            ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
+            ImGui::InputFloat((const char*)u8"Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
             cutoff = CLAMP(cutoff, -10.0f, 100.0f);
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");
             ImGui::PopItemWidth();
@@ -297,7 +297,7 @@ struct Contacts : viamd::EventHandler {
             ImGui::TextDisabled("No result");
             return;
         }
-        ImGui::Text("%zu groups (%s), surfaces within %.2f Å: %llu group pairs in contact, %llu particle pairs (%.2f s)",
+        ImGui::Text((const char*)u8"%zu groups (%s), surfaces within %.2f Å: %llu group pairs in contact, %llu particle pairs (%.2f s)",
             res.groups.size(), group_by_lbl[res.group_by], res.cutoff, (unsigned long long)res.num_group_pairs, (unsigned long long)res.num_pairs, res.seconds);
         if (res.has_energy) {
             ImGui::Text("Energy between groups: LJ %.3f, Coulomb %.3f, total %.3f kJ/mol (pairs within %.2f nm)",
