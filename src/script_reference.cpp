@@ -7,6 +7,7 @@
 #include <core/md_str.h>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_md.h>
 
 #include <stdio.h>
@@ -90,6 +91,7 @@ struct State {
     bool scroll_top = false;
     bool reveal_nav = false;        // scroll the sidebar to the current entry
     bool focus_search = false;
+    enum Reveal { Reveal_None, Reveal_Show, Reveal_Focus } reveal = Reveal_None;
     float nav_width = 0.0f;         // sidebar width in pixels (0 -> derive from font size)
 
     int history[MAX_HISTORY] = {};
@@ -876,12 +878,33 @@ void focus_search() {
     g.focus_search = true;
 }
 
+void reveal(bool take_focus) {
+    g.reveal = take_focus ? State::Reveal_Focus : State::Reveal_Show;
+}
+
 Action draw_window(bool* p_open) {
     ensure_loaded();
     g.insert_pending = false;
 
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 60.0f, ImGui::GetFontSize() * 40.0f), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Script Reference", p_open)) {
+    ImGuiWindowFlags flags = ImGuiWindowFlags_None;
+    if (g.reveal == State::Reveal_Focus) {
+        ImGui::SetNextWindowFocus();
+    } else if (g.reveal == State::Reveal_Show) {
+        flags |= ImGuiWindowFlags_NoFocusOnAppearing;
+    }
+
+    const bool visible = ImGui::Begin("Script Reference", p_open, flags);
+    if (g.reveal == State::Reveal_Show) {
+        // Show the window without taking the keyboard focus from whoever has it
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        if (window->DockNode && window->DockNode->TabBar) {
+            window->DockNode->TabBar->NextSelectedTabId = window->TabId;
+        }
+        ImGui::BringWindowToDisplayFront(window->RootWindowDockTree);
+    }
+    g.reveal = State::Reveal_None;
+    if (visible) {
         draw();
     }
     ImGui::End();

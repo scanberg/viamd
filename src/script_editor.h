@@ -4,7 +4,7 @@
 //
 // The editor widget (ext/ImGuiColorTextEdit, https://github.com/goossens/ImGuiColorTextEdit) is vendored unmodified so
 // that it can be updated by copying in a newer version. Everything viamd needs on top of it lives here: the mdscript
-// language definition, markers for compiler errors, warnings and visualization tokens, and a few helpers.
+// language definition, autocompletion, markers for compiler errors, warnings and visualization tokens, and a few helpers.
 //
 // Markers are kept here rather than in the editor. The editor is only asked two things: which glyph the mouse is over
 // (TextEditor::GetDocPosAtMousePos) and to draw squiggles. Errors and warnings are underlined in red and yellow, and
@@ -31,6 +31,9 @@ const TextEditor::Palette& retro_blue_palette();
 // Identifier under (or just before) the main cursor, empty if there is none
 std::string word_at_cursor(const TextEditor& editor);
 
+// Identifier under the mouse position (in screen coordinates), empty if there is none
+std::string word_at_mouse(const TextEditor& editor, ImVec2 mouse_pos);
+
 // Appends text as a new line at the end of the document. The cursor moves to the end of it.
 void append_line(TextEditor& editor, str_t line);
 
@@ -40,6 +43,14 @@ void insert_lines_at_cursor(TextEditor& editor, str_t code);
 
 // True if the editor has keyboard focus. Call right after TextEditor::Render(), while its child window is the last item.
 bool has_focus_after_render();
+
+// Turns on autocompletion for mdscript. Suggestions are the keywords, the built-in procedures and constants, and the
+// identifiers used in the document, ranked by how well they match what has been typed. The characters typed have to
+// appear in order in a suggestion (ignoring case) and the first one has to start it or one of its parts, so 'sw' finds
+// shape_weights. Suggestions pop up while typing an identifier, Ctrl+Space asks for them (also on macOS); Tab or Enter
+// inserts the selected one, Escape closes the list.
+// The editor keeps a reference to itself in its configuration, so it must not move while autocomplete is on.
+void enable_autocomplete(TextEditor& editor);
 
 enum MarkerType {
     MarkerType_Error,

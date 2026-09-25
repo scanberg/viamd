@@ -81,7 +81,7 @@ constexpr ImGuiKey KEY_RECOMPILE_SHADERS        = ImGuiKey_F5;
 constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW        = ImGuiKey_F11;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE          = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
-constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F1;
+constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F12;
 
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_INIT("via");
 

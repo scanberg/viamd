@@ -318,7 +318,7 @@ static void draw_distribution_window(ApplicationState* state);
 static void draw_async_task_window(ApplicationState* state);
 static void draw_script_editor_window(ApplicationState* state);
 static void draw_script_reference_window(ApplicationState* state);
-static void open_script_reference(ApplicationState* state, str_t topic);
+static void open_script_reference(ApplicationState* state, str_t topic, bool take_focus = true);
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
 
 static void draw_debug_window(ApplicationState* state);
@@ -601,6 +601,7 @@ int main(int argc, char** argv) {
     state.editor.SetLanguage(script_editor::language());
     state.editor.SetPalette(TextEditor::GetDarkPalette());
     state.editor.SetInsertSpacesOnTabs(true);
+    script_editor::enable_autocomplete(state.editor);
 
     {
 #ifdef VIAMD_DEFAULT_DATASET
@@ -1155,7 +1156,6 @@ int main(int argc, char** argv) {
             POP_CPU_SECTION();
         }
 
-        // F1 in the script editor looks up the word under the cursor instead (see draw_script_editor_window)
         if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT) && !state.editor_focused) {
 			ViewFitRequest fit_request = {
 				.app = state,
@@ -5598,16 +5598,18 @@ static void draw_debug_window(ApplicationState* data) {
 }
 
 // Opens the script reference at topic (a procedure name, alias or heading anchor). Anything else is searched for,
-// and an empty topic puts the focus in the search box.
-static void open_script_reference(ApplicationState* state, str_t topic) {
+// and an empty topic puts the focus in the search box (which always takes the focus). Without take_focus the keyboard
+// focus stays where it is, so lookups from the script editor keep its caret.
+static void open_script_reference(ApplicationState* state, str_t topic, bool take_focus) {
     ASSERT(state);
     if (str_empty(topic)) {
         script_reference::focus_search();
+        take_focus = true;
     } else if (!script_reference::show(topic)) {
         script_reference::search(topic);
     }
     state->show_script_reference_window = true;
-    ImGui::SetWindowFocus("Script Reference");
+    script_reference::reveal(take_focus);
 }
 
 static void draw_script_reference_window(ApplicationState* state) {
@@ -5711,7 +5713,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 if (word.empty()) snprintf(label, sizeof(label), "Look up word under cursor");
                 else snprintf(label, sizeof(label), "Look up '%s'", word.c_str());
                 if (ImGui::MenuItem(label, "F1", nullptr, !word.empty())) {
-                    open_script_reference(state, {word.data(), word.size()});
+                    open_script_reference(state, {word.data(), word.size()}, false);
                 }
                 ImGui::EndMenu();
             }
@@ -5748,10 +5750,18 @@ static void draw_script_editor_window(ApplicationState* state) {
         state->editor_focused = script_editor::has_focus_after_render();
         const script_editor::Marker* hovered_marker = script_editor::markers_update(&state->editor_markers, &state->editor, editor_hovered);
 
-        if (state->editor_focused && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
-            // F1 looks up the word under the cursor in the script reference
-            const std::string word = script_editor::word_at_cursor(state->editor);
-            open_script_reference(state, {word.data(), word.size()});
+        // F1 looks up the identifier under the mouse in the script reference, or else the one at the text cursor.
+        // Hovering does not require focus: opening the reference takes the focus, and a second F1 over another
+        // identifier would otherwise be ignored until the editor is clicked again.
+        if ((editor_hovered || state->editor_focused) && ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+            std::string word;
+            if (editor_hovered) {
+                word = script_editor::word_at_mouse(state->editor, ImGui::GetMousePos());
+            }
+            if (word.empty() && state->editor_focused) {
+                word = script_editor::word_at_cursor(state->editor);
+            }
+            open_script_reference(state, {word.data(), word.size()}, false);
         }
 
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + content_size.x - btn_size.x);
