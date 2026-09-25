@@ -1364,7 +1364,7 @@ static void init_display_properties(ApplicationState* data) {
 
     const str_t eval_labels[2] = {
         {},
-        STR_LIT("filt"),
+        STR_INIT("filt"),
     };
 
     for (size_t eval_idx = 0; eval_idx < ARRAY_SIZE(evals); ++eval_idx) {
@@ -6026,12 +6026,12 @@ static void draw_property_export_window(ApplicationState* data) {
     };
 
     ExportFormat table_formats[] {
-        {STR_LIT("XVG"), STR_LIT("xvg")},
-        {STR_LIT("CSV"), STR_LIT("csv")}
+        {STR_INIT("XVG"), STR_INIT("xvg")},
+        {STR_INIT("CSV"), STR_INIT("csv")}
     };
 
     ExportFormat volume_formats[] {
-        {STR_LIT("Gaussian Cube"), STR_LIT("cube")},
+        {STR_INIT("Gaussian Cube"), STR_INIT("cube")},
     };
 
     if (ImGui::Begin("Property Export", &data->show_property_export_window)) {
@@ -6154,7 +6154,7 @@ static void draw_property_export_window(ApplicationState* data) {
                                 time[i] = (float)(traj_times[i] * time_scl);
                             }
 
-                            str_t x_label = STR_LIT("Frame");
+                            str_t x_label = STR_INIT("Frame");
                             str_t y_label = str_from_cstr(dp.label);
 
                             if (!md_unit_is_none(dp.unit[1])) {
@@ -6467,7 +6467,7 @@ void draw_structure_export_window(ApplicationState* data) {
                         md_system_state_init(&frame_state, sys->atom.count);
 
                         // Many frames: one context for all of them, so the run's files stay open.
-                        const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+                        const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
                         md_system_extract_t* ex = md_system_extract_begin(sys, str_from_cstr(data->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
                         defer { md_system_extract_end(ex); };
 

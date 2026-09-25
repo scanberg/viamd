@@ -83,7 +83,7 @@ constexpr ImGuiKey KEY_SCRIPT_EVALUATE          = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
 constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F1;
 
-constexpr str_t WORKSPACE_FILE_EXTENSION = STR_LIT("via");
+constexpr str_t WORKSPACE_FILE_EXTENSION = STR_INIT("via");
 
 typedef uint64_t PickingDomainID;
 typedef uint64_t PickingSourceID;
@@ -2171,36 +2171,36 @@ bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const m
 // is waiting for a neutral name, and the moment a second reader publishes something comparable is
 // the moment to give them one and alias these onto it.
 namespace es_path {
-    inline const str_t alpha_coefficient   = STR_LIT("orbital/alpha/coefficient");
-    inline const str_t beta_coefficient    = STR_LIT("orbital/beta/coefficient");
+    inline const str_t alpha_coefficient   = STR_INIT("orbital/alpha/coefficient");
+    inline const str_t beta_coefficient    = STR_INIT("orbital/beta/coefficient");
 
-    inline const str_t alpha_energy        = STR_LIT("orbital/alpha/energy");
-    inline const str_t beta_energy         = STR_LIT("orbital/beta/energy");
+    inline const str_t alpha_energy        = STR_INIT("orbital/alpha/energy");
+    inline const str_t beta_energy         = STR_INIT("orbital/beta/energy");
 
-    inline const str_t alpha_occupation    = STR_LIT("orbital/alpha/occupation");
-    inline const str_t beta_occupation     = STR_LIT("orbital/beta/occupation");
+    inline const str_t alpha_occupation    = STR_INIT("orbital/alpha/occupation");
+    inline const str_t beta_occupation     = STR_INIT("orbital/beta/occupation");
 
     // The AO metric the coefficients and densities above are expressed against. Singular for a
     // basis that was stored spherically - see the note on md_vlx_publish_attributes.
-    inline const str_t overlap             = STR_LIT("basis/overlap");
+    inline const str_t overlap             = STR_INIT("basis/overlap");
 
-    inline const str_t alpha_density       = STR_LIT("orbital/alpha/density");
-    inline const str_t beta_density        = STR_LIT("orbital/beta/density");
-    inline const str_t total_density       = STR_LIT("orbital/total/density");
-    inline const str_t difference_density  = STR_LIT("orbital/difference/density");
+    inline const str_t alpha_density       = STR_INIT("orbital/alpha/density");
+    inline const str_t beta_density        = STR_INIT("orbital/beta/density");
+    inline const str_t total_density       = STR_INIT("orbital/total/density");
+    inline const str_t difference_density  = STR_INIT("orbital/difference/density");
 
-    inline const str_t nto_particle        = STR_LIT("vlx/rsp/nto/particle/coefficient");
-    inline const str_t nto_hole            = STR_LIT("vlx/rsp/nto/hole/coefficient");
+    inline const str_t nto_particle        = STR_INIT("vlx/rsp/nto/particle/coefficient");
+    inline const str_t nto_hole            = STR_INIT("vlx/rsp/nto/hole/coefficient");
 
     // {S,Lmax}, the weight of each NTO pair, padded with zeros on the ragged lambda axis and
     // indexing the same space as the two coefficient attributes above.
-    inline const str_t nto_lambda          = STR_LIT("vlx/rsp/nto/lambda");
+    inline const str_t nto_lambda          = STR_INIT("vlx/rsp/nto/lambda");
 
-    inline const str_t attachment_density  = STR_LIT("vlx/rsp/transition_density/attachment");
-    inline const str_t detachment_density  = STR_LIT("vlx/rsp/transition_density/detachment");
-    inline const str_t transition_diff     = STR_LIT("vlx/rsp/transition_density/difference");
+    inline const str_t attachment_density  = STR_INIT("vlx/rsp/transition_density/attachment");
+    inline const str_t detachment_density  = STR_INIT("vlx/rsp/transition_density/detachment");
+    inline const str_t transition_diff     = STR_INIT("vlx/rsp/transition_density/difference");
 
-    inline const str_t density_property    = STR_LIT("vlx/density_property");
+    inline const str_t density_property    = STR_INIT("vlx/density_property");
 }
 
 // The only interpretation of use_magnitude there is. ABS is a MODIFIER bit on an accumulate op, not

@@ -4784,8 +4784,8 @@ struct QuantumChemistry : viamd::EventHandler {
         };
 
         ExportFormat table_formats[]{
-            {STR_LIT("XVG"), STR_LIT("xvg")},
-            {STR_LIT("CSV"), STR_LIT("csv")}
+            {STR_INIT("XVG"), STR_INIT("xvg")},
+            {STR_INIT("CSV"), STR_INIT("csv")}
         };
 
         struct ExportProperty {
@@ -4796,9 +4796,9 @@ struct QuantumChemistry : viamd::EventHandler {
         };
 
         ExportProperty properties[]{
-            {rsp.x_spectra, rsp.y_spectra_abs,   STR_LIT("Absorption"), STR_LIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
-            {rsp.x_spectra, rsp.y_spectra_ecd,   STR_LIT("ECD"),        STR_LIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
-            {rsp.vib_x,          rsp.vib_y, STR_LIT("Vibration"),  STR_LIT("IR Intensity (km/mol)")}
+            {rsp.x_spectra, rsp.y_spectra_abs,   STR_INIT("Absorption"), STR_INIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_spectra, rsp.y_spectra_ecd,   STR_INIT("ECD"),        STR_INIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
+            {rsp.vib_x,          rsp.vib_y, STR_INIT("Vibration"),  STR_INIT("IR Intensity (km/mol)")}
         };
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
@@ -6928,7 +6928,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 EXPORT_FILE_FORMAT_COUNT,
             };
             const char* file_format_str[] = {"cube", "raw + mhd + xyz"};
-            str_t file_format_ext[] = {STR_LIT("cube"), STR_LIT("raw")};
+            str_t file_format_ext[] = {STR_INIT("cube"), STR_INIT("raw")};
 
             STATIC_ASSERT(ARRAY_SIZE(file_format_str) == EXPORT_FILE_FORMAT_COUNT);
             STATIC_ASSERT(ARRAY_SIZE(file_format_ext) == EXPORT_FILE_FORMAT_COUNT);

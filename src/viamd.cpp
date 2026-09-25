@@ -468,7 +468,7 @@ md_unit_t run_time_unit(const ApplicationState* app) {
     return axis ? axis->unit : md_unit_none();
 }
 
-static const str_t frame_extract_paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+static const str_t frame_extract_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
 
 bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out) {
     ASSERT(app && out);
@@ -631,7 +631,7 @@ void init_trajectory_data(ApplicationState* data, uint32_t traj_flags) {
                 },
                 .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
                 .unit   = md_unit_none(),
-                .label  = STR_LIT("Secondary Structure"),
+                .label  = STR_INIT("Secondary Structure"),
             };
             md_attribute_id_t ss_id = md_attributes_replace(attributes, &ss_desc);
 
@@ -648,7 +648,7 @@ void init_trajectory_data(ApplicationState* data, uint32_t traj_flags) {
                 .format = angle_format,
                 .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
                 .unit   = md_unit_radian(),
-                .label  = STR_LIT("Backbone Angles"),
+                .label  = STR_INIT("Backbone Angles"),
             };
             md_attribute_id_t angle_id = md_attributes_replace(attributes, &angle_desc);
 
@@ -1389,7 +1389,7 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
 
         // Series loaded along the run (.xvg, .csv), the same way: "<run>/<kind>/<name>/source"
         const md_attributes_t* attributes = &app_state->mold.sys.attributes;
-        const str_t kinds[] = { STR_LIT("xvg"), STR_LIT("csv") };
+        const str_t kinds[] = { STR_INIT("xvg"), STR_INIT("csv") };
         for (size_t k = 0; k < ARRAY_SIZE(kinds); ++k) {
             char group_buf[256];
             const str_t group = run_attribute_path(group_buf, sizeof(group_buf), app_state, kinds[k]);
@@ -1399,7 +1399,8 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
             for (size_t i = 0; i < num; ++i) {
                 char src_buf[512];
                 const int len = snprintf(src_buf, sizeof(src_buf), STR_FMT "/" STR_FMT "/source", STR_ARG(group), STR_ARG(names[i]));
-                const md_attribute_t* series_src = (len > 0 && (size_t)len < sizeof(src_buf)) ? md_attributes_find(attributes, (str_t){src_buf, (size_t)len}) : nullptr;
+                const str_t attr_src = { src_buf, (size_t)len };
+                const md_attribute_t* series_src = (len > 0 && (size_t)len < sizeof(src_buf)) ? md_attributes_find(attributes, attr_src) : nullptr;
                 if (series_src) {
                     viamd::write_str(state, STR_LIT("SeriesFile"), workspace_relative_path(md_attribute_str(attributes, series_src, 0).ptr));
                 }
@@ -1982,7 +1983,7 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 // h5 carries a local-to-global map whether it is opened on its own - where the map must NOT be
 // applied, since the system IS the QM atoms - or against a larger system, where it must. Only the
 // side holding both knows which, and that is here.
-static const str_t QM_ATOM_MAP_PATH = STR_LIT("qm/atom/system_index");
+static const str_t QM_ATOM_MAP_PATH = STR_INIT("qm/atom/system_index");
 
 // The map itself is written by the READER, on the load path: only the entry point that was called
 // knows whether this file stands alone or supplements a larger system, and that is the whole of

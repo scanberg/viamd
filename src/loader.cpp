@@ -30,18 +30,18 @@
 namespace loader {
 
 static const str_t loader_name[LoaderType_COUNT] = {
-        STR_LIT("Undefined"),
-        STR_LIT("Standard Protein Data Bank (pdb)"),
-        STR_LIT("Gromacs Structure (gro)"),
-        STR_LIT("xyz (xyz)"),
-        STR_LIT("xyz (xmol)"),
-        STR_LIT("xyz (arc)"),
-        STR_LIT("PDBx/mmCIF (cif)"),
-        STR_LIT("LAMMPS (data)"),
-        STR_LIT("LAMMPS Trajectory (lammpstrj)"),
-        STR_LIT("Gromacs Compressed Trajectory (xtc)"),
-        STR_LIT("Gromacs Lossless Trajectory (trr)"),
-        STR_LIT("DCD Trajectory (dcd)"),
+        STR_INIT("Undefined"),
+        STR_INIT("Standard Protein Data Bank (pdb)"),
+        STR_INIT("Gromacs Structure (gro)"),
+        STR_INIT("xyz (xyz)"),
+        STR_INIT("xyz (xmol)"),
+        STR_INIT("xyz (arc)"),
+        STR_INIT("PDBx/mmCIF (cif)"),
+        STR_INIT("LAMMPS (data)"),
+        STR_INIT("LAMMPS Trajectory (lammpstrj)"),
+        STR_INIT("Gromacs Compressed Trajectory (xtc)"),
+        STR_INIT("Gromacs Lossless Trajectory (trr)"),
+        STR_INIT("DCD Trajectory (dcd)"),
 #if MD_VLX
         STR_LIT("VeloxChem (h5)"),
 #endif
@@ -50,25 +50,25 @@ static const str_t loader_name[LoaderType_COUNT] = {
         STR_LIT("TREXIO (trexio)"),
 #endif
         STR_LIT("Gromacs Topology (itp/top)"),
-        STR_LIT("Gromacs Run Input (tpr)"),
-        STR_LIT("Gromacs Energy (edr)"),
-        STR_LIT("xmgrace columns (xvg)"),
-        STR_LIT("Comma separated values (csv)"),
+        STR_INIT("Gromacs Run Input (tpr)"),
+        STR_INIT("Gromacs Energy (edr)"),
+        STR_INIT("xmgrace columns (xvg)"),
+        STR_INIT("Comma separated values (csv)"),
 };
 
 static const str_t loader_ext[LoaderType_COUNT] = {
-        STR_LIT(""),
-        STR_LIT("pdb"),
-        STR_LIT("gro"),
-        STR_LIT("xyz"),
-        STR_LIT("xmol"),
-        STR_LIT("arc"),
-        STR_LIT("cif"),
-        STR_LIT("data"),
-        STR_LIT("lammpstrj"),
-        STR_LIT("xtc"),
-        STR_LIT("trr"),
-        STR_LIT("dcd"),
+        STR_INIT(""),
+        STR_INIT("pdb"),
+        STR_INIT("gro"),
+        STR_INIT("xyz"),
+        STR_INIT("xmol"),
+        STR_INIT("arc"),
+        STR_INIT("cif"),
+        STR_INIT("data"),
+        STR_INIT("lammpstrj"),
+        STR_INIT("xtc"),
+        STR_INIT("trr"),
+        STR_INIT("dcd"),
 #if MD_VLX
         STR_LIT("h5"),
 #endif
@@ -77,10 +77,10 @@ static const str_t loader_ext[LoaderType_COUNT] = {
         STR_LIT("trexio"),
 #endif
         STR_LIT("itp"),
-        STR_LIT("tpr"),
-        STR_LIT("edr"),
-        STR_LIT("xvg"),
-        STR_LIT("csv"),
+        STR_INIT("tpr"),
+        STR_INIT("edr"),
+        STR_INIT("xvg"),
+        STR_INIT("csv"),
 };
 
 static const LoaderFlags loader_flags[LoaderType_COUNT] = {

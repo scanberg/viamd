@@ -622,7 +622,7 @@ void initialize() {
     gl.luma.program = setup_program_from_source(STR_LIT("luma"), {(const char*)luma_frag, luma_frag_size});
     gl.luma.uniform_loc.tex_rgba = glGetUniformLocation(gl.luma.program, "u_tex_rgba");
 
-    str_t defines = STR_LIT("#define FXAA_PC 1\n#define FXAA_GLSL_130 1\n#define FXAA_QUALITY__PRESET 12");
+    str_t defines = STR_INIT("#define FXAA_PC 1\n#define FXAA_GLSL_130 1\n#define FXAA_QUALITY__PRESET 12");
     gl.fxaa.program = setup_program_from_source(STR_LIT("fxaa"), {(const char*)fxaa_frag, fxaa_frag_size}, defines);
     gl.fxaa.uniform_loc.tex_rgbl = glGetUniformLocation(gl.fxaa.program, "u_tex_rgbl");
     gl.fxaa.uniform_loc.rcp_res  = glGetUniformLocation(gl.fxaa.program, "u_rcp_res");
@@ -1033,7 +1033,7 @@ void initialize(int32_t width, int32_t height) {
 
     }
     {
-        str_t defines = STR_LIT("#define TILE_SIZE " STRINGIFY_VAL(VEL_TILE_SIZE));
+        str_t defines = STR_INIT("#define TILE_SIZE " STRINGIFY_VAL(VEL_TILE_SIZE));
         blit_tilemax.program = setup_program_from_source(STR_LIT("tilemax"), {(const char*)blit_tilemax_frag, blit_tilemax_frag_size}, defines);
         blit_tilemax.uniform_loc.tex_vel = glGetUniformLocation(blit_tilemax.program, "u_tex_vel");
         blit_tilemax.uniform_loc.tex_linear_depth = glGetUniformLocation(blit_tilemax.program, "u_tex_linear_depth");

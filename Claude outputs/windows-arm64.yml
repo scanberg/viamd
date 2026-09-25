@@ -1,0 +1,130 @@
+name: Windows ARM64 (MSVC)
+
+# Native ARM64, not a cross build. windows.yml covers x64; this one covers the
+# same configuration on arm64 hardware, so the tests actually execute on the
+# architecture they are meant to certify.
+#
+# Why a separate runner rather than -A ARM64 on the x64 runner: a cross build
+# only ever answers "does it compile and link". Everything that is arm64-specific
+# at runtime - NEON paths in md_simd, unaligned access, the weaker memory model
+# behind md_atomic, long double and FP contraction differences in the GTO and
+# spatial-hash math - is invisible to it, because nothing produced by a cross
+# build is ever run. It is also the configuration that has repeatedly shipped
+# broken: release.yml's build-windows-arm64 job is cross compiled and tag-gated,
+# so its failures only surface when a release is cut.
+#
+# runs-on: windows-11-arm is free on public repositories. On private ones the
+# arm64 standard runners are billable, and until early 2026 the label did not
+# resolve there at all.
+
+on: [push]
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+  VCPKG_DEFAULT_TRIPLET: arm64-windows-static
+  VCPKG_GIT_COMMIT_ID: 216bb6975d5cccd35c27a14fb39acec3ae0e8285
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg/binary-cache
+  VCPKG_BINARY_SOURCES: "clear;default,readwrite"
+
+jobs:
+    ci:
+        runs-on: windows-11-arm
+        permissions:
+          contents: read
+        steps:
+          - uses: actions/checkout@v7
+
+          - name: Restore vcpkg binary cache
+            uses: actions/cache@v6
+            with:
+              path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+              key: vcpkg-${{ github.workflow }}-${{ env.VCPKG_DEFAULT_TRIPLET }}-${{ env.VCPKG_GIT_COMMIT_ID }}-${{ hashFiles('vcpkg.json') }}
+              restore-keys: |
+                vcpkg-${{ github.workflow }}-${{ env.VCPKG_DEFAULT_TRIPLET }}-${{ env.VCPKG_GIT_COMMIT_ID }}-
+
+          - name: Setup Vcpkg
+            uses: lukka/run-vcpkg@v11
+            with:
+              vcpkgGitCommitId: ${{ env.VCPKG_GIT_COMMIT_ID }}
+
+          - name: Clone MDLIB
+            run: git submodule update --init --recursive
+
+          - name: Cmake Version
+            run: cmake --version
+
+          - name: Create Build Environment
+            run: cmake -E make_directory ${{github.workspace}}/build
+
+          # No -G. The windows-11-arm label is migrating from Visual Studio 2022 to
+          # Visual Studio 2026 (rolled out 21-30 September 2026), so a pinned generator
+          # name would start failing mid-rollout; the default generator is whichever VS
+          # the image actually has.
+          #
+          # -A ARM64 is passed anyway rather than trusting the default platform. Getting
+          # this wrong is the failure mode that costs the most: an x64 binary runs fine
+          # on this runner under emulation, so the whole suite would pass while testing
+          # nothing. The "Verify target architecture" step below is the backstop.
+          #
+          # -DVCPKG_TARGET_TRIPLET is required, not redundant with VCPKG_DEFAULT_TRIPLET:
+          # cmake/CheckVCPKG.cmake hardcodes x64-windows-static for WIN32. It uses a
+          # non-FORCE cache set, so a value given on the command line wins.
+          #
+          # The AVX probes need no help here. FindAVX.cmake uses check_c_source_runs,
+          # which has no honest answer when the target is not the host - release.yml has
+          # to pre-seed HAVE_*_EXTENSIONS for exactly that reason. Running natively, the
+          # probes just fail to compile <immintrin.h> and report false on their own.
+          - name: Configure CMake
+            shell: bash
+            working-directory: ${{github.workspace}}/build
+            run: |
+              cmake -A ARM64 \
+                -DVCPKG_TARGET_TRIPLET=arm64-windows-static \
+                -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
+                -DMD_ENABLE_VLX=ON \
+                -DMD_ENABLE_TREXIO=ON \
+                -DMD_ENABLE_GPU=ON \
+                -DMD_FORCE_ASSERTIONS=ON \
+                $GITHUB_WORKSPACE
+
+          # slangc is a host tool and ResolveSlang.cmake always fetches the
+          # windows-x86_64 build, so shader compilation runs under x64 emulation here.
+          # Correct, just slow - it has no bearing on what the tests measure.
+          - name: Build
+            working-directory: ${{github.workspace}}/build
+            shell: bash
+            run: cmake --build . --config $BUILD_TYPE
+
+          # The point of this job is that the tests run on arm64. Assert it instead of
+          # assuming it: read IMAGE_FILE_HEADER.Machine straight out of the PE header
+          # (0xAA64 = ARM64, 0x8664 = x64, 0x014C = x86) and fail on anything else.
+          - name: Verify target architecture
+            shell: pwsh
+            working-directory: ${{github.workspace}}/build
+            run: |
+              Write-Host "Runner architecture: $env:PROCESSOR_ARCHITECTURE"
+              $exe = Get-ChildItem -Recurse -Filter md_unittest.exe | Select-Object -First 1
+              if (-not $exe) { Write-Error "md_unittest.exe was not built"; exit 1 }
+              $bytes = [System.IO.File]::ReadAllBytes($exe.FullName)
+              $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+              $machine  = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+              $name = switch ($machine) { 0xAA64 {"ARM64"} 0x8664 {"x64"} 0x014C {"x86"} default {"0x{0:X4}" -f $machine} }
+              Write-Host "$($exe.Name) machine type: $name"
+              if ($machine -ne 0xAA64) {
+                Write-Error "Expected an ARM64 binary, got $name. A non-native binary runs here under emulation, so the suite would pass while testing nothing."
+                exit 1
+              }
+
+          # No Vulkan ICD is installed on this image, so the gpu tests call UTEST_SKIP
+          # rather than fail. This step exists to put the reason in the log - the value
+          # of MD_ENABLE_GPU=ON here is that md_gpu_vulkan.c and the compiled shader
+          # blobs get built and linked for ARM64 at all.
+          - name: GPU backend diagnostics
+            working-directory: ${{github.workspace}}/build
+            shell: bash
+            run: ctest -C $BUILD_TYPE -R '^gpu\.device_create_destroy$' -V --no-tests=error
+
+          - name: Test
+            working-directory: ${{github.workspace}}/build
+            shell: bash
+            run: ctest -C $BUILD_TYPE --rerun-failed --output-on-failure

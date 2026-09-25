@@ -402,7 +402,7 @@ struct Shapespace : viamd::EventHandler {
                         const vec2_t p[3] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.5f, 0.86602540378f}};
 
                         // One context for the range, so the run's files stay open across its frames.
-                        const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+                        const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
                         md_system_extract_t* ex = md_system_extract_begin(&app_state->mold.sys, str_from_cstr(app_state->mold.run), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
                         if (!ex) {
                             return;
@@ -464,7 +464,7 @@ struct Shapespace : viamd::EventHandler {
             // label has to come from the same place rather than from the trajectory.
             md_unit_t time_unit = app_state->timeline.time_unit;
 
-            str_t x_label = STR_LIT("Frame");
+            str_t x_label = STR_INIT("Frame");
             if (!md_unit_is_none(time_unit)) {
                 char unit_buf[64];
                 md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
@@ -506,8 +506,8 @@ struct Shapespace : viamd::EventHandler {
             if (str_eq(ext, STR_LIT("csv"))) {
                 md_csv_write_to_file(column_values, column_labels, num_cols, num_rows, path);
             } else if (str_eq(ext, STR_LIT("xvg"))) {
-                str_t title = STR_LIT("Shape Space");
-                str_t y_label = STR_LIT("Shape Weight Ratio");
+                str_t title = STR_INIT("Shape Space");
+                str_t y_label = STR_INIT("Shape Weight Ratio");
                 str_t header = md_xvg_format_header(title, x_label, y_label, md_array_size(column_labels) - 1, column_labels + 1, temp_arena);
                 str_t xvg    = md_xvg_format(header, num_cols, num_rows, column_values, temp_arena);
                 md_file_t file = {0};

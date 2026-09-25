@@ -7,7 +7,7 @@
 
 namespace viamd {
 
-static const str_t esc = STR_LIT("\"\"\"");
+static const str_t esc = STR_INIT("\"\"\"");
 
 bool next_section_header(str_t& section, deserialization_state_t& state) {
 	str_t line;
@@ -199,7 +199,7 @@ bool extract_bitfield(md_bitfield_t* bf, str_t arg) {
 
 	// Bitfield starts with ###
 	// and ends with ###
-	str_t token = STR_LIT("###");
+	str_t token = STR_INIT("###");
 	if (!str_eq_n(arg, token, str_len(token))) {
 		MD_LOG_ERROR("Malformed start token for bitfield");
 		return false;
