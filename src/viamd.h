@@ -31,7 +31,7 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-#include <TextEditor.h>
+#include <script_editor.h>
 #include <implot.h>
 #include <imgui_notify.h>
 
@@ -1628,6 +1628,8 @@ struct ApplicationState {
     bool show_property_export_window = false;
 
     TextEditor editor = {};
+    script_editor::Markers editor_markers = {};
+    bool editor_focused = false;    // the script editor had keyboard focus when it was last drawn
 };
 
 struct ViamdEventHandler : viamd::EventHandler {

@@ -182,6 +182,7 @@ set(SRC_FILES
     src/implot_widgets.cpp
     src/loader.cpp
     src/main.cpp
+    src/script_editor.cpp
     src/script_reference.cpp
     src/serialization_utils.cpp
     src/task_system.cpp
@@ -195,6 +196,8 @@ set(SRC_FILES
     src/imgui_widgets.h
     src/implot_widgets.h
     src/loader.h
+    src/script_editor.h
+    src/script_reference.h
     src/serialization_utils.h
     src/task_system.h
     src/viamd.h
