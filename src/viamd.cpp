@@ -3977,8 +3977,16 @@ void recenter_update_target_data(ApplicationState* state) {
                 state->operations.initial_frame.rel_xyzw[dst_idx++] = vec4_from_vec3(temp_xyz[src_idx], mass);
             }
 
-			state->operations.initial_frame.com = md_util_com_compute_vec4(state->operations.initial_frame.rel_xyzw, NULL, count, &temp_state.unitcell);
-			md_util_convert_to_relative_coordinates_vec4(state->operations.initial_frame.rel_xyzw, state->operations.initial_frame.com, count, &temp_state.unitcell);
+            // Mutually consistent images and the plain weighted mean of them, then relative to that mean.
+            // The circular mean (md_util_com_compute_vec4 with a cell) is not the mean of the placed
+            // points, and a fit against coordinates which are not centred is biased.
+            vec3_t com = vec3_zero();
+            md_util_deperiodize_self_vec4(state->operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
+            const vec4_t com4 = vec4_from_vec3(com, 0);
+            for (size_t i = 0; i < count; ++i) {
+                state->operations.initial_frame.rel_xyzw[i] = vec4_sub(state->operations.initial_frame.rel_xyzw[i], com4);
+            }
+            state->operations.initial_frame.com = com;
         }
     }
 }
@@ -3999,7 +4007,6 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
         vec4_t* target_xyzw = md_temp_alloc_array(temp, vec4_t, count);
 
 		md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
-		vec3_t target_com = md_util_com_compute_vec4(target_xyzw, NULL, count, &app->mold.state.unitcell);
 
         // Calculate target
         vec3_t target = {0};
@@ -4019,6 +4026,7 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
         // A centre folded into the reference cell would place a target living outside that cell one
         // lattice vector off, and with a rotation in play, off by R times a lattice vector.
         mat3_t R = mat3_ident();
+        vec3_t target_com = vec3_zero();
 
         // The reference has to have been built from the SAME target that is being fitted now.
         // A size match is not sufficient: the selection can change to a different set of equal
@@ -4029,10 +4037,18 @@ void recenter_calculate_transform(float M[4][4], const ApplicationState* app) {
             md_array_size(app->operations.initial_frame.rel_xyzw) == count &&
             app->operations.initial_frame.target_version == recenter_get_active_target_version(app);
 
+        // R maps the CURRENT target onto the reference: R * (q - target_com) ~= p. The relative fit this
+        // replaced had its operands the other way around, which yields the rotation carrying the reference
+        // onto the current frame - applied to the current frame, it doubled the rotation it was meant to
+        // cancel. It also centred on the circular mean, which lands in the reference cell whatever image
+        // the target occupies and is not the mean of the placed points.
         if (app->operations.fixate_orientation && reference_valid) {
-		    md_util_convert_to_relative_coordinates_vec4(target_xyzw, target_com, count, &app->mold.state.unitcell);
-            R = md_util_optimal_rotation_rel_vec4(target_xyzw, app->operations.initial_frame.rel_xyzw, count);
+            // The reference is stored relative to its own centre, so its centre here is the origin
+            md_util_optimal_rotation_pbc_vec4_iter(&R, &target_com, target_xyzw, app->operations.initial_frame.rel_xyzw, vec3_zero(),
+                                                   target_xyzw, count, &app->mold.state.unitcell, 8, 1.0e-6f);
             R = mat3_orthonormalize(R);
+        } else {
+            md_util_deperiodize_self_vec4(target_xyzw, count, &app->mold.state.unitcell, &target_com);
         }
 
         const mat4_t A = app->operations.alignment_mat;
