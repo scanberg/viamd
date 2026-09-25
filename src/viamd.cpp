@@ -4692,8 +4692,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     } else if (surf->hit.domain == PickingDomain_Bond) {
                         size_t bond_idx = surf->hit.local_idx;
                         if (bond_idx < state->mold.sys.bond.count) {
-                            md_bitfield_set_bit(&state->selection.highlight_mask, state->mold.sys.bond.pairs[bond_idx].idx[0]);
-                            md_bitfield_set_bit(&state->selection.highlight_mask, state->mold.sys.bond.pairs[bond_idx].idx[1]);
+                            // Grow both bond atoms by the current granularity, same as for atom hits
+                            const md_atom_pair_t& pair = state->mold.sys.bond.pairs[bond_idx];
+                            mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)pair.idx[0], state->selection.granularity, state->mold.sys);
+                            mask_set_atom_by_selection_granularity(&state->selection.highlight_mask, (size_t)pair.idx[1], state->selection.granularity, state->mold.sys);
                         }
                     }
                     
@@ -4720,10 +4722,6 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                         }
 
                         if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond) {
-                            if (surf->hit.domain == PickingDomain_Bond) {
-                                // Atom hits are already grown by granularity above
-                                grow_mask_by_selection_granularity(&state->selection.highlight_mask, state->selection.granularity, state->mold.sys);
-                            }
                             if (surf->selection_mode == InteractionSelectionMode::Append) {
                                 md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
                             }
