@@ -3290,7 +3290,7 @@ void create_default_representations(ApplicationState* state) {
     bool ion_present = false;
     bool water_present = false;
     bool ligand_present = false;
-    bool coarse_grained = false;
+    size_t num_coarse_grained = 0;
     size_t num_orbitals = 0;
     bool orbitals_present = es_orbital_extent(state->mold.sys, &num_orbitals, nullptr) && num_orbitals > 0;
 
@@ -3315,14 +3315,16 @@ void create_default_representations(ApplicationState* state) {
         if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
         if (flags & MD_FLAG_ION) ion_present = true;
         if (flags & MD_FLAG_WATER) water_present = true;
-        if (flags & MD_FLAG_COARSE_GRAINED) coarse_grained = true;
+        if (flags & MD_FLAG_COARSE_GRAINED) num_coarse_grained += 1;
 
         if (!(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_ION | MD_FLAG_WATER))) {
             ligand_present = true;
         }
     }
 
-    if (coarse_grained) {
+    // Coarse grained when most of it is. A handful of beads, or atoms a loader could not assign an
+    // element to, should not take the protein, ligand and water representations from the rest.
+    if (2 * num_coarse_grained > state->mold.sys.atom.count) {
         Representation* rep = create_representation(state, RepresentationType::SpaceFill, ColorMapping::Type, STR_LIT("all"));
         snprintf(rep->name, sizeof(rep->name), "default");
         goto done;
