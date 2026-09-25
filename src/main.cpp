@@ -781,11 +781,6 @@ int main(int argc, char** argv) {
 
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
-#if EXPERIMENTAL_GFX_API
-            if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
-                use_gfx = !use_gfx;
-            }
-#endif
             if (ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
                 state.script.eval_init = true;
             }
