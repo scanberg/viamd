@@ -184,9 +184,9 @@ UTEST(viamd_camera, interpolation_reproduces_its_endpoints) {
  * that everything fits. Synthetic systems, deterministic (a fixed LCG, not rand()). */
 
 struct DvSys {
-    float x[4096], y[4096], z[4096];
+    vec3_t xyz[4096];
     size_t n = 0;
-    void add(vec3_t p) { x[n] = p.x; y[n] = p.y; z[n] = p.z; ++n; }
+    void add(vec3_t p) { xyz[n++] = p; }
 };
 
 static float dv_rand(uint32_t* s) { *s = *s * 1664525u + 1013904223u; return (float)(*s >> 8) / 16777216.0f; }
@@ -198,7 +198,7 @@ static bool dv_all_in_view(const DvSys& s, const ViewTransform& v, float fov_y) 
     const mat4_t V = camera_world_to_view_matrix(v);
     const float t = tanf(fov_y * 0.5f);
     for (size_t i = 0; i < s.n; ++i) {
-        const vec4_t p = mat4_mul_vec4(V, vec4_set(s.x[i], s.y[i], s.z[i], 1.0f));
+        const vec4_t p = mat4_mul_vec4(V, vec4_from_vec3(s.xyz[i], 1.0f));
         if (p.z >= 0.0f) return false;
         if (fabsf(p.x) > t * -p.z || fabsf(p.y) > t * -p.z) return false;
     }
@@ -212,7 +212,7 @@ UTEST(viamd_camera, default_view_of_a_filled_box_is_the_world_view) {
     mat3_t A = {};
     A.elem[0][0] = A.elem[1][1] = A.elem[2][2] = 60.0f;
     const float fov = 0.785f;
-    const ViewTransform v = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, &A, fov);
+    const ViewTransform v = camera_compute_default_view(s.xyz, s.n, NULL, s.n, &A, fov);
     const vec3_t b = dv_view_dir(v);   /* towards the camera */
     const vec3_t u = dv_view_up(v);
     EXPECT_GT(u.z, 0.9f);              /* Z up */
@@ -231,7 +231,7 @@ UTEST(viamd_camera, default_view_of_a_membrane_without_a_cell_keeps_its_normal_u
         const float px = 80 * dv_rand(&seed), py = 80 * dv_rand(&seed) - 40, pz = 40 * dv_rand(&seed) - 20;
         s.add(vec3_set(px, c * py - sn * pz, sn * py + c * pz));
     }
-    const ViewTransform v = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, NULL, 0.785f);
+    const ViewTransform v = camera_compute_default_view(s.xyz, s.n, NULL, s.n, NULL, 0.785f);
     EXPECT_GT(dv_view_up(v).z, 0.9f);
     EXPECT_LT(fabsf(dv_view_dir(v).z), 0.5f);
 }
@@ -247,7 +247,7 @@ UTEST(viamd_camera, default_view_of_a_planar_molecule_is_face_on) {
         s.add(vec3_add(vec3_mul1(e1, 1.39f * cosf(a)), vec3_mul1(e2, 1.39f * sinf(a))));
         s.add(vec3_add(vec3_mul1(e1, 2.47f * cosf(a)), vec3_mul1(e2, 2.47f * sinf(a))));
     }
-    const ViewTransform v = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, NULL, 0.785f);
+    const ViewTransform v = camera_compute_default_view(s.xyz, s.n, NULL, s.n, NULL, 0.785f);
     EXPECT_GT(fabsf(vec3_dot(dv_view_dir(v), n)), 0.99f);
 }
 
@@ -265,7 +265,7 @@ UTEST(viamd_camera, default_view_does_not_look_down_a_bond) {
             s.add(vec3_add(vec3_mul1(ax, h + (c ? 0.36f : -0.36f)), vec3_add(vec3_mul1(e1, 1.03f * cosf(a)), vec3_mul1(e2, 1.03f * sinf(a)))));
         }
     }
-    const ViewTransform v = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, NULL, 0.785f);
+    const ViewTransform v = camera_compute_default_view(s.xyz, s.n, NULL, s.n, NULL, 0.785f);
     EXPECT_LT(fabsf(vec3_dot(dv_view_dir(v), ax)), 0.8f);
 }
 
@@ -279,8 +279,8 @@ UTEST(viamd_camera, default_view_is_independent_of_the_structure_sign) {
         s.add(p);
         m.add(vec3_mul1(p, -1.0f));
     }
-    const ViewTransform a = camera_compute_default_view(s.x, s.y, s.z, s.n, NULL, s.n, NULL, 0.785f);
-    const ViewTransform b = camera_compute_default_view(m.x, m.y, m.z, m.n, NULL, m.n, NULL, 0.785f);
+    const ViewTransform a = camera_compute_default_view(s.xyz, s.n, NULL, s.n, NULL, 0.785f);
+    const ViewTransform b = camera_compute_default_view(m.xyz, m.n, NULL, m.n, NULL, 0.785f);
     EXPECT_GT(vec3_dot(dv_view_up(a), dv_view_up(b)), 0.99f);
     EXPECT_GT(vec3_dot(dv_view_dir(a), dv_view_dir(b)), 0.99f);
 }

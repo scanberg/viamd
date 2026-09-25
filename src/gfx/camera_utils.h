@@ -119,11 +119,11 @@ ViewTransform compute_optimal_view(const vec3_t& center, const vec3_t& half_ext,
 // num_atoms atoms, as drawn (no periodic treatment); the view frames those listed in indices, or all of them
 // when indices is null. cell_A is the unit cell basis (columns a, b, c), or null for none - it is only used
 // to judge whether the world axes mean anything. See the implementation for the choices this makes.
-ViewTransform camera_compute_default_view(const float* x, const float* y, const float* z, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y);
+ViewTransform camera_compute_default_view(const vec3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y);
 
 // The camera distance at which all atoms (those in indices, or all count of them) fit in a view from
 // orientation, looking at look_at.
-float camera_fit_distance(const float* x, const float* y, const float* z, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y);
+float camera_fit_distance(const vec3_t* xyz, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y);
 
 // Lazy stupid procedure on top of interpolate_look_at
 void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor = 0.12f);

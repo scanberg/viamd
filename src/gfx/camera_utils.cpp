@@ -379,19 +379,19 @@ static vec3_t dv_perp(vec3_t n) {
     return v;
 }
 
-static vec3_t dv_load(const float* x, const float* y, const float* z, const int32_t* indices, size_t i) {
+static vec3_t dv_load(const vec3_t* xyz, const int32_t* indices, size_t i) {
     const size_t idx = indices ? (size_t)indices[i] : i;
-    return vec3_set(x[idx], y[idx], z[idx]);
+    return xyz[idx];
 }
 
 // Does the system fill its cell, i.e. span it along at least two cell axes?
-static bool dv_fills_cell(const float* x, const float* y, const float* z, size_t num_atoms, const mat3_t& A) {
+static bool dv_fills_cell(const vec3_t* xyz, size_t num_atoms, const mat3_t& A) {
     if (!num_atoms || fabsf(mat3_determinant(A)) < 1.0e-6f) return false;
     const mat3_t I = mat3_inverse(A);
     vec3_t fmin = vec3_set1( FLT_MAX);
     vec3_t fmax = vec3_set1(-FLT_MAX);
     for (size_t i = 0; i < num_atoms; ++i) {
-        const vec3_t f = mat3_mul_vec3(I, vec3_set(x[i], y[i], z[i]));
+        const vec3_t f = mat3_mul_vec3(I, xyz[i]);
         fmin = vec3_min(fmin, f);
         fmax = vec3_max(fmax, f);
     }
@@ -577,37 +577,37 @@ static DvFrame dv_frame_about_face(vec3_t b, const vec3_t* p, size_t n) {
     return f;
 }
 
-float camera_fit_distance(const float* x, const float* y, const float* z, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y) {
+float camera_fit_distance(const vec3_t* xyz, const int32_t* indices, size_t count, vec3_t look_at, quat_t orientation, float fov_y) {
     const vec3_t s = quat_mul_vec3(orientation, DV_X);
     const vec3_t u = quat_mul_vec3(orientation, DV_Y);
     const vec3_t b = quat_mul_vec3(orientation, DV_Z);
     const float tan_half_fov = tanf(fov_y * 0.5f) * DV_FILL;
     float dist = DV_MIN_DISTANCE;
     for (size_t i = 0; i < count; ++i) {
-        const vec3_t p = vec3_sub(dv_load(x, y, z, indices, i), look_at);
+        const vec3_t p = vec3_sub(dv_load(xyz, indices, i), look_at);
         const float lateral = MAX(fabsf(vec3_dot(p, s)), fabsf(vec3_dot(p, u))) + DV_ATOM_RADIUS;
         dist = MAX(dist, vec3_dot(p, b) + lateral / tan_half_fov);
     }
     return dist;
 }
 
-ViewTransform camera_compute_default_view(const float* x, const float* y, const float* z, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y) {
+ViewTransform camera_compute_default_view(const vec3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const mat3_t* cell_A, float fov_y) {
     ViewTransform result = {};
     if (!indices) count = num_atoms;
     if (!count) return result;
 
     // Shape: covariance and principal axes about the mean, extents along them
     vec3_t mean = {0, 0, 0};
-    for (size_t i = 0; i < count; ++i) mean = vec3_add(mean, dv_load(x, y, z, indices, i));
+    for (size_t i = 0; i < count; ++i) mean = vec3_add(mean, dv_load(xyz, indices, i));
     mean = vec3_div1(mean, (float)count);
-    const mat3_t C   = mat3_covariance_matrix(x, y, z, nullptr, indices, count, mean);
+    const mat3_t C   = mat3_covariance_matrix(xyz, nullptr, indices, count, mean);
     const mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(mat3_eigen(C).vectors));
     const mat3_t basis = mat3_transpose(PCA); // Axis i is column i of basis (row i of PCA)
 
     vec3_t pmin = vec3_set1( FLT_MAX);
     vec3_t pmax = vec3_set1(-FLT_MAX);
     for (size_t i = 0; i < count; ++i) {
-        const vec3_t q = mat3_mul_vec3(PCA, dv_load(x, y, z, indices, i));
+        const vec3_t q = mat3_mul_vec3(PCA, dv_load(xyz, indices, i));
         pmin = vec3_min(pmin, q);
         pmax = vec3_max(pmax, q);
     }
@@ -628,7 +628,7 @@ ViewTransform camera_compute_default_view(const float* x, const float* y, const 
     const bool whole = (indices == nullptr) || count == num_atoms;
     const bool slab  = ext[2] <= ext[1] * DV_SLAB_FLATNESS && ext[1] >= DV_SLAB_MIN_SIZE;
 
-    if (cell_A && dv_fills_cell(x, y, z, num_atoms, *cell_A)) {
+    if (cell_A && dv_fills_cell(xyz, num_atoms, *cell_A)) {
         // The world frame means something: Z up
         if (!whole) f.face = dv_face_about_up(DV_Z, &C);
     } else if (slab) {
@@ -643,7 +643,7 @@ ViewTransform camera_compute_default_view(const float* x, const float* y, const 
     } else if (count <= DV_SEARCH_MAX_ATOMS) {
         // Small molecule: the view that shows the most of it
         vec3_t* p = (vec3_t*)malloc(sizeof(vec3_t) * count);
-        for (size_t i = 0; i < count; ++i) p[i] = vec3_sub(dv_load(x, y, z, indices, i), mean);
+        for (size_t i = 0; i < count; ++i) p[i] = vec3_sub(dv_load(xyz, indices, i), mean);
         const vec3_t b = dv_best_direction(p, count, axis);
         f = dv_frame_about_face(b, p, count);
         free(p);
@@ -674,7 +674,7 @@ ViewTransform camera_compute_default_view(const float* x, const float* y, const 
     vec3_t vmin = vec3_set1( FLT_MAX);
     vec3_t vmax = vec3_set1(-FLT_MAX);
     for (size_t i = 0; i < count; ++i) {
-        const vec3_t q = vec3_sub(dv_load(x, y, z, indices, i), mean);
+        const vec3_t q = vec3_sub(dv_load(xyz, indices, i), mean);
         const vec3_t v = vec3_set(vec3_dot(q, s), vec3_dot(q, u), vec3_dot(q, b));
         vmin = vec3_min(vmin, v);
         vmax = vec3_max(vmax, v);
@@ -683,7 +683,7 @@ ViewTransform camera_compute_default_view(const float* x, const float* y, const 
     const vec3_t center = vec3_add(mean, vec3_add(vec3_add(vec3_mul1(s, mid.x), vec3_mul1(u, mid.y)), vec3_mul1(b, mid.z)));
 
     const quat_t orientation = quat_from_mat4(mat4_look_at(vec3_add(center, b), center, u));
-    const float  dist = camera_fit_distance(x, y, z, indices, count, center, orientation, fov_y);
+    const float  dist = camera_fit_distance(xyz, indices, count, center, orientation, fov_y);
 
     result.orientation = orientation;
     result.position    = vec3_add(center, vec3_mul1(b, dist));

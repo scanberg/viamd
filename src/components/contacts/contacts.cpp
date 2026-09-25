@@ -122,8 +122,7 @@ struct Contacts : viamd::EventHandler {
     Result result;
     Result pending;
     std::atomic<bool> pending_ready = false;
-    std::vector<float> coords;          // Private copy of the frame: x, y, z
-    md_system_state_t frame = {};
+    md_system_state_t frame = {};       // Private copy of the frame the task works on
 
     int hovered_group = -1;
 
@@ -138,6 +137,7 @@ struct Contacts : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdShutdown:
                 if (task) task_system::task_interrupt_and_wait_for(task);
+                md_system_state_free(&frame);
                 break;
             case viamd::EventType_ViamdFrameTick:
                 draw_window();
@@ -187,16 +187,8 @@ struct Contacts : viamd::EventHandler {
         if (N == 0) return;
 
         // The frame as it is now: the task works on a copy
-        coords.resize(3 * N);
-        memcpy(coords.data(),         cur.x, N * sizeof(float));
-        memcpy(coords.data() + N,     cur.y, N * sizeof(float));
-        memcpy(coords.data() + 2 * N, cur.z, N * sizeof(float));
-        frame = {};
-        frame.num_atoms = N;
-        frame.x = coords.data();
-        frame.y = coords.data() + N;
-        frame.z = coords.data() + 2 * N;
-        frame.unitcell = cur.unitcell;
+        frame.alloc = md_get_heap_allocator();
+        if (!md_system_state_copy(&frame, &cur)) return;
 
         pending = Result{};
         pending.group_by = group_by;

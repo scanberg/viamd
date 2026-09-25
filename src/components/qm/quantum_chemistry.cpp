@@ -1113,9 +1113,9 @@ struct QuantumChemistry : viamd::EventHandler {
 					const size_t count = qm.count;
                     for (size_t i = 0; i < count; ++i) {
                         const size_t idx = qm_to_system_atom(qm, i);
-                        atom_xyzw[i].x = (float)(state.mold.state.x[idx] * ANGSTROM_TO_BOHR);
-                        atom_xyzw[i].y = (float)(state.mold.state.y[idx] * ANGSTROM_TO_BOHR);
-                        atom_xyzw[i].z = (float)(state.mold.state.z[idx] * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].x = (float)(state.mold.state.xyz[idx].x * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].y = (float)(state.mold.state.xyz[idx].y * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].z = (float)(state.mold.state.xyz[idx].z * ANGSTROM_TO_BOHR);
 
 						int z = md_atom_atomic_number(&state.mold.sys.atom, idx);
 						nucl_dipole.x += atom_xyzw[i].x * z;
@@ -3912,9 +3912,9 @@ struct QuantumChemistry : viamd::EventHandler {
         for (size_t i = 0; i < qm.count; i++) {
             const size_t idx = qm_to_system_atom(qm, i);
             if (idx >= state.mold.state.num_atoms) continue;
-            state.mold.state.x[idx] = (float)coords[i].x;
-            state.mold.state.y[idx] = (float)coords[i].y;
-            state.mold.state.z[idx] = (float)coords[i].z;
+            state.mold.state.xyz[idx].x = (float)coords[i].x;
+            state.mold.state.xyz[idx].y = (float)coords[i].y;
+            state.mold.state.xyz[idx].z = (float)coords[i].z;
         }
 		viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
         state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
@@ -5952,9 +5952,9 @@ struct QuantumChemistry : viamd::EventHandler {
                             for (size_t i = 0; i < num_atoms; i++) {
                                 const size_t idx = qm_to_system_atom(qm, i);
                                 if (idx >= state.mold.state.num_atoms) continue;
-                                state.mold.state.x[idx] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                state.mold.state.y[idx] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                state.mold.state.z[idx] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                state.mold.state.xyz[idx].x = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                state.mold.state.xyz[idx].y = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                state.mold.state.xyz[idx].z = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
                             if (vib.displace_aos) {
                             }
@@ -5980,9 +5980,9 @@ struct QuantumChemistry : viamd::EventHandler {
                         for (size_t i = 0; atom_coord && i < num_atoms; i++) {
                             const size_t idx = qm_to_system_atom(qm, i);
                             if (idx >= state.mold.state.num_atoms) continue;
-                            state.mold.state.x[idx] = (float)atom_coord[i].x;
-                            state.mold.state.y[idx] = (float)atom_coord[i].y;
-                            state.mold.state.z[idx] = (float)atom_coord[i].z;
+                            state.mold.state.xyz[idx].x = (float)atom_coord[i].x;
+                            state.mold.state.xyz[idx].y = (float)atom_coord[i].y;
+                            state.mold.state.xyz[idx].z = (float)atom_coord[i].z;
                         }
                         viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_ApplicationState, &state);
                         state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
@@ -7678,7 +7678,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 candidate_mask = &state.selection.selection_mask;
                             }
                             point_set_region_mask_compute(&state.selection.highlight_mask,
-                                state.mold.state.x, state.mold.state.y, state.mold.state.z, state.mold.state.num_atoms,
+                                state.mold.state.xyz, state.mold.state.num_atoms,
                                 candidate_mask, event.world_to_clip, event.region_min, event.region_max, event.surface_size);
 
                             grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);

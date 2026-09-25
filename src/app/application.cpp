@@ -294,8 +294,9 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
 
     // Default range:               0x0020 - 0x00FF.
     // Greek and Coptik:            0x0370 - 0x03FF
+    // General punctuation (dashes, quotes, ...): 0x2010 - 0x2027
     // Superscripts and Subscripts: 0x2070 - 0x209F
-    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x0370, 0x03FF, 0x2070, 0x209F, 0};
+    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x0370, 0x03FF, 0x2010, 0x2027, 0x2070, 0x209F, 0};
     const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
     const float font_size = 18.0f;
     const char* font_name = "Dejavu Sans Mono";

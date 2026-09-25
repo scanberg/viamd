@@ -128,6 +128,8 @@ add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
 add_subdirectory(ext/atomic_queue)
 add_subdirectory(ext/imgui_notify)
+add_subdirectory(ext/md4c)
+add_subdirectory(ext/imgui_md)
 
 # Copy many of the fields from mdlib
 set(VIAMD_EXTRA_LIBS)
@@ -180,6 +182,7 @@ set(SRC_FILES
     src/implot_widgets.cpp
     src/loader.cpp
     src/main.cpp
+    src/script_reference.cpp
     src/serialization_utils.cpp
     src/task_system.cpp
     src/viamd.cpp
@@ -270,6 +273,12 @@ set(SHADER_FILES
 
 # Bake shaders into a single header file
 create_resources("${SHADER_FILES}" "gen/shaders.inl")
+
+# The script reference is plain Markdown that lives with the implementation in mdlib. It is baked into the executable
+# and shown in the Script Reference window. Re-run the configure step when it changes (handled by CMAKE_CONFIGURE_DEPENDS).
+set(SCRIPT_REFERENCE_MD "${CMAKE_CURRENT_SOURCE_DIR}/ext/mdlib/docs/script_reference.md")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SCRIPT_REFERENCE_MD}")
+create_resources("${SCRIPT_REFERENCE_MD}" "gen/script_reference.inl")
 
 source_group("src" FILES ${SRC_FILES})
 source_group("src/app" FILES ${APP_FILES})
@@ -395,6 +404,7 @@ target_link_libraries(viamd
     implot
     atomic_queue
     imgui_notify
+    imgui_md
     ${VIAMD_EXTRA_LIBS}
 )
 
