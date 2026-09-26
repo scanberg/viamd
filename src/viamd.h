@@ -1806,8 +1806,15 @@ void clear_system_frame_cache(ApplicationState* app);
 void interpolate_system_state(ApplicationState* app);
 
 // Workspace
+// See #workspace in viamd.cpp for what a workspace holds and the order it is loaded in
 void load_workspace(ApplicationState* app, str_t file);
-void save_workspace(ApplicationState* app, str_t file);
+// True when the whole file was written; it is then the current workspace (files.workspace)
+bool save_workspace(ApplicationState* app, str_t file);
+
+// Whether this window is open belongs to the workspace: stored under [Windows] as name=0/1. name
+// is the window's identity in the file, so it stays the same when the window is renamed on screen.
+// Call once, at initialization; show has to outlive the application.
+void workspace_register_window(const char* name, bool* show);
 
 // Selections
 Selection* create_selection(ApplicationState* app, str_t name, md_bitfield_t* bf = 0);

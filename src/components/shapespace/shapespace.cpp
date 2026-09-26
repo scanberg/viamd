@@ -86,8 +86,14 @@ struct Shapespace : viamd::EventHandler {
                 app_state = (ApplicationState*)e.payload;
                 arena = md_arena_allocator_create(app_state->allocator.persistent, MEGABYTES(1));
                 md_bitfield_init(&joined_bitfield, arena);
+                workspace_register_window("ShapeSpace", &show_window);
                 break;
             }
+            case viamd::EventType_ViamdDeserializeBegin:
+                str_copy_to_char_buf(input, sizeof(input), STR_LIT("all"));
+                marker_size = 1.5f;
+                use_mass = true;
+                break;
             case viamd::EventType_ViamdShutdown:
                 task_system::task_interrupt_and_wait_for(evaluate_task);
                 md_arena_allocator_destroy(arena);

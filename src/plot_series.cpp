@@ -65,6 +65,20 @@ static const char* source_name[SeriesSource_Count] = {
     "script_filtered",
 };
 
+const char* series_source_name(SeriesSource source) {
+    return source_name[source < SeriesSource_Count ? source : 0];
+}
+
+bool series_source_from_name(SeriesSource* out, str_t name) {
+    for (int k = 0; k < SeriesSource_Count; ++k) {
+        if (str_eq_cstr(name, source_name[k])) {
+            *out = (SeriesSource)k;
+            return true;
+        }
+    }
+    return false;
+}
+
 static const char* plot_type_name[PlotType_Count] = {
     "line",
     "scatter",

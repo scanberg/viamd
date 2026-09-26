@@ -5,22 +5,33 @@
 #include <core/md_base64.h>
 #include <core/md_log.h>
 
+#include <string.h>
+
 namespace viamd {
 
 static const str_t esc = STR_INIT("\"\"\"");
 
+static bool is_comment(str_t line) {
+	return str_begins_with(line, STR_LIT("#")) || str_begins_with(line, STR_LIT(";"));
+}
+
 bool next_section_header(str_t& section, deserialization_state_t& state) {
+	// Whatever the previous section's reader did not consume
+	str_t ident, arg;
+	while (next_entry(ident, arg, state)) {}
+
 	str_t line;
 	while (str_extract_line(&line, &state.text)) {
 		line = str_trim(line);
 		if (str_begins_with(line, STR_LIT("[")) &&
 			str_ends_with(line, STR_LIT("]")))
 		{
-			section = str_substr(line, 1, str_len(line) - 2);
+			section = str_trim(str_substr(line, 1, str_len(line) - 2));
 			state.cur_section = section;
 			return true;
 		}
 	}
+	state.cur_section = {};
 	return false;
 }
 
@@ -32,22 +43,28 @@ bool next_entry(str_t& ident, str_t& arg, deserialization_state_t& state) {
 			return false;
 		}
 		str_skip_line(&state.text);
+		if (is_comment(line)) {
+			continue;
+		}
 
 		size_t loc;
 		if (str_find_char(&loc, line, '=')) {
 			ident = str_trim(str_substr(line, 0, loc));
 			arg   = str_trim(str_substr(line, loc + 1, SIZE_MAX));
 			if (str_begins_with(arg, esc)) {
-				// Multiline string, find matching espace sequence
+				// Multiline string: from the opening quotes in the text itself (the line was only a
+				// view of its first line) to the matching closing ones
 				const char* beg = str_beg(arg) + str_len(esc);
 				const char* end = str_end(state.text);
 				str_t haystack = {beg, (size_t)(end-beg)};
 				if (str_find_str(&loc, haystack, esc)) {
 					arg = {beg, loc};
 					state.text = str_substr(haystack, loc + str_len(esc));
+					// The rest of the closing line
+					str_skip_line(&state.text);
 				} else {
-					// Error
-					MD_LOG_ERROR("Unbalanced escape sequence in multiline string");
+					MD_LOG_ERROR("Workspace: unbalanced \"\"\" in the value of '" STR_FMT "', the rest of the file is skipped", STR_ARG(ident));
+					state.text = {};
 					return false;
 				}
 			}
@@ -62,7 +79,7 @@ void write_section_header(serialization_state_t& state, str_t section) {
 }
 
 void write_int(serialization_state_t& state, str_t ident, int64_t val) {
-	md_strb_fmt(&state.sb, STR_FMT "=%i\n", STR_ARG(ident), (int)val);
+	md_strb_fmt(&state.sb, STR_FMT "=%lld\n", STR_ARG(ident), (long long)val);
 }
 
 void write_int_vec(serialization_state_t& state, str_t ident, const int* elem, size_t len) {
@@ -76,14 +93,20 @@ void write_int_vec(serialization_state_t& state, str_t ident, const int* elem, s
 	md_strb_push_char(&state.sb, '\n');
 }
 
+// Shortest round trip is not on offer from printf; these digit counts are the ones that always
+// read back the same value (FLT_DECIMAL_DIG and DBL_DECIMAL_DIG). %f would print 1e-7 as 0.000000.
+void write_flt(serialization_state_t& state, str_t ident, float val) {
+	md_strb_fmt(&state.sb, STR_FMT "=%.9g\n", STR_ARG(ident), (double)val);
+}
+
 void write_dbl(serialization_state_t& state, str_t ident, double val) {
-	md_strb_fmt(&state.sb, STR_FMT "=%f\n", STR_ARG(ident), val);
+	md_strb_fmt(&state.sb, STR_FMT "=%.17g\n", STR_ARG(ident), val);
 }
 
 void write_flt_vec(serialization_state_t& state, str_t ident, const float* elem, size_t len) {
 	md_strb_fmt(&state.sb, STR_FMT "=", STR_ARG(ident));
 	for (size_t i = 0; i < len; ++i) {
-		md_strb_fmt(&state.sb, "%f", elem[i]);
+		md_strb_fmt(&state.sb, "%.9g", (double)elem[i]);
 		if (i < len - 1) {
 			md_strb_push_char(&state.sb, ',');
 		}
@@ -92,7 +115,15 @@ void write_flt_vec(serialization_state_t& state, str_t ident, const float* elem,
 }
 
 void write_str(serialization_state_t& state, str_t ident, str_t str) {
-	if (str_find_char(NULL, str, '\n')) {
+	// Quoted whenever a plain value would not come back as it went: a line break ends it, and the
+	// reader trims whitespace at either end
+	const bool multiline  = str_find_char(NULL, str, '\n') || str_find_char(NULL, str, '\r');
+	const bool padded     = str.len > 0 && (is_whitespace(str.ptr[0]) || is_whitespace(str.ptr[str.len - 1]));
+	const bool looks_esc  = str_begins_with(str, esc);
+	if (multiline || padded || looks_esc) {
+		if (str_find_str(NULL, str, esc)) {
+			MD_LOG_ERROR("Workspace: the value of '" STR_FMT "' contains \"\"\" and cannot be stored as it is", STR_ARG(ident));
+		}
 		md_strb_fmt(&state.sb, STR_FMT "=" STR_FMT STR_FMT STR_FMT "\n", STR_ARG(ident), STR_ARG(esc), STR_ARG(str), STR_ARG(esc));
 	} else {
 		md_strb_fmt(&state.sb, STR_FMT "=" STR_FMT "\n", STR_ARG(ident), STR_ARG(str));
@@ -126,13 +157,30 @@ bool extract_bool(bool& val, str_t arg) {
 			val = (bool)integer;
 			return true;
 		}
+	} else if (str_eq_cstr_ignore_case(arg, "true")) {
+		val = true;
+		return true;
+	} else if (str_eq_cstr_ignore_case(arg, "false")) {
+		val = false;
+		return true;
 	}
 	return false;
 }
 
 bool extract_int(int& val, str_t arg) {
 	if (is_int(arg)) {
-		val = (int)parse_int(arg);
+		const int64_t i = parse_int(arg);
+		if (INT32_MIN <= i && i <= INT32_MAX) {
+			val = (int)i;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool extract_int64(int64_t& val, str_t arg) {
+	if (is_int(arg)) {
+		val = parse_int(arg);
 		return true;
 	}
 	return false;
@@ -142,6 +190,7 @@ bool extract_int_vec(int* elem, size_t len, str_t arg) {
 	str_t tok;
 	size_t count = 0;
 	while (count < len && extract_token_delim(&tok, &arg, ',')) {
+		tok = str_trim(tok);
 		if (is_int(tok)) {
 			elem[count++] = (int)parse_int(tok);
 		}
@@ -166,21 +215,30 @@ bool extract_flt (float& val, str_t arg) {
 }
 
 bool extract_flt_vec (float* elem, size_t len, str_t arg) {
+	// Parsed into a copy and written back only when every component was there
+	float tmp[16];
+	if (len > ARRAY_SIZE(tmp)) return false;
 	str_t tok;
 	size_t count = 0;
 	while (count < len && extract_token_delim(&tok, &arg, ',')) {
+		tok = str_trim(tok);
 		if (is_float(tok) || is_int(tok)) {
-			elem[count++] = (float)parse_float(tok);
+			tmp[count++] = (float)parse_float(tok);
 		}
 	}
-	return count == len;
+	if (count != len) return false;
+	MEMCPY(elem, tmp, len * sizeof(float));
+	return true;
 }
 
 bool extract_str(str_t& str, str_t arg) {
-	if (str_begins_with(arg, esc) && str_ends_with(arg, esc)) {
-		str = str_substr(arg, 3, arg.len - 6);
+	// next_entry already strips the quotes of a multiline value; this covers a value handed in
+	// with them still on
+	if (arg.len >= 2 * esc.len && str_begins_with(arg, esc) && str_ends_with(arg, esc)) {
+		str = str_substr(arg, esc.len, arg.len - 2 * esc.len);
+	} else {
+		str = arg;
 	}
-	str = arg;
 	return true;
 }
 

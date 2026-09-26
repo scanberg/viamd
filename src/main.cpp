@@ -445,6 +445,13 @@ int main(int argc, char** argv) {
     state.gl.shaders                = md_gl_shaders_create(shader_output_snippet);
     state.gl.shaders_lean_and_mean  = md_gl_shaders_create(shader_output_snippet_lean_and_mean);
 
+    // Which of these are open is part of a workspace; the components register their own on initialize
+    workspace_register_window("Timelines",       &state.timeline.show_window);
+    workspace_register_window("Distributions",   &state.distributions.show_window);
+    workspace_register_window("Representations", &state.representation.show_window);
+    workspace_register_window("ScriptEditor",    &state.show_script_window);
+    workspace_register_window("Animation",       &state.animation.show_window);
+
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &state);
 
 #if EXPERIMENTAL_GFX_API
@@ -1249,15 +1256,14 @@ static void draw_main_menu(ApplicationState* data) {
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Load File", "CTRL+L")) {
+            if (ImGui::MenuItem("Open File...", "CTRL+L")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open)) {
                     file_queue_push(&data->file_queue, str_from_cstr(path_buf), FileFlags_ShowDialogue);
                 }
             }
-            if (ImGui::MenuItem("Open Workspace", "CTRL+O")) {
+            if (ImGui::MenuItem("Open Workspace...", "CTRL+O")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, WORKSPACE_FILE_EXTENSION)) {
                     load_workspace(data, str_from_cstr(path_buf));
-                    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask);
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
@@ -1269,7 +1275,7 @@ static void draw_main_menu(ApplicationState* data) {
                     save_workspace(data, str_from_cstr(data->files.workspace));
                 }
             }
-            if (ImGui::MenuItem("Save As")) {
+            if (ImGui::MenuItem("Save Workspace As...")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, WORKSPACE_FILE_EXTENSION)) {
                     save_workspace(data, {path_buf, strnlen(path_buf, sizeof(path_buf))});
                 }
@@ -1301,7 +1307,8 @@ static void draw_main_menu(ApplicationState* data) {
                 reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask);
             }
             ImGui::Separator();
-            ImGui::Checkbox("Vsync", &data->app.window.vsync);
+            ImGui::Checkbox("VSync", &data->app.window.vsync);
+            ImGui::SetItemTooltip("Limit the frame rate to the display's refresh rate");
             ImGui::Separator();
 
             ImGui::BeginGroup();
@@ -1310,7 +1317,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::Combo("Mode", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
                 if (data->view.mode == CameraMode::Perspective) {
                     float fov = RAD_TO_DEG(data->view.camera.fov_y);
-                    if (ImGui::SliderFloat("field of view", &fov, 12.5f, 80.0f)) {
+                    if (ImGui::SliderFloat("Field of View", &fov, 12.5f, 80.0f, "%.1f deg")) {
                         data->view.camera.fov_y = DEG_TO_RAD(fov);
                     }
                 }
@@ -1322,24 +1329,29 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::ColorEdit3Minimal("Color", data->visuals.background.color.elem);
             ImGui::SameLine();
             ImGui::SliderFloat("##Intensity", &data->visuals.background.intensity, 0.f, 100.f);
+            ImGui::SetItemTooltip("Background brightness");
             ImGui::EndGroup();
             ImGui::Separator();
-            ImGui::Checkbox("FXAA", &data->visuals.fxaa.enabled);
+            ImGui::Checkbox("Anti-Aliasing (FXAA)", &data->visuals.fxaa.enabled);
+            ImGui::SetItemTooltip("Smooth jagged edges in the rendered image");
             // Temporal
             ImGui::BeginGroup();
             {
-                ImGui::Checkbox("Temporal AA", &data->visuals.temporal_aa.enabled);
+                ImGui::Checkbox("Temporal Anti-Aliasing", &data->visuals.temporal_aa.enabled);
+                ImGui::SetItemTooltip("Smooth edges by blending each frame with the previous ones");
                 if (data->visuals.temporal_aa.enabled) {
                     // ImGui::Checkbox("Jitter Samples", &data->visuals.temporal_reprojection.jitter);
-                    ImGui::SliderFloat("Feedback Min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f);
-                    ImGui::SliderFloat("Feedback Max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f);
+                    ImGui::SliderFloat("History Min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f);
+                    ImGui::SetItemTooltip("How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
+                    ImGui::SliderFloat("History Max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f);
+                    ImGui::SetItemTooltip("How much of the previous frames is kept where the image is still");
                     ImGui::Checkbox("Motion Blur", &data->visuals.temporal_aa.motion_blur.enabled);
                     if (data->visuals.temporal_aa.motion_blur.enabled) {
-                        ImGui::SliderFloat("Motion Scale", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f);
+                        ImGui::SliderFloat("Motion Blur Strength", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f);
                     }
                     ImGui::Checkbox("Sharpen", &data->visuals.sharpen.enabled);
                     if (data->visuals.sharpen.enabled) {
-                        ImGui::SliderFloat("Weight", &data->visuals.sharpen.weight, 0.0f, 4.0f);
+                        ImGui::SliderFloat("Sharpen Strength", &data->visuals.sharpen.weight, 0.0f, 4.0f);
                     }
                 }
             }
@@ -1349,7 +1361,8 @@ static void draw_main_menu(ApplicationState* data) {
             // SSAO
             ImGui::BeginGroup();
             ImGui::PushID("SSAO");
-            ImGui::Checkbox("SSAO", &data->visuals.ssao.enabled);
+            ImGui::Checkbox("Ambient Occlusion", &data->visuals.ssao.enabled);
+            ImGui::SetItemTooltip("Darken creases and cavities, where less light reaches (SSAO)");
             if (data->visuals.ssao.enabled) {
                 ImGui::SliderFloat("Intensity", &data->visuals.ssao.intensity, 0.5f, 12.f);
                 ImGui::SliderFloat("Radius", &data->visuals.ssao.radius, 1.f, 30.f);
@@ -1378,14 +1391,16 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Checkbox("Depth of Field", &data->visuals.dof.enabled);
             if (data->visuals.dof.enabled) {
                 // ImGui::SliderFloat("Focus Point", &data->visuals.dof.focus_depth, 0.001f, 200.f);
-                ImGui::SliderFloat("Focus Scale", &data->visuals.dof.focus_scale, 0.001f, 100.f);
+                ImGui::SliderFloat("Blur Strength", &data->visuals.dof.focus_scale, 0.001f, 100.f);
+                ImGui::SetItemTooltip("How strongly what is out of focus is blurred");
             }
             ImGui::EndGroup();
             ImGui::Separator();
 
             // Tonemapping
             ImGui::BeginGroup();
-            ImGui::Checkbox("Tonemapping", &data->visuals.tonemapping.enabled);
+            ImGui::Checkbox("Tone Mapping", &data->visuals.tonemapping.enabled);
+            ImGui::SetItemTooltip("Map the lighting into the colors a display can show");
             if (data->visuals.tonemapping.enabled) {
                 // ImGui::Combo("Function", &data->visuals.tonemapping.tonemapper, "Passthrough\0Exposure Gamma\0Filmic\0\0");
                 ImGui::SliderFloat("Exposure", &data->visuals.tonemapping.exposure, 0.01f, 10.f);
@@ -1396,6 +1411,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             ImGui::BeginGroup();
             ImGui::Checkbox("Simulation Box", &data->simulation_box.enabled);
+            ImGui::SetItemTooltip("Draw the outline of the periodic box");
             if (data->simulation_box.enabled) {
                 ImGui::SameLine();
                 ImGui::ColorEdit4Minimal("##Box-Color", data->simulation_box.color.elem);
@@ -1417,7 +1433,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            ImGui::Combo("Granularity", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
+            ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
+            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms,\nwhole components (residues) or whole instances (chains, molecules)");
             size_t num_selected_atoms = md_bitfield_popcount(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
                 md_bitfield_not_inplace(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
@@ -1575,27 +1592,33 @@ static void draw_main_menu(ApplicationState* data) {
             bool do_unwrap = false;
             bool do_bonds = false;
 
+            // Each operation can be applied to the frame shown now, or to every frame as it is shown.
+            // The labels say what happens to the atoms, not what the operation is called internally.
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
                 if (ImGui::IsWindowHovered()) {
                     md_bitfield_clear(&data->selection.highlight_mask);
                 }
-                /*
-                ImGui::TableSetupColumn("Once", 0);
-                ImGui::TableSetupColumn("Always", 0);
+                ImGui::TableSetupColumn("Now");
+                ImGui::TableSetupColumn("Every frame");
+                ImGui::TableSetupColumn("Options");
                 ImGui::TableHeadersRow();
-                */
+
                 const float button_width = (ImGui::GetFontSize() / 20.f) * 150.f;
                 const md_bitfield_t& target_mask = recenter_get_active_target_mask(data);
                 const bool recenter_available = !md_bitfield_empty(&target_mask);
+                const char* no_target_tip =
+                    "There is nothing to center on yet. Select atoms and choose 'Set as Centering Target' in the\n"
+                    "right-click menu of the viewport, or tick " ICON_FA_COMMENT_DOTS " and pick the target with a query.";
 
+                // ## Centering
                 ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
                 if (!recenter_available) {
                     ImGui::PushDisabled();
                 }
-                if (ImGui::Button("Recenter", ImVec2(button_width,0))) {
+                if (ImGui::Button("Center Target", ImVec2(button_width,0))) {
                     do_recenter = true;
                 }
                 if (!recenter_available) {
@@ -1603,9 +1626,9 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                     if (!recenter_available) {
-                        ImGui::SetTooltip("No target selected for recentering. Please select a target using the selection tools.");
+                        ImGui::SetTooltip("%s", no_target_tip);
                     } else {
-                        ImGui::SetTooltip("Recenter the system (Once)");
+                        ImGui::SetTooltip("Move everything so the target (highlighted) is in the middle of the box,\nor at the origin when there is no box");
                         // Highlight the target atoms that the system will be recentered around
                         md_bitfield_copy (&data->selection.highlight_mask, &target_mask);
                     }
@@ -1621,15 +1644,17 @@ static void draw_main_menu(ApplicationState* data) {
                 if (!recenter_available) {
                     ImGui::PopDisabled();
                 }
-                ImGui::SetItemTooltip("Recenter the system (Always)");
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    ImGui::SetTooltip("%s", recenter_available ? "Keep the target in the middle of the box in every frame" : no_target_tip);
+                }
 
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Checkbox(ICON_FA_ANCHOR_LOCK, &data->operations.fixate_orientation);
-                ImGui::SetItemTooltip("Fixate Orientation");
+                ImGui::Checkbox(ICON_FA_ANCHOR_LOCK "##keep-orientation", &data->operations.fixate_orientation);
+                ImGui::SetItemTooltip("Keep orientation: when centering, also turn everything so the target\nkeeps the orientation it has in the first frame");
 
                 ImGui::SameLine();
-                ImGui::Checkbox(ICON_FA_COMMENT_DOTS, &data->operations.recenter_query.enabled);
-                ImGui::SetItemTooltip("Use query as recentering target");
+                ImGui::Checkbox(ICON_FA_COMMENT_DOTS "##target-query", &data->operations.recenter_query.enabled);
+                ImGui::SetItemTooltip("Target by query: center on the atoms a query picks (evaluated every frame\nwhen it depends on it) instead of the target set from a selection");
 
                 if (data->operations.recenter_query.enabled) {
                     auto& recenter_query = data->operations.recenter_query;
@@ -1638,45 +1663,48 @@ static void draw_main_menu(ApplicationState* data) {
                         recenter_mark_query_dirty(data);
                     }
                 }
+
+                // ## Periodic box
                 ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("PBC", ImVec2(button_width,0))) {
+                if (ImGui::Button("Wrap into Box", ImVec2(button_width,0))) {
                     do_pbc = true;
                 }
-                ImGui::SetItemTooltip("Enforce Periodic Boundary Conditions (Once)");
+                ImGui::SetItemTooltip("Move every atom that is outside the periodic box back in through the opposite side\n(apply periodic boundary conditions). Molecules across the boundary are split.");
 
                 ImGui::TableSetColumnIndex(1);
                 if (ImGui::Checkbox("##pbc", &data->operations.apply_pbc) && data->operations.apply_pbc) {
                     do_pbc = true;
                 }
-                ImGui::SetItemTooltip("Enforce Periodic Boundary Conditions (Always)");
+                ImGui::SetItemTooltip("Wrap every atom into the periodic box in every frame");
 
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("Unwrap", ImVec2(button_width, 0))) {
+                if (ImGui::Button("Make Whole", ImVec2(button_width, 0))) {
                     do_unwrap = true;
                 }
-                ImGui::SetItemTooltip("Unwrap structures present in the system (Once)");
+                ImGui::SetItemTooltip("Join molecules that are split across the periodic box boundary,\nso each one is drawn in one piece (unwrap)");
 
                 ImGui::TableSetColumnIndex(1);
                 if (ImGui::Checkbox("##unwrap", &data->operations.unwrap_structures) && data->operations.unwrap_structures) {
                     do_unwrap = true;
                 }
-                ImGui::SetItemTooltip("Unwrap structures present in the system (Always)");
+                ImGui::SetItemTooltip("Keep every molecule whole in every frame");
 
+                // ## Bonds
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                if (ImGui::Button("Recalc Bonds", ImVec2(button_width, 0))) {
+                if (ImGui::Button("Recompute Bonds", ImVec2(button_width, 0))) {
                     do_bonds = true;
                 }
-                ImGui::SetItemTooltip("Recalculate covalent bonds (Once)");
+                ImGui::SetItemTooltip("Guess the covalent bonds again from the distances between atoms in this frame,\nfor when bonds form or break, or the file's bonds are wrong");
 
                 ImGui::TableSetColumnIndex(1);
                 if (ImGui::Checkbox("##bonds", &data->operations.recalc_bonds) && data->operations.recalc_bonds) {
                     do_bonds = true;
                 }
-                ImGui::SetItemTooltip("Recalculate covalent bonds (Always)");
+                ImGui::SetItemTooltip("Guess the covalent bonds from the distances in every frame (slower)");
                 ImGui::EndTable();
             }
 
@@ -2627,7 +2655,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         }
         
         if (num_atoms_selected > 0) {
-            if (ImGui::MenuItem("Set as Recenter Target")) {
+            if (ImGui::MenuItem("Set as Centering Target")) {
                 md_bitfield_clear(&state->operations.selection_mask);
                 md_bitfield_copy(&state->operations.selection_mask, &state->selection.selection_mask);
                 recenter_mark_selection_dirty(state);

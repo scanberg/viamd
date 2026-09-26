@@ -661,8 +661,14 @@ struct Dataset : viamd::EventHandler {
                 // Initialize component
                 app_state = (ApplicationState*)e.payload;
                 init_element_defaults();
+                workspace_register_window("System", &show_window);
                 break;
             }
+            case viamd::EventType_ViamdDeserializeBegin:
+                // A workspace without [ElementDefault] or [AtomType] sections has the built in ones
+                init_element_defaults();
+                free_pending_overrides();
+                break;
             case viamd::EventType_ViamdShutdown:
                 // Cleanup
                 clear_dataset_items();
@@ -680,7 +686,7 @@ struct Dataset : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("Dataset", &show_window);
+                ImGui::Checkbox("System", &show_window);
                 break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
@@ -832,6 +838,146 @@ struct Dataset : viamd::EventHandler {
         }
 
         return res;
+    }
+
+    // ## Files: what the system is composed of
+
+    struct FileRow {
+        const char* role;
+        str_t path;
+        char details[128];
+    };
+
+    static void file_row(const FileRow& row) {
+        ImGui::TableNextRow();
+        ImGui::PushID(row.path.ptr, row.path.ptr + row.path.len);
+
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted(row.role);
+
+        ImGui::TableSetColumnIndex(1);
+        str_t name = row.path;
+        extract_file(&name, row.path);
+        char name_buf[256];
+        str_copy_to_char_buf(name_buf, sizeof(name_buf), name);
+        ImGui::Selectable(name_buf, false, ImGuiSelectableFlags_SpanAllColumns);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip(STR_FMT, STR_ARG(row.path));
+        }
+        if (ImGui::BeginPopupContextItem("##file")) {
+            if (ImGui::MenuItem("Copy path")) {
+                char buf[1024];
+                str_copy_to_char_buf(buf, sizeof(buf), row.path);
+                ImGui::SetClipboardText(buf);
+            }
+            ImGui::EndPopup();
+        }
+
+        ImGui::TableSetColumnIndex(2);
+        ImGui::TextDisabled("%s", row.details);
+        ImGui::PopID();
+    }
+
+    // The files the system was built from, in the order they compose it: the structure, the
+    // trajectory it moves along, and what was loaded along that trajectory
+    void draw_files(ApplicationState& data) {
+        if (!ImGui::CollapsingHeader("Files", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+        const bool has_structure = data.files.molecule[0] != '\0';
+        str_t groups[64];
+        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
+        if (!has_structure && num_groups == 0) {
+            ImGui::TextDisabled("Nothing loaded. Open files with File > Open File..., or drop them on the window.");
+            return;
+        }
+
+        const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
+        if (!ImGui::BeginTable("##files", 3, flags)) return;
+        ImGui::TableSetupColumn("Role", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthStretch, 3.0f);
+        ImGui::TableSetupColumn("Holds", ImGuiTableColumnFlags_WidthStretch, 2.5f);
+        ImGui::TableHeadersRow();
+
+        if (has_structure) {
+            FileRow row = { "Structure", str_from_cstr(data.files.molecule), "" };
+            snprintf(row.details, sizeof(row.details), "%zu atoms%s", data.mold.sys.atom.count, data.files.coarse_grained ? ", coarse grained" : "");
+            file_row(row);
+        }
+
+        if (data.files.trajectory[0] != '\0') {
+            FileRow row = { "Trajectory", str_from_cstr(data.files.trajectory), "" };
+            const size_t num_frames = run_num_frames(&data);
+            const double* times = run_frame_times(&data);
+            if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(&data))) {
+                char unit_buf[32];
+                const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(&data));
+                snprintf(row.details, sizeof(row.details), "%zu frames, %.4g - %.4g %s", num_frames, times[0] * scl, times[num_frames - 1] * scl, unit_buf);
+            } else {
+                snprintf(row.details, sizeof(row.details), "%zu frames", num_frames);
+            }
+            file_row(row);
+        }
+
+        // Loaded along the trajectory: named by what they hold, which the group says
+        const str_t run = str_from_cstr(data.mold.run);
+        for (size_t g = 0; g < num_groups; ++g) {
+            const str_t source = system_series_group_source(&data, groups[g]);
+            if (str_empty(source)) continue;
+            str_t rel = groups[g];
+            if (!str_empty(run) && str_begins_with(rel, run) && rel.len > run.len + 1) {
+                rel = str_substr(rel, run.len + 1);
+            }
+            const char* role = str_begins_with(rel, STR_LIT("edr")) ? "Energies" : "Series";
+            FileRow row = { role, source, "" };
+            snprintf(row.details, sizeof(row.details), "%zu series", system_series_members(nullptr, 0, &data, groups[g]));
+            file_row(row);
+        }
+
+        ImGui::EndTable();
+    }
+
+    // ## Contents: what the system holds
+
+    void draw_contents(ApplicationState& data) {
+        if (!ImGui::CollapsingHeader("Contents", ImGuiTreeNodeFlags_DefaultOpen)) return;
+        const md_system_t& sys = data.mold.sys;
+
+        const ImGuiTableFlags flags = ImGuiTableFlags_SizingFixedFit;
+        if (ImGui::BeginTable("##contents", 2, flags)) {
+            auto count_row = [](const char* label, size_t count) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(label);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%zu", count);
+            };
+            count_row("Entities",   sys.entity.count);
+            count_row("Instances",  sys.instance.count);
+            count_row("Components", sys.component.count);
+            count_row("Atoms",      sys.atom.count);
+            count_row("Bonds",      sys.bond.count);
+            ImGui::EndTable();
+        }
+
+        const md_unitcell_t& cell = data.mold.state.unitcell;
+        if (cell.flags) {
+            char unit_buf[32];
+            const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), md_unit_angstrom());
+            const bool ortho = cell.flags & MD_UNITCELL_ORTHO;
+            const bool tricl = cell.flags & MD_UNITCELL_TRICLINIC;
+            const bool px = cell.flags & MD_UNITCELL_PBC_X, py = cell.flags & MD_UNITCELL_PBC_Y, pz = cell.flags & MD_UNITCELL_PBC_Z;
+            ImGui::Text("Box: %s, periodic in %s%s%s%s", ortho ? "orthorhombic" : tricl ? "triclinic" : "-",
+                px ? "x" : "", py ? "y" : "", pz ? "z" : "", (px || py || pz) ? "" : "no direction");
+            ImGui::Indent();
+            if (ortho) {
+                ImGui::Text("%.4g x %.4g x %.4g %s", cell.x * scl, cell.y * scl, cell.z * scl, unit_buf);
+            } else if (tricl) {
+                ImGui::Text("x %.4g, y %.4g, z %.4g %s", cell.x * scl, cell.y * scl, cell.z * scl, unit_buf);
+                ImGui::Text("xy %.4g, xz %.4g, yz %.4g %s", cell.xy * scl, cell.xz * scl, cell.yz * scl, unit_buf);
+            }
+            ImGui::Unindent();
+        }
+        ImGui::Spacing();
     }
 
     // ASCII case insensitive 'needle occurs in haystack'
@@ -1038,46 +1184,9 @@ struct Dataset : viamd::EventHandler {
         if (!show_window) return;
 
         ImGui::SetNextWindowSize(ImVec2(500, 600), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Dataset", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-            ImGui::Text("System: %s", data.files.molecule);
-            ImGui::Text("Num entities:   %9zu", data.mold.sys.entity.count);
-            ImGui::Text("Num instances:  %9zu", data.mold.sys.instance.count);
-            ImGui::Text("Num components: %9zu", data.mold.sys.component.count);
-            ImGui::Text("Num atoms:      %9zu", data.mold.sys.atom.count);
-
-            ImGui::Separator();
-
-            if (data.mold.state.unitcell.flags) {
-                md_unitcell_flags_t flags = data.mold.state.unitcell.flags;
-                bool ortho = flags & MD_UNITCELL_ORTHO;
-                bool tricl = flags & MD_UNITCELL_TRICLINIC;
-                ImGui::Text("Unitcell %s", ortho ? "Orthorhombic" : tricl ? "Triclinic" : "");
-                if (flags & MD_UNITCELL_ORTHO) {
-                    ImGui::Indent();
-                    ImGui::Text("X: %f %s", data.mold.state.unitcell.x, flags & MD_UNITCELL_PBC_X ? "(pbc)" : "");
-                    ImGui::Text("Y: %f %s", data.mold.state.unitcell.y, flags & MD_UNITCELL_PBC_Y ? "(pbc)" : "");
-                    ImGui::Text("Z: %f %s", data.mold.state.unitcell.z, flags & MD_UNITCELL_PBC_Z ? "(pbc)" : "");
-                    ImGui::Unindent();
-                } else if (flags & MD_UNITCELL_TRICLINIC) {
-                    ImGui::Indent();
-                    ImGui::Text("X:  %f", data.mold.state.unitcell.x);
-                    ImGui::Text("XY: %f", data.mold.state.unitcell.xy);
-                    ImGui::Text("XZ: %f", data.mold.state.unitcell.xz);
-                    ImGui::Text("Y:  %f", data.mold.state.unitcell.y);
-                    ImGui::Text("YZ: %f", data.mold.state.unitcell.yz);
-                    ImGui::Text("Z:  %f", data.mold.state.unitcell.z);
-                    ImGui::Unindent();
-                } 
-                ImGui::Separator();
-            }
-
-            if (data.files.trajectory[0] != '\0') {
-                ImGui::Text("Trajectory data: %s", data.files.trajectory);
-                ImGui::Text("Run:           %s", data.mold.run);
-                ImGui::Text("Num frames:    %9zu", run_num_frames(&data));
-                ImGui::Text("Num atoms:     %9zu", data.mold.sys.atom.count);
-                ImGui::Separator();
-            }
+        if (ImGui::Begin("System", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            draw_files(data);
+            draw_contents(data);
 
             if (ImGui::IsWindowHovered()) {
                 md_bitfield_clear(&data.selection.highlight_mask);

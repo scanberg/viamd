@@ -21,6 +21,7 @@
 
 #include <viamd_event.h>
 #include <viamd.h>
+#include <serialization_utils.h>
 #include <event.h>
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
@@ -514,6 +515,76 @@ struct Ramachandran : viamd::EventHandler {
 
     Ramachandran() { viamd::event_system_register_handler(*this); }
 
+    // ## Workspace: how the layers are drawn
+
+    void reset_workspace_settings() {
+        blur_sigma = 5.0f;
+        ref_alpha = full_alpha = filt_alpha = 0.85f;
+        display_mode[0] = IsoLevels; display_mode[1] = IsoLines; display_mode[2] = IsoLines;
+        colormap[0] = ImPlotColormap_Hot; colormap[1] = ImPlotColormap_Plasma; colormap[2] = ImPlotColormap_Viridis;
+        for (int i = 0; i < 3; ++i) isoline_colors[i] = {1,1,1,1};
+        for (int i = 0; i < 4; ++i) show_layer[i] = true;
+        layout_mode = 0;
+    }
+
+    void serialize(viamd::serialization_state_t& state) {
+        viamd::write_section_header(state, STR_LIT("Ramachandran"));
+        viamd::write_flt(state, STR_LIT("BlurSigma"), blur_sigma);
+        const float alpha[3] = { ref_alpha, full_alpha, filt_alpha };
+        viamd::write_flt_vec(state, STR_LIT("LayerAlpha"), alpha, 3);
+        const int modes[3] = { (int)display_mode[0], (int)display_mode[1], (int)display_mode[2] };
+        viamd::write_int_vec(state, STR_LIT("LayerDisplayMode"), modes, 3);
+        const int cmaps[3] = { (int)colormap[0], (int)colormap[1], (int)colormap[2] };
+        viamd::write_int_vec(state, STR_LIT("LayerColormap"), cmaps, 3);
+        for (int i = 0; i < 3; ++i) {
+            char key[32];
+            snprintf(key, sizeof(key), "LayerIsolineColor%d", i);
+            viamd::write_vec4(state, str_from_cstr(key), vec4_set(isoline_colors[i].x, isoline_colors[i].y, isoline_colors[i].z, isoline_colors[i].w));
+        }
+        const int layers[4] = { show_layer[0], show_layer[1], show_layer[2], show_layer[3] };
+        viamd::write_int_vec(state, STR_LIT("ShowLayer"), layers, 4);
+        viamd::write_int(state, STR_LIT("LayoutMode"), layout_mode);
+    }
+
+    void deserialize(viamd::deserialization_state_t& state) {
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "BlurSigma")) {
+                viamd::extract_flt(blur_sigma, arg);
+            } else if (str_eq_cstr(ident, "LayerAlpha")) {
+                float a[3];
+                if (viamd::extract_flt_vec(a, 3, arg)) { ref_alpha = a[0]; full_alpha = a[1]; filt_alpha = a[2]; }
+            } else if (str_eq_cstr(ident, "LayerDisplayMode")) {
+                int m[3];
+                if (viamd::extract_int_vec(m, 3, arg)) {
+                    for (int i = 0; i < 3; ++i) display_mode[i] = (RamachandranDisplayMode)CLAMP(m[i], (int)IsoLevels, (int)Colormap);
+                }
+            } else if (str_eq_cstr(ident, "LayerColormap")) {
+                int c[3];
+                if (viamd::extract_int_vec(c, 3, arg)) {
+                    for (int i = 0; i < 3; ++i) colormap[i] = (ImPlotColormap)c[i];
+                }
+            } else if (str_eq_cstr(ident, "ShowLayer")) {
+                int l[4];
+                if (viamd::extract_int_vec(l, 4, arg)) {
+                    for (int i = 0; i < 4; ++i) show_layer[i] = l[i] != 0;
+                }
+            } else if (str_eq_cstr(ident, "LayoutMode")) {
+                viamd::extract_int(layout_mode, arg);
+            } else {
+                for (int i = 0; i < 3; ++i) {
+                    char key[32];
+                    snprintf(key, sizeof(key), "LayerIsolineColor%d", i);
+                    if (str_eq_cstr(ident, key)) {
+                        vec4_t c;
+                        if (viamd::extract_vec4(c, arg)) isoline_colors[i] = ImVec4(c.x, c.y, c.z, c.w);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     void process_events(const viamd::Event* events, size_t num_events) final {
         for (size_t i = 0; i < num_events; ++i) {
             const viamd::Event e = events[i];
@@ -521,6 +592,20 @@ struct Ramachandran : viamd::EventHandler {
             case viamd::EventType_ViamdInitialize: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 initialize(state);
+                workspace_register_window("Ramachandran", &show_window);
+                break;
+            }
+            case viamd::EventType_ViamdSerialize:
+                serialize(*(viamd::serialization_state_t*)e.payload);
+                break;
+            case viamd::EventType_ViamdDeserializeBegin:
+                reset_workspace_settings();
+                break;
+            case viamd::EventType_ViamdDeserialize: {
+                viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
+                if (str_eq(viamd::section_header(state), STR_LIT("Ramachandran"))) {
+                    deserialize(state);
+                }
                 break;
             }
             case viamd::EventType_ViamdShutdown:

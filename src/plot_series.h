@@ -77,6 +77,10 @@ struct SeriesKey {
 };
 
 bool      series_key_equal(const SeriesKey& a, const SeriesKey& b);
+
+// The source's name in a workspace ("system", "script", "script_filtered"), and back
+const char* series_source_name(SeriesSource source);
+bool        series_source_from_name(SeriesSource* out, str_t name);
 SeriesKey series_key(SeriesSource source, str_t path, SeriesVariant variant = SeriesVariant_Values);
 
 // The table a source reads from, NULL when it has none right now

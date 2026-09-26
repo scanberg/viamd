@@ -127,6 +127,9 @@ struct Attributes : viamd::EventHandler {
         for (size_t i = 0; i < num_events; ++i) {
             const viamd::Event& e = events[i];
             switch (e.type) {
+            case viamd::EventType_ViamdInitialize:
+                workspace_register_window("Attributes", &show_window);
+                break;
             case viamd::EventType_ViamdFrameTick: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 // Global, below whatever has focus: a text field keeps its own use of the keys
