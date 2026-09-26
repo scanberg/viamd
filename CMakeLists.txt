@@ -182,6 +182,7 @@ set(SRC_FILES
     src/implot_widgets.cpp
     src/loader.cpp
     src/main.cpp
+    src/plot_series.cpp
     src/script_editor.cpp
     src/script_reference.cpp
     src/serialization_utils.cpp
@@ -196,6 +197,7 @@ set(SRC_FILES
     src/imgui_widgets.h
     src/implot_widgets.h
     src/loader.h
+    src/plot_series.h
     src/script_editor.h
     src/script_reference.h
     src/serialization_utils.h

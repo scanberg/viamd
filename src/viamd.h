@@ -28,6 +28,7 @@
 #include <task_system.h>
 #include <loader.h>
 #include <event.h>
+#include <plot_series.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -65,9 +66,8 @@
 #define VIAMD_LOG_ERROR MD_LOG_ERROR
 #define VIAMD_LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
-#define DISPLAY_PROPERTY_MAX_POPULATION_SIZE 256
-#define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
-#define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
+// One colour per script property (by its place in the script), shared by every view of it
+inline constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
 #define HIGHLIGHT_PULSE_TIME_SCALE  5.0
 #define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
@@ -82,6 +82,7 @@ constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW        = ImGuiKey_F11;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE          = ImGuiKey_Enter;
 constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
 constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F12;
+constexpr ImGuiKeyChord KEY_SHOW_ATTRIBUTE_WINDOW = ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A;
 
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_INIT("via");
 
@@ -266,125 +267,6 @@ enum class ElectronicStructureLegacyType {
     DetachmentDensity,
     ElectronDensity,
     Count,
-};
-
-// This is viamd's representation of a property
-struct DisplayProperty {
-    enum Type {
-        Type_Temporal,
-        Type_Distribution,
-        Type_Volume,
-        Type_Count
-    };
-
-    enum PlotType {
-        PlotType_Line,      // Single line
-        PlotType_Area,      // Shaded area
-        PlotType_Bars,      // Bar chart
-        PlotType_Scatter,   // Scatter plot
-        PlotType_Count
-    };
-
-    enum ColorType {
-        ColorType_Solid,
-        ColorType_Colormap,
-        ColorType_Count
-    };
-
-    // This is the payload passed to getters for display properties
-    struct Payload {
-        DisplayProperty* display_prop;
-        int dim_idx;
-    };
-
-    // Callback signature for printing out the value (when hovering with mouse for example)
-    typedef int (*PrintValue)(char* buf, size_t buf_cap, int sample_idx, Payload* data);
-
-    struct Histogram {
-        int num_bins;
-        int dim = 0;
-        // Can be multidimensional
-        // Total number of entries will be dim * num_bins
-        md_array(float) bins = 0;
-        double x_min;
-        double x_max;
-        double y_min;
-        double y_max;
-        md_allocator_i* alloc;
-    };
-
-    Type type = Type_Temporal;
-
-    char label[32] = "";
-
-    ColorType color_type = ColorType_Solid;
-    ImVec4 color = {1,1,1,1};
-    ImPlotColormap colormap = ImPlotColormap_Plasma;
-    float colormap_alpha = 1.0f;
-
-    PlotType plot_type = PlotType_Line;
-    ImPlotMarker marker_type = ImPlotMarker_Square;
-    float marker_size = 1.0f;
-    double bar_width_scale = 1.0;
-
-    // We need two getters to support areas (min / max)
-    ImPlotGetter getter[2] = {0,0};
-    PrintValue   print_value = 0;
-
-    bool aggregate_histogram = false;
-
-    int dim = 1;                // Number of values per sample
-    int num_samples = 0;        // Number of samples (length of x)
-    const float* y_values = 0;  // Values (y)
-    const float* x_values = 0;  // Corresponding x values
-
-    int num_bins = 128;         // Requested number of bins for histogram
-
-    // 'unit' is what the property's SOURCE gave each axis; 'unit_str' is what that axis is shown
-    // in once the display preference is applied, and 'unit_scale' the factor taking a raw value
-    // there. The getters and print_value callbacks below apply unit_scale[1] to y. The x axis of a
-    // temporal property is timeline.x_values, which is already converted, so unit_scale[0] is 1
-    // for those and unit_str[0] is the timeline's own unit.
-    // display_property_update_units in main.cpp derives the latter three from the first.
-    md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
-    double unit_scale[2] = {1.0, 1.0};
-    char unit_str[2][32] = {"",""};
-    uint64_t units_version = 0;     // display_units generation the three above were derived at
-
-    const md_script_eval_t* eval = NULL;
-
-    md_script_property_flags_t prop_flags = MD_SCRIPT_PROPERTY_FLAG_NONE;
-    const md_script_vis_payload_o* vis_payload = NULL;
-
-    // The property as published in eval's attribute table (see md_script_eval_attributes). The
-    // table is fixed for the lifetime of the evaluation, so holding the pointers is safe for as
-    // long as eval is.
-    const md_attribute_t* attr = NULL;          // script/<ident>: the values
-    const md_attribute_t* attr_range  = NULL;   // script/<ident>/range, temporal and distribution
-    const md_attribute_t* attr_weight = NULL;   // script/<ident>/weight, distribution only
-
-    // A band drawn around a centre line (variance around the mean) needs that centre as well
-    const float* y_center = 0;
-
-    // md_attributes_version of attr when the histogram was last computed
-    uint64_t attr_version = 0;
-
-    // Encodes which temporal subplots this property is visible in
-    uint32_t temporal_subplot_mask = 0;
-
-    // Encodes which distribution subplots this property is visible in
-    uint32_t distribution_subplot_mask = 0;
-
-    bool show_in_volume = false;
-    bool partial_evaluation = false;
-
-    // Encodes which indices of the population to show (if applicable, i.e. dim > 1)
-    std::bitset<DISPLAY_PROPERTY_MAX_POPULATION_SIZE> population_mask = {};
-
-    STATIC_ASSERT(DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS     <= sizeof(temporal_subplot_mask) * 8,     "Cannot fit temporal subplot mask");
-    STATIC_ASSERT(DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS <= sizeof(distribution_subplot_mask) * 8, "Cannot fit distribution subplot mask");
-
-    Histogram hist = {};
 };
 
 struct LoadDatasetWindowState {
@@ -1295,11 +1177,11 @@ struct ApplicationState {
 #endif
     } mold;
 
-    DisplayProperty* display_properties = nullptr;
-    // A copy, not a view: the labels it is set from live in display_properties and the script IR, which are
-    // rebuilt when the script recompiles, and the hover outlives that. Longer than any DisplayProperty::label.
-    char  hovered_display_property_label[64] = "";
-    int   hovered_display_property_pop_idx = -1;
+    // The script property hovered in any view of it (a plot, the script editor), by identifier. A copy,
+    // not a view: the identifiers live in the script IR, which is rebuilt when the script recompiles,
+    // and the hover outlives that.
+    char  hovered_property_label[64] = "";
+    int   hovered_property_pop_idx = -1;
 
     // --- ASYNC TASKS HANDLES ---
     struct {
@@ -1409,6 +1291,10 @@ struct ApplicationState {
         double    time_scale    = 1.0;
         uint64_t  units_version = 0;
 
+        // What each subplot draws, by attribute path (see plot_series.h)
+        PlotSubplot subplots[PLOT_MAX_SUBPLOTS];
+        int num_subplots = 1;
+
         bool show_window = false;
     } timeline;
 
@@ -1417,6 +1303,11 @@ struct ApplicationState {
         struct {
             bool enabled = false;
         } filter;
+
+        // What each subplot draws, by attribute path (see plot_series.h)
+        PlotSubplot subplots[PLOT_MAX_SUBPLOTS];
+        int num_subplots = 1;
+
         bool show_window = false;
     } distributions;
 

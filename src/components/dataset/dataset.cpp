@@ -2,6 +2,8 @@
 #include <viamd.h>
 #include <event.h>
 #include <serialization_utils.h>
+#include <display_units.h>
+#include <plot_series.h>
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -146,6 +148,7 @@ struct ElementDefaultDelta {
 
 struct Dataset : viamd::EventHandler {
     bool show_window = false;
+    char series_filter[64] = "";
 
     // Cached at ViamdInitialize: the serialize event only carries the serialization state,
     // so we need our own handle on the system in order to diff the atom types.
@@ -831,6 +834,206 @@ struct Dataset : viamd::EventHandler {
         return res;
     }
 
+    // ASCII case insensitive 'needle occurs in haystack'
+    static bool contains_ignore_case(str_t haystack, str_t needle) {
+        if (needle.len == 0) return true;
+        if (needle.len > haystack.len) return false;
+        for (size_t i = 0; i + needle.len <= haystack.len; ++i) {
+            if (str_eq_ignore_case(str_substr(haystack, i, needle.len), needle)) return true;
+        }
+        return false;
+    }
+
+    // Quantities loaded along the run - an energy file, the columns of an .xvg or a .csv - one node
+    // per file. Each row is a series the Timelines and Distributions windows can plot: drag it into
+    // a subplot of either, double click it to toggle it in the first timeline subplot, or pick one
+    // from its context menu.
+    void draw_series(ApplicationState& data) {
+        str_t groups[64];
+        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
+        if (num_groups == 0) return;
+
+        if (!ImGui::CollapsingHeader("Series", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##series_filter", "Filter by name", series_filter, sizeof(series_filter));
+        const str_t filter = str_from_cstr(series_filter);
+
+        const md_attributes_t* table = &data.mold.sys.attributes;
+        const str_t run = str_from_cstr(data.mold.run);
+
+        for (size_t g = 0; g < num_groups; ++g) {
+            md_temp_scope_t temp = md_temp_begin();
+            defer { md_temp_end(temp); };
+
+            const size_t num = system_series_members(nullptr, 0, &data, groups[g]);
+            str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
+            system_series_members(paths, num, &data, groups[g]);
+
+            char group_label[256];
+            system_series_group_label(group_label, sizeof(group_label), &data, groups[g]);
+
+            ImGui::PushID((int)md_hash64_str(groups[g], 0));
+            defer { ImGui::PopID(); };
+
+            if (!ImGui::TreeNodeEx("##group", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth, "%s   %zu series", group_label, num)) {
+                continue;
+            }
+            defer { ImGui::TreePop(); };
+
+            const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
+            if (!ImGui::BeginTable("##series", 4, table_flags)) {
+                continue;
+            }
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 3.0f);
+            ImGui::TableSetupColumn("Unit", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+            ImGui::TableSetupColumn("Samples", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < num; ++i) {
+                const md_attribute_t* attr = md_attributes_find(table, paths[i]);
+                if (!attr) continue;
+
+                const SeriesKey key = series_key(SeriesSource_System, paths[i]);
+                char name[64];
+                series_label(name, sizeof(name), &data, key);
+                if (!contains_ignore_case(str_from_cstr(name), filter) && !contains_ignore_case(md_attribute_leaf(attr), filter)) {
+                    continue;
+                }
+
+                // How attr() in the script reads it: the path below the run
+                char expr[SERIES_PATH_CAP + 16] = "";
+                if (str_begins_with(paths[i], run) && paths[i].len > run.len + 1) {
+                    const str_t rel = str_substr(paths[i], run.len + 1);
+                    snprintf(expr, sizeof(expr), "attr(\"" STR_FMT "\")", STR_ARG(rel));
+                }
+
+                bool in_subplot[PLOT_MAX_SUBPLOTS] = {};
+                bool in_any = false;
+                for (int s = 0; s < data.timeline.num_subplots; ++s) {
+                    in_subplot[s] = plot_find_series(data.timeline.subplots[s], key) != -1;
+                    in_any |= in_subplot[s];
+                }
+
+                const ImVec4 color = series_default_color(&data, key);
+
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::PushID(paths[i].ptr, paths[i].ptr + paths[i].len);
+
+                ImPlot::ItemIcon(color);
+                ImGui::SameLine();
+                if (ImGui::Selectable(name, in_any, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick)) {
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        const int idx = plot_find_series(data.timeline.subplots[0], key);
+                        if (idx != -1) {
+                            plot_remove_series(data.timeline.subplots[0], idx);
+                        } else {
+                            plot_add_series(&data, data.timeline.subplots[0], key);
+                            data.timeline.show_window = true;
+                        }
+                    }
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(name);
+                    if (!str_empty(attr->description)) {
+                        ImGui::TextDisabled(STR_FMT, STR_ARG(attr->description));
+                    }
+                    ImGui::TextDisabled(STR_FMT, STR_ARG(attr->path));
+                    if (expr[0]) ImGui::TextDisabled("In the script: %s", expr);
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Drag into a timeline or distribution subplot, double click to toggle it in the first timeline");
+                    ImGui::EndTooltip();
+                }
+                if (ImGui::BeginDragDropSource()) {
+                    series_set_drag_payload(TIMELINE_SERIES_DND, key, -1, name, color);
+                    ImGui::EndDragDropSource();
+                }
+                if (ImGui::BeginPopupContextItem("##context")) {
+                    ImGui::TextDisabled("Show in timeline");
+                    for (int s = 0; s < data.timeline.num_subplots; ++s) {
+                        char item[32];
+                        snprintf(item, sizeof(item), "Subplot %d", s + 1);
+                        if (ImGui::MenuItem(item, nullptr, in_subplot[s])) {
+                            const int idx = plot_find_series(data.timeline.subplots[s], key);
+                            if (idx != -1) {
+                                plot_remove_series(data.timeline.subplots[s], idx);
+                            } else {
+                                plot_add_series(&data, data.timeline.subplots[s], key);
+                                data.timeline.show_window = true;
+                            }
+                        }
+                    }
+                    if (data.timeline.num_subplots < PLOT_MAX_SUBPLOTS && ImGui::MenuItem("New subplot")) {
+                        const int s = data.timeline.num_subplots++;
+                        plot_add_series(&data, data.timeline.subplots[s], key);
+                        data.timeline.show_window = true;
+                    }
+                    ImGui::Separator();
+                    {
+                        PlotSubplot& dist = data.distributions.subplots[0];
+                        const int idx = plot_find_series(dist, key);
+                        if (ImGui::MenuItem("Show distribution", nullptr, idx != -1)) {
+                            if (idx != -1) {
+                                plot_remove_series(dist, idx);
+                            } else {
+                                plot_add_series(&data, dist, key);
+                                data.distributions.show_window = true;
+                            }
+                        }
+                    }
+                    if (expr[0]) {
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Copy script expression", expr)) {
+                            ImGui::SetClipboardText(expr);
+                        }
+                    }
+                    ImGui::EndPopup();
+                }
+                ImGui::PopID();
+
+                ImGui::TableSetColumnIndex(1);
+                {
+                    char unit_buf[32] = "";
+                    display_units::factor_print(unit_buf, sizeof(unit_buf), attr->unit);
+                    ImGui::TextUnformatted(unit_buf[0] ? unit_buf : "-");
+                }
+
+                const uint32_t n = attr->format.shape[0];
+                ImGui::TableSetColumnIndex(2);
+                {
+                    const size_t per_sample = md_attribute_element_count(&attr->format) / n;
+                    if (per_sample > 1) {
+                        ImGui::Text("%u x %zu", n, per_sample);
+                    } else {
+                        ImGui::Text("%u", n);
+                    }
+                }
+
+                ImGui::TableSetColumnIndex(3);
+                {
+                    const md_attribute_t* axis = md_attributes_axis(table, attr);
+                    double t[2] = {0, 0};
+                    const md_attribute_slice_t first = md_attribute_slice_1(0);
+                    const md_attribute_slice_t last  = md_attribute_slice_1(n - 1);
+                    if (axis && axis->format.shape[0] == n &&
+                        md_attribute_extract_slice_f64(&t[0], 1, axis, &first, md_unit_none()) == 1 &&
+                        md_attribute_extract_slice_f64(&t[1], 1, axis, &last,  md_unit_none()) == 1)
+                    {
+                        char unit_buf[32] = "";
+                        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), axis->unit);
+                        ImGui::Text("%.4g - %.4g %s", t[0] * scl, t[1] * scl, unit_buf);
+                    } else {
+                        ImGui::TextUnformatted("-");
+                    }
+                }
+            }
+            ImGui::EndTable();
+        }
+    }
+
     void draw(ApplicationState& data) {
         if (!show_window) return;
 
@@ -879,6 +1082,8 @@ struct Dataset : viamd::EventHandler {
             if (ImGui::IsWindowHovered()) {
                 md_bitfield_clear(&data.selection.highlight_mask);
             }
+
+            draw_series(data);
 
             static bool use_short_labels = true;
 

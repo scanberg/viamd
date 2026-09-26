@@ -26,6 +26,9 @@ struct DensityVolume : viamd::EventHandler {
     bool show_window = false;
     bool enabled = false;
 
+    // The volume property shown, by path; empty for none. One at a time.
+    SeriesKey volume_key = {};
+
     md_allocator_i* arena = nullptr;
 
     struct {
@@ -120,37 +123,28 @@ struct DensityVolume : viamd::EventHandler {
             volume::compute_transfer_function_texture_simple(&dvr.tf.id, dvr.tf.colormap, dvr.tf.alpha_scale);
         }
 
-        int64_t selected_property = -1;
-        for (size_t i = 0; i < md_array_size(state->display_properties); ++i) {
-            const DisplayProperty& dp = state->display_properties[i];
-            if (dp.type == DisplayProperty::Type_Volume && dp.show_in_volume) {
-                selected_property = i;
-                break;
-            }
-        }
+        // Resolved by path every frame: the evaluation's table is rebuilt when the script recompiles
+        const bool selected = volume_key.path[0] != '\0';
+        SeriesVolumeView vol_view = {};
+        const bool resolved = selected && series_resolve_volume(&vol_view, state, volume_key);
 
-        const md_attribute_t* prop_attr = 0;
-        const md_script_vis_payload_o* vis_payload = 0;
-        uint64_t data_version = 0;
+        const md_attribute_t* prop_attr = resolved ? vol_view.attr : NULL;
+        const md_script_vis_payload_o* vis_payload = vol_view.vis_payload;
+        const uint64_t data_version = vol_view.version;
 
         bool reset_view = false;
-        static int64_t s_selected_property = 0;
-        if (s_selected_property != selected_property) {
-            if (s_selected_property == -1) {
+        static SeriesKey s_volume_key = {};
+        static bool s_first = true;
+        if (s_first || !series_key_equal(s_volume_key, volume_key)) {
+            if (!s_first && s_volume_key.path[0] == '\0' && selected) {
                 reset_view = true;
             }
-            s_selected_property = selected_property;
+            s_first = false;
+            s_volume_key = volume_key;
             dirty_vol = true;
             dirty_rep = true;
         }
-
-        if (selected_property != -1) {
-            const DisplayProperty& dp = state->display_properties[selected_property];
-            prop_attr = (dp.attr && dp.attr->data && dp.attr->format.rank == 3) ? dp.attr : NULL;
-            vis_payload = dp.vis_payload;
-            data_version = prop_attr ? md_attributes_version(md_script_eval_attributes(dp.eval), prop_attr->id) : 0;
-        }
-        show_density_volume = selected_property != -1;
+        show_density_volume = selected;
 
         static uint64_t s_script_fingerprint = 0;
         if (s_script_fingerprint != md_script_ir_fingerprint(state->script.eval_ir)) {
@@ -302,40 +296,35 @@ struct DensityVolume : viamd::EventHandler {
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Property")) {
-                    int64_t selected_index = -1;
-                    int64_t candidate_count = 0;
-                    for (int64_t i = 0; i < (int64_t)md_array_size(state->display_properties); ++i) {
-                        DisplayProperty& dp = state->display_properties[i];
-                        if (dp.type != DisplayProperty::Type_Volume) continue;
-                        if (!state->timeline.filter.enabled && dp.partial_evaluation) {
-                            continue;
-                        }
-                        ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                        if (ImGui::Selectable(dp.label, dp.show_in_volume)) {
-                            selected_index = i;
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            script_visualize_payload(state, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
-                            script_set_hovered_property(state, str_from_cstr(dp.label));
-                        }
-                        candidate_count += 1;
+                    // One volume at a time: picking one replaces the other, picking it again hides it
+                    int candidate_count = 0;
+                    auto list = [&](SeriesSource source) {
+                        series_for_each_script_property(state, source, MD_SCRIPT_PROPERTY_FLAG_VOLUME, [&](const SeriesKey& key) {
+                            char label[96];
+                            series_label(label, sizeof(label), state, key);
+                            const bool is_selected = series_key_equal(key, volume_key);
+                            ImGui::PushID(key.source);
+                            ImPlot::ItemIcon(series_default_color(state, key)); ImGui::SameLine();
+                            if (ImGui::Selectable(label, is_selected)) {
+                                volume_key = is_selected ? SeriesKey{} : key;
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                const str_t ident = series_script_ident(key);
+                                const md_script_vis_payload_o* vis = state->script.eval_ir ? md_script_ir_property_vis_payload(state->script.eval_ir, ident) : nullptr;
+                                script_visualize_payload(state, vis, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
+                                script_set_hovered_property(state, ident);
+                            }
+                            ImGui::PopID();
+                            candidate_count += 1;
+                        });
+                    };
+                    list(SeriesSource_Script);
+                    if (state->timeline.filter.enabled) {
+                        list(SeriesSource_ScriptFiltered);
                     }
 
                     if (candidate_count == 0) {
                         ImGui::Text("No volume properties available.");
-                    }
-
-                    // Currently we only support viewing one volume at a time.
-                    // This will probably change over time but not now.
-                    if (selected_index != -1) {
-                        for (int64_t i = 0; i < (int64_t)md_array_size(state->display_properties); ++i) {
-                            if (selected_index == i) {
-                                // Toggle bool
-                                state->display_properties[i].show_in_volume = !state->display_properties[i].show_in_volume;
-                            } else {
-                                state->display_properties[i].show_in_volume = false;
-                            }
-                        }
                     }
                     ImGui::EndMenu();
                 }
@@ -661,17 +650,10 @@ struct DensityVolume : viamd::EventHandler {
             glViewport(0, 0, gbuf.width, gbuf.height);
             glScissor(0, 0,  gbuf.width, gbuf.height);
 
-            int64_t selected_property = -1;
-            for (size_t i = 0; i < md_array_size(state->display_properties); ++i) {
-                const DisplayProperty& dp = state->display_properties[i];
-                if (dp.type == DisplayProperty::Type_Volume && dp.show_in_volume) {
-                    selected_property = i;
-                    break;
-                }
-            }
+            const bool selected_property = volume_key.path[0] != '\0';
 
             size_t num_reps = md_array_size(reps);
-            if (selected_property > -1 && show_reference_structures && num_reps > 0) {
+            if (selected_property && show_reference_structures && num_reps > 0) {
                 if (!show_reference_ensemble) {
                     num_reps = 1;
                 }
@@ -766,7 +748,7 @@ struct DensityVolume : viamd::EventHandler {
             glViewport(0, 0, gbuf.width, gbuf.height);
             glScissor(0, 0, gbuf.width, gbuf.height);
 
-            if (show_bounding_box && selected_property != -1) {
+            if (show_bounding_box && selected_property) {
                 glEnable(GL_DEPTH_TEST);
                 glDepthMask(GL_TRUE);
                 glEnable(GL_BLEND);

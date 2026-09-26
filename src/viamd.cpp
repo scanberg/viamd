@@ -520,11 +520,9 @@ void free_trajectory_data(ApplicationState* state) {
     state->files.trajectory[0] = '\0';
 
     md_array_free(state->timeline.x_values,  state->allocator.persistent);
-    for (size_t i = 0; i < md_array_size(state->display_properties); ++i) {
-        md_array_free(state->display_properties[i].hist.bins, state->display_properties[i].hist.alloc);
-        state->display_properties[i].hist.bins = nullptr;
-    }
-    md_array_free(state->display_properties, state->allocator.persistent);
+    // Converted axes and histograms of what is about to go. The attribute versions they are keyed
+    // on only mean something within one table, and the next one may be allocated where this was.
+    series_cache_free(state);
 
     // backbone_angles.data and secondary_structure.data are VIEWS into sys.attributes and
     // are not md_arrays - freeing them here would hand the wrong pointer to the array allocator. The
@@ -892,7 +890,7 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
                 if (load_state.flags & LoaderFlag_Temporal) {
                     const char* hint = (load_state.type == LoaderType_EDR) ? "edr/<term>" :
                                        (load_state.type == LoaderType_XVG) ? "xvg/<file>/<legend>" : "csv/<file>/<column>";
-                    VIAMD_LOG_SUCCESS("Loaded '" STR_FMT "' into '" STR_FMT "'; read it in the script with attr(\"%s\")", STR_ARG(path_to_file), STR_ARG(run), hint);
+                    VIAMD_LOG_SUCCESS("Loaded '" STR_FMT "' into '" STR_FMT "'; plot it from Dataset > Series, or read it in the script with attr(\"%s\")", STR_ARG(path_to_file), STR_ARG(run), hint);
                 } else {
                     VIAMD_LOG_SUCCESS("Successfully loaded supplemental data from file '" STR_FMT "'", STR_ARG(path_to_file));
                 }
@@ -990,6 +988,10 @@ void load_workspace(ApplicationState* data, str_t filename) {
     data->files.workspace[0]  = '\0';
 
     data->animation = {};
+    plot_clear(data->timeline.subplots, PLOT_MAX_SUBPLOTS);
+    plot_clear(data->distributions.subplots, PLOT_MAX_SUBPLOTS);
+    data->timeline.num_subplots = 1;
+    data->distributions.num_subplots = 1;
 
     md_array(md_atom_pair_t) user_bonds = 0;    
 
@@ -1258,6 +1260,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
                 Selection* sel = create_selection(data, label);
                 md_bitfield_deserialize(&sel->atom_mask, mask_base64.ptr, mask_base64.len);
             }
+        } else if (plot_layout_deserialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), data, data->timeline.subplots, &data->timeline.num_subplots)) {
+        } else if (plot_layout_deserialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), data, data->distributions.subplots, &data->distributions.num_subplots)) {
         } else {
             viamd::event_system_broadcast_event(viamd::EventType_ViamdDeserialize, viamd::EventPayloadType_DeserializationState, &state);
         }
@@ -1413,6 +1417,9 @@ void save_workspace(ApplicationState* app_state, str_t filename) {
     viamd::write_dbl(state, STR_LIT("Frame"), app_state->animation.frame);
     viamd::write_flt(state, STR_LIT("Fps"), app_state->animation.fps);
     viamd::write_int(state, STR_LIT("Interpolation"), (int)app_state->animation.interpolation);
+
+    plot_layout_serialize(state, STR_LIT("Timeline"), STR_LIT("TimelineSeries"), app_state->timeline.subplots, app_state->timeline.num_subplots);
+    plot_layout_serialize(state, STR_LIT("Distributions"), STR_LIT("DistributionSeries"), app_state->distributions.subplots, app_state->distributions.num_subplots);
 
     viamd::write_section_header(state, STR_LIT("RenderSettings"));
     viamd::write_bool(state, STR_LIT("SsaoEnabled"), app_state->visuals.ssao.enabled);
@@ -4960,15 +4967,15 @@ void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flag
 }
 
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx) {
-    // The label is copied. A label too long to fit cannot name a display property (their labels are shorter), so it
-    // is the same as none.
-    char* dst = state->hovered_display_property_label;
-    const size_t cap = sizeof(state->hovered_display_property_label);
+    // The label, a script property's identifier, is copied. One too long to fit is taken as none: the views match
+    // it against identifiers, and a cut one would match the wrong property or nothing.
+    char* dst = state->hovered_property_label;
+    const size_t cap = sizeof(state->hovered_property_label);
     if (label.ptr && label.len < cap) {
         MEMCPY(dst, label.ptr, label.len);
         dst[label.len] = '\0';
     } else {
         dst[0] = '\0';
     }
-    state->hovered_display_property_pop_idx = population_idx;
+    state->hovered_property_pop_idx = population_idx;
 }

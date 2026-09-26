@@ -123,127 +123,6 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 }
 )");
 
-constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
-
-static void free_histogram(DisplayProperty::Histogram* hist) {
-    ASSERT(hist);
-    ASSERT(hist->alloc);
-    md_array_free(hist->bins, hist->alloc);
-    hist->bins = 0;
-}
-
-static void compute_histogram(float* bins, int num_bins, float bin_range_min, float bin_range_max, const float* values, int num_values, float* bin_val_min, float* bin_val_max) {
-    MEMSET(bins, 0, sizeof(float) * num_bins);
-
-    const float range_ext = bin_range_max - bin_range_min;
-    const float inv_range = 1.0f / range_ext;
-    int count = 0;
-    for (int i = 0; i < num_values; ++i) {
-        if (values[i] < bin_range_min || bin_range_max < values[i]) continue;
-        int idx = CLAMP((int)(((values[i] - bin_range_min) * inv_range) * num_bins), 0, num_bins - 1);
-        bins[idx] += 1.0f;
-        count += 1;
-    }
-
-    if (count == 0) {
-        if (bin_val_min) *bin_val_min = 0;
-        if (bin_val_max) *bin_val_max = 0;
-        return;
-    }
-    
-    float min_val = FLT_MAX;
-    float max_val = -FLT_MAX;
-    const float width = range_ext / num_bins;
-    const float scl = 1.0f / (width * count);
-    for (int i = 0; i < num_bins; ++i) {
-        bins[i] *= scl;
-        min_val = MIN(min_val, bins[i]);
-        max_val = MAX(max_val, bins[i]);
-    }
-    
-    if (bin_val_min) *bin_val_min = min_val;
-    if (bin_val_max) *bin_val_max = max_val;
-}
-
-static void compute_histogram_masked(DisplayProperty::Histogram* hist, int num_bins, float value_range_min, float value_range_max, const float* values, int dim, const md_bitfield_t* mask, bool aggregate = false) {
-    ASSERT(hist);
-    ASSERT(values);
-    ASSERT(mask);
-    ASSERT(dim > 0);
-
-    md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
-    defer { md_temp_end(temp); };
-
-    hist->dim = aggregate ? 1 : dim;
-    md_array_resize(hist->bins, (size_t)(hist->dim * num_bins), hist->alloc);
-    MEMSET(hist->bins, 0, md_array_bytes(hist->bins));
-
-    const size_t num_samples = md_bitfield_popcount(mask) * dim;
-    if (num_samples == 0) return;
-
-    const float range_ext = value_range_max - value_range_min;
-    const float inv_range = range_ext > 0.0f ? 1.0f / range_ext : 0.0f;
-
-    int* count = (int*)md_vm_arena_push_zero_array(frame_alloc, int, hist->dim);
-
-    // We evaluate each frame, one at a time
-    md_bitfield_iter_t it = md_bitfield_iter_create(mask);
-    while (md_bitfield_iter_next(&it)) {
-        const int val_idx = dim * (int)md_bitfield_iter_idx(&it);
-        for (int i = 0; i < dim; ++i) {
-            const float val = values[val_idx + i];
-            if (val < value_range_min || value_range_max < val) continue;
-            const int bin_idx = CLAMP((int)(((val - value_range_min) * inv_range) * num_bins), 0, num_bins - 1);
-
-            if (aggregate) {
-                hist->bins[bin_idx] += 1.0f;
-                count[0] += 1;
-            } else {
-                hist->bins[num_bins * i + bin_idx] += 1.0f;
-                count[i] += 1;
-            }
-        }
-    }
-
-    float min_bin =  FLT_MAX;
-    float max_bin = -FLT_MAX;
-    const float width = range_ext / num_bins;
-    for (int i = 0; i < hist->dim; ++i) {
-        const float scl = 1.0f / (width * count[i]);
-        for (int j = 0; j < num_bins; ++j) {
-            float& val = hist->bins[num_bins * i + j];
-            val *= scl;
-            min_bin = MIN(min_bin, val);
-            max_bin = MAX(max_bin, val);
-        }
-    }
-
-    hist->num_bins = num_bins;
-    hist->x_min = value_range_min;
-    hist->x_max = value_range_max;
-    hist->y_min = min_bin;
-    hist->y_max = max_bin;
-}
-
-static void downsample_histogram(float* dst_bins, int num_dst_bins, const float* src_bins, const float* src_weights, int num_src_bins) {
-    ASSERT(dst_bins);
-    ASSERT(src_bins);
-    ASSERT(num_dst_bins <= num_src_bins);
-
-    MEMSET(dst_bins, 0, sizeof(float) * num_dst_bins);
-
-    const int factor = MAX(1, num_src_bins / num_dst_bins);
-    for (int dst_idx = 0; dst_idx < num_dst_bins; ++dst_idx) {
-        double bin = 0.0;
-        double weight = 0.0;
-        for (int i = 0; i < factor; ++i) {
-            int src_idx = dst_idx * factor + i;
-            bin += src_bins[src_idx];
-            weight += src_weights ? src_weights[src_idx] : 1.0;
-        }
-        dst_bins[dst_idx] = (float)(bin / weight);
-    }
-}
 
 static double frame_to_time(double frame, const ApplicationState& data) {
     const int64_t num_frames = md_array_size(data.timeline.x_values);
@@ -293,12 +172,8 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
     return (double)prev_frame_idx + t;
 }
 
-static void init_display_properties(ApplicationState* state);
-static void update_display_properties(ApplicationState* state);
-
 static void update_view_param(ApplicationState* state);
 
-//static void init_display_properties(ApplicationState* state);
 //static void update_density_volume_texture(ApplicationState* state);
 
 static void render(ApplicationState* state);
@@ -357,26 +232,6 @@ static void apply_font_size(void* user_data) {
     ImGuiStyle& style = ImGui::GetStyle();
     style.FontSizeBase = state->settings.font_size;
     style._NextFrameFontSizeBase = style.FontSizeBase;  // From the demo, seems like a temporary fix
-}
-
-// Works out what a property's two axes are shown in, from the units its source gave them. The x
-// axis of a temporal property is timeline.x_values, which already holds converted time, so it takes
-// its label from there and leaves the getter nothing to scale.
-static void display_property_update_units(DisplayProperty* dp, md_unit_t timeline_time_unit) {
-    ASSERT(dp);
-
-    for (int i = 0; i < 2; ++i) {
-        md_unit_t shown_unit;
-        dp->unit_scale[i] = display_units::factor(&shown_unit, dp->unit[i]);
-        md_unit_print(dp->unit_str[i], sizeof(dp->unit_str[i]), shown_unit);
-    }
-
-    if (dp->type == DisplayProperty::Type_Temporal) {
-        dp->unit_scale[0] = 1.0;
-        md_unit_print(dp->unit_str[0], sizeof(dp->unit_str[0]), timeline_time_unit);
-    }
-
-    dp->units_version = display_units::version();
 }
 
 // timeline.x_values and view_range are stored in display units, so a change to the time preference
@@ -601,7 +456,7 @@ int main(int argc, char** argv) {
     state.editor.SetLanguage(script_editor::language());
     state.editor.SetPalette(TextEditor::GetDarkPalette());
     state.editor.SetInsertSpacesOnTabs(true);
-    script_editor::enable_autocomplete(state.editor);
+    script_editor::enable_autocomplete(state.editor, &state.mold.sys);
 
     {
 #ifdef VIAMD_DEFAULT_DATASET
@@ -677,6 +532,7 @@ int main(int argc, char** argv) {
         if (state.representation.show_window) draw_representations_window(&state);
         if (state.distributions.show_window) draw_distribution_window(&state);
         if (state.timeline.show_window) draw_timeline_window(&state);
+        series_cache_gc(&state);
         if (state.selection.query.show_window) draw_selection_query_window(&state);
         if (state.selection.grow.show_window) draw_selection_grow_window(&state);
         if (state.show_property_export_window) draw_property_export_window(&state);
@@ -1030,7 +886,9 @@ int main(int argc, char** argv) {
                         state.script.filt_eval = md_script_eval_create(num_frames, state.script.eval_ir, state.allocator.persistent);
                     }
 
-                    init_display_properties(&state);
+                    // The evaluations' tables were freed and new ones allocated, possibly in the
+                    // same place: nothing derived from the old ones may be taken for the new.
+                    series_cache_free(&state);
 
                     state.script.evaluate_filt = true;
                     state.script.evaluate_full = true;
@@ -1268,7 +1126,6 @@ int main(int argc, char** argv) {
 
         update_md_buffers(&state);
         update_timeline_time_unit(&state);
-        update_display_properties(&state);
 
         render(&state);
 
@@ -1282,6 +1139,7 @@ int main(int argc, char** argv) {
     }
 
     interrupt_async_tasks(&state);
+    series_cache_free(&state);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdShutdown);
 
@@ -1327,329 +1185,6 @@ int main(int argc, char** argv) {
     application::shutdown(&state.app);
 
     return 0;
-}
-
-static void display_property_copy_param_from_old(DisplayProperty& item, const DisplayProperty* old_items, int64_t num_old_items) {
-    // See if we have a matching item in the old list
-    for (int64_t i = 0; i < num_old_items; ++i) {
-        if (strcmp(item.label, old_items[i].label) == 0 && item.type == old_items[i].type) {
-            // Copy relevant parameters from existing item which we want to be persistent
-            item.temporal_subplot_mask      = old_items[i].temporal_subplot_mask;
-            item.distribution_subplot_mask  = old_items[i].distribution_subplot_mask;
-            item.color                      = old_items[i].color;
-            item.temporal_subplot_mask      = old_items[i].temporal_subplot_mask;
-            item.distribution_subplot_mask  = old_items[i].distribution_subplot_mask;
-            item.show_in_volume             = old_items[i].show_in_volume;
-            item.plot_type                  = old_items[i].plot_type;
-            item.colormap_alpha			    = old_items[i].colormap_alpha;
-            item.colormap                   = old_items[i].colormap;
-            item.color_type                 = old_items[i].color_type;
-            item.marker_size                = old_items[i].marker_size;
-            item.marker_type                = old_items[i].marker_type;
-            break;
-        }
-    }
-}
-
-static void init_display_properties(ApplicationState* data) {
-    DisplayProperty* new_items = 0;
-    DisplayProperty* old_items = data->display_properties;
-
-    const md_script_ir_t* ir = data->script.eval_ir;
-
-    const md_script_eval_t* evals[2] = {
-        data->script.full_eval,
-        data->script.filt_eval
-    };
-
-    const str_t eval_labels[2] = {
-        {},
-        STR_INIT("filt"),
-    };
-
-    for (size_t eval_idx = 0; eval_idx < ARRAY_SIZE(evals); ++eval_idx) {
-        const md_script_eval_t* eval = evals[eval_idx];
-        const size_t num_props = md_script_ir_property_count(ir);
-        const str_t* prop_names = md_script_ir_property_names(ir);
-        str_t eval_label = eval_labels[eval_idx];
-
-        const bool partial_evaluation = (eval_idx > 0);
-
-        for (size_t i = 0; i < num_props; ++i) {
-            str_t prop_name = prop_names[i];
-            md_script_property_flags_t prop_flags = md_script_ir_property_flags(ir, prop_name);
-
-            const md_attributes_t* attributes = md_script_eval_attributes(eval);
-            char path[256];
-            auto find_attr = [&](const char* suffix) -> const md_attribute_t* {
-                int len = snprintf(path, sizeof(path), "script/" STR_FMT "%s", STR_ARG(prop_name), suffix);
-                return md_attributes_find(attributes, str_t{path, (size_t)len});
-            };
-
-            const md_attribute_t* attr = find_attr("");
-            if (!attr || !attr->data) {
-                MD_LOG_DEBUG("Failed to find the evaluated property '" STR_FMT "'", STR_ARG(prop_name));
-                continue;
-            }
-            const md_attribute_t* attr_bin = find_attr("/bin");
-
-            DisplayProperty item;
-            if (!str_empty(eval_label)) {
-                snprintf(item.label, sizeof(item.label), STR_FMT " " STR_FMT, STR_ARG(prop_name), STR_ARG(eval_label));
-            } else {
-                snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(prop_name));
-            }
-            item.color = ImGui::ColorConvertU32ToFloat4(PROPERTY_COLORS[i % ARRAY_SIZE(PROPERTY_COLORS)]);
-            // x is the bin axis for a distribution; a temporal x is the timeline and set from it.
-            item.unit[0] = attr_bin ? attr_bin->unit : md_unit_none();
-            item.unit[1] = attr->unit;
-            item.prop_flags = prop_flags;
-            item.attr = attr;
-            item.attr_range  = find_attr("/range");
-            item.attr_weight = find_attr("/weight");
-            item.vis_payload = md_script_ir_property_vis_payload(ir, prop_name);
-            item.eval = eval;
-            item.attr_version = 0;
-            item.population_mask.set();
-            item.temporal_subplot_mask = 0;
-            item.distribution_subplot_mask = 0;
-            item.hist = {};
-            item.hist.alloc = persistent_alloc;
-            item.partial_evaluation = partial_evaluation;
-
-            display_property_update_units(&item, data->timeline.time_unit);
-
-            if (prop_flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                // Create a special distribution from the temporal (since we can)
-                {
-                    DisplayProperty item_dist_raw = item;
-                    item_dist_raw.type = DisplayProperty::Type_Distribution;
-                    item_dist_raw.plot_type = DisplayProperty::PlotType_Line;
-                    // Binning a temporal property puts its VALUES on the x axis.
-                    item_dist_raw.unit[0] = item.unit[1];
-                    item_dist_raw.unit[1] = md_unit_none();
-                    display_property_update_units(&item_dist_raw, data->timeline.time_unit);
-
-                    item_dist_raw.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                        DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
-
-                        int num_bins = data->display_prop->hist.num_bins;
-                        const double x_min = data->display_prop->hist.x_min;
-                        const double x_max = data->display_prop->hist.x_max;
-                        const double x_scl = (x_max - x_min) / (num_bins);
-                        const double x_off = x_min + 0.5 * x_scl;
-                        const double x = x_off + sample_idx * x_scl;
-                        return ImPlotPoint(x, 0);
-                    };
-                    item_dist_raw.getter[1] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                        DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
-
-                        int num_bins = data->display_prop->hist.num_bins;
-                        const double x_min = data->display_prop->hist.x_min;
-                        const double x_max = data->display_prop->hist.x_max;
-                        const double x_scl = (x_max - x_min) / (num_bins);
-                        const double x_off = x_min + 0.5 * x_scl;
-                        const double x = x_off + sample_idx * x_scl;
-                        const double y = data->display_prop->hist.bins[data->dim_idx * num_bins + sample_idx];
-                        return ImPlotPoint(x, y);
-                    };
-                    display_property_copy_param_from_old(item_dist_raw, old_items, md_array_size(old_items));
-                    md_array_push(new_items, item_dist_raw, frame_alloc);
-
-                    const int population = (int)attr->format.shape[1];
-                    if (population > 1) {
-                        DisplayProperty item_dist_agg = item_dist_raw;
-                        item_dist_agg.type = DisplayProperty::Type_Distribution;
-                        snprintf(item_dist_agg.label, sizeof(item_dist_agg.label), "%s (agg)", item.label);
-                        item_dist_agg.aggregate_histogram = true;
-                        display_property_copy_param_from_old(item_dist_agg, old_items, md_array_size(old_items));
-                        md_array_push(new_items, item_dist_agg, frame_alloc);
-                    }
-                }
-
-                // Now do all of the real temporal ones
-                if (!partial_evaluation) {
-                    item.num_samples = (int)md_array_size(data->timeline.x_values);
-                    item.x_values = data->timeline.x_values;
-                    item.y_values = (const float*)attr->data;
-
-                    DisplayProperty item_raw = item;
-                    item_raw.dim        = (int)attr->format.shape[1];
-                    item_raw.plot_type  = DisplayProperty::PlotType_Line;
-                    item_raw.getter[0]  = [](int sample_idx, void* payload) -> ImPlotPoint {
-                        DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
-                        int dim_idx = data->dim_idx;
-                        int dim = data->display_prop->dim;
-                        const float* y_values = data->display_prop->y_values;
-                        const float* x_values = data->display_prop->x_values;
-                        return ImPlotPoint(x_values[sample_idx], y_values[sample_idx * dim + dim_idx] * data->display_prop->unit_scale[1]);
-                    };
-                    display_property_copy_param_from_old(item_raw, old_items, md_array_size(old_items));
-                    md_array_push(new_items, item_raw, frame_alloc);
-
-                    const md_attribute_t* attr_mean = find_attr("/mean");
-                    const md_attribute_t* attr_var  = find_attr("/variance");
-                    const md_attribute_t* attr_ext  = find_attr("/extent");
-                    if (attr_mean && attr_var && attr_ext) {
-                        // Create 'pseudo' display properties which maps to the per frame summary over the population
-                        DisplayProperty item_mean = item;
-                        snprintf(item_mean.label, sizeof(item_mean.label), "%s (mean)", item.label);
-                        item_mean.dim = 1;
-                        item_mean.y_values = (const float*)attr_mean->data;
-                        item_mean.plot_type = DisplayProperty::PlotType_Line;
-                        item_mean.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
-                            return ImPlotPoint(dp->x_values[sample_idx], dp->y_values[sample_idx] * dp->unit_scale[1]);
-                        };
-                        item_mean.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
-                            const DisplayProperty* dp = payload->display_prop;
-                            return snprintf(buf, cap, "%.2f", dp->y_values[sample_idx] * dp->unit_scale[1]);
-                        };
-                        display_property_copy_param_from_old(item_mean, old_items, md_array_size(old_items));
-                        md_array_push(new_items, item_mean, frame_alloc);
-
-                        DisplayProperty item_var = item;
-                        snprintf(item_var.label, sizeof(item_var.label), "%s (var)", item.label);
-                        item_var.dim = 1;
-                        item_var.y_values = (const float*)attr_var->data;
-                        item_var.y_center = (const float*)attr_mean->data;
-                        item_var.color.w *= 0.4f;
-                        item_var.plot_type = DisplayProperty::PlotType_Area;
-                        item_var.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
-                            return ImPlotPoint(dp->x_values[sample_idx], (dp->y_center[sample_idx] - dp->y_values[sample_idx]) * dp->unit_scale[1]);
-                        };
-                        item_var.getter[1] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
-                            return ImPlotPoint(dp->x_values[sample_idx], (dp->y_center[sample_idx] + dp->y_values[sample_idx]) * dp->unit_scale[1]);
-                        };
-                        item_var.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
-                            const DisplayProperty* dp = payload->display_prop;
-                            return snprintf(buf, cap, "%.2f", dp->y_values[sample_idx] * dp->unit_scale[1]);
-                        };
-                        display_property_copy_param_from_old(item_var, old_items, md_array_size(old_items));
-                        md_array_push(new_items, item_var, frame_alloc);
-
-                        // Two components per frame: (min, max)
-                        DisplayProperty item_ext = item;
-                        snprintf(item_ext.label, sizeof(item_ext.label), "%s (min/max)", item.label);
-                        item_ext.dim = 2;
-                        item_ext.y_values = (const float*)attr_ext->data;
-                        item_ext.color.w *= 0.2f;
-                        item_ext.plot_type = DisplayProperty::PlotType_Area;
-                        item_ext.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
-                            return ImPlotPoint(dp->x_values[sample_idx], dp->y_values[sample_idx * 2 + 0] * dp->unit_scale[1]);
-                        };
-                        item_ext.getter[1] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                            const DisplayProperty* dp = ((DisplayProperty::Payload*)payload)->display_prop;
-                            return ImPlotPoint(dp->x_values[sample_idx], dp->y_values[sample_idx * 2 + 1] * dp->unit_scale[1]);
-                        };
-                        item_ext.print_value = [](char* buf, size_t cap, int sample_idx, DisplayProperty::Payload* payload) -> int {
-                            const DisplayProperty* dp = payload->display_prop;
-                            return snprintf(buf, cap, "%.2f, %.2f", dp->y_values[sample_idx * 2 + 0] * dp->unit_scale[1], dp->y_values[sample_idx * 2 + 1] * dp->unit_scale[1]);
-                        };
-                        display_property_copy_param_from_old(item_ext, old_items, md_array_size(old_items));
-                        md_array_push(new_items, item_ext, frame_alloc);
-                    }
-                }
-            } else if (prop_flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-                DisplayProperty item_dist = item;
-                item_dist.type = DisplayProperty::Type_Distribution;
-                item_dist.plot_type = DisplayProperty::PlotType_Line;
-                // Copied from 'item' while that was still temporal, so the x axis has to be redone
-                // now that it is the property's own x and not the timeline's.
-                display_property_update_units(&item_dist, data->timeline.time_unit);
-                item_dist.getter[0] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                    DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
-
-                    int num_bins = data->display_prop->hist.num_bins;
-                    const double x_min = data->display_prop->hist.x_min;
-                    const double x_max = data->display_prop->hist.x_max;
-                    const double x_scl = (x_max - x_min) / (num_bins);
-                    const double x_off = x_min + 0.5 * x_scl;
-                    const double x = x_off + sample_idx * x_scl;
-                    return ImPlotPoint(x, 0);
-                    };
-                item_dist.getter[1] = [](int sample_idx, void* payload) -> ImPlotPoint {
-                    DisplayProperty::Payload* data = (DisplayProperty::Payload*)payload;
-
-                    int num_bins = data->display_prop->hist.num_bins;
-                    const double x_min = data->display_prop->hist.x_min;
-                    const double x_max = data->display_prop->hist.x_max;
-                    const double x_scl = (x_max - x_min) / (num_bins);
-                    const double x_off = x_min + 0.5 * x_scl;
-                    const double x = x_off + sample_idx * x_scl;
-                    const double y = data->display_prop->hist.bins[data->dim_idx * num_bins + sample_idx];
-                    return ImPlotPoint(x, y);
-                    };
-                display_property_copy_param_from_old(item_dist, old_items, md_array_size(old_items));
-                md_array_push(new_items, item_dist, frame_alloc);
-            } else if (prop_flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
-                item.type = DisplayProperty::Type_Volume;
-                item.show_in_volume = false;
-                display_property_copy_param_from_old(item, old_items, md_array_size(old_items));
-                md_array_push(new_items, item, frame_alloc);
-            }
-        }
-    }
-
-    for (size_t i = 0; i < md_array_size(old_items); ++i) {
-        free_histogram(&old_items[i].hist);
-    }
-
-    md_array_resize(data->display_properties, md_array_size(new_items), persistent_alloc);
-    MEMCPY(data->display_properties, new_items, md_array_size(new_items) * sizeof(DisplayProperty));
-}
-
-static void update_display_properties(ApplicationState* data) {
-    ASSERT(data);
-
-    for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
-        DisplayProperty& dp = data->display_properties[i];
-
-        if (dp.units_version != display_units::version()) {
-            display_property_update_units(&dp, data->timeline.time_unit);
-            // The histogram's x axis is the value axis, so its bin edges are stale too.
-            dp.attr_version = 0;
-        }
-
-        if (dp.type == DisplayProperty::Type_Distribution) {
-            const uint64_t version = md_attributes_version(md_script_eval_attributes(dp.eval), dp.attr->id);
-            if (dp.attr_version != version || dp.num_bins != dp.hist.num_bins) {
-                dp.attr_version = version;
-
-                // The domain the property is binned over: the range of the values for a temporal
-                // property, the range of the bin axis for a distribution.
-                float range[2] = {0, 0};
-                if (dp.attr_range) {
-                    md_attribute_extract_f32(range, 2, dp.attr_range, md_unit_none());
-                }
-
-                DisplayProperty::Histogram& hist = dp.hist;
-                const float* values = (const float*)dp.attr->data;
-                if (dp.prop_flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-                    const int population = (int)dp.attr->format.shape[1];
-                    compute_histogram_masked(&hist, dp.num_bins, range[0], range[1], values, population, md_script_eval_frame_mask(dp.eval), dp.aggregate_histogram);
-                }
-                else if (dp.prop_flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-                    const float* weights = dp.attr_weight ? (const float*)dp.attr_weight->data : NULL;
-                    md_array_resize(hist.bins, (size_t)dp.num_bins, hist.alloc);
-                    hist.num_bins = dp.num_bins;
-                    hist.x_min = range[0];
-                    hist.x_max = range[1];
-                    hist.dim = 1;
-                    downsample_histogram(hist.bins, hist.num_bins, values, weights, (int)dp.attr->format.shape[0]);
-                }
-
-                // Binned in the property's own unit, shown in the user's, so the bin edges move
-                // and the curve keeps its shape. The bins themselves are left alone: the y axis of
-                // a distribution here is relative, not a density anyone reads a number off.
-                dp.hist.x_min *= dp.unit_scale[0];
-                dp.hist.x_max *= dp.unit_scale[0];
-            }
-        }
-    }
 }
 
 // #misc
@@ -4358,11 +3893,6 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
     return true;
 }
 
-struct DisplayPropertyDragDropPayload {
-    int prop_idx = 0;
-    int src_plot_idx = -1;
-};
-
 static double distance_to_linesegment(ImPlotPoint p0, ImPlotPoint p1, ImPlotPoint p) {
     double vx = p1.x - p0.x;
     double vy = p1.y - p0.y;
@@ -4396,13 +3926,219 @@ static double distance_to_linesegment(ImPlotPoint p0, ImPlotPoint p1, ImPlotPoin
     }
 }
 
+// #plots
+//
+// The Timelines and Distributions windows. Both draw series named by attribute path (see
+// plot_series.h) into subplots that own them, and share the lists, the drag and drop and the
+// styling of a legend entry.
+
+// The colour of population member k of an entry drawn with a population of population_size
+static ImVec4 plot_series_member_color(const PlotSeries& s, int k, int population_size) {
+    ImVec4 color = s.color;
+    if (s.use_colormap && population_size > 1) {
+        if (ImPlot::ColormapQualitative(s.colormap)) {
+            color = ImPlot::GetColormapColor(k, s.colormap);
+        } else {
+            color = ImPlot::SampleColormap((float)k / (float)(population_size - 1), s.colormap);
+        }
+        color.w *= s.colormap_alpha;
+    }
+    return color;
+}
+
+static ImVec4 plot_highlight(ImVec4 color) {
+    const float scl = 1.5f;
+    return ImVec4(ImSaturate(color.x * scl), ImSaturate(color.y * scl), ImSaturate(color.z * scl), color.w);
+}
+
+// The part of a legend entry's popup both windows share: colour or colormap, and which members of
+// a population are drawn. A member hovered in the popup is written to hovered_pop_idx.
+static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int dim, const char* script_ident, const md_script_vis_payload_o* vis_payload, int* hovered_pop_idx) {
+    if (dim > 1) {
+        const char* color_type_labels[] = {"Solid", "Colormap"};
+        int color_type = s.use_colormap ? 1 : 0;
+        if (ImGui::Combo("Color Type", &color_type, color_type_labels, IM_ARRAYSIZE(color_type_labels))) {
+            s.use_colormap = color_type == 1;
+        }
+    }
+    if (s.use_colormap && dim > 1) {
+        ImPlot::ColormapSelection("##Colormap", &s.colormap);
+        ImGui::SliderFloat("Alpha", &s.colormap_alpha, 0.0f, 1.0f);
+    } else {
+        ImGui::ColorEdit4("Color", &s.color.x);
+    }
+
+    if (dim > 1) {
+        ImGui::Separator();
+        if (ImGui::Button("Set All")) {
+            s.population_mask.set();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear All")) {
+            s.population_mask.reset();
+        }
+
+        const float sz = ImGui::GetFontSize() * 1.5f;
+        ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
+        for (int k = 0; k < MIN(dim, PLOT_MAX_POPULATION); ++k) {
+            char lbl[32];
+            snprintf(lbl, sizeof(lbl), "%d", k+1);
+            if (ImGui::Selectable(lbl, s.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
+                s.population_mask.flip(k);
+            }
+            if (ImGui::IsItemHovered()) {
+                if (script_ident[0] != '\0') {
+                    script_visualize_payload(data, vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                    script_set_hovered_property(data, str_from_cstr(script_ident), k);
+                }
+                *hovered_pop_idx = k;
+            }
+            if (!k || ((k+1) % 10)) {
+                ImGui::SameLine();
+            }
+        }
+        ImGui::PopStyleVar();
+    }
+}
+
+// One entry in a list of series: a click toggles it in the first subplot, a drag puts it in any
+static void plot_series_list_item(ApplicationState* data, const char* dnd_type, PlotSubplot& first, const SeriesKey& key) {
+    char label[96];
+    series_label(label, sizeof(label), data, key);
+    const ImVec4 color = series_default_color(data, key);
+    const int idx = plot_find_series(first, key);
+
+    ImGui::PushID(key.path);
+    ImGui::PushID((int)key.variant * SeriesSource_Count + (int)key.source);
+    ImPlot::ItemIcon(color);
+    ImGui::SameLine();
+    if (ImGui::Selectable(label, idx != -1, ImGuiSelectableFlags_DontClosePopups)) {
+        if (idx != -1) {
+            plot_remove_series(first, idx);
+        } else {
+            plot_add_series(data, first, key);
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        const str_t ident = series_script_ident(key);
+        if (!str_empty(ident)) {
+            const md_script_vis_payload_o* vis = data->script.eval_ir ? md_script_ir_property_vis_payload(data->script.eval_ir, ident) : nullptr;
+            script_visualize_payload(data, vis, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+            script_set_hovered_property(data, ident);
+        } else {
+            ImGui::SetTooltip("%s\nClick to show in the first subplot, drag into any", key.path);
+        }
+    }
+    if (ImGui::BeginDragDropSource()) {
+        series_set_drag_payload(dnd_type, key, -1, label, color);
+        ImGui::EndDragDropSource();
+    }
+    ImGui::PopID();
+    ImGui::PopID();
+}
+
+// The series loaded along the run, one submenu per file
+static void plot_system_series_menu(ApplicationState* data, const char* dnd_type, PlotSubplot& first) {
+    str_t groups[64];
+    const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data), ARRAY_SIZE(groups));
+    size_t num_listed = 0;
+    for (size_t g = 0; g < num_groups; ++g) {
+        md_temp_scope_t temp = md_temp_begin();
+        const size_t num = system_series_members(nullptr, 0, data, groups[g]);
+        str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
+        system_series_members(paths, num, data, groups[g]);
+        if (num > 0) {
+            char group_label[256];
+            system_series_group_label(group_label, sizeof(group_label), data, groups[g]);
+            if (ImGui::BeginMenu(group_label)) {
+                for (size_t i = 0; i < num; ++i) {
+                    plot_series_list_item(data, dnd_type, first, series_key(SeriesSource_System, paths[i]));
+                }
+                ImGui::EndMenu();
+            }
+            num_listed += 1;
+        }
+        md_temp_end(temp);
+    }
+    if (num_listed == 0) {
+        ImGui::TextDisabled("Nothing loaded, open an energy file (.edr), .xvg or .csv with the trajectory");
+    }
+}
+
+// The members of a script property's population, if it has one: the extent of its value axis
+static size_t script_property_population(const ApplicationState* data, const SeriesKey& key) {
+    const md_attributes_t* table = series_table(data, key.source);
+    const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
+    if (!attr || attr->format.rank < 1 || attr->format.shape[0] == 0) return 0;
+    return md_attribute_element_count(&attr->format) / attr->format.shape[0];
+}
+
 // #timeline
+
+// What a getter is handed: the resolved series, and which member of its population
+struct TemporalGetterPayload {
+    const SeriesTemporalView* view;
+    int k;
+};
+
+static ImPlotPoint temporal_getter_line(int i, void* payload) {
+    const TemporalGetterPayload* p = (const TemporalGetterPayload*)payload;
+    return series_temporal_point(*p->view, i, p->k);
+}
+
+static ImPlotPoint temporal_getter_band_lo(int i, void* payload) {
+    const TemporalGetterPayload* p = (const TemporalGetterPayload*)payload;
+    double lo, hi;
+    series_temporal_band(*p->view, i, &lo, &hi);
+    return ImPlotPoint(p->view->x[i], lo);
+}
+
+static ImPlotPoint temporal_getter_band_hi(int i, void* payload) {
+    const TemporalGetterPayload* p = (const TemporalGetterPayload*)payload;
+    double lo, hi;
+    series_temporal_band(*p->view, i, &lo, &hi);
+    return ImPlotPoint(p->view->x[i], hi);
+}
+
+static void draw_timeline_properties_menu(ApplicationState* data) {
+    PlotSubplot& first = data->timeline.subplots[0];
+
+    ImGui::SeparatorText("Script");
+    int num_listed = 0;
+    series_for_each_script_property(data, SeriesSource_Script, MD_SCRIPT_PROPERTY_FLAG_TEMPORAL, [&](const SeriesKey& key) {
+        plot_series_list_item(data, TIMELINE_SERIES_DND, first, key);
+        num_listed += 1;
+
+        // A property with a population also has its summary over it
+        char mean_path[SERIES_PATH_CAP + 8];
+        const int len = snprintf(mean_path, sizeof(mean_path), "%s/mean", key.path);
+        const md_attributes_t* table = series_table(data, key.source);
+        if (table && len > 0 && md_attributes_find(table, str_t{mean_path, (size_t)len})) {
+            ImGui::Indent();
+            const SeriesVariant variants[] = { SeriesVariant_Mean, SeriesVariant_Sigma, SeriesVariant_Extent };
+            for (SeriesVariant v : variants) {
+                SeriesKey summary = key;
+                summary.variant = v;
+                plot_series_list_item(data, TIMELINE_SERIES_DND, first, summary);
+            }
+            ImGui::Unindent();
+        }
+    });
+    if (num_listed == 0) {
+        ImGui::TextDisabled("No temporal properties, define and evaluate them in the script editor");
+    }
+
+    ImGui::SeparatorText("Loaded along the run");
+    plot_system_series_menu(data, TIMELINE_SERIES_DND, first);
+}
+
 static void draw_timeline_window(ApplicationState* data) {
     ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(600, 300), ImGuiCond_FirstUseEver);
 
     if (ImGui::Begin("Timelines", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
-        static int num_subplots = 1;
+        int& num_subplots = data->timeline.num_subplots;
+        num_subplots = CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
 
         double pre_filter_min = data->timeline.filter.beg_frame;
         double pre_filter_max = data->timeline.filter.end_frame;
@@ -4415,46 +4151,9 @@ static void draw_timeline_window(ApplicationState* data) {
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 2));
         defer { ImPlot::PopStyleVar(); };
 
-        // Filter out temporal display properties
-        int num_temp_props = 0;
-        for (size_t i = 0; i < md_array_size(data->display_properties); ++i) {
-            if (data->display_properties[i].type == DisplayProperty::Type_Temporal) {
-                num_temp_props += 1;
-            }
-        }
-
-        const int num_props = (int)md_array_size(data->display_properties);
-
-        if (ImGui::BeginMenuBar()) {            
+        if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Properties")) {
-                if (num_temp_props) {
-                    for (int i = 0; i < num_props; ++i) {
-                        DisplayProperty& dp = data->display_properties[i];
-                        if (dp.type != DisplayProperty::Type_Temporal) continue;
-
-                        ImPlot::ItemIcon(dp.color);
-                        ImGui::SameLine();
-                        ImGui::Selectable(dp.label);
-
-                        if (ImGui::IsItemHovered()) {
-                            if ((dp.dim > DISPLAY_PROPERTY_MAX_POPULATION_SIZE)) {
-                                ImGui::SetTooltip("The property has a large population, only the first %i items will be shown", DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
-                            }
-                            script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            script_set_hovered_property(data, str_from_cstr(dp.label));
-                        }
-
-                        if (ImGui::BeginDragDropSource()) {
-                            DisplayPropertyDragDropPayload payload = {i};
-                            ImGui::SetDragDropPayload("TEMPORAL_DND", &payload, sizeof(payload));
-                            ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                            ImGui::TextUnformatted(dp.label);
-                            ImGui::EndDragDropSource();
-                        }
-                    }
-                } else {
-                    ImGui::Text("No temporal properties available, define and evaluate properties in the script editor");
-                }
+                draw_timeline_properties_menu(data);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Filter")) {
@@ -4470,9 +4169,12 @@ static void draw_timeline_window(ApplicationState* data) {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Subplots")) {
-                ImGui::SliderInt("Num Subplots", &num_subplots, 1, DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS);
+                ImGui::SliderInt("Num Subplots", &num_subplots, 1, PLOT_MAX_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {
-                    num_subplots = CLAMP(num_subplots + 1, 1, DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS);
+                    num_subplots = CLAMP(num_subplots + 1, 1, PLOT_MAX_SUBPLOTS);
+                }
+                if (ImGui::Button("Clear All")) {
+                    plot_clear(data->timeline.subplots, PLOT_MAX_SUBPLOTS);
                 }
                 ImGui::EndMenu();
             }
@@ -4521,6 +4223,17 @@ static void draw_timeline_window(ApplicationState* data) {
             }
 
             for (int i = 0; i < num_subplots; ++i) {
+                PlotSubplot& sp = data->timeline.subplots[i];
+
+                // Every entry is resolved once per plot, and everything below reads the views
+                SeriesTemporalView views[PLOT_MAX_SERIES_PER_SUBPLOT];
+                bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                for (int j = 0; j < sp.count; ++j) {
+                    resolved[j] = series_resolve_temporal(&views[j], data, sp.series[j].key);
+                }
+
+                int remove_idx = -1;
+
                 if (ImPlot::BeginPlot("", ImVec2(), plot_flags)) {
                     ImPlot::SetupAxisLinks(ImAxis_X1, &data->timeline.view_range.beg_x, &data->timeline.view_range.end_x);
                     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_x_value, max_x_value);
@@ -4531,19 +4244,15 @@ static void draw_timeline_window(ApplicationState* data) {
                         axis_flags_x |= ImPlotAxisFlags_NoTickLabels;
                     }
 
-                    // Check and see if every property within the current subplot share the same unit, if so, use it as
-                    // y_label. It is what they are SHOWN in that has to agree, which is what unit_str holds.
+                    // When every series in the subplot is shown in the same unit, that unit labels the y axis
                     char y_unit_str[32] = "";
-                    for (int j = 0; j < num_props; ++j) {
-                        DisplayProperty& prop = data->display_properties[j];
-                        if (prop.temporal_subplot_mask & (1 << i)) {
-                            if (y_unit_str[0] == '\0') {
-                                str_copy_to_char_buf(y_unit_str, sizeof(y_unit_str), str_from_cstr(prop.unit_str[1]));
-                            } else if (strcmp(y_unit_str, prop.unit_str[1]) != 0) {
-                                // unit conflict, drop it
-                                y_unit_str[0] = '\0';
-                                break;
-                            }
+                    for (int j = 0; j < sp.count; ++j) {
+                        if (!resolved[j]) continue;
+                        if (y_unit_str[0] == '\0') {
+                            str_copy_to_char_buf(y_unit_str, sizeof(y_unit_str), str_from_cstr(views[j].unit_str));
+                        } else if (strcmp(y_unit_str, views[j].unit_str) != 0) {
+                            y_unit_str[0] = '\0';
+                            break;
                         }
                     }
 
@@ -4566,13 +4275,13 @@ static void draw_timeline_window(ApplicationState* data) {
                         if (disabled) ImGui::PopDisabled();
                     }
 
-                    // Find the and set the index of hovered lines within the plot
-                    int  hovered_prop_idx = -1;
-                    int  hovered_pop_idx  = -1; // Population index (in the case that the property has a population of values (dim > 1))
-                    char hovered_label[64] = "";
-                    
+                    // The entry, and the member of its population, under the mouse
+                    int  hovered_idx      = -1;
+                    int  hovered_pop_idx  = -1;
+                    char hovered_label[128] = "";
+
                     bool print_timeline_tooltip = false;
-                   
+
                     if (ImPlot::IsPlotHovered()) {
                         md_bitfield_clear(&data->selection.highlight_mask);
                         script_set_hovered_property(data,  STR_LIT(""));
@@ -4580,150 +4289,114 @@ static void draw_timeline_window(ApplicationState* data) {
                         print_timeline_tooltip = true;
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
                         const ImVec2 mouse_coord = ImPlot::PlotToPixels(mouse_pos);
-                        const double frame = time_to_frame(mouse_pos.x, data->timeline.x_values);
-                        const int fn  = CLAMP((int)(frame + 0.5), 0, num_x_values - 1); // Nearest index
-                        const int f[4] = {
-                            CLAMP((int)frame - 1,   0, num_x_values - 1),
-                            CLAMP((int)frame,       0, num_x_values - 1),
-                            CLAMP((int)frame + 1,   0, num_x_values - 1),
-                            CLAMP((int)frame + 2,   0, num_x_values - 1),
-                        };
                         const float max_rad = 20; // 20 pixels
-                        const float area_dist = max_rad * 0.2;
+                        const float area_dist = max_rad * 0.2f;
 
                         float min_dist = max_rad;
-                    
-                        for (int j = 0; j < num_props; ++j) {
-                            DisplayProperty& prop = data->display_properties[j];
-                            
-                            ImPlotItem* item = ImPlot::GetItem(prop.label);
+
+                        for (int j = 0; j < sp.count; ++j) {
+                            if (!resolved[j]) continue;
+                            const PlotSeries& s = sp.series[j];
+                            const SeriesTemporalView& v = views[j];
+
+                            ImPlotItem* item = ImPlot::GetItem(v.plot_id);
                             if (!item || !item->Show) {
                                 continue;
                             }
 
-                            DisplayProperty::Payload payload = {
-                                .display_prop = &prop,
+                            // Each series has an axis of its own, so the samples around the mouse are its own
+                            const int n = v.num_samples;
+                            const double fi = series_temporal_index_at(v, mouse_pos.x);
+                            const int fn = CLAMP((int)(fi + 0.5), 0, n - 1);  // Nearest index
+                            const int f[4] = {
+                                CLAMP((int)fi - 1, 0, n - 1),
+                                CLAMP((int)fi,     0, n - 1),
+                                CLAMP((int)fi + 1, 0, n - 1),
+                                CLAMP((int)fi + 2, 0, n - 1),
                             };
-                            
-                            if (prop.temporal_subplot_mask & (1 << i)) {
-                                const int dim = CLAMP(1, prop.dim, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
-                                for (int k = 0; k < dim; ++k) {
-                                    if (dim > 1 && !(prop.population_mask.test(k))) {
-                                        continue;
-                                    }
-                                    payload.dim_idx = k;
-                                    double d = DBL_MAX;
 
-                                    switch (prop.plot_type) {
-                                    case DisplayProperty::PlotType_Line:
-                                    {
-                                        // Compute distance to line segments, prev, cur and next
-                                        // It is not sufficient to only check the distance to the current line segment
-                                        ImVec2 p[4] = {
-                                            ImPlot::PlotToPixels(prop.getter[0](f[0], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](f[1], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](f[2], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](f[3], &payload)),
+                            const int dim = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+                            for (int k = 0; k < dim; ++k) {
+                                if (dim > 1 && !s.population_mask.test(k)) {
+                                    continue;
+                                }
+                                TemporalGetterPayload payload = { &v, k };
+                                double d = DBL_MAX;
+
+                                if (v.band) {
+                                    const ImVec2 p_min[4] = {
+                                        ImPlot::PlotToPixels(temporal_getter_band_lo(f[0], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_band_lo(f[1], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_band_lo(f[2], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_band_lo(f[3], &payload)),
+                                    };
+                                    const ImVec2 p_max[4] = {
+                                        ImPlot::PlotToPixels(temporal_getter_band_hi(f[0], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_band_hi(f[1], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_band_hi(f[2], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_band_hi(f[3], &payload)),
+                                    };
+                                    // Each segment forms a trapezoid with its left and right sides parallel to the y axis:
+                                    // clamp the mouse to it and measure the distance to the clamped point
+                                    for (int l = 0; l < 2; ++l) {
+                                        const float x_min = MIN(p_min[l].x, p_min[l+1].x);
+                                        const float x_max = MAX(p_min[l].x, p_min[l+1].x);
+                                        const float t = (x_max > x_min) ? CLAMP((mouse_coord.x - x_min) / (x_max - x_min), 0.0f, 1.0f) : 0.0f;
+                                        const float y[2] = {
+                                            lerp(p_min[l].y, p_min[l+1].y, t),
+                                            lerp(p_max[l].y, p_max[l+1].y, t)
                                         };
-                                        d = distance_to_linesegment(p[0], p[1], mouse_coord);
-                                        d = MIN(distance_to_linesegment(p[1], p[2], mouse_coord), d);
-                                        d = MIN(distance_to_linesegment(p[2], p[3], mouse_coord), d);
-                                                
-                                        break;
-                                    }
-                                    case DisplayProperty::PlotType_Area:
-                                    {
-                                        const ImVec2 p_min[4] = {
-                                            ImPlot::PlotToPixels(prop.getter[0](f[0], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](f[1], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](f[2], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](f[3], &payload)),
+                                        const ImVec2 p = {
+                                            CLAMP(mouse_coord.x, x_min, x_max),
+                                            CLAMP(mouse_coord.y, MIN(y[0], y[1]), MAX(y[0], y[1]))
                                         };
-                                        const ImVec2 p_max[4] = {
-                                            ImPlot::PlotToPixels(prop.getter[1](f[0], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](f[1], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](f[2], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](f[3], &payload)),
-                                        };
-                                        // Check if within area
-                                        for (int l = 0; l < 2; ++l) {
-                                            // Each segment forms a trapetzoid with left and right half parallel to the y axis
-                                            // We want to clamp the mouse coordinate to the trapetzoid and compute the distance to the clamped point
-                        
-                                            const float x_min = MIN(p_min[l].x, p_min[l+1].x);
-                                            const float x_max = MAX(p_min[l].x, p_min[l+1].x);
-
-                                            // Bilinarly interpolate the y min/max
-                                            const float t = CLAMP((mouse_coord.x - x_min) / (x_max - x_min), 0.0f, 1.0f);
-                                            const float y[2] = {
-                                                lerp(p_min[l].y, p_min[l+1].y, t),
-                                                lerp(p_max[l].y, p_max[l+1].y, t)
-                                            };
-                                            const float y_min = MIN(y[0], y[1]);
-                                            const float y_max = MAX(y[0], y[1]);
-
-                                            ImVec2 p = {
-                                                CLAMP(mouse_coord.x, x_min, x_max),
-                                                CLAMP(mouse_coord.y, y_min, y_max)
-                                            };
-
-                                            d = MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
-                                        }
-                                        d += area_dist;
-                                        break;
+                                        d = MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
                                     }
-                                    case DisplayProperty::PlotType_Scatter:
-                                    {
-                                        ImVec2 p = ImPlot::PlotToPixels(prop.getter[0](fn, &payload));
-                                        d = sqrt(ImLengthSqr(mouse_coord - p));
-                                        break;
-                                    }
-                                    default:
-                                        // Should not end up here
-                                        ASSERT(false);
-                                        break;
-                                    }
+                                    d += area_dist;
+                                } else if (s.plot_type == PlotType_Scatter) {
+                                    ImVec2 p = ImPlot::PlotToPixels(temporal_getter_line(fn, &payload));
+                                    d = sqrt(ImLengthSqr(mouse_coord - p));
+                                } else {
+                                    // Distance to the segments before, at and after the mouse:
+                                    // the current one alone is not enough near a vertex
+                                    ImVec2 p[4] = {
+                                        ImPlot::PlotToPixels(temporal_getter_line(f[0], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_line(f[1], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_line(f[2], &payload)),
+                                        ImPlot::PlotToPixels(temporal_getter_line(f[3], &payload)),
+                                    };
+                                    d = distance_to_linesegment(p[0], p[1], mouse_coord);
+                                    d = MIN(distance_to_linesegment(p[1], p[2], mouse_coord), d);
+                                    d = MIN(distance_to_linesegment(p[2], p[3], mouse_coord), d);
+                                }
 
-                                    if (d < min_dist) {
-                                        min_dist = d;
-                                        char value_buf[64] = "";
-                                        if (prop.print_value) {
-                                            prop.print_value(value_buf, sizeof(value_buf), fn, &payload);
-                                        } else {
-                                            ImPlotPoint p = prop.getter[0](fn, &payload);
-                                            snprintf(value_buf, sizeof(value_buf), "%.2f", p.y);
-                                        }
+                                if (d < min_dist) {
+                                    min_dist = (float)d;
+                                    char value_buf[64] = "";
+                                    series_temporal_print_value(value_buf, sizeof(value_buf), v, fn, k);
 
-                                        hovered_prop_idx = j;
-                                        hovered_pop_idx = k;
-                                        if (prop.dim > 1) {
-                                            snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %s", prop.label, k + 1, value_buf);
-                                        } else {
-                                            snprintf(hovered_label, sizeof(hovered_label), "%s: %s", prop.label, value_buf);
-                                        }
+                                    hovered_idx = j;
+                                    hovered_pop_idx = k;
+                                    if (v.dim > 1) {
+                                        snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %s %s", v.label, k + 1, value_buf, v.unit_str);
+                                    } else {
+                                        snprintf(hovered_label, sizeof(hovered_label), "%s: %s %s", v.label, value_buf, v.unit_str);
                                     }
                                 }
                             }
                         }
 
-                        if (hovered_prop_idx != -1) {
-                            script_set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
+                        if (hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
+                            script_set_hovered_property(data, str_from_cstr(views[hovered_idx].script_ident), hovered_pop_idx);
                         }
-
-                        if (int len = (int)strnlen(hovered_label, sizeof(hovered_label))) {
-                            // Concat the hovered_label with the y-unit
-                            snprintf(hovered_label + len, (int)sizeof(hovered_label) - len, " %s", y_label);
-                        }
-                    } else {
-                        if (data->hovered_display_property_label[0] != '\0') {
-                            for (int j = 0; j < num_props; ++j) {
-                                DisplayProperty& dp = data->display_properties[j];
-                                if (dp.type != DisplayProperty::Type_Temporal) continue;
-                                if (strcmp(data->hovered_display_property_label, dp.label) == 0) {
-                                    hovered_prop_idx = j;
-                                    hovered_pop_idx = data->hovered_display_property_pop_idx;
-                                    break;
-                                }
+                    } else if (data->hovered_property_label[0] != '\0') {
+                        // Hovered in another view of it (the other plot window, a list): light up its values here
+                        for (int j = 0; j < sp.count; ++j) {
+                            if (!resolved[j] || sp.series[j].key.variant != SeriesVariant_Values) continue;
+                            if (strcmp(data->hovered_property_label, views[j].script_ident) == 0) {
+                                hovered_idx = j;
+                                hovered_pop_idx = data->hovered_property_pop_idx;
+                                break;
                             }
                         }
                     }
@@ -4741,205 +4414,108 @@ static void draw_timeline_window(ApplicationState* data) {
                             is_selecting = true;
                         }
                     }
-                    
-                    for (int j = 0; j < num_props; ++j) {
-                        DisplayProperty& dp = data->display_properties[j];
-                        if ((dp.type != DisplayProperty::Type_Temporal)) continue;
-                        if (!(dp.temporal_subplot_mask & (1 << i))) continue;
 
-                        if (ImPlot::IsLegendEntryHovered(dp.label)) {
-                            script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            script_set_hovered_property(data, str_from_cstr(dp.label));
-                            hovered_prop_idx = j;
+                    for (int j = 0; j < sp.count; ++j) {
+                        PlotSeries& s = sp.series[j];
+                        const SeriesTemporalView& v = views[j];
+
+                        if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
+                            if (v.script_ident[0] != '\0') {
+                                script_visualize_payload(data, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_set_hovered_property(data, str_from_cstr(v.script_ident));
+                            }
+                            if (!resolved[j]) {
+                                ImGui::SetTooltip("Nothing to plot at '%s' right now", s.key.path);
+                            }
+                            hovered_idx = j;
                             hovered_pop_idx = -1;
                         }
 
                         // legend context menu
-                        if (ImPlot::BeginLegendPopup(dp.label)) {
+                        if (ImPlot::BeginLegendPopup(v.plot_id)) {
                             if (ImGui::DeleteButton("Remove")) {
-                                dp.temporal_subplot_mask &= ~(1 << i);
+                                remove_idx = j;
                                 ImGui::CloseCurrentPopup();
                             }
 
-                            const char* plot_type_names[] = {"Line", "Area", "Bars", "Scatter"};
-                            const bool  valid_plot_types[] = {true, false, false, true};
-                            STATIC_ASSERT(ARRAY_SIZE(plot_type_names) == DisplayProperty::PlotType_Count);
-                            STATIC_ASSERT(ARRAY_SIZE(valid_plot_types) == DisplayProperty::PlotType_Count);
-
-                            // The user only has the option to choose between line and scatter if it is
-                            // Line or scatter, which is initially determined by its type
-                            if (valid_plot_types[dp.plot_type]) {
-                                if (ImGui::BeginCombo("Plot Type", plot_type_names[dp.plot_type])) {
-                                    for (int k = 0; k < DisplayProperty::PlotType_Count; ++k) {
-                                        if (!valid_plot_types[k]) continue;
-                                        if (ImGui::Selectable(plot_type_names[k], dp.plot_type == k)) {
-                                            dp.plot_type = (DisplayProperty::PlotType)k;
+                            if (resolved[j] && !v.band) {
+                                const char* plot_type_names[] = {"Line", "Scatter"};
+                                int plot_type = s.plot_type == PlotType_Scatter ? 1 : 0;
+                                if (ImGui::Combo("Plot Type", &plot_type, plot_type_names, IM_ARRAYSIZE(plot_type_names))) {
+                                    s.plot_type = plot_type == 1 ? PlotType_Scatter : PlotType_Line;
+                                }
+                                if (s.plot_type == PlotType_Scatter) {
+                                    if (ImGui::BeginCombo("Marker", ImPlot::GetMarkerName(s.marker))) {
+                                        for (int k = 0; k < ImPlotMarker_COUNT; ++k) {
+                                            if (ImGui::Selectable(ImPlot::GetMarkerName(k), s.marker == k)) {
+                                                s.marker = (ImPlotMarker)k;
+                                            }
                                         }
+                                        ImGui::EndCombo();
                                     }
-                                    ImGui::EndCombo();
+                                    ImGui::SliderFloat("Marker Size", &s.marker_size, 0.1f, 10.0f, "%.2f");
                                 }
                             }
 
-                            if (dp.plot_type == DisplayProperty::PlotType_Scatter) {
-                                if (ImGui::BeginCombo("Marker", ImPlot::GetMarkerName(dp.marker_type))) {
-                                    for (int k = 0; k < ImPlotMarker_COUNT; ++k) {
-                                        if (ImGui::Selectable(ImPlot::GetMarkerName(k), dp.marker_type == k)) {
-                                            dp.marker_type = (ImPlotMarker)k;
-                                        }
-                                    }
-                                    ImGui::EndCombo();
-                                }
-                                ImGui::SliderFloat("Marker Size", &dp.marker_size, 0.1f, 10.0f, "%.2f");
-                            }
-
-                            if (dp.dim > 1) {
-                                const char* color_type_labels[] = {"Solid", "Colormap"};
-                                STATIC_ASSERT(ARRAY_SIZE(color_type_labels) == DisplayProperty::ColorType_Count);
-
-                                if (ImGui::BeginCombo("Color Type", color_type_labels[dp.color_type])) {
-                                    for (int k = 0; k < DisplayProperty::ColorType_Count; ++k) {
-                                        if (ImGui::Selectable(color_type_labels[k], k == dp.color_type)) {
-                                            dp.color_type = (DisplayProperty::ColorType)k;
-                                        }
-                                    }
-                                    ImGui::EndCombo();
-                                }
-                            }
-                            switch (dp.color_type) {
-                            case DisplayProperty::ColorType_Solid:
-                                ImGui::ColorEdit4("Color", &dp.color.x);
-                                break;
-                            case DisplayProperty::ColorType_Colormap:
-                                ImPlot::ColormapSelection("##Colormap", &dp.colormap);
-                                ImGui::SliderFloat("Alpha", &dp.colormap_alpha, 0.0f, 1.0f);
-                                break;
-                            default:
-                                ASSERT(false);
-                                break;
-                            } 
-                            if (dp.dim > 1) {
-                                ImGui::Separator();
-                                if (ImGui::Button("Set All")) {
-                                    dp.population_mask.set();
-                                }
-                                ImGui::SameLine();
-                                if (ImGui::Button("Clear All")) {
-                                    dp.population_mask.reset();
-                                }
-
-                                const float sz = ImGui::GetFontSize() * 1.5f;
-                                ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
-                                for (int k = 0; k < MIN(dp.dim, DISPLAY_PROPERTY_MAX_POPULATION_SIZE); ++k) {
-                                    char lbl[32];
-                                    snprintf(lbl, sizeof(lbl), "%d", k+1);
-                                    if (ImGui::Selectable(lbl, dp.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
-                                        // Toggle bit for this population index
-                                        dp.population_mask.flip(k);
-                                    }
-                                    if (ImGui::IsItemHovered()) {
-                                        script_visualize_payload(data, dp.vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                                        script_set_hovered_property(data, str_from_cstr(dp.label), k);
-                                        hovered_prop_idx = j;
-                                        hovered_pop_idx = k;
-                                    }
-                                    if (!k || ((k+1) % 10)) {
-                                        ImGui::SameLine();
-                                    }
-                                }
-                                ImGui::PopStyleVar();
+                            int popup_hovered_pop = -1;
+                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_payload, &popup_hovered_pop);
+                            if (popup_hovered_pop != -1) {
+                                hovered_idx = j;
+                                hovered_pop_idx = popup_hovered_pop;
                             }
                             ImPlot::EndLegendPopup();
                         }
 
-                        auto plot = [j, &dp, hovered_prop_idx, hovered_pop_idx](int k) {
-                            const float  hov_fill_alpha  = 1.25f;
-                            const float  hov_line_weight = 2.0f;
-                            const float  hov_col_scl = 1.5f;
-                            const int    population_size = CLAMP(dp.dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
+                        if (!resolved[j]) {
+                            // Still in the legend, so it can be seen and removed
+                            ImPlot::PlotDummy(v.plot_id);
+                        } else {
+                            const int population_size = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+                            auto plot = [&](int k) {
+                                ImVec4 color = plot_series_member_color(s, k, population_size);
+                                ImVec4 marker_line_color = {};
+                                float  marker_line_weight = 0;
+                                float  fill_alpha = 1.0f;
+                                float  weight = 1.0f;
 
-                            ImVec4 color = {};
-                            ImVec4 marker_line_color = {};
-                            float  marker_line_weight = 0;
-                            float  fill_alpha = 1.0f;
-                            float  weight = 1.0f;
+                                if (hovered_idx == j) {
+                                    if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
+                                        color = plot_highlight(color);
+                                        fill_alpha = 1.25f;
+                                        marker_line_color = {1,1,1,1};
+                                        marker_line_weight = 1.0f;
+                                    }
+                                    if (hovered_pop_idx == k) {
+                                        weight = 2.0f;
+                                    }
+                                }
 
-                            switch(dp.color_type) {
-                            case DisplayProperty::ColorType_Solid:
-                                color = dp.color;
-                                break;
-                            case DisplayProperty::ColorType_Colormap:
-                                if (ImPlot::ColormapQualitative(dp.colormap)) {
-                                    color = ImPlot::GetColormapColor(k, dp.colormap);
+                                TemporalGetterPayload payload = { &v, k };
+                                if (v.band) {
+                                    ImPlot::SetNextFillStyle(color, fill_alpha);
+                                    ImPlot::PlotShadedG(v.plot_id, temporal_getter_band_lo, &payload, temporal_getter_band_hi, &payload, v.num_samples);
+                                } else if (s.plot_type == PlotType_Scatter) {
+                                    ImPlot::SetNextMarkerStyle(s.marker, s.marker_size, color, marker_line_weight, marker_line_color);
+                                    ImPlot::PlotScatterG(v.plot_id, temporal_getter_line, &payload, v.num_samples);
                                 } else {
-                                    color = ImPlot::SampleColormap( (float)k / (float)(population_size-1), dp.colormap);
+                                    ImPlot::SetNextLineStyle(color, weight);
+                                    ImPlot::PlotLineG(v.plot_id, temporal_getter_line, &payload, v.num_samples);
                                 }
-                                color.w *= dp.colormap_alpha;
-                                break;
-                            default:
-                                ASSERT(false);
-                                break;
-                            }
-
-                            if (hovered_prop_idx == j) {
-                                if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
-                                    color = ImVec4(ImSaturate(color.x * hov_col_scl), ImSaturate(color.y * hov_col_scl), ImSaturate(color.z * hov_col_scl), color.w);
-                                    fill_alpha = hov_fill_alpha;
-                                    marker_line_color = {1,1,1,1};
-                                    marker_line_weight = 1.0f;
-                                }
-                                if (hovered_pop_idx == k) {
-                                    weight = hov_line_weight;
-                                }
-                            }
-
-                            DisplayProperty::Payload payload {
-                                .display_prop = &dp,
-                                .dim_idx = k,
                             };
 
-                            switch (dp.plot_type) {
-                            case DisplayProperty::PlotType_Line:
-                                ImPlot::SetNextLineStyle(color, weight);
-                                ImPlot::PlotLineG(dp.label, dp.getter[0], &payload, dp.num_samples);
-                                break;
-                            case DisplayProperty::PlotType_Area:
-                                ImPlot::SetNextFillStyle(color, fill_alpha);
-                                ImPlot::PlotShadedG(dp.label, dp.getter[0], &payload, dp.getter[1], &payload, dp.num_samples);
-                                break;
-                            case DisplayProperty::PlotType_Scatter:
-                                ImPlot::SetNextMarkerStyle(dp.marker_type, dp.marker_size, color, marker_line_weight, marker_line_color);
-                                ImPlot::PlotScatterG(dp.label, dp.getter[0], &payload, dp.num_samples);
-                                break;
-                            default:
-                                // Should not end up here
-                                ASSERT(false);
-                                break;
+                            for (int k = 0; k < population_size; ++k) {
+                                if (population_size > 1 && !s.population_mask.test(k)) continue;
+                                if (hovered_idx == j && hovered_pop_idx == k) continue;
+                                plot(k);
                             }
-                        };
-
-                        // Draw regular lines
-                        const int population_size = CLAMP(dp.dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
-                        for (int k = 0; k < population_size; ++k) {
-                            if (population_size > 1 && !dp.population_mask.test(k)) {
-                                continue;
+                            // The hovered member last, on top
+                            if (hovered_idx == j && hovered_pop_idx != -1 && hovered_pop_idx < population_size) {
+                                plot(hovered_pop_idx);
                             }
-                            if (hovered_prop_idx == j && hovered_pop_idx == k) {
-                                continue;
-                            }
-
-                            plot(k);
                         }
 
-                        // Draw hovered line
-                        if (hovered_prop_idx == j && hovered_pop_idx != -1) {
-                            plot(hovered_pop_idx);  
-                        }
-
-                        if (ImPlot::BeginDragDropSourceItem(dp.label)) {
-                            DisplayPropertyDragDropPayload dnd_payload = {j, i};
-                            ImGui::SetDragDropPayload("TEMPORAL_DND", &dnd_payload, sizeof(dnd_payload));
-                            ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                            ImGui::TextUnformatted(dp.label);
+                        if (ImPlot::BeginDragDropSourceItem(v.plot_id)) {
+                            series_set_drag_payload(TIMELINE_SERIES_DND, s.key, i, v.label, s.color);
                             ImPlot::EndDragDropSource();
                         }
                     }
@@ -4948,24 +4524,25 @@ static void draw_timeline_window(ApplicationState* data) {
                         time = CLAMP(time, min_x_value, max_x_value);
                     }
 
-                    if (ImPlot::IsPlotHovered()) {
-                        if (hovered_prop_idx != -1) {
-                            const int pop_idx = data->display_properties[hovered_prop_idx].dim > 1 ? hovered_pop_idx : -1;
-                            script_visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            script_set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
-                        }
+                    if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
+                        const SeriesTemporalView& v = views[hovered_idx];
+                        const int pop_idx = v.dim > 1 ? hovered_pop_idx : -1;
+                        script_visualize_payload(data, v.vis_payload, pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                        script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
                     }
 
                     if (ImPlot::BeginDragDropTargetPlot()) {
-                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("TEMPORAL_DND")) {
-                            ASSERT(payload->DataSize == sizeof(DisplayPropertyDragDropPayload));
-                            DisplayPropertyDragDropPayload* dnd = (DisplayPropertyDragDropPayload*)(payload->Data);
-                            data->display_properties[dnd->prop_idx].temporal_subplot_mask |= (1 << i);
-                            if (dnd->src_plot_idx != -1 && dnd->src_plot_idx != i) {
-                                // Clear bit from mask representing src plot index (only if it originated from another plot)
-                                data->display_properties[dnd->prop_idx].temporal_subplot_mask &= ~(1 << dnd->src_plot_idx);
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND)) {
+                            ASSERT(payload->DataSize == sizeof(SeriesDragPayload));
+                            const SeriesDragPayload* dnd = (const SeriesDragPayload*)(payload->Data);
+                            if (dnd->src_subplot >= 0 && dnd->src_subplot < PLOT_MAX_SUBPLOTS) {
+                                // Out of one plot and into another moves it, keeping its style
+                                plot_move_series(data, data->timeline.subplots[dnd->src_subplot], sp, dnd->key);
+                            } else {
+                                plot_add_series(data, sp, dnd->key);
                             }
                         }
+                        ImPlot::EndDragDropTarget();
                     }
 
                     if (print_timeline_tooltip) {
@@ -4985,8 +4562,12 @@ static void draw_timeline_window(ApplicationState* data) {
                             ImGui::SetTooltip("Time: %.2f (%s)\n%s", t, x_unit_str, hovered_label);
                         }
                     }
-                    
+
                     ImPlot::EndPlot();
+                }
+
+                if (remove_idx != -1) {
+                    plot_remove_series(sp, remove_idx);
                 }
             }
 
@@ -5002,19 +4583,19 @@ static void draw_timeline_window(ApplicationState* data) {
 
             ImPlot::GetInputMap() = old_map;
         }
-        
+
         if (data->timeline.filter.enabled && (data->timeline.filter.beg_frame != pre_filter_min || data->timeline.filter.end_frame != pre_filter_max)) {
             data->script.evaluate_filt = true;
         }
 
-        // Try to handle the case when the user is dragging a payload and not dropping it within a valid target zone.
-        // In such case if the property had a source plot index, remove the property from that plot
+        // A series dragged out of a plot and dropped outside any of them is taken out of that plot
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             const ImGuiPayload* payload = ImGui::GetDragDropPayload();
-            if (payload && payload->IsDataType("TEMPORAL_DND") && !ImGui::IsDragDropPayloadBeingAccepted()) {
-                DisplayPropertyDragDropPayload* dnd = (DisplayPropertyDragDropPayload*)(payload->Data);
-                if (dnd && dnd->src_plot_idx != -1) {
-                    data->display_properties[dnd->prop_idx].temporal_subplot_mask &= ~(1 << dnd->src_plot_idx);
+            if (payload && payload->IsDataType(TIMELINE_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
+                const SeriesDragPayload* dnd = (const SeriesDragPayload*)(payload->Data);
+                if (dnd && dnd->src_subplot >= 0 && dnd->src_subplot < PLOT_MAX_SUBPLOTS) {
+                    PlotSubplot& src = data->timeline.subplots[dnd->src_subplot];
+                    plot_remove_series(src, plot_find_series(src, dnd->key));
                 }
             }
         }
@@ -5023,517 +4604,374 @@ static void draw_timeline_window(ApplicationState* data) {
 }
 
 // #distribution_window
+
+struct HistogramGetterPayload {
+    const SeriesHistogramView* view;
+    int k;
+};
+
+static ImPlotPoint histogram_getter(int i, void* payload) {
+    const HistogramGetterPayload* p = (const HistogramGetterPayload*)payload;
+    return series_histogram_point(*p->view, i, p->k);
+}
+
+static ImPlotPoint histogram_getter_zero(int i, void* payload) {
+    const HistogramGetterPayload* p = (const HistogramGetterPayload*)payload;
+    return ImPlotPoint(series_histogram_point(*p->view, i, p->k).x, 0.0);
+}
+
+static void draw_distribution_properties_menu(ApplicationState* data) {
+    PlotSubplot& first = data->distributions.subplots[0];
+    const uint32_t kinds = MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION;
+
+    // A temporal property is binned over its frames, a distribution is shown as evaluated. Over the
+    // timeline filter's frames too, while there is a filter.
+    auto script_section = [&](SeriesSource source) -> int {
+        int num_listed = 0;
+        series_for_each_script_property(data, source, kinds, [&](const SeriesKey& key) {
+            plot_series_list_item(data, DISTRIBUTION_SERIES_DND, first, key);
+            num_listed += 1;
+            const bool temporal = md_script_ir_property_flags(data->script.eval_ir, series_script_ident(key)) & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
+            if (temporal && script_property_population(data, key) > 1) {
+                SeriesKey agg = key;
+                agg.variant = SeriesVariant_Aggregate;
+                ImGui::Indent();
+                plot_series_list_item(data, DISTRIBUTION_SERIES_DND, first, agg);
+                ImGui::Unindent();
+            }
+        });
+        return num_listed;
+    };
+
+    ImGui::SeparatorText("Script");
+    if (script_section(SeriesSource_Script) == 0) {
+        ImGui::TextDisabled("No temporal or distribution properties, define and evaluate them in the script editor");
+    }
+    if (data->timeline.filter.enabled) {
+        ImGui::SeparatorText("Script, over the timeline filter");
+        script_section(SeriesSource_ScriptFiltered);
+    }
+
+    ImGui::SeparatorText("Loaded along the run");
+    plot_system_series_menu(data, DISTRIBUTION_SERIES_DND, first);
+}
+
 static void draw_distribution_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Distributions", &data->distributions.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
-        static int num_subplots = 1;
+        int& num_subplots = data->distributions.num_subplots;
+        num_subplots = CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
 
-        if (ImGui::BeginMenuBar())
-        {
-            DisplayProperty* props = data->display_properties;
-            const int num_props = (int)md_array_size(props);
+        // Refit a subplot's axes to what it holds, after it gained a series or its binning changed
+        static bool fit_subplot[PLOT_MAX_SUBPLOTS] = {};
 
+        if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Properties")) {
-                if (num_props) {
-                    for (int i = 0; i < num_props; ++i) {
-                        DisplayProperty& dp = props[i];
-                        if (dp.type == DisplayProperty::Type_Distribution) {
-                            if (!data->timeline.filter.enabled && dp.partial_evaluation) {
-                                // Hide the property as an option if the timeline filter is not enabled and the property is a partial evaluation
-                                continue;
-                            }
-                            ImPlot::ItemIcon(dp.color);
-                            ImGui::SameLine();
-                            ImGui::Selectable(dp.label);
-                            if (ImGui::IsItemHovered()) {
-                                script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                                script_set_hovered_property(data, str_from_cstr(dp.label));
-                            }
-                            if (ImGui::BeginDragDropSource()) {
-                                DisplayPropertyDragDropPayload payload = {i};
-                                ImGui::SetDragDropPayload("DISTRIBUTION_DND", &payload, sizeof(payload));
-                                ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                                ImGui::TextUnformatted(dp.label);
-                                ImGui::EndDragDropSource();
-                            }
-                        }
-                    }
-                } else {
-                    ImGui::Text("No distribution properties available, try evaluating the script");
-                }
+                draw_distribution_properties_menu(data);
                 ImGui::EndMenu();
             }
-
             if (ImGui::BeginMenu("Subplots")) {
-                ImGui::SliderInt("Num Subplots", &num_subplots, 1, DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS);
+                ImGui::SliderInt("Num Subplots", &num_subplots, 1, PLOT_MAX_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {
-                    num_subplots = CLAMP(num_subplots + 1, 1, DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS);
+                    num_subplots = CLAMP(num_subplots + 1, 1, PLOT_MAX_SUBPLOTS);
+                }
+                if (ImGui::Button("Clear All")) {
+                    plot_clear(data->distributions.subplots, PLOT_MAX_SUBPLOTS);
                 }
                 ImGui::EndMenu();
             }
-
             ImGui::EndMenuBar();
         }
 
-        ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
-        ImPlotAxisFlags axis_flags_x = axis_flags | 0;
-        ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit;
-
-        ImPlotFlags     plot_flags   = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
-
-        const int num_props = (int)md_array_size(data->display_properties);
+        const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
+        const ImPlotAxisFlags axis_flags_x = axis_flags;
+        const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit;
+        const ImPlotFlags     plot_flags   = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
 
         if (ImPlot::BeginSubplots("##distribution_plots", num_subplots, 1, ImVec2(-1,-1))) {
             for (int i = 0; i < num_subplots; ++i) {
-                if (ImPlot::BeginPlot("", ImVec2(-1,0), plot_flags)) {
+                PlotSubplot& sp = data->distributions.subplots[i];
 
-                    // Labelled with what the properties are SHOWN in, which is what unit_str
-                    // holds; an empty label means either no unit or a subplot mixing several.
+                SeriesHistogramView views[PLOT_MAX_SERIES_PER_SUBPLOT];
+                bool resolved[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                for (int j = 0; j < sp.count; ++j) {
+                    resolved[j] = series_resolve_histogram(&views[j], data, sp.series[j].key, sp.series[j].num_bins);
+                }
+
+                int remove_idx = -1;
+
+                if (fit_subplot[i]) {
+                    ImPlot::SetNextAxesToFit();
+                    fit_subplot[i] = false;
+                }
+
+                if (ImPlot::BeginPlot("", ImVec2(-1,0), plot_flags)) {
+                    // Labelled with what the series are shown in; empty when there is no unit, or several
                     char x_label[64] = "";
                     char y_label[64] = "";
-                    for (int j = 0; j < num_props; ++j) {
-                        DisplayProperty& prop = data->display_properties[j];
-                        if (prop.type != DisplayProperty::Type_Distribution) continue;
-                        if (!(prop.distribution_subplot_mask & (1 << i))) continue;
-
-                        if (x_label[0] == '\0') {
-                            str_copy_to_char_buf(x_label, sizeof(x_label), str_from_cstr(prop.unit_str[0]));
-                        } else if (strcmp(x_label, prop.unit_str[0]) != 0) {
-                            x_label[0] = '\0';
-                        }
-                        if (y_label[0] == '\0') {
-                            str_copy_to_char_buf(y_label, sizeof(y_label), str_from_cstr(prop.unit_str[1]));
-                        } else if (strcmp(y_label, prop.unit_str[1]) != 0) {
-                            y_label[0] = '\0';
+                    bool first_label = true;
+                    for (int j = 0; j < sp.count; ++j) {
+                        if (!resolved[j]) continue;
+                        if (first_label) {
+                            str_copy_to_char_buf(x_label, sizeof(x_label), str_from_cstr(views[j].x_unit_str));
+                            str_copy_to_char_buf(y_label, sizeof(y_label), str_from_cstr(views[j].y_unit_str));
+                            first_label = false;
+                        } else {
+                            if (strcmp(x_label, views[j].x_unit_str) != 0) x_label[0] = '\0';
+                            if (strcmp(y_label, views[j].y_unit_str) != 0) y_label[0] = '\0';
                         }
                     }
 
                     ImPlot::SetupAxes(x_label, y_label, axis_flags_x, axis_flags_y);
                     ImPlot::SetupFinish();
 
-                    int  hovered_prop_idx  = -1;
+                    int  hovered_idx       = -1;
                     int  hovered_pop_idx   = -1;
-                    char hovered_label[64] = "";
+                    char hovered_label[128] = "";
 
                     if (ImPlot::IsPlotHovered()) {
                         script_set_hovered_property(data, STR_LIT(""));
-                        
+
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
                         const ImVec2 mouse_coord = ImPlot::PlotToPixels(mouse_pos);
-                        
+
                         const double max_rad = 20; // 20 pixels
                         const double area_dist = max_rad * 0.2;
-
                         double min_dist = max_rad;
 
-                        for (int j = 0; j < num_props; ++j) {
-                            DisplayProperty& prop = data->display_properties[j];
+                        for (int j = 0; j < sp.count; ++j) {
+                            if (!resolved[j]) continue;
+                            const PlotSeries& s = sp.series[j];
+                            const SeriesHistogramView& v = views[j];
+                            if (v.num_bins <= 0 || v.x_max <= v.x_min) continue;
 
-                            if (prop.hist.x_max <= prop.hist.x_min) continue;  // Collapsed x_axis (probably due to no data currently)
-                            
-                            // Do the reverse mapping that occurs within getters to go from x-coordinate to index
-                            const double scl = (prop.hist.x_max - prop.hist.x_min) / (double)prop.hist.num_bins;
-                            const double off = prop.hist.x_min + 0.5 * scl;
-                            const double x   = ((mouse_pos.x - off) / scl);
-                            const int xn = CLAMP(x + 0.5, 0, prop.hist.num_bins - 1);
-                            const int xi[4] {
-                                CLAMP((int)x - 1,   0, prop.hist.num_bins - 1),
-                                CLAMP((int)x,       0, prop.hist.num_bins - 1),
-                                CLAMP((int)x + 1,   0, prop.hist.num_bins - 1),
-                                CLAMP((int)x + 2,   0, prop.hist.num_bins - 1),
+                            ImPlotItem* item = ImPlot::GetItem(v.plot_id);
+                            if (!item || !item->Show) continue;
+
+                            const int nb = v.num_bins;
+                            const double x = series_histogram_index_at(v, mouse_pos.x);
+                            const int xn = CLAMP((int)(x + 0.5), 0, nb - 1);
+                            const int xi[4] = {
+                                CLAMP((int)x - 1, 0, nb - 1),
+                                CLAMP((int)x,     0, nb - 1),
+                                CLAMP((int)x + 1, 0, nb - 1),
+                                CLAMP((int)x + 2, 0, nb - 1),
                             };
 
-                            ImPlotItem* item = ImPlot::GetItem(prop.label);
-                            if (!item || !item->Show) {
-                                continue;
-                            }
+                            const int dim = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+                            for (int k = 0; k < dim; ++k) {
+                                if (dim > 1 && !s.population_mask.test(k)) continue;
+                                HistogramGetterPayload payload = { &v, k };
+                                // Later entries lie on top: prefer them a little when two are equally near
+                                const double layer = j + k / (double)(PLOT_MAX_POPULATION - 1);
+                                const double layer_dist = ((sp.count - layer) / sp.count) * (max_rad * 0.1);
+                                double d = DBL_MAX;
 
-                            DisplayProperty::Payload payload = {
-                                .display_prop = &prop,
-                            };
-
-                            if (prop.distribution_subplot_mask & (1 << i)) {
-                                for (int k = 0; k < MIN(prop.hist.dim, DISPLAY_PROPERTY_MAX_POPULATION_SIZE); ++k) {
-                                    if (prop.hist.dim > 1 && !prop.population_mask.test(k)) {
-                                        continue;
+                                if (s.plot_type == PlotType_Bars) {
+                                    const double half_width = 0.5 * series_histogram_bin_width(v) * s.bar_width;
+                                    for (int l = 0; l < 3; ++l) {
+                                        const ImPlotPoint top = histogram_getter(xi[l], &payload);
+                                        const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(top.x - half_width, 0.0));
+                                        const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(top.x + half_width, top.y));
+                                        const ImVec2 ll = ImMin(p0, p1);
+                                        const ImVec2 ur = ImMax(p0, p1);
+                                        d = MIN(d, sqrt(ImLengthSqr(mouse_coord - ImClamp(mouse_coord, ll, ur))));
                                     }
-                                    payload.dim_idx = k;
-                                    double d = DBL_MAX;
-                                    const double layer = j + k / (double)(DISPLAY_PROPERTY_MAX_POPULATION_SIZE - 1);
-                                    const double layer_dist = ((num_props - layer) / num_props) * (max_rad * 0.1);
-
-                                    switch (prop.plot_type) {
-                                    case DisplayProperty::PlotType_Line:
-                                    {
-                                        // Compute distance to line segments, prev, cur and next
-                                        // It is not sufficient to only check the distance to the current line segment
-                                        ImVec2 p[4] = {
-                                            ImPlot::PlotToPixels(prop.getter[1](xi[0], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](xi[1], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](xi[2], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](xi[3], &payload)),
+                                    d += area_dist + layer_dist;
+                                } else if (s.plot_type == PlotType_Area) {
+                                    for (int l = 0; l < 2; ++l) {
+                                        const ImVec2 a = ImPlot::PlotToPixels(histogram_getter(xi[l], &payload));
+                                        const ImVec2 b = ImPlot::PlotToPixels(histogram_getter(xi[l + 1], &payload));
+                                        const ImVec2 z = ImPlot::PlotToPixels(histogram_getter_zero(xi[l], &payload));
+                                        const float x_min = MIN(a.x, b.x);
+                                        const float x_max = MAX(a.x, b.x);
+                                        const float t = (x_max > x_min) ? CLAMP((mouse_coord.x - x_min) / (x_max - x_min), 0.0f, 1.0f) : 0.0f;
+                                        const float y_top = lerp(a.y, b.y, t);
+                                        const ImVec2 p = {
+                                            CLAMP(mouse_coord.x, x_min, x_max),
+                                            CLAMP(mouse_coord.y, MIN(y_top, z.y), MAX(y_top, z.y))
                                         };
-                                        d = distance_to_linesegment(p[0], p[1], mouse_coord);
-                                        d = MIN(distance_to_linesegment(p[1], p[2], mouse_coord), d);
-                                        d = MIN(distance_to_linesegment(p[2], p[3], mouse_coord), d);
-                                        d += layer_dist;
-                                        break;
+                                        d = MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
                                     }
-                                    case DisplayProperty::PlotType_Area:
-                                    {
-                                        const ImVec2 p_min[4] = {
-                                            ImPlot::PlotToPixels(prop.getter[0](xi[0], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](xi[1], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](xi[2], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[0](xi[3], &payload)),
-                                        };
-                                        const ImVec2 p_max[4] = {
-                                            ImPlot::PlotToPixels(prop.getter[1](xi[0], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](xi[1], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](xi[2], &payload)),
-                                            ImPlot::PlotToPixels(prop.getter[1](xi[3], &payload)),
-                                        };
-                                        // Check if within area
-                                        for (int l = 0; l < 2; ++l) {
-                                            // Each segment forms a trapetzoid with left and right half parallel to the y axis
-                                            // We want to clamp the mouse coordinate to the trapetzoid and compute the distance to the clamped point
+                                    d += area_dist + layer_dist;
+                                } else {
+                                    ImVec2 p[4] = {
+                                        ImPlot::PlotToPixels(histogram_getter(xi[0], &payload)),
+                                        ImPlot::PlotToPixels(histogram_getter(xi[1], &payload)),
+                                        ImPlot::PlotToPixels(histogram_getter(xi[2], &payload)),
+                                        ImPlot::PlotToPixels(histogram_getter(xi[3], &payload)),
+                                    };
+                                    d = distance_to_linesegment(p[0], p[1], mouse_coord);
+                                    d = MIN(distance_to_linesegment(p[1], p[2], mouse_coord), d);
+                                    d = MIN(distance_to_linesegment(p[2], p[3], mouse_coord), d);
+                                    d += layer_dist;
+                                }
 
-                                            const float x_min = MIN(p_min[l].x, p_min[l+1].x);
-                                            const float x_max = MAX(p_min[l].x, p_min[l+1].x);
-
-                                            // Bilinarly interpolate the y min/max
-                                            const float t = CLAMP((mouse_coord.x - x_min) / (x_max - x_min), 0.0f, 1.0f);
-                                            const float y[2] = {
-                                                lerp(p_min[l].y, p_min[l+1].y, t),
-                                                lerp(p_max[l].y, p_max[l+1].y, t)
-                                            };
-                                            const float y_min = MIN(y[0], y[1]);
-                                            const float y_max = MAX(y[0], y[1]);
-
-                                            ImVec2 p = {
-                                                CLAMP(mouse_coord.x, x_min, x_max),
-                                                CLAMP(mouse_coord.y, y_min, y_max)
-                                            };
-
-                                            d = MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
-                                        }
-                                        d += area_dist + layer_dist;
-                                        break;
-                                    }
-                                    case DisplayProperty::PlotType_Bars:
-                                    {
-                                        // @NOTE: There is a bug here in the computation of the width of the bars
-                                        // And does not work properly atm at different zoom levels.
-                                        const float bar_half_width = scl * prop.bar_width_scale * 0.5f;
-                                        for (int l = 0; l < 3; ++l) {
-                                            const ImVec2 p[2] = {
-                                                ImPlot::PlotToPixels(ImPlotPoint(bar_half_width, 0)),
-                                                ImPlot::PlotToPixels(prop.getter[1](xi[l], &payload))
-                                            };
-                                            const ImVec2 p_min = {p[1].x - p[0].x, ImMin(p[0].y, p[1].y)};
-                                            const ImVec2 p_max = {p[1].x + p[0].x, ImMax(p[0].y, p[1].y)};
-
-                                            const ImVec2 ll = {p_min.x, p_min.y};
-                                            const ImVec2 ur = {p_max.x, p_max.y};
-                                            const ImVec2 pos = ImClamp(mouse_coord, ll, ur);
-
-                                            d = MIN(d, sqrt(ImLengthSqr(mouse_coord - pos)));
-                                        }
-                                        d += area_dist + layer_dist;
-                                        break;
-                                    }
-                                    default:
-                                        // Should not end up here
-                                        break;
-                                    }
-
-                                    if (d < min_dist) {
-                                        min_dist = d;
-                                        char value_buf[64] = "";
-                                        if (prop.print_value) {
-                                            prop.print_value(value_buf, sizeof(value_buf), xi[1], &payload);
-                                        } else {
-                                            ImPlotPoint p = prop.getter[1](xn, &payload);
-                                            snprintf(value_buf, sizeof(value_buf), "%.2f", p.y);
-                                        }
-
-                                        hovered_prop_idx = j;
-                                        if (prop.hist.dim > 1) {
-                                            hovered_pop_idx = k;
-                                            snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %s", prop.label, k + 1, value_buf);
-                                        } else {
-                                            hovered_pop_idx = -1;
-                                            snprintf(hovered_label, sizeof(hovered_label), "%s: %s", prop.label, value_buf);
-                                        }
+                                if (d < min_dist) {
+                                    min_dist = d;
+                                    const ImPlotPoint pt = histogram_getter(xn, &payload);
+                                    hovered_idx = j;
+                                    hovered_pop_idx = dim > 1 ? k : -1;
+                                    if (dim > 1) {
+                                        snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %.4g at %.4g %s", v.label, k + 1, pt.y, pt.x, v.x_unit_str);
+                                    } else {
+                                        snprintf(hovered_label, sizeof(hovered_label), "%s: %.4g at %.4g %s", v.label, pt.y, pt.x, v.x_unit_str);
                                     }
                                 }
                             }
                         }
 
-                        if (hovered_prop_idx != -1) {
-                            script_set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
-                            script_visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-
-                            if (strnlen(hovered_label, sizeof(hovered_label)) > 0) {
+                        if (hovered_idx != -1) {
+                            const SeriesHistogramView& v = views[hovered_idx];
+                            if (v.script_ident[0] != '\0') {
+                                script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
+                                script_visualize_payload(data, v.vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                            }
+                            if (hovered_label[0] != '\0') {
                                 ImGui::SetTooltip("%s", hovered_label);
                             }
                         }
-                    } else {
-                        if (data->hovered_display_property_label[0] != '\0') {
-                            for (size_t j = 0; j < md_array_size(data->display_properties); ++j) {
-                                DisplayProperty& dp = data->display_properties[j];
-                                if (dp.type != DisplayProperty::Type_Distribution) continue;
-                                if (strcmp(data->hovered_display_property_label, dp.label) == 0) {
-                                    hovered_prop_idx = (int)j;
-                                    hovered_pop_idx = data->hovered_display_property_pop_idx;
-                                    break;
-                                }
+                    } else if (data->hovered_property_label[0] != '\0') {
+                        for (int j = 0; j < sp.count; ++j) {
+                            if (!resolved[j]) continue;
+                            if (strcmp(data->hovered_property_label, views[j].script_ident) == 0) {
+                                hovered_idx = j;
+                                hovered_pop_idx = data->hovered_property_pop_idx;
+                                break;
                             }
                         }
                     }
-                    
-                    for (int j = 0; j < num_props; ++j) {
-                        DisplayProperty& dp = data->display_properties[j];
-                        if (dp.type != DisplayProperty::Type_Distribution) continue;
-                        if (!(dp.distribution_subplot_mask & (1 << i))) continue;
 
-                        if (ImPlot::IsLegendEntryHovered(dp.label)) {
-                            script_visualize_payload(data, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            script_set_hovered_property(data, str_from_cstr(dp.label));
-                            hovered_prop_idx = j;
+                    for (int j = 0; j < sp.count; ++j) {
+                        PlotSeries& s = sp.series[j];
+                        const SeriesHistogramView& v = views[j];
+
+                        if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
+                            if (v.script_ident[0] != '\0') {
+                                script_visualize_payload(data, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_set_hovered_property(data, str_from_cstr(v.script_ident));
+                            }
+                            if (!resolved[j]) {
+                                ImGui::SetTooltip("Nothing to show for '%s' right now", s.key.path);
+                            }
+                            hovered_idx = j;
                             hovered_pop_idx = -1;
                         }
-                        
-                        // legend context menu
-                        if (ImPlot::BeginLegendPopup(dp.label)) {
+
+                        if (ImPlot::BeginLegendPopup(v.plot_id)) {
                             if (ImGui::DeleteButton("Remove")) {
-                                dp.distribution_subplot_mask &= ~(1 << i);
+                                remove_idx = j;
                                 ImGui::CloseCurrentPopup();
                             }
 
-                            const char* plot_type_names[] = {"Line", "Area", "Bars", "Scatter"};
-                            const bool  valid_plot_types[] = {true, true, true, false};
-                            STATIC_ASSERT(ARRAY_SIZE(plot_type_names) == DisplayProperty::PlotType_Count);
-                            STATIC_ASSERT(ARRAY_SIZE(valid_plot_types) == DisplayProperty::PlotType_Count);
-
-                            if (ImGui::BeginCombo("Plot Type", plot_type_names[dp.plot_type])) {
-                                for (int k = 0; k < DisplayProperty::PlotType_Count; ++k) {
-                                    if (!valid_plot_types[k]) continue;
-                                    if (ImGui::Selectable(plot_type_names[k], dp.plot_type == k)) {
-                                        dp.plot_type = (DisplayProperty::PlotType)k;
-                                    }
-                                }
-                                ImGui::EndCombo();
+                            const char* plot_type_names[] = {"Line", "Area", "Bars"};
+                            const PlotType plot_types[]   = {PlotType_Line, PlotType_Area, PlotType_Bars};
+                            int plot_type = 0;
+                            for (int k = 0; k < IM_ARRAYSIZE(plot_types); ++k) {
+                                if (s.plot_type == plot_types[k]) plot_type = k;
+                            }
+                            if (ImGui::Combo("Plot Type", &plot_type, plot_type_names, IM_ARRAYSIZE(plot_type_names))) {
+                                s.plot_type = plot_types[plot_type];
+                            }
+                            if (s.plot_type == PlotType_Bars) {
+                                ImGui::SliderFloat("Bar Width", &s.bar_width, 0.01f, 1.0f, "%.3f");
                             }
 
-                            if (dp.plot_type == DisplayProperty::PlotType_Bars) {
-                                const double MIN_BAR_WIDTH = 0.01;
-                                const double MAX_BAR_WIDTH = 1.00;
-                                ImGui::SliderScalar("Bar Width", ImGuiDataType_Double, &dp.bar_width_scale, &MIN_BAR_WIDTH, &MAX_BAR_WIDTH, "%.3f");
+                            // Powers of two: a script distribution only divides into those
+                            int bins_exp = (int)log2((double)MAX(s.num_bins, 2));
+                            char bins_fmt[32];
+                            snprintf(bins_fmt, sizeof(bins_fmt), "%d", 1 << bins_exp);
+                            if (ImGui::SliderInt("Num Bins", &bins_exp, 5, 10, bins_fmt)) {
+                                s.num_bins = 1 << bins_exp;
+                                fit_subplot[i] = true;
+                            }
+                            if (resolved[j] && v.num_bins != s.num_bins) {
+                                ImGui::TextDisabled("Evaluated at %d bins", v.num_bins);
                             }
 
-                            if (dp.hist.dim > 1) {
-                                const char* color_type_labels[] = {"Solid", "Colormap"};
-                                STATIC_ASSERT(ARRAY_SIZE(color_type_labels) == DisplayProperty::ColorType_Count);
-
-                                if (ImGui::BeginCombo("Color Type", color_type_labels[dp.color_type])) {
-                                    for (int k = 0; k < DisplayProperty::ColorType_Count; ++k) {
-                                        if (ImGui::Selectable(color_type_labels[k], k == dp.color_type)) {
-                                            dp.color_type = (DisplayProperty::ColorType)k;
-                                        }
-                                    }
-                                    ImGui::EndCombo();
-                                }
+                            int popup_hovered_pop = -1;
+                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_payload, &popup_hovered_pop);
+                            if (popup_hovered_pop != -1) {
+                                hovered_idx = j;
+                                hovered_pop_idx = popup_hovered_pop;
                             }
-                            switch (dp.color_type) {
-                            case DisplayProperty::ColorType_Solid:
-                                ImGui::ColorEdit4("Color", &dp.color.x);
-                                break;
-                            case DisplayProperty::ColorType_Colormap:
-                                ImPlot::ColormapSelection("##Colormap", &dp.colormap);
-                                ImGui::SliderFloat("Alpha", &dp.colormap_alpha, 0.0f, 1.0f);
-                                break;
-                            default:
-                                ASSERT(false);
-                                break;
-                            } 
-
-                            const int MIN_BINS = 32;
-                            const int MAX_BINS = 1024;
-                            if (ImGui::SliderInt("Num Bins", &dp.num_bins, MIN_BINS, MAX_BINS)) {
-                                int next = next_power_of_two32(dp.num_bins);
-                                int prev = next >> 1;
-                                if (dp.num_bins - prev < next - dp.num_bins) {
-                                    dp.num_bins = prev;
-                                } else {
-                                    dp.num_bins = next;
-                                }
-                                ImPlotPoint p_min = {dp.hist.x_min, dp.hist.y_min};
-                                ImPlotPoint p_max = {dp.hist.x_max, dp.hist.y_max};
-                                ImPlot::FitPoint(p_min);
-                                ImPlot::FitPoint(p_max);
-                            }
-
-                            if (dp.hist.dim > 1) {
-                                ImGui::Separator();
-                                if (ImGui::Button("Set All")) {
-                                    dp.population_mask = UINT64_MAX;
-                                }
-                                ImGui::SameLine();
-                                if (ImGui::Button("Clear All")) {
-                                    dp.population_mask = 0;
-                                }
-
-                                const float sz = ImGui::GetFontSize() * 1.5f;
-                                ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
-                                for (int k = 0; k < MIN(dp.hist.dim, DISPLAY_PROPERTY_MAX_POPULATION_SIZE); ++k) {
-                                    char lbl[32];
-                                    snprintf(lbl, sizeof(lbl), "%d", k+1);
-                                    if (ImGui::Selectable(lbl, dp.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
-                                        // Toggle bit for this population index
-                                        dp.population_mask.flip(k);
-                                    }
-                                    if (ImGui::IsItemHovered()) {
-                                        script_visualize_payload(data, dp.vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                                        script_set_hovered_property(data, str_from_cstr(dp.label), k);
-                                        hovered_prop_idx = j;
-                                        hovered_pop_idx = k;
-                                    }
-                                    if (!k || ((k+1) % 10)) {
-                                        ImGui::SameLine();
-                                    }
-                                }
-                                ImGui::PopStyleVar();
-                            }
-
                             ImPlot::EndLegendPopup();
                         }
 
-                        auto plot = [j, &dp, hovered_prop_idx, hovered_pop_idx] (int k) {
-                            const float  hov_fill_alpha  = 1.25f;
-                            const float  hov_line_weight = 2.0f;
-                            const float  hov_col_scl = 1.5f;
-                            const int    population_size = CLAMP(dp.hist.dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
-                            const double bar_width = (dp.hist.x_max - dp.hist.x_min) / (dp.hist.num_bins);
-
-                            ImVec4 color = {};
-                            float  fill_alpha = 1.0f;
-                            float  weight = 1.0f;
-
-                            switch(dp.color_type) {
-                            case DisplayProperty::ColorType_Solid:
-                                color = dp.color;
-                                break;
-                            case DisplayProperty::ColorType_Colormap:
-                                if (ImPlot::ColormapQualitative(dp.colormap)) {
-                                    color = ImPlot::GetColormapColor(k, dp.colormap);
-                                } else {
-                                    color = ImPlot::SampleColormap( (float)k / (float)(population_size-1), dp.colormap);
+                        if (!resolved[j] || v.num_bins <= 0) {
+                            ImPlot::PlotDummy(v.plot_id);
+                        } else {
+                            const int population_size = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+                            auto plot = [&](int k) {
+                                ImVec4 color = plot_series_member_color(s, k, population_size);
+                                float  fill_alpha = 1.0f;
+                                float  weight = 1.0f;
+                                if (hovered_idx == j) {
+                                    if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
+                                        color = plot_highlight(color);
+                                        fill_alpha = 1.25f;
+                                    }
+                                    if (hovered_pop_idx == k) {
+                                        weight = 2.0f;
+                                    }
                                 }
-                                color.w *= dp.colormap_alpha;
-                                break;
-                            default:
-                                ASSERT(false);
-                                break;
-                            }
 
-                            if (hovered_prop_idx == j) {
-                                if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
-                                    color = ImVec4(ImSaturate(color.x * hov_col_scl), ImSaturate(color.y * hov_col_scl), ImSaturate(color.z * hov_col_scl), color.w);
-                                    fill_alpha = hov_fill_alpha;
+                                HistogramGetterPayload payload = { &v, k };
+                                switch (s.plot_type) {
+                                case PlotType_Area:
+                                    ImPlot::SetNextFillStyle(color, fill_alpha);
+                                    ImPlot::PlotShadedG(v.plot_id, histogram_getter_zero, &payload, histogram_getter, &payload, v.num_bins);
+                                    break;
+                                case PlotType_Bars:
+                                    ImPlot::SetNextFillStyle(color, fill_alpha);
+                                    ImPlot::PlotBarsG(v.plot_id, histogram_getter, &payload, v.num_bins, series_histogram_bin_width(v) * s.bar_width);
+                                    break;
+                                default:
+                                    ImPlot::SetNextLineStyle(color, weight);
+                                    ImPlot::PlotLineG(v.plot_id, histogram_getter, &payload, v.num_bins);
+                                    break;
                                 }
-                                if (hovered_pop_idx == k) {
-                                    weight = hov_line_weight;
-                                }
-                            }
-
-                            DisplayProperty::Payload payload = {
-                                .display_prop = &dp,
-                                .dim_idx = k,
                             };
 
-                            switch (dp.plot_type) {
-                            case DisplayProperty::PlotType_Line:
-                                ImPlot::SetNextLineStyle(color, weight);
-                                ImPlot::PlotLineG(dp.label, dp.getter[1], &payload, dp.hist.num_bins);
-                                break;
-                            case DisplayProperty::PlotType_Area:
-                                ImPlot::SetNextFillStyle(color, fill_alpha);
-                                ImPlot::PlotShadedG(dp.label, dp.getter[0], &payload, dp.getter[1], &payload, dp.hist.num_bins);
-                                break;
-                            case DisplayProperty::PlotType_Bars:
-                                ImPlot::SetNextFillStyle(color, fill_alpha);
-                                ImPlot::PlotBarsG(dp.label, dp.getter[1], &payload, dp.hist.num_bins, bar_width * dp.bar_width_scale);
-                                break;
-                            default:
-                                break;
-                            }
-                        };
-                        
-                        if (dp.hist.num_bins > 0) {
-                            const int dim = CLAMP(dp.hist.dim, 1, DISPLAY_PROPERTY_MAX_POPULATION_SIZE);
-                            for (int k = 0; k < dim; ++k) {
-                                if (dp.hist.dim > 1 && !dp.population_mask.test(k)) {
-                                    continue;
-                                }
-                                // Render this last, to make sure it is on top of the others
-                                if (hovered_prop_idx == j && hovered_pop_idx == k) {
-                                    continue;
-                                }
-
+                            for (int k = 0; k < population_size; ++k) {
+                                if (population_size > 1 && !s.population_mask.test(k)) continue;
+                                if (hovered_idx == j && hovered_pop_idx == k) continue;
                                 plot(k);
                             }
-
-                            if (hovered_prop_idx == j && hovered_pop_idx != -1) {
+                            if (hovered_idx == j && hovered_pop_idx != -1 && hovered_pop_idx < population_size) {
                                 plot(hovered_pop_idx);
                             }
                         }
 
-                        if (ImPlot::BeginDragDropSourceItem(dp.label)) {
-                            DisplayPropertyDragDropPayload dnd_payload = {j, i};
-                            ImGui::SetDragDropPayload("DISTRIBUTION_DND", &dnd_payload, sizeof(dnd_payload));
-                            ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                            ImGui::TextUnformatted(dp.label);
+                        if (ImPlot::BeginDragDropSourceItem(v.plot_id)) {
+                            series_set_drag_payload(DISTRIBUTION_SERIES_DND, s.key, i, v.label, s.color);
                             ImPlot::EndDragDropSource();
                         }
                     }
 
                     if (ImPlot::BeginDragDropTargetPlot()) {
-                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("DISTRIBUTION_DND")) {
-                            ASSERT(payload->DataSize == sizeof(DisplayPropertyDragDropPayload));
-                            DisplayPropertyDragDropPayload* dnd = (DisplayPropertyDragDropPayload*)(payload->Data);
-                            data->display_properties[dnd->prop_idx].distribution_subplot_mask |= (1 << i);
-                            if (dnd->src_plot_idx != -1 && dnd->src_plot_idx != i) {
-                                // Clear bit from mask representing src plot index (only if it originated from another plot)
-                                data->display_properties[dnd->prop_idx].distribution_subplot_mask &= ~(1 << dnd->src_plot_idx);
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(DISTRIBUTION_SERIES_DND)) {
+                            ASSERT(payload->DataSize == sizeof(SeriesDragPayload));
+                            const SeriesDragPayload* dnd = (const SeriesDragPayload*)(payload->Data);
+                            if (dnd->src_subplot >= 0 && dnd->src_subplot < PLOT_MAX_SUBPLOTS) {
+                                plot_move_series(data, data->distributions.subplots[dnd->src_subplot], sp, dnd->key);
+                            } else {
+                                plot_add_series(data, sp, dnd->key);
                             }
-
-                            for (int j = 0; j < num_props; ++j) {
-                                DisplayProperty& dp = data->display_properties[j];
-                                if (dp.distribution_subplot_mask & (1 << i)) {
-                                    ImPlotItem* item = ImPlot::GetItem(dp.label);
-                                    bool just_dropped = dnd->prop_idx == j;
-                                    bool previously_visible = item && item->Show;
-                                    if (just_dropped || previously_visible) {
-                                        ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].ExtendFit(dp.hist.x_min);
-                                        ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].ExtendFit(dp.hist.x_max);
-                                        ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].ExtendFit(dp.hist.y_min);
-                                        ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].ExtendFit(dp.hist.y_max);
-                                    }
-                                }
-                            }
-                            
-                            ImPlot::GetCurrentPlot()->Axes[ImAxis_X1].ApplyFit(ImPlot::GetStyle().FitPadding.x);
-                            ImPlot::GetCurrentPlot()->Axes[ImAxis_Y1].ApplyFit(ImPlot::GetStyle().FitPadding.y);
+                            fit_subplot[i] = true;
+                        } else if (const ImGuiPayload* tl_payload = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND)) {
+                            // Something plotted over time, dropped here: the distribution of its
+                            // values, whichever view of them (a mean, a spread) was dragged
+                            ASSERT(tl_payload->DataSize == sizeof(SeriesDragPayload));
+                            SeriesKey key = ((const SeriesDragPayload*)tl_payload->Data)->key;
+                            key.variant = SeriesVariant_Values;
+                            plot_add_series(data, sp, key);
+                            fit_subplot[i] = true;
                         }
+                        ImPlot::EndDragDropTarget();
                     }
 
                     if (ImPlot::IsPlotHovered()) {
-                        if (hovered_prop_idx != -1) {
-                            script_visualize_payload(data, data->display_properties[hovered_prop_idx].vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
-                            script_set_hovered_property(data, str_from_cstr(data->display_properties[hovered_prop_idx].label), hovered_pop_idx);
-                        }
-
                         ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
                         ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
                         ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
@@ -5545,18 +4983,22 @@ static void draw_distribution_window(ApplicationState* data) {
 
                     ImPlot::EndPlot();
                 }
+
+                if (remove_idx != -1) {
+                    plot_remove_series(sp, remove_idx);
+                }
             }
             ImPlot::EndSubplots();
         }
 
-        // Try to handle the case when the user is dragging a payload and not dropping it within a valid target zone.
-        // In such case if the property had a source plot index, remove the property from that plot
+        // A series dragged out of a plot and dropped outside any of them is taken out of that plot
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             const ImGuiPayload* payload = ImGui::GetDragDropPayload();
-            if (payload && payload->IsDataType("DISTRIBUTION_DND") && !ImGui::IsDragDropPayloadBeingAccepted()) {
-                DisplayPropertyDragDropPayload* dnd = (DisplayPropertyDragDropPayload*)(payload->Data);
-                if (dnd && dnd->src_plot_idx != -1) {
-                    data->display_properties[dnd->prop_idx].distribution_subplot_mask &= ~(1 << dnd->src_plot_idx);
+            if (payload && payload->IsDataType(DISTRIBUTION_SERIES_DND) && !ImGui::IsDragDropPayloadBeingAccepted()) {
+                const SeriesDragPayload* dnd = (const SeriesDragPayload*)(payload->Data);
+                if (dnd && dnd->src_subplot >= 0 && dnd->src_subplot < PLOT_MAX_SUBPLOTS) {
+                    PlotSubplot& src = data->distributions.subplots[dnd->src_subplot];
+                    plot_remove_series(src, plot_find_series(src, dnd->key));
                 }
             }
         }
@@ -6018,15 +5460,6 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
 
 #define APPEND_BUF(buf, len, fmt, ...) (len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), fmt, ##__VA_ARGS__) + 1)
 
-static md_array(float) sample_range(float beg, float end, int sample_count, md_allocator_i* alloc) {
-    md_array(float) result = md_array_create(float, sample_count, alloc);
-    double step = (end - beg) / (double)(sample_count - 1);
-    for (int i = 0; i < sample_count; ++i) {
-        result[i] = (float)((double)beg + step * (double)i);
-    }
-    return result;
-}
-
 static void draw_property_export_window(ApplicationState* data) {
     ASSERT(data);
 
@@ -6044,69 +5477,109 @@ static void draw_property_export_window(ApplicationState* data) {
         {STR_INIT("Gaussian Cube"), STR_INIT("cube")},
     };
 
+    enum ExportKind {
+        ExportKind_Temporal = 0,
+        ExportKind_Distribution,
+        ExportKind_Volume,
+    };
+
     if (ImGui::Begin("Property Export", &data->show_property_export_window)) {
-        static int type = DisplayProperty::Type_Temporal;
-        static int property_idx  = 0;
+        static int kind = ExportKind_Temporal;
+        static SeriesKey selected = {};
         static int table_format  = 0;
         static int volume_format = 0;
-
-        int num_properties = (int)md_array_size(data->display_properties);
-        if (num_properties == 0) {
-            ImGui::Text("No properties available for export, try evaluating the script.");
-            ImGui::End();
-            property_idx = 0;
-            return;
-        }
+        static int bins_exp      = 7;   // 128 bins
 
         if (task_system::task_is_running(data->tasks.evaluate_full)) {
             ImGui::Text("The properties are currently being evaluated, please wait...");
             ImGui::End();
-            property_idx = 0;
             return;
         }
 
-        ImGui::PushItemWidth(200);
-        if (ImGui::Combo("Data Type", (int*)(&type), "Temporal\0Distribution\0Density Volume\0")) {
-            if (property_idx != -1) {
-                const char* cur_lbl = data->display_properties[property_idx].label;
-                for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
-                    const DisplayProperty& dp = data->display_properties[i];
-                    if (type == dp.type && strcmp(cur_lbl, dp.label) == 0) {
-                        property_idx = i;
-                        break;
+        md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
+        defer { md_temp_end(temp); };
+        md_allocator_i* alloc = md_temp_allocator(temp);
+
+        // What there is to export of the chosen kind: the same series the plots offer
+        md_array(SeriesKey) candidates = 0;
+        {
+            const uint32_t script_kinds =
+                kind == ExportKind_Temporal     ? (uint32_t)MD_SCRIPT_PROPERTY_FLAG_TEMPORAL :
+                kind == ExportKind_Distribution ? (uint32_t)(MD_SCRIPT_PROPERTY_FLAG_TEMPORAL | MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) :
+                                                  (uint32_t)MD_SCRIPT_PROPERTY_FLAG_VOLUME;
+            auto push_script = [&](SeriesSource source) {
+                series_for_each_script_property(data, source, script_kinds, [&](const SeriesKey& key) {
+                    md_array_push(candidates, key, alloc);
+                    const bool temporal = md_script_ir_property_flags(data->script.eval_ir, series_script_ident(key)) & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
+                    if (kind == ExportKind_Distribution && temporal && script_property_population(data, key) > 1) {
+                        SeriesKey agg = key;
+                        agg.variant = SeriesVariant_Aggregate;
+                        md_array_push(candidates, agg, alloc);
+                    }
+                });
+            };
+            push_script(SeriesSource_Script);
+            if (data->timeline.filter.enabled && kind != ExportKind_Temporal) {
+                push_script(SeriesSource_ScriptFiltered);
+            }
+            if (kind != ExportKind_Volume) {
+                str_t groups[64];
+                const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data), ARRAY_SIZE(groups));
+                for (size_t g = 0; g < num_groups; ++g) {
+                    const size_t num = system_series_members(nullptr, 0, data, groups[g]);
+                    str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
+                    system_series_members(paths, num, data, groups[g]);
+                    for (size_t i = 0; i < num; ++i) {
+                        md_array_push(candidates, series_key(SeriesSource_System, paths[i]), alloc);
                     }
                 }
             }
         }
+
+        bool selected_valid = false;
+        for (size_t i = 0; i < md_array_size(candidates); ++i) {
+            if (series_key_equal(candidates[i], selected)) { selected_valid = true; break; }
+        }
+        if (!selected_valid) {
+            selected = md_array_size(candidates) ? candidates[0] : SeriesKey{};
+            selected_valid = md_array_size(candidates) > 0;
+        }
+
+        ImGui::PushItemWidth(200);
+        ImGui::Combo("Data Type", &kind, "Temporal\0Distribution\0Density Volume\0");
         ImGui::Separator();
-        
-        if (ImGui::BeginCombo("Property", property_idx != -1 ? data->display_properties[property_idx].label : "")) {
-            for (int i = 0; i < (int)md_array_size(data->display_properties); ++i) {
-                const DisplayProperty& dp = data->display_properties[i];
-                if (dp.type == DisplayProperty::Type_Distribution && dp.hist.num_bins == 0) {
-                    continue; 
+
+        char selected_label[96] = "";
+        if (selected_valid) {
+            series_label(selected_label, sizeof(selected_label), data, selected);
+        }
+        if (ImGui::BeginCombo("Property", selected_label)) {
+            for (size_t i = 0; i < md_array_size(candidates); ++i) {
+                char label[96];
+                series_label(label, sizeof(label), data, candidates[i]);
+                ImGui::PushID((int)i);
+                if (ImGui::Selectable(label, series_key_equal(candidates[i], selected))) {
+                    selected = candidates[i];
                 }
-                if (type == dp.type) {
-                    if (ImGui::Selectable(dp.label, property_idx == i)) {
-                        property_idx = i;
-                    }
+                if (ImGui::IsItemHovered() && candidates[i].source == SeriesSource_System) {
+                    ImGui::SetTooltip("%s", candidates[i].path);
                 }
+                ImGui::PopID();
             }
             ImGui::EndCombo();
         }
-        
+        if (md_array_size(candidates) == 0) {
+            ImGui::TextDisabled("Nothing of this kind, evaluate the script or load an energy file");
+        }
+
+        if (kind == ExportKind_Distribution) {
+            char bins_fmt[32];
+            snprintf(bins_fmt, sizeof(bins_fmt), "%d", 1 << bins_exp);
+            ImGui::SliderInt("Num Bins", &bins_exp, 5, 10, bins_fmt);
+        }
+
         str_t file_extension = {};
-        if (type == DisplayProperty::Type_Distribution || type == DisplayProperty::Type_Temporal) {
-            if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
-                    if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
-                        table_format = i;
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            file_extension = table_formats[table_format].ext;
-        } else if (type == DisplayProperty::Type_Volume) {
+        if (kind == ExportKind_Volume) {
             if (ImGui::BeginCombo("File Format", volume_formats[volume_format].lbl.ptr)) {
                 for (int i = 0; i < (int)ARRAY_SIZE(volume_formats); ++i) {
                     if (ImGui::Selectable(volume_formats[i].lbl.ptr, volume_format == i)) {
@@ -6116,137 +5589,119 @@ static void draw_property_export_window(ApplicationState* data) {
                 ImGui::EndCombo();
             }
             file_extension = volume_formats[volume_format].ext;
-        }
-
-        if (property_idx != -1) {
-            if (type != data->display_properties[property_idx].type) {
-                property_idx = -1;
+        } else {
+            if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
+                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
+                    if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
+                        table_format = i;
+                    }
+                }
+                ImGui::EndCombo();
             }
+            file_extension = table_formats[table_format].ext;
         }
 
-        if (property_idx == -1) ImGui::PushDisabled();
-        bool export_clicked = ImGui::Button("Export");
-        if (property_idx == -1) ImGui::PopDisabled();
+        if (!selected_valid) ImGui::PushDisabled();
+        const bool export_clicked = ImGui::Button("Export");
+        if (!selected_valid) ImGui::PopDisabled();
+        ImGui::PopItemWidth();
 
-        if (export_clicked) {
-            md_allocator_i* alloc = frame_alloc;
-            md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
-            defer { md_temp_end(temp); };
+        char path_buf[1024];
+        if (export_clicked && application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
+            const str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+            char label[96];
+            series_label(label, sizeof(label), data, selected);
 
-            ASSERT(property_idx != -1);
-            char path_buf[1024];
-            DisplayProperty& dp = data->display_properties[property_idx];
-            md_array(const float*)  column_data = 0;
-            md_array(str_t)         column_labels = 0;
-            md_array(str_t)         legends = 0;
+            if (kind == ExportKind_Volume) {
+                SeriesVolumeView view;
+                if (!series_resolve_volume(&view, data, selected)) {
+                    VIAMD_LOG_ERROR("'%s' has no volume to export", label);
+                } else if (str_eq(file_extension, STR_LIT("cube")) && export_cube(*data, view.attr, view.vis_payload, path)) {
+                    VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", label, STR_ARG(path));
+                }
+            } else {
+                // Columns in the units the plots show them in, so a column and its axis label agree
+                md_array(const float*) column_data   = 0;
+                md_array(str_t)        column_labels = 0;
+                md_array(str_t)        legends       = 0;
+                str_t x_label = {};
+                str_t y_label = str_from_cstr(label);
+                size_t num_rows = 0;
+                bool ok = false;
 
-            if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
-                str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
-                if (dp.type == DisplayProperty::Type_Volume) {
-                    if (str_eq(file_extension, STR_LIT("cube"))) {
-                        if (export_cube(*data, dp.attr, dp.vis_payload, path)) {
-                            VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", dp.label, STR_ARG(path));
+                auto push_columns = [&](int dim, auto value) {
+                    for (int k = 0; k < dim; ++k) {
+                        float* col = md_temp_alloc_array(temp, float, num_rows);
+                        for (size_t r = 0; r < num_rows; ++r) {
+                            col[r] = value(r, k);
+                        }
+                        md_array_push(column_data, col, alloc);
+                        if (dim > 1) {
+                            const str_t legend = str_printf(alloc, "%s[%i]", label, k + 1);
+                            md_array_push(legends, legend, alloc);
+                            md_array_push(column_labels, legend, alloc);
+                        } else {
+                            md_array_push(column_labels, y_label, alloc);
                         }
                     }
+                };
+
+                if (kind == ExportKind_Temporal) {
+                    SeriesTemporalView view;
+                    if (series_resolve_temporal(&view, data, selected)) {
+                        num_rows = (size_t)view.num_samples;
+                        char time_unit_str[32] = "";
+                        md_unit_print(time_unit_str, sizeof(time_unit_str), data->timeline.time_unit);
+                        x_label = md_unit_is_none(data->timeline.time_unit) ? STR_LIT("Frame") : str_printf(alloc, "Time (%s)", time_unit_str);
+                        if (view.unit_str[0]) y_label = str_printf(alloc, "%s (%s)", label, view.unit_str);
+
+                        float* x = md_temp_alloc_array(temp, float, num_rows);
+                        MEMCPY(x, view.x, num_rows * sizeof(float));
+                        md_array_push(column_data, x, alloc);
+                        md_array_push(column_labels, x_label, alloc);
+                        push_columns(view.dim, [&](size_t r, int k) { return (float)series_temporal_point(view, (int)r, k).y; });
+                        ok = true;
+                    }
                 } else {
+                    SeriesHistogramView view;
+                    if (series_resolve_histogram(&view, data, selected, 1 << bins_exp)) {
+                        num_rows = (size_t)view.num_bins;
+                        x_label = str_copy(str_from_cstr(view.x_unit_str), alloc);
+                        if (view.y_unit_str[0]) y_label = str_printf(alloc, "%s (%s)", label, view.y_unit_str);
+
+                        // The centre of each bin, where the plot draws it
+                        float* x = md_temp_alloc_array(temp, float, num_rows);
+                        for (size_t r = 0; r < num_rows; ++r) {
+                            x[r] = (float)series_histogram_point(view, (int)r, 0).x;
+                        }
+                        md_array_push(column_data, x, alloc);
+                        md_array_push(column_labels, x_label, alloc);
+                        push_columns(view.dim, [&](size_t r, int k) { return (float)series_histogram_point(view, (int)r, k).y; });
+                        ok = true;
+                    }
+                }
+
+                if (!ok) {
+                    VIAMD_LOG_ERROR("'%s' has nothing to export right now", label);
+                } else {
+                    str_t out_str = {};
+                    if (str_eq(file_extension, STR_LIT("xvg"))) {
+                        str_t header = md_xvg_format_header(str_from_cstr(label), x_label, y_label, md_array_size(legends), legends, alloc);
+                        out_str = md_xvg_format(header, md_array_size(column_data), num_rows, column_data, alloc);
+                    } else if (str_eq(file_extension, STR_LIT("csv"))) {
+                        out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), num_rows, alloc);
+                    }
                     md_file_t file = {0};
-                    if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-                        str_t out_str = {};
-                        if (dp.type == DisplayProperty::Type_Temporal) {
-                            const double* traj_times = run_frame_times(data);
-                            const size_t  num_frames = run_num_frames(data);
-                            // Exported in the units the plot shows, so a column and its axis label agree.
-                            const double time_scl  = data->timeline.time_scale;
-                            const double value_scl = dp.unit_scale[1];
-
-                            md_array(float) time = md_array_create(float, num_frames, alloc);
-                            for (size_t i = 0; i < num_frames; ++i) {
-                                time[i] = (float)(traj_times[i] * time_scl);
-                            }
-
-                            str_t x_label = STR_INIT("Frame");
-                            str_t y_label = str_from_cstr(dp.label);
-
-                            if (!md_unit_is_none(dp.unit[1])) {
-                                y_label = str_printf(alloc, "%s (%s)", dp.label, dp.unit_str[1]);
-                            }
-
-                            if (!md_unit_is_none(data->timeline.time_unit)) {
-                                x_label = str_printf(alloc, "Time (%s)", dp.unit_str[0]);
-                            }
-
-                            md_array_push(column_data, time, alloc);
-                            md_array_push(column_labels, x_label, alloc);
-
-                            if (dp.dim > 1) {
-                                for (int i = 0; i < dp.dim; ++i) {
-                                    str_t  legend = str_printf(alloc, "%s[%i]", dp.label, i + 1);
-                                    float* values = (float*)md_alloc(alloc, sizeof(float) * num_frames);
-                                    for (size_t j = 0; j < num_frames; ++j) {
-                                        values[j] = (float)(dp.y_values[j * dp.dim + i] * value_scl);
-                                    }
-                                    md_array_push(column_data, values, alloc);
-                                    md_array_push(legends, legend, alloc);
-                                    md_array_push(column_labels, legend, alloc);
-                                }
-                            } else {
-                                float* values = (float*)md_alloc(alloc, sizeof(float) * num_frames);
-                                for (size_t j = 0; j < num_frames; ++j) {
-                                    values[j] = (float)(dp.y_values[j] * value_scl);
-                                }
-                                md_array_push(column_data, values, alloc);
-                                md_array_push(column_labels, y_label, alloc);
-                            }
-
-                            if (str_eq(file_extension, STR_LIT("xvg"))) {
-                                str_t header = md_xvg_format_header(str_from_cstr(dp.label), x_label, y_label, md_array_size(legends), legends, alloc);
-                                out_str = md_xvg_format(header, md_array_size(column_data), num_frames, column_data, alloc);
-                            } else if (str_eq(file_extension, STR_LIT("csv"))) {
-                                out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), num_frames, alloc);
-                            }
-
-
-                        } else if (dp.type == DisplayProperty::Type_Distribution) {
-                            md_array(float) x_values = sample_range(dp.hist.x_min, dp.hist.x_max, dp.hist.num_bins, alloc);
-
-                            str_t x_label = str_from_cstr(dp.unit_str[0]);
-                            str_t y_label = str_from_cstr(dp.label);
-                            if (strlen(dp.unit_str[1]) > 0) {
-                                y_label = str_printf(frame_alloc, "%s (%s)", dp.label, dp.unit_str[1]);
-                            }
-
-                            md_array_push(column_data, x_values, alloc);
-                            md_array_push(column_labels, x_label, alloc);
-
-                            if (dp.hist.dim > 1) {
-                                for (int i = 0; i < dp.hist.dim; ++i) {
-                                    md_array_push(column_data, dp.hist.bins + i * dp.hist.num_bins, alloc);
-                                    str_t legend = str_printf(alloc, "%s[%i]", dp.label, i + 1);
-                                    md_array_push(legends, legend, alloc);
-                                    md_array_push(column_labels, legend, alloc);
-                                }
-                            } else {
-                                md_array_push(column_data, dp.hist.bins, alloc);
-                                md_array_push(column_labels, y_label, alloc);
-                            }
-
-                            if (str_eq(file_extension, STR_LIT("xvg"))) {
-                                str_t header = md_xvg_format_header(str_from_cstr(dp.label), x_label, y_label, md_array_size(legends), legends, alloc);
-                                out_str = md_xvg_format(header, md_array_size(column_data), dp.hist.num_bins, column_data, alloc);
-                            } else if (str_eq(file_extension, STR_LIT("csv"))) {
-                                out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), dp.hist.num_bins, alloc);
-                            }
-                        }
-                        if (!str_empty(out_str)) {
-                            md_file_write(file, out_str.ptr, out_str.len);
-                            VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '%.*s'", dp.label, (int)path.len, path.ptr);
-                        }
+                    if (!str_empty(out_str) && md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+                        md_file_write(file, out_str.ptr, out_str.len);
                         md_file_close(&file);
+                        VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", label, STR_ARG(path));
+                    } else {
+                        VIAMD_LOG_ERROR("Failed to write '" STR_FMT "'", STR_ARG(path));
                     }
                 }
             }
         }
-        ImGui::PopItemWidth();
     }
     ImGui::End();
 }

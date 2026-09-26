@@ -10,8 +10,6 @@
 
 #include <algorithm>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace script_editor {
@@ -149,11 +147,14 @@ static inline bool ascii_lower(char c) { return 'a' <= c && c <= 'z'; }
 static inline bool ascii_upper(char c) { return 'A' <= c && c <= 'Z'; }
 static inline char to_lower(char c)    { return ascii_upper(c) ? (char)(c - 'A' + 'a') : c; }
 
-// Whether word[j] starts the word or a part of it: after an underscore or at a lower to upper case change
+static inline bool ascii_alnum(char c) { return ascii_lower(c) || ascii_upper(c) || ('0' <= c && c <= '9'); }
+
+// Whether word[j] starts the word or a part of it: after a separator (shape_weights, edr/potential) or at a lower to
+// upper case change (loadFile)
 static bool starts_part(std::string_view word, size_t j) {
     if (j == 0) return true;
     const char prev = word[j - 1], cur = word[j];
-    return (prev == '_' && cur != '_') || (ascii_lower(prev) && ascii_upper(cur));
+    return (!ascii_alnum(prev) && ascii_alnum(cur)) || (ascii_lower(prev) && ascii_upper(cur));
 }
 
 // Fuzzy match in the style of VS Code. The pattern has to appear in order in the word, ignoring case, and its first
@@ -207,95 +208,92 @@ static bool fuzzy_match(std::string_view pat, std::string_view word, int* out_sc
     return true;
 }
 
-// Where a suggestion comes from, which is also the order among equally good matches
-enum Origin {
-    Origin_Document,  // variables (and anything else) named in the script
-    Origin_Builtin,   // built-in procedures and constants
-    Origin_Keyword,
-};
-
-struct Vocabulary {
-    std::vector<std::string> builtins;
-    std::vector<std::string> keywords;
-    std::unordered_set<std::string> known;  // all of the above
-};
-
-static const Vocabulary& vocabulary() {
-    static const Vocabulary vocab = [] {
-        Vocabulary v;
-        const size_t num = md_script_builtin_identifiers(nullptr, 0);
-        std::vector<str_t> names(num);
-        md_script_builtin_identifiers(names.data(), names.size());
-        for (str_t name : names) {
-            std::string s(name.ptr, name.len);
-            if (is_identifier(s) && v.known.insert(s).second) v.builtins.push_back(s);  // skip operators
-        }
-        const str_t* keywords = md_script_keywords();
-        for (size_t i = 0; i < md_script_num_keywords(); ++i) {
-            std::string s(keywords[i].ptr, keywords[i].len);
-            if (v.known.insert(s).second) v.keywords.push_back(s);
-        }
-        return v;
-    }();
-    return vocab;
+// The order among equally good matches
+static int kind_order(md_script_completion_kind_t kind) {
+    switch (kind) {
+    case MD_SCRIPT_COMPLETION_VALUE:     return 0;
+    case MD_SCRIPT_COMPLETION_PARAMETER: return 1;
+    case MD_SCRIPT_COMPLETION_VARIABLE:  return 2;
+    case MD_SCRIPT_COMPLETION_PROCEDURE: return 3;
+    case MD_SCRIPT_COMPLETION_CONSTANT:  return 4;
+    default:                             return 5;
+    }
 }
 
-static void suggest(const TextEditor& editor, TextEditor::AutoCompleteState& state) {
+// What can be written at the cursor comes from mdlib (md_script_complete), which knows the language and the system.
+// What matches what has been typed, and in which order, is decided here.
+static void suggest(const TextEditor& editor, const md_system_t* sys, TextEditor::AutoCompleteState& state) {
     const size_t MAX_SUGGESTIONS = 100;
     state.suggestions.clear();
 
-    const std::string& term = state.searchTerm;
-    if (state.inNumber || (!term.empty() && is_digit(term[0]))) return;
+    const std::string src = editor.GetText();
+    auto byte_offset = [&editor](TextEditor::DocPos pos) { return editor.GetSectionText(TextEditor::DocPos(0, 0), pos).size(); };
+    const int cursor = (int)byte_offset(state.searchTermEnd);
 
-    const Vocabulary& vocab = vocabulary();
+    md_temp_scope_t temp = md_temp_begin();
+    const md_script_completions_t completions = md_script_complete({src.data(), src.size()}, cursor, sys, md_temp_allocator(temp));
 
-    // Identifiers in the document, counted, so that the word being completed can be left out unless it also appears
-    // elsewhere. The word is what a suggestion would replace, which extends past the cursor.
-    std::unordered_map<std::string, int> in_document;
-    editor.IterateIdentifiers([&](const std::string& id) {
-        if (is_identifier(id) && !vocab.known.count(id)) in_document[id] += 1;
-    });
-    const std::string word = editor.GetSectionText(state.searchTermStart, editor.FindWordEnd(state.searchTermStart, true));
-    if (auto it = in_document.find(word); it != in_document.end() && --it->second == 0) {
-        in_document.erase(it);
-    }
+    // mdlib says which bytes a completion replaces: an identifier, or the contents of a string, such as an attribute
+    // path. The editor replaces the word the cursor is in, which can be less (the 'potential' of 'edr/potential'), so
+    // a completion is cut down to what goes in its place. The rest of mdlib's range has to be in the completion
+    // already, as it is when that is what has been typed.
+    const TextEditor::DocPos word_end = editor.FindWordEnd(state.searchTermStart, true);
+    const size_t word_beg_byte = byte_offset(state.searchTermStart);
+    const size_t word_end_byte = byte_offset(word_end);
+    const size_t range_beg = (size_t)completions.range.beg, range_end = (size_t)completions.range.end;
+    const bool word_in_range = range_beg <= word_beg_byte && word_end_byte <= range_end && range_end <= src.size();
+    const std::string_view lead = word_in_range ? std::string_view(src).substr(range_beg, word_beg_byte - range_beg) : std::string_view();
+    const std::string_view tail = word_in_range ? std::string_view(src).substr(word_end_byte, range_end - word_end_byte) : std::string_view();
+    const std::string_view word = std::string_view(src).substr(std::min(word_beg_byte, src.size()), word_end_byte - std::min(word_beg_byte, word_end_byte));
+
+    // Matched against all that has been typed of the value, not just the word
+    const std::string_view typed(completions.prefix.ptr, completions.prefix.len);
 
     struct Match {
-        std::string_view name;
-        Origin origin;
+        const md_script_completion_t* item;
+        std::string_view insert;    // what replaces the word
         int score;
     };
     std::vector<Match> matches;
-    auto consider = [&](std::string_view name, Origin origin) {
+    for (size_t i = 0; word_in_range && i < completions.count; ++i) {
+        const md_script_completion_t& item = completions.items[i];
+        const std::string_view text(item.text.ptr, item.text.len);
+        if (text.size() < lead.size() + tail.size() || text.substr(0, lead.size()) != lead || text.substr(text.size() - tail.size()) != tail) continue;
         int score;
-        if (fuzzy_match(term, name, &score)) matches.push_back({name, origin, score});
-    };
-    for (const auto& [name, count] : in_document) consider(name, Origin_Document);
-    for (const std::string& name : vocab.builtins) consider(name, Origin_Builtin);
-    for (const std::string& name : vocab.keywords) consider(name, Origin_Keyword);
+        if (fuzzy_match(typed, {item.label.ptr, item.label.len}, &score)) {
+            matches.push_back({&item, text.substr(lead.size(), text.size() - lead.size() - tail.size()), score});
+        }
+    }
 
-    // What has been typed already is complete, nothing to offer
-    if (matches.size() == 1 && matches[0].name == term) return;
+    auto label = [](const Match& m) { return std::string_view(m.item->label.ptr, m.item->label.len); };
 
-    // Best score first. Among equals: an exact match, then by origin, then the shortest (the one needing the least
-    // typing to tell apart), then alphabetically. Without a term everything scores 0 and is listed alphabetically.
-    std::sort(matches.begin(), matches.end(), [&term](const Match& a, const Match& b) {
-        if (a.score != b.score) return a.score > b.score;
-        const bool a_exact = a.name == term, b_exact = b.name == term;
-        if (a_exact != b_exact) return a_exact;
-        if (a.origin != b.origin) return a.origin < b.origin;
-        if (!term.empty() && a.name.size() != b.name.size()) return a.name.size() < b.name.size();
-        return a.name < b.name;
-    });
+    // Nothing to offer if what has been typed is already complete
+    if (!(matches.size() == 1 && matches[0].insert == word)) {
+        // Best score first. Among equals: an exact match, then by kind, then the shortest (the one needing the least
+        // typing to tell apart), then alphabetically. Without a term everything scores 0 and is listed by kind and name.
+        std::sort(matches.begin(), matches.end(), [&](const Match& a, const Match& b) {
+            if (a.score != b.score) return a.score > b.score;
+            const bool a_exact = label(a) == typed, b_exact = label(b) == typed;
+            if (a_exact != b_exact) return a_exact;
+            const int a_kind = kind_order(a.item->kind), b_kind = kind_order(b.item->kind);
+            if (a_kind != b_kind) return a_kind < b_kind;
+            if (!typed.empty() && label(a).size() != label(b).size()) return label(a).size() < label(b).size();
+            return label(a) < label(b);
+        });
 
-    const size_t count = std::min(matches.size(), MAX_SUGGESTIONS);
-    state.suggestions.reserve(count);
-    for (size_t i = 0; i < count; ++i) state.suggestions.emplace_back(matches[i].name);
+        const size_t count = std::min(matches.size(), MAX_SUGGESTIONS);
+        state.suggestions.reserve(count);
+        for (size_t i = 0; i < count; ++i) state.suggestions.emplace_back(matches[i].insert);
+    }
+
+    md_temp_end(temp);
 }
 
-void enable_autocomplete(TextEditor& editor) {
+void enable_autocomplete(TextEditor& editor, const md_system_t* sys) {
     TextEditor::AutoCompleteConfig config;
-    config.callback = [ed = &editor](TextEditor::AutoCompleteState& state) { suggest(*ed, state); };
+    // Strings are for mdlib to judge: it offers the names a selector such as resname() takes, and nothing elsewhere
+    config.triggerInStrings = true;
+    config.callback = [ed = &editor, sys](TextEditor::AutoCompleteState& state) { suggest(*ed, sys, state); };
     editor.SetAutoCompleteConfig(&config);
 }
 

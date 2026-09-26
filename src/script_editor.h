@@ -44,13 +44,16 @@ void insert_lines_at_cursor(TextEditor& editor, str_t code);
 // True if the editor has keyboard focus. Call right after TextEditor::Render(), while its child window is the last item.
 bool has_focus_after_render();
 
-// Turns on autocompletion for mdscript. Suggestions are the keywords, the built-in procedures and constants, and the
-// identifiers used in the document, ranked by how well they match what has been typed. The characters typed have to
-// appear in order in a suggestion (ignoring case) and the first one has to start it or one of its parts, so 'sw' finds
-// shape_weights. Suggestions pop up while typing an identifier, Ctrl+Space asks for them (also on macOS); Tab or Enter
-// inserts the selected one, Escape closes the list.
-// The editor keeps a reference to itself in its configuration, so it must not move while autocomplete is on.
-void enable_autocomplete(TextEditor& editor);
+// Turns on autocompletion for mdscript. What can be written at the cursor comes from mdlib (md_script_complete):
+// variables, procedures, constants and keywords, the parameters of the procedure being called, and the values that
+// selectors take, such as the residue names of the system in resname("|") or the attribute paths in attr("|").
+// Suggestions are ranked by how well they match what has been typed: the characters typed have to appear in order in
+// a suggestion (ignoring case) and the first one has to start it or one of its parts, so 'sw' finds shape_weights and
+// 'pot' edr/potential. They pop up while typing and Ctrl+Space asks for them (also on macOS); Tab or Enter inserts the
+// selected one, Escape closes the list.
+// sys is where the values come from, it is read when suggestions are made and may be NULL. The editor keeps a
+// reference to itself in its configuration, so neither it nor sys may move while autocomplete is on.
+void enable_autocomplete(TextEditor& editor, const md_system_t* sys);
 
 enum MarkerType {
     MarkerType_Error,
