@@ -79,9 +79,9 @@ constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME       = ImGuiKey_LeftArrow;
 constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME       = ImGuiKey_RightArrow;
 constexpr ImGuiKey KEY_RECOMPILE_SHADERS        = ImGuiKey_F5;
 constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW        = ImGuiKey_F11;
-constexpr ImGuiKey KEY_SCRIPT_EVALUATE          = ImGuiKey_Enter;
-constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
-constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F12;
+constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F2;
+
+constexpr ImGuiKeyChord KEY_SCRIPT_EVALUATE          = ImGuiMod_Shift | ImGuiKey_Enter;
 constexpr ImGuiKeyChord KEY_SHOW_ATTRIBUTE_WINDOW = ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A;
 
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_INIT("via");
@@ -428,90 +428,25 @@ struct AABB {
     vec3_t max_ext = { 0 };
 };
 
-static mat3_t mat3_PCA(const vec4_t* xyzw, size_t count) {
-    vec3_t acc = vec3_zero();
-    for (size_t i = 0; i < count; ++i) {
-        acc = vec3_add(acc, vec3_from_vec4(xyzw[i]));
-    }
-    vec3_t mean = acc / (float)count;
+mat3_t mat3_PCA(const vec4_t* xyzw, size_t count);
 
-    mat3_t cov = mat3_covariance_matrix_vec4(xyzw, nullptr, count, mean);
-    mat3_eigen_t eigen = mat3_eigen(cov);
-    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-    return PCA;
-}
-
-static void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, size_t count, const mat3_t& orientation = mat3_ident()) {
-    vec4_t min_v = vec4_set1( FLT_MAX);
-    vec4_t max_v = vec4_set1(-FLT_MAX);
-
-    mat4_t rot = mat4_from_mat3(mat3_transpose(orientation));
-
-    for (size_t i = 0; i < count; ++i) {
-        vec4_t v = mat4_mul_vec4(rot, xyzw[i]);
-        min_v = vec4_min(min_v, v);
-        max_v = vec4_max(max_v, v);
-    }
-
-    // Padding
-    const float pad = 6.0f;
-    min_v -= pad;
-    max_v += pad; 
-
-	MEMCPY(out_min, &min_v, sizeof(float) * 3);
-	MEMCPY(out_max, &max_v, sizeof(float) * 3);
-}
+void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, size_t count, const mat3_t& orientation = mat3_ident());
 
 // Construct texture to world transformation matrix for Volume
 // extent is the extent of the volume (dim * voxel_size)
-static inline mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent) {
-    mat4_t T = mat4_translate_vec3(origin);
-    mat4_t R = mat4_from_mat3(orientation);
-    mat4_t S = mat4_scale_vec3(extent);
-    return T * R * S;
-}
+mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent);
 
-static inline mat4_t compute_world_to_model_mat(const mat3_t& orientation, const vec3_t& origin) {
-    mat4_t world_to_model = mat4_from_mat3(mat3_transpose(orientation)) * mat4_translate_vec3(-origin);
-    return world_to_model;
-}
+mat4_t compute_world_to_model_mat(const mat3_t& orientation, const vec3_t& origin);
 
-static inline mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& in_origin, const vec3_t& stepsize) {
-    vec3_t step_x = orientation.col[0] * stepsize.x;
-    vec3_t step_y = orientation.col[1] * stepsize.y;
-    vec3_t step_z = orientation.col[2] * stepsize.z;
-    // Shift origin by half voxel
-    vec3_t origin = in_origin + orientation * (stepsize * 0.5f);
-
-    mat4_t index_to_world = {
-        step_x.x, step_x.y, step_x.z, 0.0f,
-        step_y.x, step_y.y, step_y.z, 0.0f,
-        step_z.x, step_z.y, step_z.z, 0.0f,
-        origin.x, origin.y, origin.z, 1.0f,
-    };
-
-    return index_to_world;
-}
+mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& in_origin, const vec3_t& stepsize);
 
 // Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
-static inline void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_length) {
-    out_dim[0] = CLAMP(ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
-    out_dim[1] = CLAMP(ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
-    out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
-}
+void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_length);
 
 // Grid units are BOHR, matching what md_gto evaluates in; a Volume's transforms are Angstrom,
 // matching the world the camera lives in. init_volume is where the two meet, and it is the only
 // place that conversion belongs.
-static inline void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, double samples_per_unit_length) {
-    ASSERT(grid);
-    vec3_t extent = max_ext - min_ext;
-    compute_dim(grid->dim, extent, samples_per_unit_length);
-    vec3_t voxel_size = vec3_div(extent, vec3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
-    grid->orientation = orientation;
-    grid->origin = orientation * min_ext;
-    grid->spacing = voxel_size;
-}
+void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, double samples_per_unit_length);
 
 struct Volume {
     mat4_t world_to_model   = {};   // Roto-translation into volume local axes, no scaling applied (preserves world length units)
