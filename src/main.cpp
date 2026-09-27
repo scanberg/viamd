@@ -650,9 +650,6 @@ int main(int argc, char** argv) {
                 use_gfx = !use_gfx;
             }
 #endif
-            if (ImGui::IsKeyDown(KEY_SCRIPT_EVALUATE_MOD) && ImGui::IsKeyPressed(KEY_SCRIPT_EVALUATE)) {
-                state.script.eval_init = true;
-            }
 
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
                 state.show_debug_window = true;
@@ -4089,7 +4086,7 @@ static void plot_system_series_menu(ApplicationState* data, const char* dnd_type
         md_temp_end(temp);
     }
     if (num_listed == 0) {
-        ImGui::TextDisabled("Nothing loaded, open an energy file (.edr), .xvg or .csv with the trajectory");
+        ImGui::TextDisabled("Nothing loaded");
     }
 }
 
@@ -5200,8 +5197,7 @@ static void draw_script_editor_window(ApplicationState* state) {
         // Shift+Enter evaluates the script. The editor binds it to "insert line above", so claim it before the editor
         // sees it (shortcut routes are resolved from the previous frame, hence the focus from the last draw).
         bool eval = false;
-        if (state->editor_focused &&
-            ImGui::Shortcut(KEY_SCRIPT_EVALUATE_MOD | KEY_SCRIPT_EVALUATE, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_RouteOverFocused)) {
+        if (ImGui::Shortcut(KEY_SCRIPT_EVALUATE, ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_RouteOverFocused)) {
             eval = true;
         }
 
