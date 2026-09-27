@@ -141,6 +141,7 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             if (flags & MD_FLAG_SP3)            { *sb += "SP3 "; }
             if (flags & MD_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
             if (flags & MD_FLAG_COARSE_GRAINED) { *sb += "COARSE-GRAINED "; }
+            if (flags & MD_FLAG_DERIVED)        { *sb += "DERIVED "; }
             *sb += "\n";
         }
         /*

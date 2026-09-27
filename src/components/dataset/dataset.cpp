@@ -19,57 +19,154 @@
 #include <implot_widgets.h>
 
 #include <string>
+#include <algorithm>
 
 namespace dataset {
 
-// Helper function to convert amino acids and nucleotides from three-letter to single-letter codes
-static str_t convert_to_short(str_t in_str) {
-    
-    // Standard amino acids
-    if (str_eq_cstr(in_str, "ALA")) return STR_LIT("A");
-    if (str_eq_cstr(in_str, "ARG")) return STR_LIT("R");
-    if (str_eq_cstr(in_str, "ASN")) return STR_LIT("N");
-    if (str_eq_cstr(in_str, "ASP")) return STR_LIT("D");
-    if (str_eq_cstr(in_str, "CYS")) return STR_LIT("C");
-    if (str_eq_cstr(in_str, "GLU")) return STR_LIT("E");
-    if (str_eq_cstr(in_str, "GLN")) return STR_LIT("Q");
-    if (str_eq_cstr(in_str, "GLY")) return STR_LIT("G");
-    if (str_eq_cstr(in_str, "HIS")) return STR_LIT("H");
-    if (str_eq_cstr(in_str, "ILE")) return STR_LIT("I");
-    if (str_eq_cstr(in_str, "LEU")) return STR_LIT("L");
-    if (str_eq_cstr(in_str, "LYS")) return STR_LIT("K");
-    if (str_eq_cstr(in_str, "MET")) return STR_LIT("M");
-    if (str_eq_cstr(in_str, "PHE")) return STR_LIT("F");
-    if (str_eq_cstr(in_str, "PRO")) return STR_LIT("P");
-    if (str_eq_cstr(in_str, "SER")) return STR_LIT("S");
-    if (str_eq_cstr(in_str, "THR")) return STR_LIT("T");
-    if (str_eq_cstr(in_str, "TRP")) return STR_LIT("W");
-    if (str_eq_cstr(in_str, "TYR")) return STR_LIT("Y");
-    if (str_eq_cstr(in_str, "VAL")) return STR_LIT("V");
+// ## Residue codes
 
-    // Standard nucleotides
-    if (str_eq_cstr(in_str, "DA")) return STR_LIT("A");
-    if (str_eq_cstr(in_str, "DC")) return STR_LIT("C");
-    if (str_eq_cstr(in_str, "DG")) return STR_LIT("G");
-    if (str_eq_cstr(in_str, "DT")) return STR_LIT("T");
-    if (str_eq_cstr(in_str, "DU")) return STR_LIT("U");
-    
-    // Failed to map it, return itself
-    return in_str;
+// The class a residue is colored by in a sequence. Amino acids follow the Clustal X grouping,
+// nucleotides are colored by their base.
+enum ResidueClass : uint8_t {
+    ResidueClass_Unknown = 0,
+    ResidueClass_Hydrophobic,
+    ResidueClass_Cysteine,
+    ResidueClass_Positive,
+    ResidueClass_Negative,
+    ResidueClass_Polar,
+    ResidueClass_Glycine,
+    ResidueClass_Proline,
+    ResidueClass_Aromatic,
+    ResidueClass_Adenine,
+    ResidueClass_Cytosine,
+    ResidueClass_Guanine,
+    ResidueClass_Thymine,
+    ResidueClass_Uracil,
+    ResidueClass_Count
+};
+
+static inline bool residue_class_is_nucleotide(ResidueClass cls) {
+    return cls >= ResidueClass_Adenine && cls < ResidueClass_Count;
 }
 
-// Essentially a bswap to go from RGBA to ABGR
-#define RGBA_HEX(x) BSWAP32(x)
+static const char* residue_class_label(ResidueClass cls) {
+    switch (cls) {
+    case ResidueClass_Hydrophobic: return "Hydrophobic";
+    case ResidueClass_Cysteine:    return "Cysteine";
+    case ResidueClass_Positive:    return "Positive";
+    case ResidueClass_Negative:    return "Negative";
+    case ResidueClass_Polar:       return "Polar";
+    case ResidueClass_Glycine:     return "Glycine";
+    case ResidueClass_Proline:     return "Proline";
+    case ResidueClass_Aromatic:    return "Aromatic";
+    case ResidueClass_Adenine:     return "Adenine";
+    case ResidueClass_Cytosine:    return "Cytosine";
+    case ResidueClass_Guanine:     return "Guanine";
+    case ResidueClass_Thymine:     return "Thymine";
+    case ResidueClass_Uracil:      return "Uracil";
+    default:                       return "Unknown";
+    }
+}
 
-// Helper function to assign colors to components based on their type
-static uint32_t component_color(str_t str) {
-    if (str_eq_cstr(str, "DG")) return RGBA_HEX(0xD5B3EFAA); // Purple
-    if (str_eq_cstr(str, "DT")) return RGBA_HEX(0x9FF3A0AA); // Green
-    if (str_eq_cstr(str, "DC")) return RGBA_HEX(0xF8EE5CAA); // Yellow
-    if (str_eq_cstr(str, "DU")) return RGBA_HEX(0xFE9D2DAA); // Orange
-    if (str_eq_cstr(str, "DA")) return RGBA_HEX(0xFC697AAA); // Red
+// Pastel fills which dark text reads well on, in light and dark themes alike
+static uint32_t residue_class_color(ResidueClass cls) {
+    switch (cls) {
+    case ResidueClass_Hydrophobic: return IM_COL32(160, 190, 245, 255);
+    case ResidueClass_Cysteine:    return IM_COL32(245, 170, 170, 255);
+    case ResidueClass_Positive:    return IM_COL32(245, 125, 115, 255);
+    case ResidueClass_Negative:    return IM_COL32(215, 150, 215, 255);
+    case ResidueClass_Polar:       return IM_COL32(140, 215, 140, 255);
+    case ResidueClass_Glycine:     return IM_COL32(245, 185, 130, 255);
+    case ResidueClass_Proline:     return IM_COL32(225, 225, 110, 255);
+    case ResidueClass_Aromatic:    return IM_COL32(120, 205, 205, 255);
+    case ResidueClass_Adenine:     return IM_COL32(252, 105, 122, 255);
+    case ResidueClass_Cytosine:    return IM_COL32(248, 238,  92, 255);
+    case ResidueClass_Guanine:     return IM_COL32(213, 179, 239, 255);
+    case ResidueClass_Thymine:     return IM_COL32(159, 243, 160, 255);
+    case ResidueClass_Uracil:      return IM_COL32(254, 157,  45, 255);
+    default:                       return IM_COL32(190, 190, 190, 255);
+    }
+}
 
-    return 0;
+struct ResidueCode {
+    const char*  name;
+    char         code;
+    ResidueClass cls;
+};
+
+#define RC(name, code, cls) {name, code, ResidueClass_##cls}
+
+// Residue names as they appear in structure files and force fields, mapped to their single letter code.
+// Besides the standard names this covers the protonation and disulfide variants of the common MD force
+// fields (AMBER, CHARMM, GROMOS/OPLS as named in GROMACS), which is what simulated systems usually carry.
+static const ResidueCode residue_codes[] = {
+    RC("ALA",'A',Hydrophobic),
+    RC("ARG",'R',Positive), RC("ARN",'R',Positive),
+    RC("ASN",'N',Polar),
+    RC("ASP",'D',Negative), RC("ASH",'D',Negative), RC("ASPH",'D',Negative), RC("ASPP",'D',Negative),
+    RC("CYS",'C',Cysteine), RC("CYX",'C',Cysteine), RC("CYM",'C',Cysteine), RC("CYN",'C',Cysteine), RC("CYS2",'C',Cysteine), RC("CYSH",'C',Cysteine),
+    RC("GLN",'Q',Polar),
+    RC("GLU",'E',Negative), RC("GLH",'E',Negative), RC("GLUH",'E',Negative), RC("GLUP",'E',Negative),
+    RC("GLY",'G',Glycine),
+    RC("HIS",'H',Aromatic), RC("HID",'H',Aromatic), RC("HIE",'H',Aromatic), RC("HIP",'H',Aromatic),
+    RC("HSD",'H',Aromatic), RC("HSE",'H',Aromatic), RC("HSP",'H',Aromatic),
+    RC("HISD",'H',Aromatic), RC("HISE",'H',Aromatic), RC("HISH",'H',Aromatic), RC("HISA",'H',Aromatic), RC("HISB",'H',Aromatic), RC("HIS1",'H',Aromatic), RC("HIS2",'H',Aromatic),
+    RC("ILE",'I',Hydrophobic),
+    RC("LEU",'L',Hydrophobic),
+    RC("LYS",'K',Positive), RC("LYN",'K',Positive), RC("LSN",'K',Positive), RC("LYSH",'K',Positive), RC("LYP",'K',Positive),
+    RC("MET",'M',Hydrophobic), RC("MSE",'M',Hydrophobic),
+    RC("PHE",'F',Hydrophobic),
+    RC("PRO",'P',Proline),
+    RC("SER",'S',Polar),
+    RC("THR",'T',Polar),
+    RC("TRP",'W',Hydrophobic),
+    RC("TYR",'Y',Aromatic),
+    RC("VAL",'V',Hydrophobic),
+    RC("SEC",'U',Cysteine),
+    RC("PYL",'O',Positive),
+
+    // DNA
+    RC("DA",'A',Adenine), RC("DC",'C',Cytosine), RC("DG",'G',Guanine), RC("DT",'T',Thymine), RC("DU",'U',Uracil),
+    // RNA
+    RC("A",'A',Adenine),  RC("C",'C',Cytosine),  RC("G",'G',Guanine),  RC("T",'T',Thymine),  RC("U",'U',Uracil),
+    RC("RA",'A',Adenine), RC("RC",'C',Cytosine), RC("RG",'G',Guanine), RC("RU",'U',Uracil),
+    // CHARMM
+    RC("ADE",'A',Adenine), RC("CYT",'C',Cytosine), RC("GUA",'G',Guanine), RC("THY",'T',Thymine), RC("URA",'U',Uracil),
+};
+
+#undef RC
+
+static int find_residue_code_exact(str_t name) {
+    for (int i = 0; i < (int)ARRAY_SIZE(residue_codes); ++i) {
+        if (str_eq_cstr(name, residue_codes[i].name)) return i;
+    }
+    return -1;
+}
+
+// Index into residue_codes for a component, -1 if it has no single letter code.
+// The terminal variants are only accepted when the component flags agree on what the component is,
+// so that a ligand which happens to be named like one (e.g. CN) is not taken for a terminal nucleotide.
+static int find_residue_code(str_t name, md_flags_t comp_flags) {
+    name = str_trim(name);
+    int idx = find_residue_code_exact(name);
+    if (idx != -1) return idx;
+
+    // AMBER terminal amino acids: NALA, CALA, ...
+    if ((comp_flags & MD_FLAG_AMINO_ACID) && name.len == 4 && (name.ptr[0] == 'N' || name.ptr[0] == 'C')) {
+        idx = find_residue_code_exact(str_substr(name, 1));
+        if (idx != -1 && !residue_class_is_nucleotide(residue_codes[idx].cls)) return idx;
+    }
+
+    // AMBER terminal nucleotides: DA5, DA3, DAN, RA5, A5, ...
+    if ((comp_flags & (MD_FLAG_NUCLEOTIDE | MD_FLAG_NUCLEIC_ACID)) && name.len >= 2) {
+        const char last = name.ptr[name.len - 1];
+        if (last == '5' || last == '3' || last == 'N') {
+            idx = find_residue_code_exact(str_substr(name, 0, name.len - 1));
+            if (idx != -1 && residue_class_is_nucleotide(residue_codes[idx].cls)) return idx;
+        }
+    }
+
+    return -1;
 }
 
 struct AtomElementMapping {
@@ -129,6 +226,71 @@ struct DatasetItem {
     AtomTypeLoadState load = {}; // What the loader assigned, the baseline user modifications are stored against
 };
 
+// What an entity is, as far as presenting it goes
+enum EntityKind : uint8_t {
+    EntityKind_Molecule = 0,    // Anything not covered below, e.g. lipids or solvents other than water
+    EntityKind_Protein,
+    EntityKind_NucleicAcid,
+    EntityKind_Polymer,         // Connected chain of components which are neither amino acids nor nucleotides
+    EntityKind_Water,
+    EntityKind_Ion,
+    EntityKind_Ligand,          // Marked as hetero by the file
+};
+
+static const char* entity_kind_label(EntityKind kind) {
+    switch (kind) {
+    case EntityKind_Protein:     return "Protein";
+    case EntityKind_NucleicAcid: return "Nucleic acid";
+    case EntityKind_Polymer:     return "Polymer";
+    case EntityKind_Water:       return "Water";
+    case EntityKind_Ion:         return "Ion";
+    case EntityKind_Ligand:      return "Ligand";
+    default:                     return "Molecule";
+    }
+}
+
+// What the components of an entity's instances are called
+static const char* entity_kind_comp_noun(EntityKind kind, size_t count, bool capitalized = false) {
+    const bool one = count == 1;
+    switch (kind) {
+    case EntityKind_Protein:
+    case EntityKind_NucleicAcid: return capitalized ? (one ? "Residue"  : "Residues")  : (one ? "residue"  : "residues");
+    case EntityKind_Water:       return capitalized ? (one ? "Molecule" : "Molecules") : (one ? "molecule" : "molecules");
+    case EntityKind_Ion:         return capitalized ? (one ? "Ion"      : "Ions")      : (one ? "ion"      : "ions");
+    default:                     return capitalized ? (one ? "Component": "Components"): (one ? "component": "components");
+    }
+}
+
+// Instances of these are chains, shown as a sequence
+static inline bool entity_kind_is_sequence(EntityKind kind) {
+    return kind == EntityKind_Protein || kind == EntityKind_NucleicAcid || kind == EntityKind_Polymer;
+}
+
+// The entity flags only carry the chain level flags (polypeptide, nucleic acid), so the flags of the
+// components are combined into them before classifying: a derived entity of amino acids which lack
+// the backbone bonds to be recognized as a polypeptide is still a protein.
+static EntityKind classify_entity(md_flags_t flags) {
+    if (flags & MD_FLAG_WATER)                                  return EntityKind_Water;
+    if (flags & MD_FLAG_ION)                                    return EntityKind_Ion;
+    if (flags & (MD_FLAG_POLYPEPTIDE  | MD_FLAG_AMINO_ACID))    return EntityKind_Protein;
+    if (flags & (MD_FLAG_NUCLEIC_ACID | MD_FLAG_NUCLEOTIDE))    return EntityKind_NucleicAcid;
+    if (flags & MD_FLAG_POLYMER)                                return EntityKind_Polymer;
+    if (flags & MD_FLAG_HETERO)                                 return EntityKind_Ligand;
+    return EntityKind_Molecule;
+}
+
+// Per entity summary, computed once when the system is initialized
+struct EntityInfo {
+    md_array(int) instances = 0;            // Indices of the instances of the entity
+    size_t   num_comps = 0;                 // Summed over all instances
+    size_t   num_atoms = 0;                 // Summed over all instances
+    uint32_t min_comps = 0, max_comps = 0;  // Components per instance
+    uint32_t min_atoms = 0, max_atoms = 0;  // Atoms per instance
+    md_flags_t flags = MD_FLAG_NONE;        // Entity flags combined with the flags of all its components
+    EntityKind kind  = EntityKind_Molecule;
+    bool derived = false;                   // Inferred upon load rather than defined by the file
+    char name[64] = "";                     // Description to show
+};
 struct ElementDefault {
     vec4_t color;
     float radius;
@@ -161,6 +323,19 @@ struct Dataset : viamd::EventHandler {
     md_array(DatasetItem) atom_types = 0;
     md_allocator_i* arena = 0;
 
+    md_array(EntityInfo) entities = 0;  // One per entity of the system
+    md_array(int16_t) comp_code = 0;    // Per component: index into residue_codes, -1 if it has no single letter code
+
+    // Settings menu
+    bool use_single_letter_codes = true;    // Show the residues of proteins and nucleic acids by their single letter code
+    bool color_residues          = true;    // Color the residues of sequences by their class
+
+    char atom_type_filter[64] = "";
+    md_array(int) atom_type_order = 0;      // Display order of the atom types as sorted by the table, allocated in `arena`
+    bool atom_type_resort     = false;      // The order is to be sorted again, e.g. after the atom types changed
+    int  atom_type_selected   = -1;         // Atom type selected in the table, edited below it
+    int  element_popup_z = -1;              // Element whose defaults are being edited
+
     ElementDefault element_defaults[MD_Z_Count] = {};
 
     // Atom type overrides read from a workspace, waiting for a system to be applied to.
@@ -189,6 +364,10 @@ struct Dataset : viamd::EventHandler {
         inst_types = 0;
         comp_types = 0;
         atom_types = 0;
+        atom_type_order = 0;
+        atom_type_selected = -1;
+        entities   = 0;
+        comp_code  = 0;
         if (arena) {
             md_arena_allocator_reset(arena);
         }
@@ -335,6 +514,66 @@ struct Dataset : viamd::EventHandler {
                 item->count += 1;
                 item->fraction += (float)(chain_atom_count / (double)atom_count);
                 md_array_push(item->indices, (int)i, arena);
+            }
+        }
+
+        // Single letter codes of the components, looked up once rather than every frame
+        if (comp_count > 0) {
+            md_array_resize(comp_code, comp_count, arena);
+            for (size_t i = 0; i < comp_count; ++i) {
+                comp_code[i] = (int16_t)find_residue_code(md_component_name(&sys.component, i), md_component_flags(&sys.component, i));
+            }
+        }
+
+        // Entities: which instances belong to each, and what those add up to
+        const size_t ent_count = md_system_entity_count(&sys);
+        if (ent_count > 0) {
+            md_array_resize(entities, ent_count, arena);
+            for (size_t e = 0; e < ent_count; ++e) {
+                entities[e] = EntityInfo{};
+                entities[e].flags = md_entity_flags(&sys.entity, e);
+            }
+
+            for (size_t i = 0; i < inst_count; ++i) {
+                const int e = md_instance_entity_idx(&sys.instance, i);
+                if (e < 0 || (size_t)e >= ent_count) continue;
+                EntityInfo& info = entities[e];
+
+                const md_urange_t comp_range = md_instance_component_range(&sys.instance, i);
+                const uint32_t num_comps = comp_range.end - comp_range.beg;
+                const uint32_t num_atoms = (uint32_t)md_system_instance_atom_count(&sys, i);
+                if (md_array_size(info.instances) == 0) {
+                    info.min_comps = info.max_comps = num_comps;
+                    info.min_atoms = info.max_atoms = num_atoms;
+                } else {
+                    info.min_comps = MIN(info.min_comps, num_comps);
+                    info.max_comps = MAX(info.max_comps, num_comps);
+                    info.min_atoms = MIN(info.min_atoms, num_atoms);
+                    info.max_atoms = MAX(info.max_atoms, num_atoms);
+                }
+                info.num_comps += num_comps;
+                info.num_atoms += num_atoms;
+                for (uint32_t c = comp_range.beg; c < comp_range.end; ++c) {
+                    info.flags |= md_component_flags(&sys.component, c);
+                }
+                md_array_push(info.instances, (int)i, arena);
+            }
+
+            for (size_t e = 0; e < ent_count; ++e) {
+                EntityInfo& info = entities[e];
+                info.kind = classify_entity(info.flags);
+
+                // Entities the file does not define are derived by mdlib (md_util_system_infer_entity_and_instance)
+                str_t desc = str_trim(md_entity_description(&sys.entity, e));
+                info.derived = (md_entity_flags(&sys.entity, e) & MD_FLAG_DERIVED) != 0;
+                if (info.derived && (entity_kind_is_sequence(info.kind) || info.kind == EntityKind_Water)) {
+                    // The generated description only restates the kind (polypeptide, water, ...), which is shown anyway
+                    desc = STR_LIT("");
+                }
+                if (str_empty(desc)) {
+                    desc = str_from_cstr(entity_kind_label(info.kind));
+                }
+                str_copy_to_char_buf(info.name, sizeof(info.name), desc);
             }
         }
 
@@ -1180,11 +1419,1315 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
+    // ## Formatting helpers
+
+    // Integer with thousands separators, e.g. 12,345
+    static const char* fmt_count(char* buf, size_t cap, size_t n) {
+        char tmp[32];
+        const int len = snprintf(tmp, sizeof(tmp), "%zu", n);
+        size_t out = 0;
+        for (int i = 0; i < len && out + 2 < cap; ++i) {
+            if (i > 0 && (len - i) % 3 == 0) buf[out++] = ',';
+            buf[out++] = tmp[i];
+        }
+        buf[out] = '\0';
+        return buf;
+    }
+
+    static const char* fmt_count_range(char* buf, size_t cap, size_t lo, size_t hi) {
+        char a[32], b[32];
+        if (lo == hi) {
+            snprintf(buf, cap, "%s", fmt_count(a, sizeof(a), lo));
+        } else {
+            snprintf(buf, cap, "%s - %s", fmt_count(a, sizeof(a), lo), fmt_count(b, sizeof(b), hi));
+        }
+        return buf;
+    }
+
+    static const char* fmt_mass(char* buf, size_t cap, double mass) {
+        if (mass >= 1.0e6) {
+            snprintf(buf, cap, "%.3g MDa", mass * 1.0e-6);
+        } else if (mass >= 1.0e3) {
+            snprintf(buf, cap, "%.2f kDa", mass * 1.0e-3);
+        } else {
+            snprintf(buf, cap, "%.2f Da", mass);
+        }
+        return buf;
+    }
+
+    static double atom_range_mass(const md_system_t& sys, md_urange_t atoms) {
+        double mass = 0;
+        for (uint32_t i = atoms.beg; i < atoms.end; ++i) {
+            mass += md_atom_mass(&sys.atom, i);
+        }
+        return mass;
+    }
+
+    static int element_symbol_cmp(md_atomic_number_t a, md_atomic_number_t b) {
+        char sa[8], sb[8];
+        str_copy_to_char_buf(sa, sizeof(sa), md_atomic_number_symbol(a));
+        str_copy_to_char_buf(sb, sizeof(sb), md_atomic_number_symbol(b));
+        return strcmp(sa, sb);
+    }
+
+    // Chemical formula in Hill order: C and H first when there is carbon, the rest alphabetically.
+    // Empty if any atom lacks an element, such as coarse grained beads.
+    static void hill_formula(char* buf, size_t cap, const md_system_t& sys, md_urange_t atoms) {
+        buf[0] = '\0';
+        uint32_t count[MD_Z_Count] = {};
+        for (uint32_t i = atoms.beg; i < atoms.end; ++i) {
+            const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, i);
+            if (z == 0 || z >= MD_Z_Count) return;
+            count[z] += 1;
+        }
+
+        md_atomic_number_t order[MD_Z_Count];
+        int num = 0;
+        const bool organic = count[MD_Z_C] > 0;
+        if (organic) {
+            order[num++] = MD_Z_C;
+            if (count[MD_Z_H]) order[num++] = MD_Z_H;
+        }
+        const int first_sorted = num;
+        for (int z = 1; z < MD_Z_Count; ++z) {
+            if (!count[z]) continue;
+            if (organic && (z == MD_Z_C || z == MD_Z_H)) continue;
+            order[num++] = (md_atomic_number_t)z;
+        }
+        for (int i = first_sorted + 1; i < num; ++i) {
+            const md_atomic_number_t key = order[i];
+            int j = i - 1;
+            while (j >= first_sorted && element_symbol_cmp(order[j], key) > 0) {
+                order[j + 1] = order[j];
+                --j;
+            }
+            order[j + 1] = key;
+        }
+
+        size_t len = 0;
+        for (int i = 0; i < num; ++i) {
+            const md_atomic_number_t z = order[i];
+            const str_t sym = md_atomic_number_symbol(z);
+            const int n = count[z] > 1 ? snprintf(buf + len, cap - len, STR_FMT "%u", STR_ARG(sym), count[z])
+                                       : snprintf(buf + len, cap - len, STR_FMT, STR_ARG(sym));
+            if (n < 0 || (size_t)n >= cap - len) break; // Truncated
+            len += (size_t)n;
+        }
+    }
+
+    // The single letter sequence of an instance, X for components without a code, cut short with ...
+    void sequence_string(char* buf, size_t cap, const md_system_t& sys, size_t inst_idx) const {
+        const md_urange_t range = md_system_instance_comp_range(&sys, inst_idx);
+        size_t len = 0;
+        for (uint32_t c = range.beg; c < range.end; ++c) {
+            if (len + 4 >= cap) {
+                buf[len++] = '.'; buf[len++] = '.'; buf[len++] = '.';
+                break;
+            }
+            const int code = c < md_array_size(comp_code) ? comp_code[c] : -1;
+            buf[len++] = code >= 0 ? residue_codes[code].code : 'X';
+        }
+        buf[len] = '\0';
+    }
+
+    // Draws disabled text flush against right_x on the line of the previous item, when there is room for it
+    static void right_aligned_disabled(float right_x, const char* text) {
+        const float w = ImGui::CalcTextSize(text).x;
+        ImGui::SameLine();
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        if (right_x - w > pos.x) {
+            ImGui::SetCursorScreenPos(ImVec2(right_x - w, pos.y));
+            ImGui::TextDisabled("%s", text);
+        } else {
+            ImGui::NewLine();
+        }
+    }
+
+    // Key value row for the tooltip tables
+    static void info_row(const char* key) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextDisabled("%s", key);
+        ImGui::TableSetColumnIndex(1);
+    }
+
+    // ## Selection targets: entities, instances and components
+
+    enum Target {
+        Target_Entity,
+        Target_Instance,
+        Target_Component,
+    };
+
+    void target_mask(md_bitfield_t* bf, const md_system_t& sys, Target target, size_t idx) const {
+        switch (target) {
+        case Target_Entity:
+            if (idx < md_array_size(entities)) {
+                const EntityInfo& info = entities[idx];
+                for (size_t k = 0; k < md_array_size(info.instances); ++k) {
+                    const md_urange_t range = md_system_instance_atom_range(&sys, info.instances[k]);
+                    md_bitfield_set_range(bf, range.beg, range.end);
+                }
+            }
+            break;
+        case Target_Instance: {
+            const md_urange_t range = md_system_instance_atom_range(&sys, idx);
+            md_bitfield_set_range(bf, range.beg, range.end);
+            break;
+        }
+        case Target_Component: {
+            const md_urange_t range = md_system_component_atom_range(&sys, idx);
+            md_bitfield_set_range(bf, range.beg, range.end);
+            break;
+        }
+        }
+    }
+
+    // Hovering the target highlights it, Shift + click (de)selects it and a right click opens a menu to do the same.
+    // Called right after the item which represents the target, with whether it is hovered.
+    void target_interaction(ApplicationState& data, Target target, size_t idx, bool hovered) {
+        if (hovered) {
+            md_bitfield_clear(&data.selection.highlight_mask);
+            target_mask(&data.selection.highlight_mask, data.mold.sys, target, idx);
+            handle_item_click(data);
+            // Shift + right click is taken by deselect
+            if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                ImGui::OpenPopup("##target_menu");
+            }
+        }
+        if (ImGui::BeginPopup("##target_menu")) {
+            md_bitfield_t* sel = &data.selection.selection_mask;
+            if (ImGui::MenuItem("Select")) {
+                md_bitfield_clear(sel);
+                target_mask(sel, data.mold.sys, target, idx);
+            }
+            if (ImGui::MenuItem("Add to selection")) {
+                target_mask(sel, data.mold.sys, target, idx);
+            }
+            if (ImGui::MenuItem("Remove from selection")) {
+                md_temp_scope_t temp = md_temp_begin();
+                md_bitfield_t mask = {};
+                md_bitfield_init(&mask, md_temp_allocator(temp));
+                target_mask(&mask, data.mold.sys, target, idx);
+                md_bitfield_andnot_inplace(sel, &mask);
+                md_temp_end(temp);
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    // ## Tooltips
+
+    void entity_tooltip(const ApplicationState& data, size_t e) const {
+        const md_system_t& sys = data.mold.sys;
+        const EntityInfo& info = entities[e];
+        const size_t num_inst  = md_array_size(info.instances);
+        const str_t  id        = md_entity_id(&sys.entity, e);
+        char buf[128], num[32];
+
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+
+        ImGui::Text("Entity " STR_FMT ": %s", STR_ARG(id), info.name);
+        if (!str_eq_cstr_ignore_case(str_from_cstr(info.name), entity_kind_label(info.kind))) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", entity_kind_label(info.kind));
+        }
+
+        ImGui::Separator();
+        if (info.derived) {
+            // How md_util_system_infer_entity_and_instance arrives at the instances of this kind of entity
+            bool has_chain_ids = false;
+            for (size_t k = 0; k < num_inst; ++k) {
+                has_chain_ids |= !str_empty(md_instance_auth_id(&sys.instance, info.instances[k]));
+            }
+            const char* grouping = "";
+            if (entity_kind_is_sequence(info.kind)) {
+                grouping = has_chain_ids ? "Each instance is a run of consecutive residues sharing a chain ID of the file."
+                                         : "Each instance is a run of consecutive residues joined by bonds.";
+            } else if (info.kind == EntityKind_Water || info.kind == EntityKind_Ion) {
+                grouping = has_chain_ids ? "Consecutive molecules of the same name and chain ID are grouped into one instance."
+                                         : "Consecutive molecules of the same name are grouped into one instance.";
+            } else {
+                grouping = has_chain_ids ? "Each instance is a run of consecutive components sharing a chain ID of the file."
+                                         : "Each instance is a molecule: consecutive components joined by bonds, or sharing a residue number.";
+            }
+
+            ImGui::TextUnformatted("Derived on load");
+            ImGui::TextDisabled("The file does not define entities, so they were derived from the components. %s "
+                                "Instances made up of the same components form one entity. Entity and instance IDs are generated.", grouping);
+        } else {
+            ImGui::TextUnformatted("Defined by the file");
+        }
+        ImGui::Spacing();
+
+        if (ImGui::BeginTable("##entity_info", 2, ImGuiTableFlags_SizingFixedFit)) {
+            // IDs of the first few instances, followed by the author (chain) IDs where the file provided those
+            {
+                const size_t max_ids = 8;
+                size_t len = 0;
+                bool has_auth = false;
+                buf[0] = '\0';
+                for (size_t k = 0; k < MIN(num_inst, max_ids); ++k) {
+                    const str_t inst_id = md_instance_id(&sys.instance, info.instances[k]);
+                    const int n = snprintf(buf + len, sizeof(buf) - len, "%s" STR_FMT, k ? ", " : "", STR_ARG(inst_id));
+                    if (n < 0 || (size_t)n >= sizeof(buf) - len) break;
+                    len += (size_t)n;
+                    const str_t auth_id = md_instance_auth_id(&sys.instance, info.instances[k]);
+                    has_auth |= !str_empty(auth_id) && !str_eq(auth_id, inst_id);
+                }
+                info_row("Instances");
+                ImGui::Text("%s  (%s%s)", fmt_count(num, sizeof(num), num_inst), buf, num_inst > max_ids ? ", ..." : "");
+
+                if (has_auth) {
+                    len = 0;
+                    buf[0] = '\0';
+                    for (size_t k = 0; k < MIN(num_inst, max_ids); ++k) {
+                        const str_t auth_id = md_instance_auth_id(&sys.instance, info.instances[k]);
+                        const int n = snprintf(buf + len, sizeof(buf) - len, "%s" STR_FMT, k ? ", " : "", STR_ARG(auth_id));
+                        if (n < 0 || (size_t)n >= sizeof(buf) - len) break;
+                        len += (size_t)n;
+                    }
+                    info_row("Author chains");
+                    ImGui::Text("%s%s", buf, num_inst > max_ids ? ", ..." : "");
+                }
+            }
+
+            char comps[64], atoms[64];
+            fmt_count_range(comps, sizeof(comps), info.min_comps, info.max_comps);
+            fmt_count_range(atoms, sizeof(atoms), info.min_atoms, info.max_atoms);
+            info_row(num_inst > 1 ? "Per instance" : "Size");
+            ImGui::Text("%s %s, %s atoms", comps, entity_kind_comp_noun(info.kind, info.max_comps), atoms);
+
+            if (num_inst > 1) {
+                const size_t total = md_system_atom_count(&sys);
+                info_row("Total");
+                ImGui::Text("%s atoms (%.1f%% of the system)", fmt_count(num, sizeof(num), info.num_atoms), total ? 100.0 * info.num_atoms / (double)total : 0.0);
+            }
+
+            // Mass, formula and contents of the first instance, the others are alike by construction
+            if (num_inst > 0) {
+                const int first = info.instances[0];
+                const md_urange_t atom_range = md_system_instance_atom_range(&sys, first);
+                const char* per = num_inst > 1 ? " each" : "";
+
+                info_row("Mass");
+                ImGui::Text("%s%s", fmt_mass(buf, sizeof(buf), atom_range_mass(sys, atom_range)), per);
+
+                hill_formula(buf, sizeof(buf), sys, atom_range);
+                if (buf[0]) {
+                    info_row("Formula");
+                    ImGui::Text("%s%s", buf, per);
+                }
+
+                if (info.kind == EntityKind_Protein || info.kind == EntityKind_NucleicAcid) {
+                    sequence_string(buf, 64, sys, first);
+                    info_row("Sequence");
+                    ImGui::TextUnformatted(buf);
+                } else {
+                    // Distinct component names
+                    const md_urange_t comp_range = md_system_instance_comp_range(&sys, first);
+                    const size_t max_names = 6;
+                    str_t names[max_names];
+                    size_t num_names = 0;
+                    bool more = false;
+                    for (uint32_t c = comp_range.beg; c < comp_range.end; ++c) {
+                        const str_t name = md_component_name(&sys.component, c);
+                        bool found = false;
+                        for (size_t k = 0; k < num_names; ++k) found |= str_eq(names[k], name);
+                        if (found) continue;
+                        if (num_names == max_names) { more = true; break; }
+                        names[num_names++] = name;
+                    }
+                    if (num_names > 0) {
+                        size_t len = 0;
+                        buf[0] = '\0';
+                        for (size_t k = 0; k < num_names; ++k) {
+                            const int n = snprintf(buf + len, sizeof(buf) - len, "%s" STR_FMT, k ? ", " : "", STR_ARG(names[k]));
+                            if (n < 0 || (size_t)n >= sizeof(buf) - len) break;
+                            len += (size_t)n;
+                        }
+                        info_row(num_names > 1 ? "Components" : "Component");
+                        ImGui::Text("%s%s", buf, more ? ", ..." : "");
+                    }
+                }
+            }
+
+            if (info.flags & (MD_FLAG_ISOMER_L | MD_FLAG_ISOMER_D)) {
+                info_row("Chirality");
+                ImGui::TextUnformatted((info.flags & MD_FLAG_ISOMER_L) ? "L" : "D");
+            }
+            if (info.flags & MD_FLAG_COARSE_GRAINED) {
+                info_row("Model");
+                ImGui::TextUnformatted("Coarse grained");
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Shift + click to select, Shift + right click to deselect, right click for options");
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+
+    void instance_tooltip(const ApplicationState& data, size_t e, size_t inst_idx) const {
+        const md_system_t& sys = data.mold.sys;
+        const EntityInfo& info = entities[e];
+        const str_t id      = md_instance_id(&sys.instance, inst_idx);
+        const str_t auth_id = md_instance_auth_id(&sys.instance, inst_idx);
+        const md_urange_t comp_range = md_system_instance_comp_range(&sys, inst_idx);
+        const md_urange_t atom_range = md_system_instance_atom_range(&sys, inst_idx);
+        const size_t num_comps = comp_range.end - comp_range.beg;
+        char buf[128], num[32];
+
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+        ImGui::Text("Instance " STR_FMT, STR_ARG(id));
+        if (!str_empty(auth_id) && !str_eq(auth_id, id)) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(author chain " STR_FMT ")", STR_ARG(auth_id));
+        }
+        ImGui::TextDisabled("Entity " STR_FMT ": %s", STR_ARG(md_entity_id(&sys.entity, e)), info.name);
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("##instance_info", 2, ImGuiTableFlags_SizingFixedFit)) {
+            info_row(entity_kind_comp_noun(info.kind, num_comps, true));
+            if (num_comps > 1) {
+                ImGui::Text("%s  (%d - %d)", fmt_count(num, sizeof(num), num_comps),
+                    md_component_seq_id(&sys.component, comp_range.beg), md_component_seq_id(&sys.component, comp_range.end - 1));
+            } else {
+                ImGui::Text("%s", fmt_count(num, sizeof(num), num_comps));
+            }
+
+            info_row("Atoms");
+            ImGui::Text("%s", fmt_count(num, sizeof(num), atom_range.end - atom_range.beg));
+
+            info_row("Mass");
+            ImGui::TextUnformatted(fmt_mass(buf, sizeof(buf), atom_range_mass(sys, atom_range)));
+
+            hill_formula(buf, sizeof(buf), sys, atom_range);
+            if (buf[0]) {
+                info_row("Formula");
+                ImGui::TextUnformatted(buf);
+            }
+
+            if (info.kind == EntityKind_Protein || info.kind == EntityKind_NucleicAcid) {
+                sequence_string(buf, 64, sys, inst_idx);
+                info_row("Sequence");
+                ImGui::TextUnformatted(buf);
+            }
+            ImGui::EndTable();
+        }
+        if (info.derived) {
+            ImGui::TextDisabled("Grouped on load, the instance ID is generated");
+        }
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+
+    void component_tooltip(const ApplicationState& data, size_t e, size_t inst_idx, size_t comp_idx) const {
+        const md_system_t& sys = data.mold.sys;
+        const EntityInfo& info = entities[e];
+        const str_t name = md_component_name(&sys.component, comp_idx);
+        const md_flags_t flags = md_component_flags(&sys.component, comp_idx);
+        const int code = comp_idx < md_array_size(comp_code) ? comp_code[comp_idx] : -1;
+        const md_urange_t atom_range = md_system_component_atom_range(&sys, comp_idx);
+
+        ImGui::BeginTooltip();
+        ImGui::Text(STR_FMT " %d", STR_ARG(name), md_component_seq_id(&sys.component, comp_idx));
+        if (code >= 0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%c, %s", residue_codes[code].code, residue_class_label(residue_codes[code].cls));
+        }
+
+        const bool nucleic = info.kind == EntityKind_NucleicAcid;
+        char num[32];
+        ImGui::Text("%s atoms%s%s", fmt_count(num, sizeof(num), atom_range.end - atom_range.beg),
+            (flags & MD_FLAG_TERMINAL_BEG) ? (nucleic ? ", 5' terminus" : ", N-terminus") : "",
+            (flags & MD_FLAG_TERMINAL_END) ? (nucleic ? ", 3' terminus" : ", C-terminus") : "");
+        ImGui::TextDisabled("Instance " STR_FMT ", entity " STR_FMT, STR_ARG(md_instance_id(&sys.instance, inst_idx)), STR_ARG(md_entity_id(&sys.entity, e)));
+        ImGui::EndTooltip();
+    }
+
+    // ## Settings
+
+    static void residue_color_legend() {
+        ImGui::TextDisabled("Amino acids by Clustal X class, nucleotides by base");
+        const float sz = ImGui::GetTextLineHeight();
+        for (int cls = ResidueClass_Hydrophobic; cls < ResidueClass_Count; ++cls) {
+            if (cls == ResidueClass_Adenine) ImGui::Separator();
+
+            // The single letter codes of the class
+            char codes[32] = "";
+            size_t len = 0;
+            for (size_t i = 0; i < ARRAY_SIZE(residue_codes) && len + 2 < sizeof(codes); ++i) {
+                if (residue_codes[i].cls != cls) continue;
+                if (memchr(codes, residue_codes[i].code, len)) continue;
+                if (len) codes[len++] = ' ';
+                codes[len++] = residue_codes[i].code;
+                codes[len] = '\0';
+            }
+
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + sz, p.y + sz), residue_class_color((ResidueClass)cls), 2.0f);
+            ImGui::Dummy(ImVec2(sz, sz));
+            ImGui::SameLine();
+            if (residue_class_is_nucleotide((ResidueClass)cls)) {
+                ImGui::TextUnformatted(residue_class_label((ResidueClass)cls));
+            } else {
+                ImGui::Text("%s (%s)", residue_class_label((ResidueClass)cls), codes);
+            }
+        }
+    }
+
+    void draw_menu_bar() {
+        if (!ImGui::BeginMenuBar()) return;
+        if (ImGui::BeginMenu("Settings")) {
+            ImGui::SeparatorText("Sequences");
+            ImGui::MenuItem("Single letter residue codes", nullptr, &use_single_letter_codes);
+            ImGui::SetItemTooltip("Show the amino acids and nucleotides of proteins and nucleic acids by their single letter code.\n"
+                                  "Residues without a code keep their name.");
+            ImGui::MenuItem("Color residues by type", nullptr, &color_residues);
+            if (ImGui::BeginItemTooltip()) {
+                residue_color_legend();
+                ImGui::EndTooltip();
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenuBar();
+    }
+
+    // ## Entities: entity > instance > component
+
+    // The components of a chain as a wrapped sequence of chips, single letter codes in groups of ten
+    void draw_sequence(ApplicationState& data, size_t e, size_t inst_idx) {
+        const md_system_t& sys = data.mold.sys;
+        const md_urange_t range = md_system_instance_comp_range(&sys, inst_idx);
+        if (range.beg >= range.end) return;
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float font      = ImGui::GetFontSize();
+        const float pad_x     = floorf(font * 0.2f);
+        const float pad_y     = 1.0f;
+        const float gap       = 1.0f;
+        const float group_gap = floorf(font * 0.5f);
+        const float h         = ImGui::GetTextLineHeight() + 2 * pad_y;
+        const float letter_w  = ImGui::CalcTextSize("W").x + 2 * pad_x;
+
+        const vec4_t sel = data.selection.color.selection.visible;
+        const vec4_t hl  = data.selection.color.highlight.visible;
+        const uint32_t sel_col    = ImGui::ColorConvertFloat4ToU32(ImVec4(sel.x, sel.y, sel.z, 1.0f));
+        const uint32_t hl_col     = ImGui::ColorConvertFloat4ToU32(ImVec4(hl.x, hl.y, hl.z, 0.6f));
+        const uint32_t plain_fill = ImGui::GetColorU32(ImGuiCol_FrameBg);
+        const uint32_t text_col   = color_residues ? IM_COL32(20, 20, 20, 255) : ImGui::GetColorU32(ImGuiCol_Text);
+
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const float  max_x  = origin.x + ImGui::GetContentRegionAvail().x;
+        ImVec2 p = origin;
+
+        for (uint32_t c = range.beg; c < range.end; ++c) {
+            const uint32_t n = c - range.beg;
+            const int code = c < md_array_size(comp_code) ? comp_code[c] : -1;
+
+            char  lbl[16];
+            float w;
+            if (use_single_letter_codes && code >= 0) {
+                lbl[0] = residue_codes[code].code;
+                lbl[1] = '\0';
+                w = letter_w;
+                if (n > 0 && n % 10 == 0) p.x += group_gap;
+            } else {
+                str_copy_to_char_buf(lbl, sizeof(lbl), md_component_name(&sys.component, c));
+                w = ImGui::CalcTextSize(lbl).x + 2 * pad_x;
+            }
+
+            if (p.x + w > max_x && p.x > origin.x) {
+                p.x  = origin.x;
+                p.y += h + gap;
+            }
+            const ImVec2 a = p;
+            const ImVec2 b = ImVec2(p.x + w, p.y + h);
+            p.x += w + gap;
+
+            if (!ImGui::IsRectVisible(a, b)) continue;
+
+            ImGui::SetCursorScreenPos(a);
+            ImGui::PushID((int)c);
+            ImGui::InvisibleButton("##res", ImVec2(w, h));
+            const bool hovered = ImGui::IsItemHovered();
+            const bool tooltip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
+            target_interaction(data, Target_Component, c, hovered);
+            if (tooltip) component_tooltip(data, e, inst_idx, c);
+            ImGui::PopID();
+
+            // Reflects the selection and what is hovered in the viewport
+            const md_urange_t atoms = md_system_component_atom_range(&sys, c);
+            const bool has_atoms   = atoms.beg < atoms.end;
+            const bool selected    = has_atoms && md_bitfield_test_bit(&data.selection.selection_mask, atoms.beg);
+            const bool highlighted = hovered || (has_atoms && md_bitfield_test_bit(&data.selection.highlight_mask, atoms.beg));
+
+            const uint32_t fill = color_residues ? residue_class_color(code >= 0 ? residue_codes[code].cls : ResidueClass_Unknown) : plain_fill;
+            dl->AddRectFilled(a, b, fill, 2.0f);
+            if (highlighted) dl->AddRectFilled(a, b, hl_col, 2.0f);
+            if (selected)    dl->AddRect(a, b, sel_col, 2.0f, 0, 2.0f);
+            dl->AddText(ImVec2(a.x + pad_x, a.y + pad_y), text_col, lbl);
+        }
+
+        // Claim the space the sequence occupies
+        ImGui::SetCursorScreenPos(ImVec2(origin.x, p.y + h));
+        ImGui::Dummy(ImVec2(0.0f, gap));
+    }
+
+    // Components of an instance which is not a chain (e.g. a group of water molecules), one row each
+    void draw_component_list(ApplicationState& data, size_t e, size_t inst_idx) {
+        const md_system_t& sys = data.mold.sys;
+        const md_urange_t range = md_system_instance_comp_range(&sys, inst_idx);
+
+        ImGuiListClipper clipper;
+        clipper.Begin((int)(range.end - range.beg));
+        while (clipper.Step()) {
+            for (int k = clipper.DisplayStart; k < clipper.DisplayEnd; ++k) {
+                const size_t c = range.beg + (size_t)k;
+                ImGui::PushID((int)c);
+                const float right_x = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+                const str_t name = md_component_name(&sys.component, c);
+                ImGui::TreeNodeEx("##comp", ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen,
+                    STR_FMT " %d", STR_ARG(name), md_component_seq_id(&sys.component, c));
+                const bool hovered = ImGui::IsItemHovered();
+                const bool tooltip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
+                target_interaction(data, Target_Component, c, hovered);
+                if (tooltip) component_tooltip(data, e, inst_idx, c);
+
+                char num[32], txt[64];
+                const size_t num_atoms = md_component_atom_count(&sys.component, c);
+                snprintf(txt, sizeof(txt), "%s %s", fmt_count(num, sizeof(num), num_atoms), num_atoms == 1 ? "atom" : "atoms");
+                right_aligned_disabled(right_x, txt);
+                ImGui::PopID();
+            }
+        }
+        clipper.End();
+    }
+
+    void draw_instance(ApplicationState& data, size_t e, int inst_idx) {
+        const md_system_t& sys = data.mold.sys;
+        const EntityInfo& info = entities[e];
+
+        ImGui::PushID(inst_idx);
+        defer { ImGui::PopID(); };
+
+        const str_t id      = md_instance_id(&sys.instance, inst_idx);
+        const str_t auth_id = md_instance_auth_id(&sys.instance, inst_idx);
+        const md_urange_t comp_range = md_system_instance_comp_range(&sys, inst_idx);
+        const size_t num_comps = comp_range.end - comp_range.beg;
+        const size_t num_atoms = md_system_instance_atom_count(&sys, inst_idx);
+        const bool   leaf      = num_comps <= 1;
+
+        char label[128];
+        size_t len = (size_t)MAX(0, snprintf(label, sizeof(label), STR_FMT, STR_ARG(id)));
+        if (!str_empty(auth_id) && !str_eq(auth_id, id) && len < sizeof(label)) {
+            len += (size_t)MAX(0, snprintf(label + len, sizeof(label) - len, " (auth " STR_FMT ")", STR_ARG(auth_id)));
+        }
+        if (leaf && num_comps == 1 && len < sizeof(label)) {
+            snprintf(label + len, sizeof(label) - len, "  " STR_FMT, STR_ARG(md_component_name(&sys.component, comp_range.beg)));
+        }
+
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (leaf) {
+            flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        } else if (md_array_size(info.instances) == 1 && entity_kind_is_sequence(info.kind)) {
+            flags |= ImGuiTreeNodeFlags_DefaultOpen;
+        }
+
+        const float right_x = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        const bool open    = ImGui::TreeNodeEx("##inst", flags, "%s", label);
+        const bool hovered = ImGui::IsItemHovered();
+        const bool tooltip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
+        target_interaction(data, Target_Instance, inst_idx, hovered);
+        if (tooltip) instance_tooltip(data, e, inst_idx);
+
+        char n0[32], n1[32], txt[96];
+        if (leaf) {
+            snprintf(txt, sizeof(txt), "%s atoms", fmt_count(n0, sizeof(n0), num_atoms));
+        } else {
+            snprintf(txt, sizeof(txt), "%s %s, %s atoms", fmt_count(n0, sizeof(n0), num_comps), entity_kind_comp_noun(info.kind, num_comps), fmt_count(n1, sizeof(n1), num_atoms));
+        }
+        right_aligned_disabled(right_x, txt);
+
+        if (open && !leaf) {
+            if (entity_kind_is_sequence(info.kind)) {
+                draw_sequence(data, e, inst_idx);
+            } else {
+                draw_component_list(data, e, inst_idx);
+            }
+            ImGui::TreePop();
+        }
+    }
+
+    void draw_entities(ApplicationState& data) {
+        const md_system_t& sys = data.mold.sys;
+        const size_t num_entities = md_system_entity_count(&sys);
+        if (num_entities == 0 || md_array_size(entities) != num_entities) return;
+
+        char header[64];
+        snprintf(header, sizeof(header), "Entities (%zu)###Entities", num_entities);
+        if (!ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+        for (size_t e = 0; e < num_entities; ++e) {
+            const EntityInfo& info = entities[e];
+            const size_t num_inst = md_array_size(info.instances);
+            if (num_inst == 0) continue;
+
+            ImGui::PushID((int)e);
+            defer { ImGui::PopID(); };
+
+            const str_t id = md_entity_id(&sys.entity, e);
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
+            if (num_entities == 1) flags |= ImGuiTreeNodeFlags_DefaultOpen;
+
+            const float right_x = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+            const bool open    = ImGui::TreeNodeEx("##entity", flags, STR_FMT "  %s", STR_ARG(id), info.name);
+            const bool hovered = ImGui::IsItemHovered();
+            const bool tooltip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
+            target_interaction(data, Target_Entity, e, hovered);
+            if (tooltip) entity_tooltip(data, e);
+
+            // The kind next to the name, unless the name already is the kind
+            {
+                const char* kind = entity_kind_label(info.kind);
+                const bool name_is_kind = str_eq_cstr_ignore_case(str_from_cstr(info.name), kind);
+                char txt[64] = "";
+                if (!name_is_kind) {
+                    snprintf(txt, sizeof(txt), "%s%s", kind, info.derived ? ", derived" : "");
+                } else if (info.derived) {
+                    snprintf(txt, sizeof(txt), "derived");
+                }
+                if (txt[0]) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", txt);
+                }
+            }
+
+            {
+                char n0[32], n1[32], txt[128];
+                size_t len = 0;
+                if (num_inst > 1) {
+                    len += (size_t)MAX(0, snprintf(txt + len, sizeof(txt) - len, "%s instances, ", fmt_count(n0, sizeof(n0), num_inst)));
+                } else if (!entity_kind_is_sequence(info.kind) && info.num_comps > 1) {
+                    len += (size_t)MAX(0, snprintf(txt + len, sizeof(txt) - len, "%s %s, ", fmt_count(n0, sizeof(n0), info.num_comps), entity_kind_comp_noun(info.kind, info.num_comps)));
+                }
+                if (len < sizeof(txt)) {
+                    snprintf(txt + len, sizeof(txt) - len, "%s atoms", fmt_count(n1, sizeof(n1), info.num_atoms));
+                }
+                right_aligned_disabled(right_x, txt);
+            }
+
+            if (open) {
+                if (info.max_comps <= 1) {
+                    // Every instance is a single component (ions, lipids, small molecules), possibly thousands of them
+                    ImGuiListClipper clipper;
+                    clipper.Begin((int)num_inst);
+                    while (clipper.Step()) {
+                        for (int k = clipper.DisplayStart; k < clipper.DisplayEnd; ++k) {
+                            draw_instance(data, e, info.instances[k]);
+                        }
+                    }
+                    clipper.End();
+                } else {
+                    for (size_t k = 0; k < num_inst; ++k) {
+                        draw_instance(data, e, info.instances[k]);
+                    }
+                }
+                ImGui::TreePop();
+            }
+        }
+        ImGui::Spacing();
+    }
+
+    // ## Atom types
+
+    static constexpr float atom_type_min_mass   = 1.0f;
+    static constexpr float atom_type_max_mass   = 500.0f;
+    static constexpr float atom_type_min_radius = 0.1f;
+    static constexpr float atom_type_max_radius = 20.0f;
+
+    // Restore an atom type to its state right after loading: what the loader assigned, with the customized element
+    // defaults pushed on top if it is linked to them (see on_system_init). This is the baseline compute_atom_type_delta
+    // diffs against, so a reset type is no longer written to the workspace.
+    void reset_atom_type(ApplicationState& data, size_t i, bool& radius_changed, bool& color_changed, bool& mass_changed) {
+        md_atom_type_data_t& type = data.mold.sys.atom.type;
+        DatasetItem& item = atom_types[i];
+        const AtomTypeLoadState& load = item.load;
+
+        float    radius = load.radius;
+        float    mass   = load.mass;
+        uint32_t color  = load.color;
+
+        item.use_defaults = !(load.flags & MD_FLAG_COARSE_GRAINED);
+        if (item.use_defaults) {
+            const ElementDefaultDelta ed = compute_element_default_delta(load.z);
+            const ElementDefault& def = element_defaults[load.z];
+            if (ed.radius) radius = def.radius;
+            if (ed.mass)   mass   = def.mass;
+            if (ed.color)  color  = u32_from_vec4(def.color);
+        }
+
+        radius_changed |= type.radius[i] != radius;
+        mass_changed   |= type.mass[i]   != mass;
+        color_changed  |= type.color[i]  != color || type.z[i] != load.z;
+
+        type.z[i]      = load.z;
+        type.radius[i] = radius;
+        type.mass[i]   = mass;
+        type.color[i]  = color;
+        type.flags[i]  = (type.flags[i] & ~MD_FLAG_COARSE_GRAINED) | (load.flags & MD_FLAG_COARSE_GRAINED);
+    }
+
+    // Push the element defaults onto an atom type which is linked to them
+    void link_atom_type_to_element(ApplicationState& data, size_t i, bool& radius_changed, bool& color_changed, bool& mass_changed) {
+        md_atom_type_data_t& type = data.mold.sys.atom.type;
+        const ElementDefault& def = element_defaults[type.z[i]];
+        const uint32_t color = u32_from_vec4(def.color);
+
+        radius_changed |= type.radius[i] != def.radius;
+        mass_changed   |= type.mass[i]   != def.mass;
+        color_changed  |= type.color[i]  != color;
+
+        type.radius[i] = def.radius;
+        type.mass[i]   = def.mass;
+        type.color[i]  = color;
+    }
+
+    void atom_type_tooltip(const ApplicationState& data, size_t i) const {
+        const md_atom_type_data_t& type = data.mold.sys.atom.type;
+        const DatasetItem& item = atom_types[i];
+        const bool cg = type.flags[i] & MD_FLAG_COARSE_GRAINED;
+        const str_t name    = md_atom_type_name(&type, i);
+        const str_t ff_type = md_atom_type_ff_type(&type, i);
+        char num[32];
+
+        ImGui::BeginTooltip();
+        ImGui::Text(STR_FMT, STR_ARG(name));
+        if (!str_empty(ff_type) && !str_eq(ff_type, name)) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("force field type " STR_FMT, STR_ARG(ff_type));
+        }
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("##atom_type_info", 2, ImGuiTableFlags_SizingFixedFit)) {
+            info_row("Element");
+            if (cg) {
+                ImGui::TextUnformatted("None, coarse grained bead");
+            } else {
+                const md_atomic_number_t z = type.z[i];
+                ImGui::Text(STR_FMT " (" STR_FMT ", %d)", STR_ARG(md_atomic_number_name(z)), STR_ARG(md_atomic_number_symbol(z)), (int)z);
+            }
+            info_row("Radius");
+            ImGui::Text("%.3f \xC3\x85", type.radius[i]);
+            info_row("Mass");
+            ImGui::Text("%.3f u", type.mass[i]);
+            info_row("Atoms");
+            ImGui::Text("%s (%.2f%%)", fmt_count(num, sizeof(num), item.count), item.fraction * 100.0f);
+            info_row("Properties");
+            ImGui::TextUnformatted(cg ? "Custom (coarse grained)" : item.use_defaults ? "From the element defaults" : "Custom");
+
+            const AtomTypeDelta delta = compute_atom_type_delta(type, item, i);
+            if (delta) {
+                char buf[128] = "";
+                size_t len = 0;
+                const char* parts[] = {
+                    delta.elem     ? "element"        : nullptr,
+                    delta.radius   ? "radius"         : nullptr,
+                    delta.mass     ? "mass"           : nullptr,
+                    delta.color    ? "color"          : nullptr,
+                    delta.coarse   ? "coarse grained" : nullptr,
+                    delta.defaults ? "linking"        : nullptr,
+                };
+                for (const char* part : parts) {
+                    if (!part) continue;
+                    const int n = snprintf(buf + len, sizeof(buf) - len, "%s%s", len ? ", " : "", part);
+                    if (n < 0 || (size_t)n >= sizeof(buf) - len) break;
+                    len += (size_t)n;
+                }
+                info_row("Modified");
+                ImGui::TextUnformatted(buf);
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("Shift + click to select, Shift + right click to deselect");
+        ImGui::EndTooltip();
+    }
+
+    // Columns of the atom type table. Used as the column user IDs, so sorting keeps working when columns are hidden
+    enum AtomTypeColumn {
+        AtomTypeCol_Type,
+        AtomTypeCol_Element,
+        AtomTypeCol_Radius,
+        AtomTypeCol_Mass,
+        AtomTypeCol_Atoms,
+        AtomTypeCol_Count
+    };
+
+    static int compare3(double a, double b) { return (a > b) - (a < b); }
+
+    int compare_atom_types(const md_atom_type_data_t& type, int a, int b, ImGuiID column) const {
+        const bool cg_a = type.flags[a] & MD_FLAG_COARSE_GRAINED;
+        const bool cg_b = type.flags[b] & MD_FLAG_COARSE_GRAINED;
+        switch (column) {
+        case AtomTypeCol_Type:     return strcmp(atom_types[a].label, atom_types[b].label);
+        case AtomTypeCol_Element:  return compare3(cg_a ? (int)MD_Z_Count : (int)type.z[a], cg_b ? (int)MD_Z_Count : (int)type.z[b]); // Beads have no element and go last
+        case AtomTypeCol_Radius:   return compare3(type.radius[a], type.radius[b]);
+        case AtomTypeCol_Mass:     return compare3(type.mass[a], type.mass[b]);
+        case AtomTypeCol_Atoms:    return compare3(atom_types[a].count, atom_types[b].count);
+        default: return 0;
+        }
+    }
+
+    // Order the atom types by the sort specs of the table. Without any specs (tri-state sorting) the loader order is restored.
+    void sort_atom_types(const md_atom_type_data_t& type, const ImGuiTableSortSpecs* specs) {
+        const size_t n = md_array_size(atom_type_order);
+        for (size_t k = 0; k < n; ++k) atom_type_order[k] = (int)k;
+        if (!specs || specs->SpecsCount == 0) return;
+
+        std::stable_sort(atom_type_order, atom_type_order + n, [&](int a, int b) {
+            for (int s = 0; s < specs->SpecsCount; ++s) {
+                const ImGuiTableColumnSortSpecs& spec = specs->Specs[s];
+                const int c = compare_atom_types(type, a, b, spec.ColumnUserID);
+                if (c) return spec.SortDirection == ImGuiSortDirection_Descending ? c > 0 : c < 0;
+            }
+            return false;
+        });
+    }
+
+    static void cell_text_right(const char* text, bool dim) {
+        const float w = ImGui::CalcTextSize(text).x;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - w);
+        ImGui::AlignTextToFramePadding();
+        if (dim) ImGui::TextDisabled("%s", text);
+        else     ImGui::TextUnformatted(text);
+    }
+
+    // Editor of the selected atom type, shown below the table
+    void draw_atom_type_editor(ApplicationState& data, size_t i, bool& radius_changed, bool& color_changed, bool& mass_changed) {
+        md_atom_type_data_t& type = data.mold.sys.atom.type;
+        DatasetItem& item = atom_types[i];
+
+        ImGui::PushID("##atom_type_editor");
+        ImGui::PushID((int)i);
+        defer { ImGui::PopID(); ImGui::PopID(); };
+
+        {
+            char title[64];
+            snprintf(title, sizeof(title), "%s%s", item.label, compute_atom_type_delta(type, item, i) ? " *" : "");
+            ImGui::SeparatorText(title);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+                atom_type_tooltip(data, i);
+            }
+        }
+
+        bool coarse_grained = type.flags[i] & MD_FLAG_COARSE_GRAINED;
+        if (ImGui::Checkbox("Coarse grained", &coarse_grained)) {
+            if (coarse_grained) {
+                type.flags[i] |=  MD_FLAG_COARSE_GRAINED;
+            } else {
+                type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
+            }
+        }
+
+        if (!coarse_grained) {
+            const md_atomic_number_t z = type.z[i];
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Element");
+            ImGui::SameLine();
+            if (element_button(str_ptr(md_atomic_number_symbol(z)), element_defaults[z].color)) {
+                ImGui::OpenPopup("##element_popup");
+            }
+            ImGui::SetItemTooltip(STR_FMT ", click to change", STR_ARG(md_atomic_number_name(z)));
+            if (ImGui::BeginPopup("##element_popup")) {
+                const PeriodicTableResult res = periodic_table_widget(element_defaults);
+                if (res.clicked && res.z >= 0) {
+                    color_changed |= type.z[i] != (md_atomic_number_t)res.z;
+                    type.z[i] = (md_atomic_number_t)res.z;
+                    if (item.use_defaults) {
+                        link_atom_type_to_element(data, i, radius_changed, color_changed, mass_changed);
+                    }
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Use element defaults", &item.use_defaults) && item.use_defaults) {
+                // Relinking takes the element defaults as they currently are, including the user's edits of them
+                link_atom_type_to_element(data, i, radius_changed, color_changed, mass_changed);
+            }
+            ImGui::SetItemTooltip("Take radius, mass and color from the element defaults and follow them when those are edited");
+        } else {
+            item.use_defaults = false; // Coarse grained types always carry custom properties
+        }
+
+        // Editing a value of a linked type unlinks it, as the value no longer follows the element defaults
+        const ImGuiSliderFlags slider_flags = ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_NoRoundToFormat | ImGuiSliderFlags_AlwaysClamp;
+        bool edited = false;
+        if (ImGui::SliderFloat("Radius", &type.radius[i], atom_type_min_radius, atom_type_max_radius, "%.3f \xC3\x85", slider_flags)) {
+            radius_changed = edited = true;
+        }
+        ImGui::SetItemTooltip("Ctrl + click to enter a value");
+        if (ImGui::SliderFloat("Mass", &type.mass[i], atom_type_min_mass, atom_type_max_mass, "%.3f u", slider_flags)) {
+            mass_changed = edited = true;
+        }
+        ImGui::SetItemTooltip("Ctrl + click to enter a value");
+        ImVec4 color = ImColor(type.color[i]);
+        if (ImGui::ColorEdit4("Color", &color.x)) {
+            type.color[i] = ImColor(color);
+            color_changed = edited = true;
+        }
+        if (edited) item.use_defaults = false;
+
+        if (item.use_defaults) {
+            ImGui::TextDisabled("The values follow the element defaults, editing one unlinks the type");
+        }
+
+        if (compute_atom_type_delta(type, item, i)) {
+            if (ImGui::Button("Reset")) {
+                reset_atom_type(data, i, radius_changed, color_changed, mass_changed);
+            }
+            ImGui::SetItemTooltip("Restore what was loaded");
+        }
+    }
+
+    void draw_atom_types(ApplicationState& data, bool& radius_changed, bool& color_changed, bool& mass_changed) {
+        md_system_t& sys = data.mold.sys;
+        md_atom_type_data_t& type = sys.atom.type;
+        const size_t num_types = md_system_atom_type_count(&sys);
+        if (num_types == 0 || md_array_size(atom_types) != num_types) return;
+
+        // The sentinel "unknown" type is only listed when used
+        const size_t first = atom_types[0].count == 0 ? 1 : 0;
+
+        char header[64];
+        snprintf(header, sizeof(header), "Atom Types (%zu)###AtomTypes", num_types - first);
+        if (!ImGui::CollapsingHeader(header)) return;
+
+        if (atom_type_selected >= (int)num_types) atom_type_selected = -1;
+
+        size_t num_modified = 0;
+        for (size_t i = first; i < num_types; ++i) {
+            num_modified += compute_atom_type_delta(type, atom_types[i], i) ? 1 : 0;
+        }
+
+        const bool show_filter = num_types - first > 8;
+        if (show_filter || num_modified) {
+            char reset_lbl[48] = "";
+            float reset_w = 0;
+            if (num_modified) {
+                snprintf(reset_lbl, sizeof(reset_lbl), "Reset %zu modified", num_modified);
+                reset_w = ImGui::CalcTextSize(reset_lbl).x + ImGui::GetStyle().FramePadding.x * 2;
+            }
+            if (show_filter) {
+                ImGui::SetNextItemWidth(num_modified ? -(reset_w + ImGui::GetStyle().ItemSpacing.x) : -FLT_MIN);
+                ImGui::InputTextWithHint("##atom_type_filter", "Filter by name or element", atom_type_filter, sizeof(atom_type_filter));
+                if (num_modified) ImGui::SameLine();
+            }
+            if (num_modified) {
+                if (ImGui::Button(reset_lbl)) {
+                    for (size_t i = first; i < num_types; ++i) {
+                        if (compute_atom_type_delta(type, atom_types[i], i)) {
+                            reset_atom_type(data, i, radius_changed, color_changed, mass_changed);
+                        }
+                    }
+                }
+                ImGui::SetItemTooltip("Restore the modified atom types (marked *) to what was loaded");
+            }
+        }
+        const str_t filter = show_filter ? str_trim(str_from_cstr(atom_type_filter)) : STR_LIT("");
+
+        auto passes_filter = [&](size_t i) {
+            if (i < first) return false;
+            if (str_empty(filter)) return true;
+            const bool cg = type.flags[i] & MD_FLAG_COARSE_GRAINED;
+            return contains_ignore_case(str_from_cstr(atom_types[i].label), filter) || (!cg && str_eq_ignore_case(md_atomic_number_symbol(type.z[i]), filter));
+        };
+
+        size_t num_rows = 0;
+        for (size_t i = 0; i < num_types; ++i) {
+            num_rows += passes_filter(i) ? 1 : 0;
+        }
+
+        if (num_rows == 0) {
+            ImGui::TextDisabled("No atom type matches the filter");
+        } else {
+            draw_atom_type_table(data, num_rows, passes_filter, radius_changed, color_changed, mass_changed);
+        }
+
+        // The editor stays when the filter hides the selected type, its header tells which type it is
+        if (atom_type_selected >= 0) {
+            draw_atom_type_editor(data, (size_t)atom_type_selected, radius_changed, color_changed, mass_changed);
+        } else {
+            ImGui::TextDisabled("Select an atom type to edit it");
+        }
+        ImGui::Spacing();
+    }
+
+    template <typename Filter>
+    void draw_atom_type_table(ApplicationState& data, size_t num_rows, const Filter& passes_filter, bool& radius_changed, bool& color_changed, bool& mass_changed) {
+        md_atom_type_data_t& type = data.mold.sys.atom.type;
+        const size_t num_types = md_system_atom_type_count(&data.mold.sys);
+
+        if (md_array_size(atom_type_order) != num_types) {
+            md_array_resize(atom_type_order, num_types, arena);
+            for (size_t k = 0; k < num_types; ++k) atom_type_order[k] = (int)k;
+            atom_type_resort = true;
+        }
+
+        // Rows hold frame sized widgets, the table scrolls once there are more than fit in max_rows
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float  frame_h  = ImGui::GetFrameHeight();
+        const float  row_h    = frame_h + style.CellPadding.y * 2.0f;
+        const float  header_h = ImGui::GetFontSize() + style.CellPadding.y * 2.0f;
+        const size_t max_rows = 12;
+        const ImVec2 outer_size(0.0f, header_h + row_h * (float)MIN(num_rows, max_rows) + 2.0f);
+
+        const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerV |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortTristate |
+            ImGuiTableFlags_SizingFixedFit;
+        if (!ImGui::BeginTable("##atom_types", AtomTypeCol_Count, table_flags, outer_size)) return;
+
+        const float value_w = ImGui::CalcTextSize("000.000").x;
+        const float swatch  = floorf(ImGui::GetTextLineHeight() * 0.75f);
+        const float elem_w  = swatch + style.ItemSpacing.x + ImGui::CalcTextSize("Wm").x;
+
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("Type",    ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_NoHide, 0.0f, AtomTypeCol_Type);
+        ImGui::TableSetupColumn("Element", ImGuiTableColumnFlags_WidthFixed, elem_w,  AtomTypeCol_Element);
+        ImGui::TableSetupColumn("Radius",  ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_PreferSortDescending, value_w, AtomTypeCol_Radius);
+        ImGui::TableSetupColumn("Mass",    ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_PreferSortDescending, value_w, AtomTypeCol_Mass);
+        ImGui::TableSetupColumn("Atoms",   ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_PreferSortDescending, 0.0f,    AtomTypeCol_Atoms);
+
+        // Headers are submitted one by one to give them tooltips
+        static const char* header_tips[AtomTypeCol_Count] = {
+            "Name of the atom type (force field type), * marks modified types\nClick a row to edit the type, right click for more options",
+            "Color and element, CG for coarse grained beads which have no element",
+            "Radius in \xC3\x85ngstr\xC3\xB6m, dimmed when taken from the element defaults",
+            "Mass in atomic mass units, dimmed when taken from the element defaults",
+            "Number of atoms of the type (share of all atoms)",
+        };
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        for (int c = 0; c < AtomTypeCol_Count; ++c) {
+            if (!ImGui::TableSetColumnIndex(c)) continue;
+            ImGui::TableHeader(ImGui::TableGetColumnName(c));
+            ImGui::SetItemTooltip("%s", header_tips[c]);
+        }
+
+        // Sorted when the specs change, not when values are edited, so a row does not move away while it is being edited
+        if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
+            if (specs->SpecsDirty || atom_type_resort) {
+                sort_atom_types(type, specs);
+                specs->SpecsDirty = false;
+                atom_type_resort  = false;
+            }
+        }
+
+        if (ImGui::IsWindowHovered()) {
+            md_bitfield_clear(&data.selection.highlight_mask);
+        }
+
+        md_temp_scope_t temp = md_temp_begin();
+        defer { md_temp_end(temp); };
+        md_array(int) rows = 0;
+        md_array_ensure(rows, num_rows, md_temp_allocator(temp));
+        for (size_t k = 0; k < num_types; ++k) {
+            const int i = atom_type_order[k];
+            if (passes_filter((size_t)i)) md_array_push(rows, i, md_temp_allocator(temp));
+        }
+
+        ImGuiListClipper clipper;
+        clipper.Begin((int)md_array_size(rows), row_h);
+        while (clipper.Step()) {
+            for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+                const size_t i = (size_t)rows[r];
+                DatasetItem& item = atom_types[i];
+                const bool cg       = type.flags[i] & MD_FLAG_COARSE_GRAINED;
+                const bool linked   = item.use_defaults && !cg;
+                const bool modified = (bool)compute_atom_type_delta(type, item, i);
+                const bool selected = atom_type_selected == (int)i;
+
+                ImGui::PushID((int)i);
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, row_h);
+
+                // Type: spans the row for hovering and selection
+                ImGui::TableSetColumnIndex(AtomTypeCol_Type);
+                {
+                    char lbl[48];
+                    snprintf(lbl, sizeof(lbl), "%s%s", item.label, modified ? " *" : "");
+                    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
+                    // Shift + click is taken by the selection of atoms (handle_item_click)
+                    if (ImGui::Selectable(lbl, selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, frame_h)) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                        atom_type_selected = selected ? -1 : (int)i;
+                    }
+                    ImGui::PopStyleVar();
+
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem)) {
+                        md_bitfield_clear(&data.selection.highlight_mask);
+                        md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
+                        handle_item_click(data);
+                        // Shift + right click is taken by deselect
+                        if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                            ImGui::OpenPopup("##atom_type_menu");
+                        }
+                    }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+                        atom_type_tooltip(data, i);
+                    }
+                    if (ImGui::BeginPopup("##atom_type_menu")) {
+                        ImGui::TextUnformatted(item.label);
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Reset", nullptr, false, modified)) {
+                            reset_atom_type(data, i, radius_changed, color_changed, mass_changed);
+                        }
+                        ImGui::SetItemTooltip("Restore what was loaded");
+                        if (ImGui::MenuItem("Link to element defaults", nullptr, false, !cg && !item.use_defaults)) {
+                            item.use_defaults = true;
+                            link_atom_type_to_element(data, i, radius_changed, color_changed, mass_changed);
+                        }
+                        ImGui::EndPopup();
+                    }
+                }
+
+                // Element: swatch in the color of the type and the symbol
+                if (ImGui::TableSetColumnIndex(AtomTypeCol_Element)) {
+                    const ImVec2 p  = ImGui::GetCursorScreenPos();
+                    const float off = floorf((frame_h - swatch) * 0.5f);
+                    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + off), ImVec2(p.x + swatch, p.y + off + swatch), type.color[i] | IM_COL32_A_MASK, 2.0f);
+                    ImGui::Dummy(ImVec2(swatch, frame_h));
+                    ImGui::SameLine();
+                    ImGui::AlignTextToFramePadding();
+                    if (cg) {
+                        ImGui::TextDisabled("CG");
+                    } else {
+                        ImGui::Text(STR_FMT, STR_ARG(md_atomic_number_symbol(type.z[i])));
+                    }
+                }
+
+                // Values taken from the element defaults are dimmed
+                char buf[48];
+                if (ImGui::TableSetColumnIndex(AtomTypeCol_Radius)) {
+                    snprintf(buf, sizeof(buf), "%.3f", type.radius[i]);
+                    cell_text_right(buf, linked);
+                }
+                if (ImGui::TableSetColumnIndex(AtomTypeCol_Mass)) {
+                    snprintf(buf, sizeof(buf), "%.3f", type.mass[i]);
+                    cell_text_right(buf, linked);
+                }
+                if (ImGui::TableSetColumnIndex(AtomTypeCol_Atoms)) {
+                    char num[32];
+                    snprintf(buf, sizeof(buf), "%s (%.1f%%)", fmt_count(num, sizeof(num), item.count), item.fraction * 100.0f);
+                    cell_text_right(buf, false);
+                }
+
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTable();
+    }
+
+    // ## Element defaults
+
+    void draw_element_defaults(ApplicationState& data, bool& radius_changed, bool& color_changed, bool& mass_changed) {
+        md_system_t& sys = data.mold.sys;
+        md_atom_type_data_t& type = sys.atom.type;
+        const size_t num_types = md_system_atom_type_count(&sys);
+        if (num_types == 0 || md_array_size(atom_types) != num_types) return;
+
+        // Elements used by atom types linked to the defaults, the others are shown disabled
+        uint64_t elem_mask[2] = { 0 };
+        for (size_t i = 0; i < num_types; ++i) {
+            const int z = type.z[i];
+            if (atom_types[i].use_defaults && atom_types[i].count > 0) {
+                elem_mask[z / 64] |= (1ULL << (z % 64));
+            }
+        }
+        if (!(elem_mask[0] || elem_mask[1])) return;
+        if (!ImGui::CollapsingHeader("Element Defaults")) return;
+
+        ImGui::Indent();
+        defer { ImGui::Unindent(); };
+
+        const PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
+        if (table_res.hovered) {
+            md_bitfield_clear(&data.selection.highlight_mask);
+            for (size_t i = 0; i < num_types; ++i) {
+                const DatasetItem& item = atom_types[i];
+                if (type.z[i] == table_res.z) {
+                    md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
+                }
+            }
+            handle_item_click(data);
+
+            if (table_res.clicked && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
+                ImGui::OpenPopup("##element_default_popup");
+                element_popup_z = table_res.z;
+            }
+        }
+        ImGui::TextDisabled("Click an element to edit its defaults, which apply to all atom types linked to them");
+
+        if (element_popup_z >= 0 && element_popup_z < MD_Z_Count && ImGui::BeginPopup("##element_default_popup")) {
+            const int z = element_popup_z;
+            const str_t sym  = md_atomic_number_symbol((md_atomic_number_t)z);
+            const str_t name = md_atomic_number_name((md_atomic_number_t)z);
+            ImGui::Text("%d: " STR_FMT " (" STR_FMT ")", z, STR_ARG(name), STR_ARG(sym));
+            ImGui::Separator();
+
+            ElementDefault& def = element_defaults[z];
+            bool edited = false;
+            edited |= ImGui::ColorEdit3("Color", def.color.elem);
+            if (ImGui::InputFloat("Van der Waals Radius", &def.radius)) {
+                def.radius = MAX(def.radius, 0.01f);
+                edited = true;
+            }
+            if (ImGui::InputFloat("Atomic Mass", &def.mass)) {
+                def.mass = MAX(def.mass, 0.001f);
+                edited = true;
+            }
+            if (compute_element_default_delta((md_atomic_number_t)z)) {
+                if (ImGui::Button("Reset")) {
+                    def.color  = vec4_from_u32(md_atomic_number_cpk_color((md_atomic_number_t)z));
+                    def.radius = md_atomic_number_vdw_radius((md_atomic_number_t)z);
+                    def.mass   = md_atomic_number_mass((md_atomic_number_t)z);
+                    edited = true;
+                }
+                ImGui::SetItemTooltip("Restore the built in values");
+            }
+
+            if (edited) {
+                // Push onto every atom type of this element which is linked to the defaults
+                for (size_t i = 0; i < num_types; ++i) {
+                    if (type.z[i] == z && atom_types[i].use_defaults) {
+                        link_atom_type_to_element(data, i, radius_changed, color_changed, mass_changed);
+                    }
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
+
+    void draw_element_mappings() {
+        const size_t num_mappings = md_array_size(atom_element_remappings);
+        if (num_mappings && ImGui::CollapsingHeader("Atom Element Mappings")) {
+            for (size_t i = 0; i < num_mappings; ++i) {
+                const auto& mapping = atom_element_remappings[i];
+                ImGui::Text("%s -> %s (%s)", mapping.lbl, md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
+            }
+        }
+    }
+
     void draw(ApplicationState& data) {
         if (!show_window) return;
 
         ImGui::SetNextWindowSize(ImVec2(500, 600), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("System", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+        if (ImGui::Begin("System", &show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
+            draw_menu_bar();
             draw_files(data);
             draw_contents(data);
 
@@ -1193,328 +2736,25 @@ struct Dataset : viamd::EventHandler {
             }
 
             draw_series(data);
+            draw_entities(data);
 
-            static bool use_short_labels = true;
+            bool radius_changed = false;
+            bool color_changed  = false;
+            bool mass_changed   = false;
 
-            size_t num_entities   = md_system_entity_count(&data.mold.sys);
-            size_t num_instances  = md_system_instance_count(&data.mold.sys);
-			size_t num_atom_types = md_system_atom_type_count(&data.mold.sys);
+            draw_atom_types(data, radius_changed, color_changed, mass_changed);
+            draw_element_defaults(data, radius_changed, color_changed, mass_changed);
 
-            ImGui::Checkbox("Use single letter codes for amino and nucleic acids", &use_short_labels);
-
-            if (num_entities && ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
-
-                for (size_t ent_idx = 0; ent_idx < num_entities; ++ent_idx) {
-                    char buf[256];
-                    str_t entity_id   = md_entity_id(&data.mold.sys.entity, ent_idx);
-                    str_t entity_desc = md_entity_description(&data.mold.sys.entity, ent_idx);
-                    md_flags_t entity_flags = md_entity_flags(&data.mold.sys.entity, ent_idx);
-                    bool short_comp_label = (entity_flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) && use_short_labels;
-
-                    snprintf(buf, sizeof(buf), STR_FMT ": " STR_FMT, STR_ARG(entity_id), STR_ARG(entity_desc));
-                    ImGui::Indent();
-
-                    bool expand_entity = ImGui::CollapsingHeader(buf);
-                    if (ImGui::IsItemHovered()) {
-                        md_bitfield_clear(&data.selection.highlight_mask);
-                        for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
-                            if (md_instance_entity_idx(&data.mold.sys.instance, inst_idx) == (int)ent_idx) {
-                                md_urange_t range = md_system_instance_atom_range(&data.mold.sys, inst_idx);
-                                md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
-                            }
-                        }
-                        handle_item_click(data);
-                    }
-                    if (expand_entity) {
-                        ImGui::Indent();
-                        for (size_t inst_idx = 0; inst_idx < num_instances; ++inst_idx) {
-                            if (md_instance_entity_idx(&data.mold.sys.instance, inst_idx) != (int)ent_idx) continue;
-                            ImGui::PushID((int)inst_idx);  // avoid ID collisions if names repeat
-                            defer { ImGui::PopID(); };
-
-                            str_t inst_id = md_instance_id(&data.mold.sys.instance, inst_idx);
-                            str_t auth_id = md_instance_auth_id(&data.mold.sys.instance, inst_idx);
-
-                            // If auth_id is supplied then show both assigned and author-provided IDs, otherwise just show the instance ID
-                            if (!str_empty(auth_id)) {
-                                snprintf(buf, sizeof(buf), STR_FMT " (" STR_FMT ")", STR_ARG(inst_id), STR_ARG(auth_id));
-                            } else {
-                                snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(inst_id));
-                            }
-                            bool expand_inst = ImGui::CollapsingHeader(buf);
-                            if (ImGui::IsItemHovered()) {
-                                md_bitfield_clear(&data.selection.highlight_mask);
-                                md_urange_t range = md_system_instance_atom_range(&data.mold.sys, inst_idx);
-                                md_bitfield_set_range(&data.selection.highlight_mask, range.beg, range.end);
-                                handle_item_click(data);
-                            }
-                            if (expand_inst) {
-                                const ImGuiStyle& style = ImGui::GetStyle();
-                                md_urange_t range = md_system_instance_comp_range(&data.mold.sys, inst_idx);
-
-                                for (size_t comp_idx = range.beg; comp_idx < range.end; ++comp_idx) {
-                                    str_t comp_name = md_component_name(&data.mold.sys.component, comp_idx);
-
-                                    if (short_comp_label) {
-                                        uint32_t color = component_color(comp_name);
-                                        comp_name = convert_to_short(comp_name);
-                                        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
-                                        ImGui::PushStyleColor(ImGuiCol_Header, color);
-                                        ImGui::PushStyleColor(ImGuiCol_HeaderActive, color);
-                                    }
-
-                                    // Measure label + padding (match what we pass to Selectable)
-                                    ImVec2 text_sz = ImGui::CalcTextSize(str_beg(comp_name), str_end(comp_name));
-                                    ImVec2 item_sz(text_sz.x + style.ItemSpacing.x * 2.0f,
-                                        text_sz.y + style.ItemSpacing.x * 2.0f);
-
-                                    // Flow: stay on same line only if it fits to the right of the previous item
-                                    if (comp_idx != range.beg) {
-                                        float last_x = ImGui::GetItemRectMax().x; // right edge of previous item (screen coords)
-                                        float max_x  = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x; // window content right edge (screen coords)
-                                        if (last_x + style.ItemSpacing.x + item_sz.x <= max_x) {
-                                            ImGui::SameLine();
-                                        }
-                                    }
-
-                                    ImGui::PushID((int)comp_idx); // avoid ID collisions if names repeat
-                                    ImGui::Selectable(comp_name.ptr, true, 0, text_sz);
-                                    ImGui::PopID();
-
-                                    if (ImGui::IsItemHovered()) {
-                                        ImGui::SetTooltip("%d", md_component_seq_id(&data.mold.sys.component, comp_idx));
-                                    }
-
-                                    if (short_comp_label) {
-                                        ImGui::PopStyleVar();
-                                        ImGui::PopStyleColor(2);
-                                    }
-
-                                    if (ImGui::IsItemHovered()) {
-                                        md_bitfield_clear(&data.selection.highlight_mask);
-                                        md_urange_t atom_range = md_system_component_atom_range(&data.mold.sys, comp_idx);
-                                        md_bitfield_set_range(&data.selection.highlight_mask, atom_range.beg, atom_range.end);
-                                        handle_item_click(data);
-                                    }
-                                }
-                            }
-                        }
-                        ImGui::Unindent();
-                    }
-                    ImGui::Unindent();
-                }
-                ImGui::Separator();
+            if (radius_changed) {
+                data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
             }
-
-            if (num_atom_types) {
-                const float min_mass = 1.0f;
-                const float max_mass = 500.0f;
-
-                const float min_radius = 0.1f;
-                const float max_radius = 20.0f;
-
-                bool radius_changed = false;
-                bool color_changed  = false;
-                bool mass_changed   = false;
-
-                if (ImGui::CollapsingHeader("Atom Types")) {
-                    ImGui::Indent();
-                    for (size_t i = 0; i < num_atom_types; ++i) {
-                        DatasetItem& item = atom_types[i];
-                        if (i == 0 && item.count == 0) {
-                            // Skip sentinel "unknown" atom type if unused
-                            continue;
-                        }
-
-                        ImGui::PushID((int)i);
-                        defer{ ImGui::PopID(); };
-                        char buf_num[32];
-						snprintf(buf_num, sizeof(buf_num), "%d (%.2f%%)", item.count, item.fraction * 100.0f);
-                        char buf_tot[256];
-                        snprintf(buf_tot, sizeof(buf_tot), "%-4s %10s", item.label, buf_num);
-                        bool expand = ImGui::CollapsingHeader(buf_tot);
-                        if (ImGui::IsItemHovered()) {
-                            md_bitfield_clear(&data.selection.highlight_mask);
-                            md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
-                            if (ImGui::IsItemClicked()) {
-                                handle_item_click(data);
-                            }
-                        }
-                        if (expand) {
-                            bool coarse_grained = data.mold.sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED;
-                            if (ImGui::Checkbox("Coarse Grained", &coarse_grained)) {
-                                if (coarse_grained) {
-                                    data.mold.sys.atom.type.flags[i] |=  MD_FLAG_COARSE_GRAINED;
-                                } else {
-                                    data.mold.sys.atom.type.flags[i] &= ~MD_FLAG_COARSE_GRAINED;
-                                }
-                            }
-                            if (!(data.mold.sys.atom.type.flags[i] & MD_FLAG_COARSE_GRAINED)) {
-								str_t symbol = md_atomic_number_symbol((md_atomic_number_t)data.mold.sys.atom.type.z[i]);
-                                if (ImGui::Checkbox("Use element defaults", &item.use_defaults)) {
-                                    if (item.use_defaults) {
-										// If the user enables the use_defaults flag then we should set the values back to the element defaults
-                                        md_element_t elem = data.mold.sys.atom.type.z[i];
-										data.mold.sys.atom.type.radius[i] = md_util_element_vdw_radius(elem);
-										data.mold.sys.atom.type.mass[i]   = md_util_element_atomic_mass(elem);
-										data.mold.sys.atom.type.color[i]  = md_util_element_cpk_color(elem);
-										radius_changed = true;
-                                        color_changed = true;
-										mass_changed = true;
-                                    }
-                                }
-                                if (item.use_defaults) {
-                                    ImGui::SameLine();
-                                    int z = data.mold.sys.atom.type.z[i];
-                                    vec4_t color = element_defaults[z].color;
-                                    if (element_button(str_ptr(symbol), color)) {
-                                        ImGui::OpenPopup("Element Popup");
-                                    }
-                                }
-                                if (ImGui::BeginPopup("Element Popup")) {
-                                    PeriodicTableResult table_res = periodic_table_widget(element_defaults);
-                                    if (table_res.clicked) {
-                                        int z = table_res.z;
-                                        data.mold.sys.atom.type.z[i] = (md_atomic_number_t)table_res.z;
-                                        data.mold.sys.atom.type.color[i] = u32_from_vec4(element_defaults[z].color);
-                                        data.mold.sys.atom.type.radius[i] = element_defaults[z].radius;
-                                        data.mold.sys.atom.type.mass[i] = element_defaults[z].mass;
-
-										radius_changed = true;
-										color_changed = true;
-										mass_changed = true;
-                                        ImGui::CloseCurrentPopup();
-                                    }
-									ImGui::EndPopup();
-                                }
-                            } else {
-								item.use_defaults = false; // Coarse grained types always have custom properties
-                            }
-
-                            if (item.use_defaults) {
-                                ImGui::PushDisabled();
-                            }
-                            float* radius = &data.mold.sys.atom.type.radius[i];
-                            radius_changed |= ImGui::SliderFloat("Radius", radius, min_radius, max_radius);
-
-                            float* mass = &data.mold.sys.atom.type.mass[i];
-                            mass_changed |= ImGui::SliderFloat("Mass", mass, min_mass, max_mass);
-
-                            ImVec4 color = ImColor(data.mold.sys.atom.type.color[i]);
-                            if (ImGui::ColorEdit4("Color", &color.x)) {
-                                data.mold.sys.atom.type.color[i] = ImColor(color);
-                                color_changed = true;
-                            }
-
-                            if (item.use_defaults) {
-                                ImGui::PopDisabled();
-							}
-                        }
-                    }
-                    ImGui::Unindent();
-                }
-
-                // Keep track of what elements are used in the system
-				uint64_t elem_mask[2] = { 0 };
-
-                for (size_t i = 0; i < num_atom_types; ++i) {
-                    int z = data.mold.sys.atom.type.z[i];
-                    if (atom_types[i].use_defaults && atom_types[i].count > 0) {
-						elem_mask[z / 64] |= (1ULL << (z % 64));
-                    }
-                }
-
-                if ((elem_mask[0] || elem_mask[1]) && ImGui::CollapsingHeader("Element Defaults")) {
-                    ImGui::Indent();
-
-                    static int z = -1;
-					PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
-					if (table_res.hovered) {
-                        md_bitfield_clear(&data.selection.highlight_mask);
-                        for (size_t i = 0; i < num_atom_types; ++i) {
-							const DatasetItem& item = atom_types[i];
-                            if (data.mold.sys.atom.type.z[i] == table_res.z) {
-                                md_bitfield_set_indices_u32(&data.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
-                            }
-                        }
-                        handle_item_click(data);
-
-                        if (table_res.clicked && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                            ImGui::OpenPopup("Element Popup");
-							z = table_res.z;
-                        }
-                    }
-
-                    if (ImGui::BeginPopup("Element Popup")) {
-                        str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
-                        str_t name = md_atomic_number_name((md_atomic_number_t)z);
-                        char buf[64];
-                        snprintf(buf, sizeof(buf), "%d: %s (%s)", z, str_ptr(name), str_ptr(sym));
-                        ImGui::Text("%s", buf);
-                        ImGui::Separator();
-
-                        ElementDefault& elem_def = element_defaults[z];
-
-                        if (ImGui::ColorEdit3("Color", elem_def.color.elem)) {
-                            // Iterate and set color for all atom types that use this element and have use_defaults = true
-                            for (size_t i = 0; i < num_atom_types; ++i) {
-                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                    data.mold.sys.atom.type.color[i] = u32_from_vec4(elem_def.color);
-                                }
-                            }
-                            color_changed = true;
-                        }
-                        if (ImGui::InputFloat("Van der Waals Radius", &elem_def.radius)) {
-                            // Iterate and set radius for all atom types that use this element and have use_defaults = true
-                            for (size_t i = 0; i < num_atom_types; ++i) {
-                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                    data.mold.sys.atom.type.radius[i] = elem_def.radius;
-                                }
-                            }
-                            radius_changed = true;
-                        }
-                        if (ImGui::InputFloat("Atomic Mass", &elem_def.mass)) {
-                            // Iterate and set mass for all atom types that use this element and have use_defaults = true
-                            for (size_t i = 0; i < num_atom_types; ++i) {
-                                if (data.mold.sys.atom.type.z[i] == z && atom_types[i].use_defaults) {
-                                    data.mold.sys.atom.type.mass[i] = elem_def.mass;
-                                }
-                            }
-                            mass_changed = true;
-                        }
-
-                        ImGui::EndPopup();
-                    }
-                    ImGui::Unindent();
-                }
-
-                if (radius_changed) {
-                    data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
-                }
-
-                if (color_changed) {
-                    // @NOTE: Only the color within representations needs to be updated, not the filter.
-                    flag_all_representations_as_dirty(&data);
-                }
-                (void)mass_changed; // Currently mass is not used for rendering, but we track changes in case it's used for other purposes in the future
+            if (color_changed) {
+                // @NOTE: Only the color within representations needs to be updated, not the filter.
+                flag_all_representations_as_dirty(&data);
             }
+            (void)mass_changed; // Mass is not used for rendering, but tracked in case it is used for other purposes in the future
 
-
-            // Draw the three sections
-            //draw_dataset_section("Chain Types",     inst_types,      md_array_size(inst_types),   0);
-            //draw_dataset_section("Residue Types",   comp_types,    md_array_size(comp_types), 1);  
-            //draw_dataset_section("Atom Types",      atom_types,       md_array_size(atom_types),    2);
-
-            // Atom Element Mappings section (keep existing functionality)
-            const size_t num_mappings = md_array_size(atom_element_remappings);
-            if (num_mappings) {
-                if (ImGui::CollapsingHeader("Atom Element Mappings")) {
-                    for (size_t i = 0; i < num_mappings; ++i) {
-                        const auto& mapping = atom_element_remappings[i];
-                        ImGui::Text("%s -> %s (%s)", mapping.lbl, md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
-                    }
-                }
-            }
+            draw_element_mappings();
         }
         ImGui::End();
     }
