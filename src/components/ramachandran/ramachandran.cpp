@@ -791,10 +791,8 @@ struct Ramachandran : viamd::EventHandler {
 
             constexpr const float min_ext = -180.0f;
             constexpr const float max_ext = 180.0f;
-            constexpr const float reset_coords[2] = { min_ext, max_ext };
             constexpr const char* x_lbl = "\xc2\xb0\xcf\x86";   // utf8 Degree Phi
             constexpr const char* y_lbl = "\xc2\xb0\xcf\x88";   // utf8 Degree Psi
-
             constexpr const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect; // | ImPlotFlags_AntiAliased;
             constexpr const ImPlotFlags subplotflags = ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_NoMenus;
             constexpr const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels;
@@ -885,9 +883,6 @@ struct Ramachandran : viamd::EventHandler {
                         ImPlot::SetupAxesLimits(min_ext, max_ext, min_ext, max_ext, ImPlotCond_Once);
                         ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
                         ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
-                        // @NOTE(Robin): This wont work out of the box due to the periodic domain.
-                        //ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -720, +720);
-                        //ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -720, +720);
                         ImPlot::SetupAxes(x_lbl, y_lbl, axis_flags, axis_flags);
 
                         ImPlot::SetupAxisFormat(ImAxis_X1, formatter, (void*)x_lbl);
@@ -896,13 +891,6 @@ struct Ramachandran : viamd::EventHandler {
                         ImPlot::SetupFinish();
 
                         viewrect = ImPlot::GetPlotLimits();
-
-                        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
-                        ImPlot::PushStyleColor(ImPlotCol_MarkerFill, ImVec4(0,0,0,0));
-                        ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(0,0,0,0));
-                        ImPlot::PlotScatter("##Hidden reset helper", reset_coords, reset_coords, 2);
-                        ImPlot::PopStyleColor(2);
-                        ImPlot::PopStyleVar();
 
                         //ImPlot::PlotDummy("Reference");
                         //ImPlot::PlotDummy("Full");
@@ -1106,6 +1094,12 @@ struct Ramachandran : viamd::EventHandler {
                                     modify_field(selection_mask, highlight_mask, op);
                                 }
                             } 
+                        }
+
+                        if (ImPlot::FitThisFrame()) {
+                            ImPlotPlot* plot = ImPlot::GetCurrentPlot();
+                            plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(-180, 180);
+                            plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(-180, 180);
                         }
 
                         ImPlot::EndPlot();
