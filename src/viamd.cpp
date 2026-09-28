@@ -623,6 +623,11 @@ void free_trajectory_data(ApplicationState* state) {
     // The denoised render copy is still an ordinary array owned here.
     md_array_free(state->trajectory_data.secondary_structure_render.data,    state->allocator.persistent);
 
+    // A stale match here would make interpolate_system_state silently skip pushing the new run's
+    // first frame to the renderer whenever it happens to resolve to the same nearest frame index
+    // as whatever was last displayed (frame 0 is the common case).
+    state->mold.last_interpolated_nearest_frame = -1;
+
     // The views above are dropped first; now the storage they pointed at goes with the run - its
     // frame axis, the quantities derived per frame, and whatever was loaded against it.
     if (state->mold.run[0]) {
@@ -804,6 +809,10 @@ void init_trajectory_data(ApplicationState* data, uint32_t traj_flags) {
                 md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), data, STR_LIT("backbone/secondary_structure"))));
                 data->trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
 
+				// The data just went from placeholder to real values for every frame - force the
+				// next interpolate_system_state to actually push it, even if playback is paused on
+				// the same nearest frame it was on before this task started.
+				data->mold.last_interpolated_nearest_frame = -1;
 				data->mold.interpolate_system_state = true;
                 data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
                 flag_all_representations_as_dirty(data);
@@ -3871,14 +3880,13 @@ void interpolate_system_state(ApplicationState* app) {
     const int64_t frame = (int64_t)time;
     const int64_t nearest_frame = CLAMP((int64_t)(time + 0.5), 0LL, last_frame);
 
-    static int64_t curr_nearest_frame = -1;
     if (app->animation.interpolation == InterpolationMode::Nearest) {
-        if (curr_nearest_frame == nearest_frame) {
+        if (app->mold.last_interpolated_nearest_frame == nearest_frame) {
             return;
         }
         app->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
     }
-    curr_nearest_frame = nearest_frame;
+    app->mold.last_interpolated_nearest_frame = nearest_frame;
 
     // This represents the frames that we would like to load into memory for interpolation (worst case).
     const int64_t frames[4] = {

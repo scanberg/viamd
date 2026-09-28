@@ -1092,6 +1092,12 @@ struct ApplicationState {
         vec3_t              sys_aabb_max = {};
 
         bool                interpolate_system_state = false;
+        // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
+        // interpolate_system_state skip redundant work when playback ticks without the displayed
+        // frame changing. Reset to -1 whenever the underlying per-frame data can no longer be
+        // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
+        // so the next call is never skipped by a stale match.
+        int64_t             last_interpolated_nearest_frame = -1;
         uint32_t            dirty_gpu_buffers = 0;
 
 #if MD_ENABLE_GPU
