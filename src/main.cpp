@@ -1601,7 +1601,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::TableSetupColumn("Options");
                 ImGui::TableHeadersRow();
 
-                const float button_width = (ImGui::GetFontSize() / 20.f) * 150.f;
+                const float button_width = (ImGui::GetFontSize() / 20.f) * 175.f;
                 const md_bitfield_t& target_mask = recenter_get_active_target_mask(data);
                 const bool recenter_available = !md_bitfield_empty(&target_mask);
                 const char* no_target_tip =
@@ -4552,7 +4552,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
                         const SeriesTemporalView& v = views[hovered_idx];
                         const int pop_idx = v.dim > 1 ? hovered_pop_idx : -1;
-                        script_visualize_payload(data, v.vis_payload, pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                        script_visualize_payload(data, v.vis_payload, pop_idx, ~MD_SCRIPT_VISUALIZE_SDF);
                         script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
                     }
 
@@ -6234,25 +6234,23 @@ static void render(ApplicationState* state) {
             immediate::lines(vis_scope, (immediate::Vertex*)vis.lines, md_array_size(vis.lines), state->script.line_color);
         }
 
-        size_t num_matrices = md_array_size(vis.sdf.matrices);
-        mat4_t* model_matrices = nullptr;
+        const size_t num_matrices = md_array_size(vis.sdf.matrices);
+        const size_t num_structures = md_array_size(vis.sdf.structures);
+        const size_t num_sdf_items = MIN(MIN(num_matrices, num_structures), 100);
 
-        if (num_matrices > 0) {
-            md_temp_scope_t temp = md_temp_begin();
-            defer{ md_temp_end(temp); };
-            model_matrices = md_temp_alloc_array(temp, mat4_t, num_matrices);
-            for (size_t i = 0; i < num_matrices; ++i) {
-                model_matrices[i] = mat4_inverse(vis.sdf.matrices[i]);
-            }
-
+        if (num_matrices != num_structures) {
+            VIAMD_LOG_DEBUG("SDF visualization returned mismatched matrix and structure counts (%zu, %zu)", num_matrices, num_structures);
+        }
+        if (num_sdf_items > 0) {
             const vec4_t col_x = { 1, 0, 0, 0.7f };
             const vec4_t col_y = { 0, 1, 0, 0.7f };
             const vec4_t col_z = { 0, 0, 1, 0.7f };
             const float ext = vis.sdf.extent * 0.25f;
             const vec3_t box_ext = vec3_set1(vis.sdf.extent);
-            for (size_t i = 0; i < num_matrices; ++i) {
-                immediate::basis(vis_scope, model_matrices[i], ext, col_x, col_y, col_z);
-                immediate::box_wireframe(vis_scope_depth, -box_ext, box_ext, model_matrices[i]);
+            for (size_t i = 0; i < num_sdf_items; ++i) {
+                const mat4_t model_matrix = mat4_inverse(vis.sdf.matrices[i]);
+                immediate::basis(vis_scope, model_matrix, ext, col_x, col_y, col_z);
+                immediate::box_wireframe(vis_scope_depth, -box_ext, box_ext, model_matrix);
             }
         }
     }

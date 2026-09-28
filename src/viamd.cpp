@@ -5387,7 +5387,7 @@ void script_visualize_payload(ApplicationState* state, const md_script_vis_paylo
     ASSERT(state);
 
     md_script_vis_ctx_t ctx = {
-        .ir   = state->script.eval_ir,
+        .ir   = state->script.ir,
         .sys  = &state->mold.sys,
         .state = &state->mold.state,
     };
