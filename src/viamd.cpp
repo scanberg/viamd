@@ -5403,7 +5403,7 @@ void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flag
     ASSERT(state);
 
     md_script_vis_ctx_t ctx = {
-        .ir    = state->script.eval_ir,
+        .ir    = state->script.ir,
         .sys   = &state->mold.sys,
         .state = &state->mold.state,
     };
