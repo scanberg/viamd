@@ -380,23 +380,27 @@ int main(int argc, char** argv) {
         state.gpu_stream = md_gpu_stream_default(state.gpu_device, MD_GPU_STREAM_COMPUTE);
 
         md_gpu_pool_desc_t pool_desc = {};
-        pool_desc.flags = MD_GPU_MEM_DEVICE;
+        pool_desc.kind  = MD_GPU_MEM_DEVICE;
         pool_desc.label = "evaluation";
         state.gpu_pool = md_gpu_pool_create(state.gpu_device, &pool_desc);
 
-        pool_desc.flags = MD_GPU_MEM_HOST_READ;
+        pool_desc.kind  = MD_GPU_MEM_HOST_READ;
         pool_desc.label = "evaluation readback";
         state.gpu_rb_pool = md_gpu_pool_create(state.gpu_device, &pool_desc);
 
-        md_gpu_tex_desc_t vol_desc = {
-            .width  = 512,
-            .height = 512,
-            .depth  = 512,
-            .format = MD_GPU_FORMAT_R32_FLOAT,
-            .flags  = MD_GPU_TEX_STORAGE,
-            .label  = "Evaluation volume",
+        md_gpu_texture_desc_t vol_desc = {
+            .type            = MD_GPU_TEX_3D,
+            .format          = MD_GPU_FORMAT_R32_FLOAT,
+            .usage           = MD_GPU_TEX_STORAGE,
+            .width           = 512,
+            .height          = 512,
+            .depth_or_layers = 512,
+            .label           = "Evaluation volume",
         };
-        state.gpu_volume = md_gpu_tex_create(state.gpu_device, &vol_desc);
+        state.gpu_volume = md_gpu_texture_create(state.gpu_stream, state.gpu_pool, &vol_desc);
+        if (!state.gpu_volume) {
+            VIAMD_LOG_ERROR("Failed to create the GPU evaluation volume: %s", md_gpu_last_error());
+        }
     }
 #endif
 
@@ -1171,13 +1175,13 @@ int main(int argc, char** argv) {
         gpu_volume_jobs_drain(&state);
         system_gpu_data_free(&state);
 
-        md_gpu_free(state.gpu_coeff, state.gpu_stream);
-        md_gpu_tex_destroy(state.gpu_volume, state.gpu_stream);
+        md_gpu_free(state.gpu_stream, state.gpu_coeff);
+        md_gpu_texture_destroy(state.gpu_volume);
         md_gpu_pool_destroy(state.gpu_rb_pool);
         md_gpu_pool_destroy(state.gpu_pool);
-        state.gpu_coeff = nullptr;
+        state.gpu_coeff = 0;
         state.gpu_coeff_capacity = 0;
-        state.gpu_volume = 0;
+        state.gpu_volume = nullptr;
         state.gpu_rb_pool = nullptr;
         state.gpu_pool = nullptr;
         state.gpu_stream = nullptr;

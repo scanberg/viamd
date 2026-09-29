@@ -2314,12 +2314,12 @@ void system_gpu_data_free(ApplicationState* state) {
     ASSERT(state);
 #if MD_ENABLE_GPU
     if (state->mold.gpu_basis) {
-        md_gto_gpu_basis_destroy(state->mold.gpu_basis);
+        md_gto_gpu_basis_destroy(state->gpu_stream, state->mold.gpu_basis);
         state->mold.gpu_basis = nullptr;
     }
     if (state->mold.gpu_atoms) {
-        md_gpu_free(state->mold.gpu_atoms, state->gpu_stream);
-        state->mold.gpu_atoms = nullptr;
+        md_gpu_free(state->gpu_stream, state->mold.gpu_atoms);
+        state->mold.gpu_atoms = 0;
     }
     state->mold.gpu_atoms_hash = 0;
 #else
@@ -2346,7 +2346,7 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
     }
 
     md_gto_gpu_basis_desc_t desc = { .basis = &basis, .cutoff = cutoff };
-    state->mold.gpu_basis = md_gto_gpu_basis_create(state->gpu_pool, state->gpu_stream, &desc);
+    state->mold.gpu_basis = md_gto_gpu_basis_create(state->gpu_stream, state->gpu_pool, &desc);
     if (!state->mold.gpu_basis) {
         MD_LOG_ERROR("Failed to upload the GTO basis to the device");
         return false;
@@ -2355,7 +2355,7 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
     const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
     const size_t num_atoms = md_gto_gpu_basis_num_atoms(state->mold.gpu_basis);
 
-    state->mold.gpu_atoms = md_gpu_malloc(state->gpu_pool, md_gto_gpu_atom_buffer_size(num_atoms), state->gpu_stream);
+    state->mold.gpu_atoms = md_gpu_malloc(state->gpu_stream, state->gpu_pool, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
     state->mold.gpu_atoms_hash = 0;
 
     // Density coefficients are the larger of the two packings, so one size covers both the density
@@ -2363,13 +2363,13 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
     const size_t coeff_size = md_gto_gpu_coeff_size_density(num_cgtos);
     if (coeff_size > state->gpu_coeff_capacity) {
         if (state->gpu_coeff) {
-            md_gpu_free(state->gpu_coeff, state->gpu_stream);
+            md_gpu_free(state->gpu_stream, state->gpu_coeff);
         }
-        state->gpu_coeff = md_gpu_malloc(state->gpu_pool, coeff_size, state->gpu_stream);
+        state->gpu_coeff = md_gpu_malloc(state->gpu_stream, state->gpu_pool, coeff_size).gpu;
         state->gpu_coeff_capacity = state->gpu_coeff ? coeff_size : 0;
     }
 
-    return state->mold.gpu_atoms != nullptr && state->gpu_coeff != nullptr;
+    return state->mold.gpu_atoms != 0 && state->gpu_coeff != 0;
 #else
     (void)state; (void)cutoff;
     return false;
@@ -2714,25 +2714,25 @@ static void gpu_volume_job_complete(void* user) {
     ApplicationState::GpuVolumeJob* job = (ApplicationState::GpuVolumeJob*)user;
     ApplicationState* self = job->owner;
     if (self && job->tex_id) {
-        gpu_volume_upload_to_gl(job->tex_id, md_gpu_host_ptr(job->rb), job->size);
+        gpu_volume_upload_to_gl(job->tex_id, job->rb.cpu, job->size);
     }
-    if (self && job->rb) md_gpu_free(job->rb, self->gpu_stream);
-    job->rb        = nullptr;
+    if (self && job->rb.gpu) md_gpu_free(self->gpu_stream, job->rb.gpu);
+    job->rb        = {};
     job->in_flight = false;
 }
 
 // Used when no job slot is free, and when a caller genuinely needs the data before it returns.
 static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, size_t size) {
-    md_gpu_ptr_t rb = md_gpu_malloc(state->gpu_rb_pool, size, state->gpu_stream);
-    if (!rb) return false;
+    md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, state->gpu_rb_pool, size);
+    if (!rb.cpu) return false;
     const md_gpu_tex_region_t region = {
         .offset = {0, 0, 0},
         .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
     };
-    bool ok = md_gpu_memcpy_from_tex_async(rb, state->gpu_volume, &region, size, state->gpu_stream);
+    bool ok = md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, state->gpu_volume, &region);
     md_gpu_stream_sync(state->gpu_stream);
-    if (ok) gpu_volume_upload_to_gl(vol_tex, md_gpu_host_ptr(rb), size);
-    md_gpu_free(rb, state->gpu_stream);
+    if (ok) gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
+    md_gpu_free(state->gpu_stream, rb.gpu);
     return ok;
 }
 
@@ -2770,8 +2770,8 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
         return gpu_volume_readback_blocking(state, vol_tex, grid, size);
     }
 
-    md_gpu_ptr_t rb = md_gpu_malloc(state->gpu_rb_pool, size, state->gpu_stream);
-    if (!rb) {
+    md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, state->gpu_rb_pool, size);
+    if (!rb.cpu) {
         MD_LOG_ERROR("Failed to allocate volume readback staging (%zu bytes)", size);
         job->in_flight = false;
         return false;
@@ -2781,9 +2781,9 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
         .offset = {0, 0, 0},
         .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
     };
-    if (!md_gpu_memcpy_from_tex_async(rb, state->gpu_volume, &region, size, state->gpu_stream)) {
+    if (!md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, state->gpu_volume, &region)) {
         MD_LOG_ERROR("Failed to record the volume readback");
-        md_gpu_free(rb, state->gpu_stream);
+        md_gpu_free(state->gpu_stream, rb.gpu);
         job->in_flight = false;
         return false;
     }
@@ -2797,8 +2797,8 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
         // synchronously instead of leaking it.
         MD_LOG_ERROR("Failed to queue the volume completion; falling back to a blocking readback");
         md_gpu_stream_sync(state->gpu_stream);
-        gpu_volume_upload_to_gl(vol_tex, md_gpu_host_ptr(rb), size);
-        md_gpu_free(rb, state->gpu_stream);
+        gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
+        md_gpu_free(state->gpu_stream, rb.gpu);
         job->in_flight = false;
         return true;
     }
@@ -2869,8 +2869,8 @@ void gpu_volume_jobs_drain(ApplicationState* state) {
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
         ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
         if (j.in_flight) {
-            if (j.rb) md_gpu_free(j.rb, state->gpu_stream);
-            j.rb = nullptr;
+            if (j.rb.gpu) md_gpu_free(state->gpu_stream, j.rb.gpu);
+            j.rb = {};
             j.in_flight = false;
         }
     }

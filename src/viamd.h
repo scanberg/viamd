@@ -975,8 +975,8 @@ struct ApplicationState {
     md_gpu_stream_t gpu_stream  = nullptr;   // the device's default compute stream
     md_gpu_pool_t   gpu_pool    = nullptr;   // device-local: basis, atoms, coefficients
     md_gpu_pool_t   gpu_rb_pool = nullptr;   // host-readable: volume readback staging
-    md_gpu_tex_t    gpu_volume  = 0;         // 3d R32F scratch for an evaluated orbital / density
-    md_gpu_ptr_t    gpu_coeff   = nullptr;   // AO coefficient staging, sized to the widest basis
+    md_gpu_texture_t gpu_volume = nullptr;   // 3d R32F scratch for an evaluated orbital / density
+    md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
     // One in-flight readback of gpu_volume into a GL texture. A slot must outlive the call that
@@ -987,7 +987,7 @@ struct ApplicationState {
         bool              in_flight = false;
         ApplicationState* owner     = nullptr;
         uint32_t          tex_id    = 0;        // GL texture to receive the data
-        md_gpu_ptr_t      rb        = nullptr;  // HOST_READ staging block
+        md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
         size_t            size      = 0;
     };
     // Readbacks are issued at most one per representation per change, and a change cannot be
@@ -1109,7 +1109,7 @@ struct ApplicationState {
         // This whole block is per DATASET, so it is what gets replicated when several systems can
         // be loaded at once. That is also why the evaluation scratch is not here but on the device.
         md_gto_gpu_basis_t  gpu_basis = nullptr;   // built from the basis/ attributes, not from a loader
-        md_gpu_ptr_t        gpu_atoms = nullptr;   // packed float4 positions, xyz in Bohr
+        md_gpu_addr_t       gpu_atoms = 0;         // packed float4 positions, xyz in Bohr
         // Hash of the positions currently in gpu_atoms, 0 when nothing has been uploaded. The
         // positions come from the system STATE, so they move with the trajectory; comparing what is
         // uploaded against what is wanted is the only test that cannot go stale, and it costs a hash
