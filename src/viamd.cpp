@@ -530,13 +530,15 @@ str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str
     return {buf, (size_t)len};
 }
 
-const md_attribute_t* run_time_axis(const ApplicationState* app) {
+const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf) {
     ASSERT(app);
-    char buf[256];
-    const str_t path = run_attribute_path(buf, sizeof(buf), app, STR_LIT("time"));
-    if (str_empty(path)) return nullptr;
-    const md_attribute_t* axis = md_attributes_find(&app->mold.sys.attributes, path);
-    return (axis && axis->format.type == MD_ATTRIBUTE_TYPE_F64 && axis->data) ? axis : nullptr;
+    if (app->mold.run[0] == '\0') return nullptr;
+    return md_attributes_find_in(&app->mold.sys.attributes, str_from_cstr(app->mold.run), leaf);
+}
+
+const md_attribute_t* run_time_axis(const ApplicationState* app) {
+    const md_attribute_t* axis = run_attribute(app, STR_LIT("time"));
+    return md_attribute_view(axis, MD_ATTRIBUTE_TYPE_F64, 1, 1) ? axis : nullptr;
 }
 
 size_t run_num_frames(const ApplicationState* app) {
@@ -545,8 +547,7 @@ size_t run_num_frames(const ApplicationState* app) {
 }
 
 const double* run_frame_times(const ApplicationState* app) {
-    const md_attribute_t* axis = run_time_axis(app);
-    return axis ? (const double*)axis->data : nullptr;
+    return (const double*)md_attribute_view(run_time_axis(app), MD_ATTRIBUTE_TYPE_F64, 1, 1);
 }
 
 md_unit_t run_time_unit(const ApplicationState* app) {
@@ -694,7 +695,7 @@ void init_trajectory_data(ApplicationState* data, uint32_t traj_flags) {
             // owns the storage and the trajectory_data fields below are views onto it. That is the
             // point of the move - 'stride' and 'count' were a hand rolled shape {F,S}, and the one
             // place they could disagree with the buffer was here, in three lines repeated per
-            // quantity. Now the shape IS the declaration, and md_attributes_query answers "what
+            // quantity. Now the shape IS the declaration, and md_attributes_iter answers "what
             // varies over time in this dataset" without anybody maintaining a second list.
             //
             // Both are declared together so the frame axis and the segment axis are stated once for
@@ -1818,9 +1819,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     // the energies and removed with them, so what is written here cannot name a file that was
     // dropped with an earlier trajectory.
     {
-        char path_buf[256];
-        const md_attribute_t* src = md_attributes_find(attributes, run_attribute_path(path_buf, sizeof(path_buf), app_state, STR_LIT("edr/source")));
-        if (src) {
+        if (const md_attribute_t* src = run_attribute(app_state, STR_LIT("edr/source"))) {
             viamd::write_str(state, STR_LIT("EnergyFile"), workspace_relative_path(md_attribute_str(attributes, src, 0)));
         }
 
@@ -1830,13 +1829,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
             char group_buf[256];
             const str_t group = run_attribute_path(group_buf, sizeof(group_buf), app_state, kinds[k]);
             if (str_empty(group)) continue;
-            str_t names[64];
-            const size_t num = MIN(md_attributes_query_children(names, ARRAY_SIZE(names), attributes, group), ARRAY_SIZE(names));
-            for (size_t i = 0; i < num; ++i) {
-                char src_buf[512];
-                const int len = snprintf(src_buf, sizeof(src_buf), STR_FMT "/" STR_FMT "/source", STR_ARG(group), STR_ARG(names[i]));
-                const md_attribute_t* series_src = (len > 0 && (size_t)len < sizeof(src_buf)) ? md_attributes_find(attributes, str_t{src_buf, (size_t)len}) : nullptr;
-                if (series_src) {
+            for (md_attribute_iter_t it = md_attributes_iter_children(attributes, group); md_attributes_next(&it);) {
+                if (const md_attribute_t* series_src = md_attributes_find_in(attributes, it.child_path, STR_LIT("source"))) {
                     viamd::write_str(state, STR_LIT("SeriesFile"), workspace_relative_path(md_attribute_str(attributes, series_src, 0)));
                 }
             }
@@ -2122,12 +2116,7 @@ int dipole_entry_label(char* buf, size_t cap, const DipoleGroup& group, uint32_t
 // The origin lives beside the vector: same group, last path segment swapped. Derived rather than
 // carried around, so a key is the only thing anyone has to hold on to.
 static const md_attribute_t* dipole_origin_of(const md_system_t& sys, const md_attribute_t* vec) {
-    size_t sep = 0;
-    if (!str_rfind_char(&sep, vec->path, '/')) return nullptr;
-
-    char path[256];
-    int len = snprintf(path, sizeof(path), "%.*s/origin", (int)sep, vec->path.ptr);
-    return md_attributes_find(&sys.attributes, str_from_cstrn(path, len));
+    return md_attributes_sibling(&sys.attributes, vec, STR_LIT("origin"));
 }
 
 // A vector and an origin form a group only if both are there, both are 3 component, and the origin
@@ -2135,7 +2124,7 @@ static const md_attribute_t* dipole_origin_of(const md_system_t& sys, const md_a
 // all of them, which is how one centre of charge serves every excited state.
 static bool dipole_group_qualifies(const md_attribute_t* vec, const md_attribute_t* org) {
     if (!vec || !org) return false;
-    if (md_attribute_components(&vec->format) != 3 || md_attribute_components(&org->format) != 3) return false;
+    if (vec->format.components != 3 || org->format.components != 3) return false;
 
     const size_t num_elem = md_attribute_value_count(&vec->format);
     const size_t num_org  = md_attribute_value_count(&org->format);
@@ -2143,21 +2132,15 @@ static bool dipole_group_qualifies(const md_attribute_t* vec, const md_attribute
 }
 
 size_t dipole_groups_gather(DipoleGroup out[], size_t cap, const md_system_t& sys) {
-    str_t groups[64];
-    size_t num_groups = md_attributes_query_children(groups, ARRAY_SIZE(groups), &sys.attributes, STR_LIT("dipole"));
-    num_groups = MIN(num_groups, ARRAY_SIZE(groups));
-
     size_t count = 0;
-    for (size_t i = 0; i < num_groups; ++i) {
-        char path[256];
-        int len = snprintf(path, sizeof(path), "dipole/" STR_FMT "/vector", STR_ARG(groups[i]));
-        const md_attribute_t* vec = md_attributes_find(&sys.attributes, str_from_cstrn(path, len));
+    for (md_attribute_iter_t it = md_attributes_iter_children(&sys.attributes, STR_LIT("dipole")); md_attributes_next(&it);) {
+        const md_attribute_t* vec = md_attributes_find_in(&sys.attributes, it.child_path, STR_LIT("vector"));
         if (!vec || !dipole_group_qualifies(vec, dipole_origin_of(sys, vec))) continue;
 
         if (out && count < cap) {
             out[count] = {
                 .key   = vec->id,
-                .label = groups[i],
+                .label = it.child,
                 .count = (uint32_t)md_attribute_value_count(&vec->format),
                 .unit  = vec->unit,
             };
@@ -2207,8 +2190,8 @@ bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& 
     // system space, and extraction refuses if it is not.
     float v[3] = {0, 0, 0};
     float o[3] = {0, 0, 0};
-    md_attribute_extract_slice_f32(v, ARRAY_SIZE(v), vec, &vec_slice, md_unit_none());
-    md_attribute_extract_slice_f32(o, ARRAY_SIZE(o), org, &org_slice, md_unit_angstrom());
+    md_attribute_extract_f32(v, ARRAY_SIZE(v), vec, vec_slice, md_unit_none());
+    md_attribute_extract_f32(o, ARRAY_SIZE(o), org, org_slice, md_unit_angstrom());
 
     if (out_vec)    *out_vec    = vec3_set(v[0], v[1], v[2]);
     if (out_origin) *out_origin = vec3_set(o[0], o[1], o[2]);
@@ -2222,22 +2205,17 @@ bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& 
 static bool atom_property_qualifies(const md_attribute_t* attr, const md_system_t& sys) {
     const md_attribute_format_t& fmt = attr->format;
     if (fmt.rank < 1 || fmt.rank > 2) return false;
-    if (md_attribute_components(&fmt) != 1) return false;
+    if (fmt.components != 1) return false;
     return fmt.shape[fmt.rank - 1] == (uint32_t)sys.atom.count;
 }
 
 size_t atom_property_query(md_attribute_id_t out_ids[], size_t cap, const md_system_t& sys) {
-    md_attribute_id_t ids[128];
-    size_t num_ids = md_attributes_query(ids, ARRAY_SIZE(ids), &sys.attributes, STR_LIT("atom"));
-    num_ids = MIN(num_ids, ARRAY_SIZE(ids));
-
     size_t count = 0;
-    for (size_t i = 0; i < num_ids; ++i) {
-        const md_attribute_t* attr = md_attributes_get(&sys.attributes, ids[i]);
-        if (!attr || !atom_property_qualifies(attr, sys)) continue;
+    for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, STR_LIT("atom")); md_attributes_next(&it);) {
+        if (!atom_property_qualifies(it.attr, sys)) continue;
 
         if (out_ids && count < cap) {
-            out_ids[count] = ids[i];
+            out_ids[count] = it.attr->id;
         }
         count += 1;
     }
@@ -2267,7 +2245,7 @@ bool atom_property_value_range(float* out_min, float* out_max, const md_attribut
 
     // Deliberately the whole attribute and not one variant: a span recomputed per variant would
     // make the colours shift as the index slider moves, which reads as the data changing.
-    bool result = values && md_attribute_extract_f32(values, num_values, attr, md_unit_none()) == num_values;
+    bool result = values && md_attribute_extract_f32(values, num_values, attr, md_attribute_slice_all(), md_unit_none()) == num_values;
     if (result) {
         float value_min =  FLT_MAX;
         float value_max = -FLT_MAX;
@@ -2387,7 +2365,8 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
 // The basis is rebuilt per call for now. That is one interleave over a few hundred shells, but it
 // is the obvious thing for a representation to cache, keyed on the ids of the basis/ attributes it
 // was built from.
-double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, const md_attribute_slice_t* slice) {
+double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, const md_attribute_slice_t* slice_ptr) {
+    const md_attribute_slice_t slice = slice_ptr ? *slice_ptr : md_attribute_slice_all();
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, coefficient_path);
     if (!attr) {
         MD_LOG_DEBUG("No orbital coefficients published at '" STR_FMT "'", STR_ARG(coefficient_path));
@@ -2402,7 +2381,7 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
         MD_LOG_ERROR("The slice does not address '" STR_FMT "'", STR_ARG(coefficient_path));
         return nullptr;
     }
-    if (format.rank != 1 || md_attribute_components(&format) != 1) {
+    if (format.rank != 1 || format.components != 1) {
         MD_LOG_ERROR("'" STR_FMT "' does not slice down to one row of orbital coefficients", STR_ARG(coefficient_path));
         return nullptr;
     }
@@ -2421,7 +2400,7 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 
     // f64, because that is what md_gto takes: the coefficients are double at this boundary to keep
     // the QM code's precision, and extracting them through floats would spend it here.
-    if (md_attribute_extract_slice_f64(dst, num_ao, attr, slice, md_unit_none()) != num_ao) {
+    if (md_attribute_extract_f64(dst, num_ao, attr, slice, md_unit_none()) != num_ao) {
         return nullptr;
     }
 
@@ -2451,7 +2430,7 @@ static const str_t QM_ATOM_MAP_PATH = STR_INIT("qm/atom/system_index");
 
 bool es_orbital_extent(const md_system_t& sys, size_t* out_num_mo, size_t* out_num_ao) {
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::alpha_coefficient);
-    if (!attr || attr->format.rank != 2 || md_attribute_components(&attr->format) != 1) {
+    if (!attr || attr->format.rank != 2 || attr->format.components != 1) {
         return false;
     }
     if (out_num_mo) *out_num_mo = attr->format.shape[0];
@@ -2464,12 +2443,11 @@ bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, str_t occ
     *out = {};
 
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, occupation_path);
-    if (!attr || !attr->data || attr->format.type != MD_ATTRIBUTE_TYPE_F64 ||
-        attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) {
+    const double* occ = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+    if (!occ) {
         return false;
     }
 
-    const double* occ = (const double*)attr->data;
     const int num = (int)attr->format.shape[0];
     out->num_orbitals = num;
 
@@ -2492,13 +2470,9 @@ const double* es_orbital_energies(size_t* out_count, const md_system_t& sys, str
     if (out_count) *out_count = 0;
 
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, energy_path);
-    if (!attr || !attr->data || attr->format.type != MD_ATTRIBUTE_TYPE_F64 ||
-        attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) {
-        return nullptr;
-    }
-
-    if (out_count) *out_count = attr->format.shape[0];
-    return (const double*)attr->data;
+    const double* energies = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+    if (energies && out_count) *out_count = attr->format.shape[0];
+    return energies;
 }
 
 // NULL when there is none, which the callers read as the identity. Same explicitness as
@@ -2506,15 +2480,12 @@ const double* es_orbital_energies(size_t* out_count, const md_system_t& sys, str
 // shape is a mistake to refuse rather than to reinterpret.
 static const uint32_t* qm_atom_map_find(size_t* out_count, const md_system_t& sys) {
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, QM_ATOM_MAP_PATH);
-    if (!attr) {
-        return nullptr;
-    }
-    if (attr->format.type != MD_ATTRIBUTE_TYPE_U32 || attr->format.rank != 1 || md_attribute_components(&attr->format) != 1 || !attr->data) {
+    const uint32_t* map = (const uint32_t*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_U32, 1, 1);
+    if (attr && !map) {
         MD_LOG_ERROR("'" STR_FMT "' is not a plain column of atom indices", STR_ARG(QM_ATOM_MAP_PATH));
-        return nullptr;
     }
-    if (out_count) *out_count = attr->format.shape[0];
-    return (const uint32_t*)attr->data;
+    if (map && out_count) *out_count = attr->format.shape[0];
+    return map;
 }
 
 bool es_has_distinct_beta_orbitals(const md_system_t& sys) {
@@ -2530,11 +2501,10 @@ bool es_has_distinct_beta_orbitals(const md_system_t& sys) {
 
 double es_electron_count(const md_system_t& sys, str_t occupation_path) {
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, occupation_path);
-    if (!attr || !attr->data || attr->format.type != MD_ATTRIBUTE_TYPE_F64 ||
-        attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) {
+    const double* occ = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+    if (!occ) {
         return 0.0;
     }
-    const double* occ = (const double*)attr->data;
     double sum = 0.0;
     for (uint32_t i = 0; i < attr->format.shape[0]; ++i) {
         sum += occ[i];
@@ -2553,7 +2523,7 @@ bool es_has_distinct_beta_occupations(const md_system_t& sys) {
 
 size_t es_excited_state_count(const md_system_t& sys) {
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
-    if (!attr || attr->format.rank != 2 || md_attribute_components(&attr->format) != 1) {
+    if (!attr || attr->format.rank != 2 || attr->format.components != 1) {
         return 0;
     }
     return attr->format.shape[0];
@@ -2569,7 +2539,7 @@ size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, si
     }
 
     const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state_idx);
-    const size_t row = md_attribute_slice_count(attr, &slice);
+    const size_t row = md_attribute_slice_count(attr, slice);
     if (row == 0) {
         return 0;
     }
@@ -2577,7 +2547,7 @@ size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, si
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
     double* values = (double*)md_temp_alloc(temp, sizeof(double) * row);
-    if (!values || md_attribute_extract_slice_f64(values, row, attr, &slice, md_unit_none()) != row) {
+    if (!values || md_attribute_extract_f64(values, row, attr, slice, md_unit_none()) != row) {
         return 0;
     }
 
@@ -2597,7 +2567,7 @@ bool es_qm_atoms(QmAtoms* out, const md_system_t& sys) {
     // is the atom count. Without it there is no QM atom space to speak of.
     const md_attribute_t* z = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/atomic_number"));
     if (!z || !z->data || z->format.type != MD_ATTRIBUTE_TYPE_U8 ||
-        z->format.rank != 1 || md_attribute_components(&z->format) != 1) {
+        z->format.rank != 1 || z->format.components != 1) {
         return false;
     }
     out->count         = z->format.shape[0];
@@ -2605,7 +2575,7 @@ bool es_qm_atoms(QmAtoms* out, const md_system_t& sys) {
 
     if (const md_attribute_t* c = md_attributes_find(&sys.attributes, STR_LIT("qm/atom/coordinate"))) {
         if (c->data && c->format.type == MD_ATTRIBUTE_TYPE_F64 && c->format.rank == 1 &&
-            md_attribute_components(&c->format) == 3 && c->format.shape[0] == out->count) {
+            c->format.components == 3 && c->format.shape[0] == out->count) {
             // dvec3_t is three doubles with no padding, and the {N,3} layout is exactly an
             // array of them, so this is a view and not a reinterpretation.
             out->coordinate = (const dvec3_t*)c->data;
@@ -2954,7 +2924,8 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
 // which narrows to one matrix. The caller names what it wants and this cares neither which of the
 // two shapes it came from, nor whether the values were stored or worked out on demand, because
 // md_attribute_slice_format answers the first and the extract answers the second.
-double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice) {
+double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice_ptr) {
+    const md_attribute_slice_t slice = slice_ptr ? *slice_ptr : md_attribute_slice_all();
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
     if (!attr) {
         MD_LOG_DEBUG("No density published at '" STR_FMT "'", STR_ARG(density_path));
@@ -2969,7 +2940,7 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
 
     // Square is not pedantry: the GL and GPU density paths both pack the upper triangle and never
     // read the lower half, so a non square matrix would be silently half consumed.
-    if (format.rank != 2 || format.shape[0] != format.shape[1] || md_attribute_components(&format) != 1) {
+    if (format.rank != 2 || format.shape[0] != format.shape[1] || format.components != 1) {
         MD_LOG_ERROR("'" STR_FMT "' does not slice down to a square density matrix", STR_ARG(density_path));
         return nullptr;
     }
@@ -2983,7 +2954,7 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
     if (!dst) {
         return nullptr;
     }
-    if (md_attribute_extract_slice_f64(dst, count, attr, slice, md_unit_none()) != count) {
+    if (md_attribute_extract_f64(dst, count, attr, slice, md_unit_none()) != count) {
         return nullptr;
     }
 
@@ -3498,7 +3469,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     // and takes no indices at all.
                     const uint32_t variant = (uint32_t)CLAMP(rep->atomic_property.variant_idx, 0, MAX(atom_property_variant_count(attr) - 1, 0));
                     const md_attribute_slice_t slice = attr->format.rank > 1 ? md_attribute_slice_1(variant) : md_attribute_slice_all();
-                    num_extracted = md_attribute_extract_slice_f32(values, num_atoms, attr, &slice, md_unit_none());
+                    num_extracted = md_attribute_extract_f32(values, num_atoms, attr, slice, md_unit_none());
                 }
 
                 if (num_extracted == num_atoms) {
@@ -3669,30 +3640,11 @@ void update_representation(ApplicationState* state, Representation* rep) {
 // Counts past 'cap' on purpose: the return value is how many the system HAS, so a caller with a
 // fixed buffer can tell that it saw all of them.
 size_t density_properties_gather(DensityProperty out[], size_t cap, const md_system_t& sys) {
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-
-    const size_t num_props = md_attributes_query(nullptr, 0, &sys.attributes, es_path::density_property);
-    if (num_props == 0) return 0;
-
-    md_attribute_id_t* ids = (md_attribute_id_t*)md_temp_alloc(temp, sizeof(md_attribute_id_t) * num_props);
-    if (!ids) return 0;
-    md_attributes_query(ids, num_props, &sys.attributes, es_path::density_property);
-
     size_t count = 0;
-    for (size_t i = 0; i < num_props; ++i) {
-        const md_attribute_t* attr = md_attributes_get(&sys.attributes, ids[i]);
-        if (!attr) continue;
-
+    for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, es_path::density_property); md_attributes_next(&it);) {
+        const md_attribute_t* attr = it.attr;
         if (out && count < cap) {
-            str_t label = attr->label;
-            if (str_empty(label)) {
-                label = attr->path;
-                size_t sep = 0;
-                if (str_rfind_char(&sep, label, '/')) {
-                    label = str_substr(label, sep + 1, SIZE_MAX);
-                }
-            }
+            const str_t label = str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
             out[count] = { .key = attr->id, .label = label };
         }
         count += 1;

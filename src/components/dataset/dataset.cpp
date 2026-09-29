@@ -1036,7 +1036,7 @@ struct Dataset : viamd::EventHandler {
         if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"))) {
             if (attr->format.rank == 1 && md_attribute_element_count(&attr->format) == sys.atom.count) {
                 charge = md_temp_alloc_array(temp, float, sys.atom.count + 1);
-                c.has_charge = md_attribute_extract_f32(charge, sys.atom.count, attr, md_unit_none()) == sys.atom.count;
+                c.has_charge = md_attribute_extract_f32(charge, sys.atom.count, attr, md_attribute_slice_all(), md_unit_none()) == sys.atom.count;
                 if (!c.has_charge) charge = nullptr;
             }
         }
@@ -1511,8 +1511,7 @@ struct Dataset : viamd::EventHandler {
 
     uint64_t trajectory_key(const ApplicationState& data) {
         const md_attribute_t* axis = run_time_axis(&data);
-        char buf[256];
-        const md_attribute_t* cell = md_attributes_find(&data.mold.sys.attributes, run_attribute_path(buf, sizeof(buf), &data, STR_LIT("unitcell")));
+        const md_attribute_t* cell = run_attribute(&data, STR_LIT("unitcell"));
         const uint64_t v[3] = { axis ? axis->version : 0, cell ? cell->version : 0, (uint64_t)md_attributes_count(&data.mold.sys.attributes) };
         return md_hash64(v, sizeof(v), md_hash64_str(str_from_cstr(data.mold.run), 0));
     }
@@ -1540,33 +1539,29 @@ struct Dataset : viamd::EventHandler {
             if (n < 2) traj.dt_min = traj.dt_max = 0;
         }
 
-        char buf[256];
-        traj.has_velocity = md_attributes_find(attrs, run_attribute_path(buf, sizeof(buf), &data, STR_LIT("atom/velocity"))) != nullptr;
-        traj.has_force    = md_attributes_find(attrs, run_attribute_path(buf, sizeof(buf), &data, STR_LIT("atom/force"))) != nullptr;
+        traj.has_velocity = run_attribute(&data, STR_LIT("atom/velocity")) != nullptr;
+        traj.has_force    = run_attribute(&data, STR_LIT("atom/force")) != nullptr;
 
         // Sections with an axis of their own: "<run>/trr/<name>/time"
+        char buf[256];
         const str_t trr = run_attribute_path(buf, sizeof(buf), &data, STR_LIT("trr"));
         if (!str_empty(trr)) {
-            str_t names[8];
-            const size_t num = MIN(md_attributes_query_children(names, ARRAY_SIZE(names), attrs, trr), ARRAY_SIZE(names));
             int len = 0;
-            for (size_t i = 0; i < num; ++i) {
-                char tbuf[300];
-                const int tl = snprintf(tbuf, sizeof(tbuf), STR_FMT "/" STR_FMT "/time", STR_ARG(trr), STR_ARG(names[i]));
-                const md_attribute_t* axis = (tl > 0 && (size_t)tl < sizeof(tbuf)) ? md_attributes_find(attrs, str_t{tbuf, (size_t)tl}) : nullptr;
+            for (md_attribute_iter_t it = md_attributes_iter_children(attrs, trr); md_attributes_next(&it);) {
+                const md_attribute_t* axis = md_attributes_find_in(attrs, it.child_path, STR_LIT("time"));
                 if (!axis) continue;
                 const size_t m = axis->format.shape[0];
-                len += snprintf(traj.sections + len, sizeof(traj.sections) - len, "%s" STR_FMT " in %zu frames", len ? ", " : "", STR_ARG(names[i]), m);
+                len += snprintf(traj.sections + len, sizeof(traj.sections) - len, "%s" STR_FMT " in %zu frames", len ? ", " : "", STR_ARG(it.child), m);
                 if (len >= (int)sizeof(traj.sections)) break;
             }
         }
 
         // The box, frame by frame
-        const md_attribute_t* cell = md_attributes_find(attrs, run_attribute_path(buf, sizeof(buf), &data, STR_LIT("unitcell")));
+        const md_attribute_t* cell = run_attribute(&data, STR_LIT("unitcell"));
         if (cell && cell->data && md_attribute_element_count(&cell->format) == n * 9 && n > 0) {
             md_temp_scope_t temp = md_temp_begin();
             float* m = md_temp_alloc_array(temp, float, n * 9);
-            if (md_attribute_extract_f32(m, n * 9, cell, md_unit_none()) == n * 9) {
+            if (md_attribute_extract_f32(m, n * 9, cell, md_attribute_slice_all(), md_unit_none()) == n * 9) {
                 traj.vol_min = DBL_MAX;
                 traj.vol_max = 0;
                 for (size_t f = 0; f < n; ++f) {
@@ -1655,9 +1650,7 @@ struct Dataset : viamd::EventHandler {
         str_t groups[64];
         const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), &data), ARRAY_SIZE(groups));
         for (size_t g = 0; g < num_groups; ++g) {
-            char axis_buf[512];
-            const int al = snprintf(axis_buf, sizeof(axis_buf), STR_FMT "/time", STR_ARG(groups[g]));
-            const md_attribute_t* axis = (al > 0 && (size_t)al < sizeof(axis_buf)) ? md_attributes_find(&data.mold.sys.attributes, str_t{axis_buf, (size_t)al}) : nullptr;
+            const md_attribute_t* axis = md_attributes_find_in(&data.mold.sys.attributes, groups[g], STR_LIT("time"));
             char label[256];
             system_series_group_label(label, sizeof(label), &data, groups[g]);
             if (!axis || axis->format.shape[0] < 1) {
@@ -1666,9 +1659,8 @@ struct Dataset : viamd::EventHandler {
             }
             const size_t m = axis->format.shape[0];
             double ends[2] = {0, 0};
-            const md_attribute_slice_t s0 = md_attribute_slice_1(0), s1 = md_attribute_slice_1((uint32_t)(m - 1));
-            md_attribute_extract_slice_f64(&ends[0], 1, axis, &s0, run_time_unit(&data));
-            md_attribute_extract_slice_f64(&ends[1], 1, axis, &s1, run_time_unit(&data));
+            md_attribute_extract_f64(&ends[0], 1, axis, md_attribute_slice_1(0),                  run_time_unit(&data));
+            md_attribute_extract_f64(&ends[1], 1, axis, md_attribute_slice_1((uint32_t)(m - 1)), run_time_unit(&data));
             const double every = m > 1 ? (ends[1] - ends[0]) / (double)(m - 1) : 0.0;
             const bool covers = traj.has_time && ends[0] <= traj.t0 + 1e-6 * fabs(traj.t1 - traj.t0) && ends[1] >= traj.t1 - 1e-6 * fabs(traj.t1 - traj.t0);
             ImGui::TextDisabled("%s: every %.4g %s, %s", label, every * ts, tu,
@@ -1865,8 +1857,8 @@ struct Dataset : viamd::EventHandler {
                     const md_attribute_slice_t first = md_attribute_slice_1(0);
                     const md_attribute_slice_t last  = md_attribute_slice_1(n - 1);
                     if (axis && axis->format.shape[0] == n &&
-                        md_attribute_extract_slice_f64(&t[0], 1, axis, &first, md_unit_none()) == 1 &&
-                        md_attribute_extract_slice_f64(&t[1], 1, axis, &last,  md_unit_none()) == 1)
+                        md_attribute_extract_f64(&t[0], 1, axis, first, md_unit_none()) == 1 &&
+                        md_attribute_extract_f64(&t[1], 1, axis, last,  md_unit_none()) == 1)
                     {
                         char unit_buf[32] = "";
                         const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), axis->unit);

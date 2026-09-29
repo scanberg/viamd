@@ -5380,7 +5380,8 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
     // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
-    if (!attr || !attr->data || attr->format.rank != 3) {
+    const float* volume_values = (const float*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F32, 1, 3);
+    if (!volume_values) {
         VIAMD_LOG_ERROR("Export Cube: The property to be exported did not exist");
         return false;
     }
@@ -5431,7 +5432,7 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
             const md_bitfield_t* bf = &vis.sdf.structures[0];
             const int num_atoms = (int)md_bitfield_popcount(bf);
             const int vol_dim[3] = {(int)attr->format.shape[0], (int)attr->format.shape[1], (int)attr->format.shape[2]};
-            const float* values = (const float*)attr->data;
+            const float* values = volume_values;
             const double extent = vis.sdf.extent * 2.0 * angstrom_to_bohr;
             const double voxel_ext[3] = {
                 (double)extent / (double)vol_dim[0],

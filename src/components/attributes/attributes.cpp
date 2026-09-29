@@ -43,13 +43,10 @@ static const char* type_name(md_attribute_type_t type) {
     }
 }
 
-static const char* storage_name(md_attribute_storage_t storage) {
-    switch (storage) {
-    case MD_ATTRIBUTE_STORAGE_RESIDENT: return "resident";
-    case MD_ATTRIBUTE_STORAGE_VIRTUAL:  return "virtual";
-    case MD_ATTRIBUTE_STORAGE_ALIAS:    return "alias";
-    default: return "-";
-    }
+static const char* storage_name(const md_attribute_t& attr) {
+    if (md_attribute_is_alias(&attr))   return "alias";
+    if (md_attribute_is_virtual(&attr)) return "virtual";
+    return "resident";
 }
 
 static const char* source_name(SeriesSource source) {
@@ -108,7 +105,7 @@ static bool matches_filter(str_t filter, str_t path, str_t label, const char* so
 struct Row {
     SeriesSource source;
     const md_attributes_t* table;
-    uint32_t index;         // into table->attr
+    const md_attribute_t* attr;  // valid for the frame: nothing publishes while the window draws
     uint32_t views;         // SeriesView_*
     const char* reason;     // why no view can show it
 };
@@ -183,12 +180,11 @@ struct Attributes : viamd::EventHandler {
             if (source == SeriesSource_ScriptFiltered && !state.timeline.filter.enabled) continue;
             const md_attributes_t* table = series_table(&state, source);
             if (!table) continue;
-            const size_t count = md_array_size(table->attr);
-            total += count;
-            for (size_t i = 0; i < count; ++i) {
-                const md_attribute_t& attr = table->attr[i];
+            total += md_attributes_count(table);
+            for (md_attribute_iter_t it = md_attributes_iter(table, {}); md_attributes_next(&it);) {
+                const md_attribute_t& attr = *it.attr;
                 if (!matches_filter(filter_str, attr.path, attr.label, source_name(source))) continue;
-                Row row = { source, table, (uint32_t)i, 0, nullptr };
+                Row row = { source, table, it.attr, 0, nullptr };
                 const SeriesKey key = series_key(source, attr.path);
                 row.views = series_views(&state, key, &row.reason);
                 if (plottable_only && !row.views) continue;
@@ -229,7 +225,7 @@ struct Attributes : viamd::EventHandler {
             while (clipper.Step()) {
                 for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                     const Row& row = rows[r];
-                    const md_attribute_t& attr = row.table->attr[row.index];
+                    const md_attribute_t& attr = *row.attr;
                     const SeriesKey key = series_key(row.source, attr.path);
                     const bool timeline = row.views & SeriesView_Timeline;
                     const bool distribution = row.views & SeriesView_Distribution;
@@ -296,7 +292,7 @@ struct Attributes : viamd::EventHandler {
                     }
 
                     ImGui::TableSetColumnIndex(6);
-                    ImGui::TextUnformatted(storage_name(attr.storage));
+                    ImGui::TextUnformatted(storage_name(attr));
 
                     ImGui::TableSetColumnIndex(7);
                     ImGui::TextUnformatted(source_name(row.source));

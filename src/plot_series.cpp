@@ -35,11 +35,12 @@ SeriesKey series_key(SeriesSource source, str_t path, SeriesVariant variant) {
     return key;
 }
 
-static const char* variant_suffix[SeriesVariant_Count] = {
+// The child of the series' path each variant is read from; empty for the series itself.
+static const char* variant_leaf[SeriesVariant_Count] = {
     "",
-    "/mean",
-    "/variance",
-    "/extent",
+    "mean",
+    "variance",
+    "extent",
     "",
 };
 
@@ -178,19 +179,11 @@ void series_set_drag_payload(const char* dnd_type, const SeriesKey& key, int src
 static bool attribute_numeric_resident(const md_attribute_t* attr) {
     if (!attr) return false;
     if (attr->format.rank < 1 || attr->format.shape[0] == 0) return false;
-    if (attr->format.type == MD_ATTRIBUTE_TYPE_NONE || attr->format.type == MD_ATTRIBUTE_TYPE_STR) return false;
-    return attr->data != nullptr;
+    return md_attribute_type_is_numeric(attr->format.type) && !md_attribute_is_virtual(attr);
 }
 
 static bool attribute_temporal(const md_attribute_t* attr) {
     return attribute_numeric_resident(attr) && (attr->flags & MD_ATTRIBUTE_FLAG_TEMPORAL);
-}
-
-static const md_attribute_t* find_with_suffix(const md_attributes_t* table, str_t path, const char* suffix) {
-    char buf[SERIES_PATH_CAP + 32];
-    const int len = snprintf(buf, sizeof(buf), STR_FMT "%s", STR_ARG(path), suffix);
-    if (len <= 0 || (size_t)len >= sizeof(buf)) return nullptr;
-    return md_attributes_find(table, str_t{buf, (size_t)len});
 }
 
 static md_script_property_flags_t script_property_kind(const ApplicationState* app, const SeriesKey& key) {
@@ -271,7 +264,7 @@ static const float* cache_convert(ApplicationState* app, const md_attributes_t* 
     entry->last_used = frame;
     const size_t count = md_attribute_element_count(&attr->format);
     md_array_resize(entry->data, count, app->allocator.persistent);
-    entry->valid = md_attribute_extract_f32(entry->data, count, attr, dst_unit) == count;
+    entry->valid = md_attribute_extract_f32(entry->data, count, attr, md_attribute_slice_all(), dst_unit) == count;
     if (!entry->valid) {
         md_array_free(entry->data, app->allocator.persistent);
         entry->data = nullptr;
@@ -405,15 +398,15 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     const md_attribute_t* src2 = nullptr;
     switch (key.variant) {
     case SeriesVariant_Mean:
-        src = find_with_suffix(table, path, variant_suffix[SeriesVariant_Mean]);
+        src = md_attributes_find_in(table, path, str_from_cstr(variant_leaf[SeriesVariant_Mean]));
         break;
     case SeriesVariant_Sigma:
-        src  = find_with_suffix(table, path, variant_suffix[SeriesVariant_Mean]);
-        src2 = find_with_suffix(table, path, variant_suffix[SeriesVariant_Sigma]);
+        src  = md_attributes_find_in(table, path, str_from_cstr(variant_leaf[SeriesVariant_Mean]));
+        src2 = md_attributes_find_in(table, path, str_from_cstr(variant_leaf[SeriesVariant_Sigma]));
         if (!attribute_temporal(src2)) return false;
         break;
     case SeriesVariant_Extent:
-        src = find_with_suffix(table, path, variant_suffix[SeriesVariant_Extent]);
+        src = md_attributes_find_in(table, path, str_from_cstr(variant_leaf[SeriesVariant_Extent]));
         break;
     default:
         break;
@@ -598,7 +591,7 @@ static void downsample_bins(float* dst, int num_dst, const float* src, const flo
 static bool read_range(double out[2], const md_attribute_t* range) {
     if (!range || !range->data || range->format.type == MD_ATTRIBUTE_TYPE_NONE || range->format.type == MD_ATTRIBUTE_TYPE_STR) return false;
     if (md_attribute_element_count(&range->format) != 2) return false;
-    return md_attribute_extract_f64(out, 2, range, md_unit_none()) == 2 && out[1] > out[0];
+    return md_attribute_extract_f64(out, 2, range, md_attribute_slice_all(), md_unit_none()) == 2 && out[1] > out[0];
 }
 
 bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, const SeriesKey& key, int num_bins) {
@@ -620,7 +613,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     const bool distribution = !temporal && (script_property_kind(app, key) & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION);
     if (!temporal && !distribution) return false;
 
-    const md_attribute_t* weight = distribution ? find_with_suffix(table, path, "/weight") : nullptr;
+    const md_attribute_t* weight = distribution ? md_attributes_find_in(table, path, STR_LIT("weight")) : nullptr;
     if (weight && (!attribute_numeric_resident(weight) || md_attribute_element_count(&weight->format) != md_attribute_element_count(&attr->format))) {
         weight = nullptr;
     }
@@ -671,7 +664,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
         const float* values = attribute_floats(app, table, attr);
         if (values) {
             double range[2] = {0, 0};
-            const bool has_range = read_range(range, find_with_suffix(table, path, "/range"));
+            const bool has_range = read_range(range, md_attributes_find_in(table, path, STR_LIT("range")));
             if (temporal) {
                 const md_bitfield_t* mask = nullptr;
                 if (is_script(key.source)) {
@@ -718,7 +711,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     double x_scl = 1.0;
     double y_scl = 1.0;
     if (distribution) {
-        const md_attribute_t* bin = find_with_suffix(table, path, "/bin");
+        const md_attribute_t* bin = md_attributes_find_in(table, path, STR_LIT("bin"));
         x_scl = display_units::factor_print(out->x_unit_str, sizeof(out->x_unit_str), bin ? bin->unit : md_unit_none());
         y_scl = display_units::factor_print(out->y_unit_str, sizeof(out->y_unit_str), attr->unit);
     } else {
@@ -846,28 +839,22 @@ size_t system_series_groups(str_t out_groups[], size_t cap, const ApplicationSta
     const md_attributes_t* table = &app->mold.sys.attributes;
     const str_t run = str_from_cstr(app->mold.run);
 
-    md_temp_scope_t temp = md_temp_begin();
-    const size_t num = md_attributes_query(nullptr, 0, table, run);
-    md_attribute_id_t* ids = md_temp_alloc_array(temp, md_attribute_id_t, num + 1);
-    md_attributes_query(ids, num, table, run);
-
     size_t count = 0;
-    for (size_t i = 0; i < num; ++i) {
-        const md_attribute_t* attr = md_attributes_get(table, ids[i]);
-        if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR) continue;
+    for (md_attribute_iter_t it = md_attributes_iter(table, run); md_attributes_next(&it);) {
+        const md_attribute_t* attr = it.attr;
+        if (attr->format.type != MD_ATTRIBUTE_TYPE_STR) continue;
         if (!str_eq_cstr(md_attribute_leaf(attr), "source")) continue;
         const str_t group = md_attribute_group(attr);
         if (str_empty(group) || str_eq(group, run)) continue;
         if (out_groups && count < cap) out_groups[count] = group;
         count += 1;
     }
-    md_temp_end(temp);
     return count;
 }
 
 str_t system_series_group_source(const ApplicationState* app, str_t group) {
     const md_attributes_t* table = &app->mold.sys.attributes;
-    const md_attribute_t* src = find_with_suffix(table, group, "/source");
+    const md_attribute_t* src = md_attributes_find_in(table, group, STR_LIT("source"));
     if (!src || src->format.type != MD_ATTRIBUTE_TYPE_STR) return {};
     return md_attribute_str(table, src, 0);
 }
@@ -895,20 +882,14 @@ size_t system_series_members(str_t out_paths[], size_t cap, const ApplicationSta
     ASSERT(app);
     const md_attributes_t* table = &app->mold.sys.attributes;
 
-    md_temp_scope_t temp = md_temp_begin();
-    const size_t num = md_attributes_query_flags(nullptr, 0, table, group, MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL);
-    md_attribute_id_t* ids = md_temp_alloc_array(temp, md_attribute_id_t, num + 1);
-    md_attributes_query_flags(ids, num, table, group, MD_ATTRIBUTE_FLAG_TEMPORAL, MD_ATTRIBUTE_FLAG_TEMPORAL);
-
     size_t count = 0;
-    for (size_t i = 0; i < num; ++i) {
-        const md_attribute_t* attr = md_attributes_get(table, ids[i]);
+    for (md_attribute_iter_t it = md_attributes_iter(table, group); md_attributes_next(&it);) {
+        const md_attribute_t* attr = it.attr;
         if (!attribute_temporal(attr)) continue;
         if (md_attributes_axis(table, attr) == attr) continue;  // The group's own time
         if (out_paths && count < cap) out_paths[count] = attr->path;
         count += 1;
     }
-    md_temp_end(temp);
     return count;
 }
 

@@ -1739,6 +1739,8 @@ bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
 str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);
+// The attribute at "<run>/<leaf>" of the current run; NULL without a run or without such an attribute.
+const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf);
 
 // Frame cache operations
 void clear_system_frame_cache(ApplicationState* app);
