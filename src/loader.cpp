@@ -8,6 +8,7 @@
 #include <md_xtc.h>
 #include <md_trr.h>
 #include <md_xyz.h>
+#include <md_ase_traj.h>
 #include <md_mmcif.h>
 #include <md_lammps.h>
 #include <md_dcd.h>
@@ -53,6 +54,7 @@ static const str_t loader_name[LoaderType_COUNT] = {
         STR_INIT("Gromacs Energy (edr)"),
         STR_INIT("xmgrace columns (xvg)"),
         STR_INIT("Comma separated values (csv)"),
+        STR_INIT("ASE Trajectory (traj)"),
 };
 
 static const str_t loader_ext[LoaderType_COUNT] = {
@@ -81,6 +83,7 @@ static const str_t loader_ext[LoaderType_COUNT] = {
         STR_INIT("edr"),
         STR_INIT("xvg"),
         STR_INIT("csv"),
+        STR_INIT("traj"),
 };
 
 static const LoaderFlags loader_flags[LoaderType_COUNT] = {
@@ -112,6 +115,7 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
         LoaderFlag_Supplemental | LoaderFlag_Temporal | LoaderFlag_MM, // GROMACS energy
         LoaderFlag_Supplemental | LoaderFlag_Temporal,                 // XVG
         LoaderFlag_Supplemental | LoaderFlag_Temporal,                 // CSV
+        LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM,     // ASE trajectory
 };
 
 void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
@@ -182,6 +186,8 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
             return md_gro_system_init_from_file(out_sys, out_state, filepath);
         case LoaderType_TPR:
             return md_tpr_system_init_from_file(out_sys, out_state, filepath);
+        case LoaderType_ASE_TRAJ:
+            return md_ase_traj_system_init_from_file(out_sys, out_state, filepath);
         case LoaderType_XYZ:
         case LoaderType_XMOL:
         case LoaderType_ARC: {
@@ -273,6 +279,7 @@ bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags) {
     case LoaderType_TRR:       return md_trr_system_publish_run(sys, filepath, run, flags);
     case LoaderType_DCD:       return md_dcd_system_publish_run(sys, filepath, run, flags);
     case LoaderType_PDB:       return md_pdb_system_publish_run(sys, filepath, run, flags);
+    case LoaderType_ASE_TRAJ:  return md_ase_traj_system_publish_run(sys, filepath, run, flags);
     case LoaderType_XYZ:
     case LoaderType_XMOL:
     case LoaderType_ARC:       return md_xyz_system_publish_run(sys, filepath, run, flags);

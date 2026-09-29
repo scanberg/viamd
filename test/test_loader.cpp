@@ -86,6 +86,25 @@ UTEST(viamd_loader, molecular_and_quantum_formats_are_labelled_as_such) {
 #endif
 }
 
+UTEST(viamd_loader, ase_trajectory_contains_a_system_and_a_run) {
+    const str_t path = STR_LIT(VIAMD_ASE_TRAJ_TEST_DATA_DIR "/ase_fixed.traj");
+    loader::LoaderState reader = {};
+    loader::init(&reader, path);
+    ASSERT_EQ((LoaderType)LoaderType_ASE_TRAJ, reader.type);
+    EXPECT_NE(0u, reader.flags & LoaderFlag_System);
+    EXPECT_NE(0u, reader.flags & LoaderFlag_Trajectory);
+
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(loader::load(&sys, &state, path, reader));
+    EXPECT_EQ(3u, sys.atom.count);
+    ASSERT_TRUE(loader::publish_run(&sys, path, STR_LIT("run/ase"), 0));
+    EXPECT_TRUE(md_attributes_find(&sys.attributes, STR_LIT("run/ase/atom/position")) != nullptr);
+    md_system_state_free(&state);
+    md_system_free(&sys);
+}
+
 UTEST(viamd_loader, trajectory_only_formats_do_not_claim_to_be_systems) {
     /* A trajectory has no topology of its own, so offering one as a system would load atoms with no
      * elements or names. */
