@@ -9,4 +9,4 @@
 	url = https://github.com/dougbinks/enkiTS
 [submodule "ext/mdlib"]
 	path = ext/mdlib
-	url = https://github.com/scanberg/mdlib
+	url = https://github.com/JamesOBrien2/mdlib
