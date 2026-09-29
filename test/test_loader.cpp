@@ -3,12 +3,13 @@
 #include <loader.h>
 
 #include <core/md_str.h>
+#include <core/md_arena_allocator.h>
 #include <md_system.h>
 
 /* loader is the table that decides which reader gets a file. It is three parallel arrays indexed by
- * LoaderType plus a lookup, and the arrays are maintained by hand behind #if MD_VLX / #if MD_TREXIO
- * guards - so the failure mode is not a crash but a silent shift, where adding a format one place
- * and not another makes every entry after it describe the wrong reader. Most of what follows checks
+ * LoaderType plus a lookup, and the arrays are maintained by hand behind #if MD_HDF5 guards - so
+ * the failure mode is not a crash but a silent shift, where adding a format one place and not
+ * another makes every entry after it describe the wrong reader. Most of what follows checks
  * that the three arrays still agree with each other and with the enum. */
 
 UTEST(viamd_loader, every_type_has_a_name_and_an_extension) {
@@ -75,11 +76,9 @@ UTEST(viamd_loader, molecular_and_quantum_formats_are_labelled_as_such) {
     EXPECT_EQ(0u, loader::type_flags(LoaderType_PDB)    & LoaderFlag_QM);
     EXPECT_NE(0u, loader::type_flags(LoaderType_MOLDEN) & LoaderFlag_QM);
     EXPECT_EQ(0u, loader::type_flags(LoaderType_MOLDEN) & LoaderFlag_MM);
-#if MD_TREXIO
+#if MD_HDF5
     EXPECT_NE(0u, loader::type_flags(LoaderType_TREXIO) & LoaderFlag_QM);
     EXPECT_EQ(0u, loader::type_flags(LoaderType_TREXIO) & LoaderFlag_MM);
-#endif
-#if MD_VLX
     /* VeloxChem h5 is the one format that is both: a system with coordinates and a trajectory, and
      * quantum data alongside. */
     EXPECT_NE(0u, loader::type_flags(LoaderType_VLX_H5) & LoaderFlag_QM);
@@ -125,7 +124,7 @@ UTEST(viamd_loader, init_picks_a_reader_from_the_path) {
     EXPECT_EQ((LoaderType)LoaderType_Undefined, state.type);
 }
 
-#if MD_TREXIO
+#if MD_HDF5
 UTEST(viamd_loader, trexio_is_recognised_by_content_not_only_by_extension) {
     /* .h5 is not one format: VeloxChem and TREXIO both use it, and they are told apart by looking
      * inside. Here the extension already says trexio, so this checks the other half - that the
@@ -137,7 +136,34 @@ UTEST(viamd_loader, trexio_is_recognised_by_content_not_only_by_extension) {
 }
 #endif
 
-#if MD_VLX
+#if MD_HDF5
+UTEST(viamd_loader, h5md_is_a_system_and_its_own_trajectory) {
+    /* One file, both halves: load() gives the system from it and publish_run() the positions, which
+     * is the path a structure file with frames of its own takes (init_trajectory_data). */
+    const str_t path = STR_LIT(VIAMD_TEST_DATA_DIR "/h5md/peptide_tip3p.h5md");
+    loader::LoaderState state = {};
+    loader::init(&state, path);
+    EXPECT_EQ((LoaderType)LoaderType_H5MD, state.type);
+    const LoaderFlags expected = LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM | LoaderFlag_Topology;
+    EXPECT_EQ(expected, state.flags & expected);
+
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_system_t sys = {};
+    sys.alloc = arena;
+    md_system_state_t sys_state = {};
+    sys_state.alloc = arena;
+    ASSERT_TRUE(loader::load(&sys, &sys_state, path, state));
+    EXPECT_EQ(1577u, sys.atom.count);
+    EXPECT_LT(0u, sys.bond.count);
+    EXPECT_TRUE(loader::publish_run(&sys, path, STR_LIT("run/h5md"), 0));
+    const md_attribute_t* time = md_attributes_find(&sys.attributes, STR_LIT("run/h5md/time"));
+    ASSERT_TRUE(time != NULL);
+    EXPECT_EQ(5u, time->format.shape[0]);
+    md_vm_arena_destroy(arena);
+}
+#endif
+
+#if MD_HDF5
 UTEST(viamd_loader, a_veloxchem_h5_stays_veloxchem) {
     /* The mirror of the case above: a .h5 that is not TREXIO must not be rerouted by the content
      * check. Getting this backwards would send every VeloxChem file to the wrong reader. */

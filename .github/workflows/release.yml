@@ -45,8 +45,6 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_STATIC_LIBS=ON \
             -DVIAMD_ENABLE_QM=ON \
-            -DMD_ENABLE_VLX=ON \
-            -DMD_ENABLE_TREXIO=ON \
             -DMD_BENCHMARK=OFF \
             -DMD_UNITTEST=OFF \
             -DVIAMD_UNITTEST=OFF
@@ -102,8 +100,6 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_STATIC_LIBS=ON \
             -DVIAMD_ENABLE_QM=ON \
-            -DMD_ENABLE_VLX=ON \
-            -DMD_ENABLE_TREXIO=ON \
             -DMD_BENCHMARK=OFF \
             -DMD_UNITTEST=OFF \
             -DVIAMD_UNITTEST=OFF \
@@ -161,8 +157,6 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF `
             -DBUILD_STATIC_LIBS=ON `
             -DVIAMD_ENABLE_QM=ON `
-            -DMD_ENABLE_VLX=ON `
-            -DMD_ENABLE_TREXIO=ON `
             -DMD_BENCHMARK=OFF `
             -DMD_UNITTEST=OFF `
             -DVIAMD_UNITTEST=OFF `
@@ -228,8 +222,6 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF `
             -DBUILD_STATIC_LIBS=ON `
             -DVIAMD_ENABLE_QM=ON `
-            -DMD_ENABLE_VLX=ON `
-            -DMD_ENABLE_TREXIO=ON `
             -DMD_BENCHMARK=OFF `
             -DMD_UNITTEST=OFF `
             -DVIAMD_UNITTEST=OFF `

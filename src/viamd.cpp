@@ -1012,9 +1012,11 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             state->files.coarse_grained = load_state.flags & LoaderFlag_CoarseGrained;
             // @NOTE: If the dataset is coarse-grained, then postprocessing must be aware
             md_infer_flags_t flags = state->files.coarse_grained ? MD_UTIL_INFER_NONE : MD_UTIL_INFER_ALL;
-            if (load_state.flags & LoaderFlag_Topology) {
+            if ((load_state.flags & LoaderFlag_Topology) && state->mold.sys.bond.count > 0) {
                 // The file's bonds are the force field's; inferring would replace them with a guess.
-                // Structures and rings are still derived, from those bonds.
+                // Structures and rings are still derived, from those bonds. A topology format that
+                // carried no bonds at all (an H5MD file without connectivity) has none to protect, and
+                // gets them inferred like any other structure.
                 flags &= ~MD_UTIL_INFER_BOND_BIT;
                 flags |= MD_UTIL_INFER_STRUCTURE_BIT;
             }

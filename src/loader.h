@@ -35,12 +35,13 @@ enum LoaderType_ {
     LoaderType_XTC,
     LoaderType_TRR,
     LoaderType_DCD,
-#if MD_VLX
+#if MD_HDF5
     LoaderType_VLX_H5,
 #endif
     LoaderType_MOLDEN,
-#if MD_TREXIO
+#if MD_HDF5
     LoaderType_TREXIO,
+    LoaderType_H5MD,    // H5MD (GROMACS mdrun -o traj.h5md, and others): a system and its trajectory in one file
 #endif
     LoaderType_ITP,     // GROMACS topology (.itp / .top), supplements a loaded system
     LoaderType_TPR,     // GROMACS run input, topology and coordinates
