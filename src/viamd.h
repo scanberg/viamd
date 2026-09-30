@@ -973,15 +973,13 @@ struct ApplicationState {
     // asking. The coefficient buffer is grown to fit the widest basis loaded so far, for the same
     // reason. Whoever evaluates borrows these; nobody else frees them.
     md_gpu_stream_t gpu_stream  = nullptr;   // the device's default compute stream
-    md_gpu_pool_t   gpu_pool    = nullptr;   // device-local: basis, atoms, coefficients
-    md_gpu_pool_t   gpu_rb_pool = nullptr;   // host-readable: volume readback staging
     md_gpu_texture_t gpu_volume = nullptr;   // 3d R32F scratch for an evaluated orbital / density
     md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
     // One in-flight readback of gpu_volume into a GL texture. A slot must outlive the call that
     // queued it, so these live here rather than in the frame arena - and here specifically because
-    // every one of them references gpu_volume, gpu_rb_pool and gpu_stream above. Whoever destroys
+    // every one of them references gpu_volume and gpu_stream above. Whoever destroys
     // those drains these first.
     struct GpuVolumeJob {
         bool              in_flight = false;

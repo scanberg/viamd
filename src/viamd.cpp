@@ -2310,7 +2310,7 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
 #if MD_ENABLE_GPU
     system_gpu_data_free(state);
 
-    if (!state->gpu_device || !state->gpu_pool) {
+    if (!state->gpu_device) {
         return false;
     }
 
@@ -2324,7 +2324,7 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
     }
 
     md_gto_gpu_basis_desc_t desc = { .basis = &basis, .cutoff = cutoff };
-    state->mold.gpu_basis = md_gto_gpu_basis_create(state->gpu_stream, state->gpu_pool, &desc);
+    state->mold.gpu_basis = md_gto_gpu_basis_create(state->gpu_stream, &desc);
     if (!state->mold.gpu_basis) {
         MD_LOG_ERROR("Failed to upload the GTO basis to the device");
         return false;
@@ -2333,7 +2333,7 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
     const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
     const size_t num_atoms = md_gto_gpu_basis_num_atoms(state->mold.gpu_basis);
 
-    state->mold.gpu_atoms = md_gpu_malloc(state->gpu_stream, state->gpu_pool, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
+    state->mold.gpu_atoms = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
     state->mold.gpu_atoms_hash = 0;
 
     // Density coefficients are the larger of the two packings, so one size covers both the density
@@ -2343,7 +2343,7 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
         if (state->gpu_coeff) {
             md_gpu_free(state->gpu_stream, state->gpu_coeff);
         }
-        state->gpu_coeff = md_gpu_malloc(state->gpu_stream, state->gpu_pool, coeff_size).gpu;
+        state->gpu_coeff = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_DEVICE, coeff_size).gpu;
         state->gpu_coeff_capacity = state->gpu_coeff ? coeff_size : 0;
     }
 
@@ -2693,7 +2693,7 @@ static void gpu_volume_job_complete(void* user) {
 
 // Used when no job slot is free, and when a caller genuinely needs the data before it returns.
 static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, size_t size) {
-    md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, state->gpu_rb_pool, size);
+    md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);
     if (!rb.cpu) return false;
     const md_gpu_tex_region_t region = {
         .offset = {0, 0, 0},
@@ -2712,7 +2712,7 @@ static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_t
 //
 // Returns true when the work was QUEUED -- not that the texture holds data.
 static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid) {
-    if (!state->gpu_stream || !state->gpu_rb_pool || !state->gpu_volume) {
+    if (!state->gpu_stream || !state->gpu_volume) {
         return false;
     }
     const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
@@ -2740,7 +2740,7 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
         return gpu_volume_readback_blocking(state, vol_tex, grid, size);
     }
 
-    md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, state->gpu_rb_pool, size);
+    md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);
     if (!rb.cpu) {
         MD_LOG_ERROR("Failed to allocate volume readback staging (%zu bytes)", size);
         job->in_flight = false;

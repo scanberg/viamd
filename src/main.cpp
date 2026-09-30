@@ -375,18 +375,9 @@ int main(int argc, char** argv) {
         const char* reason = md_gpu_last_error();
         VIAMD_LOG_ERROR("Failed to create GPU device: %s", reason ? reason : "unknown");
     } else {
-        // The pools and the scratch belong to the device, not to whichever component happens to
-        // evaluate first. Components borrow them; see the note on ApplicationState.
+        // The scratch belongs to the device, not to whichever component happens to evaluate
+        // first. Components borrow it; see the note on ApplicationState.
         state.gpu_stream = md_gpu_stream_default(state.gpu_device, MD_GPU_STREAM_COMPUTE);
-
-        md_gpu_pool_desc_t pool_desc = {};
-        pool_desc.kind  = MD_GPU_MEM_DEVICE;
-        pool_desc.label = "evaluation";
-        state.gpu_pool = md_gpu_pool_create(state.gpu_device, &pool_desc);
-
-        pool_desc.kind  = MD_GPU_MEM_HOST_READ;
-        pool_desc.label = "evaluation readback";
-        state.gpu_rb_pool = md_gpu_pool_create(state.gpu_device, &pool_desc);
 
         md_gpu_texture_desc_t vol_desc = {
             .type            = MD_GPU_TEX_3D,
@@ -397,7 +388,7 @@ int main(int argc, char** argv) {
             .depth_or_layers = 512,
             .label           = "Evaluation volume",
         };
-        state.gpu_volume = md_gpu_texture_create(state.gpu_stream, state.gpu_pool, &vol_desc);
+        state.gpu_volume = md_gpu_texture_create(state.gpu_stream, &vol_desc);
         if (!state.gpu_volume) {
             VIAMD_LOG_ERROR("Failed to create the GPU evaluation volume: %s", md_gpu_last_error());
         }
@@ -1170,20 +1161,16 @@ int main(int argc, char** argv) {
     gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU
     if (state.gpu_device) {
-        // A queued readback writes into a GL texture and frees a staging block from gpu_rb_pool, so
-        // nothing below may go until the queue has run out.
+        // A queued readback writes into a GL texture and frees its staging memory, so nothing
+        // below may go until the queue has run out.
         gpu_volume_jobs_drain(&state);
         system_gpu_data_free(&state);
 
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
-        md_gpu_pool_destroy(state.gpu_rb_pool);
-        md_gpu_pool_destroy(state.gpu_pool);
         state.gpu_coeff = 0;
         state.gpu_coeff_capacity = 0;
         state.gpu_volume = nullptr;
-        state.gpu_rb_pool = nullptr;
-        state.gpu_pool = nullptr;
         state.gpu_stream = nullptr;
 
         md_gpu_device_destroy(state.gpu_device);
