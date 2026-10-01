@@ -5340,6 +5340,11 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags) {
     ASSERT(state);
 
+    if (payload == NULL) {
+        MD_LOG_DEBUG("No payload supplied for visualization");
+        return;
+    }
+
     md_script_vis_ctx_t ctx = {
         .ir   = state->script.ir,
         .sys  = &state->mold.sys,
