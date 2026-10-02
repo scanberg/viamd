@@ -84,7 +84,11 @@ static inline uint32_t u32_to_color_sequential(uint32_t u32, uint32_t num_colors
 
 static inline uint32_t u32_to_color_qualitative(uint32_t u32) {
 	// The golden ratio conjugate is used to ensure good distribution of colors even for non-random u32 values (e.g. sequential indices)
-    const float t = fractf((float)u32 * 1.618033988749f);
+    // The multiplication is done in integer arithmetic (Fibonacci hashing): 0x9E3779B9 = 2^32 / phi, and the wrap-around modulo 2^32
+    // is exactly the fractional part of u32 * phi. Doing this in float breaks for u32 >= 2^24 (e.g. hashes), where the product has no
+    // fractional bits left and every value maps to t = 0 (the same color).
+    const uint32_t h = u32 * 0x9E3779B9u;
+    const float t = (float)(h >> 8) * (1.0f / 16777216.0f);
     vec3_t rgb = sample_colormap(wheel_colors, ARRAY_SIZE(wheel_colors), t);
     return convert_color({ rgb.x, rgb.y, rgb.z, 1.0f });
 }

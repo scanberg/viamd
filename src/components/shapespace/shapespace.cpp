@@ -86,8 +86,14 @@ struct Shapespace : viamd::EventHandler {
                 app_state = (ApplicationState*)e.payload;
                 arena = md_arena_allocator_create(app_state->allocator.persistent, MEGABYTES(1));
                 md_bitfield_init(&joined_bitfield, arena);
+                workspace_register_window("ShapeSpace", &show_window);
                 break;
             }
+            case viamd::EventType_ViamdDeserializeBegin:
+                str_copy_to_char_buf(input, sizeof(input), STR_LIT("all"));
+                marker_size = 1.5f;
+                use_mass = true;
+                break;
             case viamd::EventType_ViamdShutdown:
                 task_system::task_interrupt_and_wait_for(evaluate_task);
                 md_arena_allocator_destroy(arena);
@@ -430,8 +436,10 @@ struct Shapespace : viamd::EventHandler {
                                     xyzw[dst_idx++] = vec4_from_vec3(xyz[src_idx], w ? w[src_idx] : 1.0f);
                                 }
 
-                                vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &frame_state.unitcell);
-                                md_util_deperiodize_vec4(xyzw, count, com, &frame_state.unitcell);
+                                // Covariance about the mean of the placed points, not the circular mean the
+                                // placement is seeded from (their offset enters the covariance squared)
+                                vec3_t com = vec3_zero();
+                                md_util_deperiodize_self_vec4(xyzw, count, &frame_state.unitcell, &com);
 
                                 const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                                 const vec3_t weights = md_util_shape_weights(&M);

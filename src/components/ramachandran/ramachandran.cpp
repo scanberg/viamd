@@ -21,6 +21,7 @@
 
 #include <viamd_event.h>
 #include <viamd.h>
+#include <serialization_utils.h>
 #include <event.h>
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
@@ -514,6 +515,76 @@ struct Ramachandran : viamd::EventHandler {
 
     Ramachandran() { viamd::event_system_register_handler(*this); }
 
+    // ## Workspace: how the layers are drawn
+
+    void reset_workspace_settings() {
+        blur_sigma = 5.0f;
+        ref_alpha = full_alpha = filt_alpha = 0.85f;
+        display_mode[0] = IsoLevels; display_mode[1] = IsoLines; display_mode[2] = IsoLines;
+        colormap[0] = ImPlotColormap_Hot; colormap[1] = ImPlotColormap_Plasma; colormap[2] = ImPlotColormap_Viridis;
+        for (int i = 0; i < 3; ++i) isoline_colors[i] = {1,1,1,1};
+        for (int i = 0; i < 4; ++i) show_layer[i] = true;
+        layout_mode = 0;
+    }
+
+    void serialize(viamd::serialization_state_t& state) {
+        viamd::write_section_header(state, STR_LIT("Ramachandran"));
+        viamd::write_flt(state, STR_LIT("BlurSigma"), blur_sigma);
+        const float alpha[3] = { ref_alpha, full_alpha, filt_alpha };
+        viamd::write_flt_vec(state, STR_LIT("LayerAlpha"), alpha, 3);
+        const int modes[3] = { (int)display_mode[0], (int)display_mode[1], (int)display_mode[2] };
+        viamd::write_int_vec(state, STR_LIT("LayerDisplayMode"), modes, 3);
+        const int cmaps[3] = { (int)colormap[0], (int)colormap[1], (int)colormap[2] };
+        viamd::write_int_vec(state, STR_LIT("LayerColormap"), cmaps, 3);
+        for (int i = 0; i < 3; ++i) {
+            char key[32];
+            snprintf(key, sizeof(key), "LayerIsolineColor%d", i);
+            viamd::write_vec4(state, str_from_cstr(key), vec4_set(isoline_colors[i].x, isoline_colors[i].y, isoline_colors[i].z, isoline_colors[i].w));
+        }
+        const int layers[4] = { show_layer[0], show_layer[1], show_layer[2], show_layer[3] };
+        viamd::write_int_vec(state, STR_LIT("ShowLayer"), layers, 4);
+        viamd::write_int(state, STR_LIT("LayoutMode"), layout_mode);
+    }
+
+    void deserialize(viamd::deserialization_state_t& state) {
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "BlurSigma")) {
+                viamd::extract_flt(blur_sigma, arg);
+            } else if (str_eq_cstr(ident, "LayerAlpha")) {
+                float a[3];
+                if (viamd::extract_flt_vec(a, 3, arg)) { ref_alpha = a[0]; full_alpha = a[1]; filt_alpha = a[2]; }
+            } else if (str_eq_cstr(ident, "LayerDisplayMode")) {
+                int m[3];
+                if (viamd::extract_int_vec(m, 3, arg)) {
+                    for (int i = 0; i < 3; ++i) display_mode[i] = (RamachandranDisplayMode)CLAMP(m[i], (int)IsoLevels, (int)Colormap);
+                }
+            } else if (str_eq_cstr(ident, "LayerColormap")) {
+                int c[3];
+                if (viamd::extract_int_vec(c, 3, arg)) {
+                    for (int i = 0; i < 3; ++i) colormap[i] = (ImPlotColormap)c[i];
+                }
+            } else if (str_eq_cstr(ident, "ShowLayer")) {
+                int l[4];
+                if (viamd::extract_int_vec(l, 4, arg)) {
+                    for (int i = 0; i < 4; ++i) show_layer[i] = l[i] != 0;
+                }
+            } else if (str_eq_cstr(ident, "LayoutMode")) {
+                viamd::extract_int(layout_mode, arg);
+            } else {
+                for (int i = 0; i < 3; ++i) {
+                    char key[32];
+                    snprintf(key, sizeof(key), "LayerIsolineColor%d", i);
+                    if (str_eq_cstr(ident, key)) {
+                        vec4_t c;
+                        if (viamd::extract_vec4(c, arg)) isoline_colors[i] = ImVec4(c.x, c.y, c.z, c.w);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     void process_events(const viamd::Event* events, size_t num_events) final {
         for (size_t i = 0; i < num_events; ++i) {
             const viamd::Event e = events[i];
@@ -521,6 +592,20 @@ struct Ramachandran : viamd::EventHandler {
             case viamd::EventType_ViamdInitialize: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
                 initialize(state);
+                workspace_register_window("Ramachandran", &show_window);
+                break;
+            }
+            case viamd::EventType_ViamdSerialize:
+                serialize(*(viamd::serialization_state_t*)e.payload);
+                break;
+            case viamd::EventType_ViamdDeserializeBegin:
+                reset_workspace_settings();
+                break;
+            case viamd::EventType_ViamdDeserialize: {
+                viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
+                if (str_eq(viamd::section_header(state), STR_LIT("Ramachandran"))) {
+                    deserialize(state);
+                }
                 break;
             }
             case viamd::EventType_ViamdShutdown:
@@ -706,10 +791,8 @@ struct Ramachandran : viamd::EventHandler {
 
             constexpr const float min_ext = -180.0f;
             constexpr const float max_ext = 180.0f;
-            constexpr const float reset_coords[2] = { min_ext, max_ext };
             constexpr const char* x_lbl = "\xc2\xb0\xcf\x86";   // utf8 Degree Phi
             constexpr const char* y_lbl = "\xc2\xb0\xcf\x88";   // utf8 Degree Psi
-
             constexpr const ImPlotFlags flags = ImPlotFlags_Equal | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect; // | ImPlotFlags_AntiAliased;
             constexpr const ImPlotFlags subplotflags = ImPlotSubplotFlags_NoResize | ImPlotSubplotFlags_NoMenus;
             constexpr const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_Foreground | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels;
@@ -800,9 +883,6 @@ struct Ramachandran : viamd::EventHandler {
                         ImPlot::SetupAxesLimits(min_ext, max_ext, min_ext, max_ext, ImPlotCond_Once);
                         ImPlot::SetupAxisLinks(ImAxis_X1, &viewrect.X.Min, &viewrect.X.Max);
                         ImPlot::SetupAxisLinks(ImAxis_Y1, &viewrect.Y.Min, &viewrect.Y.Max);
-                        // @NOTE(Robin): This wont work out of the box due to the periodic domain.
-                        //ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, -720, +720);
-                        //ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, -720, +720);
                         ImPlot::SetupAxes(x_lbl, y_lbl, axis_flags, axis_flags);
 
                         ImPlot::SetupAxisFormat(ImAxis_X1, formatter, (void*)x_lbl);
@@ -811,13 +891,6 @@ struct Ramachandran : viamd::EventHandler {
                         ImPlot::SetupFinish();
 
                         viewrect = ImPlot::GetPlotLimits();
-
-                        ImPlot::PushStyleVar(ImPlotStyleVar_Marker, ImPlotMarker_Square);
-                        ImPlot::PushStyleColor(ImPlotCol_MarkerFill, ImVec4(0,0,0,0));
-                        ImPlot::PushStyleColor(ImPlotCol_MarkerOutline, ImVec4(0,0,0,0));
-                        ImPlot::PlotScatter("##Hidden reset helper", reset_coords, reset_coords, 2);
-                        ImPlot::PopStyleColor(2);
-                        ImPlot::PopStyleVar();
 
                         //ImPlot::PlotDummy("Reference");
                         //ImPlot::PlotDummy("Full");
@@ -1021,6 +1094,12 @@ struct Ramachandran : viamd::EventHandler {
                                     modify_field(selection_mask, highlight_mask, op);
                                 }
                             } 
+                        }
+
+                        if (ImPlot::FitThisFrame()) {
+                            ImPlotPlot* plot = ImPlot::GetCurrentPlot();
+                            plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(-180, 180);
+                            plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(-180, 180);
                         }
 
                         ImPlot::EndPlot();

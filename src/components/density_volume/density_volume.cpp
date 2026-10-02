@@ -2,6 +2,7 @@
 
 #include <viamd_event.h>
 #include <viamd.h>
+#include <serialization_utils.h>
 
 #include <gfx/gl_utils.h>
 #include <gfx/volumerender_utils.h>
@@ -25,6 +26,9 @@ enum LegendColorMapMode_ {
 struct DensityVolume : viamd::EventHandler {
     bool show_window = false;
     bool enabled = false;
+
+    // The volume property shown, by path; empty for none. One at a time.
+    SeriesKey volume_key = {};
 
     md_allocator_i* arena = nullptr;
 
@@ -109,6 +113,151 @@ struct DensityVolume : viamd::EventHandler {
         viamd::event_system_register_handler(*this);
     }
 
+    // ## Workspace: which volume is shown, and how
+
+    void reset_workspace_settings() {
+        volume_key = {};
+        dvr.enabled = true;
+        dvr.tf.alpha_scale = 1.0f;
+        dvr.tf.colormap = DEFAULT_COLORMAP;
+        dvr.tf.min_val = 0.0f;
+        dvr.tf.max_val = 1.0f;
+        dvr.tf.dirty = true;
+        iso.enabled = false;
+        iso.count = 0;
+        MEMSET(iso.values, 0, sizeof(iso.values));
+        MEMSET(iso.colors, 0, sizeof(iso.colors));
+        clip_volume.min = {0, 0, 0};
+        clip_volume.max = {1, 1, 1};
+        legend.enabled = true;
+        legend.checkerboard = true;
+        legend.colormap_mode = LegendColorMapMode_Split;
+        resolution_scale = 2.0f;
+        clip_volume_color = {1,0,0,1};
+        bounding_box_color = {0,0,0,1};
+        show_bounding_box = true;
+        show_reference_structures = true;
+        show_reference_ensemble = false;
+        show_coordinate_system_widget = true;
+        rep.type = RepresentationType::BallAndStick;
+        rep.colormap = ColorMapping::Type;
+        rep.param[0] = rep.param[1] = rep.param[2] = rep.param[3] = 1.0f;
+        rep.color = {1,1,1,1};
+        dirty_rep = true;
+        dirty_vol = true;
+    }
+
+    void serialize(viamd::serialization_state_t& state) {
+        viamd::write_section_header(state, STR_LIT("DensityVolume"));
+        if (volume_key.path[0] != '\0') {
+            viamd::write_str(state, STR_LIT("PropertySource"), str_from_cstr(series_source_name(volume_key.source)));
+            viamd::write_str(state, STR_LIT("PropertyPath"), str_from_cstr(volume_key.path));
+        }
+        viamd::write_bool(state, STR_LIT("DvrEnabled"), dvr.enabled);
+        viamd::write_int (state, STR_LIT("DvrColormap"), dvr.tf.colormap);
+        viamd::write_flt (state, STR_LIT("DvrAlphaScale"), dvr.tf.alpha_scale);
+        const float tf_range[2] = { dvr.tf.min_val, dvr.tf.max_val };
+        viamd::write_flt_vec(state, STR_LIT("DvrRange"), tf_range, 2);
+        viamd::write_bool(state, STR_LIT("IsoEnabled"), iso.enabled);
+        viamd::write_int (state, STR_LIT("IsoCount"), (int64_t)iso.count);
+        for (size_t i = 0; i < iso.count && i < ARRAY_SIZE(iso.values); ++i) {
+            char key[32];
+            snprintf(key, sizeof(key), "IsoValue%zu", i);
+            viamd::write_flt(state, str_from_cstr(key), iso.values[i]);
+            snprintf(key, sizeof(key), "IsoColor%zu", i);
+            viamd::write_vec4(state, str_from_cstr(key), iso.colors[i]);
+        }
+        viamd::write_vec3(state, STR_LIT("ClipMin"), clip_volume.min);
+        viamd::write_vec3(state, STR_LIT("ClipMax"), clip_volume.max);
+        viamd::write_bool(state, STR_LIT("LegendEnabled"), legend.enabled);
+        viamd::write_bool(state, STR_LIT("LegendCheckerboard"), legend.checkerboard);
+        viamd::write_int (state, STR_LIT("LegendColormapMode"), legend.colormap_mode);
+        viamd::write_flt (state, STR_LIT("ResolutionScale"), resolution_scale);
+        viamd::write_vec4(state, STR_LIT("ClipVolumeColor"), clip_volume_color);
+        viamd::write_vec4(state, STR_LIT("BoundingBoxColor"), bounding_box_color);
+        viamd::write_bool(state, STR_LIT("ShowBoundingBox"), show_bounding_box);
+        viamd::write_bool(state, STR_LIT("ShowReferenceStructures"), show_reference_structures);
+        viamd::write_bool(state, STR_LIT("ShowReferenceEnsemble"), show_reference_ensemble);
+        viamd::write_bool(state, STR_LIT("ShowCoordinateSystem"), show_coordinate_system_widget);
+        viamd::write_int (state, STR_LIT("RepType"), (int)rep.type);
+        viamd::write_int (state, STR_LIT("RepColorMapping"), (int)rep.colormap);
+        viamd::write_flt_vec(state, STR_LIT("RepParam"), rep.param, 4);
+        viamd::write_vec4(state, STR_LIT("RepColor"), rep.color);
+    }
+
+    void deserialize(viamd::deserialization_state_t& state) {
+        SeriesSource source = SeriesSource_Script;
+        str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (str_eq_cstr(ident, "PropertySource")) {
+                str_t name;
+                viamd::extract_str(name, arg);
+                series_source_from_name(&source, name);
+            } else if (str_eq_cstr(ident, "PropertyPath")) {
+                str_t path;
+                viamd::extract_str(path, arg);
+                volume_key = series_key(source, path);
+            } else if (str_eq_cstr(ident, "DvrEnabled")) {
+                viamd::extract_bool(dvr.enabled, arg);
+            } else if (str_eq_cstr(ident, "DvrColormap")) {
+                viamd::extract_int(dvr.tf.colormap, arg);
+            } else if (str_eq_cstr(ident, "DvrAlphaScale")) {
+                viamd::extract_flt(dvr.tf.alpha_scale, arg);
+            } else if (str_eq_cstr(ident, "DvrRange")) {
+                float r[2];
+                if (viamd::extract_flt_vec(r, 2, arg)) { dvr.tf.min_val = r[0]; dvr.tf.max_val = r[1]; }
+            } else if (str_eq_cstr(ident, "IsoEnabled")) {
+                viamd::extract_bool(iso.enabled, arg);
+            } else if (str_eq_cstr(ident, "IsoCount")) {
+                int n;
+                if (viamd::extract_int(n, arg)) iso.count = (size_t)CLAMP(n, 0, (int)ARRAY_SIZE(iso.values));
+            } else if (str_eq_cstr(ident, "ClipMin")) {
+                viamd::extract_vec3(clip_volume.min, arg);
+            } else if (str_eq_cstr(ident, "ClipMax")) {
+                viamd::extract_vec3(clip_volume.max, arg);
+            } else if (str_eq_cstr(ident, "LegendEnabled")) {
+                viamd::extract_bool(legend.enabled, arg);
+            } else if (str_eq_cstr(ident, "LegendCheckerboard")) {
+                viamd::extract_bool(legend.checkerboard, arg);
+            } else if (str_eq_cstr(ident, "LegendColormapMode")) {
+                viamd::extract_int(legend.colormap_mode, arg);
+            } else if (str_eq_cstr(ident, "ResolutionScale")) {
+                viamd::extract_flt(resolution_scale, arg);
+            } else if (str_eq_cstr(ident, "ClipVolumeColor")) {
+                viamd::extract_vec4(clip_volume_color, arg);
+            } else if (str_eq_cstr(ident, "BoundingBoxColor")) {
+                viamd::extract_vec4(bounding_box_color, arg);
+            } else if (str_eq_cstr(ident, "ShowBoundingBox")) {
+                viamd::extract_bool(show_bounding_box, arg);
+            } else if (str_eq_cstr(ident, "ShowReferenceStructures")) {
+                viamd::extract_bool(show_reference_structures, arg);
+            } else if (str_eq_cstr(ident, "ShowReferenceEnsemble")) {
+                viamd::extract_bool(show_reference_ensemble, arg);
+            } else if (str_eq_cstr(ident, "ShowCoordinateSystem")) {
+                viamd::extract_bool(show_coordinate_system_widget, arg);
+            } else if (str_eq_cstr(ident, "RepType")) {
+                viamd::extract_enum(rep.type, arg, (int)RepresentationType::Count);
+            } else if (str_eq_cstr(ident, "RepColorMapping")) {
+                viamd::extract_enum(rep.colormap, arg, (int)ColorMapping::Count);
+            } else if (str_eq_cstr(ident, "RepParam")) {
+                viamd::extract_flt_vec(rep.param, 4, arg);
+            } else if (str_eq_cstr(ident, "RepColor")) {
+                viamd::extract_vec4(rep.color, arg);
+            } else {
+                for (size_t i = 0; i < ARRAY_SIZE(iso.values); ++i) {
+                    char key[32];
+                    snprintf(key, sizeof(key), "IsoValue%zu", i);
+                    if (str_eq_cstr(ident, key)) { viamd::extract_flt(iso.values[i], arg); break; }
+                    snprintf(key, sizeof(key), "IsoColor%zu", i);
+                    if (str_eq_cstr(ident, key)) { viamd::extract_vec4(iso.colors[i], arg); break; }
+                }
+            }
+        }
+        dvr.tf.dirty = true;
+        dirty_rep = true;
+        dirty_vol = true;
+    }
+
     void update(ApplicationState* state) {
         md_allocator_i* temp_arena = state->allocator.frame;
         md_temp_scope_t temp_scope = md_temp_begin_in(temp_arena);
@@ -120,37 +269,28 @@ struct DensityVolume : viamd::EventHandler {
             volume::compute_transfer_function_texture_simple(&dvr.tf.id, dvr.tf.colormap, dvr.tf.alpha_scale);
         }
 
-        int64_t selected_property = -1;
-        for (size_t i = 0; i < md_array_size(state->display_properties); ++i) {
-            const DisplayProperty& dp = state->display_properties[i];
-            if (dp.type == DisplayProperty::Type_Volume && dp.show_in_volume) {
-                selected_property = i;
-                break;
-            }
-        }
+        // Resolved by path every frame: the evaluation's table is rebuilt when the script recompiles
+        const bool selected = volume_key.path[0] != '\0';
+        SeriesVolumeView vol_view = {};
+        const bool resolved = selected && series_resolve_volume(&vol_view, state, volume_key);
 
-        const md_attribute_t* prop_attr = 0;
-        const md_script_vis_payload_o* vis_payload = 0;
-        uint64_t data_version = 0;
+        const md_attribute_t* prop_attr = resolved ? vol_view.attr : NULL;
+        const md_script_vis_payload_o* vis_payload = vol_view.vis_payload;
+        const uint64_t data_version = vol_view.version;
 
         bool reset_view = false;
-        static int64_t s_selected_property = 0;
-        if (s_selected_property != selected_property) {
-            if (s_selected_property == -1) {
+        static SeriesKey s_volume_key = {};
+        static bool s_first = true;
+        if (s_first || !series_key_equal(s_volume_key, volume_key)) {
+            if (!s_first && s_volume_key.path[0] == '\0' && selected) {
                 reset_view = true;
             }
-            s_selected_property = selected_property;
+            s_first = false;
+            s_volume_key = volume_key;
             dirty_vol = true;
             dirty_rep = true;
         }
-
-        if (selected_property != -1) {
-            const DisplayProperty& dp = state->display_properties[selected_property];
-            prop_attr = (dp.attr && dp.attr->data && dp.attr->format.rank == 3) ? dp.attr : NULL;
-            vis_payload = dp.vis_payload;
-            data_version = prop_attr ? md_attributes_version(md_script_eval_attributes(dp.eval), prop_attr->id) : 0;
-        }
-        show_density_volume = selected_property != -1;
+        show_density_volume = selected;
 
         static uint64_t s_script_fingerprint = 0;
         if (s_script_fingerprint != md_script_ir_fingerprint(state->script.eval_ir)) {
@@ -302,40 +442,35 @@ struct DensityVolume : viamd::EventHandler {
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Property")) {
-                    int64_t selected_index = -1;
-                    int64_t candidate_count = 0;
-                    for (int64_t i = 0; i < (int64_t)md_array_size(state->display_properties); ++i) {
-                        DisplayProperty& dp = state->display_properties[i];
-                        if (dp.type != DisplayProperty::Type_Volume) continue;
-                        if (!state->timeline.filter.enabled && dp.partial_evaluation) {
-                            continue;
-                        }
-                        ImPlot::ItemIcon(dp.color); ImGui::SameLine();
-                        if (ImGui::Selectable(dp.label, dp.show_in_volume)) {
-                            selected_index = i;
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            script_visualize_payload(state, dp.vis_payload, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
-                            script_set_hovered_property(state, str_from_cstr(dp.label));
-                        }
-                        candidate_count += 1;
+                    // One volume at a time: picking one replaces the other, picking it again hides it
+                    int candidate_count = 0;
+                    auto list = [&](SeriesSource source) {
+                        series_for_each_script_property(state, source, MD_SCRIPT_PROPERTY_FLAG_VOLUME, [&](const SeriesKey& key) {
+                            char label[96];
+                            series_label(label, sizeof(label), state, key);
+                            const bool is_selected = series_key_equal(key, volume_key);
+                            ImGui::PushID(key.source);
+                            ImPlot::ItemIcon(series_default_color(state, key)); ImGui::SameLine();
+                            if (ImGui::Selectable(label, is_selected)) {
+                                volume_key = is_selected ? SeriesKey{} : key;
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                const str_t ident = series_script_ident(key);
+                                const md_script_vis_payload_o* vis = state->script.eval_ir ? md_script_ir_property_vis_payload(state->script.eval_ir, ident) : nullptr;
+                                script_visualize_payload(state, vis, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
+                                script_set_hovered_property(state, ident);
+                            }
+                            ImGui::PopID();
+                            candidate_count += 1;
+                        });
+                    };
+                    list(SeriesSource_Script);
+                    if (state->timeline.filter.enabled) {
+                        list(SeriesSource_ScriptFiltered);
                     }
 
                     if (candidate_count == 0) {
                         ImGui::Text("No volume properties available.");
-                    }
-
-                    // Currently we only support viewing one volume at a time.
-                    // This will probably change over time but not now.
-                    if (selected_index != -1) {
-                        for (int64_t i = 0; i < (int64_t)md_array_size(state->display_properties); ++i) {
-                            if (selected_index == i) {
-                                // Toggle bool
-                                state->display_properties[i].show_in_volume = !state->display_properties[i].show_in_volume;
-                            } else {
-                                state->display_properties[i].show_in_volume = false;
-                            }
-                        }
                     }
                     ImGui::EndMenu();
                 }
@@ -661,17 +796,10 @@ struct DensityVolume : viamd::EventHandler {
             glViewport(0, 0, gbuf.width, gbuf.height);
             glScissor(0, 0,  gbuf.width, gbuf.height);
 
-            int64_t selected_property = -1;
-            for (size_t i = 0; i < md_array_size(state->display_properties); ++i) {
-                const DisplayProperty& dp = state->display_properties[i];
-                if (dp.type == DisplayProperty::Type_Volume && dp.show_in_volume) {
-                    selected_property = i;
-                    break;
-                }
-            }
+            const bool selected_property = volume_key.path[0] != '\0';
 
             size_t num_reps = md_array_size(reps);
-            if (selected_property > -1 && show_reference_structures && num_reps > 0) {
+            if (selected_property && show_reference_structures && num_reps > 0) {
                 if (!show_reference_ensemble) {
                     num_reps = 1;
                 }
@@ -766,7 +894,7 @@ struct DensityVolume : viamd::EventHandler {
             glViewport(0, 0, gbuf.width, gbuf.height);
             glScissor(0, 0, gbuf.width, gbuf.height);
 
-            if (show_bounding_box && selected_property != -1) {
+            if (show_bounding_box && selected_property) {
                 glEnable(GL_DEPTH_TEST);
                 glDepthMask(GL_TRUE);
                 glEnable(GL_BLEND);
@@ -853,6 +981,20 @@ struct DensityVolume : viamd::EventHandler {
                 ApplicationState* state = (ApplicationState*)e.payload;
                 arena = md_arena_allocator_create(state->allocator.persistent, MEGABYTES(1));
                 picking_surface_init(&picking_surface, interaction_surface_density_vol);
+                workspace_register_window("DensityVolume", &show_window);
+                break;
+            }
+            case viamd::EventType_ViamdSerialize:
+                serialize(*(viamd::serialization_state_t*)e.payload);
+                break;
+            case viamd::EventType_ViamdDeserializeBegin:
+                reset_workspace_settings();
+                break;
+            case viamd::EventType_ViamdDeserialize: {
+                viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
+                if (str_eq(viamd::section_header(state), STR_LIT("DensityVolume"))) {
+                    deserialize(state);
+                }
                 break;
             }
             case viamd::EventType_ViamdShutdown: {

@@ -7,6 +7,7 @@
 #include <core/md_grid.h>
 #include <core/md_spatial_acc.h>
 #include <md_types.h>
+#include <md_unitcell.h>
 
 #include <float.h>
 #include <math.h>
@@ -47,12 +48,13 @@ struct Beads {
         acc.alloc = md_get_heap_allocator();
         md_spatial_acc_desc_t desc = {};
         desc.coords   = &stream;
-        desc.radii    = r.data();
-        desc.cell_ext = 5.0;
+        desc.cutoff   = 5.0;
         desc.unitcell = cell;
-        md_spatial_acc_init_desc(&acc, &desc);
+        md_spatial_acc_init(&acc, &desc);
     }
     ~Beads() { md_spatial_acc_free(&acc); }
+
+    void_beads_t view() const { return void_beads(&acc, r.data(), r.size()); }
 };
 
 // Weighted distance by brute force, minimum image on the periodic axes of an orthorhombic box.
@@ -131,7 +133,7 @@ UTEST(viamd_void_field, field_matches_brute_force_and_does_not_depend_on_the_til
     std::vector<float> field(num_voxels, -1.0f);
 
     void_field_desc_t desc = {};
-    desc.acc       = &beads.acc;
+    desc.beads     = beads.view();
     desc.cell      = &cell;
     desc.grid      = &grid;
     desc.max_dist  = 60.0;      // Beyond anything in the box, so nothing clamps
@@ -216,7 +218,7 @@ UTEST(viamd_void_field, voxels_out_of_range_report_max_dist) {
     std::vector<float> field(md_grid_num_points(&grid), -1.0f);
 
     void_field_desc_t desc = {};
-    desc.acc = &beads.acc;
+    desc.beads = beads.view();
     desc.grid = &grid;
     desc.max_dist = 5.0;
     desc.num_slabs = num_slabs;
@@ -266,7 +268,7 @@ UTEST(viamd_void_field, triclinic_cell_is_counted_once) {
 
     const uint32_t num_slabs = 16, num_bins = 64;
     void_field_desc_t desc = {};
-    desc.acc = &beads.acc;
+    desc.beads = beads.view();
     desc.cell = &cell;
     desc.grid = &grid;
     desc.max_dist = 40.0;
@@ -300,7 +302,7 @@ UTEST(viamd_void_field, porosity_of_a_sphere_in_a_periodic_cube) {
 
     const uint32_t num_slabs = 32, num_bins = 512;
     void_field_desc_t desc = {};
-    desc.acc = &beads.acc;
+    desc.beads = beads.view();
     desc.cell = &cell;
     desc.grid = &grid;
     desc.max_dist = L;

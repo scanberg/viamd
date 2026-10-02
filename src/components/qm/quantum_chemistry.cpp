@@ -3928,7 +3928,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, STR_LIT("dipole/ground_state/vector"));
         if (!attr) return {0, 0, 0};
         double v[3] = {0, 0, 0};
-        if (md_attribute_extract_f64(v, ARRAY_SIZE(v), attr, md_unit_none()) != ARRAY_SIZE(v)) {
+        if (md_attribute_extract_f64(v, ARRAY_SIZE(v), attr, md_attribute_slice_all(), md_unit_none()) != ARRAY_SIZE(v)) {
             return {0, 0, 0};
         }
         return {v[0], v[1], v[2]};
@@ -3938,12 +3938,12 @@ struct QuantumChemistry : viamd::EventHandler {
     // wanted - it sets an arrow scale - so the vectors themselves never have to come back.
     static double dipole_max_length(md_temp_scope_t temp, const md_system_t& sys, str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || md_attribute_components(&attr->format) != 3) {
+        if (!attr || attr->format.components != 3) {
             return 0.0;
         }
         const size_t count = md_attribute_element_count(&attr->format);
         double* v = md_temp_alloc_array(temp, double, count);
-        if (!v || md_attribute_extract_f64(v, count, attr, md_unit_none()) != count) {
+        if (!v || md_attribute_extract_f64(v, count, attr, md_attribute_slice_all(), md_unit_none()) != count) {
             return 0.0;
         }
         double max_len = 0.0;
@@ -3969,12 +3969,9 @@ struct QuantumChemistry : viamd::EventHandler {
     // the null return covers every case where it is not.
     static const double* attribute_series_f64(size_t* out_count, const md_system_t& sys, str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || !attr->data) return nullptr;
-        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
-        if (attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) return nullptr;
-
-        if (out_count) *out_count = attr->format.shape[0];
-        return (const double*)attr->data;
+        const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+        if (values && out_count) *out_count = attr->format.shape[0];
+        return values;
     }
 
     // True when the table carries this path at all. "Does this file have X" is a question about the
@@ -3991,7 +3988,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr) return fallback;
         double value = 0.0;
-        if (md_attribute_extract_f64(&value, 1, attr, md_unit_none()) != 1) return fallback;
+        if (md_attribute_extract_f64(&value, 1, attr, md_attribute_slice_all(), md_unit_none()) != 1) return fallback;
         return value;
     }
 
@@ -4019,13 +4016,12 @@ struct QuantumChemistry : viamd::EventHandler {
     // same reason: these are resident F64 and the callers want them at that precision.
     static const double* attribute_matrix_f64(size_t* out_rows, size_t* out_cols, const md_system_t& sys, str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || !attr->data) return nullptr;
-        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
-        if (attr->format.rank != 2 || md_attribute_components(&attr->format) != 1) return nullptr;
+        const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 2);
+        if (!values) return nullptr;
 
         if (out_rows) *out_rows = attr->format.shape[0];
         if (out_cols) *out_cols = attr->format.shape[1];
-        return (const double*)attr->data;
+        return values;
     }
 
     // One row of such a matrix. NULL when the row is out of range, which is what a caller holding a
@@ -4048,7 +4044,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
-        if (attr->format.rank != 2 || md_attribute_components(&attr->format) != 3) return nullptr;
+        if (attr->format.rank != 2 || attr->format.components != 3) return nullptr;
 
         if (out_rows) *out_rows = attr->format.shape[0];
         if (out_cols) *out_cols = attr->format.shape[1];
@@ -4071,7 +4067,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
-        if (attr->format.rank != 1 || md_attribute_components(&attr->format) != 3) return nullptr;
+        if (attr->format.rank != 1 || attr->format.components != 3) return nullptr;
 
         if (out_count) *out_count = attr->format.shape[0];
         return (const dvec3_t*)attr->data;
@@ -4084,7 +4080,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != type) return nullptr;
-        if (attr->format.rank != 1 || md_attribute_components(&attr->format) != 1) return nullptr;
+        if (attr->format.rank != 1 || attr->format.components != 1) return nullptr;
 
         if (out_count) *out_count = attr->format.shape[0];
         return attr->data;
@@ -8536,10 +8532,10 @@ struct QuantumChemistry : viamd::EventHandler {
         // Extracted rather than pointed at, so a producer that publishes either of these through a
         // provider instead of storing them works here unchanged.
         if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::overlap)) {
-            if (attr->format.rank == 2 && md_attribute_components(&attr->format) == 1 &&
+            if (attr->format.rank == 2 && attr->format.components == 1 &&
                 attr->format.shape[0] == num_ao && attr->format.shape[1] == num_ao) {
                 double* S = md_temp_alloc_array(temp, double, num_ao * num_ao);
-                if (md_attribute_extract_f64(S, num_ao * num_ao, attr, md_unit_none()) == num_ao * num_ao) {
+                if (md_attribute_extract_f64(S, num_ao * num_ao, attr, md_attribute_slice_all(), md_unit_none()) == num_ao * num_ao) {
                     out->S = S;
                 }
             }
@@ -8547,7 +8543,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::alpha_coefficient)) {
             double* C = md_temp_alloc_array(temp, double, num_mo * num_ao);
-            if (md_attribute_extract_f64(C, num_mo * num_ao, attr, md_unit_none()) == num_mo * num_ao) {
+            if (md_attribute_extract_f64(C, num_mo * num_ao, attr, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao) {
                 out->C_mo = C;
             }
         }
@@ -8579,19 +8575,19 @@ struct QuantumChemistry : viamd::EventHandler {
             if (lambda_attr && hole_attr && part_attr) {
                 // Bounded by the label storage the builders write into, which is the real
                 // constraint - not by any reader's idea of how many pairs a state may have.
-                const size_t num_nto = MIN(md_attribute_slice_count(lambda_attr, &slice), ARRAY_SIZE(flow.nto_label));
+                const size_t num_nto = MIN(md_attribute_slice_count(lambda_attr, slice), ARRAY_SIZE(flow.nto_label));
                 const size_t block   = num_nto * num_ao;
 
                 if (num_nto > 0 &&
-                    md_attribute_slice_count(hole_attr, &slice) >= block &&
-                    md_attribute_slice_count(part_attr, &slice) >= block) {
+                    md_attribute_slice_count(hole_attr, slice) >= block &&
+                    md_attribute_slice_count(part_attr, slice) >= block) {
                     double* lambda = md_temp_alloc_array(temp, double, num_nto);
                     double* hole   = md_temp_alloc_array(temp, double, block);
                     double* part   = md_temp_alloc_array(temp, double, block);
 
-                    if (md_attribute_extract_slice_f64(lambda, num_nto, lambda_attr, &slice, md_unit_none()) >= num_nto &&
-                        md_attribute_extract_slice_f64(hole,   block,  hole_attr,   &slice, md_unit_none()) >= block &&
-                        md_attribute_extract_slice_f64(part,   block,  part_attr,   &slice, md_unit_none()) >= block) {
+                    if (md_attribute_extract_f64(lambda, num_nto, lambda_attr, slice, md_unit_none()) >= num_nto &&
+                        md_attribute_extract_f64(hole,   block,  hole_attr,   slice, md_unit_none()) >= block &&
+                        md_attribute_extract_f64(part,   block,  part_attr,   slice, md_unit_none()) >= block) {
                         out->num_nto    = num_nto;
                         out->nto_lambda = lambda;
                         out->C_nto_hole = hole;

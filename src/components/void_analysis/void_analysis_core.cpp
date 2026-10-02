@@ -3,9 +3,10 @@
 #include <core/md_allocator.h>
 #include <core/md_common.h>
 #include <core/md_grid.h>
+#include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
-#include <core/md_coord_stream.h>
 #include <md_types.h>
+#include <md_unitcell.h>
 
 #include <float.h>
 #include <math.h>
@@ -168,6 +169,380 @@ bool void_profile_film_extent(const void_profile_t* prof, double frac, uint32_t*
 }
 
 // =================================================================================================
+// The weighted nearest query
+// =================================================================================================
+
+namespace {
+
+// Points are searched in batches, and within a batch in groups of consecutive points, each with its own
+// box and its own worst distance so far. A bead is tested against the points of a group only when a test
+// against the group box says it could improve on one of them. Smaller groups cull more finely but pay the
+// box test per group for every bead; on a fibril network 128 measured best, 1.3 to 1.6 times faster than 32.
+#ifndef VOID_NEAREST_GROUP
+#define VOID_NEAREST_GROUP 128
+#endif
+// The first box reaches this far past the largest radius. It grows from there by doubling, so this only
+// trades the work of an oversized first box against the rounds a small one takes in the open.
+#ifndef VOID_NEAREST_SEED
+#define VOID_NEAREST_SEED 2.0
+#endif
+constexpr int NEAREST_BATCH      = 512;
+constexpr int NEAREST_GROUP      = VOID_NEAREST_GROUP;
+constexpr int NEAREST_MAX_GROUPS = NEAREST_BATCH / NEAREST_GROUP;
+static_assert(NEAREST_GROUP % 8 == 0 && NEAREST_BATCH % NEAREST_GROUP == 0, "groups are whole vectors");
+
+struct nearest_group_t {
+    float lo[3], hi[3];     // Box of the group's points
+    float worst;            // Largest best distance in the group
+    int   beg, end;         // Lanes, end rounded up to whole vectors
+};
+
+struct nearest_batch_t {
+    // Points relative to ref, with the best distance and bead found for each. A group's padding lanes
+    // repeat its last point, so they never change the worst distance of the group.
+    alignas(32) float    px[NEAREST_BATCH];
+    alignas(32) float    py[NEAREST_BATCH];
+    alignas(32) float    pz[NEAREST_BATCH];
+    alignas(32) float    best[NEAREST_BATCH];
+    alignas(32) uint32_t bead[NEAREST_BATCH];
+
+    nearest_group_t group[NEAREST_MAX_GROUPS];
+    int num_groups;
+
+    const float* radii;
+    double shift[3];        // Takes a position the query reports to the frame of the batch: image offset - ref
+
+    // When the search box no longer fits in the period, a bead is moved to its image nearest ref and tried
+    // there and at the neighbouring images as well
+    bool   images;
+    int    num_images;
+    float  image[27][3];
+    double A[3][3];         // [col][row], as md_spatial_acc_t has them
+    double I[3][3];
+    bool   pbc[3];
+};
+
+// Try one bead against every group it could improve
+inline void nearest_try(nearest_batch_t* b, float ex, float ey, float ez, float r, uint32_t idx) {
+    for (int g = 0; g < b->num_groups; ++g) {
+        nearest_group_t* grp = &b->group[g];
+
+        // The bead improves on a point exactly when |p - c| < best + r. Nothing in the group can be nearer than
+        // the group box is.
+        const float t = grp->worst + r;
+        if (!(t > 0.0f)) continue;
+        const float bx = MAX(0.0f, MAX(grp->lo[0] - ex, ex - grp->hi[0]));
+        const float by = MAX(0.0f, MAX(grp->lo[1] - ey, ey - grp->hi[1]));
+        const float bz = MAX(0.0f, MAX(grp->lo[2] - ez, ez - grp->hi[2]));
+        if (bx * bx + by * by + bz * bz >= t * t) continue;
+
+        const md_256  vx = md_mm256_set1_ps(ex);
+        const md_256  vy = md_mm256_set1_ps(ey);
+        const md_256  vz = md_mm256_set1_ps(ez);
+        const md_256  vr = md_mm256_set1_ps(r);
+        const md_256  vi = md_mm256_castsi256_ps(md_mm256_set1_epi32((int)idx));
+        const md_256  zero = md_mm256_setzero_ps();
+        md_256 worst = md_mm256_set1_ps(-FLT_MAX);
+        bool hit = false;
+
+        for (int i = grp->beg; i < grp->end; i += 8) {
+            const md_256 dx = md_mm256_sub_ps(md_mm256_load_ps(b->px + i), vx);
+            const md_256 dy = md_mm256_sub_ps(md_mm256_load_ps(b->py + i), vy);
+            const md_256 dz = md_mm256_sub_ps(md_mm256_load_ps(b->pz + i), vz);
+            const md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
+
+            // Squared, which keeps the square root off the path of the beads which improve nothing
+            md_256 bd = md_mm256_load_ps(b->best + i);
+            const md_256 tt   = md_mm256_add_ps(bd, vr);
+            const md_256 mask = md_mm256_and_ps(md_mm256_cmplt_ps(d2, md_mm256_mul_ps(tt, tt)), md_mm256_cmpgt_ps(tt, zero));
+            if (md_mm256_movemask_ps(mask)) {
+                const md_256 d  = md_mm256_sub_ps(md_mm256_sqrt_ps(d2), vr);
+                const md_256 bi = md_mm256_load_ps((const float*)(b->bead + i));
+                bd = md_mm256_blendv_ps(bd, d, mask);
+                md_mm256_store_ps(b->best + i, bd);
+                md_mm256_store_ps((float*)(b->bead + i), md_mm256_blendv_ps(bi, vi, mask));
+                hit = true;
+            }
+            worst = md_mm256_max_ps(worst, bd);
+        }
+        if (hit) grp->worst = md_mm256_reduce_max_ps(worst);
+    }
+}
+
+void nearest_callback(const uint32_t* idx, const float* x, const float* y, const float* z, size_t num, void* user) {
+    nearest_batch_t* b = (nearest_batch_t*)user;
+    for (size_t k = 0; k < num; ++k) {
+        const float r = b->radii[idx[k]];
+        double e[3] = {
+            (double)x[k] + b->shift[0],
+            (double)y[k] + b->shift[1],
+            (double)z[k] + b->shift[2],
+        };
+        if (!b->images) {
+            nearest_try(b, (float)e[0], (float)e[1], (float)e[2], r, idx[k]);
+            continue;
+        }
+
+        // The image nearest ref. Rounding the fractional coordinate is that image for an orthorhombic cell and
+        // near enough to it for a triclinic one that the neighbours tried next include it.
+        double n[3];
+        for (int a = 0; a < 3; ++a) {
+            n[a] = b->pbc[a] ? round(b->I[0][a] * e[0] + b->I[1][a] * e[1] + b->I[2][a] * e[2]) : 0.0;
+        }
+        for (int a = 0; a < 3; ++a) {
+            e[a] -= b->A[0][a] * n[0] + b->A[1][a] * n[1] + b->A[2][a] * n[2];
+        }
+        for (int m = 0; m < b->num_images; ++m) {
+            nearest_try(b, (float)e[0] + b->image[m][0], (float)e[1] + b->image[m][1], (float)e[2] + b->image[m][2], r, idx[k]);
+        }
+    }
+}
+
+// Every bead in the box [lo, hi], relative to ref
+void nearest_box(nearest_batch_t* b, const md_spatial_acc_t* acc, const double ref[3], const double lo[3], const double hi[3]) {
+    double cen[3], rad[3];
+    for (int a = 0; a < 3; ++a) {
+        if (!(hi[a] > lo[a])) return;
+        cen[a] = ref[a] + 0.5 * (lo[a] + hi[a]);
+        rad[a] = 0.5 * (hi[a] - lo[a]);
+    }
+    // The query reports positions in the image of its own centre, which is cen folded into the cell
+    double img[3];
+    md_spatial_acc_aabb_query_center(img, acc, cen);
+    for (int a = 0; a < 3; ++a) {
+        b->shift[a] = (cen[a] - img[a]) - ref[a];
+    }
+    md_spatial_acc_for_each_point_in_aabb(acc, cen, rad, nearest_callback, b);
+}
+
+// Every bead in the box between two nested boxes, as the six slabs it decomposes into
+void nearest_shell(nearest_batch_t* b, const md_spatial_acc_t* acc, const double ref[3], const double in_lo[3], const double in_hi[3], const double out_lo[3], const double out_hi[3]) {
+    for (int a = 0; a < 3; ++a) {
+        // Full extent along the axes before a, the inner one along the axes after it
+        double lo[3], hi[3];
+        for (int c = 0; c < 3; ++c) {
+            lo[c] = (c < a) ? out_lo[c] : in_lo[c];
+            hi[c] = (c < a) ? out_hi[c] : in_hi[c];
+        }
+        lo[a] = out_lo[a]; hi[a] = in_lo[a];
+        nearest_box(b, acc, ref, lo, hi);
+        lo[a] = in_hi[a];  hi[a] = out_hi[a];
+        nearest_box(b, acc, ref, lo, hi);
+    }
+}
+
+}  // namespace
+
+void_beads_t void_beads(const md_spatial_acc_t* acc, const float* radii, size_t num_radii) {
+    void_beads_t beads = {};
+    beads.acc   = acc;
+    beads.radii = radii;
+    float max_radius = 0.0f;
+    for (size_t i = 0; i < num_radii; ++i) {
+        max_radius = MAX(max_radius, radii[i]);
+    }
+    beads.max_radius = max_radius;
+    return beads;
+}
+
+void void_beads_nearest(const void_beads_t* beads, const float* x, const float* y, const float* z, size_t count,
+                        double max_dist, uint32_t* out_idx, float* out_dist) {
+    if (count == 0) return;
+    const float d_max = (float)max_dist;
+
+    if (!beads || !beads->acc || !beads->radii || beads->acc->num_elems == 0) {
+        for (size_t i = 0; i < count; ++i) {
+            if (out_idx)  out_idx[i]  = VOID_BEAD_NONE;
+            if (out_dist) out_dist[i] = d_max;
+        }
+        return;
+    }
+
+    const md_spatial_acc_t* acc = beads->acc;
+    const double R = MAX(0.0, (double)beads->max_radius);
+
+    // Nothing further than this from a point can be below max_dist
+    const double e_max = max_dist + R;
+
+    nearest_batch_t b;
+    b.radii  = beads->radii;
+    b.images = false;
+
+    // The periodic axes, and how large a search box may get before it holds a bead twice. Orthorhombic: less
+    // than a period along each periodic axis. Triclinic: a box inside a ball of less than half the smallest
+    // distance between lattice planes, which no two images fit in.
+    const bool tri = (acc->flags & MD_UNITCELL_TRICLINIC) != 0;
+    bool any_pbc = false;
+    double max_half[3] = { DBL_MAX, DBL_MAX, DBL_MAX };
+    double max_ball = DBL_MAX;
+    for (int a = 0; a < 3; ++a) {
+        b.pbc[a] = (acc->flags & (MD_UNITCELL_PBC_X << a)) != 0;
+        any_pbc |= b.pbc[a];
+        for (int c = 0; c < 3; ++c) {
+            b.A[a][c] = (double)acc->A[a][c];
+            b.I[a][c] = (double)acc->I[a][c];
+        }
+    }
+    if (any_pbc) {
+        const double* va = b.A[0];
+        const double* vb = b.A[1];
+        const double* vc = b.A[2];
+        const double bc[3] = { vb[1] * vc[2] - vb[2] * vc[1], vb[2] * vc[0] - vb[0] * vc[2], vb[0] * vc[1] - vb[1] * vc[0] };
+        const double ca[3] = { vc[1] * va[2] - vc[2] * va[1], vc[2] * va[0] - vc[0] * va[2], vc[0] * va[1] - vc[1] * va[0] };
+        const double ab[3] = { va[1] * vb[2] - va[2] * vb[1], va[2] * vb[0] - va[0] * vb[2], va[0] * vb[1] - va[1] * vb[0] };
+        const double vol = fabs(va[0] * bc[0] + va[1] * bc[1] + va[2] * bc[2]);
+        const double* nrm[3] = { bc, ca, ab };
+        for (int a = 0; a < 3; ++a) {
+            if (!b.pbc[a]) continue;
+            const double len   = sqrt(nrm[a][0] * nrm[a][0] + nrm[a][1] * nrm[a][1] + nrm[a][2] * nrm[a][2]);
+            const double width = (len > 0.0) ? vol / len : 0.0;
+            if (tri) {
+                max_ball = MIN(max_ball, 0.5 * width);
+            } else {
+                max_half[a] = 0.5 * width;
+            }
+        }
+
+        b.num_images = 0;
+        for (int k = -1; k <= 1; ++k) {
+            if (k && !b.pbc[2]) continue;
+            for (int j = -1; j <= 1; ++j) {
+                if (j && !b.pbc[1]) continue;
+                for (int i = -1; i <= 1; ++i) {
+                    if (i && !b.pbc[0]) continue;
+                    float* t = b.image[b.num_images++];
+                    for (int c = 0; c < 3; ++c) {
+                        t[c] = (float)(b.A[0][c] * i + b.A[1][c] * j + b.A[2][c] * k);
+                    }
+                }
+            }
+        }
+    }
+
+    for (size_t base = 0; base < count; base += NEAREST_BATCH) {
+        const int n = (int)MIN((size_t)NEAREST_BATCH, count - base);
+
+        // Points relative to the centre of the batch, which keeps the distances accurate however far from the
+        // origin the batch is
+        double ref[3];
+        {
+            double lo[3] = {  DBL_MAX,  DBL_MAX,  DBL_MAX };
+            double hi[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX };
+            for (int i = 0; i < n; ++i) {
+                const double p[3] = { (double)x[base + i], (double)y[base + i], (double)z[base + i] };
+                for (int a = 0; a < 3; ++a) {
+                    lo[a] = MIN(lo[a], p[a]);
+                    hi[a] = MAX(hi[a], p[a]);
+                }
+            }
+            for (int a = 0; a < 3; ++a) ref[a] = 0.5 * (lo[a] + hi[a]);
+        }
+
+        double ulo[3] = {  DBL_MAX,  DBL_MAX,  DBL_MAX };
+        double uhi[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX };
+        b.num_groups = 0;
+        for (int beg = 0; beg < n; beg += NEAREST_GROUP) {
+            const int end = MIN(beg + NEAREST_GROUP, n);
+            nearest_group_t* grp = &b.group[b.num_groups++];
+            grp->beg   = beg;
+            grp->end   = (int)ALIGN_TO(end, 8);
+            grp->worst = d_max;
+            for (int a = 0; a < 3; ++a) {
+                grp->lo[a] =  FLT_MAX;
+                grp->hi[a] = -FLT_MAX;
+            }
+            for (int i = beg; i < grp->end; ++i) {
+                const size_t s = base + (size_t)MIN(i, end - 1);
+                const float p[3] = {
+                    (float)((double)x[s] - ref[0]),
+                    (float)((double)y[s] - ref[1]),
+                    (float)((double)z[s] - ref[2]),
+                };
+                b.px[i]   = p[0];
+                b.py[i]   = p[1];
+                b.pz[i]   = p[2];
+                b.best[i] = d_max;
+                b.bead[i] = VOID_BEAD_NONE;
+                for (int a = 0; a < 3; ++a) {
+                    grp->lo[a] = MIN(grp->lo[a], p[a]);
+                    grp->hi[a] = MAX(grp->hi[a], p[a]);
+                }
+            }
+            for (int a = 0; a < 3; ++a) {
+                ulo[a] = MIN(ulo[a], (double)grp->lo[a]);
+                uhi[a] = MAX(uhi[a], (double)grp->hi[a]);
+            }
+        }
+
+        // Grow the box around the batch until no bead outside it can improve on a point. A bead outside the box
+        // is at least as far from a point of a group as the group box is from the faces of the search box, and
+        // its weighted distance is that less its radius.
+        double e = MIN(e_max, R + VOID_NEAREST_SEED);
+        double e_prev = -1.0;
+        for (;;) {
+            bool fits = true;
+            {
+                double ball = 0.0;
+                for (int a = 0; a < 3; ++a) {
+                    const double h = 0.5 * (uhi[a] - ulo[a]) + e;
+                    if (h >= max_half[a]) fits = false;
+                    ball += h * h;
+                }
+                if (sqrt(ball) >= max_ball) fits = false;
+            }
+
+            if (!fits) {
+                // Everything, each bead at every image which can matter. Final, whatever was found before.
+                double reach = 0.0;
+                for (int a = 0; a < 3; ++a) {
+                    reach += sqrt(b.A[a][0] * b.A[a][0] + b.A[a][1] * b.A[a][1] + b.A[a][2] * b.A[a][2]);
+                    reach += fabs(ref[a] - (double)acc->origin[a]);
+                }
+                const double lo[3] = { -reach - 1.0, -reach - 1.0, -reach - 1.0 };
+                const double hi[3] = {  reach + 1.0,  reach + 1.0,  reach + 1.0 };
+                b.images = true;
+                nearest_box(&b, acc, ref, lo, hi);
+                b.images = false;
+                break;
+            }
+
+            const double out_lo[3] = { ulo[0] - e, ulo[1] - e, ulo[2] - e };
+            const double out_hi[3] = { uhi[0] + e, uhi[1] + e, uhi[2] + e };
+            if (e_prev < 0.0) {
+                nearest_box(&b, acc, ref, out_lo, out_hi);
+            } else {
+                const double in_lo[3] = { ulo[0] - e_prev, ulo[1] - e_prev, ulo[2] - e_prev };
+                const double in_hi[3] = { uhi[0] + e_prev, uhi[1] + e_prev, uhi[2] + e_prev };
+                nearest_shell(&b, acc, ref, in_lo, in_hi, out_lo, out_hi);
+            }
+
+            double need = -DBL_MAX;
+            bool done = true;
+            for (int g = 0; g < b.num_groups; ++g) {
+                const nearest_group_t* grp = &b.group[g];
+                double margin = DBL_MAX;
+                for (int a = 0; a < 3; ++a) {
+                    margin = MIN(margin, MIN(out_hi[a] - (double)grp->hi[a], (double)grp->lo[a] - out_lo[a]));
+                }
+                const double reach = (double)grp->worst + R;
+                if (reach > margin) done = false;
+                need = MAX(need, reach);
+            }
+            if (done || e >= e_max) break;
+
+            e_prev = e;
+            e = MIN(e_max, MIN(2.0 * e, need));
+            if (!(e > e_prev)) break;
+        }
+
+        for (int i = 0; i < n; ++i) {
+            if (out_idx)  out_idx[base + i]  = b.bead[i];
+            if (out_dist) out_dist[base + i] = b.best[i];
+        }
+    }
+}
+
+// =================================================================================================
 // The distance field
 // =================================================================================================
 
@@ -284,7 +659,7 @@ void void_field_accum_merge(void_field_accum_t* dst, const void_field_accum_t* s
 }
 
 void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* desc, uint32_t tile_beg, uint32_t tile_end) {
-    if (!accum || !desc || !desc->acc || !desc->grid) return;
+    if (!accum || !desc || !desc->beads.acc || !desc->grid) return;
     if (desc->num_slabs == 0 || desc->num_bins == 0) return;
 
     const md_grid_t& grid = *desc->grid;
@@ -355,8 +730,7 @@ void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* d
         }
         if (n == 0) continue;
 
-        md_coord_stream_t pts = md_coord_stream_from_soa(qx, qy, qz, NULL, (size_t)n);
-        md_spatial_acc_query_nearest(desc->acc, &pts, desc->max_dist, NULL, dist);
+        void_beads_nearest(&desc->beads, qx, qy, qz, (size_t)n, desc->max_dist, NULL, dist);
 
         for (int p = 0; p < n; ++p) {
             const float d = dist[p];
@@ -453,8 +827,7 @@ void heightmap_march(float* out, const size_t* col, const float* cx, const float
             qy[a] = cy[i];
             qz[a] = (float)z[i];
         }
-        md_coord_stream_t pts = md_coord_stream_from_soa(qx, qy, qz, NULL, (size_t)num_act);
-        md_spatial_acc_query_nearest(desc->acc, &pts, desc->max_dist, NULL, dist);
+        void_beads_nearest(&desc->beads, qx, qy, qz, (size_t)num_act, desc->max_dist, NULL, dist);
 
         int keep = 0;
         for (int a = 0; a < num_act; ++a) {
@@ -498,7 +871,7 @@ uint32_t void_heightmap_num_patches(const md_grid_t* grid) {
 }
 
 void void_heightmap_eval_patches(float* out_top, float* out_bot, const void_heightmap_desc_t* desc, uint32_t patch_beg, uint32_t patch_end) {
-    if (!desc || !desc->acc || !desc->grid) return;
+    if (!desc || !desc->beads.acc || !desc->grid) return;
     if (!out_top && !out_bot) return;
     const md_grid_t& grid = *desc->grid;
     if (grid.dim[0] <= 0 || grid.dim[1] <= 0 || grid.dim[2] <= 0) return;

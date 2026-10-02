@@ -210,7 +210,10 @@ struct VoidAnalysis : viamd::EventHandler {
     float probe_radius  = 1.4f;      // Water sized by default
     float max_dist      = 320.0f;    // 32 nm, the range the field is resolved over
     float uniform_radius = 5.0f;
-    float cell_ext      = 20.0f;     // Cell extent handed to the acceleration structure
+
+    // The cutoff the acceleration structure is built for. Every query here is a box which grows as far as it has
+    // to, so this only sets the scale of the cells; the field pass costs the same within 10% from 10 to 40 A.
+    static constexpr double ACC_CUTOFF = 20.0;
 
     RadiusSource radius_source = RadiusSource_Vdw;
 
@@ -494,15 +497,24 @@ struct VoidAnalysis : viamd::EventHandler {
     }
 
     // Radii the geometry is actually built from: the bead, and optionally a probe.
-    void fill_radii(float* out_radii, const md_system_t& sys, size_t count, double extra) const {
+    // returns max radius, for the acceleration structure
+    double fill_radii(float* out_radii, const md_system_t& sys, size_t count, double extra) const {
+        double max = 0.0;
         if (radius_source == RadiusSource_Vdw) {
             md_atom_extract_radii(out_radii, 0, count, &sys.atom);
+            for (size_t i = 0; i < count; ++i) {
+                float rad = out_radii[i] + extra;
+                max = MAX(max, rad);
+                out_radii[i] = rad;
+            }
         } else {
-            for (size_t i = 0; i < count; ++i) out_radii[i] = uniform_radius;
+            float rad = uniform_radius + extra;
+            max = rad;
+            for (size_t i = 0; i < count; ++i) {
+                out_radii[i] = rad;
+            }
         }
-        if (extra != 0.0) {
-            for (size_t i = 0; i < count; ++i) out_radii[i] += (float)extra;
-        }
+        return max;
     }
 
     // Axis aligned grid covering the unit cell, or the atoms when there is no cell.
@@ -554,11 +566,11 @@ struct VoidAnalysis : viamd::EventHandler {
         acc.alloc = md_temp_allocator(temp_scope);
         md_spatial_acc_desc_t desc = {};
         desc.coords   = &coords;
-        desc.radii    = radii;
-        desc.cell_ext = cell_ext;
+        desc.cutoff   = ACC_CUTOFF;
         desc.unitcell = &state.unitcell;
-        md_spatial_acc_init_desc(&acc, &desc);
+        md_spatial_acc_init(&acc, &desc);
         defer { md_spatial_acc_free(&acc); };
+        const void_beads_t beads = void_beads(&acc, radii, state.num_atoms);
 
         const uint32_t num_tiles = void_field_num_tiles(&grid);
 
@@ -571,7 +583,7 @@ struct VoidAnalysis : viamd::EventHandler {
         // not the binning, is what should be limiting. The coarea derivative is the one reader that
         // needs a coarser window, and it widens its own rather than making everyone else share it.
         void_field_desc_t fdesc = {};
-        fdesc.acc       = &acc;
+        fdesc.beads     = beads;
         fdesc.cell      = &state.unitcell;
         fdesc.grid      = &grid;
         fdesc.max_dist  = (double)max_dist;
@@ -653,8 +665,8 @@ struct VoidAnalysis : viamd::EventHandler {
 
         has_result = true;
 
-        // The topography reuses the structure the field was just evaluated with
-        compute_height(&acc);
+        // The topography reuses the beads the field was just evaluated with
+        compute_height(beads);
 
         // A new field needs uploading, and the colour range follows the new distances unless the
         // user had narrowed it to something the new result still covers.
@@ -841,10 +853,10 @@ struct VoidAnalysis : viamd::EventHandler {
     // --- Surface topography -------------------------------------------------------------------
 
     // Heights of the probe apex over every column of the grid, from above and from below, at the
-    // current probe radius. acc is the structure the field was built with, or one built the same way.
-    void compute_height(const md_spatial_acc_t* acc) {
+    // current probe radius. beads are the ones the field was built from, or built the same way.
+    void compute_height(const void_beads_t& beads) {
         clear_height();
-        if (!has_result || !acc) return;
+        if (!has_result || !beads.acc) return;
 
         const size_t n = (size_t)grid.dim[0] * (size_t)grid.dim[1];
         if (n == 0) return;
@@ -861,7 +873,7 @@ struct VoidAnalysis : viamd::EventHandler {
         md_array_resize(height_thk, n, arena);
 
         void_heightmap_desc_t desc = {};
-        desc.acc          = acc;
+        desc.beads        = beads;
         desc.grid         = &grid;
         desc.probe_radius = (double)probe_radius;
         desc.max_dist     = (double)max_dist;
@@ -914,13 +926,12 @@ struct VoidAnalysis : viamd::EventHandler {
         acc.alloc = md_temp_allocator(temp_scope);
         md_spatial_acc_desc_t desc = {};
         desc.coords   = &coords;
-        desc.radii    = radii;
-        desc.cell_ext = cell_ext;
+        desc.cutoff   = ACC_CUTOFF;
         desc.unitcell = &state.unitcell;
-        md_spatial_acc_init_desc(&acc, &desc);
+        md_spatial_acc_init(&acc, &desc);
         defer { md_spatial_acc_free(&acc); };
 
-        compute_height(&acc);
+        compute_height(void_beads(&acc, radii, state.num_atoms));
     }
 
     const float* height_source(HeightView v) const {
@@ -1254,7 +1265,7 @@ struct VoidAnalysis : viamd::EventHandler {
         defer { md_temp_end(temp_scope); };
 
         float* radii = (float*)md_temp_alloc(temp_scope, state.num_atoms * sizeof(float));
-        fill_radii(radii, sys, state.num_atoms, (double)probe_radius);
+        double max_rad = fill_radii(radii, sys, state.num_atoms, (double)probe_radius);
 
         md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state.xyz, sizeof(vec3_t), NULL, state.num_atoms);
 
@@ -1262,11 +1273,11 @@ struct VoidAnalysis : viamd::EventHandler {
         acc.alloc = md_temp_allocator(temp_scope);
         md_spatial_acc_desc_t desc = {};
         desc.coords   = &coords;
-        desc.radii    = radii;
-        desc.cell_ext = cell_ext;
+        desc.cutoff   = ACC_CUTOFF;
         desc.unitcell = &state.unitcell;
-        md_spatial_acc_init_desc(&acc, &desc);
+        md_spatial_acc_init(&acc, &desc);
         defer { md_spatial_acc_free(&acc); };
+        const void_beads_t beads = void_beads(&acc, radii, state.num_atoms);
 
         // Unit sphere directions, generated once and shared read only. A Fibonacci spiral spreads the points evenly
         // enough that the quadrature error is the 1/sqrt(N) term rather than a pattern in the lattice.
@@ -1302,7 +1313,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
         // A sample point sits on its own bead, so the search never has to travel: anything which could bury it is
         // within two radii. Bounding the query here keeps the traversal to the immediate neighborhood.
-        const double query_max_dist = 2.0 * (double)acc.max_rad + 1.0;
+        const double query_max_dist = 2.0 * max_rad + 1.0;
 
         task_system::ID task = task_system::create_pool_task(STR_LIT("Accessible surface area"), (uint32_t)num_sampled,
             [&](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
@@ -1325,8 +1336,7 @@ struct VoidAnalysis : viamd::EventHandler {
                         pz[k] = state.xyz[i].z + a * dir[k * 3 + 2];
                     }
 
-                    md_coord_stream_t pts = md_coord_stream_from_soa(px, py, pz, NULL, (size_t)NP);
-                    md_spatial_acc_query_nearest(&acc, &pts, query_max_dist, idx, NULL);
+                    void_beads_nearest(&beads, px, py, pz, (size_t)NP, query_max_dist, idx, NULL);
 
                     int exposed = 0;
                     for (int k = 0; k < NP; ++k) exposed += (idx[k] == (uint32_t)i);
@@ -2142,13 +2152,6 @@ struct VoidAnalysis : viamd::EventHandler {
             ImGui::SliderInt("z profile slabs", &z_slabs, 8, MAX_SLABS);
             ImGui::SetItemTooltip("How finely the profiles resolve z. Capped at one slab per plane of voxels -\n"
                                   "a slab thinner than that is empty or a copy of its neighbour.");
-
-            float cell_ext_nm = cell_ext / ANGSTROM_PER_NM;
-            if (ImGui::SliderFloat("Acc cell extent (nm)", &cell_ext_nm, 0.3f, 10.0f, "%.2f")) {
-                cell_ext = cell_ext_nm * ANGSTROM_PER_NM;
-            }
-            ImGui::SetItemTooltip("Cell size of the spatial acceleration structure. Smaller cells search less but cost memory:\n"
-                                  "the structure allocates one offset per cell, and it is capped at 1024 cells per axis.");
 
             ImGui::SeparatorText("Radii");
 

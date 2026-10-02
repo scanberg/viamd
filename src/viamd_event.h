@@ -18,8 +18,15 @@ enum : EventType {
 
 	EventType_ViamdWindowDrawMenu			= HASH_STR_LIT("VIAMD Draw Window Menu"),		// Draw the menu
 
+	// Workspace. Serialize: write your sections. Loading a workspace is three steps (see #workspace in
+	// viamd.cpp): DeserializeBegin - reset what you keep in a workspace to its defaults, since a
+	// section missing from the file means "the defaults"; Deserialize, once per section nobody else
+	// reads - read it if it is yours; DeserializeEnd - the files are loaded, apply what needed them.
+	// All three carry the DeserializationState (its filename identifies the workspace).
 	EventType_ViamdSerialize				= HASH_STR_LIT("VIAMD Serialize Workspace"),
+	EventType_ViamdDeserializeBegin			= HASH_STR_LIT("VIAMD Deserialize Workspace Begin"),
 	EventType_ViamdDeserialize				= HASH_STR_LIT("VIAMD Deserialize Workspace"),
+	EventType_ViamdDeserializeEnd			= HASH_STR_LIT("VIAMD Deserialize Workspace End"),
 
 	EventType_ViamdSystemInit				= HASH_STR_LIT("VIAMD System Initialize"),		// Called when a system is initialized
 	EventType_ViamdSystemFree				= HASH_STR_LIT("VIAMD System Free"),			// Called when a system is freed

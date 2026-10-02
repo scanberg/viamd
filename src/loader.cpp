@@ -19,12 +19,10 @@
 #include <md_xvg.h>
 #include <md_csv.h>
 
-#if MD_VLX
+#if MD_HDF5
 #include <md_vlx.h>
-#endif
-
-#if MD_TREXIO
 #include <md_trexio.h>
+#include <md_h5md.h>
 #endif
 
 namespace loader {
@@ -42,12 +40,13 @@ static const str_t loader_name[LoaderType_COUNT] = {
         STR_INIT("Gromacs Compressed Trajectory (xtc)"),
         STR_INIT("Gromacs Lossless Trajectory (trr)"),
         STR_INIT("DCD Trajectory (dcd)"),
-#if MD_VLX
+#if MD_HDF5
         STR_LIT("VeloxChem (h5)"),
 #endif
         STR_LIT("Molden (molden)"),
-#if MD_TREXIO
+#if MD_HDF5
         STR_LIT("TREXIO (trexio)"),
+        STR_INIT("H5MD (h5md)"),
 #endif
         STR_LIT("Gromacs Topology (itp/top)"),
         STR_INIT("Gromacs Run Input (tpr)"),
@@ -69,12 +68,13 @@ static const str_t loader_ext[LoaderType_COUNT] = {
         STR_INIT("xtc"),
         STR_INIT("trr"),
         STR_INIT("dcd"),
-#if MD_VLX
+#if MD_HDF5
         STR_LIT("h5"),
 #endif
         STR_LIT("molden"),
-#if MD_TREXIO
+#if MD_HDF5
         STR_LIT("trexio"),
+        STR_INIT("h5md"),
 #endif
         STR_LIT("itp"),
         STR_INIT("tpr"),
@@ -96,12 +96,16 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
         LoaderFlag_Trajectory | LoaderFlag_MM,                      // XTC
         LoaderFlag_Trajectory | LoaderFlag_MM,                      // TRR
         LoaderFlag_Trajectory | LoaderFlag_MM,                      // DCD
-#if MD_VLX
+#if MD_HDF5
         LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM | LoaderFlag_QM,  // Veloxchem (h5)
 #endif
         LoaderFlag_System | LoaderFlag_QM,                          // Molden
-#if MD_TREXIO
+#if MD_HDF5
         LoaderFlag_System | LoaderFlag_QM,                          // TREXIO
+        // The system from the file, then its positions as the run (init_trajectory_data publishes the
+        // structure file's own frames). Topology: GROMACS writes its bonds; a file without any has
+        // them inferred, see load_data_from_file
+        LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_MM | LoaderFlag_Topology,  // H5MD
 #endif
         LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS topology
         LoaderFlag_System | LoaderFlag_MM | LoaderFlag_Topology,    // GROMACS run input
@@ -130,7 +134,7 @@ void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
                     state->flags |= LoaderFlag_RequiresDialogue;
                 }
             }
-#if MD_TREXIO
+#if MD_HDF5
             // .h5 is not one format. A TREXIO file has a nucleus group and a VeloxChem one does
             // not, so the extension picks the reader and the CONTENT corrects it - which is also
             // why md_trexio_file_is_trexio exists.
@@ -139,8 +143,6 @@ void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
                 state->flags = loader_flags[LoaderType_TREXIO];
                 return;
             }
-#endif
-#if MD_VLX
             if (state->type == LoaderType_VLX_H5 && sys) {
                 // Send check to vlx to see if we can supplement the existing system with qm data
                 if (md_vlx_system_is_file_supplemental(sys, filepath)) {
@@ -202,15 +204,17 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
             // A trajectory is not loaded into the system: it is published as a run (publish_run).
             MD_LOG_ERROR("'" STR_FMT "' is a trajectory; it is opened with publish_run, not loaded", STR_ARG(filepath));
             return false;
-#if MD_VLX
+#if MD_HDF5
         case LoaderType_VLX_H5:
             return md_vlx_system_init_from_file(out_sys, out_state, filepath);
 #endif
         case LoaderType_MOLDEN:
             return md_molden_system_init_from_file(out_sys, out_state, filepath);
-#if MD_TREXIO
+#if MD_HDF5
         case LoaderType_TREXIO:
             return md_trexio_system_init_from_file(out_sys, out_state, filepath);
+        case LoaderType_H5MD:
+            return md_h5md_system_init_from_file(out_sys, out_state, filepath);
 #endif
         default:
             return false;
@@ -221,7 +225,7 @@ bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& 
     ASSERT(out_sys);
 
     switch (state.type) {
-#if MD_VLX
+#if MD_HDF5
         case LoaderType_VLX_H5:
             return md_vlx_system_supplement_from_file(out_sys, filepath);
 #endif
@@ -273,6 +277,9 @@ bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags) {
     case LoaderType_XMOL:
     case LoaderType_ARC:       return md_xyz_system_publish_run(sys, filepath, run, flags);
     case LoaderType_LAMMPSTRJ: return md_lammps_system_publish_run(sys, filepath, run, flags);
+#if MD_HDF5
+    case LoaderType_H5MD:      return md_h5md_system_publish_run(sys, filepath, run, flags);
+#endif
     default:                   return false;
     }
 }

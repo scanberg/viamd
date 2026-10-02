@@ -26,6 +26,10 @@ void search(str_t query);
 // Moves keyboard focus to the search box the next time the window is drawn.
 void focus_search();
 
+// Makes the window visible the next time it is drawn: brought to the front, or its tab selected if it is docked.
+// With take_focus it also gets keyboard focus, otherwise the focus stays where it is (e.g. in the script editor).
+void reveal(bool take_focus);
+
 // What the user asked the host to do while the window was drawn.
 struct Action {
     str_t insert_code = {};  // "Insert" was pressed on an example. Zero terminated, ends with a newline, valid until the next draw_window().

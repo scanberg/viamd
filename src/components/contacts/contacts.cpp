@@ -134,6 +134,11 @@ struct Contacts : viamd::EventHandler {
             switch (e.type) {
             case viamd::EventType_ViamdInitialize:
                 app_state = (ApplicationState*)e.payload;
+                workspace_register_window("Contacts", &show_window);
+                break;
+            case viamd::EventType_ViamdDeserializeBegin:
+                group_by = GroupBy_Residue;
+                cutoff = 1.0f;
                 break;
             case viamd::EventType_ViamdShutdown:
                 if (task) task_system::task_interrupt_and_wait_for(task);
@@ -163,9 +168,7 @@ struct Contacts : viamd::EventHandler {
                     str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
                         if (str_eq(ident, STR_LIT("GroupBy"))) {
-                            int v = 0;
-                            viamd::extract_int(v, arg);
-                            group_by = (GroupBy)CLAMP(v, 0, GroupBy_Count - 1);
+                            viamd::extract_enum(group_by, arg, GroupBy_Count);
                         } else if (str_eq(ident, STR_LIT("Cutoff"))) {
                             viamd::extract_flt(cutoff, arg);
                         }

@@ -170,6 +170,52 @@ double void_profile_mass_density(const void_profile_t* prof, const double* slab_
 #endif
 
 // =================================================================================================
+// The weighted nearest query
+// =================================================================================================
+//
+// Everything below reduces to one query: for a point p, the bead minimizing
+//
+//     d(p, i) = |p - c_i| - R_i,
+//
+// the signed distance to the surface of bead i, negative inside it. The centres live in a spatial
+// acceleration structure and the radii next to it, indexed the way the structure reports its points
+// (the coord stream index with MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX, the point's position in
+// the stream otherwise). Keeping the radii out of the structure is deliberate: they are a property of
+// this analysis, not of where the points are, and the structure is shared with queries which have no
+// use for them.
+//
+// The search is a box around the batch of query points, grown until no bead outside it can beat what
+// was found inside. Nearly all of the cost is the beads inside the box, so a batch should be a compact
+// block of points - a tile of voxels, a patch of columns, the samples around one bead.
+
+#define VOID_BEAD_NONE 0xFFFFFFFFu
+
+typedef struct void_beads_t {
+    const struct md_spatial_acc_t* acc;     // Built over the bead centres
+    const float* radii;                     // Indexed by the index acc reports a point with
+    float        max_radius;                // At least every radius; see void_beads
+} void_beads_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Beads over a built structure, with max_radius taken over radii[0, num_radii).
+void_beads_t void_beads(const struct md_spatial_acc_t* acc, const float* radii, size_t num_radii);
+
+// For each of the count points (cartesian, anywhere - they are not required to lie in the cell), the
+// bead with the least weighted distance below max_dist, under the minimum image along the periodic
+// axes. A point with none reports VOID_BEAD_NONE and max_dist. out_idx and out_dist are each optional.
+//
+// Only reads the structure and keeps its state on the stack, so it is safe to call concurrently.
+void void_beads_nearest(const void_beads_t* beads, const float* x, const float* y, const float* z, size_t count,
+                        double max_dist, uint32_t* out_idx, float* out_dist);
+
+#ifdef __cplusplus
+}
+#endif
+
+// =================================================================================================
 // The distance field
 // =================================================================================================
 //
@@ -178,8 +224,8 @@ double void_profile_mass_density(const void_profile_t* prof, const double* slab_
 //     d(p) = min_i ( |p - c_i| - R_i ),
 //
 // which is the radius of the largest probe sphere that fits at p. The query itself is the weighted
-// nearest query on md_spatial_acc, so the field is exact everywhere rather than banded, and
-// periodicity is whatever the unit cell the structure was built with says it is.
+// nearest query above, so the field is exact everywhere rather than banded, and periodicity is
+// whatever the unit cell the structure was built with says it is.
 //
 // The grid is walked in tiles of VOID_FIELD_TILE_DIM^3 voxels, which is what the batched query is
 // efficient at, and each tile is summarized into a profile accumulator while it is still in cache.
@@ -192,8 +238,8 @@ double void_profile_mass_density(const void_profile_t* prof, const double* slab_
 #define VOID_FIELD_TILE_DIM 8
 
 typedef struct void_field_desc_t {
-    const struct md_spatial_acc_t* acc;     // Built over the beads, one radius per bead
-    const struct md_unitcell_t*    cell;    // The cell acc was built with, or NULL. Drives the in-cell mask.
+    void_beads_t                   beads;
+    const struct md_unitcell_t*    cell;    // The cell beads.acc was built with, or NULL. Drives the in-cell mask.
     const struct md_grid_t*        grid;    // Axis aligned, see void_field_grid
 
     double   max_dist;      // Range of the query. A voxel with no bead within it reports max_dist.
@@ -265,7 +311,7 @@ void_profile_t void_field_profile(const void_field_accum_t* accum, const void_fi
 // parallelises by handing out disjoint patch ranges, as with the field.
 
 typedef struct void_heightmap_desc_t {
-    const struct md_spatial_acc_t* acc;     // Built over the beads, one radius per bead
+    void_beads_t                   beads;
     const struct md_grid_t*        grid;    // Columns at its xy voxel centres; the scan spans its z extent
 
     double probe_radius;    // R, world units, >= 0

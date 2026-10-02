@@ -82,12 +82,10 @@ set(VIAMD_NUM_WORKER_THREADS "0" CACHE STRING "Number of worker threads (Decreas
 set(MD_LINK_STDLIB_STATIC ${VIAMD_LINK_STDLIB_STATIC} CACHE BOOL "" FORCE)
 
 if (VIAMD_ENABLE_QM)
-    # The QM readers mdlib has, turned on beside each other rather than instead of each other.
-    # TREXIO reads its own HDF5 back end directly, so it costs the dependency VeloxChem already
-    # brings in and no new one. Molden needs nothing at all and is built unconditionally, which is
-    # why it is not named here.
-    set(MD_ENABLE_VLX ON CACHE BOOL "" FORCE)
-    set(MD_ENABLE_TREXIO ON CACHE BOOL "" FORCE)
+    # What the QM module is mostly fed - VeloxChem and TREXIO - is HDF5, so it brings mdlib's HDF5
+    # readers with it (H5MD among them). Without the module they are MD_ENABLE_HDF5 on its own.
+    # Molden needs nothing and is always built.
+    set(MD_ENABLE_HDF5 ON CACHE BOOL "" FORCE)
 endif ()
 
 find_package(OpenGL REQUIRED)
@@ -184,6 +182,7 @@ set(SRC_FILES
     src/implot_widgets.cpp
     src/loader.cpp
     src/main.cpp
+    src/plot_series.cpp
     src/script_editor.cpp
     src/script_reference.cpp
     src/serialization_utils.cpp
@@ -198,6 +197,7 @@ set(SRC_FILES
     src/imgui_widgets.h
     src/implot_widgets.h
     src/loader.h
+    src/plot_series.h
     src/script_editor.h
     src/script_reference.h
     src/serialization_utils.h

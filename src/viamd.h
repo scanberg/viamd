@@ -28,6 +28,7 @@
 #include <task_system.h>
 #include <loader.h>
 #include <event.h>
+#include <plot_series.h>
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
@@ -65,9 +66,8 @@
 #define VIAMD_LOG_ERROR MD_LOG_ERROR
 #define VIAMD_LOG_SUCCESS(...) ImGui::InsertNotification(ImGuiToast(ImGuiToastType_Success, 6000, __VA_ARGS__))
 
-#define DISPLAY_PROPERTY_MAX_POPULATION_SIZE 256
-#define DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS 10
-#define DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS 10
+// One colour per script property (by its place in the script), shared by every view of it
+inline constexpr uint32_t PROPERTY_COLORS[] = {4293119554, 4290017311, 4287291314, 4281114675, 4288256763, 4280031971, 4285513725, 4278222847, 4292260554, 4288298346, 4288282623, 4280834481};
 
 #define HIGHLIGHT_PULSE_TIME_SCALE  5.0
 #define HIGHLIGHT_PULSE_ALPHA_SCALE 0.1
@@ -79,9 +79,10 @@ constexpr ImGuiKey KEY_SKIP_TO_PREV_FRAME       = ImGuiKey_LeftArrow;
 constexpr ImGuiKey KEY_SKIP_TO_NEXT_FRAME       = ImGuiKey_RightArrow;
 constexpr ImGuiKey KEY_RECOMPILE_SHADERS        = ImGuiKey_F5;
 constexpr ImGuiKey KEY_SHOW_DEBUG_WINDOW        = ImGuiKey_F11;
-constexpr ImGuiKey KEY_SCRIPT_EVALUATE          = ImGuiKey_Enter;
-constexpr ImGuiKey KEY_SCRIPT_EVALUATE_MOD      = ImGuiMod_Shift;
-constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F12;
+constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F2;
+
+constexpr ImGuiKeyChord KEY_SCRIPT_EVALUATE         = ImGuiMod_Shift | ImGuiKey_Enter;
+constexpr ImGuiKeyChord KEY_SHOW_ATTRIBUTE_WINDOW   = ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A;
 
 constexpr str_t WORKSPACE_FILE_EXTENSION = STR_INIT("via");
 
@@ -268,125 +269,6 @@ enum class ElectronicStructureLegacyType {
     Count,
 };
 
-// This is viamd's representation of a property
-struct DisplayProperty {
-    enum Type {
-        Type_Temporal,
-        Type_Distribution,
-        Type_Volume,
-        Type_Count
-    };
-
-    enum PlotType {
-        PlotType_Line,      // Single line
-        PlotType_Area,      // Shaded area
-        PlotType_Bars,      // Bar chart
-        PlotType_Scatter,   // Scatter plot
-        PlotType_Count
-    };
-
-    enum ColorType {
-        ColorType_Solid,
-        ColorType_Colormap,
-        ColorType_Count
-    };
-
-    // This is the payload passed to getters for display properties
-    struct Payload {
-        DisplayProperty* display_prop;
-        int dim_idx;
-    };
-
-    // Callback signature for printing out the value (when hovering with mouse for example)
-    typedef int (*PrintValue)(char* buf, size_t buf_cap, int sample_idx, Payload* data);
-
-    struct Histogram {
-        int num_bins;
-        int dim = 0;
-        // Can be multidimensional
-        // Total number of entries will be dim * num_bins
-        md_array(float) bins = 0;
-        double x_min;
-        double x_max;
-        double y_min;
-        double y_max;
-        md_allocator_i* alloc;
-    };
-
-    Type type = Type_Temporal;
-
-    char label[32] = "";
-
-    ColorType color_type = ColorType_Solid;
-    ImVec4 color = {1,1,1,1};
-    ImPlotColormap colormap = ImPlotColormap_Plasma;
-    float colormap_alpha = 1.0f;
-
-    PlotType plot_type = PlotType_Line;
-    ImPlotMarker marker_type = ImPlotMarker_Square;
-    float marker_size = 1.0f;
-    double bar_width_scale = 1.0;
-
-    // We need two getters to support areas (min / max)
-    ImPlotGetter getter[2] = {0,0};
-    PrintValue   print_value = 0;
-
-    bool aggregate_histogram = false;
-
-    int dim = 1;                // Number of values per sample
-    int num_samples = 0;        // Number of samples (length of x)
-    const float* y_values = 0;  // Values (y)
-    const float* x_values = 0;  // Corresponding x values
-
-    int num_bins = 128;         // Requested number of bins for histogram
-
-    // 'unit' is what the property's SOURCE gave each axis; 'unit_str' is what that axis is shown
-    // in once the display preference is applied, and 'unit_scale' the factor taking a raw value
-    // there. The getters and print_value callbacks below apply unit_scale[1] to y. The x axis of a
-    // temporal property is timeline.x_values, which is already converted, so unit_scale[0] is 1
-    // for those and unit_str[0] is the timeline's own unit.
-    // display_property_update_units in main.cpp derives the latter three from the first.
-    md_unit_t unit[2] = {md_unit_none(), md_unit_none()};
-    double unit_scale[2] = {1.0, 1.0};
-    char unit_str[2][32] = {"",""};
-    uint64_t units_version = 0;     // display_units generation the three above were derived at
-
-    const md_script_eval_t* eval = NULL;
-
-    md_script_property_flags_t prop_flags = MD_SCRIPT_PROPERTY_FLAG_NONE;
-    const md_script_vis_payload_o* vis_payload = NULL;
-
-    // The property as published in eval's attribute table (see md_script_eval_attributes). The
-    // table is fixed for the lifetime of the evaluation, so holding the pointers is safe for as
-    // long as eval is.
-    const md_attribute_t* attr = NULL;          // script/<ident>: the values
-    const md_attribute_t* attr_range  = NULL;   // script/<ident>/range, temporal and distribution
-    const md_attribute_t* attr_weight = NULL;   // script/<ident>/weight, distribution only
-
-    // A band drawn around a centre line (variance around the mean) needs that centre as well
-    const float* y_center = 0;
-
-    // md_attributes_version of attr when the histogram was last computed
-    uint64_t attr_version = 0;
-
-    // Encodes which temporal subplots this property is visible in
-    uint32_t temporal_subplot_mask = 0;
-
-    // Encodes which distribution subplots this property is visible in
-    uint32_t distribution_subplot_mask = 0;
-
-    bool show_in_volume = false;
-    bool partial_evaluation = false;
-
-    // Encodes which indices of the population to show (if applicable, i.e. dim > 1)
-    std::bitset<DISPLAY_PROPERTY_MAX_POPULATION_SIZE> population_mask = {};
-
-    STATIC_ASSERT(DISPLAY_PROPERTY_MAX_TEMPORAL_SUBPLOTS     <= sizeof(temporal_subplot_mask) * 8,     "Cannot fit temporal subplot mask");
-    STATIC_ASSERT(DISPLAY_PROPERTY_MAX_DISTRIBUTION_SUBPLOTS <= sizeof(distribution_subplot_mask) * 8, "Cannot fit distribution subplot mask");
-
-    Histogram hist = {};
-};
-
 struct LoadDatasetWindowState {
     char path_buf[1024] = "";
     char atom_format_buf[128] = "";
@@ -546,90 +428,25 @@ struct AABB {
     vec3_t max_ext = { 0 };
 };
 
-static mat3_t mat3_PCA(const vec4_t* xyzw, size_t count) {
-    vec3_t acc = vec3_zero();
-    for (size_t i = 0; i < count; ++i) {
-        acc = vec3_add(acc, vec3_from_vec4(xyzw[i]));
-    }
-    vec3_t mean = acc / (float)count;
+mat3_t mat3_PCA(const vec4_t* xyzw, size_t count);
 
-    mat3_t cov = mat3_covariance_matrix_vec4(xyzw, nullptr, count, mean);
-    mat3_eigen_t eigen = mat3_eigen(cov);
-    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
-    return PCA;
-}
-
-static void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, size_t count, const mat3_t& orientation = mat3_ident()) {
-    vec4_t min_v = vec4_set1( FLT_MAX);
-    vec4_t max_v = vec4_set1(-FLT_MAX);
-
-    mat4_t rot = mat4_from_mat3(mat3_transpose(orientation));
-
-    for (size_t i = 0; i < count; ++i) {
-        vec4_t v = mat4_mul_vec4(rot, xyzw[i]);
-        min_v = vec4_min(min_v, v);
-        max_v = vec4_max(max_v, v);
-    }
-
-    // Padding
-    const float pad = 6.0f;
-    min_v -= pad;
-    max_v += pad; 
-
-	MEMCPY(out_min, &min_v, sizeof(float) * 3);
-	MEMCPY(out_max, &max_v, sizeof(float) * 3);
-}
+void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, size_t count, const mat3_t& orientation = mat3_ident());
 
 // Construct texture to world transformation matrix for Volume
 // extent is the extent of the volume (dim * voxel_size)
-static inline mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent) {
-    mat4_t T = mat4_translate_vec3(origin);
-    mat4_t R = mat4_from_mat3(orientation);
-    mat4_t S = mat4_scale_vec3(extent);
-    return T * R * S;
-}
+mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent);
 
-static inline mat4_t compute_world_to_model_mat(const mat3_t& orientation, const vec3_t& origin) {
-    mat4_t world_to_model = mat4_from_mat3(mat3_transpose(orientation)) * mat4_translate_vec3(-origin);
-    return world_to_model;
-}
+mat4_t compute_world_to_model_mat(const mat3_t& orientation, const vec3_t& origin);
 
-static inline mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& in_origin, const vec3_t& stepsize) {
-    vec3_t step_x = orientation.col[0] * stepsize.x;
-    vec3_t step_y = orientation.col[1] * stepsize.y;
-    vec3_t step_z = orientation.col[2] * stepsize.z;
-    // Shift origin by half voxel
-    vec3_t origin = in_origin + orientation * (stepsize * 0.5f);
-
-    mat4_t index_to_world = {
-        step_x.x, step_x.y, step_x.z, 0.0f,
-        step_y.x, step_y.y, step_y.z, 0.0f,
-        step_z.x, step_z.y, step_z.z, 0.0f,
-        origin.x, origin.y, origin.z, 1.0f,
-    };
-
-    return index_to_world;
-}
+mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& in_origin, const vec3_t& stepsize);
 
 // Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
-static inline void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_length) {
-    out_dim[0] = CLAMP(ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
-    out_dim[1] = CLAMP(ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
-    out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
-}
+void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_length);
 
 // Grid units are BOHR, matching what md_gto evaluates in; a Volume's transforms are Angstrom,
 // matching the world the camera lives in. init_volume is where the two meet, and it is the only
 // place that conversion belongs.
-static inline void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, double samples_per_unit_length) {
-    ASSERT(grid);
-    vec3_t extent = max_ext - min_ext;
-    compute_dim(grid->dim, extent, samples_per_unit_length);
-    vec3_t voxel_size = vec3_div(extent, vec3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
-    grid->orientation = orientation;
-    grid->origin = orientation * min_ext;
-    grid->spacing = voxel_size;
-}
+void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, double samples_per_unit_length);
 
 struct Volume {
     mat4_t world_to_model   = {};   // Roto-translation into volume local axes, no scaling applied (preserves world length units)
@@ -1156,21 +973,19 @@ struct ApplicationState {
     // asking. The coefficient buffer is grown to fit the widest basis loaded so far, for the same
     // reason. Whoever evaluates borrows these; nobody else frees them.
     md_gpu_stream_t gpu_stream  = nullptr;   // the device's default compute stream
-    md_gpu_pool_t   gpu_pool    = nullptr;   // device-local: basis, atoms, coefficients
-    md_gpu_pool_t   gpu_rb_pool = nullptr;   // host-readable: volume readback staging
-    md_gpu_tex_t    gpu_volume  = 0;         // 3d R32F scratch for an evaluated orbital / density
-    md_gpu_ptr_t    gpu_coeff   = nullptr;   // AO coefficient staging, sized to the widest basis
+    md_gpu_texture_t gpu_volume = nullptr;   // 3d R32F scratch for an evaluated orbital / density
+    md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
     // One in-flight readback of gpu_volume into a GL texture. A slot must outlive the call that
     // queued it, so these live here rather than in the frame arena - and here specifically because
-    // every one of them references gpu_volume, gpu_rb_pool and gpu_stream above. Whoever destroys
+    // every one of them references gpu_volume and gpu_stream above. Whoever destroys
     // those drains these first.
     struct GpuVolumeJob {
         bool              in_flight = false;
         ApplicationState* owner     = nullptr;
         uint32_t          tex_id    = 0;        // GL texture to receive the data
-        md_gpu_ptr_t      rb        = nullptr;  // HOST_READ staging block
+        md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
         size_t            size      = 0;
     };
     // Readbacks are issued at most one per representation per change, and a change cannot be
@@ -1275,6 +1090,12 @@ struct ApplicationState {
         vec3_t              sys_aabb_max = {};
 
         bool                interpolate_system_state = false;
+        // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
+        // interpolate_system_state skip redundant work when playback ticks without the displayed
+        // frame changing. Reset to -1 whenever the underlying per-frame data can no longer be
+        // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
+        // so the next call is never skipped by a stale match.
+        int64_t             last_interpolated_nearest_frame = -1;
         uint32_t            dirty_gpu_buffers = 0;
 
 #if MD_ENABLE_GPU
@@ -1286,7 +1107,7 @@ struct ApplicationState {
         // This whole block is per DATASET, so it is what gets replicated when several systems can
         // be loaded at once. That is also why the evaluation scratch is not here but on the device.
         md_gto_gpu_basis_t  gpu_basis = nullptr;   // built from the basis/ attributes, not from a loader
-        md_gpu_ptr_t        gpu_atoms = nullptr;   // packed float4 positions, xyz in Bohr
+        md_gpu_addr_t       gpu_atoms = 0;         // packed float4 positions, xyz in Bohr
         // Hash of the positions currently in gpu_atoms, 0 when nothing has been uploaded. The
         // positions come from the system STATE, so they move with the trajectory; comparing what is
         // uploaded against what is wanted is the only test that cannot go stale, and it costs a hash
@@ -1295,11 +1116,11 @@ struct ApplicationState {
 #endif
     } mold;
 
-    DisplayProperty* display_properties = nullptr;
-    // A copy, not a view: the labels it is set from live in display_properties and the script IR, which are
-    // rebuilt when the script recompiles, and the hover outlives that. Longer than any DisplayProperty::label.
-    char  hovered_display_property_label[64] = "";
-    int   hovered_display_property_pop_idx = -1;
+    // The script property hovered in any view of it (a plot, the script editor), by identifier. A copy,
+    // not a view: the identifiers live in the script IR, which is rebuilt when the script recompiles,
+    // and the hover outlives that.
+    char  hovered_property_label[64] = "";
+    int   hovered_property_pop_idx = -1;
 
     // --- ASYNC TASKS HANDLES ---
     struct {
@@ -1409,6 +1230,10 @@ struct ApplicationState {
         double    time_scale    = 1.0;
         uint64_t  units_version = 0;
 
+        // What each subplot draws, by attribute path (see plot_series.h)
+        PlotSubplot subplots[PLOT_MAX_SUBPLOTS];
+        int num_subplots = 1;
+
         bool show_window = false;
     } timeline;
 
@@ -1417,6 +1242,11 @@ struct ApplicationState {
         struct {
             bool enabled = false;
         } filter;
+
+        // What each subplot draws, by attribute path (see plot_series.h)
+        PlotSubplot subplots[PLOT_MAX_SUBPLOTS];
+        int num_subplots = 1;
+
         bool show_window = false;
     } distributions;
 
@@ -1907,6 +1737,8 @@ bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
 str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);
+// The attribute at "<run>/<leaf>" of the current run; NULL without a run or without such an attribute.
+const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf);
 
 // Frame cache operations
 void clear_system_frame_cache(ApplicationState* app);
@@ -1915,8 +1747,15 @@ void clear_system_frame_cache(ApplicationState* app);
 void interpolate_system_state(ApplicationState* app);
 
 // Workspace
+// See #workspace in viamd.cpp for what a workspace holds and the order it is loaded in
 void load_workspace(ApplicationState* app, str_t file);
-void save_workspace(ApplicationState* app, str_t file);
+// True when the whole file was written; it is then the current workspace (files.workspace)
+bool save_workspace(ApplicationState* app, str_t file);
+
+// Whether this window is open belongs to the workspace: stored under [Windows] as name=0/1. name
+// is the window's identity in the file, so it stays the same when the window is renamed on screen.
+// Call once, at initialization; show has to outlive the application.
+void workspace_register_window(const char* name, bool* show);
 
 // Selections
 Selection* create_selection(ApplicationState* app, str_t name, md_bitfield_t* bf = 0);
