@@ -2,7 +2,6 @@
 
 #include <core/md_log.h>
 #include <core/md_allocator.h>
-#include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
 #include <core/md_grid.h>
@@ -29,7 +28,8 @@
 #include <core/md_str_builder.h>
 
 #include <float.h>
-#include <algorithm>
+#include <atomic>
+#include <memory>
 
 /*
     Void and nanopore characterization: the component.
@@ -69,15 +69,17 @@ constexpr int VOL_TF_RES  = 1024;    // Fine enough that the cut at R is sharp t
 // surface is. The statistics are always taken over every column.
 constexpr uint32_t HEIGHT_MAX_DIM = 256;
 
-// Pore network. Colours are ABGR, one per PORE_CLASS_: warm for what gets through the film, cool
-// for what is reachable from one side only, purple for what fits the probe and leads nowhere, and
-// grey for what the probe does not fit.
+// Pore network. Colours are ABGR, one per PORE_CLASS_, from the Okabe-Ito set: distinct under
+// the common colour vision deficiencies, and dark enough to read against a white background as
+// well as a black one. Vermillion for what gets through the film, blue and green for what is
+// reachable from one side only, purple for what fits the probe and leads nowhere, grey for what
+// the probe does not fit.
 constexpr uint32_t PORE_CLASS_COLOR[5] = {
-    0x60909090,     // PORE_CLASS_SMALL
-    0xffd060c0,     // PORE_CLASS_CLOSED
-    0xffffb060,     // PORE_CLASS_TOP
-    0xff90d050,     // PORE_CLASS_BOTTOM
-    0xff3c96ff,     // PORE_CLASS_SPANNING
+    0xff8c8c8c,     // PORE_CLASS_SMALL     #8C8C8C
+    0xff7733aa,     // PORE_CLASS_CLOSED    #AA3377
+    0xffb27200,     // PORE_CLASS_TOP       #0072B2
+    0xff739e00,     // PORE_CLASS_BOTTOM    #009E73
+    0xff005ed5,     // PORE_CLASS_SPANNING  #D55E00
 };
 const char* pore_class_lbl[5] = {
     "Too narrow",
@@ -86,14 +88,17 @@ const char* pore_class_lbl[5] = {
     "Reachable from the bottom",
     "Through the film",
 };
-constexpr uint32_t PORE_THROAT_CLOSED_COLOR = 0x50808080;
-constexpr uint32_t PORE_ROUTE_COLOR         = 0xff60f0ff;
-constexpr uint32_t PORE_HOVER_COLOR         = 0xffffffff;
-constexpr uint32_t PORE_HOVER_THROAT_COLOR  = 0x90ffffff;
+constexpr uint32_t PORE_ROUTE_COLOR         = 0xff003d9e;     // #9E3D00, a darker vermillion: the route is spanning by definition
+constexpr uint32_t PORE_FOCUS_ON_LIGHT      = 0xff1a1a1a;
+constexpr uint32_t PORE_FOCUS_ON_DARK       = 0xfff2f2f2;
 constexpr float    PORE_POINT_SIZE          = 7.0f;     // Pixels, the smallest a pore is drawn
-constexpr float    PORE_POINT_SIZE_HOVER    = 12.0f;
+constexpr float    PORE_POINT_SIZE_FOCUS    = 12.0f;
 
-// The overlay is rebuilt every frame, so a network past this many throats draws the widest of them
+// Past this many selected pores only their points are drawn in focus. A box over a dense network can
+// take thousands, and each one in full focus is its sphere and a sphere per throat.
+constexpr uint32_t PORE_MAX_FOCUS_DRAWN     = 2000;
+
+// The skeleton is rebuilt every frame, so a network past this many throats draws the widest of them
 // - which, since the list runs widest first, is a prefix - and says so in the window.
 constexpr size_t   PORE_MAX_DRAWN_THROATS   = 250000;
 
@@ -217,6 +222,179 @@ struct SasaResult {
 
 }  // namespace
 
+// --- Background passes -----------------------------------------------------------------------------
+//
+// The field and the topography run on the task pool, never on the render thread. A pass owns
+// everything it reads - a copy of the beads as they were when it was asked for - so playback, a new
+// frame or a freed system cannot change what a running pass sees, and it owns everything it writes
+// until the main thread installs it at the end. A pass that is cancelled, or superseded by a newer
+// one, is told to stop and frees itself when its last task has run.
+
+// The cutoff the acceleration structure is built for. Every query here is a box which grows as far
+// as it has to, so this only sets the scale of the cells; the field pass costs the same within 10%
+// from 10 to 40 A.
+constexpr double ACC_CUTOFF = 20.0;
+
+enum PassState { Pass_Running = 0, Pass_Done, Pass_Failed };
+enum PassPhase { Phase_Setup = 0, Phase_Work, Phase_Finish };
+
+void stats_free(Stats& s) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_array_free(s.hist, heap);
+    md_array_free(s.slab_solid, heap);
+    md_array_free(s.slab_total, heap);
+    md_array_free(s.slab_mass, heap);
+    md_array_free(s.slab_count, heap);
+    s = {};
+}
+
+// The beads as a pass sees them: a copy, and the structure built over it on a pool thread.
+struct BeadInput {
+    md_array(vec3_t)  xyz   = 0;
+    md_array(float)   radii = 0;
+    md_unitcell_t     cell  = {};
+    md_coord_stream_t coords = {};
+    md_spatial_acc_t  acc   = {};
+    void_beads_t      beads = {};
+    bool              built = false;
+
+    void build() {
+        coords = md_coord_stream_from_aos((const float*)xyz, sizeof(vec3_t), NULL, md_array_size(xyz));
+        acc = {};
+        acc.alloc = md_get_heap_allocator();
+        md_spatial_acc_desc_t desc = {};
+        desc.coords   = &coords;
+        desc.cutoff   = ACC_CUTOFF;
+        desc.unitcell = &cell;
+        md_spatial_acc_init(&acc, &desc);
+        beads = void_beads(&acc, radii, md_array_size(radii));
+        built = true;
+    }
+
+    void release() {
+        if (built) md_spatial_acc_free(&acc);
+        built = false;
+        beads = {};
+        md_array_free(xyz,   md_get_heap_allocator());
+        md_array_free(radii, md_get_heap_allocator());
+        xyz = 0;
+        radii = 0;
+    }
+};
+
+struct Pass {
+    std::atomic<bool> cancel{false};
+    std::atomic<int>  state{Pass_Running};
+    std::atomic<int>  phase{Phase_Setup};
+    task_system::ID   task_work = task_system::INVALID_ID;
+    std::atomic<uint32_t> work_done{0};         // Tiles or patches, counted one at a time: the pool
+    uint32_t          work_total = 0;           // hands out ranges of hundreds, too coarse to report
+    md_tick_t         t0 = 0;
+    double            seconds = 0.0;
+    char              error[256] = "";
+
+    bool cancelled() const { return cancel.load(std::memory_order_relaxed); }
+
+    // Called from a pool thread; the main thread only reads error once the pass is finished
+    void fail(const char* msg) {
+        snprintf(error, sizeof(error), "%s", msg);
+        state  = Pass_Failed;
+        cancel = true;
+    }
+
+    // Setup builds the structure and is not divisible; the work is the bulk and reports per range
+    float progress() const {
+        switch (phase.load()) {
+        case Phase_Setup: return 0.0f;
+        case Phase_Work:  return work_total ? (float)work_done.load(std::memory_order_relaxed) / (float)work_total : 0.0f;
+        default:          return 1.0f;
+        }
+    }
+};
+
+struct FieldPass : Pass {
+    BeadInput in;
+    md_array(float) masses = 0;
+    md_grid_t grid = {};
+    double    max_dist = 0.0;
+    uint32_t  planes_per_slab = 1;
+    uint32_t  num_slabs = 1;
+    bool      materialize = false;
+    bool      pbc_z = false;
+    size_t    num_threads = 1;
+
+    void_field_desc_t desc = {};
+    md_array(void_field_accum_t) accum = 0;     // One per thread, merged in the finish
+    md_array(uint64_t) accum_mem = 0;
+
+    md_array(float) field = 0;                  // Handed over on install
+    Stats stats = {};
+
+    ~FieldPass() {
+        md_allocator_i* heap = md_get_heap_allocator();
+        in.release();
+        md_array_free(masses, heap);
+        md_array_free(accum, heap);
+        md_array_free(accum_mem, heap);
+        md_array_free(field, heap);
+        stats_free(stats);
+    }
+};
+
+// The materialized field, shared between the window and any pass reading it. Replacing or clearing
+// the field drops the window's reference only; the memory goes when the last reader is done.
+struct FieldBuffer {
+    md_array(float) data = 0;
+    ~FieldBuffer() { md_array_free(data, md_get_heap_allocator()); }
+};
+
+struct NetworkPass : Pass {
+    std::shared_ptr<FieldBuffer> keep;          // Alive for as long as the build reads it
+    channel_field_t f = {};
+    double   r_min = 0.0;
+    double   merge = 0.0;
+    uint64_t result_gen = 0;                    // The field it was built from
+
+    pore_network_t net = {};                    // Handed over on install
+    md_array(uint32_t) route = 0;
+    double   bottleneck = 0.0;
+    double   route_length = 0.0;
+
+    ~NetworkPass() {
+        pore_network_free(&net);
+        md_array_free(route, md_get_heap_allocator());
+    }
+};
+
+// The build reports from inside its sweep, which is also where it can be told to stop
+bool network_progress(float fraction, void* user) {
+    NetworkPass* p = (NetworkPass*)user;
+    p->work_done.store((uint32_t)(fraction * (float)p->work_total), std::memory_order_relaxed);
+    return !p->cancelled();
+}
+
+struct HeightPass : Pass {
+    BeadInput in;
+    md_grid_t grid = {};
+    double    probe = 0.0;
+    double    max_dist = 0.0;
+    uint64_t  result_gen = 0;                   // The field it was made for
+    void_heightmap_desc_t desc = {};
+
+    md_array(float) top = 0;                    // Handed over on install
+    md_array(float) bot = 0;
+    md_array(float) thk = 0;
+    void_heightmap_stats_t st[HeightView_Count] = {};
+
+    ~HeightPass() {
+        md_allocator_i* heap = md_get_heap_allocator();
+        in.release();
+        md_array_free(top, heap);
+        md_array_free(bot, heap);
+        md_array_free(thk, heap);
+    }
+};
+
 struct VoidAnalysis : viamd::EventHandler {
     bool show_window = false;
 
@@ -227,18 +405,14 @@ struct VoidAnalysis : viamd::EventHandler {
     float max_dist      = 320.0f;    // 32 nm, the range the field is resolved over
     float uniform_radius = 5.0f;
 
-    // The cutoff the acceleration structure is built for. Every query here is a box which grows as far as it has
-    // to, so this only sets the scale of the cells; the field pass costs the same within 10% from 10 to 40 A.
-    static constexpr double ACC_CUTOFF = 20.0;
-
     RadiusSource radius_source = RadiusSource_Vdw;
 
     bool  materialize = false;
-    md_array(float) field = 0;
+    md_array(float) field = 0;                  // The data of field_owner, or null
+    std::shared_ptr<FieldBuffer> field_owner;
     md_grid_t grid = {};
 
-    // Pore network: the clearance field as pores and the throats between them, drawn in 3D. On the
-    // heap rather than the arena, since a rebuild has to give the last one back.
+    // Pore network: the clearance field as pores and the throats between them, drawn in 3D.
     float    net_r_min       = 2.0f;    // Smallest throat and pore; also what bounds the memory
     float    net_merge       = 0.5f;    // Persistence below which two pores are one, in voxel spacings
     bool     has_net         = false;
@@ -256,14 +430,11 @@ struct VoidAnalysis : viamd::EventHandler {
     uint32_t net_hovered     = PORE_INVALID;
     PickingRange net_picking = {};
     size_t   net_drawn_throats = 0;
-
-    // Pores in draw order, far to near. Sorting is the one per frame cost that grows faster than
-    // the network, and the order only matters to which of two overlapping points a hover finds -
-    // so it is redone once the camera has come to rest, not while it moves.
-    md_array(uint32_t) net_order = 0;
-    bool     net_order_stale = true;     // The visible set changed: rebuild before drawing
-    bool     net_order_sorted = false;
-    mat4_t   net_order_view = {};
+    md_array(uint8_t) net_selected = 0; // Per pore, set by clicking it in the 3D view
+    uint32_t net_num_selected = 0;
+    md_array(uint8_t) net_region = 0;   // Per pore, inside the box being dragged out right now
+    uint32_t net_num_region = 0;
+    bool     net_region_removing = false;
 
     // Porosity and accessible volume
     Region   region      = Region_Box;
@@ -351,7 +522,12 @@ struct VoidAnalysis : viamd::EventHandler {
     bool  has_sasa = false;
     char  error[256] = "";
 
-    md_allocator_i* arena = nullptr;
+    md_allocator_i* arena = nullptr;    // The heap; see EventType_ViamdInitialize
+
+    FieldPass*  field_pass  = nullptr;  // Running, or null. Owned by its tasks, see install_field_pass
+    HeightPass* height_pass = nullptr;
+    NetworkPass* net_pass   = nullptr;
+    uint64_t    result_gen  = 0;        // Bumped whenever a new field is installed
     ApplicationState* app_state = nullptr;
 
     VoidAnalysis() { viamd::event_system_register_handler(*this); }
@@ -363,15 +539,19 @@ struct VoidAnalysis : viamd::EventHandler {
             switch (e.type) {
             case viamd::EventType_ViamdInitialize: {
                 app_state = (ApplicationState*)e.payload;
-                arena = md_arena_allocator_create(app_state->allocator.persistent, MEGABYTES(1));
+                // Everything the window keeps is freed when it is replaced. An arena never frees, so
+                // it would keep every field ever computed until shutdown.
+                arena = md_get_heap_allocator();
                 break;
             }
             case viamd::EventType_ViamdShutdown:
-                // The pore network is on the heap rather than the arena, so destroying the arena does
-                // not take it with it.
-                clear_network();
+                // Running passes stop and free themselves; what the window holds is freed here.
+                cancel_field_pass();
+                cancel_height_pass();
+                cancel_network_pass();
+                clear_result();
+                clear_sasa();
                 free_volume();
-                md_arena_allocator_destroy(arena);
                 arena = nullptr;
                 break;
             case viamd::EventType_ViamdFrameTick:
@@ -381,18 +561,26 @@ struct VoidAnalysis : viamd::EventHandler {
                 ImGui::Checkbox("Void Analysis", &show_window);
                 break;
             case viamd::EventType_ViamdSystemFree:
+                cancel_field_pass();
+                cancel_height_pass();
                 clear_result();
                 clear_sasa();
                 break;
-            case viamd::EventType_ViamdRenderTransparent: {
+            case viamd::EventType_ViamdRenderOpaque: {
                 if (e.payload_type != viamd::EventPayloadType_ApplicationState) break;
-                // The volume and the pore network are explicit toggles and stay up with the window
-                // closed, like any other representation.
-                if (show_volume && has_result) {
-                    draw_volume(*(const ApplicationState*)e.payload);
-                }
+                // Queued into the world pass, which follows this event and depth tests. Like the
+                // volume, an explicit toggle that stays up with the window closed.
                 if (show_net && has_net) {
                     draw_network_3d(*(const ApplicationState*)e.payload);
+                }
+                break;
+            }
+            case viamd::EventType_ViamdRenderTransparent: {
+                if (e.payload_type != viamd::EventPayloadType_ApplicationState) break;
+                // The volume is an explicit toggle and stays up with the window closed, like any
+                // other representation.
+                if (show_volume && has_result) {
+                    draw_volume(*(const ApplicationState*)e.payload);
                 }
                 break;
             }
@@ -408,10 +596,7 @@ struct VoidAnalysis : viamd::EventHandler {
             }
             case viamd::EventType_ViamdInteractionSurface: {
                 if (e.payload_type != viamd::EventPayloadType_InteractionSurfaceEvent) break;
-                const InteractionSurfaceEvent* ev = (const InteractionSurfaceEvent*)e.payload;
-                if (ev->surface_id != interaction_surface_main || ev->kind != InteractionSurfaceEventKind::Hover) break;
-                const bool ours = has_net && show_net && ev->hit.domain == PickingDomain_PoreNetwork && ev->hit.local_idx < md_array_size(net.vertices);
-                net_hovered = ours ? ev->hit.local_idx : PORE_INVALID;
+                network_interaction(*(const InteractionSurfaceEvent*)e.payload);
                 break;
             }
             case viamd::EventType_ViamdPickingTooltipTextRequest: {
@@ -427,7 +612,7 @@ struct VoidAnalysis : viamd::EventHandler {
     }
 
     void clear_result() {
-        md_array_free(field, arena);
+        field_owner.reset();
         field = 0;
         md_array_free(stats.hist, arena);
         md_array_free(stats.slab_solid, arena);
@@ -517,8 +702,41 @@ struct VoidAnalysis : viamd::EventHandler {
         return void_field_grid(out_grid, &state.unitcell, state.xyz, state.num_atoms, voxel_spacing);
     }
 
+    // A copy of the beads, as every pass wants them. Main thread, since it reads the system.
+    void snapshot_beads(BeadInput* in) const {
+        const md_system_t&       sys   = app_state->mold.sys;
+        const md_system_state_t& state = app_state->mold.state;
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_array_resize(in->xyz,   state.num_atoms, heap);
+        md_array_resize(in->radii, state.num_atoms, heap);
+        MEMCPY(in->xyz, state.xyz, state.num_atoms * sizeof(vec3_t));
+        // Bead radii. Every reported quantity is a function of them, so the radius source is a
+        // choice worth stating next to any number quoted from here.
+        fill_radii(in->radii, sys, state.num_atoms, 0.0);
+        in->cell = state.unitcell;
+    }
+
+    bool height_running() const { return height_pass != nullptr; }
+
+    // Abandon the running pass, if any. It stops at the next tile and frees itself.
+    void cancel_field_pass() {
+        if (!field_pass) return;
+        field_pass->cancel = true;
+        task_system::task_interrupt(field_pass->task_work);
+        field_pass = nullptr;
+    }
+
+    void cancel_height_pass() {
+        if (!height_pass) return;
+        height_pass->cancel = true;
+        task_system::task_interrupt(height_pass->task_work);
+        height_pass = nullptr;
+    }
+
+    // Snapshot the system, then hand everything else to the pool: building the structure, the
+    // field over the tiles, and the reduction of the per thread accumulators. The previous result
+    // stays up until the new one is installed.
     void compute() {
-        clear_result();
         error[0] = '\0';
 
         const md_system_t&       sys   = app_state->mold.sys;
@@ -529,140 +747,198 @@ struct VoidAnalysis : viamd::EventHandler {
             return;
         }
 
-        if (!setup_grid(&grid, state)) {
+        md_grid_t g = {};
+        if (!setup_grid(&g, state)) {
             snprintf(error, sizeof(error), "Could not derive a grid from the system");
             return;
         }
 
-        const size_t num_voxels = md_grid_num_points(&grid);
-        if (materialize) {
-            const size_t bytes = num_voxels * sizeof(float);
-            if (bytes > GIGABYTES(4)) {
-                snprintf(error, sizeof(error), "Materialized field would need %.1f GB, refusing", (double)bytes / (double)GIGABYTES(1));
-                return;
-            }
-            md_array_resize(field, num_voxels, arena);
+        const size_t num_voxels = md_grid_num_points(&g);
+        if (materialize && num_voxels * sizeof(float) > GIGABYTES(4)) {
+            snprintf(error, sizeof(error), "Materialized field would need %.1f GB, refusing", (double)(num_voxels * sizeof(float)) / (double)GIGABYTES(1));
+            return;
         }
 
-        const md_tick_t t0 = md_tick_now();
+        cancel_field_pass();
 
-        md_temp_scope_t temp_scope = md_temp_begin();
-        defer { md_temp_end(temp_scope); };
+        FieldPass* p = new FieldPass();
+        p->t0 = md_tick_now();
+        snapshot_beads(&p->in);
+        md_array_resize(p->masses, state.num_atoms, md_get_heap_allocator());
+        md_atom_extract_masses(p->masses, 0, state.num_atoms, &sys.atom);
 
-        // Bead radii. Every reported quantity is a function of them, so the radius source is a choice
-        // worth stating next to any number quoted from here.
-        float* radii = (float*)md_temp_alloc(temp_scope, state.num_atoms * sizeof(float));
-        fill_radii(radii, sys, state.num_atoms, 0.0);
-
-        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state.xyz, sizeof(vec3_t), NULL, state.num_atoms);
-
-        md_spatial_acc_t acc = {};
-        acc.alloc = md_temp_allocator(temp_scope);
-        md_spatial_acc_desc_t desc = {};
-        desc.coords   = &coords;
-        desc.cutoff   = ACC_CUTOFF;
-        desc.unitcell = &state.unitcell;
-        md_spatial_acc_init(&acc, &desc);
-        defer { md_spatial_acc_free(&acc); };
-        const void_beads_t beads = void_beads(&acc, radii, state.num_atoms);
-
-        const uint32_t num_tiles = void_field_num_tiles(&grid);
+        p->grid        = g;
+        p->max_dist    = (double)max_dist;
+        p->materialize = materialize;
+        p->pbc_z       = (md_unitcell_flags(&state.unitcell) & MD_UNITCELL_PBC_Z) != 0;
 
         // z resolution of the profile: one plane of voxels per slab, which is the resolution the
         // field has. Whole planes only, see void_profile_planes_per_slab for why.
-        const uint32_t planes_per_slab = void_profile_planes_per_slab(grid.dim[2], MAX_SLABS);
-        const uint32_t num_slabs       = void_profile_num_slabs(grid.dim[2], planes_per_slab);
+        p->planes_per_slab = void_profile_planes_per_slab(g.dim[2], MAX_SLABS);
+        p->num_slabs       = void_profile_num_slabs(g.dim[2], p->planes_per_slab);
 
-        // The bins are the resolution in R of every accessible volume reported later, so they are
-        // deliberately finer than the voxel spacing: R is a continuous parameter and the voxelization,
-        // not the binning, is what should be limiting. The coarea derivative is the one reader that
-        // needs a coarser window, and it widens its own rather than making everyone else share it.
-        void_field_desc_t fdesc = {};
-        fdesc.beads           = beads;
-        fdesc.cell            = &state.unitcell;
-        fdesc.grid            = &grid;
-        fdesc.max_dist        = (double)max_dist;
-        fdesc.planes_per_slab = planes_per_slab;
-        fdesc.num_bins        = NUM_BINS;
-        fdesc.field           = field;
+        // Thread 0 is the main thread, which does not take part here but is counted so that any
+        // thread index the pool reports has an accumulator of its own.
+        p->num_threads = MAX((size_t)1, task_system::pool_num_threads() + 1);
 
-        // Per thread accumulators, merged once the range task has completed. Nothing is shared while it runs.
-        const size_t num_threads = MAX((size_t)1, task_system::pool_num_threads() + 1);
-        const size_t hist_stride = (size_t)num_slabs * NUM_BINS;
-        void_field_accum_t* accum = (void_field_accum_t*)md_temp_alloc(temp_scope, num_threads * sizeof(void_field_accum_t));
-        for (size_t i = 0; i < num_threads; ++i) {
-            accum[i].hist  = (uint64_t*)md_temp_alloc(temp_scope, hist_stride * sizeof(uint64_t));
-            accum[i].solid = (uint64_t*)md_temp_alloc(temp_scope, num_slabs * sizeof(uint64_t));
-            accum[i].total = (uint64_t*)md_temp_alloc(temp_scope, num_slabs * sizeof(uint64_t));
-            void_field_accum_reset(&accum[i], num_slabs, NUM_BINS);
-        }
+        const uint32_t num_tiles = void_field_num_tiles(&g);
 
-        task_system::ID task = task_system::create_pool_task(STR_LIT("Void distance field"), num_tiles,
-            [&](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
-                const uint32_t ti = MIN((uint32_t)(num_threads - 1), thread_num);
-                void_field_eval_tiles(&accum[ti], &fdesc, range_beg, range_end);
-            }, 1);
+        const task_system::ID setup = task_system::create_pool_task(STR_LIT("Void field setup"), [p, num_voxels]() {
+            if (p->cancelled()) return;
+            md_allocator_i* heap = md_get_heap_allocator();
+            p->in.build();
+            if (p->materialize) {
+                md_array_resize(p->field, num_voxels, heap);
+                if (!p->field) { p->fail("Could not allocate the materialized field"); return; }
+            }
 
-        task_system::enqueue_task(task);
-        task_system::task_wait_for(task);
+            const size_t hist_stride = (size_t)p->num_slabs * NUM_BINS;
+            const size_t per_thread  = hist_stride + 2 * (size_t)p->num_slabs;
+            md_array_resize(p->accum_mem, p->num_threads * per_thread, heap);
+            md_array_resize(p->accum, p->num_threads, heap);
+            for (size_t i = 0; i < p->num_threads; ++i) {
+                uint64_t* base = p->accum_mem + i * per_thread;
+                p->accum[i] = {};
+                p->accum[i].hist  = base;
+                p->accum[i].solid = base + hist_stride;
+                p->accum[i].total = base + hist_stride + p->num_slabs;
+                void_field_accum_reset(&p->accum[i], p->num_slabs, NUM_BINS);
+            }
 
-        md_array_resize(stats.hist, hist_stride, arena);
-        md_array_resize(stats.slab_solid, num_slabs, arena);
-        md_array_resize(stats.slab_total, num_slabs, arena);
+            // The bins are the resolution in R of every accessible volume reported later, so they
+            // are deliberately finer than the voxel spacing: R is a continuous parameter and the
+            // voxelization, not the binning, is what should be limiting.
+            p->desc = {};
+            p->desc.beads           = p->in.beads;
+            p->desc.cell            = &p->in.cell;
+            p->desc.grid            = &p->grid;
+            p->desc.max_dist        = p->max_dist;
+            p->desc.planes_per_slab = p->planes_per_slab;
+            p->desc.num_bins        = NUM_BINS;
+            p->desc.field           = p->field;
+            p->phase = Phase_Work;
+        });
+
+        // Per thread accumulators: nothing is shared while the tiles run
+        // One tile at a time within a range, so a cancel lands within a tile rather than a range
+        p->work_total = num_tiles;
+        p->task_work = task_system::create_pool_task(STR_LIT("Void distance field"), num_tiles, [p](uint32_t beg, uint32_t end, uint32_t thread_num) {
+            const size_t ti = MIN(p->num_threads - 1, (size_t)thread_num);
+            for (uint32_t t = beg; t < end && !p->cancelled(); ++t) {
+                void_field_eval_tiles(&p->accum[ti], &p->desc, t, t + 1);
+                p->work_done.fetch_add(1, std::memory_order_relaxed);
+            }
+        }, 1);
+
+        const task_system::ID finish = task_system::create_pool_task(STR_LIT("Void field reduce"), [p, num_voxels]() {
+            p->phase = Phase_Finish;
+            if (!p->cancelled()) finish_field_pass(p, num_voxels);
+            p->in.release();
+            md_array_free(p->accum, md_get_heap_allocator());
+            md_array_free(p->accum_mem, md_get_heap_allocator());
+            p->accum = 0;
+            p->accum_mem = 0;
+            p->seconds = md_tick_to_seconds(md_tick_now() - p->t0);
+            if (p->state == Pass_Running) p->state = p->cancelled() ? Pass_Failed : Pass_Done;
+        });
+
+        const task_system::ID install = task_system::create_main_task(STR_LIT("Void field install"), [this, p]() {
+            install_field_pass(p);
+        });
+
+        task_system::set_task_dependency(p->task_work, setup);
+        task_system::set_task_dependency(finish, p->task_work);
+        task_system::set_task_dependency(install, finish);
+
+        field_pass = p;
+        task_system::enqueue_task(setup);
+    }
+
+    // Pool thread. Everything here reads and writes the pass only.
+    static void finish_field_pass(FieldPass* p, size_t num_voxels) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        Stats& s = p->stats;
+        const uint32_t ns = p->num_slabs;
+
+        md_array_resize(s.hist, (size_t)ns * NUM_BINS, heap);
+        md_array_resize(s.slab_solid, ns, heap);
+        md_array_resize(s.slab_total, ns, heap);
 
         void_field_accum_t merged = {};
-        merged.hist  = stats.hist;
-        merged.solid = stats.slab_solid;
-        merged.total = stats.slab_total;
-        void_field_accum_reset(&merged, num_slabs, NUM_BINS);
-        for (size_t t = 0; t < num_threads; ++t) {
-            void_field_accum_merge(&merged, &accum[t], num_slabs, NUM_BINS);
+        merged.hist  = s.hist;
+        merged.solid = s.slab_solid;
+        merged.total = s.slab_total;
+        void_field_accum_reset(&merged, ns, NUM_BINS);
+        for (size_t t = 0; t < p->num_threads; ++t) {
+            void_field_accum_merge(&merged, &p->accum[t], ns, NUM_BINS);
         }
 
-        const void_profile_t prof = void_field_profile(&merged, &fdesc);
+        const void_profile_t prof = void_field_profile(&merged, &p->desc);
 
-        stats.num_grid    = num_voxels;
-        stats.num_voxels  = 0;
-        stats.num_solid   = 0;
-        for (uint32_t sl = 0; sl < num_slabs; ++sl) {
-            stats.num_voxels += merged.total[sl];
-            stats.num_solid  += merged.solid[sl];
+        s.num_grid   = num_voxels;
+        s.num_voxels = 0;
+        s.num_solid  = 0;
+        for (uint32_t sl = 0; sl < ns; ++sl) {
+            s.num_voxels += merged.total[sl];
+            s.num_solid  += merged.solid[sl];
         }
-        stats.num_clamped = merged.num_clamped;
+        s.num_clamped = merged.num_clamped;
         if (merged.d_min <= merged.d_max) {
-            stats.d_min = (double)merged.d_min;
-            stats.d_max = (double)merged.d_max;
-        } else {
-            stats.d_min = 0.0;
-            stats.d_max = 0.0;
+            s.d_min = (double)merged.d_min;
+            s.d_max = (double)merged.d_max;
         }
 
-        stats.num_slabs    = num_slabs;
-        stats.bin_width    = prof.bin_width;
-        stats.z_min        = prof.z_min;
-        stats.z_max        = prof.z_max;
-        stats.slab_height  = prof.slab_height;
-        stats.voxel_volume = prof.voxel_volume;
+        s.num_slabs    = ns;
+        s.bin_width    = prof.bin_width;
+        s.z_min        = prof.z_min;
+        s.z_max        = prof.z_max;
+        s.slab_height  = prof.slab_height;
+        s.voxel_volume = prof.voxel_volume;
 
         // Mass along z, on the same slabs as the histogram so that a density and a porosity quoted
         // for a slab range are about the same volume. z is wrapped only when the cell says it is
         // periodic; on an open axis an atom outside the grid is outside what is being measured.
-        {
-            const bool pbc_z = (md_unitcell_flags(&state.unitcell) & MD_UNITCELL_PBC_Z) != 0;
-            float* masses = (float*)md_temp_alloc(temp_scope, state.num_atoms * sizeof(float));
-            md_atom_extract_masses(masses, 0, state.num_atoms, &sys.atom);
-            md_array_resize(stats.slab_mass,  num_slabs, arena);
-            md_array_resize(stats.slab_count, num_slabs, arena);
-            stats.mass_total  = void_profile_bin_mass(stats.slab_mass,  &prof, state.xyz, masses, state.num_atoms, pbc_z);
-            stats.count_total = void_profile_bin_mass(stats.slab_count, &prof, state.xyz, NULL,   state.num_atoms, pbc_z);
+        const size_t n = md_array_size(p->in.xyz);
+        md_array_resize(s.slab_mass,  ns, heap);
+        md_array_resize(s.slab_count, ns, heap);
+        s.mass_total  = void_profile_bin_mass(s.slab_mass,  &prof, p->in.xyz, p->masses, n, p->pbc_z);
+        s.count_total = void_profile_bin_mass(s.slab_count, &prof, p->in.xyz, NULL,      n, p->pbc_z);
+    }
+
+    // Main thread, when the pass's last task has run. Only the pass the window is still waiting for
+    // is installed; anything else was cancelled or superseded and is just freed.
+    void install_field_pass(FieldPass* p) {
+        if (p != field_pass) {
+            delete p;
+            return;
+        }
+        field_pass = nullptr;
+
+        if (p->state != Pass_Done) {
+            if (p->error[0]) snprintf(error, sizeof(error), "%s", p->error);
+            delete p;
+            return;
         }
 
-        stats.seconds      = md_tick_to_seconds(md_tick_now() - t0);
+        // Once asked for, the topography follows the field it belongs to
+        const bool want_height = has_height || height_pass != nullptr;
+        cancel_height_pass();
+        clear_result();
 
-        has_result = true;
+        grid  = p->grid;
+        if (p->field) {
+            field_owner = std::make_shared<FieldBuffer>();
+            field_owner->data = p->field;
+            p->field = 0;
+            field = field_owner->data;
+        }
+        stats = p->stats;
+        p->stats = {};
+        stats.seconds = p->seconds;
+        delete p;
 
-        // The topography reuses the beads the field was just evaluated with
-        compute_height(beads);
+        has_result  = true;
+        result_gen += 1;
 
         // A new field needs uploading, and the colour range follows the new distances unless the
         // user had narrowed it to something the new result still covers.
@@ -680,6 +956,7 @@ struct VoidAnalysis : viamd::EventHandler {
             manual_z_hi = grid.origin.z + grid.spacing.z * (float)grid.dim[2];
         }
         update_region();
+        if (want_height) start_height();
     }
 
     // A read only view of the accumulated histogram. Every scalar and every curve below goes through
@@ -851,84 +1128,122 @@ struct VoidAnalysis : viamd::EventHandler {
 
     // Heights of the probe apex over every column of the grid, from above and from below, at the
     // current probe radius. beads are the ones the field was built from, or built the same way.
-    void compute_height(const void_beads_t& beads) {
-        clear_height();
-        if (!has_result || !beads.acc) return;
+    // The topography is asked for, not computed with every field: a pass of its own over every
+    // column, which on a sparse network costs as much as the field again. Same shape as the field
+    // pass - snapshot here, everything else on the pool.
+    void start_height() {
+        height_pending = false;
+        if (!has_result || !app_state || app_state->mold.state.num_atoms == 0) return;
 
         const size_t n = (size_t)grid.dim[0] * (size_t)grid.dim[1];
         if (n == 0) return;
-
         if (!((double)probe_radius < (double)max_dist)) {
             snprintf(error, sizeof(error), "Probe radius must be below the max distance for the topography");
             return;
         }
 
-        const md_tick_t t0 = md_tick_now();
+        cancel_height_pass();
 
-        md_array_resize(height_top, n, arena);
-        md_array_resize(height_bot, n, arena);
-        md_array_resize(height_thk, n, arena);
+        HeightPass* p = new HeightPass();
+        p->t0         = md_tick_now();
+        p->grid       = grid;
+        p->probe      = (double)probe_radius;
+        p->max_dist   = (double)max_dist;
+        p->result_gen = result_gen;
+        snapshot_beads(&p->in);
 
-        void_heightmap_desc_t desc = {};
-        desc.beads        = beads;
-        desc.grid         = &grid;
-        desc.probe_radius = (double)probe_radius;
-        desc.max_dist     = (double)max_dist;
+        const task_system::ID setup = task_system::create_pool_task(STR_LIT("Void topography setup"), [p, n]() {
+            if (p->cancelled()) return;
+            md_allocator_i* heap = md_get_heap_allocator();
+            p->in.build();
+            md_array_resize(p->top, n, heap);
+            md_array_resize(p->bot, n, heap);
+            md_array_resize(p->thk, n, heap);
+            p->desc = {};
+            p->desc.beads        = p->in.beads;
+            p->desc.grid         = &p->grid;
+            p->desc.probe_radius = p->probe;
+            p->desc.max_dist     = p->max_dist;
+            p->phase = Phase_Work;
+        });
 
-        float* top = height_top;
-        float* bot = height_bot;
-        task_system::ID task = task_system::create_pool_task(STR_LIT("Void surface topography"), void_heightmap_num_patches(&grid),
-            [top, bot, &desc](uint32_t range_beg, uint32_t range_end, uint32_t) {
-                void_heightmap_eval_patches(top, bot, &desc, range_beg, range_end);
+        p->work_total = void_heightmap_num_patches(&p->grid);
+        p->task_work = task_system::create_pool_task(STR_LIT("Void surface topography"), p->work_total,
+            [p](uint32_t beg, uint32_t end, uint32_t) {
+                for (uint32_t i = beg; i < end && !p->cancelled(); ++i) {
+                    void_heightmap_eval_patches(p->top, p->bot, &p->desc, i, i + 1);
+                    p->work_done.fetch_add(1, std::memory_order_relaxed);
+                }
             }, 1);
-        task_system::enqueue_task(task);
-        task_system::task_wait_for(task);
 
-        for (size_t i = 0; i < n; ++i) {
-            const float t = height_top[i];
-            const float b = height_bot[i];
-            height_thk[i] = (isfinite(t) && isfinite(b)) ? t - b : NAN;
-        }
+        const task_system::ID finish = task_system::create_pool_task(STR_LIT("Void topography reduce"), [p, n]() {
+            p->phase = Phase_Finish;
+            if (!p->cancelled()) {
+                for (size_t i = 0; i < n; ++i) {
+                    const float t = p->top[i];
+                    const float b = p->bot[i];
+                    p->thk[i] = (isfinite(t) && isfinite(b)) ? t - b : NAN;
+                }
+                void_heightmap_stats(&p->st[HeightView_Top],       p->top, n);
+                void_heightmap_stats(&p->st[HeightView_Bottom],    p->bot, n);
+                void_heightmap_stats(&p->st[HeightView_Thickness], p->thk, n);
+            }
+            p->in.release();
+            p->seconds = md_tick_to_seconds(md_tick_now() - p->t0);
+            if (p->state == Pass_Running) p->state = p->cancelled() ? Pass_Failed : Pass_Done;
+        });
 
-        void_heightmap_stats(&height_stats[HeightView_Top],       height_top, n);
-        void_heightmap_stats(&height_stats[HeightView_Bottom],    height_bot, n);
-        void_heightmap_stats(&height_stats[HeightView_Thickness], height_thk, n);
+        const task_system::ID install = task_system::create_main_task(STR_LIT("Void topography install"), [this, p]() {
+            install_height_pass(p);
+        });
 
-        height_probe      = (double)probe_radius;
-        height_seconds    = md_tick_to_seconds(md_tick_now() - t0);
-        has_height        = true;
-        height_pending    = false;
-        height_disp_dirty = true;
+        task_system::set_task_dependency(p->task_work, setup);
+        task_system::set_task_dependency(finish, p->task_work);
+        task_system::set_task_dependency(install, finish);
+
+        height_pass = p;
+        task_system::enqueue_task(setup);
     }
 
-    // The same outside of compute(), for when only the probe radius has changed: the structure is
-    // rebuilt, which is a small fraction of what the field costs, and the field is not touched.
-    void refresh_height() {
-        height_pending = false;
-        if (!has_result || !app_state) return;
+    void install_height_pass(HeightPass* p) {
+        // Superseded, cancelled, or made for a field that has since been replaced
+        if (p != height_pass || p->state != Pass_Done || p->result_gen != result_gen) {
+            if (p == height_pass) height_pass = nullptr;
+            delete p;
+            return;
+        }
+        height_pass = nullptr;
 
-        const md_system_t&       sys   = app_state->mold.sys;
-        const md_system_state_t& state = app_state->mold.state;
-        if (state.num_atoms == 0) return;
+        const bool pending = height_pending;    // The probe moved while this ran; it reruns on release
+        clear_height();
+        height_top = p->top; p->top = 0;
+        height_bot = p->bot; p->bot = 0;
+        height_thk = p->thk; p->thk = 0;
+        MEMCPY(height_stats, p->st, sizeof(height_stats));
+        height_nx         = 0;
+        height_ny         = 0;
+        height_probe      = p->probe;
+        height_seconds    = p->seconds;
+        has_height        = true;
+        height_disp_dirty = true;
+        height_pending    = pending;
+        delete p;
+    }
 
-        md_temp_scope_t temp_scope = md_temp_begin();
-        defer { md_temp_end(temp_scope); };
-
-        float* radii = (float*)md_temp_alloc(temp_scope, state.num_atoms * sizeof(float));
-        fill_radii(radii, sys, state.num_atoms, 0.0);
-
-        md_coord_stream_t coords = md_coord_stream_from_aos((const float*)state.xyz, sizeof(vec3_t), NULL, state.num_atoms);
-
-        md_spatial_acc_t acc = {};
-        acc.alloc = md_temp_allocator(temp_scope);
-        md_spatial_acc_desc_t desc = {};
-        desc.coords   = &coords;
-        desc.cutoff   = ACC_CUTOFF;
-        desc.unitcell = &state.unitcell;
-        md_spatial_acc_init(&acc, &desc);
-        defer { md_spatial_acc_free(&acc); };
-
-        compute_height(void_beads(&acc, radii, state.num_atoms));
+    // A progress bar for a running pass, with a way to stop it. Returns true when it was stopped.
+    bool draw_pass_progress(const Pass* p, const char* what) {
+        static const char* phase_lbl[] = { "building the neighbour structure", "", "reducing" };
+        const int ph = p->phase.load();
+        const float frac = p->progress();
+        char overlay[128];
+        if (ph == Phase_Work) snprintf(overlay, sizeof(overlay), "%s: %.0f%%", what, 100.0f * frac);
+        else                  snprintf(overlay, sizeof(overlay), "%s: %s", what, phase_lbl[ph]);
+        ImGui::PushID(what);
+        ImGui::ProgressBar(frac, ImVec2(-80.0f, 0.0f), overlay);
+        ImGui::SameLine();
+        const bool stop = ImGui::Button("Cancel");
+        ImGui::PopID();
+        return stop;
     }
 
     const float* height_source(HeightView v) const {
@@ -1411,16 +1726,26 @@ struct VoidAnalysis : viamd::EventHandler {
         return true;
     }
 
+    void cancel_network_pass() {
+        if (!net_pass) return;
+        net_pass->cancel = true;
+        net_pass = nullptr;
+    }
+
+    // Also abandons a build in progress: whatever it would produce belongs to what is being cleared
     void clear_network() {
+        cancel_network_pass();
         pore_network_free(&net);
         md_array_free(net_class, md_get_heap_allocator());
         md_array_free(net_route, md_get_heap_allocator());
-        md_array_free(net_order, md_get_heap_allocator());
+        md_array_free(net_selected, md_get_heap_allocator());
+        md_array_free(net_region, md_get_heap_allocator());
         net_class = 0;
         net_route = 0;
-        net_order = 0;
-        net_order_stale = true;
-        net_order_sorted = false;
+        net_selected = 0;
+        net_num_selected = 0;
+        net_region = 0;
+        net_num_region = 0;
         net_drawn_throats = 0;
         net_class_r = -1.0f;
         MEMSET(net_class_count, 0, sizeof(net_class_count));
@@ -1432,8 +1757,10 @@ struct VoidAnalysis : viamd::EventHandler {
         net_seconds = 0.0;
     }
 
+    // The build is one ordered sweep and does not divide over threads, so it runs as a single pool
+    // task. It holds a reference to the field, which keeps it alive if a new one is installed while
+    // the build runs; the network that would have come of it is then discarded.
     void compute_network() {
-        clear_network();
         error[0] = '\0';
 
         channel_field_t f;
@@ -1442,34 +1769,89 @@ struct VoidAnalysis : viamd::EventHandler {
             return;
         }
 
-        const md_tick_t t0 = md_tick_now();
-        const double merge = (double)net_merge * (double)MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
-        if (!pore_network_build(&net, &f, (double)net_r_min, merge, md_get_heap_allocator())) {
-            snprintf(error, sizeof(error), "Nothing at or above %.2f nm to build a network from", net_r_min / ANGSTROM_PER_NM);
-            pore_network_free(&net);
+        cancel_network_pass();
+
+        NetworkPass* p = new NetworkPass();
+        p->t0         = md_tick_now();
+        p->keep       = field_owner;
+        p->f          = f;
+        p->r_min      = (double)net_r_min;
+        p->merge      = (double)net_merge * (double)MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
+        p->result_gen = result_gen;
+        p->work_total = 1000;
+
+        p->task_work = task_system::create_pool_task(STR_LIT("Void pore network"), [p]() {
+            md_allocator_i* heap = md_get_heap_allocator();
+            p->phase = Phase_Work;
+            if (!p->cancelled() && !pore_network_build(&p->net, &p->f, p->r_min, p->merge, heap, network_progress, p)) {
+                if (!p->cancelled()) {
+                    snprintf(p->error, sizeof(p->error), "Nothing at or above %.2f nm to build a network from", p->r_min / ANGSTROM_PER_NM);
+                }
+                p->cancel = true;
+            }
+            p->keep.reset();
+
+            p->phase = Phase_Finish;
+            if (!p->cancelled() && pore_network_widest_route(&p->route, &p->bottleneck, &p->net, heap)) {
+                // Pore to throat to pore along the route, plus the straight legs in from each face.
+                // Over the depth of the box that is the tortuosity of the route at the resolution of
+                // the graph.
+                const pore_network_t& net = p->net;
+                const size_t n = md_array_size(p->route);
+                double len = 0.0;
+                for (size_t i = 0; i + 1 < n; ++i) {
+                    const uint32_t e = pore_network_find_edge(&net, p->route[i], p->route[i + 1]);
+                    if (e == PORE_INVALID) continue;
+                    vec3_t a, s, b;
+                    pore_network_edge_points(&a, &s, &b, &net, e);
+                    len += vec3_length(vec3_sub(s, a)) + vec3_length(vec3_sub(b, s));
+                }
+                const float z_top = net.box_min[2] + net.box_ext[2];
+                len += fabs((double)z_top - (double)net.vertices[p->route[0]].pos[2]);
+                len += fabs((double)net.vertices[p->route[n - 1]].pos[2] - (double)net.box_min[2]);
+                p->route_length = len;
+            }
+
+            p->seconds = md_tick_to_seconds(md_tick_now() - p->t0);
+            p->state   = p->cancelled() ? Pass_Failed : Pass_Done;
+        });
+
+        const task_system::ID install = task_system::create_main_task(STR_LIT("Void pore network install"), [this, p]() {
+            install_network_pass(p);
+        });
+        task_system::set_task_dependency(install, p->task_work);
+
+        net_pass = p;
+        task_system::enqueue_task(p->task_work);
+    }
+
+    // Main thread. The previous network stays up until this replaces it.
+    void install_network_pass(NetworkPass* p) {
+        if (p != net_pass || p->state != Pass_Done || p->result_gen != result_gen) {
+            if (p == net_pass) {
+                net_pass = nullptr;
+                if (p->error[0]) snprintf(error, sizeof(error), "%s", p->error);
+            }
+            delete p;
             return;
         }
+        net_pass = nullptr;
+
+        clear_network();
+        net = p->net;
+        p->net = {};
+        net_route = p->route;
+        p->route = 0;
+        net_route_bottleneck = p->bottleneck;
+        net_route_length     = p->route_length;
+        net_seconds          = p->seconds;
+        delete p;
+
         has_net = true;
-
-        if (pore_network_widest_route(&net_route, &net_route_bottleneck, &net, md_get_heap_allocator())) {
-            // Pore to throat to pore along the route, plus the straight legs in from each face. Over
-            // the depth of the box that is the tortuosity of the route at the resolution of the graph.
-            const size_t n = md_array_size(net_route);
-            double len = 0.0;
-            for (size_t i = 0; i + 1 < n; ++i) {
-                const uint32_t e = pore_network_find_edge(&net, net_route[i], net_route[i + 1]);
-                if (e == PORE_INVALID) continue;
-                vec3_t a, s, b;
-                pore_network_edge_points(&a, &s, &b, &net, e);
-                len += vec3_length(vec3_sub(s, a)) + vec3_length(vec3_sub(b, s));
-            }
-            const float z_top = net.box_min[2] + net.box_ext[2];
-            len += fabs((double)z_top - (double)net.vertices[net_route[0]].pos[2]);
-            len += fabs((double)net.vertices[net_route[n - 1]].pos[2] - (double)net.box_min[2]);
-            net_route_length = len;
-        }
-
-        net_seconds = md_tick_to_seconds(md_tick_now() - t0);
+        md_array_resize(net_selected, md_array_size(net.vertices), md_get_heap_allocator());
+        md_array_resize(net_region,   md_array_size(net.vertices), md_get_heap_allocator());
+        clear_network_selection();
+        clear_network_region();
         update_network_classes();
     }
 
@@ -1483,15 +1865,108 @@ struct VoidAnalysis : viamd::EventHandler {
         if (V == 0) return;
         pore_network_classify(net_class, &net, (double)probe_radius, md_get_heap_allocator());
         for (size_t i = 0; i < V; ++i) net_class_count[net_class[i]] += 1;
-        net_order_stale = true;
     }
 
     bool net_pore_visible(uint32_t i) const {
         return net_show_small || net_class[i] != PORE_CLASS_SMALL;
     }
 
-    // Drawn into the overlay queue, which is rendered last with the depth test off: the skeleton
-    // reads through the structure, which is the point of it.
+    // Contrast against the background, for what is in focus: near black on a light background and
+    // near white on a dark one. No hue survives both, and every hue is already spent on the classes.
+    static uint32_t focus_color(const ApplicationState& state) {
+        const vec3_t c = state.visuals.background.color;
+        const float  lum = (0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z) * state.visuals.background.intensity;
+        return (lum > 0.5f) ? PORE_FOCUS_ON_LIGHT : PORE_FOCUS_ON_DARK;
+    }
+
+    bool net_pore_selected(uint32_t i) const {
+        return i < md_array_size(net_selected) && net_selected[i];
+    }
+
+    void clear_network_selection() {
+        for (size_t i = 0; i < md_array_size(net_selected); ++i) net_selected[i] = 0;
+        net_num_selected = 0;
+    }
+
+    void clear_network_region() {
+        if (net_num_region == 0) return;
+        for (size_t i = 0; i < md_array_size(net_region); ++i) net_region[i] = 0;
+        net_num_region = 0;
+    }
+
+    // The pores whose centres project inside the box, out of those drawn - or, when removing, out of
+    // those selected - exactly as the atoms are chosen.
+    void update_network_region(const InteractionSurfaceEvent& ev) {
+        clear_network_region();
+        const size_t V = md_array_size(net.vertices);
+        if (md_array_size(net_region) != V || md_array_size(net_class) != V) return;
+        const bool removing = ev.selection_mode == InteractionSelectionMode::Remove;
+        net_region_removing = removing;
+        for (uint32_t i = 0; i < (uint32_t)V; ++i) {
+            if (removing ? !net_selected[i] : !net_pore_visible(i)) continue;
+            const pore_vertex_t& v = net.vertices[i];
+            const vec4_t c = mat4_mul_vec4(ev.world_to_clip, vec4_set(v.pos[0], v.pos[1], v.pos[2], 1.0f));
+            if (!(c.w > 0.0f)) continue;    // Behind the camera, where the divide would mirror it into view
+            const float sx = ( c.x / c.w * 0.5f + 0.5f) * ev.surface_size.x;
+            const float sy = (-c.y / c.w * 0.5f + 0.5f) * ev.surface_size.y;
+            if (ev.region_min.x <= sx && sx <= ev.region_max.x && ev.region_min.y <= sy && sy <= ev.region_max.y) {
+                net_region[i] = 1;
+                net_num_region += 1;
+            }
+        }
+    }
+
+    void set_network_selected(uint32_t i, bool on) {
+        if (i >= md_array_size(net_selected) || (net_selected[i] != 0) == on) return;
+        net_selected[i] = on ? 1 : 0;
+        if (on) net_num_selected += 1; else net_num_selected -= 1;
+    }
+
+    // Selection follows the atoms: a click picks one pore, shift adds and shift with the right
+    // button removes, a shift drag adds or removes everything in the box, and a plain click on
+    // nothing clears. Hover only feeds the tooltip and the focus drawing.
+    void network_interaction(const InteractionSurfaceEvent& ev) {
+        if (ev.surface_id != interaction_surface_main) return;
+        const size_t V = md_array_size(net.vertices);
+        const bool live = has_net && show_net;
+        const bool ours = live && ev.hit.domain == PickingDomain_PoreNetwork && ev.hit.local_idx < V;
+
+        if (ev.kind != InteractionSurfaceEventKind::RegionSelect) {
+            clear_network_region();
+        }
+
+        if (ev.kind == InteractionSurfaceEventKind::RegionSelect) {
+            net_hovered = PORE_INVALID;
+            if (!live) return;
+            update_network_region(ev);
+            if (ev.region_phase == InteractionSurfaceEventPhase::Commit) {
+                const bool on = ev.selection_mode != InteractionSelectionMode::Remove;
+                for (uint32_t i = 0; i < (uint32_t)V; ++i) {
+                    if (net_region[i]) set_network_selected(i, on);
+                }
+                clear_network_region();
+            }
+        } else if (ev.kind == InteractionSurfaceEventKind::Hover) {
+            net_hovered = ours ? ev.hit.local_idx : PORE_INVALID;
+        } else if (ev.kind == InteractionSurfaceEventKind::Click && live) {
+            if (ours) {
+                switch (ev.selection_mode) {
+                case InteractionSelectionMode::None:
+                    clear_network_selection();
+                    set_network_selected(ev.hit.local_idx, true);
+                    break;
+                case InteractionSelectionMode::Append: set_network_selected(ev.hit.local_idx, true);  break;
+                case InteractionSelectionMode::Remove: set_network_selected(ev.hit.local_idx, false); break;
+                }
+            } else if (ev.hit.domain == 0 && ev.selection_mode != InteractionSelectionMode::Append) {
+                clear_network_selection();
+            }
+        }
+    }
+
+    // Drawn into the world queue, which is rendered with the depth test into the G-buffer: lit by the
+    // same pass as the structure, hidden by what is in front of it, and picked by depth rather than
+    // by draw order.
     void draw_network_3d(const ApplicationState& state) {
         if (net_class_r != probe_radius || md_array_size(net_class) != md_array_size(net.vertices)) {
             update_network_classes();
@@ -1501,20 +1976,77 @@ struct VoidAnalysis : viamd::EventHandler {
         const size_t E = md_array_size(net.edges);
         if (V == 0) return;
 
-        md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
-        defer { md_temp_end(temp); };
+        md_allocator_i* frame = state.allocator.frame;
 
-        immediate::Scope scope(state.gfx.overlay, "void_pore_network");
+        // Points and lines have no surface to light, so their normal is made to face the camera:
+        // the deferred pass then shades them at their full colour from any direction.
+        const vec3_t facing = vec3_normalize(vec3_from_vec4(state.view.param.matrix.inv.view.col[2]));
+        const uint32_t focus = focus_color(state);
 
         auto pore_pos = [&](uint32_t i) {
             return vec3_t{ net.vertices[i].pos[0], net.vertices[i].pos[1], net.vertices[i].pos[2] };
         };
+
+        md_array(immediate::Vertex) lines = 0;
+        md_array_ensure(lines, 4 * MIN(E, PORE_MAX_DRAWN_THROATS) + 1024, frame);
+        auto seg = [&](vec3_t a, vec3_t b, uint32_t col) {
+            const immediate::Vertex va = { a, col, facing, 0xFFFFFFFFu };
+            const immediate::Vertex vb = { b, col, facing, 0xFFFFFFFFu };
+            md_array_push(lines, va, frame);
+            md_array_push(lines, vb, frame);
+        };
         auto throat = [&](uint32_t e, uint32_t col) {
             vec3_t a, s, b;
             pore_network_edge_points(&a, &s, &b, &net, e);
-            immediate::line(scope, a, s, col);
-            immediate::line(scope, s, b, col);
+            seg(a, s, col);
+            seg(s, b, col);
         };
+        auto wire_sphere = [&](vec3_t c, float r, uint32_t col, int stacks, int slices) {
+            const float pi = 3.14159265358979f;
+            for (int i = 1; i < stacks; ++i) {          // Parallels
+                const float t = pi * (float)i / (float)stacks;
+                const float z = r * cosf(t), rr = r * sinf(t);
+                for (int j = 0; j < slices; ++j) {
+                    const float p0 = 2.0f * pi * (float)j / (float)slices, p1 = 2.0f * pi * (float)(j + 1) / (float)slices;
+                    seg(vec3_t{ c.x + rr * cosf(p0), c.y + rr * sinf(p0), c.z + z }, vec3_t{ c.x + rr * cosf(p1), c.y + rr * sinf(p1), c.z + z }, col);
+                }
+            }
+            for (int j = 0; j < slices; j += 2) {       // Meridians, every other slice
+                const float p = 2.0f * pi * (float)j / (float)slices;
+                for (int i = 0; i < stacks; ++i) {
+                    const float t0 = pi * (float)i / (float)stacks, t1 = pi * (float)(i + 1) / (float)stacks;
+                    seg(vec3_t{ c.x + r * sinf(t0) * cosf(p), c.y + r * sinf(t0) * sinf(p), c.z + r * cosf(t0) },
+                        vec3_t{ c.x + r * sinf(t1) * cosf(p), c.y + r * sinf(t1) * sinf(p), c.z + r * cosf(t1) }, col);
+                }
+            }
+        };
+
+        // A pore in focus - hovered or selected - shows its largest sphere and each of its throats at
+        // its own width. First, so that where it coincides with the ordinary drawing of the same
+        // throat, the depth test keeps the focus colour.
+        auto draw_focus = [&](uint32_t i) {
+            wire_sphere(pore_pos(i), net.vertices[i].radius, focus, 10, 20);
+            for (uint32_t j = net.adj_offset[i]; j < net.adj_offset[i + 1]; ++j) {
+                const uint32_t e = net.adj[j];
+                const pore_edge_t& edge = net.edges[e];
+                throat(e, focus);
+                wire_sphere(vec3_t{ edge.pos[0], edge.pos[1], edge.pos[2] }, edge.radius, focus, 6, 12);
+            }
+        };
+        const bool hovered = net_hovered < V;
+        if (hovered) draw_focus(net_hovered);
+        if (net_num_selected > 0 && net_num_selected <= PORE_MAX_FOCUS_DRAWN) {
+            for (uint32_t i = 0; i < (uint32_t)V; ++i) {
+                if (net_selected[i] && i != net_hovered) draw_focus(i);
+            }
+        }
+
+        // The voxel that limits the widest route, at r_c
+        const size_t nr = md_array_size(net_route);
+        const bool route = show_net_route && nr > 0;
+        if (route && net.has_r_c) {
+            wire_sphere(vec3_t{ net.throat[0], net.throat[1], net.throat[2] }, (float)net.r_c, PORE_ROUTE_COLOR, 8, 16);
+        }
 
         // Throats. Widest first, so the ones a probe of this radius passes are a prefix. An open
         // throat joins two pores of the same component, so either end gives its class.
@@ -1523,84 +2055,63 @@ struct VoidAnalysis : viamd::EventHandler {
             const pore_edge_t& edge = net.edges[e];
             const bool open = edge.radius >= probe_radius;
             if (!open && !net_show_small) break;
-            const uint32_t col = open ? (PORE_CLASS_COLOR[net_class[edge.a]] & 0x00FFFFFFu) | 0xC0000000u : PORE_THROAT_CLOSED_COLOR;
-            throat((uint32_t)e, col);
+            throat((uint32_t)e, open ? PORE_CLASS_COLOR[net_class[edge.a]] : PORE_CLASS_COLOR[PORE_CLASS_SMALL]);
         }
 
-        // The widest route through the film, over everything else, with the one voxel that limits it
-        const size_t nr = md_array_size(net_route);
-        if (show_net_route && nr > 0) {
+        immediate::Scope scope(state.gfx.world, "void_pore_network");
+        immediate::lines(scope, lines, md_array_size(lines));
+
+        // The widest route through the film as a tube, so it reads as a path rather than as one more
+        // line among thousands. Sized to the grid and to r_c, not to the screen.
+        if (route) {
+            const float spacing = MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
+            const float tube = MAX(0.5f * spacing, net.has_r_c ? 0.15f * (float)net.r_c : 0.0f);
             for (size_t i = 0; i + 1 < nr; ++i) {
                 const uint32_t e = pore_network_find_edge(&net, net_route[i], net_route[i + 1]);
-                if (e != PORE_INVALID) throat(e, PORE_ROUTE_COLOR);
+                if (e == PORE_INVALID) continue;
+                vec3_t a, s, b;
+                pore_network_edge_points(&a, &s, &b, &net, e);
+                immediate::cylinder(scope, a, s, tube, PORE_ROUTE_COLOR, 0xFFFFFFFFu, 8);
+                immediate::cylinder(scope, s, b, tube, PORE_ROUTE_COLOR, 0xFFFFFFFFu, 8);
             }
             const vec3_t first = pore_pos(net_route[0]);
             const vec3_t last  = pore_pos(net_route[nr - 1]);
-            immediate::line(scope, first, vec3_t{ first.x, first.y, net.box_min[2] + net.box_ext[2] }, PORE_ROUTE_COLOR);
-            immediate::line(scope, last,  vec3_t{ last.x,  last.y,  net.box_min[2] }, PORE_ROUTE_COLOR);
-            if (net.has_r_c) {
-                immediate::sphere_wireframe(scope, vec3_t{ net.throat[0], net.throat[1], net.throat[2] }, (float)net.r_c, PORE_ROUTE_COLOR, 12, 16);
-            }
+            immediate::cylinder(scope, first, vec3_t{ first.x, first.y, net.box_min[2] + net.box_ext[2] }, tube, PORE_ROUTE_COLOR, 0xFFFFFFFFu, 8);
+            immediate::cylinder(scope, last,  vec3_t{ last.x,  last.y,  net.box_min[2] }, tube, PORE_ROUTE_COLOR, 0xFFFFFFFFu, 8);
         }
 
-        // The hovered pore: its largest sphere, and each of its throats at its own width
-        const bool hovered = net_hovered < V;
-        if (hovered) {
-            const pore_vertex_t& v = net.vertices[net_hovered];
-            immediate::sphere_wireframe(scope, pore_pos(net_hovered), v.radius, PORE_HOVER_COLOR, 16, 24);
-            for (uint32_t j = net.adj_offset[net_hovered]; j < net.adj_offset[net_hovered + 1]; ++j) {
-                const uint32_t e = net.adj[j];
-                throat(e, PORE_HOVER_COLOR);
-                const pore_edge_t& edge = net.edges[e];
-                immediate::sphere_wireframe(scope, vec3_t{ edge.pos[0], edge.pos[1], edge.pos[2] }, edge.radius, PORE_HOVER_THROAT_COLOR, 8, 12);
-            }
-        }
-
-        // Pores, as points that keep their size on screen. Without a depth test the last one drawn
-        // owns the pixel in the picking buffer too, so they go far to near and the nearest is what
-        // a hover finds.
+        // Pores, as points that keep their size on screen. Those in focus go first and larger, so the
+        // depth test keeps their colour where the ordinary point of the same pore lands on it.
         const bool pickable = net_picking.domain == PickingDomain_PoreNetwork && net_picking.end - net_picking.beg == (uint32_t)V;
-        md_allocator_i* heap = md_get_heap_allocator();
-        if (net_order_stale) {
-            md_array_shrink(net_order, 0);
-            for (uint32_t i = 0; i < (uint32_t)V; ++i) {
-                if (net_pore_visible(i)) md_array_push(net_order, i, heap);
-            }
-            net_order_stale  = false;
-            net_order_sorted = false;
-        }
-        const mat4_t view = camera_world_to_view_matrix(state.view.camera);
-        if (MEMCMP(&view, &net_order_view, sizeof(mat4_t)) != 0) {
-            net_order_view   = view;
-            net_order_sorted = false;
-        } else if (!net_order_sorted) {
-            const size_t n = md_array_size(net_order);
-            float* depth = md_temp_alloc_array(temp, float, V);
-            for (size_t k = 0; k < n; ++k) {
-                const vec3_t p = pore_pos(net_order[k]);
-                depth[net_order[k]] = view[0][2] * p.x + view[1][2] * p.y + view[2][2] * p.z + view[3][2];
-            }
-            std::sort(net_order, net_order + n, [depth](uint32_t a, uint32_t b) { return depth[a] < depth[b]; });
-            net_order_sorted = true;
-        }
-
-        const size_t np = md_array_size(net_order);
-        immediate::Vertex* pts = md_temp_alloc_array(temp, immediate::Vertex, MAX((size_t)1, np));
-        for (size_t k = 0; k < np; ++k) {
-            const uint32_t i = net_order[k];
-            pts[k].coord       = pore_pos(i);
-            pts[k].color       = (i == net_hovered) ? PORE_HOVER_COLOR : PORE_CLASS_COLOR[net_class[i]];
-            pts[k].normal      = vec3_t{ 0, 0, 1 };
-            pts[k].picking_idx = pickable ? i : 0xFFFFFFFFu;
-        }
-
         if (pickable) immediate::set_picking_base_idx(scope, net_picking.beg);
-        immediate::set_point_size(scope, PORE_POINT_SIZE);
-        immediate::points(scope, pts, np);
-        if (hovered) {
-            immediate::set_point_size(scope, PORE_POINT_SIZE_HOVER);
-            immediate::point(scope, pore_pos(net_hovered), PORE_HOVER_COLOR, pickable ? net_hovered : 0xFFFFFFFFu);
+        const uint32_t no_pick = 0xFFFFFFFFu;
+
+        md_array(immediate::Vertex) pts = 0;
+        md_array_ensure(pts, V, frame);
+        auto pore_vertex = [&](uint32_t i, uint32_t col) {
+            const immediate::Vertex v = { pore_pos(i), col, facing, pickable ? i : no_pick };
+            md_array_push(pts, v, frame);
+        };
+        // A box being dragged previews what it will take: what it adds, or, when removing, what it
+        // leaves selected.
+        const bool removing_region = net_num_region > 0 && net_region_removing;
+        if (hovered) pore_vertex(net_hovered, focus);
+        for (uint32_t i = 0; i < (uint32_t)V && (net_num_selected > 0 || net_num_region > 0); ++i) {
+            if (i == net_hovered) continue;
+            const bool sel = net_selected[i] != 0;
+            const bool reg = net_region[i] != 0;
+            if (removing_region ? (sel && !reg) : (sel || reg)) pore_vertex(i, focus);
         }
+        if (md_array_size(pts) > 0) {
+            immediate::set_point_size(scope, PORE_POINT_SIZE_FOCUS);
+            immediate::points(scope, pts, md_array_size(pts));
+            md_array_shrink(pts, 0);
+        }
+        for (uint32_t i = 0; i < (uint32_t)V; ++i) {
+            if (net_pore_visible(i)) pore_vertex(i, PORE_CLASS_COLOR[net_class[i]]);
+        }
+        immediate::set_point_size(scope, PORE_POINT_SIZE);
+        immediate::points(scope, pts, md_array_size(pts));
     }
 
     void network_tooltip(md_strb_t* sb, uint32_t i) const {
@@ -1664,13 +2175,16 @@ struct VoidAnalysis : viamd::EventHandler {
                               (spacing > 0.0f) ? net_merge * spacing / ANGSTROM_PER_NM : 0.0f);
 
         ImGui::BeginDisabled(!has_result || !field);
-        if (ImGui::Button("Build network")) {
+        if (ImGui::Button(net_pass ? "Restart##net" : "Build network")) {
             compute_network();
         }
         ImGui::EndDisabled();
         if (!field) {
             ImGui::SameLine();
             ImGui::TextDisabled("(needs a materialized field)");
+        } else if (net_pass) {
+            ImGui::SameLine();
+            if (draw_pass_progress(net_pass, "Pore network")) cancel_network_pass();
         }
 
         if (!has_net) return;
@@ -1701,7 +2215,7 @@ struct VoidAnalysis : viamd::EventHandler {
         ImGui::SameLine();
         ImGui::Checkbox("Widest route", &show_net_route);
         ImGui::SameLine();
-        if (ImGui::Checkbox("Too narrow for the probe", &net_show_small)) net_order_stale = true;
+        ImGui::Checkbox("Too narrow for the probe", &net_show_small);
         if (net_drawn_throats >= PORE_MAX_DRAWN_THROATS) {
             ImGui::TextColored({1.0f, 0.8f, 0.35f, 1.0f}, "Drawing the %zu widest throats only", PORE_MAX_DRAWN_THROATS);
         }
@@ -1715,7 +2229,14 @@ struct VoidAnalysis : viamd::EventHandler {
             ImGui::SameLine();
             ImGui::Text("%s: %u", pore_class_lbl[c], net_class_count[c]);
         }
-        ImGui::TextDisabled("Hover a pore in the 3D view for its details.");
+        ImGui::TextDisabled("Hover a pore in the 3D view for its details. Click to select, shift click or drag to add,\n"
+                            "shift right click or drag to remove.");
+        if (net_num_selected > 0) {
+            ImGui::Text("%u selected%s", net_num_selected,
+                        net_num_selected > PORE_MAX_FOCUS_DRAWN ? " (spheres drawn up to 2000)" : "");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear selection")) clear_network_selection();
+        }
     }
 
     // Porosity and accessible volume. Both are V(R) = Vol[d > R] over a slab range: porosity is the
@@ -1967,8 +2488,15 @@ struct VoidAnalysis : viamd::EventHandler {
 
         ImGui::SeparatorText("Surface topography");
 
+        if (height_pass) {
+            if (draw_pass_progress(height_pass, "Topography")) cancel_height_pass();
+        }
         if (!has_height) {
-            ImGui::TextDisabled("No topography - the probe radius must be below the max distance.");
+            if (!height_pass) {
+                if (ImGui::Button("Compute topography")) start_height();
+                ImGui::SetItemTooltip("The height a probe of the current radius finds over every column, from above and\n"
+                                      "from below. A pass of its own, about as costly as the field on a sparse network.");
+            }
             return;
         }
 
@@ -1988,7 +2516,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
         ImGui::TextDisabled("At probe %.2f nm, %.2f s over %i x %i columns",
                             height_probe / nm, height_seconds, grid.dim[0], grid.dim[1]);
-        if (height_pending) {
+        if (height_pending && !height_pass) {
             ImGui::SameLine();
             ImGui::TextColored({1.0f, 0.8f, 0.35f, 1.0f}, "(updates on release)");
         }
@@ -2147,12 +2675,12 @@ struct VoidAnalysis : viamd::EventHandler {
                 probe_radius = probe_nm * ANGSTROM_PER_NM;
                 probe_dirty  = true;
                 vol_tf_dirty = true;
-                if (has_height) height_pending = true;
+                if (has_height || height_running()) height_pending = true;
             }
             // The profile and the volume follow the slider; the topography is a geometric pass of its
             // own and waits until the value is let go.
-            if (ImGui::IsItemDeactivatedAfterEdit() && has_height) {
-                refresh_height();
+            if (ImGui::IsItemDeactivatedAfterEdit() && (has_height || height_running())) {
+                start_height();
             }
             ImGui::SetItemTooltip("Water sized (0.14 nm) for sorption, colloid sized for exclusion.\n"
                                   "The accessible volume, the volume rendering and the topography all follow it.");
@@ -2175,10 +2703,15 @@ struct VoidAnalysis : viamd::EventHandler {
             }
 
             ImGui::BeginDisabled(!has_system);
-            if (ImGui::Button("Compute")) {
+            if (ImGui::Button(field_pass ? "Restart" : "Compute")) {
                 compute();
             }
             ImGui::EndDisabled();
+            if (field_pass) {
+                ImGui::SetItemTooltip("Abandon the running pass and start again with the current settings.");
+                ImGui::SameLine();
+                if (draw_pass_progress(field_pass, "Distance field")) cancel_field_pass();
+            }
 
             if (error[0]) {
                 ImGui::TextColored({1.0f, 0.4f, 0.4f, 1.0f}, "%s", error);

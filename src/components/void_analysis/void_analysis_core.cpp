@@ -1693,7 +1693,8 @@ void pore_network_free(pore_network_t* net) {
     MEMSET(net, 0, sizeof(pore_network_t));
 }
 
-bool pore_network_build(pore_network_t* out, const channel_field_t* field, double r_min, double merge, struct md_allocator_i* alloc) {
+bool pore_network_build(pore_network_t* out, const channel_field_t* field, double r_min, double merge, struct md_allocator_i* alloc,
+                        pore_network_progress_fn progress, void* user) {
     ASSERT(out);
     ASSERT(field);
     ASSERT(alloc);
@@ -1731,6 +1732,7 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
     }
     out->num_active = M;
     if (M == 0) return false;
+    if (progress && !progress(0.05f, user)) return false;
 
     // Counting sort, descending, as in channel_percolate but finer: the order inside a bucket is
     // voxel order rather than clearance, and the only thing that sees it is the persistence test,
@@ -1778,7 +1780,15 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
     md_hashmap32_t seen = {};
     seen.allocator = alloc;
 
-    for (size_t p = 0; p < M; ++p) {
+    // The sweep is nearly all of the time; the sort before it and the graph after share the rest
+    const size_t report_every = (size_t)1 << 16;
+    bool abandoned = progress && !progress(0.15f, user);
+
+    for (size_t p = 0; p < M && !abandoned; ++p) {
+        if (progress && (p % report_every) == 0 && p > 0) {
+            abandoned = !progress(0.15f + 0.8f * (float)((double)p / (double)M), user);
+            if (abandoned) break;
+        }
         const uint32_t v = vox[p];
         const float    d = field->data[v];
         const int k = (int)((size_t)v / plane);
@@ -1883,6 +1893,13 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
     md_free(alloc, label, N * sizeof(uint32_t));
     md_free(alloc, vox,   M * sizeof(uint32_t));
     md_hashmap_free(&seen);
+
+    if (abandoned) {
+        md_array_free(reg, alloc);
+        md_array_free(con, alloc);
+        pore_network_free(out);
+        return false;
+    }
 
     // Pores are the roots that survived the merges
     const size_t num_reg = md_array_size(reg);

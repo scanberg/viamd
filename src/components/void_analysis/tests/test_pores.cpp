@@ -58,7 +58,7 @@ UTEST(viamd_pores, two_cavities_and_the_throat_between_them) {
     });
 
     pore_network_t net;
-    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 0.5, alloc));
+    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 0.5, alloc, NULL, NULL));
     ASSERT_EQ((size_t)2, md_array_size(net.vertices));
     ASSERT_EQ((size_t)1, md_array_size(net.edges));
 
@@ -131,14 +131,14 @@ UTEST(viamd_pores, a_shallow_dip_is_one_pore) {
     });
 
     pore_network_t net;
-    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 1.0, alloc));
+    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 1.0, alloc, NULL, NULL));
     ASSERT_EQ((size_t)2, md_array_size(net.vertices));
     ASSERT_EQ((size_t)1, md_array_size(net.edges));
     EXPECT_NEAR(6.0, net.edges[0].radius, 1e-5);
     EXPECT_FALSE(net.has_r_c);                      // Neither touches a face
     pore_network_free(&net);
 
-    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 2.0, alloc));
+    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 2.0, alloc, NULL, NULL));
     ASSERT_EQ((size_t)1, md_array_size(net.vertices));
     EXPECT_EQ((size_t)0, md_array_size(net.edges));
     EXPECT_NEAR(8.0, net.vertices[0].radius, 1e-5);
@@ -186,7 +186,7 @@ UTEST(viamd_pores, disordered_field_agrees_with_percolation) {
     ASSERT_TRUE(perc.has_r_c);
 
     pore_network_t net;
-    ASSERT_TRUE(pore_network_build(&net, &fd.field, r_min, 0.0, alloc));
+    ASSERT_TRUE(pore_network_build(&net, &fd.field, r_min, 0.0, alloc, NULL, NULL));
     ASSERT_TRUE(net.has_r_c);
     EXPECT_NEAR(perc.r_c, net.r_c, 1e-2);
     EXPECT_TRUE(md_array_size(net.vertices) > 2);
@@ -248,7 +248,7 @@ UTEST(viamd_pores, disordered_field_agrees_with_percolation) {
 
     // Merging only ever removes pores, and leaves r_c alone since it never came from the graph
     pore_network_t merged;
-    ASSERT_TRUE(pore_network_build(&merged, &fd.field, r_min, 1.0, alloc));
+    ASSERT_TRUE(pore_network_build(&merged, &fd.field, r_min, 1.0, alloc, NULL, NULL));
     EXPECT_TRUE(md_array_size(merged.vertices) < V);
     EXPECT_EQ(net.r_c, merged.r_c);
     EXPECT_EQ(net.num_active, merged.num_active);
@@ -278,7 +278,7 @@ UTEST(viamd_pores, a_tube_through_the_periodic_seam) {
     ASSERT_TRUE(perc.has_r_c);
 
     pore_network_t net;
-    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 0.5, alloc));
+    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 0.5, alloc, NULL, NULL));
     ASSERT_TRUE(net.has_r_c);
     EXPECT_NEAR(perc.r_c, net.r_c, 1e-2);
 
@@ -290,7 +290,38 @@ UTEST(viamd_pores, a_tube_through_the_periodic_seam) {
     channel_percolation_free(&perc);
 
     fd.field.pbc[0] = false;
-    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 0.5, alloc));
+    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 0.5, alloc, NULL, NULL));
     EXPECT_FALSE(net.has_r_c);
     pore_network_free(&net);
+}
+
+UTEST(viamd_pores, progress_is_reported_and_a_stop_is_honoured) {
+    // The build runs in the background in the component, which watches it through the callback and
+    // stops it through the same. Reported fractions only rise, and a stop leaves nothing behind.
+    md_allocator_i* alloc = md_get_heap_allocator();
+    Field fd(64, 64, 64, 0.5f, true, [&](double x, double y, double z) {
+        return 3.0 - sqrt((x - 16.25) * (x - 16.25) + (y - 16.25) * (y - 16.25)) + 0.0 * z;
+    });
+
+    struct Log { std::vector<float> f; int stop_after; };
+    auto cb = [](float fraction, void* user) {
+        Log* l = (Log*)user;
+        l->f.push_back(fraction);
+        return l->stop_after < 0 || (int)l->f.size() < l->stop_after;
+    };
+
+    Log all = { {}, -1 };
+    pore_network_t net;
+    ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, 0.5, alloc, cb, &all));
+    ASSERT_TRUE(all.f.size() >= 2);
+    for (size_t i = 1; i < all.f.size(); ++i) EXPECT_TRUE(all.f[i] >= all.f[i - 1]);
+    EXPECT_TRUE(md_array_size(net.vertices) > 0);
+    pore_network_free(&net);
+
+    Log stop = { {}, 2 };
+    EXPECT_FALSE(pore_network_build(&net, &fd.field, 0.25, 0.5, alloc, cb, &stop));
+    EXPECT_EQ((size_t)2, stop.f.size());
+    EXPECT_EQ((size_t)0, md_array_size(net.vertices));
+    EXPECT_EQ((size_t)0, md_array_size(net.edges));
+    EXPECT_FALSE(net.has_r_c);
 }

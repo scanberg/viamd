@@ -599,11 +599,20 @@ enum {
 extern "C" {
 #endif
 
+// Called from inside a build every so often with the fraction done, on the thread running it.
+// Returning false abandons the build.
+typedef bool (*pore_network_progress_fn)(float fraction, void* user);
+
 // r_min bounds the memory, as for channel_percolate: a voxel below it never enters, so it is also
 // the smallest throat and the smallest pore the network can have. merge is the persistence below
 // which two pores are one, in world units. Costs 4 bytes per voxel of the field plus 4 per active
 // voxel, and a few tens per pore.
-bool pore_network_build(pore_network_t* out, const channel_field_t* field, double r_min, double merge, struct md_allocator_i* alloc);
+//
+// The pass is one ordered sweep and does not divide over threads; progress, which may be NULL, is
+// how a caller running it in the background reports it and stops it. Returns false when there is
+// nothing at or above r_min, or when progress asked to stop, with out left empty either way.
+bool pore_network_build(pore_network_t* out, const channel_field_t* field, double r_min, double merge, struct md_allocator_i* alloc,
+                        pore_network_progress_fn progress, void* user = NULL);
 void pore_network_free(pore_network_t* net);
 
 // out_class[num_vertices], one PORE_CLASS_ per vertex at probe radius r.
