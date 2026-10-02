@@ -60,6 +60,9 @@ void render(Queue* queue, const RenderParams& params);
 // Direct queue API: emit commands straight into queue storage without creating a Scope.
 void set_model(Queue* queue, const mat4_t& model_mat);
 void set_picking_base_idx(Queue* queue, uint32_t base_idx);
+// Smallest size in pixels of the points drawn after this; a near point is still drawn larger. A
+// Scope resets it to 1 at both ends.
+void set_point_size(Queue* queue, float pixels);
 
 void point(Queue* queue, vec3_t pos, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
 void line(Queue* queue, vec3_t from, vec3_t to, uint32_t color = DEFAULT_COLOR);

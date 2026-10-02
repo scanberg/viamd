@@ -11,6 +11,7 @@
 //   the distance field               grid, tiles, and the pass that fills a profile
 //   surface topography               the height a probe of radius R finds, from above and below
 //   channels                         connectivity through z, from a materialized field
+//   pore network                     the field as pores and throats, for the 3D skeleton
 
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
@@ -74,7 +75,8 @@ typedef struct void_profile_t {
 
     double bin_width;           // Distance bin width, world units
     double z_min;               // World z of the lower edge of slab 0
-    double slab_height;         // World z height of one slab
+    double z_max;               // World z of the upper edge of the last slab, which is cut here
+    double slab_height;         // World z height of one slab, a whole number of voxel planes
     double voxel_volume;        // World volume of one voxel
 } void_profile_t;
 
@@ -92,13 +94,30 @@ static inline uint32_t void_profile_bin_of(double d, double bin_width, uint32_t 
     return (uint32_t)u;
 }
 
-// Voxel plane k of dim_z, assigned by its centre, so the slabs are the uniform division of the grid
-// in z that z_lo and z_hi report whether or not num_slabs divides dim_z.
-static inline uint32_t void_profile_slab_of(int k, int dim_z, uint32_t num_slabs) {
-    if (dim_z <= 0 || num_slabs == 0) return 0;
-    if (k < 0) return 0;
-    const uint64_t s = ((uint64_t)(2 * k + 1) * (uint64_t)num_slabs) / ((uint64_t)2 * (uint64_t)dim_z);
-    return (s >= (uint64_t)num_slabs) ? num_slabs - 1 : (uint32_t)s;
+// A slab is a whole number of voxel planes: one, unless the grid has more planes than max_slabs, and
+// then the fewest that fit. The last slab takes whatever is left over and can be thinner. A slab
+// boundary is therefore always a plane boundary, so the voxels a slab counts and the z interval it
+// reports are the same volume, and anything binned by world z - the mass - lands with the voxels it
+// shares that volume with.
+//
+// The alternative, a uniform division of z with each plane assigned by its centre, puts floor(n) or
+// ceil(n) planes into a slab that is nominally n planes thick. Every ratio of voxel counts survives
+// that, but a density does not: mass binned by z over voxels counted by plane alternates between
+// n / floor(n) and n / ceil(n) of its true value from one slab to the next.
+static inline uint32_t void_profile_planes_per_slab(int dim_z, uint32_t max_slabs) {
+    if (dim_z <= 0 || max_slabs == 0) return 1;
+    return (uint32_t)(((uint64_t)dim_z + max_slabs - 1) / max_slabs);
+}
+
+static inline uint32_t void_profile_num_slabs(int dim_z, uint32_t planes_per_slab) {
+    if (dim_z <= 0 || planes_per_slab == 0) return 0;
+    return (uint32_t)(((uint64_t)dim_z + planes_per_slab - 1) / planes_per_slab);
+}
+
+// The slab voxel plane k belongs to.
+static inline uint32_t void_profile_slab_of(int k, uint32_t planes_per_slab) {
+    if (k < 0 || planes_per_slab == 0) return 0;
+    return (uint32_t)k / planes_per_slab;
 }
 
 #ifdef __cplusplus
@@ -107,7 +126,8 @@ extern "C" {
 
 bool void_profile_valid(const void_profile_t* prof);
 
-// World z bounds of a slab, and the slab a world z falls in (clamped to the profile).
+// World z bounds of a slab, and the slab a world z falls in (clamped to the profile). The upper
+// bound of the last slab is z_max, not a whole slab height past its lower bound.
 double   void_profile_z_lo(const void_profile_t* prof, uint32_t slab);
 double   void_profile_z_hi(const void_profile_t* prof, uint32_t slab);
 uint32_t void_profile_slab_at(const void_profile_t* prof, double z);
@@ -152,8 +172,9 @@ double void_profile_solid_fraction_smooth(const void_profile_t* prof, uint32_t s
 // Returns false when the profile carries no solid at all, in which case the outputs are untouched.
 bool void_profile_film_extent(const void_profile_t* prof, double frac, uint32_t* out_slab_beg, uint32_t* out_slab_end, double* out_interior_solid_fraction);
 
-// Mass per slab, binned along the same uniform division of z the profile uses, so a density read off
-// it and a porosity read off the histogram describe the same slab. A position below or above the
+// Mass per slab, binned by world z on the slab boundaries the profile reports, which are voxel plane
+// boundaries - so a density read off it and a porosity read off the histogram describe the same
+// volume. A position below or above the
 // profile's z range is wrapped into it when periodic_z is set and dropped otherwise - an atom outside
 // an open axis is outside the volume the density is taken over, and folding it into the edge slab
 // would invent a spike there. mass may be NULL, in which case every position counts as one, which
@@ -242,15 +263,16 @@ typedef struct void_field_desc_t {
     const struct md_unitcell_t*    cell;    // The cell beads.acc was built with, or NULL. Drives the in-cell mask.
     const struct md_grid_t*        grid;    // Axis aligned, see void_field_grid
 
-    double   max_dist;      // Range of the query. A voxel with no bead within it reports max_dist.
-    uint32_t num_slabs;     // z resolution of the profile, at most grid->dim[2]
-    uint32_t num_bins;      // Distance bins over [0, max_dist]
+    double   max_dist;          // Range of the query. A voxel with no bead within it reports max_dist.
+    uint32_t planes_per_slab;   // z resolution of the profile, see void_profile_planes_per_slab
+    uint32_t num_bins;          // Distance bins over [0, max_dist]
 
     float*   field;         // Optional, md_grid_num_points(grid) entries, x fastest. Written for every voxel.
 } void_field_desc_t;
 
 // What the field is summarized into. The arrays are caller owned and sized as a void_profile_t's:
-// hist [num_slabs * num_bins], solid [num_slabs], total [num_slabs].
+// hist [num_slabs * num_bins], solid [num_slabs], total [num_slabs], with
+// num_slabs = void_profile_num_slabs(grid->dim[2], planes_per_slab).
 typedef struct void_field_accum_t {
     uint64_t* hist;
     uint64_t* solid;
@@ -468,36 +490,12 @@ void channel_percolation_free(channel_percolation_t* perc);
 // and exact where they were bracketed.
 bool channel_percolate(channel_percolation_t* out, const channel_field_t* field, double r_min, uint32_t num_samples, struct md_allocator_i* alloc);
 
-// A route a probe of radius r can actually follow from the top face to the bottom: breadth first
-// through {d >= r}, so it is the shortest such route in voxel steps, then straightened wherever the
-// segment between two of its points stays inside the set.
-//
-// Unlike the representative centreline on a tree branch - the widest voxel per slab, which need not
-// be connected to the widest voxel of the slab below - every point of this is reachable from the
-// previous one at radius r. Trace it at r_c and it is the route the critical radius belongs to.
-//
-// out_path is xyz in world space with w the clearance there, wrapped into the box on a periodic
-// axis. out_length is the length of the unwrapped route, so length / |z span| is the tortuosity.
-// Returns false when nothing gets through at r.
-bool channel_trace_path(md_array(vec4_t)* out_path, double* out_length, const channel_field_t* field, double r, struct md_allocator_i* alloc);
-
 // Sweep the field at one probe radius. With want_tree false only the counts are produced, which is
 // what the radius sweeps below use.
 bool channel_sweep(channel_tree_t* out, const channel_field_t* field, double probe_radius, bool want_tree, struct md_allocator_i* alloc);
 
 // Number of channels at each supplied radius.
 void channel_spanning_counts(uint32_t* out_counts, const double* radii, size_t num_radii, const channel_field_t* field, struct md_allocator_i* alloc);
-
-// Assign a dendrogram column to every branch belonging to a channel which gets all the way through.
-// Leaves take consecutive columns in traversal order and a merge node sits at the mean of its
-// children, so a branch is drawn above the span of what feeds it. Branches of any other component
-// are left at -1: a blind pore would only crowd the diagram.
-//
-// out_slot must have room for md_array_size(tree->nodes) entries. Returns the number of columns used.
-//
-// The traversal carries its own stack. A merge tree has one node per pair of branches that join, so
-// a real network produces a chain thousands of levels deep and recursing over it overflows.
-float channel_tree_layout(float* out_slot, const channel_tree_t* tree, struct md_allocator_i* alloc);
 
 // The largest probe radius which still gets through: bisected until the bracket is below tol.
 //
@@ -509,6 +507,120 @@ float channel_tree_layout(float* out_slot, const channel_tree_t* tree, struct md
 // is the number to quote - the branch clearances above are read off a representative centreline.
 // Returns a value below r_lo when nothing gets through even at r_lo.
 double channel_critical_radius(const channel_field_t* field, double r_lo, double r_hi, double tol, struct md_allocator_i* alloc);
+
+#ifdef __cplusplus
+}
+#endif
+
+// =================================================================================================
+// Pore network: a skeleton of the clearance field
+// =================================================================================================
+//
+// The void as a graph. A vertex is a pore - a basin of the clearance field around one maximum, i.e.
+// around the centre of the largest sphere that fits there - and an edge is a throat, the widest
+// point on the boundary between two pores. Drawn as lines from pore to throat to pore, it is a
+// skeleton of the field which says how wide each cavity is and how wide each connection is.
+//
+// Built in one pass over the voxels in order of decreasing clearance, the same order the
+// percolation pass uses. A voxel with no inserted neighbour starts a pore. Otherwise it joins the
+// neighbouring pore with the highest maximum, and every other pore it touches meets that one here:
+// the clearance of this voxel is the throat between them, since the order guarantees nothing wider
+// joins the two. Two pores whose throat is within `merge` of the smaller one's maximum are one
+// pore with a shallow dip in it rather than two pores, and are merged instead (persistence, in the
+// sense of topological data analysis). Without that every bump the voxelization leaves on a wall
+// would be a pore of its own.
+//
+// What it is exact about:
+//
+// - Within an unmerged pore, every voxel is joined to the pore's maximum through voxels at least as
+//   wide as itself. So a probe that fits a pore's throat reaches its centre, and connectivity at a
+//   radius R is connectivity of the graph over the throats >= R - except across a merge, where the
+//   graph says connected down to `merge` below where the voxels stop being.
+// - r_c is not read off the graph at all. A second union-find over the same pass joins on every
+//   contact, merged or not, and the voxel whose insertion first connects the two z faces gives the
+//   critical radius exactly, as channel_percolate does.
+//
+// The sweep axis is z and must be non periodic; x and y may be periodic, see channel_field_t.
+
+#define PORE_INVALID 0xFFFFFFFFu
+
+enum {
+    PORE_FACE_TOP    = 1,       // The far z face, plane dim[2] - 1
+    PORE_FACE_BOTTOM = 2,       // The near z face, plane 0
+};
+
+typedef struct pore_vertex_t {
+    float    pos[3];            // World centre of the widest voxel of the pore
+    float    radius;            // Clearance there: the largest sphere that fits in the pore
+    float    face_top;          // Widest clearance of the pore in the top plane, -1 when it has none there
+    float    face_bottom;       // Same for the bottom plane
+    uint32_t num_voxels;        // Voxels of the pore, i.e. those at or above r_min assigned to it
+} pore_vertex_t;
+
+typedef struct pore_edge_t {
+    uint32_t a, b;              // Vertex indices, a < b
+    float    radius;            // Throat radius: the clearance at the widest point between the two
+    float    pos[3];            // World centre of that voxel, inside the box
+} pore_edge_t;
+
+typedef struct pore_network_t {
+    md_array(pore_vertex_t) vertices;
+    md_array(pore_edge_t)   edges;          // Widest throat first
+    md_array(uint32_t)      adj_offset;     // [num_vertices + 1], into adj
+    md_array(uint32_t)      adj;            // Edge indices incident to each vertex
+
+    double r_min;
+    double merge;
+    double voxel_volume;
+    float  box_min[3];                      // Grid bounds, for wrapping on the periodic axes
+    float  box_ext[3];
+    bool   pbc[3];
+
+    bool   has_r_c;
+    double r_c;                             // Exact, from the voxels; see above
+    float  throat[3];                       // Where: the voxel whose insertion connected the faces
+
+    size_t num_active;                      // Voxels at or above r_min
+    size_t bytes;                           // Peak scratch the build allocated
+
+    struct md_allocator_i* alloc;
+} pore_network_t;
+
+// What a pore is at a probe radius R.
+enum {
+    PORE_CLASS_SMALL = 0,       // The probe does not fit in it
+    PORE_CLASS_CLOSED,          // Fits, but no throat chain >= R reaches a face
+    PORE_CLASS_TOP,             // Reachable from the top face only
+    PORE_CLASS_BOTTOM,          // From the bottom only
+    PORE_CLASS_SPANNING,        // From both: on a route through the film
+};
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// r_min bounds the memory, as for channel_percolate: a voxel below it never enters, so it is also
+// the smallest throat and the smallest pore the network can have. merge is the persistence below
+// which two pores are one, in world units. Costs 4 bytes per voxel of the field plus 4 per active
+// voxel, and a few tens per pore.
+bool pore_network_build(pore_network_t* out, const channel_field_t* field, double r_min, double merge, struct md_allocator_i* alloc);
+void pore_network_free(pore_network_t* net);
+
+// out_class[num_vertices], one PORE_CLASS_ per vertex at probe radius r.
+void pore_network_classify(uint8_t* out_class, const pore_network_t* net, double r, struct md_allocator_i* temp);
+
+// The widest route from the top face to the bottom: the vertex chain whose narrowest throat (or
+// face entry) is as wide as possible, top first. out_bottleneck is that narrowest width. It agrees
+// with r_c unless the route passes a merge, where it can read up to `merge` wider. Returns false when
+// the graph does not connect the faces at all.
+bool pore_network_widest_route(md_array(uint32_t)* out_vertices, double* out_bottleneck, const pore_network_t* net, struct md_allocator_i* alloc);
+
+// The incident edge from a to b, or PORE_INVALID.
+uint32_t pore_network_find_edge(const pore_network_t* net, uint32_t a, uint32_t b);
+
+// The images of an edge's two pores nearest its throat, for drawing a -> throat -> b as one
+// connected polyline when the edge crosses a periodic face.
+void pore_network_edge_points(vec3_t* out_a, vec3_t* out_throat, vec3_t* out_b, const pore_network_t* net, uint32_t edge);
 
 #ifdef __cplusplus
 }

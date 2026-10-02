@@ -20,6 +20,7 @@ struct DrawCommand {
     int32_t model_matrix_idx = -1;
     uint32_t picking_base_idx = 0;
     GLenum primitive_type;
+    float point_size = 1.0f;
 };
 
 struct PassParams {
@@ -39,6 +40,7 @@ struct Queue {
 
     int32_t curr_model_matrix_idx = -1;
     uint32_t curr_picking_base_idx = 0;
+    float curr_point_size = 1.0f;
 };
 
 static GLuint vbo = 0;
@@ -123,7 +125,8 @@ static inline void append_draw_command(Queue& ctx, size_t count, GLenum primitiv
     if (last_cmd &&
         last_cmd->primitive_type == primitive_type &&
         last_cmd->model_matrix_idx == ctx.curr_model_matrix_idx &&
-        last_cmd->picking_base_idx == ctx.curr_picking_base_idx) {
+        last_cmd->picking_base_idx == ctx.curr_picking_base_idx &&
+        last_cmd->point_size == ctx.curr_point_size) {
         size_t capacity = max_size - last_cmd->count;
         if (count < capacity) {
             last_cmd->count += (uint32_t)count;
@@ -135,7 +138,7 @@ static inline void append_draw_command(Queue& ctx, size_t count, GLenum primitiv
 
     ASSERT(ctx.curr_model_matrix_idx > -1 && "Immediate draw model matrix not set");
     const size_t offset = md_array_size(ctx.indices) - count;
-    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, ctx.curr_model_matrix_idx, ctx.curr_picking_base_idx, primitive_type};
+    DrawCommand cmd {(uint32_t)offset, (uint32_t)count, ctx.curr_model_matrix_idx, ctx.curr_picking_base_idx, primitive_type, ctx.curr_point_size};
     md_array_push(ctx.commands, cmd, ctx.arena);
 }
 
@@ -148,6 +151,7 @@ static void init_queue_storage(Queue& q, md_allocator_i* arena) {
     md_array_ensure(q.commands, 32, q.arena);
     q.curr_model_matrix_idx = -1;
     q.curr_picking_base_idx = 0;
+    q.curr_point_size = 1.0f;
 }
 
 void encoder_set_model(Queue& ctx, const mat4_t& model_matrix);
@@ -194,6 +198,11 @@ void set_model(Queue* queue, const mat4_t& model_mat) {
 void set_picking_base_idx(Queue* queue, uint32_t base_idx) {
     Queue& q = require_queue(queue);
     encoder_set_picking_base_idx(q, base_idx);
+}
+
+void set_point_size(Queue* queue, float pixels) {
+    Queue& q = require_queue(queue);
+    q.curr_point_size = (pixels > 1.0f) ? pixels : 1.0f;
 }
 
 void point(Queue* queue, vec3_t pos, uint32_t color, uint32_t picking_idx) {
@@ -342,6 +351,7 @@ Scope::Scope(Queue* supplied_queue, const char* label) {
     // Begin scope: push a fresh identity model transform in the queue stream.
     set_model(queue, mat4_ident());
     set_picking_base_idx(queue, 0);
+    set_point_size(queue, 1.0f);
 }
 
 Scope::~Scope() {
@@ -349,6 +359,7 @@ Scope::~Scope() {
         // End scope: reset back to identity for the following commands.
         set_model(queue, mat4_ident());
         set_picking_base_idx(queue, 0);
+        set_point_size(queue, 1.0f);
     }
     queue = nullptr;
 }
@@ -394,6 +405,7 @@ void queue_reset(Queue* queue) {
     md_array_shrink(queue->model_matrices, 0);
     queue->curr_model_matrix_idx = -1;
     queue->curr_picking_base_idx = 0;
+    queue->curr_point_size = 1.0f;
 }
 
 void render(Queue* queue, const RenderParams& params) {
@@ -533,6 +545,7 @@ void encoder_submit(Queue& ctx, const mat4_t& view, const mat4_t& proj) {
 		}
 
 		glUniform1ui(uniform_loc_picking_base_idx, cmd.picking_base_idx);
+		glUniform1f(uniform_loc_point_size, cmd.point_size);
 
 		glDrawElements(cmd.primitive_type, cmd.count, index_type, (const void*)(cmd.offset * sizeof(Index)));
 	}

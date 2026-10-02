@@ -3,6 +3,7 @@
 #include <core/md_allocator.h>
 #include <core/md_common.h>
 #include <core/md_grid.h>
+#include <core/md_hash.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_acc.h>
 #include <md_types.h>
@@ -11,6 +12,8 @@
 #include <float.h>
 #include <math.h>
 #include <string.h>
+
+#include <algorithm>
 
 // =================================================================================================
 // Porosity and accessible volume
@@ -46,7 +49,8 @@ double void_profile_z_lo(const void_profile_t* prof, uint32_t slab) {
 
 double void_profile_z_hi(const void_profile_t* prof, uint32_t slab) {
     if (!prof) return 0.0;
-    return prof->z_min + (double)(slab + 1) * prof->slab_height;
+    const double z = prof->z_min + (double)(slab + 1) * prof->slab_height;
+    return (z < prof->z_max) ? z : prof->z_max;
 }
 
 uint32_t void_profile_slab_at(const void_profile_t* prof, double z) {
@@ -551,7 +555,8 @@ double void_profile_bin_mass(double* out_slab_mass, const void_profile_t* prof, 
     memset(out_slab_mass, 0, prof->num_slabs * sizeof(double));
     if (!xyz) return 0.0;
 
-    const double H = prof->slab_height * (double)prof->num_slabs;
+    const double H = prof->z_max - prof->z_min;
+    if (!(H > 0.0)) return 0.0;
     double total = 0.0;
     for (size_t i = 0; i < count; ++i) {
         double u = (double)xyz[i].z - prof->z_min;
@@ -660,7 +665,7 @@ void void_field_accum_merge(void_field_accum_t* dst, const void_field_accum_t* s
 
 void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* desc, uint32_t tile_beg, uint32_t tile_end) {
     if (!accum || !desc || !desc->beads.acc || !desc->grid) return;
-    if (desc->num_slabs == 0 || desc->num_bins == 0) return;
+    if (desc->planes_per_slab == 0 || desc->num_bins == 0) return;
 
     const md_grid_t& grid = *desc->grid;
     const int TD = VOID_FIELD_TILE_DIM;
@@ -671,7 +676,7 @@ void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* d
     };
     tile_end = MIN(tile_end, void_field_num_tiles(desc->grid));
 
-    const uint32_t num_slabs = desc->num_slabs;
+    const uint32_t pps       = desc->planes_per_slab;
     const uint32_t num_bins  = desc->num_bins;
     const float    max_dist  = (float)desc->max_dist;
 
@@ -752,7 +757,7 @@ void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* d
                 if (outside) continue;
             }
 
-            const uint32_t slab = void_profile_slab_of(vk[p], grid.dim[2], num_slabs);
+            const uint32_t slab = void_profile_slab_of(vk[p], pps);
 
             accum->total[slab] += 1;
             accum->d_min = MIN(accum->d_min, d);
@@ -771,16 +776,17 @@ void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* d
 
 void_profile_t void_field_profile(const void_field_accum_t* accum, const void_field_desc_t* desc) {
     void_profile_t p = {};
-    if (!accum || !desc || !desc->grid || desc->num_slabs == 0 || desc->num_bins == 0) return p;
+    if (!accum || !desc || !desc->grid || desc->planes_per_slab == 0 || desc->num_bins == 0) return p;
     const md_grid_t& grid = *desc->grid;
     p.hist         = accum->hist;
     p.solid        = accum->solid;
     p.total        = accum->total;
-    p.num_slabs    = desc->num_slabs;
+    p.num_slabs    = void_profile_num_slabs(grid.dim[2], desc->planes_per_slab);
     p.num_bins     = desc->num_bins;
     p.bin_width    = desc->max_dist / (double)desc->num_bins;
     p.z_min        = (double)grid.origin.z;
-    p.slab_height  = (double)grid.spacing.z * (double)grid.dim[2] / (double)desc->num_slabs;
+    p.z_max        = (double)grid.origin.z + (double)grid.spacing.z * (double)grid.dim[2];
+    p.slab_height  = (double)grid.spacing.z * (double)desc->planes_per_slab;
     p.voxel_volume = (double)grid.spacing.x * (double)grid.spacing.y * (double)grid.spacing.z;
     return p;
 }
@@ -1569,267 +1575,6 @@ bool channel_percolate(channel_percolation_t* out, const channel_field_t* field,
     return true;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Tracing a route
-// ---------------------------------------------------------------------------------------------
-
-namespace {
-
-const int PATH_DIR[6][3] = { {-1,0,0}, {1,0,0}, {0,-1,0}, {0,1,0}, {0,0,-1}, {0,0,1} };
-const uint8_t PATH_SEED  = 7;
-
-// Voxel index of an integer lattice point, wrapping x and y where the field is periodic. Returns
-// false for a point off a non periodic face.
-inline bool path_voxel(const channel_field_t* f, long ix, long iy, long ik, size_t* out) {
-    const long nx = f->dim[0], ny = f->dim[1], nz = f->dim[2];
-    if (f->pbc[0]) { ix = ((ix % nx) + nx) % nx; } else if (ix < 0 || ix >= nx) return false;
-    if (f->pbc[1]) { iy = ((iy % ny) + ny) % ny; } else if (iy < 0 || iy >= ny) return false;
-    if (ik < 0 || ik >= nz) return false;
-    *out = ((size_t)ik * (size_t)ny + (size_t)iy) * (size_t)nx + (size_t)ix;
-    return true;
-}
-
-// Does the straight segment between two lattice points stay inside {d >= r}? Sampled at half a
-// voxel, which is the finest statement the field itself supports.
-bool path_segment_clear(const channel_field_t* f, float r, const double a[3], const double b[3]) {
-    const double dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
-    const double len = sqrt(dx * dx + dy * dy + dz * dz);
-    const int steps = (int)(2.0 * len) + 1;
-    for (int i = 0; i <= steps; ++i) {
-        const double t = (double)i / (double)steps;
-        size_t v;
-        if (!path_voxel(f, lround(a[0] + t * dx), lround(a[1] + t * dy), lround(a[2] + t * dz), &v)) return false;
-        if (f->data[v] < r) return false;
-    }
-    return true;
-}
-
-// One sample of the route: the wrapped world position, with the clearance the field actually
-// reports there rather than an interpolation between two distant anchors.
-void path_emit(md_array(vec4_t)* out, const channel_field_t* f, double sx, double sy, double sz, struct md_allocator_i* alloc) {
-    size_t v = 0;
-    if (!path_voxel(f, lround(sx), lround(sy), lround(sz), &v)) return;
-    double wx = sx, wy = sy;
-    if (f->pbc[0]) { wx = fmod(sx, (double)f->dim[0]); if (wx < 0.0) wx += (double)f->dim[0]; }
-    if (f->pbc[1]) { wy = fmod(sy, (double)f->dim[1]); if (wy < 0.0) wy += (double)f->dim[1]; }
-    vec4_t pt;
-    pt.x = f->origin[0] + (float)(wx + 0.5) * f->spacing[0];
-    pt.y = f->origin[1] + (float)(wy + 0.5) * f->spacing[1];
-    pt.z = f->origin[2] + (float)(sz + 0.5) * f->spacing[2];
-    pt.w = f->data[v];
-    md_array_push(*out, pt, alloc);
-}
-
-}  // namespace
-
-bool channel_trace_path(md_array(vec4_t)* out_path, double* out_length, const channel_field_t* field, double r, struct md_allocator_i* alloc) {
-    ASSERT(out_path);
-    ASSERT(field);
-    ASSERT(alloc);
-
-    if (!field->data) return false;
-    if (field->pbc[2]) return false;
-    const int nx = field->dim[0], ny = field->dim[1], nz = field->dim[2];
-    if (nx <= 0 || ny <= 0 || nz <= 0) return false;
-
-    const size_t plane = (size_t)nx * (size_t)ny;
-    const size_t N     = plane * (size_t)nz;
-    const float  rr    = (float)r;
-
-    // One byte per voxel: which way we arrived. A parent index would be four, and the direction is
-    // all a backtrace needs.
-    uint8_t* from = (uint8_t*)md_alloc(alloc, N);
-    if (!from) return false;
-    MEMSET(from, 0, N);
-
-    md_array(uint32_t) queue = 0;
-    size_t head = 0;
-    size_t found = N;
-
-    for (size_t i = 0; i < plane; ++i) {
-        const size_t v = (size_t)(nz - 1) * plane + i;
-        if (field->data[v] < rr) continue;
-        from[v] = PATH_SEED;
-        if (nz == 1) { found = v; break; }
-        md_array_push(queue, (uint32_t)v, alloc);
-    }
-
-    while (found == N && head < md_array_size(queue)) {
-        const size_t v = (size_t)queue[head++];
-        const int k = (int)(v / plane);
-        const int y = (int)((v % plane) / (size_t)nx);
-        const int x = (int)(v % (size_t)nx);
-
-        for (int d = 0; d < 6; ++d) {
-            size_t w;
-            if (!path_voxel(field, (long)x + PATH_DIR[d][0], (long)y + PATH_DIR[d][1], (long)k + PATH_DIR[d][2], &w)) continue;
-            if (from[w] || field->data[w] < rr) continue;
-            from[w] = (uint8_t)(d + 1);
-            if (w < plane) { found = w; break; }        // Reached the bottom face
-            md_array_push(queue, (uint32_t)w, alloc);
-        }
-    }
-
-    md_array_free(queue, alloc);
-
-    if (found == N) {
-        md_free(alloc, from, N);
-        return false;
-    }
-
-    // Backtrace, then reverse, carrying unwrapped lattice coordinates so a route that leaves through
-    // a periodic face keeps going in a straight line instead of jumping the box.
-    md_array(int32_t) chain = 0;                        // Directions, bottom to top
-    {
-        size_t v = found;
-        while (from[v] != PATH_SEED) {
-            const int d = (int)from[v] - 1;
-            md_array_push(chain, (int32_t)d, alloc);
-            size_t w;
-            const int k = (int)(v / plane);
-            const int y = (int)((v % plane) / (size_t)nx);
-            const int x = (int)(v % (size_t)nx);
-            if (!path_voxel(field, (long)x - PATH_DIR[d][0], (long)y - PATH_DIR[d][1], (long)k - PATH_DIR[d][2], &w)) break;
-            v = w;
-        }
-        // v is now the seed at the top face; rebuild the route downward from it
-        md_array(double) pts = 0;
-        long ix = (long)(v % (size_t)nx);
-        long iy = (long)((v % plane) / (size_t)nx);
-        long ik = (long)(v / plane);
-        md_array_push(pts, (double)ix, alloc);
-        md_array_push(pts, (double)iy, alloc);
-        md_array_push(pts, (double)ik, alloc);
-        for (size_t i = md_array_size(chain); i > 0; --i) {
-            const int d = (int)chain[i - 1];
-            ix += PATH_DIR[d][0];
-            iy += PATH_DIR[d][1];
-            ik += PATH_DIR[d][2];
-            md_array_push(pts, (double)ix, alloc);
-            md_array_push(pts, (double)iy, alloc);
-            md_array_push(pts, (double)ik, alloc);
-        }
-        md_array_free(chain, alloc);
-        md_free(alloc, from, N);
-
-        const size_t n = md_array_size(pts) / 3;
-
-        // Straighten it. Breadth first through a six connected grid returns a staircase: it is the
-        // shortest route in voxel steps, which overstates the length of anything not axis aligned by
-        // up to sqrt(3). Replacing a run by the straight segment between its ends, where that segment
-        // stays inside the set, recovers a length worth quoting and a route worth looking at.
-        const size_t LOOKAHEAD = 64;
-        md_array(double) anchor = 0;
-        for (size_t i = 0; ; ) {
-            md_array_push(anchor, pts[i*3+0], alloc);
-            md_array_push(anchor, pts[i*3+1], alloc);
-            md_array_push(anchor, pts[i*3+2], alloc);
-            if (i + 1 >= n) break;
-
-            size_t best = i + 1;
-            const size_t far = MIN(n - 1, i + LOOKAHEAD);
-            for (size_t j = far; j > i + 1; --j) {
-                const double a[3] = { pts[i*3+0], pts[i*3+1], pts[i*3+2] };
-                const double b[3] = { pts[j*3+0], pts[j*3+1], pts[j*3+2] };
-                if (path_segment_clear(field, rr, a, b)) { best = j; break; }
-            }
-            i = best;
-        }
-        md_array_free(pts, alloc);
-
-        const size_t na = md_array_size(anchor) / 3;
-
-        double length = 0.0;
-        for (size_t i = 1; i < na; ++i) {
-            const double dx = (anchor[i*3+0] - anchor[(i-1)*3+0]) * (double)field->spacing[0];
-            const double dy = (anchor[i*3+1] - anchor[(i-1)*3+1]) * (double)field->spacing[1];
-            const double dz = (anchor[i*3+2] - anchor[(i-1)*3+2]) * (double)field->spacing[2];
-            length += sqrt(dx * dx + dy * dy + dz * dz);
-        }
-        if (out_length) *out_length = length;
-
-        // Resample the straightened route at half a voxel, reading the clearance at each sample.
-        //
-        // The anchors alone are not something to draw with. Straightening is free to leave them
-        // sixty voxels apart, and the clearance between two of them is whatever the field says, not
-        // the interpolation of its endpoints - so anything drawn from the anchors is at its widest
-        // exactly where its width was never measured. Sampling also keeps every step short, which is
-        // what lets a caller drop the one segment that crosses a periodic face without leaving a
-        // visible gap in the rest.
-        md_array_shrink(*out_path, 0);
-        for (size_t i = 0; i + 1 < na; ++i) {
-            const double ax = anchor[i*3+0],     ay = anchor[i*3+1],     az = anchor[i*3+2];
-            const double dx = anchor[(i+1)*3+0] - ax;
-            const double dy = anchor[(i+1)*3+1] - ay;
-            const double dz = anchor[(i+1)*3+2] - az;
-            const int steps = MAX(1, (int)(2.0 * sqrt(dx * dx + dy * dy + dz * dz)));
-            for (int t = 0; t < steps; ++t) {
-                const double u = (double)t / (double)steps;
-                path_emit(out_path, field, ax + u * dx, ay + u * dy, az + u * dz, alloc);
-            }
-        }
-        path_emit(out_path, field, anchor[(na-1)*3+0], anchor[(na-1)*3+1], anchor[(na-1)*3+2], alloc);
-        md_array_free(anchor, alloc);
-    }
-
-    return md_array_size(*out_path) > 1;
-}
-
-float channel_tree_layout(float* out_slot, const channel_tree_t* tree, struct md_allocator_i* alloc) {
-    ASSERT(out_slot);
-    ASSERT(tree);
-
-    const size_t num_nodes = md_array_size(tree->nodes);
-    for (size_t i = 0; i < num_nodes; ++i) out_slot[i] = -1.0f;
-
-    // An explicit traversal stack. Post order: a node's column is only known once every child has
-    // one, so a frame stays on the stack accumulating its children's columns until they are done.
-    typedef struct {
-        uint32_t node;
-        uint32_t next_child;
-        float    sum;
-        uint32_t count;
-    } frame_t;
-
-    md_array(frame_t) stack = 0;
-    float slot = 0.0f;
-
-    for (size_t i = 0; i < md_array_size(tree->roots); ++i) {
-        const uint32_t root = tree->roots[i];
-        if (!(tree->nodes[root].reaches_top && tree->nodes[root].reaches_bottom)) continue;
-
-        md_array_shrink(stack, 0);
-        frame_t root_frame = { root, tree->nodes[root].first_child, 0.0f, 0 };
-        md_array_push(stack, root_frame, alloc);
-
-        while (md_array_size(stack) > 0) {
-            frame_t* top = md_array_last(stack);
-
-            if (top->next_child != CHANNEL_INVALID_INDEX) {
-                const uint32_t child = top->next_child;
-                top->next_child = tree->nodes[child].next_sibling;
-                frame_t child_frame = { child, tree->nodes[child].first_child, 0.0f, 0 };
-                // The push may move the array, so nothing may be read through top after this
-                md_array_push(stack, child_frame, alloc);
-                continue;
-            }
-
-            const float column = top->count ? (top->sum / (float)top->count) : slot++;
-            out_slot[top->node] = column;
-            md_array_pop(stack);
-
-            if (md_array_size(stack) > 0) {
-                frame_t* parent = md_array_last(stack);
-                parent->sum   += column;
-                parent->count += 1;
-            }
-        }
-    }
-
-    md_array_free(stack, alloc);
-    return slot;
-}
-
 void channel_spanning_counts(uint32_t* out_counts, const double* radii, size_t num_radii, const channel_field_t* field, struct md_allocator_i* alloc) {
     for (size_t i = 0; i < num_radii; ++i) {
         channel_tree_t t;
@@ -1862,4 +1607,529 @@ double channel_critical_radius(const channel_field_t* field, double r_lo, double
         if (spans) r_lo = mid; else r_hi = mid;
     }
     return r_lo;
+}
+
+// =================================================================================================
+// Pore network
+// =================================================================================================
+
+namespace {
+
+// One per basin the pass opens. A region stays a pore of its own until a persistence merge folds it
+// into an elder one; conn_parent joins on every contact and is only there for r_c.
+struct pore_region_t {
+    uint32_t pore_parent;
+    uint32_t conn_parent;
+    uint32_t peak_vox;      // Valid at a pore root
+    uint32_t count;
+    float    peak;
+    float    face_top;
+    float    face_bot;
+    uint8_t  conn_faces;    // Valid at a conn root
+};
+
+struct pore_contact_t {
+    uint32_t a, b;          // Pore roots when recorded; resolved to their final roots afterwards
+    uint32_t vox;
+    float    d;
+};
+
+inline uint32_t pore_find(pore_region_t* r, uint32_t x) {
+    while (r[x].pore_parent != x) {
+        r[x].pore_parent = r[r[x].pore_parent].pore_parent;
+        x = r[x].pore_parent;
+    }
+    return x;
+}
+
+inline uint32_t conn_find(pore_region_t* r, uint32_t x) {
+    while (r[x].conn_parent != x) {
+        r[x].conn_parent = r[r[x].conn_parent].conn_parent;
+        x = r[x].conn_parent;
+    }
+    return x;
+}
+
+inline uint32_t vert_find(uint32_t* parent, uint32_t x) {
+    while (parent[x] != x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    return x;
+}
+
+// The hash map indexes by the low bits of the key, and a pair key built from two small ids would
+// pile into few buckets. The mix is a bijection, and the two values the map reserves are moved out
+// of the way.
+inline uint64_t pore_pair_key(uint32_t a, uint32_t b) {
+    uint64_t x = (a < b) ? (((uint64_t)a << 32) | b) : (((uint64_t)b << 32) | a);
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ull;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebull;
+    x ^= x >> 31;
+    if (x >= MD_HASH_TOMBSTONE) x ^= (1ull << 63);
+    return x;
+}
+
+inline void voxel_centre(float out[3], const channel_field_t* f, uint32_t v) {
+    const size_t plane = (size_t)f->dim[0] * (size_t)f->dim[1];
+    const int k = (int)((size_t)v / plane);
+    const int y = (int)(((size_t)v % plane) / (size_t)f->dim[0]);
+    const int x = (int)((size_t)v % (size_t)f->dim[0]);
+    out[0] = f->origin[0] + ((float)x + 0.5f) * f->spacing[0];
+    out[1] = f->origin[1] + ((float)y + 0.5f) * f->spacing[1];
+    out[2] = f->origin[2] + ((float)k + 0.5f) * f->spacing[2];
+}
+
+}  // namespace
+
+void pore_network_free(pore_network_t* net) {
+    if (!net || !net->alloc) return;
+    md_array_free(net->vertices,   net->alloc);
+    md_array_free(net->edges,      net->alloc);
+    md_array_free(net->adj_offset, net->alloc);
+    md_array_free(net->adj,        net->alloc);
+    MEMSET(net, 0, sizeof(pore_network_t));
+}
+
+bool pore_network_build(pore_network_t* out, const channel_field_t* field, double r_min, double merge, struct md_allocator_i* alloc) {
+    ASSERT(out);
+    ASSERT(field);
+    ASSERT(alloc);
+
+    MEMSET(out, 0, sizeof(pore_network_t));
+    out->alloc = alloc;
+    out->r_min = r_min;
+    out->merge = merge;
+
+    if (!field->data) return false;
+    if (field->pbc[2]) return false;
+    const int nx = field->dim[0], ny = field->dim[1], nz = field->dim[2];
+    if (nx <= 0 || ny <= 0 || nz <= 0) return false;
+
+    const size_t plane = (size_t)nx * (size_t)ny;
+    const size_t N     = plane * (size_t)nz;
+    if (N > 0xFFFFFFF0u) return false;
+
+    for (int a = 0; a < 3; ++a) {
+        out->box_min[a] = field->origin[a];
+        out->box_ext[a] = field->spacing[a] * (float)field->dim[a];
+        out->pbc[a]     = field->pbc[a];
+    }
+    out->voxel_volume = (double)field->spacing[0] * (double)field->spacing[1] * (double)field->spacing[2];
+
+    const float rmin = (float)r_min;
+    float  d_max = rmin;
+    size_t M     = 0;
+    for (size_t i = 0; i < N; ++i) {
+        const float d = field->data[i];
+        if (d >= rmin) {
+            M += 1;
+            if (d > d_max) d_max = d;
+        }
+    }
+    out->num_active = M;
+    if (M == 0) return false;
+
+    // Counting sort, descending, as in channel_percolate but finer: the order inside a bucket is
+    // voxel order rather than clearance, and the only thing that sees it is the persistence test,
+    // which is told to ignore anything shallower than two buckets.
+    const uint32_t NB    = 1u << 16;
+    const double   width = MAX(1.0e-6, (double)d_max - (double)rmin) / (double)NB;
+    const float    h     = (float)MAX(merge, 2.0 * width);
+
+    uint32_t* label = (uint32_t*)md_alloc(alloc, N * sizeof(uint32_t));
+    uint32_t* vox   = (uint32_t*)md_alloc(alloc, M * sizeof(uint32_t));
+    uint32_t* off   = (uint32_t*)md_alloc(alloc, (size_t)NB * sizeof(uint32_t));
+    if (!label || !vox || !off) {
+        md_free(alloc, label, N * sizeof(uint32_t));
+        md_free(alloc, vox,   M * sizeof(uint32_t));
+        md_free(alloc, off,   (size_t)NB * sizeof(uint32_t));
+        return false;
+    }
+
+    MEMSET(off, 0, (size_t)NB * sizeof(uint32_t));
+    for (size_t i = 0; i < N; ++i) {
+        label[i] = PORE_INVALID;
+        const float d = field->data[i];
+        if (d < rmin) continue;
+        const int b = CLAMP((int)(((double)d - (double)rmin) / width), 0, (int)NB - 1);
+        off[b] += 1;
+    }
+    {
+        uint32_t acc = 0;
+        for (int b = (int)NB - 1; b >= 0; --b) {
+            const uint32_t n = off[b];
+            off[b] = acc;
+            acc += n;
+        }
+    }
+    for (size_t i = 0; i < N; ++i) {
+        const float d = field->data[i];
+        if (d < rmin) continue;
+        const int b = CLAMP((int)(((double)d - (double)rmin) / width), 0, (int)NB - 1);
+        vox[off[b]++] = (uint32_t)i;
+    }
+    md_free(alloc, off, (size_t)NB * sizeof(uint32_t));
+
+    md_array(pore_region_t)  reg = 0;
+    md_array(pore_contact_t) con = 0;
+    md_hashmap32_t seen = {};
+    seen.allocator = alloc;
+
+    for (size_t p = 0; p < M; ++p) {
+        const uint32_t v = vox[p];
+        const float    d = field->data[v];
+        const int k = (int)((size_t)v / plane);
+        const int y = (int)(((size_t)v % plane) / (size_t)nx);
+        const int x = (int)((size_t)v % (size_t)nx);
+
+        size_t nb[6];
+        int    nn = 0;
+        if (x > 0)                        nb[nn++] = (size_t)v - 1;
+        else if (field->pbc[0] && nx > 1) nb[nn++] = (size_t)v + (nx - 1);
+        if (x < nx - 1)                   nb[nn++] = (size_t)v + 1;
+        else if (field->pbc[0] && nx > 1) nb[nn++] = (size_t)v - (nx - 1);
+        if (y > 0)                        nb[nn++] = (size_t)v - nx;
+        else if (field->pbc[1] && ny > 1) nb[nn++] = (size_t)v + (size_t)(ny - 1) * nx;
+        if (y < ny - 1)                   nb[nn++] = (size_t)v + nx;
+        else if (field->pbc[1] && ny > 1) nb[nn++] = (size_t)v - (size_t)(ny - 1) * nx;
+        if (k > 0)                        nb[nn++] = (size_t)v - plane;
+        if (k < nz - 1)                   nb[nn++] = (size_t)v + plane;
+
+        // The distinct pores already inserted around this voxel
+        uint32_t roots[6];
+        int      nr = 0;
+        for (int q = 0; q < nn; ++q) {
+            const uint32_t l = label[nb[q]];
+            if (l == PORE_INVALID) continue;
+            const uint32_t r = pore_find(reg, l);
+            bool dup = false;
+            for (int s = 0; s < nr; ++s) dup |= (roots[s] == r);
+            if (!dup) roots[nr++] = r;
+        }
+
+        uint32_t own;
+        if (nr == 0) {
+            own = (uint32_t)md_array_size(reg);
+            pore_region_t r = {};
+            r.pore_parent = own;
+            r.conn_parent = own;
+            r.peak_vox    = v;
+            r.peak        = d;
+            r.face_top    = -1.0f;
+            r.face_bot    = -1.0f;
+            md_array_push(reg, r, alloc);
+        } else {
+            // The neighbour with the highest maximum, which is the basin steepest ascent leads to
+            own = roots[0];
+            for (int s = 1; s < nr; ++s) {
+                if (reg[roots[s]].peak > reg[own].peak) own = roots[s];
+            }
+        }
+
+        label[v] = own;
+        reg[own].count += 1;
+        if (k == nz - 1) {
+            reg[own].face_top = MAX(reg[own].face_top, d);
+            reg[conn_find(reg, own)].conn_faces |= PORE_FACE_TOP;
+        }
+        if (k == 0) {
+            reg[own].face_bot = MAX(reg[own].face_bot, d);
+            reg[conn_find(reg, own)].conn_faces |= PORE_FACE_BOTTOM;
+        }
+
+        for (int s = 0; s < nr; ++s) {
+            const uint32_t ro = pore_find(reg, own);
+            const uint32_t rr = pore_find(reg, roots[s]);
+            if (ro == rr) continue;
+
+            const uint32_t co = conn_find(reg, ro);
+            const uint32_t cr = conn_find(reg, rr);
+            if (co != cr) {
+                reg[cr].conn_parent = co;
+                reg[co].conn_faces |= reg[cr].conn_faces;
+            }
+
+            // Nothing wider than this voxel joins the two, so its clearance is their throat
+            if (MIN(reg[ro].peak, reg[rr].peak) - d < h) {
+                const uint32_t elder   = (reg[ro].peak >= reg[rr].peak) ? ro : rr;
+                const uint32_t younger = (elder == ro) ? rr : ro;
+                reg[younger].pore_parent = elder;
+                reg[elder].count   += reg[younger].count;
+                reg[elder].face_top = MAX(reg[elder].face_top, reg[younger].face_top);
+                reg[elder].face_bot = MAX(reg[elder].face_bot, reg[younger].face_bot);
+            } else {
+                const uint64_t key = pore_pair_key(ro, rr);
+                if (!md_hashmap_get(&seen, key)) {
+                    const pore_contact_t c = { ro, rr, v, d };
+                    md_hashmap_add(&seen, key, (uint32_t)md_array_size(con));
+                    md_array_push(con, c, alloc);
+                }
+            }
+        }
+
+        if (!out->has_r_c && reg[conn_find(reg, own)].conn_faces == (PORE_FACE_TOP | PORE_FACE_BOTTOM)) {
+            out->has_r_c = true;
+            out->r_c     = (double)d;
+            voxel_centre(out->throat, field, v);
+        }
+    }
+
+    out->bytes = N * sizeof(uint32_t) + M * sizeof(uint32_t) + (size_t)NB * sizeof(uint32_t)
+               + md_array_bytes(reg) + md_array_bytes(con) + (size_t)seen.num_buckets * (sizeof(uint64_t) + sizeof(uint32_t));
+
+    md_free(alloc, label, N * sizeof(uint32_t));
+    md_free(alloc, vox,   M * sizeof(uint32_t));
+    md_hashmap_free(&seen);
+
+    // Pores are the roots that survived the merges
+    const size_t num_reg = md_array_size(reg);
+    uint32_t* vid = (uint32_t*)md_alloc(alloc, num_reg * sizeof(uint32_t));
+    for (size_t i = 0; i < num_reg; ++i) {
+        vid[i] = PORE_INVALID;
+        if (pore_find(reg, (uint32_t)i) != (uint32_t)i) continue;
+        const pore_region_t& r = reg[i];
+        pore_vertex_t pv = {};
+        voxel_centre(pv.pos, field, r.peak_vox);
+        pv.radius      = r.peak;
+        pv.face_top    = r.face_top;
+        pv.face_bottom = r.face_bot;
+        pv.num_voxels  = r.count;
+        vid[i] = (uint32_t)md_array_size(out->vertices);
+        md_array_push(out->vertices, pv, alloc);
+    }
+
+    // Contacts resolved to pores. Two recorded between pores that were merged later are inside one
+    // pore now, and two recorded before a merge can name the same pair twice; the first of those is
+    // the wider, since contacts were recorded in order of decreasing clearance.
+    md_array(pore_edge_t) cand = 0;
+    for (size_t i = 0; i < md_array_size(con); ++i) {
+        uint32_t a = vid[pore_find(reg, con[i].a)];
+        uint32_t b = vid[pore_find(reg, con[i].b)];
+        if (a == b) continue;
+        if (a > b) { const uint32_t t = a; a = b; b = t; }
+        pore_edge_t e = {};
+        e.a = a;
+        e.b = b;
+        e.radius = con[i].d;
+        voxel_centre(e.pos, field, con[i].vox);
+        md_array_push(cand, e, alloc);
+    }
+    md_free(alloc, vid, num_reg * sizeof(uint32_t));
+    md_array_free(reg, alloc);
+    md_array_free(con, alloc);
+
+    std::stable_sort(cand, cand + md_array_size(cand), [](const pore_edge_t& x, const pore_edge_t& y) {
+        return (x.a != y.a) ? (x.a < y.a) : (x.b != y.b) ? (x.b < y.b) : (x.radius > y.radius);
+    });
+    for (size_t i = 0; i < md_array_size(cand); ++i) {
+        if (i > 0 && cand[i].a == cand[i - 1].a && cand[i].b == cand[i - 1].b) continue;
+        md_array_push(out->edges, cand[i], alloc);
+    }
+    md_array_free(cand, alloc);
+
+    const size_t V = md_array_size(out->vertices);
+    const size_t E = md_array_size(out->edges);
+    std::stable_sort(out->edges, out->edges + E, [](const pore_edge_t& x, const pore_edge_t& y) { return x.radius > y.radius; });
+
+    md_array_resize(out->adj_offset, V + 1, alloc);
+    md_array_resize(out->adj, 2 * E, alloc);
+    MEMSET(out->adj_offset, 0, (V + 1) * sizeof(uint32_t));
+    for (size_t e = 0; e < E; ++e) {
+        out->adj_offset[out->edges[e].a + 1] += 1;
+        out->adj_offset[out->edges[e].b + 1] += 1;
+    }
+    for (size_t i = 0; i < V; ++i) out->adj_offset[i + 1] += out->adj_offset[i];
+    {
+        md_array(uint32_t) fill = 0;
+        md_array_resize(fill, V, alloc);
+        for (size_t i = 0; i < V; ++i) fill[i] = out->adj_offset[i];
+        for (size_t e = 0; e < E; ++e) {
+            out->adj[fill[out->edges[e].a]++] = (uint32_t)e;
+            out->adj[fill[out->edges[e].b]++] = (uint32_t)e;
+        }
+        md_array_free(fill, alloc);
+    }
+
+    return true;
+}
+
+void pore_network_classify(uint8_t* out_class, const pore_network_t* net, double r, struct md_allocator_i* temp) {
+    ASSERT(out_class);
+    ASSERT(net);
+    ASSERT(temp);
+    const size_t V = md_array_size(net->vertices);
+    if (V == 0) return;
+
+    uint32_t* parent = (uint32_t*)md_alloc(temp, V * sizeof(uint32_t));
+    uint8_t*  faces  = (uint8_t*) md_alloc(temp, V * sizeof(uint8_t));
+    for (size_t i = 0; i < V; ++i) {
+        parent[i] = (uint32_t)i;
+        faces[i]  = 0;
+    }
+
+    // Widest first, so the throats a probe of radius r passes are a prefix
+    for (size_t e = 0; e < md_array_size(net->edges); ++e) {
+        const pore_edge_t& edge = net->edges[e];
+        if ((double)edge.radius < r) break;
+        const uint32_t a = vert_find(parent, edge.a);
+        const uint32_t b = vert_find(parent, edge.b);
+        if (a != b) parent[b] = a;
+    }
+
+    for (size_t i = 0; i < V; ++i) {
+        const pore_vertex_t& v = net->vertices[i];
+        uint8_t f = 0;
+        if ((double)v.face_top    >= r) f |= PORE_FACE_TOP;
+        if ((double)v.face_bottom >= r) f |= PORE_FACE_BOTTOM;
+        faces[vert_find(parent, (uint32_t)i)] |= f;
+    }
+
+    for (size_t i = 0; i < V; ++i) {
+        if ((double)net->vertices[i].radius < r) {
+            out_class[i] = PORE_CLASS_SMALL;
+            continue;
+        }
+        switch (faces[vert_find(parent, (uint32_t)i)]) {
+        case PORE_FACE_TOP | PORE_FACE_BOTTOM: out_class[i] = PORE_CLASS_SPANNING; break;
+        case PORE_FACE_TOP:                    out_class[i] = PORE_CLASS_TOP;      break;
+        case PORE_FACE_BOTTOM:                 out_class[i] = PORE_CLASS_BOTTOM;   break;
+        default:                               out_class[i] = PORE_CLASS_CLOSED;   break;
+        }
+    }
+
+    md_free(temp, parent, V * sizeof(uint32_t));
+    md_free(temp, faces,  V * sizeof(uint8_t));
+}
+
+bool pore_network_widest_route(md_array(uint32_t)* out_vertices, double* out_bottleneck, const pore_network_t* net, struct md_allocator_i* alloc) {
+    ASSERT(out_vertices);
+    ASSERT(net);
+    ASSERT(alloc);
+    md_array_shrink(*out_vertices, 0);
+
+    const uint32_t V = (uint32_t)md_array_size(net->vertices);
+    if (V == 0) return false;
+    const uint32_t T = V, B = V + 1;
+
+    // Kruskal over the throats and the face entries together, widest first, until the two faces
+    // meet. The links taken form a spanning forest in which the path between the faces is the
+    // widest route, and the last link taken is its narrowest point.
+    struct link_t { uint32_t u, w; float radius; };
+    md_array(link_t) links = 0;
+    for (size_t e = 0; e < md_array_size(net->edges); ++e) {
+        const link_t l = { net->edges[e].a, net->edges[e].b, net->edges[e].radius };
+        md_array_push(links, l, alloc);
+    }
+    for (uint32_t i = 0; i < V; ++i) {
+        if (net->vertices[i].face_top    >= 0.0f) { const link_t l = { i, T, net->vertices[i].face_top };    md_array_push(links, l, alloc); }
+        if (net->vertices[i].face_bottom >= 0.0f) { const link_t l = { i, B, net->vertices[i].face_bottom }; md_array_push(links, l, alloc); }
+    }
+    const size_t L = md_array_size(links);
+    std::stable_sort(links, links + L, [](const link_t& x, const link_t& y) { return x.radius > y.radius; });
+
+    md_array(uint32_t) parent = 0;
+    md_array_resize(parent, V + 2, alloc);
+    for (uint32_t i = 0; i < V + 2; ++i) parent[i] = i;
+
+    md_array(link_t) tree = 0;
+    bool   joined = false;
+    double bottleneck = 0.0;
+    for (size_t i = 0; i < L && !joined; ++i) {
+        const uint32_t a = vert_find(parent, links[i].u);
+        const uint32_t b = vert_find(parent, links[i].w);
+        if (a == b) continue;
+        parent[b] = a;
+        md_array_push(tree, links[i], alloc);
+        if (vert_find(parent, T) == vert_find(parent, B)) {
+            joined = true;
+            bottleneck = (double)links[i].radius;
+        }
+    }
+    md_array_free(links, alloc);
+
+    if (joined) {
+        // Breadth first through the forest from the top face; the path in a forest is unique
+        const uint32_t NV = V + 2;
+        md_array(uint32_t) off   = 0;
+        md_array(uint32_t) nbr   = 0;
+        md_array(uint32_t) prev  = 0;
+        md_array(uint32_t) queue = 0;
+        md_array_resize(off, NV + 1, alloc);
+        MEMSET(off, 0, (NV + 1) * sizeof(uint32_t));
+        for (size_t i = 0; i < md_array_size(tree); ++i) {
+            off[tree[i].u + 1] += 1;
+            off[tree[i].w + 1] += 1;
+        }
+        for (uint32_t i = 0; i < NV; ++i) off[i + 1] += off[i];
+        md_array_resize(nbr, off[NV], alloc);
+        md_array_resize(prev, NV, alloc);
+        for (uint32_t i = 0; i < NV; ++i) prev[i] = off[i];     // Fill cursor first, parent pointer after
+        for (size_t i = 0; i < md_array_size(tree); ++i) {
+            nbr[prev[tree[i].u]++] = tree[i].w;
+            nbr[prev[tree[i].w]++] = tree[i].u;
+        }
+        for (uint32_t i = 0; i < NV; ++i) prev[i] = PORE_INVALID;
+
+        prev[T] = T;
+        md_array_push(queue, T, alloc);
+        for (size_t qi = 0; qi < md_array_size(queue) && prev[B] == PORE_INVALID; ++qi) {
+            const uint32_t u = queue[qi];
+            for (uint32_t j = off[u]; j < off[u + 1]; ++j) {
+                const uint32_t w = nbr[j];
+                if (prev[w] != PORE_INVALID) continue;
+                prev[w] = u;
+                md_array_push(queue, w, alloc);
+            }
+        }
+
+        // Walked back from the bottom, so reversed into top first on the way out
+        md_array(uint32_t) rev = 0;
+        for (uint32_t u = prev[B]; u != T && u != PORE_INVALID; u = prev[u]) md_array_push(rev, u, alloc);
+        for (size_t i = md_array_size(rev); i > 0; --i) md_array_push(*out_vertices, rev[i - 1], alloc);
+
+        md_array_free(rev, alloc);
+        md_array_free(off, alloc);
+        md_array_free(nbr, alloc);
+        md_array_free(prev, alloc);
+        md_array_free(queue, alloc);
+    }
+
+    md_array_free(tree, alloc);
+    md_array_free(parent, alloc);
+
+    if (out_bottleneck) *out_bottleneck = joined ? bottleneck : 0.0;
+    return joined && md_array_size(*out_vertices) > 0;
+}
+
+uint32_t pore_network_find_edge(const pore_network_t* net, uint32_t a, uint32_t b) {
+    if (!net || a >= md_array_size(net->vertices)) return PORE_INVALID;
+    for (uint32_t j = net->adj_offset[a]; j < net->adj_offset[a + 1]; ++j) {
+        const pore_edge_t& e = net->edges[net->adj[j]];
+        if ((e.a == a && e.b == b) || (e.a == b && e.b == a)) return net->adj[j];
+    }
+    return PORE_INVALID;
+}
+
+void pore_network_edge_points(vec3_t* out_a, vec3_t* out_throat, vec3_t* out_b, const pore_network_t* net, uint32_t edge) {
+    ASSERT(net && edge < md_array_size(net->edges));
+    const pore_edge_t& e = net->edges[edge];
+    const vec3_t s = { e.pos[0], e.pos[1], e.pos[2] };
+    vec3_t a = { net->vertices[e.a].pos[0], net->vertices[e.a].pos[1], net->vertices[e.a].pos[2] };
+    vec3_t b = { net->vertices[e.b].pos[0], net->vertices[e.b].pos[1], net->vertices[e.b].pos[2] };
+    for (int ax = 0; ax < 3; ++ax) {
+        if (!net->pbc[ax] || !(net->box_ext[ax] > 0.0f)) continue;
+        const float L = net->box_ext[ax];
+        float da = a.elem[ax] - s.elem[ax];
+        float db = b.elem[ax] - s.elem[ax];
+        da -= L * roundf(da / L);
+        db -= L * roundf(db / L);
+        a.elem[ax] = s.elem[ax] + da;
+        b.elem[ax] = s.elem[ax] + db;
+    }
+    if (out_a)      *out_a = a;
+    if (out_throat) *out_throat = s;
+    if (out_b)      *out_b = b;
 }

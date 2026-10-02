@@ -128,8 +128,10 @@ UTEST(viamd_void_field, field_matches_brute_force_and_does_not_depend_on_the_til
     ASSERT_NE(0, grid.dim[2] % VOID_FIELD_TILE_DIM);
 
     const size_t   num_voxels = md_grid_num_points(&grid);
-    const uint32_t num_slabs  = 7;
+    const uint32_t pps        = 4;
+    const uint32_t num_slabs  = void_profile_num_slabs(grid.dim[2], pps);
     const uint32_t num_bins   = 64;
+    ASSERT_NE(0, grid.dim[2] % (int)pps);   // A short last slab, exercised
     std::vector<float> field(num_voxels, -1.0f);
 
     void_field_desc_t desc = {};
@@ -137,7 +139,7 @@ UTEST(viamd_void_field, field_matches_brute_force_and_does_not_depend_on_the_til
     desc.cell      = &cell;
     desc.grid      = &grid;
     desc.max_dist  = 60.0;      // Beyond anything in the box, so nothing clamps
-    desc.num_slabs = num_slabs;
+    desc.planes_per_slab = pps;
     desc.num_bins  = num_bins;
     desc.field     = field.data();
 
@@ -162,7 +164,7 @@ UTEST(viamd_void_field, field_matches_brute_force_and_does_not_depend_on_the_til
                 worst = fmax(worst, fabs(ref - (double)field[idx]));
 
                 // The profile rebuilt from the field, binned by the same helpers
-                const uint32_t slab = void_profile_slab_of(k, grid.dim[2], num_slabs);
+                const uint32_t slab = void_profile_slab_of(k, pps);
                 rebuilt.total[slab] += 1;
                 if (field[idx] <= 0.0f) {
                     rebuilt.solid[slab] += 1;
@@ -214,14 +216,15 @@ UTEST(viamd_void_field, voxels_out_of_range_report_max_dist) {
     grid.spacing = { 1.0f, 1.0f, 1.0f };
     grid.dim[0] = grid.dim[1] = grid.dim[2] = 20;
 
-    const uint32_t num_slabs = 4, num_bins = 10;
+    const uint32_t pps = 5, num_bins = 10;
+    const uint32_t num_slabs = void_profile_num_slabs(grid.dim[2], pps);
     std::vector<float> field(md_grid_num_points(&grid), -1.0f);
 
     void_field_desc_t desc = {};
     desc.beads = beads.view();
     desc.grid = &grid;
     desc.max_dist = 5.0;
-    desc.num_slabs = num_slabs;
+    desc.planes_per_slab = pps;
     desc.num_bins = num_bins;
     desc.field = field.data();
 
@@ -266,13 +269,14 @@ UTEST(viamd_void_field, triclinic_cell_is_counted_once) {
     md_grid_t grid = {};
     ASSERT_TRUE(void_field_grid(&grid, &cell, NULL, 0, 0.5f));
 
-    const uint32_t num_slabs = 16, num_bins = 64;
+    const uint32_t pps = 4, num_bins = 64;
+    const uint32_t num_slabs = void_profile_num_slabs(grid.dim[2], pps);
     void_field_desc_t desc = {};
     desc.beads = beads.view();
     desc.cell = &cell;
     desc.grid = &grid;
     desc.max_dist = 40.0;
-    desc.num_slabs = num_slabs;
+    desc.planes_per_slab = pps;
     desc.num_bins = num_bins;
 
     Run run(num_slabs, num_bins);
@@ -300,13 +304,14 @@ UTEST(viamd_void_field, porosity_of_a_sphere_in_a_periodic_cube) {
     md_grid_t grid = {};
     ASSERT_TRUE(void_field_grid(&grid, &cell, NULL, 0, 0.5f));
 
-    const uint32_t num_slabs = 32, num_bins = 512;
+    const uint32_t pps = 3, num_bins = 512;
+    const uint32_t num_slabs = void_profile_num_slabs(grid.dim[2], pps);
     void_field_desc_t desc = {};
     desc.beads = beads.view();
     desc.cell = &cell;
     desc.grid = &grid;
     desc.max_dist = L;
-    desc.num_slabs = num_slabs;
+    desc.planes_per_slab = pps;
     desc.num_bins = num_bins;
 
     Run run(num_slabs, num_bins);
@@ -323,4 +328,65 @@ UTEST(viamd_void_field, porosity_of_a_sphere_in_a_periodic_cube) {
 
     // The deepest point of the void is the cube corner, at half the body diagonal from the centre
     EXPECT_NEAR(sqrt(3.0) * 0.5 * L - a, (double)run.accum.d_max, 0.5);
+}
+
+UTEST(viamd_void_field, density_profile_is_flat_for_uniform_mass) {
+    // The density along z is mass binned by world z over voxels counted by plane. Those describe the
+    // same volume only if every slab boundary is a plane boundary, so a uniform mass has to come out
+    // uniform in every slab. The grid has more planes than the profile has slabs, which is the case
+    // where a slab could otherwise hold a fractional number of planes and the density would alternate
+    // between two wrong values from one slab to the next.
+    const double Lxy = 8.0, Lz = 301.0;
+    const md_unitcell_t cell = md_unitcell_from_extent(Lxy, Lxy, Lz);
+
+    Beads beads;
+    beads.x = { 4.0f }; beads.y = { 4.0f }; beads.z = { 150.0f }; beads.r = { 1.0f };
+    beads.build(&cell);
+
+    md_grid_t grid = {};
+    ASSERT_TRUE(void_field_grid(&grid, &cell, NULL, 0, 1.0f));
+    ASSERT_EQ(301, grid.dim[2]);
+
+    const uint32_t pps       = void_profile_planes_per_slab(grid.dim[2], 128);
+    const uint32_t num_slabs = void_profile_num_slabs(grid.dim[2], pps);
+    const uint32_t num_bins  = 16;
+    ASSERT_EQ(3u, pps);
+    ASSERT_EQ(101u, num_slabs);             // The last one a single plane
+
+    void_field_desc_t desc = {};
+    desc.beads           = beads.view();
+    desc.cell            = &cell;
+    desc.grid            = &grid;
+    desc.max_dist        = 8.0;
+    desc.planes_per_slab = pps;
+    desc.num_bins        = num_bins;
+
+    Run run(num_slabs, num_bins);
+    void_field_eval_tiles(&run.accum, &desc, 0, void_field_num_tiles(&grid));
+    const void_profile_t prof = void_field_profile(&run.accum, &desc);
+    ASSERT_TRUE(void_profile_valid(&prof));
+
+    // Slab bounds are plane bounds, and the last one stops at the cell face rather than a whole slab
+    // height past its lower bound.
+    for (uint32_t s = 0; s < num_slabs; ++s) {
+        const double z_lo = (double)grid.origin.z + (double)(s * pps) * (double)grid.spacing.z;
+        EXPECT_NEAR(z_lo, void_profile_z_lo(&prof, s), 1e-4);
+        EXPECT_EQ((uint64_t)(s + 1 < num_slabs ? pps : 1) * 64u, run.total[s]);
+    }
+    EXPECT_NEAR(Lz, void_profile_z_hi(&prof, num_slabs - 1), 1e-3);
+
+    // A uniform column of mass placed off the plane centres, seven positions per plane
+    const int per_plane = 7;
+    const int n = grid.dim[2] * per_plane;
+    std::vector<vec3_t> xyz;
+    for (int i = 0; i < n; ++i) {
+        xyz.push_back({ 1.0f, 1.0f, (float)(((double)i + 0.5) * Lz / (double)n) });
+    }
+    std::vector<double> m(num_slabs, 0.0);
+    EXPECT_NEAR((double)n, void_profile_bin_mass(m.data(), &prof, xyz.data(), NULL, xyz.size(), true), 1e-9);
+
+    const double want = (double)n / (Lxy * Lxy * Lz);
+    for (uint32_t s = 0; s < num_slabs; ++s) {
+        EXPECT_NEAR(want, void_profile_mass_density(&prof, m.data(), s, s + 1), 1e-9 * want);
+    }
 }

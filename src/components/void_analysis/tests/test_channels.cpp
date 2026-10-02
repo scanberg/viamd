@@ -206,117 +206,6 @@ UTEST(viamd_channels, converging_tubes_make_one_channel_with_two_branches) {
     channel_tree_free(&tree);
 }
 
-UTEST(viamd_channels, layout_columns_a_small_tree) {
-    // One merge node with two leaves below it: the leaves take columns 0 and 1, and the merge sits
-    // between them at 0.5.
-    md_allocator_i* alloc = md_get_heap_allocator();
-
-    channel_tree_t tree = {};
-    tree.alloc = alloc;
-
-    channel_node_t n = {};
-    n.parent = n.first_child = n.next_sibling = CHANNEL_INVALID_INDEX;
-
-    channel_node_t root = n;   // 0
-    channel_node_t a    = n;   // 1
-    channel_node_t b    = n;   // 2
-    root.reaches_top = root.reaches_bottom = true;
-    a.reaches_top = b.reaches_top = true;
-    root.first_child = 1;
-    a.next_sibling   = 2;
-    a.parent = b.parent = 0;
-
-    md_array_push(tree.nodes, root, alloc);
-    md_array_push(tree.nodes, a, alloc);
-    md_array_push(tree.nodes, b, alloc);
-    md_array_push(tree.roots, 0u, alloc);
-
-    float slot[3];
-    const float used = channel_tree_layout(slot, &tree, alloc);
-
-    EXPECT_NEAR(2.0, (double)used, 1.0e-6);
-    EXPECT_NEAR(0.0, (double)slot[1], 1.0e-6);
-    EXPECT_NEAR(1.0, (double)slot[2], 1.0e-6);
-    EXPECT_NEAR(0.5, (double)slot[0], 1.0e-6);
-
-    channel_tree_free(&tree);
-}
-
-UTEST(viamd_channels, layout_survives_a_deep_tree) {
-    // A merge tree carries one node per pair of branches that join, so a dense network produces a
-    // chain many thousands of levels deep. Laying that out by recursing over the children overflows
-    // the stack on a real system, so the traversal carries its own.
-    //
-    // The tree is built directly rather than swept out of a field: reaching this depth through a
-    // field would need a grid with as many slabs, and the depth is the whole point of the case.
-    md_allocator_i* alloc = md_get_heap_allocator();
-
-    // Deep enough to overrun a default stack on every platform the project builds for: recursing
-    // here costs roughly 50 bytes a level, so this is tens of megabytes of frames against the 8 MB
-    // a linux thread gets and the 1 MB a windows one does. The window between those two is exactly
-    // where a version that only crashes for some users lives.
-    const uint32_t DEPTH = 250000;
-
-    channel_tree_t tree = {};
-    tree.alloc = alloc;
-
-    // Level i is a merge node at index 2i whose children are level i+1 and a leaf at index 2i+1.
-    // The deepest level has only its leaf.
-    for (uint32_t i = 0; i < DEPTH; ++i) {
-        channel_node_t merge = {};
-        merge.parent = (i == 0) ? CHANNEL_INVALID_INDEX : 2 * (i - 1);
-        merge.next_sibling = CHANNEL_INVALID_INDEX;
-        merge.first_child = (i + 1 < DEPTH) ? 2 * (i + 1) : (2 * i + 1);
-        merge.reaches_top = true;
-        merge.reaches_bottom = (i == 0);
-        md_array_push(tree.nodes, merge, alloc);
-
-        channel_node_t leaf = {};
-        leaf.parent = 2 * i;
-        leaf.first_child = CHANNEL_INVALID_INDEX;
-        leaf.next_sibling = CHANNEL_INVALID_INDEX;
-        leaf.reaches_top = true;
-        md_array_push(tree.nodes, leaf, alloc);
-    }
-    // Wire the leaf of level i as the sibling of level i+1
-    for (uint32_t i = 0; i + 1 < DEPTH; ++i) {
-        tree.nodes[2 * (i + 1)].next_sibling = 2 * i + 1;
-    }
-    md_array_push(tree.roots, 0u, alloc);
-
-    md_array(float) slot = 0;
-    md_array_resize(slot, md_array_size(tree.nodes), alloc);
-    const float used = channel_tree_layout(slot, &tree, alloc);
-
-    // One column per leaf, and every leaf got a distinct one
-    EXPECT_NEAR((double)DEPTH, (double)used, 1.0e-6);
-    md_array(uint8_t) taken = 0;
-    md_array_resize(taken, DEPTH, alloc);
-    MEMSET(taken, 0, DEPTH);
-    uint32_t bad = 0;
-    for (uint32_t i = 0; i < DEPTH; ++i) {
-        const float s = slot[2 * i + 1];
-        if (!(s >= 0.0f && s < (float)DEPTH)) { bad += 1; continue; }
-        const uint32_t c = (uint32_t)s;
-        if (taken[c]) bad += 1;
-        taken[c] = 1;
-    }
-    EXPECT_EQ(0u, bad);
-
-    // A merge node sits at the mean of its children
-    for (uint32_t i = 0; i + 1 < DEPTH; ++i) {
-        const double want = 0.5 * ((double)slot[2 * (i + 1)] + (double)slot[2 * i + 1]);
-        if (fabs(want - (double)slot[2 * i]) > 1.0e-3) {
-            EXPECT_NEAR(want, (double)slot[2 * i], 1.0e-3);
-            break;
-        }
-    }
-
-    md_array_free(slot, alloc);
-    md_array_free(taken, alloc);
-    channel_tree_free(&tree);
-}
-
 // --- Percolation -------------------------------------------------------------------------------
 //
 // The same questions the sweeps above answer by repetition, answered once in order of decreasing
@@ -494,109 +383,10 @@ UTEST(viamd_channels, percolation_separates_a_sealed_cavity_from_the_open_pore) 
     channel_percolation_free(&perc);
 }
 
-UTEST(viamd_channels, traced_route_is_one_a_probe_could_follow) {
-    // The route, not a representative centreline. Every point on it has to clear the probe, it has
-    // to start at one face and end at the other, and consecutive points have to be reachable from
-    // each other - which is what the straightening step is allowed to assume and has to preserve.
-    md_allocator_i* alloc = md_get_heap_allocator();
-    DrilledBlock b;
-
-    const double r = 6.0;            // Fits the widest hole only
-    md_array(vec4_t) path = 0;
-    double length = 0.0;
-    ASSERT_TRUE(channel_trace_path(&path, &length, &b.field, r, alloc));
-
-    const size_t n = md_array_size(path);
-    ASSERT_TRUE(n > 1);
-
-    const double z_top = (DrilledBlock::DIM[2] - 0.5) * DrilledBlock::H;
-    EXPECT_NEAR(z_top, path[0].z, 1.0e-4);
-    EXPECT_NEAR(0.5 * DrilledBlock::H, path[n - 1].z, 1.0e-4);
-
-    for (size_t i = 0; i < n; ++i) {
-        EXPECT_TRUE(path[i].w >= (float)r);
-        // Only the widest hole admits a probe this size
-        EXPECT_NEAR(DrilledBlock::AX[2], path[i].x, DrilledBlock::RAD[2] - r + 0.5);
-    }
-
-    // A straight bore, so the straightened route is the depth of the block.
-    EXPECT_NEAR(z_top - 0.5 * DrilledBlock::H, length, 0.5);
-
-    // Resampled densely along the straightened polyline: every step is about half a voxel. That is
-    // what lets a renderer size each sphere from the clearance at its own centre, instead of
-    // interpolating between anchors which straightening is free to leave sixty voxels apart - and a
-    // width interpolated between two anchors is widest exactly where it was never measured.
-    EXPECT_TRUE(n > 100);
-    for (size_t i = 1; i < n; ++i) {
-        const double dx = path[i].x - path[i-1].x;
-        const double dy = path[i].y - path[i-1].y;
-        const double dz = path[i].z - path[i-1].z;
-        EXPECT_TRUE(sqrt(dx*dx + dy*dy + dz*dz) <= (double)DrilledBlock::H + 1.0e-4);
-    }
-
-    // Nothing fits above the critical radius, and the trace has to say so rather than returning a
-    // route through solid.
-    md_array(vec4_t) none = 0;
-    EXPECT_FALSE(channel_trace_path(&none, nullptr, &b.field, 7.5, alloc));
-    md_array_free(none, alloc);
-
-    md_array_free(path, alloc);
-}
-
-UTEST(viamd_channels, traced_route_follows_a_bent_pore) {
-    // A tube whose axis swings across the box, so the staircase a breadth first search returns is
-    // nothing like the route. The straightened length has to come back near the true arc length,
-    // and every point still has to clear the probe.
-    md_allocator_i* alloc = md_get_heap_allocator();
-
-    const float h = 0.5f;
-    const int dim[3] = { 160, 40, 120 };
-    const double R = 5.0, swing = 20.0;
-    const double zmax = dim[2] * h;
-
-    std::vector<float> f((size_t)dim[0]*dim[1]*dim[2], 0.0f);
-    for (int k = 0; k < dim[2]; ++k) {
-        const double z = (k + 0.5) * h;
-        const double cx = 40.0 + swing * (z / zmax);
-        for (int j = 0; j < dim[1]; ++j) {
-            const double y = (j + 0.5) * h;
-            for (int i = 0; i < dim[0]; ++i) {
-                const double x = (i + 0.5) * h;
-                f[(size_t)k*dim[0]*dim[1] + (size_t)j*dim[0] + i] =
-                    (float)fmax(0.0, R - sqrt((x - cx)*(x - cx) + (y - 10.25)*(y - 10.25)));
-            }
-        }
-    }
-
-    channel_field_t field = {};
-    field.data = f.data();
-    for (int a = 0; a < 3; ++a) {
-        field.dim[a] = dim[a]; field.spacing[a] = h; field.origin[a] = 0.0f; field.pbc[a] = false;
-    }
-
-    md_array(vec4_t) path = 0;
-    double length = 0.0;
-    ASSERT_TRUE(channel_trace_path(&path, &length, &field, 3.0, alloc));
-
-    for (size_t i = 0; i < md_array_size(path); ++i) {
-        EXPECT_TRUE(path[i].w >= 3.0f);
-    }
-
-    // The axis is a straight slanted line, so its length is hypot(swing, depth). A six connected
-    // staircase would report swing + depth instead, which is 13% longer here - far outside this.
-    const double depth = zmax - h;
-    const double want  = sqrt(swing * swing + depth * depth);
-    EXPECT_NEAR(want, length, 0.06 * want);
-    EXPECT_TRUE(length < swing + depth - 1.0);
-
-    md_array_free(path, alloc);
-}
-
-UTEST(viamd_channels, percolation_and_route_cross_the_periodic_seam) {
+UTEST(viamd_channels, percolation_crosses_the_periodic_seam) {
     // The box is periodic in x and the only tube through it drifts far enough to leave one x face
     // and come back through the other. If the wrap is not honoured the tube is two blind pores and
-    // nothing gets through - so this pins the periodic neighbour handling in the percolation pass
-    // and in the trace at once. It is the same wrap md_spatial_acc applies when it builds the field
+    // nothing gets through - so this pins the periodic neighbour handling in the percolation pass. It is the same wrap md_spatial_acc applies when it builds the field
     // in the first place; here it is asserted rather than assumed.
     md_allocator_i* alloc = md_get_heap_allocator();
 
@@ -639,28 +429,12 @@ UTEST(viamd_channels, percolation_and_route_cross_the_periodic_seam) {
     EXPECT_TRUE(perc.r_c > 3.0);
     EXPECT_TRUE(perc.r_c <= R + 0.05);
 
-    md_array(vec4_t) path = 0;
-    double length = 0.0;
-    ASSERT_TRUE(channel_trace_path(&path, &length, &field, 2.0, alloc));
-    for (size_t i = 0; i < md_array_size(path); ++i) {
-        EXPECT_TRUE(path[i].w >= 2.0f);
-        // Every point is wrapped back inside the box, which is what makes it drawable
-        EXPECT_TRUE(path[i].x >= 0.0f && path[i].x <= (float)(Lx + h));
-    }
-    // It has to cover the drift as well as the depth, which it can only do by going through the seam
-    EXPECT_NEAR(sqrt(drift * drift + zmax * zmax), length, 0.1 * zmax);
-
-    md_array_free(path, alloc);
     channel_percolation_free(&perc);
 
-    // Turn the wrap off and the same field is cut at the seam: nothing through, and nothing to trace.
+    // Turn the wrap off and the same field is cut at the seam: nothing through.
     field.pbc[0] = false;
     channel_percolation_t flat;
     ASSERT_TRUE(channel_percolate(&flat, &field, 0.25, 64, alloc));
     EXPECT_FALSE(flat.has_r_c);
     channel_percolation_free(&flat);
-
-    md_array(vec4_t) none = 0;
-    EXPECT_FALSE(channel_trace_path(&none, nullptr, &field, 2.0, alloc));
-    md_array_free(none, alloc);
 }

@@ -309,6 +309,7 @@ struct ScatteringComponent : viamd::EventHandler {
     float q_par_max_nm = 2.0f;
     float q_z_max_nm = 2.0f;
     float oversampling = 3.0f;
+    float ring_rel_width = 0.1f;      // Lattice shells closer than this (relative to q_par) share a ring
     int   num_qz = 512;
     int   max_slices = 1024;
 
@@ -377,17 +378,20 @@ struct ScatteringComponent : viamd::EventHandler {
     size_t res_rows = 0;
     size_t res_cols = 0;
     md_array(float)  res_raw = nullptr;      // [row = qz ascending][ring]
-    md_array(double) res_map = nullptr;      // [row 0 = highest qz][ring], log10 if log_scale
+    md_array(double) res_map = nullptr;      // [ring][row 0 = highest qz], log10 if log_scale. One column per ring,
+                                             // drawn between the ring edges since the rings are non-uniform in q_par
     md_array(float)  res_smooth = nullptr;   // res_raw with the instrument resolution applied, same layout
     double res_min = 0.0, res_max = 1.0;
-    double res_qpar_min = 0.0, res_qpar_max = 1.0;   // nm^-1 bounds
+    double res_qpar_min = 0.0, res_qpar_max = 1.0;   // nm^-1 bounds (outer ring edges)
     double res_qz_min = 0.0, res_qz_max = 1.0;       // nm^-1 bounds
-    double res_dq = 0.0;                             // Å^-1
+    double res_dq = 0.0;                             // Å^-1, lattice spacing max(2 pi / Lx, 2 pi / Ly) (max ring width)
+    double res_qpar_first = 0.0;                     // Å^-1, smallest sampled q_par min(2 pi / Lx, 2 pi / Ly)
     double res_dqz = 0.0;                            // Å^-1
     bool   res_dirty_map = false;
     md_array(double) prof_z = nullptr;
     md_array(double) prof_rho = nullptr;
-    md_array(double) res_ring_q_nm = nullptr;   // Ring centers (nm^-1)
+    md_array(double) res_ring_q_nm = nullptr;   // Mean q_par per ring (nm^-1), increasing but non-uniform
+    md_array(double) res_ring_edge_nm = nullptr; // Ring boundaries (nm^-1), res_cols + 1
     md_array(unsigned) res_ring_count = nullptr;
     md_array(double) res_qz_nm = nullptr;       // Row q_z (nm^-1), ascending
     md_array(double) hcut = nullptr;
@@ -527,6 +531,7 @@ struct ScatteringComponent : viamd::EventHandler {
         h = md_hash64(&q_par_max_nm, sizeof(q_par_max_nm), h);
         h = md_hash64(&q_z_max_nm, sizeof(q_z_max_nm), h);
         h = md_hash64(&oversampling, sizeof(oversampling), h);
+        h = md_hash64(&ring_rel_width, sizeof(ring_rel_width), h);
         h = md_hash64(&max_slices, sizeof(max_slices), h);
         h = md_hash64(&density_model, sizeof(density_model), h);
         if (density_model == DensityModel_Fibril) {
@@ -727,6 +732,8 @@ struct ScatteringComponent : viamd::EventHandler {
         md_array_free(prof_z, alloc);
         md_array_free(prof_rho, alloc);
         md_array_free(res_ring_q_nm, alloc);
+        md_array_free(res_ring_edge_nm, alloc);
+        res_ring_edge_nm = nullptr;
         md_array_free(res_ring_count, alloc);
         md_array_free(res_qz_nm, alloc);
         md_array_free(hcut, alloc);
@@ -1121,6 +1128,7 @@ struct ScatteringComponent : viamd::EventHandler {
         params.q_par_max = q_par_max_nm * 0.1;
         params.q_z_max = q_z_max_nm * 0.1;
         params.oversampling = oversampling;
+        params.ring_rel_width = ring_rel_width;
         params.max_slices = (size_t)MAX(max_slices, 8);
 
         ctx = md_gisaxs_create(&input, &params, alloc);
@@ -1228,16 +1236,28 @@ struct ScatteringComponent : viamd::EventHandler {
             }
         }
 
-        const double dq = R > 0 ? md_gisaxs_ring_q(ctx)[0] : 0.0;
         md_gisaxs_info_t info;
         md_gisaxs_get_info(ctx, &info);
         res_dq = info.dq_ring;
+        res_qpar_first = info.q_par_min;
         res_dqz = Nq > 1 ? eval_qz[1] - eval_qz[0] : 0.0;
-        (void)dq;
-        // Ring r is centered at (r + 1) * dq
+
+        // Rings are non-uniform in q_par: ring r has mean q_par ring_q[r] and spans [edges[r], edges[r + 1])
+        md_array_resize(res_ring_q_nm, R, alloc);
+        md_array_resize(res_ring_edge_nm, R + 1, alloc);
+        md_array_resize(res_ring_count, R, alloc);
+        const double* rq = md_gisaxs_ring_q(ctx);
+        const double* re = md_gisaxs_ring_edges(ctx);
+        const unsigned* rc = md_gisaxs_ring_count(ctx);
+        for (size_t i = 0; i < R; ++i) {
+            res_ring_q_nm[i] = rq[i] * 10.0;
+            res_ring_count[i] = rc[i];
+        }
+        for (size_t i = 0; i <= R; ++i) res_ring_edge_nm[i] = re[i] * 10.0;
+
         const double prev_bounds[4] = {res_qpar_min, res_qpar_max, res_qz_min, res_qz_max};
-        res_qpar_min = 0.5 * res_dq * 10.0;
-        res_qpar_max = (R + 0.5) * res_dq * 10.0;
+        res_qpar_min = res_ring_edge_nm[0];
+        res_qpar_max = res_ring_edge_nm[R];
         res_qz_min = (eval_qz[0] - 0.5 * res_dqz) * 10.0;
         res_qz_max = (eval_qz[Nq - 1] + 0.5 * res_dqz) * 10.0;
 
@@ -1259,14 +1279,6 @@ struct ScatteringComponent : viamd::EventHandler {
             prof_rho[i] = sp[i];
         }
 
-        md_array_resize(res_ring_q_nm, R, alloc);
-        md_array_resize(res_ring_count, R, alloc);
-        const double* rq = md_gisaxs_ring_q(ctx);
-        const unsigned* rc = md_gisaxs_ring_count(ctx);
-        for (size_t i = 0; i < R; ++i) {
-            res_ring_q_nm[i] = rq[i] * 10.0;
-            res_ring_count[i] = rc[i];
-        }
         md_array_resize(res_qz_nm, Nq, alloc);
         for (size_t i = 0; i < Nq; ++i) res_qz_nm[i] = eval_qz[i] * 10.0;
 
@@ -1298,17 +1310,16 @@ struct ScatteringComponent : viamd::EventHandler {
             res_max = vmax;
             res_min = 0.0;
         }
-        for (size_t row = 0; row < res_rows; ++row) {
-            // Row 0 of the heat map is drawn at the top, i.e. highest q_z
-            const float* src = res_smooth + (res_rows - 1 - row) * res_cols;
-            double* dst = res_map + row * res_cols;
-            for (size_t c = 0; c < res_cols; ++c) {
-                double v = src[c];
+        for (size_t c = 0; c < res_cols; ++c) {
+            // One contiguous column per ring, row 0 of the heat map is drawn at the top, i.e. highest q_z
+            double* dst = res_map + c * res_rows;
+            for (size_t row = 0; row < res_rows; ++row) {
+                double v = res_smooth[(res_rows - 1 - row) * res_cols + c];
                 if (log_scale) {
                     v = v > 0.0 ? log10(v) : res_min;
                     v = MAX(v, res_min);
                 }
-                dst[c] = v;
+                dst[row] = v;
             }
         }
         res_dirty_map = false;
@@ -1378,7 +1389,7 @@ struct ScatteringComponent : viamd::EventHandler {
         MEMCPY(res_smooth, res_raw, sizeof(float) * R * Q);
 
         const double fwhm_to_sigma = 1.0 / 2.354820045;
-        const double sc = res_dq > 0.0 ? res_fwhm_qpar * fwhm_to_sigma / (res_dq * 10.0) : 0.0;
+        const double sq = res_fwhm_qpar * fwhm_to_sigma;     // nm^-1
         const double sr = res_dqz > 0.0 ? res_fwhm_qz * fwhm_to_sigma / (res_dqz * 10.0) : 0.0;
 
         md_array(float) tmp = nullptr;
@@ -1392,20 +1403,44 @@ struct ScatteringComponent : viamd::EventHandler {
             return rad;
         };
 
-        if (sc > 0.05) {
-            const int rad = make_kernel(sc);
+        if (sq > 0.0 && R > 1) {
+            // Gaussian convolution in q_par on the non-uniform rings: the rings are quadrature nodes with weight equal
+            // to their width. The weights are precomputed as a (banded) R x R matrix, each row normalized.
+            const double cutoff = 4.0 * sq;
+            md_array(uint32_t) kbeg = nullptr;
+            md_array(uint32_t) kend = nullptr;
+            md_array(uint32_t) koff = nullptr;
+            defer { md_array_free(kbeg, alloc); md_array_free(kend, alloc); md_array_free(koff, alloc); };
+            md_array_resize(kbeg, R, alloc);
+            md_array_resize(kend, R, alloc);
+            md_array_resize(koff, R + 1, alloc);
+            md_array_shrink(kern, 0);
+            koff[0] = 0;
+            for (size_t c = 0; c < R; ++c) {
+                size_t b = c, e = c + 1;
+                while (b > 0 && res_ring_q_nm[c] - res_ring_q_nm[b - 1] <= cutoff) --b;
+                while (e < R && res_ring_q_nm[e] - res_ring_q_nm[c] <= cutoff) ++e;
+                kbeg[c] = (uint32_t)b;
+                kend[c] = (uint32_t)e;
+                double wsum = 0.0;
+                const size_t off = md_array_size(kern);
+                for (size_t cc = b; cc < e; ++cc) {
+                    const double d = (res_ring_q_nm[cc] - res_ring_q_nm[c]) / sq;
+                    const double w = exp(-0.5 * d * d) * (res_ring_edge_nm[cc + 1] - res_ring_edge_nm[cc]);
+                    md_array_push(kern, w, alloc);
+                    wsum += w;
+                }
+                for (size_t i = off; i < md_array_size(kern); ++i) kern[i] = wsum > 0.0 ? kern[i] / wsum : 0.0;
+                koff[c + 1] = (uint32_t)md_array_size(kern);
+            }
             md_array_resize(tmp, R, alloc);
             for (size_t r = 0; r < Q; ++r) {
                 float* row = res_smooth + r * R;
                 for (size_t c = 0; c < R; ++c) {
-                    double sum = 0.0, wsum = 0.0;
-                    for (int i = -rad; i <= rad; ++i) {
-                        const long cc = (long)c + i;
-                        if (cc < 0 || cc >= (long)R) continue;
-                        sum += kern[i + rad] * row[cc];
-                        wsum += kern[i + rad];
-                    }
-                    tmp[c] = (float)(wsum > 0.0 ? sum / wsum : row[c]);
+                    const double* k = kern + koff[c];
+                    double sum = 0.0;
+                    for (size_t cc = kbeg[c]; cc < kend[c]; ++cc) sum += k[cc - kbeg[c]] * row[cc];
+                    tmp[c] = (float)sum;
                 }
                 MEMCPY(row, tmp, sizeof(float) * R);
             }
@@ -1451,18 +1486,52 @@ struct ScatteringComponent : viamd::EventHandler {
         return (px % pw) >= det.module_w || (py % ph) >= det.module_h;
     }
 
+    // Ring containing q_par (nm^-1), i.e. edge[r] <= q_par < edge[r + 1], or -1 outside [edge[0], edge[R]]
+    long ring_at(double qpar_nm) const {
+        const size_t R = res_cols;
+        if (!R || !res_ring_edge_nm) return -1;
+        if (qpar_nm < res_ring_edge_nm[0] || qpar_nm > res_ring_edge_nm[R]) return -1;
+        // Last edge <= q_par
+        size_t lo = 0, hi = R;
+        while (lo < hi) {
+            const size_t mid = (lo + hi + 1) / 2;
+            if (res_ring_edge_nm[mid] <= qpar_nm) lo = mid; else hi = mid - 1;
+        }
+        return (long)MIN(lo, R - 1);
+    }
+
+    // Linear interpolation weights in q_par between the (non-uniform) ring q values: value = (1 - t) I[c0] + t I[c1].
+    // Below the first / above the last ring q (but within the outer edges) the nearest ring is used.
+    // Returns false outside [edge[0], edge[R]] (specular rod / beyond q_par max).
+    bool ring_interp(double qpar_nm, size_t* c0, size_t* c1, double* t) const {
+        const size_t R = res_cols;
+        if (!R || !res_ring_edge_nm) return false;
+        if (qpar_nm < res_ring_edge_nm[0] || qpar_nm > res_ring_edge_nm[R]) return false;
+        const double* rq = res_ring_q_nm;
+        if (qpar_nm <= rq[0])     { *c0 = *c1 = 0;     *t = 0.0; return true; }
+        if (qpar_nm >= rq[R - 1]) { *c0 = *c1 = R - 1; *t = 0.0; return true; }
+        // Last ring q <= q_par (R >= 2 here)
+        size_t lo = 0, hi = R - 1;
+        while (lo < hi) {
+            const size_t mid = (lo + hi + 1) / 2;
+            if (rq[mid] <= qpar_nm) lo = mid; else hi = mid - 1;
+        }
+        *c0 = lo;
+        *c1 = MIN(lo + 1, R - 1);
+        *t = *c1 > *c0 ? (qpar_nm - rq[*c0]) / (rq[*c1] - rq[*c0]) : 0.0;
+        return true;
+    }
+
     // Bilinear lookup of the (smoothed) q-map at q_par, q_z (nm^-1). Returns false outside the data.
     bool lookup(double qpar_nm, double qz_nm, float* out) const {
-        const double cf = qpar_nm / (res_dq * 10.0) - 1.0;     // ring r is centered at (r + 1) dq
+        size_t c0, c1;
+        double tc;
+        if (!ring_interp(qpar_nm, &c0, &c1, &tc)) return false;
         const double rf = qz_nm / (res_dqz * 10.0);            // row r at r * dqz
-        if (cf < -0.5 || cf > (double)res_cols - 1.0) return false;   // specular rod / beyond q_par max
         if (rf < 0.0 || rf > (double)res_rows - 1.0) return false;
-        const double c = MAX(cf, 0.0);
-        const size_t c0 = MIN((size_t)c, res_cols - 1);
-        const size_t c1 = MIN(c0 + 1, res_cols - 1);
         const size_t r0 = MIN((size_t)rf, res_rows - 1);
         const size_t r1 = MIN(r0 + 1, res_rows - 1);
-        const double tc = c - c0, tr = rf - r0;
+        const double tr = rf - r0;
         const float* m = res_smooth;
         const double v = (1 - tr) * ((1 - tc) * m[r0 * res_cols + c0] + tc * m[r0 * res_cols + c1]) +
                          tr       * ((1 - tc) * m[r1 * res_cols + c0] + tc * m[r1 * res_cols + c1]);
@@ -1958,6 +2027,12 @@ struct ScatteringComponent : viamd::EventHandler {
             ImGui::SliderInt("q_z rows", &num_qz, 16, 1024);
             ImGui::SliderFloat("Oversampling", &oversampling, 1.5f, 4.0f, "%.2f");
             ImGui::SetItemTooltip("Grid oversampling relative to q max (in-plane and z).\nHigher reduces aliasing at the cost of memory and time.");
+            ImGui::SliderFloat("Ring width (Δq/q)", &ring_rel_width, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+            ring_rel_width = CLAMP(ring_rel_width, 0.001f, 10.0f);
+            ImGui::SetItemTooltip("The periodic box restricts q_par to the reciprocal lattice (2π i / Lx, 2π j / Ly).\n"
+                                  "Lattice shells closer than this fraction of q_par are averaged into one ring.\n"
+                                  "At low q_par every shell is its own ring (exact q_par, few points), rings are never wider than\n"
+                                  "the lattice spacing max(2π/Lx, 2π/Ly). Smaller: finer q_par sampling, noisier rings, more memory.");
             ImGui::InputInt("Max slices", &max_slices);
             max_slices = CLAMP(max_slices, 8, 8192);
             if (ctx) {
@@ -1965,7 +2040,7 @@ struct ScatteringComponent : viamd::EventHandler {
                 md_gisaxs_get_info(ctx, &info);
                 ImGui::TextDisabled("Grid %i x %i, dx = %.2f Å", info.nx, info.ny, info.dx);
                 ImGui::TextDisabled("%zu slices, dz = %.2f Å", info.num_slices, info.dz);
-                ImGui::TextDisabled("%zu rings, dq = %.4f nm⁻¹", info.num_rings, info.dq_ring * 10.0);
+                ImGui::TextDisabled("%zu rings, q_par min = %.4f nm⁻¹, max width = %.4f nm⁻¹", info.num_rings, info.q_par_min * 10.0, info.dq_ring * 10.0);
                 ImGui::TextDisabled("Ring matrices: %.1f MB", info.matrix_bytes / (1024.0 * 1024.0));
             }
         }
@@ -1979,7 +2054,8 @@ struct ScatteringComponent : viamd::EventHandler {
             res_fwhm_qz = MAX(res_fwhm_qz, 0.0f);
             if (changed) res_dirty_map = true;
             if (res_dq > 0.0) {
-                ImGui::TextDisabled("Ring spacing (box limit): %.4f nm⁻¹", res_dq * 10.0);
+                ImGui::TextDisabled("Lowest q_par (box limit): %.4f nm⁻¹", res_qpar_first * 10.0);
+                ImGui::TextDisabled("Lattice spacing: %.4f nm⁻¹", res_dq * 10.0);
             }
             ImGui::Checkbox("Show detector image", &view_detector);
             ImGui::BeginDisabled(!view_detector);
@@ -2079,7 +2155,7 @@ struct ScatteringComponent : viamd::EventHandler {
         md_array_resize(vcut, Q, alloc);
 
         const double half_qz = MAX(0.5 * cut_width_qz, 0.5 * res_dqz * 10.0);
-        const double half_qp = MAX(0.5 * cut_width_qpar, 0.5 * res_dq * 10.0);
+        const double half_qp = 0.5 * cut_width_qpar;
 
         for (size_t c = 0; c < R; ++c) hcut[c] = 0.0;
         size_t nrows = 0;
@@ -2099,10 +2175,21 @@ struct ScatteringComponent : viamd::EventHandler {
             c_end = MAX(c_end, c + 1);
             ncols += 1;
         }
-        for (size_t r = 0; r < Q; ++r) {
-            double sum = 0.0;
-            for (size_t c = c_beg; c < c_end; ++c) sum += res_smooth[r * R + c];
-            vcut[r] = ncols ? sum / (double)ncols : 0.0;
+        if (ncols) {
+            for (size_t r = 0; r < Q; ++r) {
+                double sum = 0.0;
+                for (size_t c = c_beg; c < c_end; ++c) sum += res_smooth[r * R + c];
+                vcut[r] = sum / (double)ncols;
+            }
+        } else {
+            // No ring within the band (narrow band between non-uniform rings): interpolate between the neighbors
+            size_t c0 = 0, c1 = 0;
+            double t = 0.0;
+            const bool ok = ring_interp(cut_qpar, &c0, &c1, &t);
+            for (size_t r = 0; r < Q; ++r) {
+                vcut[r] = ok ? (1.0 - t) * res_smooth[r * R + c0] + t * res_smooth[r * R + c1] : 0.0;
+            }
+            ncols = ok ? (c1 > c0 ? 2 : 1) : 0;
         }
         vcut_cols = ncols;
 
@@ -2288,8 +2375,13 @@ struct ScatteringComponent : viamd::EventHandler {
             ImPlot::SetupAxisLinks(ImAxis_Y1, &link_qz_min, &link_qz_max);
             ImPlot::SetupFinish();
 
-            ImPlot::PlotHeatmap("##I", res_map, (int)res_rows, (int)res_cols, res_min, res_max, nullptr,
-                                ImPlotPoint(res_qpar_min, res_qz_min), ImPlotPoint(res_qpar_max, res_qz_max));
+            // The rings are non-uniform in q_par: one single column heat map per ring, spanning its edges
+            for (size_t c = 0; c < res_cols; ++c) {
+                ImGui::PushID((int)c);
+                ImPlot::PlotHeatmap("##I", res_map + c * res_rows, (int)res_rows, 1, res_min, res_max, nullptr,
+                                    ImPlotPoint(res_ring_edge_nm[c], res_qz_min), ImPlotPoint(res_ring_edge_nm[c + 1], res_qz_max));
+                ImGui::PopID();
+            }
 
             if (eval_model.dwba) {
                 const double horizon = horizon_qz_nm();
@@ -2329,14 +2421,14 @@ struct ScatteringComponent : viamd::EventHandler {
 
             if (ImPlot::IsPlotHovered()) {
                 const ImPlotPoint mp = ImPlot::GetPlotMousePos();
-                const double qpar = mp.x * 0.1;   // Å^-1
-                const double qz = mp.y * 0.1;
-                const long col = (long)floor(qpar / res_dq + 0.5) - 1;
+                const double qz = mp.y * 0.1;     // Å^-1
+                const long col = ring_at(mp.x);
                 const long row = res_dqz > 0 ? (long)floor(qz / res_dqz + 0.5) : -1;
                 if (col >= 0 && col < (long)res_cols && row >= 0 && row < (long)res_rows) {
                     const float I = res_smooth[row * res_cols + col];
-                    ImGui::SetTooltip("q_par: %.4f nm⁻¹\nq_z: %.4f nm⁻¹\nalpha_f: %.3f°\nI: %.4e sr⁻¹\nRing points: %u",
-                        mp.x, mp.y, alpha_f_deg(mp.y), I, (col < (long)md_array_size(res_ring_count)) ? res_ring_count[col] : 0u);
+                    ImGui::SetTooltip("q_par: %.4f nm⁻¹ (ring %.4f nm⁻¹, %u points)\nq_z: %.4f nm⁻¹\nalpha_f: %.3f°\nI: %.4e sr⁻¹",
+                        mp.x, res_ring_q_nm[col], (col < (long)md_array_size(res_ring_count)) ? res_ring_count[col] : 0u,
+                        mp.y, alpha_f_deg(mp.y), I);
                 }
             }
             ImPlot::EndPlot();
@@ -2510,6 +2602,7 @@ struct ScatteringComponent : viamd::EventHandler {
         viamd::write_flt(state, STR_LIT("QParMax"), q_par_max_nm);
         viamd::write_flt(state, STR_LIT("QZMax"), q_z_max_nm);
         viamd::write_flt(state, STR_LIT("Oversampling"), oversampling);
+        viamd::write_flt(state, STR_LIT("RingRelWidth"), ring_rel_width);
         viamd::write_int(state, STR_LIT("NumQz"), num_qz);
         viamd::write_int(state, STR_LIT("MaxSlices"), max_slices);
         viamd::write_bool(state, STR_LIT("LogScale"), log_scale);
@@ -2598,6 +2691,7 @@ struct ScatteringComponent : viamd::EventHandler {
             else if (str_eq(ident, STR_LIT("QParMax")))           viamd::extract_flt(q_par_max_nm, arg);
             else if (str_eq(ident, STR_LIT("QZMax")))             viamd::extract_flt(q_z_max_nm, arg);
             else if (str_eq(ident, STR_LIT("Oversampling")))      viamd::extract_flt(oversampling, arg);
+            else if (str_eq(ident, STR_LIT("RingRelWidth")))      viamd::extract_flt(ring_rel_width, arg);
             else if (str_eq(ident, STR_LIT("NumQz")))             viamd::extract_int(num_qz, arg);
             else if (str_eq(ident, STR_LIT("MaxSlices")))         viamd::extract_int(max_slices, arg);
             else if (str_eq(ident, STR_LIT("LogScale")))          viamd::extract_bool(log_scale, arg);

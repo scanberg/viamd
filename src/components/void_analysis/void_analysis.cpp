@@ -26,15 +26,19 @@
 
 #include "void_analysis_core.h"
 
+#include <core/md_str_builder.h>
+
 #include <float.h>
+#include <algorithm>
 
 /*
     Void and nanopore characterization: the component.
 
     The computation lives in void_analysis_core.h - the distance field, the profile it is summarized into and the
-    reductions of it, the surface topography, and connectivity through z - and is tested on its own under tests/.
+    reductions of it, the surface topography, and the pore network - and is tested on its own under tests/.
     This file owns what needs an application: the window and its parameters, reading the system, spreading the
-    field and topography passes over the task system, the volume rendering of the field, and the 3D overlay.
+    field and topography passes over the task system, the volume rendering of the field, and the pore network in
+    the 3D view, with its picking and tooltips.
 
     Residency: statistics are accumulated per tile while the tile is still in cache, so the full field is only
     materialized when explicitly asked for. At 0.5 nm voxels a 670 x 670 x 175 nm box is 2.4e9 voxels, which is
@@ -44,7 +48,7 @@
 namespace {
 
 constexpr int   NUM_BINS  = 512;                      // Distance bins of the profile histogram
-constexpr int   MAX_SLABS = 512;                      // Upper bound on the z resolution of the profile
+constexpr int   MAX_SLABS = 512;                      // Above this many voxel planes, slabs take several
 constexpr int   SASA_MAX_POINTS = 1024;
 constexpr float ANGSTROM_PER_NM = 10.0f;
 constexpr double PI_D = 3.14159265358979323846;
@@ -54,10 +58,6 @@ constexpr double SPECIFIC_AREA_SCALE = 1.0e-20 / 1.66053906892e-24;
 
 // Dalton per Angstrom^3 to kg/m^3: 1.66053906892e-27 kg over 1e-30 m^3
 constexpr double DA_PER_A3_TO_KG_PER_M3 = 1660.53906892;
-
-// The percolation analysis and the traced route. Compiled out of the window and the overlay; the
-// code behind it is kept, and so are its tests in the core.
-#define VOID_ANALYSIS_PERCOLATION 0
 
 // Largest 3D texture edge the field is uploaded at for volume rendering. A larger field is averaged
 // down by a whole number of voxels per axis, which keeps the texture within what any GL 4 driver
@@ -69,20 +69,35 @@ constexpr int VOL_TF_RES  = 1024;    // Fine enough that the cut at R is sharp t
 // surface is. The statistics are always taken over every column.
 constexpr uint32_t HEIGHT_MAX_DIM = 256;
 
-// Opacity of the channel ribbon. The overlay pass blends on source alpha, so this is how much of the
-// structure is still read through the tube.
-constexpr uint32_t RIBBON_ALPHA = 0x60;
+// Pore network. Colours are ABGR, one per PORE_CLASS_: warm for what gets through the film, cool
+// for what is reachable from one side only, purple for what fits the probe and leads nowhere, and
+// grey for what the probe does not fit.
+constexpr uint32_t PORE_CLASS_COLOR[5] = {
+    0x60909090,     // PORE_CLASS_SMALL
+    0xffd060c0,     // PORE_CLASS_CLOSED
+    0xffffb060,     // PORE_CLASS_TOP
+    0xff90d050,     // PORE_CLASS_BOTTOM
+    0xff3c96ff,     // PORE_CLASS_SPANNING
+};
+const char* pore_class_lbl[5] = {
+    "Too narrow",
+    "Closed",
+    "Reachable from the top",
+    "Reachable from the bottom",
+    "Through the film",
+};
+constexpr uint32_t PORE_THROAT_CLOSED_COLOR = 0x50808080;
+constexpr uint32_t PORE_ROUTE_COLOR         = 0xff60f0ff;
+constexpr uint32_t PORE_HOVER_COLOR         = 0xffffffff;
+constexpr uint32_t PORE_HOVER_THROAT_COLOR  = 0x90ffffff;
+constexpr float    PORE_POINT_SIZE          = 7.0f;     // Pixels, the smallest a pore is drawn
+constexpr float    PORE_POINT_SIZE_HOVER    = 12.0f;
 
-// Colors are ABGR. The chain is cool and the throat warm, so the one tight place on the route reads
-// against the rest of it rather than as another bead.
-constexpr uint32_t ROUTE_LINE_COLOR   = 0xff50f0a0;
-constexpr uint32_t ROUTE_SPHERE_COLOR = 0xffe0b060;
-constexpr uint32_t THROAT_COLOR       = 0xff3c96ff;
+// The overlay is rebuilt every frame, so a network past this many throats draws the widest of them
+// - which, since the list runs widest first, is a prefix - and says so in the window.
+constexpr size_t   PORE_MAX_DRAWN_THROATS   = 250000;
 
-// Centre to centre spacing of the probe spheres, as a multiple of the local radius. At 1.5 two
-// equal spheres overlap by half a radius.
-constexpr float SPHERE_SPACING = 1.5f;
-constexpr size_t MAX_ROUTE_SPHERES = 256;
+constexpr PickingDomainID PickingDomain_PoreNetwork = HASH_STR_LIT64("picking domain void pore network");
 
 enum RadiusSource {
     RadiusSource_Vdw = 0,       // Per atom radius as reported by the system
@@ -175,7 +190,7 @@ struct Stats {
     md_array(uint64_t) hist       = 0;   // [slab * NUM_BINS + bin], void voxels only
     md_array(uint64_t) slab_solid = 0;   // [slab]
     md_array(uint64_t) slab_total = 0;   // [slab]
-    md_array(double)   slab_mass  = 0;   // [slab], Dalton, binned on the same division of z
+    md_array(double)   slab_mass  = 0;   // [slab], Dalton, binned on the same slab boundaries
     md_array(double)   slab_count = 0;   // [slab], atoms
     double   mass_total    = 0.0;        // Of the atoms that landed in a slab
     double   count_total   = 0.0;
@@ -183,6 +198,7 @@ struct Stats {
 
     double   bin_width     = 0.0;
     double   z_min         = 0.0;
+    double   z_max         = 0.0;
     double   slab_height   = 0.0;
     double   voxel_volume  = 0.0;
     double   seconds       = 0.0;
@@ -221,38 +237,35 @@ struct VoidAnalysis : viamd::EventHandler {
     md_array(float) field = 0;
     md_grid_t grid = {};
 
-    // Percolation: r_c, what it costs a probe to be larger than it, and where the route is limited
-    float  channel_r_min     = 2.0f;   // Also what bounds the memory: voxels below it never enter
-    int    channel_num_radii = 64;
-    bool   has_perc          = false;
-    double perc_seconds      = 0.0;
-    channel_percolation_t perc = {};
-    md_array(double) pc_r      = 0;    // The curves, in nm and volume fractions, for plotting
-    md_array(double) pc_top    = 0;
-    md_array(double) pc_bot    = 0;
-    md_array(double) pc_void   = 0;
-    md_array(double) pc_open   = 0;
-    md_array(double) pc_span   = 0;
-    md_array(double) pc_closed = 0;
+    // Pore network: the clearance field as pores and the throats between them, drawn in 3D. On the
+    // heap rather than the arena, since a rebuild has to give the last one back.
+    float    net_r_min       = 2.0f;    // Smallest throat and pore; also what bounds the memory
+    float    net_merge       = 0.5f;    // Persistence below which two pores are one, in voxel spacings
+    bool     has_net         = false;
+    bool     show_net        = true;
+    bool     show_net_route  = true;
+    bool     net_show_small  = false;   // Pores and throats too narrow for the probe
+    double   net_seconds     = 0.0;
+    pore_network_t net       = {};
+    md_array(uint8_t)  net_class = 0;   // PORE_CLASS_ per pore at net_class_r
+    float    net_class_r     = -1.0f;
+    uint32_t net_class_count[5] = {};
+    md_array(uint32_t) net_route = 0;   // Widest route, top face first
+    double   net_route_bottleneck = 0.0;
+    double   net_route_length     = 0.0;
+    uint32_t net_hovered     = PORE_INVALID;
+    PickingRange net_picking = {};
+    size_t   net_drawn_throats = 0;
 
-    // The route the critical radius belongs to
-    bool   has_route    = false;
-    bool   show_route   = true;
-    double route_length = 0.0;
-    double route_radius = 0.0;
-    md_array(vec4_t) route = 0;
-
-    // The sweep tree. Kept because a branching pore is worth seeing, but it is no longer where any
-    // number comes from - on a real network it is one component with thousands of branches.
-    bool  has_channels      = false;
-    double channel_seconds  = 0.0;
-    channel_tree_t channels = {};
-    md_array(float)    node_slot    = 0;   // Dendrogram column per branch, negative when not drawn
-    float    num_slots     = 0.0f;
-    uint32_t hovered_node  = CHANNEL_INVALID_INDEX;
+    // Pores in draw order, far to near. Sorting is the one per frame cost that grows faster than
+    // the network, and the order only matters to which of two overlapping points a hover finds -
+    // so it is redone once the camera has come to rest, not while it moves.
+    md_array(uint32_t) net_order = 0;
+    bool     net_order_stale = true;     // The visible set changed: rebuild before drawing
+    bool     net_order_sorted = false;
+    mat4_t   net_order_view = {};
 
     // Porosity and accessible volume
-    int      z_slabs     = 128;      // z resolution of the profile, capped at the grid and MAX_SLABS
     Region   region      = Region_Box;
     float    film_frac   = 0.5f;     // Solid fraction, as a share of the interior value, at the film edge
     float    manual_z_lo = 0.0f;
@@ -354,9 +367,9 @@ struct VoidAnalysis : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdShutdown:
-                // The percolation result and the traced route are on the heap rather than the arena,
-                // so destroying the arena does not take them with it.
-                clear_percolation();
+                // The pore network is on the heap rather than the arena, so destroying the arena does
+                // not take it with it.
+                clear_network();
                 free_volume();
                 md_arena_allocator_destroy(arena);
                 arena = nullptr;
@@ -373,24 +386,38 @@ struct VoidAnalysis : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdRenderTransparent: {
                 if (e.payload_type != viamd::EventPayloadType_ApplicationState) break;
-                // The volume is an explicit toggle and stays up with the window closed, like any
-                // other representation. The overlay below is a readout of the window and does not.
+                // The volume and the pore network are explicit toggles and stay up with the window
+                // closed, like any other representation.
                 if (show_volume && has_result) {
                     draw_volume(*(const ApplicationState*)e.payload);
                 }
-#if VOID_ANALYSIS_PERCOLATION
-                if (!show_window) break;
-                const bool want_route  = show_route && (has_route || (has_perc && perc.has_r_c));
-                const bool want_branch = has_channels && hovered_node != CHANNEL_INVALID_INDEX;
-                if (!want_route && !want_branch) break;
-                const ApplicationState& state = *(ApplicationState*)e.payload;
-                immediate::Scope scope(state.gfx.overlay, "void_channel_path");
-                // Camera Z in world space. The overlay is rendered with an identity model matrix, so
-                // this is the same space the grid is in.
-                const vec3_t cam_axis = vec3_normalize(vec3_from_vec4(state.view.param.matrix.inv.view.col[2]));
-                if (want_route)  draw_route_3d(scope);
-                if (want_branch) draw_channel_path_3d(scope, hovered_node, cam_axis);
-#endif
+                if (show_net && has_net) {
+                    draw_network_3d(*(const ApplicationState*)e.payload);
+                }
+                break;
+            }
+            case viamd::EventType_ViamdPickingRangeReserve: {
+                if (e.payload_type != viamd::EventPayloadType_PickingSpace) break;
+                net_picking = {};
+                if (show_net && has_net && md_array_size(net.vertices) > 0) {
+                    if (!picking_range_reserve(&net_picking, (PickingSpace*)e.payload, PickingDomain_PoreNetwork, md_array_size(net.vertices))) {
+                        net_picking = {};
+                    }
+                }
+                break;
+            }
+            case viamd::EventType_ViamdInteractionSurface: {
+                if (e.payload_type != viamd::EventPayloadType_InteractionSurfaceEvent) break;
+                const InteractionSurfaceEvent* ev = (const InteractionSurfaceEvent*)e.payload;
+                if (ev->surface_id != interaction_surface_main || ev->kind != InteractionSurfaceEventKind::Hover) break;
+                const bool ours = has_net && show_net && ev->hit.domain == PickingDomain_PoreNetwork && ev->hit.local_idx < md_array_size(net.vertices);
+                net_hovered = ours ? ev->hit.local_idx : PORE_INVALID;
+                break;
+            }
+            case viamd::EventType_ViamdPickingTooltipTextRequest: {
+                if (e.payload_type != viamd::EventPayloadType_PickingTooltipTextRequest) break;
+                PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)e.payload;
+                if (req->hit.domain == PickingDomain_PoreNetwork) network_tooltip(&req->sb, req->hit.local_idx);
                 break;
             }
             default:
@@ -432,8 +459,7 @@ struct VoidAnalysis : viamd::EventHandler {
         has_result = false;
         clear_height();
         vol_dirty = false;
-        clear_percolation();
-        clear_channels();
+        clear_network();
     }
 
     void clear_height() {
@@ -456,38 +482,6 @@ struct VoidAnalysis : viamd::EventHandler {
         vol_tf_tex = 0;
         vol_dim[0] = vol_dim[1] = vol_dim[2] = 0;
         vol_tf_dirty = true;
-    }
-
-    void clear_channels() {
-        channel_tree_free(&channels);
-        md_array_free(node_slot, arena);
-        node_slot    = 0;
-        num_slots    = 0.0f;
-        hovered_node = CHANNEL_INVALID_INDEX;
-        has_channels = false;
-    }
-
-    void clear_percolation() {
-        channel_percolation_free(&perc);
-        md_array_free(pc_r, arena);
-        md_array_free(pc_top, arena);
-        md_array_free(pc_bot, arena);
-        md_array_free(pc_void, arena);
-        md_array_free(pc_open, arena);
-        md_array_free(pc_span, arena);
-        md_array_free(pc_closed, arena);
-        pc_r = 0; pc_top = 0; pc_bot = 0; pc_void = 0; pc_open = 0; pc_span = 0; pc_closed = 0;
-        has_perc = false;
-        perc_seconds = 0.0;
-        clear_route();
-    }
-
-    void clear_route() {
-        md_array_free(route, md_get_heap_allocator());
-        route = 0;
-        has_route = false;
-        route_length = 0.0;
-        route_radius = 0.0;
     }
 
     void clear_sasa() {
@@ -574,22 +568,23 @@ struct VoidAnalysis : viamd::EventHandler {
 
         const uint32_t num_tiles = void_field_num_tiles(&grid);
 
-        // z resolution of the profile. Never finer than the grid: a slab thinner than a plane of
-        // voxels is either empty or a duplicate of its neighbour, and neither is a measurement.
-        const uint32_t num_slabs = (uint32_t)CLAMP(z_slabs, 1, MIN(grid.dim[2], MAX_SLABS));
+        // z resolution of the profile: one plane of voxels per slab, which is the resolution the
+        // field has. Whole planes only, see void_profile_planes_per_slab for why.
+        const uint32_t planes_per_slab = void_profile_planes_per_slab(grid.dim[2], MAX_SLABS);
+        const uint32_t num_slabs       = void_profile_num_slabs(grid.dim[2], planes_per_slab);
 
         // The bins are the resolution in R of every accessible volume reported later, so they are
         // deliberately finer than the voxel spacing: R is a continuous parameter and the voxelization,
         // not the binning, is what should be limiting. The coarea derivative is the one reader that
         // needs a coarser window, and it widens its own rather than making everyone else share it.
         void_field_desc_t fdesc = {};
-        fdesc.beads     = beads;
-        fdesc.cell      = &state.unitcell;
-        fdesc.grid      = &grid;
-        fdesc.max_dist  = (double)max_dist;
-        fdesc.num_slabs = num_slabs;
-        fdesc.num_bins  = NUM_BINS;
-        fdesc.field     = field;
+        fdesc.beads           = beads;
+        fdesc.cell            = &state.unitcell;
+        fdesc.grid            = &grid;
+        fdesc.max_dist        = (double)max_dist;
+        fdesc.planes_per_slab = planes_per_slab;
+        fdesc.num_bins        = NUM_BINS;
+        fdesc.field           = field;
 
         // Per thread accumulators, merged once the range task has completed. Nothing is shared while it runs.
         const size_t num_threads = MAX((size_t)1, task_system::pool_num_threads() + 1);
@@ -645,6 +640,7 @@ struct VoidAnalysis : viamd::EventHandler {
         stats.num_slabs    = num_slabs;
         stats.bin_width    = prof.bin_width;
         stats.z_min        = prof.z_min;
+        stats.z_max        = prof.z_max;
         stats.slab_height  = prof.slab_height;
         stats.voxel_volume = prof.voxel_volume;
 
@@ -699,6 +695,7 @@ struct VoidAnalysis : viamd::EventHandler {
         p.num_bins     = NUM_BINS;
         p.bin_width    = stats.bin_width;
         p.z_min        = stats.z_min;
+        p.z_max        = stats.z_max;
         p.slab_height  = stats.slab_height;
         p.voxel_volume = stats.voxel_volume;
         return p;
@@ -1396,7 +1393,7 @@ struct VoidAnalysis : viamd::EventHandler {
         has_sasa = true;
     }
 
-    // --- Channels -----------------------------------------------------------------------------
+    // --- Pore network -------------------------------------------------------------------------
 
     bool build_channel_field(channel_field_t* out) const {
         if (!field || !has_result) return false;
@@ -1414,12 +1411,29 @@ struct VoidAnalysis : viamd::EventHandler {
         return true;
     }
 
-    // One pass in order of decreasing clearance. It answers what the bisection and the per radius
-    // sweeps answered - r_c, and how many components get through at each radius - and several things
-    // they could not: where the route is limited, how deep a probe too large to cross still reaches,
-    // and which of the pore space is open to the outside rather than merely large enough.
-    void compute_percolation() {
-        clear_percolation();
+    void clear_network() {
+        pore_network_free(&net);
+        md_array_free(net_class, md_get_heap_allocator());
+        md_array_free(net_route, md_get_heap_allocator());
+        md_array_free(net_order, md_get_heap_allocator());
+        net_class = 0;
+        net_route = 0;
+        net_order = 0;
+        net_order_stale = true;
+        net_order_sorted = false;
+        net_drawn_throats = 0;
+        net_class_r = -1.0f;
+        MEMSET(net_class_count, 0, sizeof(net_class_count));
+        net_route_bottleneck = 0.0;
+        net_route_length = 0.0;
+        net_hovered = PORE_INVALID;
+        net_picking = {};
+        has_net = false;
+        net_seconds = 0.0;
+    }
+
+    void compute_network() {
+        clear_network();
         error[0] = '\0';
 
         channel_field_t f;
@@ -1429,318 +1443,279 @@ struct VoidAnalysis : viamd::EventHandler {
         }
 
         const md_tick_t t0 = md_tick_now();
-
-        if (!channel_percolate(&perc, &f, (double)channel_r_min, (uint32_t)CLAMP(channel_num_radii, 8, 512), md_get_heap_allocator())) {
-            snprintf(error, sizeof(error), "Nothing at or above %.2f nm to analyse", channel_r_min / ANGSTROM_PER_NM);
-            channel_percolation_free(&perc);
+        const double merge = (double)net_merge * (double)MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
+        if (!pore_network_build(&net, &f, (double)net_r_min, merge, md_get_heap_allocator())) {
+            snprintf(error, sizeof(error), "Nothing at or above %.2f nm to build a network from", net_r_min / ANGSTROM_PER_NM);
+            pore_network_free(&net);
             return;
         }
-        has_perc = true;
+        has_net = true;
 
-        // At exactly r_c the set is barely connected, so any route through it passes the throat the
-        // pass just located. Tracing there is therefore tracing the route r_c belongs to, not a
-        // route that merely happens to fit.
-        if (perc.has_r_c) trace_route(perc.r_c);
-
-        perc_seconds = md_tick_to_seconds(md_tick_now() - t0);
-        build_perc_curves();
-    }
-
-    void trace_route(double r) {
-        clear_route();
-        channel_field_t f;
-        if (!build_channel_field(&f)) return;
-        has_route = channel_trace_path(&route, &route_length, &f, r, md_get_heap_allocator());
-        route_radius = r;
-        if (!has_route) {
-            snprintf(error, sizeof(error), "No route at %.2f nm", r / ANGSTROM_PER_NM);
-        }
-    }
-
-    void build_perc_curves() {
-        const size_t n = md_array_size(perc.radius);
-        md_array_resize(pc_r,      n, arena);
-        md_array_resize(pc_top,    n, arena);
-        md_array_resize(pc_bot,    n, arena);
-        md_array_resize(pc_void,   n, arena);
-        md_array_resize(pc_open,   n, arena);
-        md_array_resize(pc_span,   n, arena);
-        md_array_resize(pc_closed, n, arena);
-        for (size_t i = 0; i < n; ++i) {
-            pc_r[i]      = perc.radius[i]        / (double)ANGSTROM_PER_NM;
-            pc_top[i]    = perc.z_from_top[i]    / (double)ANGSTROM_PER_NM;
-            pc_bot[i]    = perc.z_from_bottom[i] / (double)ANGSTROM_PER_NM;
-            pc_void[i]   = perc.frac_void[i];
-            pc_open[i]   = perc.frac_open[i];
-            pc_span[i]   = perc.frac_spanning[i];
-            pc_closed[i] = perc.frac_void[i] - perc.frac_open[i];
-        }
-    }
-
-    // Read a curve at an arbitrary radius, which is what the scalars below the plots quote.
-    double perc_at(const md_array(double) y, double r_nm) const {
-        const size_t n = md_array_size(pc_r);
-        if (n == 0 || !y) return 0.0;
-        if (r_nm <= pc_r[0])     return y[0];
-        if (r_nm >= pc_r[n - 1]) return y[n - 1];
-        size_t i = 0;
-        while (i + 2 < n && pc_r[i + 1] < r_nm) ++i;
-        const double t = (r_nm - pc_r[i]) / MAX(1.0e-12, pc_r[i + 1] - pc_r[i]);
-        return (1.0 - t) * y[i] + t * y[i + 1];
-    }
-
-    // Nearest sample to a radius, for the integer curves where interpolating between two counts
-    // would invent a component that is not there.
-    size_t perc_index_at(double r_nm) const {
-        const size_t n = md_array_size(pc_r);
-        if (n == 0) return 0;
-        size_t best = 0;
-        double best_d = fabs(pc_r[0] - r_nm);
-        for (size_t i = 1; i < n; ++i) {
-            const double d = fabs(pc_r[i] - r_nm);
-            if (d < best_d) { best_d = d; best = i; }
-        }
-        return best;
-    }
-
-    void compute_channels() {
-        clear_channels();
-        error[0] = '\0';
-
-        channel_field_t f;
-        if (!build_channel_field(&f)) {
-            snprintf(error, sizeof(error), "Compute the field first, with 'Materialize field' enabled");
-            return;
-        }
-
-        const md_tick_t t0 = md_tick_now();
-        channel_sweep(&channels, &f, (double)probe_radius, true, arena);
-        layout_channel_tree();
-        channel_seconds = md_tick_to_seconds(md_tick_now() - t0);
-        has_channels = true;
-    }
-
-    void layout_channel_tree() {
-        const size_t num = md_array_size(channels.nodes);
-        md_array_resize(node_slot, num, arena);
-        num_slots = channel_tree_layout(node_slot, &channels, arena);
-    }
-
-    // Everything below is drawn into the overlay queue, which is rendered last with the depth test
-    // off, so a route stays in front of the structure rather than being buried by it.
-    // One stretch of a route, as a camera facing ribbon whose half width is the clearance there with
-    // an opaque line on top. A line alone is one pixel wide at any zoom, which in a dense network is
-    // easy to lose and thin enough for temporal AA to eat; the ribbon carries the width of the
-    // channel and is translucent so the structure still reads through it.
-    void draw_clearance_segment(immediate::Queue* q, vec4_t a, vec4_t b, uint32_t col, vec3_t cam_axis) const {
-        // A route may wrap through the periodic faces; it must not be drawn straight back across the
-        // box when it does.
-        const float wrap_x = 0.5f * grid.spacing.x * (float)grid.dim[0];
-        const float wrap_y = 0.5f * grid.spacing.y * (float)grid.dim[1];
-        if (fabsf(a.x - b.x) > wrap_x || fabsf(a.y - b.y) > wrap_y) return;
-
-        const vec3_t p0 = {a.x, a.y, a.z};
-        const vec3_t p1 = {b.x, b.y, b.z};
-
-        const vec3_t d   = vec3_sub(p1, p0);
-        const float  len = vec3_length(d);
-        if (len > 1.0e-6f) {
-            // Perpendicular to both the segment and the line of sight. It only degenerates when the
-            // segment points straight at the camera, where a ribbon has nothing to show.
-            vec3_t side = vec3_cross(vec3_mul1(d, 1.0f / len), cam_axis);
-            const float side_len = vec3_length(side);
-            if (side_len > 1.0e-4f) {
-                side = vec3_mul1(side, 1.0f / side_len);
-                const vec3_t e0 = vec3_mul1(side, a.w);
-                const vec3_t e1 = vec3_mul1(side, b.w);
-                const uint32_t fill = (col & 0x00FFFFFFu) | (RIBBON_ALPHA << 24);
-                immediate::triangle(q, vec3_sub(p0, e0), vec3_add(p0, e0), vec3_add(p1, e1), fill);
-                immediate::triangle(q, vec3_sub(p0, e0), vec3_add(p1, e1), vec3_sub(p1, e1), fill);
+        if (pore_network_widest_route(&net_route, &net_route_bottleneck, &net, md_get_heap_allocator())) {
+            // Pore to throat to pore along the route, plus the straight legs in from each face. Over
+            // the depth of the box that is the tortuosity of the route at the resolution of the graph.
+            const size_t n = md_array_size(net_route);
+            double len = 0.0;
+            for (size_t i = 0; i + 1 < n; ++i) {
+                const uint32_t e = pore_network_find_edge(&net, net_route[i], net_route[i + 1]);
+                if (e == PORE_INVALID) continue;
+                vec3_t a, s, b;
+                pore_network_edge_points(&a, &s, &b, &net, e);
+                len += vec3_length(vec3_sub(s, a)) + vec3_length(vec3_sub(b, s));
             }
+            const float z_top = net.box_min[2] + net.box_ext[2];
+            len += fabs((double)z_top - (double)net.vertices[net_route[0]].pos[2]);
+            len += fabs((double)net.vertices[net_route[n - 1]].pos[2] - (double)net.box_min[2]);
+            net_route_length = len;
         }
-        immediate::line(q, p0, p1, col);
+
+        net_seconds = md_tick_to_seconds(md_tick_now() - t0);
+        update_network_classes();
     }
 
-    // The route a probe of the traced radius can follow, and the throat that stops a larger one.
-    //
-    // A centre line plus the probe itself, placed along it. A clearance scaled ribbon was tried
-    // first and is wrong here for a reason worth recording: the route is straightened, so its
-    // anchors can be sixty voxels apart, and a ribbon interpolates the clearance between them.
-    // Through a wide cavity that draws a few enormous flat billboards whose width was never measured
-    // anywhere along them. Spheres read as what they are - where a probe of that size fits - and
-    // every one is sized by the field at its own centre, which is why the route is resampled.
-    //
-    // The throat is the same thing at the one place it is tight: "a sphere this big fits exactly
-    // here and no bigger one gets past" is the whole content of the critical radius.
-    void draw_route_3d(immediate::Queue* q) const {
-        const size_t n = md_array_size(route);
-        const float wrap_x = 0.5f * grid.spacing.x * (float)grid.dim[0];
-        const float wrap_y = 0.5f * grid.spacing.y * (float)grid.dim[1];
+    // What every pore is to a probe of the current radius. A sweep of the throats, so it follows the
+    // probe slider rather than waiting for a button.
+    void update_network_classes() {
+        net_class_r = probe_radius;
+        MEMSET(net_class_count, 0, sizeof(net_class_count));
+        const size_t V = md_array_size(net.vertices);
+        md_array_resize(net_class, V, md_get_heap_allocator());
+        if (V == 0) return;
+        pore_network_classify(net_class, &net, (double)probe_radius, md_get_heap_allocator());
+        for (size_t i = 0; i < V; ++i) net_class_count[net_class[i]] += 1;
+        net_order_stale = true;
+    }
 
-        // Minimum image, so a step across a periodic face counts as the half voxel it is rather than
-        // the width of the box. The same test says whether the segment may be drawn at all.
-        auto step = [&](const vec4_t& a, const vec4_t& b, bool* wrapped) {
-            float dx = b.x - a.x;
-            float dy = b.y - a.y;
-            *wrapped = false;
-            if (fabsf(dx) > wrap_x) { dx -= copysignf(2.0f * wrap_x, dx); *wrapped = true; }
-            if (fabsf(dy) > wrap_y) { dy -= copysignf(2.0f * wrap_y, dy); *wrapped = true; }
-            const float dz = b.z - a.z;
-            return sqrtf(dx * dx + dy * dy + dz * dz);
+    bool net_pore_visible(uint32_t i) const {
+        return net_show_small || net_class[i] != PORE_CLASS_SMALL;
+    }
+
+    // Drawn into the overlay queue, which is rendered last with the depth test off: the skeleton
+    // reads through the structure, which is the point of it.
+    void draw_network_3d(const ApplicationState& state) {
+        if (net_class_r != probe_radius || md_array_size(net_class) != md_array_size(net.vertices)) {
+            update_network_classes();
+        }
+
+        const size_t V = md_array_size(net.vertices);
+        const size_t E = md_array_size(net.edges);
+        if (V == 0) return;
+
+        md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
+        defer { md_temp_end(temp); };
+
+        immediate::Scope scope(state.gfx.overlay, "void_pore_network");
+
+        auto pore_pos = [&](uint32_t i) {
+            return vec3_t{ net.vertices[i].pos[0], net.vertices[i].pos[1], net.vertices[i].pos[2] };
+        };
+        auto throat = [&](uint32_t e, uint32_t col) {
+            vec3_t a, s, b;
+            pore_network_edge_points(&a, &s, &b, &net, e);
+            immediate::line(scope, a, s, col);
+            immediate::line(scope, s, b, col);
         };
 
-        for (size_t i = 1; i < n; ++i) {
-            bool wrapped = false;
-            step(route[i - 1], route[i], &wrapped);
-            if (wrapped) continue;
-            const vec3_t p0 = {route[i - 1].x, route[i - 1].y, route[i - 1].z};
-            const vec3_t p1 = {route[i].x, route[i].y, route[i].z};
-            immediate::line(q, p0, p1, ROUTE_LINE_COLOR);
+        // Throats. Widest first, so the ones a probe of this radius passes are a prefix. An open
+        // throat joins two pores of the same component, so either end gives its class.
+        net_drawn_throats = 0;
+        for (size_t e = 0; e < E && net_drawn_throats < PORE_MAX_DRAWN_THROATS; ++e, ++net_drawn_throats) {
+            const pore_edge_t& edge = net.edges[e];
+            const bool open = edge.radius >= probe_radius;
+            if (!open && !net_show_small) break;
+            const uint32_t col = open ? (PORE_CLASS_COLOR[net_class[edge.a]] & 0x00FFFFFFu) | 0xC0000000u : PORE_THROAT_CLOSED_COLOR;
+            throat((uint32_t)e, col);
         }
 
-        if (n == 0) return;
-
-        // Spheres are spaced at SPHERE_SPACING times the local radius, so consecutive ones overlap by
-        // about half a radius: enough to read as one channel, not so much that they fuse into a
-        // sausage. The requirement is taken as the largest radius seen since the last sphere, which
-        // is what keeps the overlap bounded where the channel opens out.
-        const float min_step = MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
-        auto walk = [&](float scale, auto&& emit) {
-            size_t count = 1;
-            emit(route[0]);
-            float travelled = 0.0f;
-            float need = scale * SPHERE_SPACING * MAX(route[0].w, min_step);
-            for (size_t i = 1; i < n; ++i) {
-                bool wrapped = false;
-                travelled += step(route[i - 1], route[i], &wrapped);
-                need = MAX(need, scale * SPHERE_SPACING * route[i].w);
-                if (travelled >= need) {
-                    emit(route[i]);
-                    count += 1;
-                    travelled = 0.0f;
-                    need = scale * SPHERE_SPACING * MAX(route[i].w, min_step);
-                }
+        // The widest route through the film, over everything else, with the one voxel that limits it
+        const size_t nr = md_array_size(net_route);
+        if (show_net_route && nr > 0) {
+            for (size_t i = 0; i + 1 < nr; ++i) {
+                const uint32_t e = pore_network_find_edge(&net, net_route[i], net_route[i + 1]);
+                if (e != PORE_INVALID) throat(e, PORE_ROUTE_COLOR);
             }
-            return count;
-        };
+            const vec3_t first = pore_pos(net_route[0]);
+            const vec3_t last  = pore_pos(net_route[nr - 1]);
+            immediate::line(scope, first, vec3_t{ first.x, first.y, net.box_min[2] + net.box_ext[2] }, PORE_ROUTE_COLOR);
+            immediate::line(scope, last,  vec3_t{ last.x,  last.y,  net.box_min[2] }, PORE_ROUTE_COLOR);
+            if (net.has_r_c) {
+                immediate::sphere_wireframe(scope, vec3_t{ net.throat[0], net.throat[1], net.throat[2] }, (float)net.r_c, PORE_ROUTE_COLOR, 12, 16);
+            }
+        }
 
-        // Count first: a long route through a tight channel would otherwise fill the overlay with
-        // thousands of spheres, so the spacing widens rather than the frame rate collapsing.
-        const size_t want = walk(1.0f, [](const vec4_t&) {});
-        const float  scale = (want > MAX_ROUTE_SPHERES) ? (float)want / (float)MAX_ROUTE_SPHERES : 1.0f;
-        const int    detail = (want > 64) ? 6 : 8;
+        // The hovered pore: its largest sphere, and each of its throats at its own width
+        const bool hovered = net_hovered < V;
+        if (hovered) {
+            const pore_vertex_t& v = net.vertices[net_hovered];
+            immediate::sphere_wireframe(scope, pore_pos(net_hovered), v.radius, PORE_HOVER_COLOR, 16, 24);
+            for (uint32_t j = net.adj_offset[net_hovered]; j < net.adj_offset[net_hovered + 1]; ++j) {
+                const uint32_t e = net.adj[j];
+                throat(e, PORE_HOVER_COLOR);
+                const pore_edge_t& edge = net.edges[e];
+                immediate::sphere_wireframe(scope, vec3_t{ edge.pos[0], edge.pos[1], edge.pos[2] }, edge.radius, PORE_HOVER_THROAT_COLOR, 8, 12);
+            }
+        }
 
-        walk(scale, [&](const vec4_t& p) {
-            immediate::sphere_wireframe(q, vec3_t{p.x, p.y, p.z}, p.w, ROUTE_SPHERE_COLOR, detail, detail + 2);
-        });
+        // Pores, as points that keep their size on screen. Without a depth test the last one drawn
+        // owns the pixel in the picking buffer too, so they go far to near and the nearest is what
+        // a hover finds.
+        const bool pickable = net_picking.domain == PickingDomain_PoreNetwork && net_picking.end - net_picking.beg == (uint32_t)V;
+        md_allocator_i* heap = md_get_heap_allocator();
+        if (net_order_stale) {
+            md_array_shrink(net_order, 0);
+            for (uint32_t i = 0; i < (uint32_t)V; ++i) {
+                if (net_pore_visible(i)) md_array_push(net_order, i, heap);
+            }
+            net_order_stale  = false;
+            net_order_sorted = false;
+        }
+        const mat4_t view = camera_world_to_view_matrix(state.view.camera);
+        if (MEMCMP(&view, &net_order_view, sizeof(mat4_t)) != 0) {
+            net_order_view   = view;
+            net_order_sorted = false;
+        } else if (!net_order_sorted) {
+            const size_t n = md_array_size(net_order);
+            float* depth = md_temp_alloc_array(temp, float, V);
+            for (size_t k = 0; k < n; ++k) {
+                const vec3_t p = pore_pos(net_order[k]);
+                depth[net_order[k]] = view[0][2] * p.x + view[1][2] * p.y + view[2][2] * p.z + view[3][2];
+            }
+            std::sort(net_order, net_order + n, [depth](uint32_t a, uint32_t b) { return depth[a] < depth[b]; });
+            net_order_sorted = true;
+        }
 
-        if (has_perc && perc.has_r_c) {
-            const vec3_t c = {perc.throat[0], perc.throat[1], perc.throat[2]};
-            immediate::sphere_wireframe(q, c, (float)perc.r_c, THROAT_COLOR, 12, 16);
+        const size_t np = md_array_size(net_order);
+        immediate::Vertex* pts = md_temp_alloc_array(temp, immediate::Vertex, MAX((size_t)1, np));
+        for (size_t k = 0; k < np; ++k) {
+            const uint32_t i = net_order[k];
+            pts[k].coord       = pore_pos(i);
+            pts[k].color       = (i == net_hovered) ? PORE_HOVER_COLOR : PORE_CLASS_COLOR[net_class[i]];
+            pts[k].normal      = vec3_t{ 0, 0, 1 };
+            pts[k].picking_idx = pickable ? i : 0xFFFFFFFFu;
+        }
+
+        if (pickable) immediate::set_picking_base_idx(scope, net_picking.beg);
+        immediate::set_point_size(scope, PORE_POINT_SIZE);
+        immediate::points(scope, pts, np);
+        if (hovered) {
+            immediate::set_point_size(scope, PORE_POINT_SIZE_HOVER);
+            immediate::point(scope, pore_pos(net_hovered), PORE_HOVER_COLOR, pickable ? net_hovered : 0xFFFFFFFFu);
         }
     }
 
-    void draw_channel_path_3d(immediate::Queue* q, uint32_t node, vec3_t cam_axis) const {
-        auto segment = [&](vec4_t a, vec4_t b, uint32_t col) {
-            draw_clearance_segment(q, a, b, col, cam_axis);
-        };
+    void network_tooltip(md_strb_t* sb, uint32_t i) const {
+        if (!has_net || i >= md_array_size(net.vertices)) return;
+        const pore_vertex_t& v = net.vertices[i];
+        const double nm  = (double)ANGSTROM_PER_NM;
+        const double nm3 = nm * nm * nm;
 
-        uint32_t n = node;
-        bool first = true;
-        while (n != CHANNEL_INVALID_INDEX) {
-            const channel_node_t& cn = channels.nodes[n];
-            const uint32_t col = first ? 0xff3060ff : 0xffb0a060;   // ABGR: the branch, then its route down
+        md_strb_fmt(sb, "Pore %u\n", i);
+        md_strb_fmt(sb, "Radius: %.2f nm (largest sphere that fits)\n", v.radius / nm);
+        md_strb_fmt(sb, "Volume: %.4g nm^3\n", (double)v.num_voxels * net.voxel_volume / nm3);
+        md_strb_fmt(sb, "Centre: %.1f, %.1f, %.1f nm\n", v.pos[0] / nm, v.pos[1] / nm, v.pos[2] / nm);
 
-            for (size_t i = 1; i < md_array_size(cn.path); ++i) {
-                segment(cn.path[i - 1], cn.path[i], col);
+        const uint32_t deg = net.adj_offset[i + 1] - net.adj_offset[i];
+        if (deg > 0) {
+            float t_min = FLT_MAX, t_max = 0.0f;
+            uint32_t passable = 0;
+            for (uint32_t j = net.adj_offset[i]; j < net.adj_offset[i + 1]; ++j) {
+                const float r = net.edges[net.adj[j]].radius;
+                t_min = MIN(t_min, r);
+                t_max = MAX(t_max, r);
+                passable += (r >= probe_radius);
             }
-            if (cn.parent != CHANNEL_INVALID_INDEX && md_array_size(cn.path) > 0) {
-                const channel_node_t& pn = channels.nodes[cn.parent];
-                if (md_array_size(pn.path) > 0) {
-                    segment(*md_array_last(cn.path), pn.path[0], col);
-                }
+            md_strb_fmt(sb, "Throats: %u, %.2f to %.2f nm, %u wide enough for the probe\n", deg, t_min / nm, t_max / nm, passable);
+        } else {
+            md_strb_fmt(sb, "Throats: none\n");
+        }
+        if (v.face_top    >= 0.0f) md_strb_fmt(sb, "Opens on the top face, %.2f nm wide\n", v.face_top / nm);
+        if (v.face_bottom >= 0.0f) md_strb_fmt(sb, "Opens on the bottom face, %.2f nm wide\n", v.face_bottom / nm);
+
+        if (i < md_array_size(net_class)) {
+            md_strb_fmt(sb, "Probe %.2f nm: %s", probe_radius / nm, pore_class_lbl[net_class[i]]);
+        }
+        for (size_t k = 0; k < md_array_size(net_route); ++k) {
+            if (net_route[k] == i) {
+                md_strb_fmt(sb, "\nOn the widest route, pore %zu of %zu from the top", k + 1, md_array_size(net_route));
+                break;
             }
-            first = false;
-            n = cn.parent;
         }
     }
 
-    void draw_channel_tree(ImVec2 size) {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("##channel_tree", size);
-        const bool active = ImGui::IsItemHovered();
-        const ImVec2 mouse = ImGui::GetIO().MousePos;
+    void draw_network_section() {
+        const double nm = (double)ANGSTROM_PER_NM;
 
-        dl->AddRectFilled(p0, ImVec2(p0.x + size.x, p0.y + size.y), IM_COL32(24, 24, 28, 255));
+        ImGui::SeparatorText("Pore network");
+        ImGui::TextDisabled("The void as pores and the throats between them, in the 3D view. Through z, open at both ends.");
 
-        if (num_slots <= 0.0f) {
-            const char* msg = "No channel gets through at this probe radius";
-            const ImVec2 ts = ImGui::CalcTextSize(msg);
-            dl->AddText(ImVec2(p0.x + 0.5f * (size.x - ts.x), p0.y + 0.5f * (size.y - ts.y)), IM_COL32(150, 150, 150, 255), msg);
-            hovered_node = CHANNEL_INVALID_INDEX;
-            return;
+        float r_min_nm = net_r_min / ANGSTROM_PER_NM;
+        if (ImGui::SliderFloat("Smallest clearance (nm)", &r_min_nm, 0.05f, 5.0f, "%.2f")) {
+            net_r_min = r_min_nm * ANGSTROM_PER_NM;
+        }
+        ImGui::SetItemTooltip("The narrowest throat and the smallest pore the network can have, and what bounds\n"
+                              "the memory: a voxel with less clearance never enters the pass.");
+
+        const float spacing = MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
+        ImGui::SliderFloat("Merge depth (voxels)", &net_merge, 0.0f, 4.0f, "%.2f");
+        ImGui::SetItemTooltip("Two pores are one when the throat between them is less than this far below the\n"
+                              "smaller one's radius - a shallow dip rather than a constriction. Every bump the\n"
+                              "voxelization leaves on a wall is a dip of a fraction of a voxel, so below about\n"
+                              "half a voxel the network fills with pores that are not there. Currently %.2f nm.",
+                              (spacing > 0.0f) ? net_merge * spacing / ANGSTROM_PER_NM : 0.0f);
+
+        ImGui::BeginDisabled(!has_result || !field);
+        if (ImGui::Button("Build network")) {
+            compute_network();
+        }
+        ImGui::EndDisabled();
+        if (!field) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(needs a materialized field)");
         }
 
-        const float z_lo = grid.origin.z;
-        const float z_hi = grid.origin.z + grid.spacing.z * (float)grid.dim[2];
-        const float span = MAX(1.0e-6f, z_hi - z_lo);
+        if (!has_net) return;
 
-        auto to_y = [&](float z) { return p0.y + (z_hi - z) / span * size.y; };
-        auto to_x = [&](float s) { return p0.x + (s + 0.5f) / MAX(1.0f, num_slots) * size.x; };
+        const size_t V = md_array_size(net.vertices);
+        const size_t E = md_array_size(net.edges);
+        ImGui::Text("Built in %.2f s: %zu pores, %zu throats, mean coordination %.2f",
+                    net_seconds, V, E, V > 0 ? 2.0 * (double)E / (double)V : 0.0);
 
-        float max_clear = 1.0e-6f;
-        for (size_t i = 0; i < md_array_size(channels.nodes); ++i) {
-            if (node_slot[i] >= 0.0f) max_clear = MAX(max_clear, channels.nodes[i].max_clearance);
-        }
-
-        uint32_t best = CHANNEL_INVALID_INDEX;
-        float    best_dist = 6.0f;
-
-        for (size_t i = 0; i < md_array_size(channels.nodes); ++i) {
-            if (node_slot[i] < 0.0f) continue;
-            const channel_node_t& n = channels.nodes[i];
-
-            const float x  = to_x(node_slot[i]);
-            const float y0 = to_y(n.z_top);
-            const float y1 = to_y(n.z_bot);
-
-            // Width carries the tightest point of the branch: a thin line is a branch a probe barely fits through
-            const float t = CLAMP(n.min_clearance / max_clear, 0.0f, 1.0f);
-            const float w = 1.0f + 4.0f * t;
-
-            const bool is_hovered = (hovered_node == (uint32_t)i);
-            const ImU32 col = is_hovered ? IM_COL32(255, 150, 60, 255)
-                                         : IM_COL32(90 + (int)(140 * t), 150 + (int)(80 * t), 230, 255);
-
-            dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), col, is_hovered ? w + 2.0f : w);
-
-            if (n.parent != CHANNEL_INVALID_INDEX && node_slot[n.parent] >= 0.0f) {
-                const float px = to_x(node_slot[n.parent]);
-                const float py = to_y(channels.nodes[n.parent].z_top);
-                dl->AddLine(ImVec2(x, y1), ImVec2(px, py), col, 1.0f);
+        if (net.has_r_c) {
+            ImGui::Text("Critical radius r_c: %.3f nm", net.r_c / nm);
+            ImGui::SetItemTooltip("The largest probe which still gets from one z face to the other: the tightest\n"
+                                  "throat on the widest route. Exact - read off the voxels in the same pass, not off\n"
+                                  "the graph, so merging pores does not move it.");
+            const size_t nr = md_array_size(net_route);
+            if (nr > 0) {
+                ImGui::Text("Widest route: %zu pores, tortuosity %.2f", nr, net_route_length / MAX(1.0e-6, (double)net.box_ext[2]));
+                ImGui::SetItemTooltip("Through pore centres and throats, with straight legs in from each face, over the\n"
+                                      "depth of the box. A route through the graph, so it is as coarse as the pores are.%s",
+                                      (fabs(net_route_bottleneck - net.r_c) > 1.0e-3 * nm)
+                                      ? "\nIts narrowest throat reads wider than r_c because it passes a merged pore." : "");
             }
-
-            if (active) {
-                const float dy = (mouse.y < MIN(y0, y1)) ? MIN(y0, y1) - mouse.y
-                               : (mouse.y > MAX(y0, y1)) ? mouse.y - MAX(y0, y1) : 0.0f;
-                const float d = sqrtf((mouse.x - x) * (mouse.x - x) + dy * dy);
-                if (d < best_dist) {
-                    best_dist = d;
-                    best = (uint32_t)i;
-                }
-            }
+        } else {
+            ImGui::Text("Nothing gets through at %.2f nm or above", net_r_min / nm);
         }
 
-        if (active) hovered_node = best;
-
-        if (hovered_node != CHANNEL_INVALID_INDEX && hovered_node < md_array_size(channels.nodes)) {
-            const channel_node_t& n = channels.nodes[hovered_node];
-            ImGui::SetTooltip("z %.1f to %.1f nm\nTightest point %.2f nm\nWidest point %.2f nm\n%u voxels",
-                              n.z_bot / ANGSTROM_PER_NM, n.z_top / ANGSTROM_PER_NM,
-                              n.min_clearance / ANGSTROM_PER_NM, n.max_clearance / ANGSTROM_PER_NM,
-                              n.num_voxels);
+        ImGui::Checkbox("Show in 3D", &show_net);
+        ImGui::SameLine();
+        ImGui::Checkbox("Widest route", &show_net_route);
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Too narrow for the probe", &net_show_small)) net_order_stale = true;
+        if (net_drawn_throats >= PORE_MAX_DRAWN_THROATS) {
+            ImGui::TextColored({1.0f, 0.8f, 0.35f, 1.0f}, "Drawing the %zu widest throats only", PORE_MAX_DRAWN_THROATS);
         }
+
+        if (net_class_r != probe_radius) update_network_classes();
+        ImGui::Text("At probe %.2f nm:", probe_radius / nm);
+        static const int order[] = { PORE_CLASS_SPANNING, PORE_CLASS_TOP, PORE_CLASS_BOTTOM, PORE_CLASS_CLOSED, PORE_CLASS_SMALL };
+        for (int c : order) {
+            ImGui::ColorButton(pore_class_lbl[c], ImGui::ColorConvertU32ToFloat4(PORE_CLASS_COLOR[c] | 0xFF000000u),
+                               ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(10, 10));
+            ImGui::SameLine();
+            ImGui::Text("%s: %u", pore_class_lbl[c], net_class_count[c]);
+        }
+        ImGui::TextDisabled("Hover a pore in the 3D view for its details.");
     }
 
     // Porosity and accessible volume. Both are V(R) = Vol[d > R] over a slab range: porosity is the
@@ -2149,9 +2124,6 @@ struct VoidAnalysis : viamd::EventHandler {
                                   "It is also the span of the distance binning, so a range far beyond the largest pore\n"
                                   "spends bins on nothing.");
 
-            ImGui::SliderInt("z profile slabs", &z_slabs, 8, MAX_SLABS);
-            ImGui::SetItemTooltip("How finely the profiles resolve z. Capped at one slab per plane of voxels -\n"
-                                  "a slab thinner than that is empty or a copy of its neighbour.");
 
             ImGui::SeparatorText("Radii");
 
@@ -2240,152 +2212,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
             draw_volume_section();
 
-#if VOID_ANALYSIS_PERCOLATION
-            ImGui::SeparatorText("Percolation through z");
-
-            ImGui::TextDisabled("Along z, which is treated as open at both ends.");
-
-            float r_min_nm = channel_r_min / ANGSTROM_PER_NM;
-            if (ImGui::SliderFloat("Smallest radius (nm)", &r_min_nm, 0.05f, 5.0f, "%.2f")) {
-                channel_r_min = r_min_nm * ANGSTROM_PER_NM;
-            }
-            ImGui::SetItemTooltip("The lowest radius the curves reach, and what bounds the memory: a voxel with\n"
-                                  "less clearance than this never enters the structure. Below it a network is\n"
-                                  "usually one connected pore and there is nothing left to resolve.");
-
-            ImGui::SliderInt("Radius samples", &channel_num_radii, 8, 512);
-
-            ImGui::BeginDisabled(!has_result || !field);
-            if (ImGui::Button("Analyse percolation")) {
-                compute_percolation();
-            }
-            ImGui::EndDisabled();
-            if (!field) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("(needs a materialized field)");
-            }
-
-            if (has_perc) {
-                const double nm  = (double)ANGSTROM_PER_NM;
-                const size_t np  = md_array_size(pc_r);
-                const double r_p = probe_radius / nm;
-
-                ImGui::Text("Computed in %.2f s over %.3g M active voxels, %.2f GB",
-                            perc_seconds, (double)perc.num_active / 1.0e6,
-                            (double)perc.bytes / (double)GIGABYTES(1));
-
-                if (perc.has_r_c) {
-                    ImGui::Text("Critical radius r_c: %.3f nm", perc.r_c / nm);
-                    ImGui::SetItemTooltip("The largest probe which still gets from one z face to the other. It is the\n"
-                                          "tightest throat along the widest route, not a cavity anywhere on it, and it\n"
-                                          "is read off the insertion order rather than bracketed by bisection.");
-
-                    ImGui::Text("Limiting throat at %.1f, %.1f, %.1f nm",
-                                (double)perc.throat[0] / nm, (double)perc.throat[1] / nm, (double)perc.throat[2] / nm);
-                    ImGui::SetItemTooltip("The one place a probe of r_c only just fits: the voxel whose insertion joined\n"
-                                          "the two faces. Drawn in 3D as a sphere of that radius, which is the probe.");
-
-                    if (has_route && md_array_size(route) > 1) {
-                        const vec4_t a = route[0];
-                        const vec4_t b = *md_array_last(route);
-                        const double straight = MAX(1.0e-6, fabs((double)b.z - (double)a.z));
-                        ImGui::Text("Route at %.2f nm: %.1f nm long, tortuosity %.2f",
-                                    route_radius / nm, route_length / nm, route_length / straight);
-                        ImGui::SetItemTooltip("A route a probe of that radius can actually follow, not a representative\n"
-                                              "centreline: every point on it clears the probe and each is reachable from\n"
-                                              "the last. Tortuosity is its length over the straight-line depth.");
-                    }
-                } else {
-                    ImGui::Text("Nothing gets through at %.2f nm or above", channel_r_min / nm);
-                    ImGui::SetItemTooltip("Either the network is closed to a probe this size, or the smallest radius is\n"
-                                          "set above r_c. Lower it to find out which.");
-                }
-
-                ImGui::Checkbox("Show route and throat in 3D", &show_route);
-                ImGui::SameLine();
-                ImGui::BeginDisabled(!perc.has_r_c || (double)probe_radius > perc.r_c);
-                if (ImGui::Button("Trace at the probe radius")) {
-                    trace_route((double)probe_radius);
-                }
-                ImGui::EndDisabled();
-                ImGui::SetItemTooltip("Retrace the route for the current probe rather than for r_c. Only possible below\n"
-                                      "r_c, since above it there is no route to trace.");
-
-                // How far in a probe gets, from each face. The two fronts approach each other as the
-                // probe shrinks and meet exactly at r_c, so this is the percolation threshold arrived
-                // at from the other direction - and unlike the single number, the band between them
-                // says how much of the film a probe too large to cross can still get into.
-                if (np > 1 && ImPlot::BeginPlot("##penetration", ImVec2(-1, 200))) {
-                    ImPlot::SetupAxes("Probe radius R (nm)", "z (nm)");
-                    ImPlot::PlotShaded("Reached by neither", pc_r, pc_bot, pc_top, (int)np);
-                    ImPlot::PlotLine("From the top",    pc_r, pc_top, (int)np);
-                    ImPlot::PlotLine("From the bottom", pc_r, pc_bot, (int)np);
-                    if (has_film) {
-                        const void_profile_t vp = make_profile();
-                        double fz[2] = { void_profile_z_lo(&vp, film_beg) / nm, void_profile_z_hi(&vp, film_end - 1) / nm };
-                        ImPlot::DragLineY(10, &fz[0], ImVec4(0.6f, 0.6f, 0.6f, 0.6f), 1.0f, ImPlotDragToolFlags_NoInputs);
-                        ImPlot::DragLineY(11, &fz[1], ImVec4(0.6f, 0.6f, 0.6f, 0.6f), 1.0f, ImPlotDragToolFlags_NoInputs);
-                    }
-                    if (perc.has_r_c) {
-                        double rc_nm = perc.r_c / nm;
-                        ImPlot::DragLineX(12, &rc_nm, ImVec4(1, 0.6f, 0.2f, 1), 1.0f, ImPlotDragToolFlags_NoInputs);
-                    }
-                    ImPlot::EndPlot();
-                }
-                ImGui::TextDisabled("The band is what a probe of that radius cannot enter from either side.");
-
-                // Fits, reachable, spanning. The gap between the first two is the closed porosity -
-                // pore space large enough for the probe and sealed off from it - which is the
-                // exterior flood fill, arriving out of the same ordering rather than a second pass.
-                if (np > 1 && ImPlot::BeginPlot("##perc_fractions", ImVec2(-1, 190))) {
-                    ImPlot::SetupAxes("Probe radius R (nm)", "Volume fraction");
-                    ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, MAX(1.0e-4, pc_void[0] * 1.05), ImPlotCond_Always);
-                    ImPlot::PlotShaded("Closed", pc_r, pc_open, pc_void, (int)np);
-                    ImPlot::PlotLine("Fits",      pc_r, pc_void, (int)np);
-                    ImPlot::PlotLine("Reachable", pc_r, pc_open, (int)np);
-                    ImPlot::PlotLine("Spanning",  pc_r, pc_span, (int)np);
-                    if (perc.has_r_c) {
-                        double rc_nm = perc.r_c / nm;
-                        ImPlot::DragLineX(13, &rc_nm, ImVec4(1, 0.6f, 0.2f, 1), 1.0f, ImPlotDragToolFlags_NoInputs);
-                    }
-                    ImPlot::EndPlot();
-                }
-
-                {
-                    const double v_fit  = perc_at(pc_void, r_p);
-                    const double v_open = perc_at(pc_open, r_p);
-                    const double v_span = perc_at(pc_span, r_p);
-                    ImGui::Text("At probe %.2f nm - fits %.4f, reachable %.4f, spanning %.4f", r_p, v_fit, v_open, v_span);
-                    ImGui::Text("Closed to it: %.4f of the box, %.1f%% of what it would otherwise fit",
-                                v_fit - v_open, (v_fit > 0.0) ? 100.0 * (1.0 - v_open / v_fit) : 0.0);
-                    ImGui::SetItemTooltip("Pore space wide enough for the probe with no route to the outside. The\n"
-                                          "accessible volume above counts it; nothing that has to get there can.");
-                    const size_t pi = perc_index_at(r_p);
-                    ImGui::Text("Components at that radius: %u, of which %u get through",
-                                perc.num_components[pi], perc.num_spanning[pi]);
-                    ImGui::SetItemTooltip("Counting components is what this section used to report on its own. Below r_c\n"
-                                          "a percolating network is one component and the count is 1, which is why the\n"
-                                          "curves above are here instead.");
-                }
-            }
-
-            if (ImGui::CollapsingHeader("Branch tree at the probe radius")) {
-                ImGui::TextDisabled("One component with many branches on a real network - a shape, not a number.");
-
-                ImGui::BeginDisabled(!has_result || !field);
-                if (ImGui::Button("Build tree")) {
-                    compute_channels();
-                }
-                ImGui::EndDisabled();
-
-                if (has_channels) {
-                    ImGui::Text("Built in %.2f s. %u components, %u of them through.",
-                                channel_seconds, channels.num_components, channels.num_spanning);
-                    ImGui::TextDisabled("Hover a branch to trace it in 3D");
-                    draw_channel_tree(ImVec2(ImGui::GetContentRegionAvail().x, 220.0f));
-                }
-            }
-#endif
+            draw_network_section();
 
 #if 0
             ImGui::SeparatorText("Accessible surface area");

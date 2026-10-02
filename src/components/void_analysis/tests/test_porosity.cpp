@@ -24,15 +24,16 @@ struct Sampled {
     void_profile_t prof = {};
 
     template <typename F>
-    Sampled(int nx, int ny, int nz, double h, uint32_t num_slabs, uint32_t num_bins, double max_dist, F dist) {
-        const double bin_width = max_dist / (double)num_bins;
+    Sampled(int nx, int ny, int nz, double h, uint32_t planes_per_slab, uint32_t num_bins, double max_dist, F dist) {
+        const double   bin_width = max_dist / (double)num_bins;
+        const uint32_t num_slabs = void_profile_num_slabs(nz, planes_per_slab);
 
         hist.assign((size_t)num_slabs * num_bins, 0);
         solid.assign(num_slabs, 0);
         total.assign(num_slabs, 0);
 
         for (int k = 0; k < nz; ++k) {
-            const uint32_t slab = void_profile_slab_of(k, nz, num_slabs);
+            const uint32_t slab = void_profile_slab_of(k, planes_per_slab);
             const double z = ((double)k + 0.5) * h;
             for (int j = 0; j < ny; ++j) {
                 const double y = ((double)j + 0.5) * h;
@@ -57,7 +58,8 @@ struct Sampled {
         prof.num_bins     = num_bins;
         prof.bin_width    = bin_width;
         prof.z_min        = 0.0;
-        prof.slab_height  = h * (double)nz / (double)num_slabs;
+        prof.z_max        = h * (double)nz;
+        prof.slab_height  = h * (double)planes_per_slab;
         prof.voxel_volume = h * h * h;
     }
 };
@@ -69,25 +71,26 @@ UTEST(viamd_void_profile, binning_conventions) {
     // exactly why they are worth pinning: a one plane shift in the slab mapping or a half bin shift
     // in the distance mapping changes every reported profile a little and nothing enough to notice.
 
-    // One slab per plane of voxels is the identity. Anything else is an off by one.
+    // One slab per plane of voxels whenever the grid fits, which makes the mapping the identity.
+    EXPECT_EQ(1u, void_profile_planes_per_slab(37, 512));
+    EXPECT_EQ(37u, void_profile_num_slabs(37, 1));
     for (int k = 0; k < 37; ++k) {
-        EXPECT_EQ((uint32_t)k, void_profile_slab_of(k, 37, 37));
+        EXPECT_EQ((uint32_t)k, void_profile_slab_of(k, 1));
     }
 
-    // Otherwise a plane belongs to the slab its centre falls in, and the slabs partition the grid:
-    // non decreasing, starting at the first and ending at the last.
-    const int dim_z = 100;
-    const uint32_t ns = 7;
-    uint32_t prev = 0;
-    for (int k = 0; k < dim_z; ++k) {
-        const uint32_t got  = void_profile_slab_of(k, dim_z, ns);
-        const uint32_t want = (uint32_t)(((double)k + 0.5) / (double)dim_z * (double)ns);
-        EXPECT_EQ(want, got);
-        EXPECT_TRUE(got >= prev);
-        prev = got;
-    }
-    EXPECT_EQ(0u, void_profile_slab_of(0, dim_z, ns));
-    EXPECT_EQ(ns - 1, void_profile_slab_of(dim_z - 1, dim_z, ns));
+    // Past the cap, the fewest whole planes per slab that fit, with the remainder in a thinner last
+    // slab. Every slab but the last holds exactly planes_per_slab planes: a slab with one plane more
+    // or less than its neighbours is the defect this convention exists to rule out.
+    const int dim_z = 1301;
+    const uint32_t pps = void_profile_planes_per_slab(dim_z, 512);
+    const uint32_t ns  = void_profile_num_slabs(dim_z, pps);
+    EXPECT_EQ(3u, pps);
+    EXPECT_EQ(434u, ns);
+    EXPECT_TRUE(ns <= 512u);
+    std::vector<uint32_t> planes(ns, 0);
+    for (int k = 0; k < dim_z; ++k) planes[void_profile_slab_of(k, pps)] += 1;
+    for (uint32_t s = 0; s + 1 < ns; ++s) EXPECT_EQ(pps, planes[s]);
+    EXPECT_EQ(2u, planes[ns - 1]);
 
     // Bin b is [b*w, (b+1)*w): closed below, open above.
     const double w = 0.25;
@@ -116,7 +119,7 @@ UTEST(viamd_void_profile, slab_porosity_and_linear_accessible_volume) {
     const double t  = 20.0;                  // Slab thickness
     const double z0 = 0.5 * H;
 
-    Sampled s(4, 4, nz, h, 64, 256, 64.0, [&](double, double, double z) {
+    Sampled s(4, 4, nz, h, 5, 256, 64.0, [&](double, double, double z) {
         return fabs(z - z0) - 0.5 * t;
     });
 
@@ -221,7 +224,7 @@ UTEST(viamd_void_profile, film_extent_finds_the_half_density_surface) {
     void_profile_t p = {};
     p.hist = hist.data(); p.solid = solid.data(); p.total = total.data();
     p.num_slabs = ns; p.num_bins = 4; p.bin_width = 1.0;
-    p.z_min = 0.0; p.slab_height = slab_h; p.voxel_volume = 1.0;
+    p.z_min = 0.0; p.z_max = slab_h * ns; p.slab_height = slab_h; p.voxel_volume = 1.0;
 
     uint32_t beg = 0, end = 0;
     double interior = 0.0;
@@ -259,7 +262,7 @@ UTEST(viamd_void_profile, film_extent_spans_an_internal_void) {
     void_profile_t p = {};
     p.hist = hist.data(); p.solid = solid.data(); p.total = total.data();
     p.num_slabs = ns; p.num_bins = 2; p.bin_width = 1.0;
-    p.z_min = 0.0; p.slab_height = 1.0; p.voxel_volume = 1.0;
+    p.z_min = 0.0; p.z_max = (double)ns; p.slab_height = 1.0; p.voxel_volume = 1.0;
 
     uint32_t beg = 0, end = 0;
     ASSERT_TRUE(void_profile_film_extent(&p, 0.5, &beg, &end, nullptr));
@@ -284,7 +287,7 @@ UTEST(viamd_void_profile, reduction_identities) {
     const double cy[3]  = { 5.0, 17.0, 8.0 };
     const double cz[3]  = { 7.0, 9.0, 19.0 };
 
-    Sampled s(n, n, n, h, 12, 256, 16.0, [&](double x, double y, double z) {
+    Sampled s(n, n, n, h, 5, 256, 16.0, [&](double x, double y, double z) {
         double best = 1.0e30;
         for (int c = 0; c < 3; ++c) {
             const double d = sqrt((x - cx[c]) * (x - cx[c]) + (y - cy[c]) * (y - cy[c]) + (z - cz[c]) * (z - cz[c])) - rad[c];
