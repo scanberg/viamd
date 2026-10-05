@@ -99,7 +99,7 @@ struct BeamPreset {
     // Detector (flat, normal to the direct beam)
     double sdd_mm;
     double pixel_mm;
-    int    det_px_h;            // horizontal pixels (beam centered horizontally)
+    int    det_px_h;            // horizontal pixels
     double alpha_f_max_deg;     // vertical range used, from the sample horizon
     // Substrate
     double sub_delta;
@@ -110,6 +110,7 @@ struct BeamPreset {
     // Detector image
     int    det_px_v;            // vertical pixels
     double beam_y_px;           // direct beam row, counted from the bottom edge
+    double beam_x_px;           // direct beam column, counted from the left edge
     int    module_w, module_h;  // detector module size (px), 0 = no gaps
     int    gap_w, gap_h;        // gaps between modules (px)
     int    bs_direct_px;        // direct beamstop (square, px)
@@ -132,10 +133,37 @@ const BeamPreset beam_presets[] = {
         // Pilatus 1M: 2 x 5 modules of 487 x 195 px, gaps 7 px (horizontal) and 17 px (vertical).
         // The direct beam row is chosen such that the top edge is at alpha_f ~ 1.6 deg (as in the script).
         // Beamstop sizes are estimates, the paper does not state them.
-        1043, 23.0,
+        1043, 23.0, 490.5,
         487, 195, 7, 17,
         20, 12,
         2.0e-9,
+    },
+    {
+        "P03 / PETRA III (Brett 2019)",
+        "Brett et al., Macromolecules 52, 4721 (2019), spray-deposited CNF films:\n"
+        "13 keV (lambda = 0.09537 nm), alpha_i = 0.41 deg, Pilatus 1M (981 x 1043 px, 172 um) at SDD = 5007 mm,\n"
+        "alpha_f up to 1.61 deg, Si substrate (delta 2.88e-6, beta 2.6e-8, critical angle 0.137 deg).\n"
+        "Horizontal cut at the CNF Yoneda (alpha_f = 0.13 deg). The vertical cut of the paper is at q_y = 0, on the\n"
+        "specular rod, which the model does not contain: it is placed at the lowest q_par of the map instead.\n"
+        "Direct beam position and beamstop sizes are estimated from the Pilatus 1M patterns (SI, Fig. S8).",
+        0.09537, 0.41,
+        5007.0, 0.172, 981, 1.614,
+        // Si at 13 keV. delta reproduces the critical angle given in the paper (0.137 deg); delta and beta are
+        // scaled from the values of the Ohm 2018 setup (delta ~ lambda^2, beta ~ lambda^4). The native oxide is not
+        // modelled, the paper finds the substrate contribution negligible.
+        2.88e-6, 2.6e-8,
+        // The paper cuts at qy = 0 nm^-1 (Fig. 4b); 0 is clamped to the lowest q_par of the map
+        0.13, 0.0,
+        // Not stated in the paper, estimated from Fig. S8, calibrated on the two horizontal module gaps visible
+        // there (212 px pitch): the specular beamstop sits on the gap at rows 407-423 and the CNF Yoneda is ~135 px
+        // below that gap, which puts the direct beam at row ~14 (+-5) and the top edge at alpha_f ~1.61 deg, as in
+        // Ohm 2018. The specular rod runs ~41 px right of the vertical module gap (column ~532). The specular
+        // beamstop is a disc of ~33 px (~5.7 mm), modelled as a square. The direct beamstop is outside the figure.
+        1043, 14.0, 532.0,
+        487, 195, 7, 17,
+        20, 33,
+        // Cellulose at 13 keV, scaled from 2e-9 at 12.8 keV
+        1.9e-9,
     },
 };
 
@@ -630,8 +658,9 @@ struct ScatteringComponent : viamd::EventHandler {
     static PresetValues preset_values(const BeamPreset& p) {
         const double lambda_a = p.wavelength_nm * 10.0;
         const double k0 = 2.0 * PI / p.wavelength_nm;   // nm^-1
-        // Largest in-plane angle: half the detector width (beam centered horizontally)
-        const double two_theta_max = atan(0.5 * p.det_px_h * p.pixel_mm / p.sdd_mm);
+        // Largest in-plane angle: the detector edge farthest from the direct beam, so the map covers every pixel
+        const double edge_px = MAX(p.beam_x_px, p.det_px_h - p.beam_x_px);
+        const double two_theta_max = atan(edge_px * p.pixel_mm / p.sdd_mm);
         const double ai = p.alpha_i_deg * DEG_TO_RAD;
         const double af = p.alpha_f_max_deg * DEG_TO_RAD;
         PresetValues v;
@@ -671,14 +700,14 @@ struct ScatteringComponent : viamd::EventHandler {
         cut_alpha_f_deg = (float)p.cut_alpha_f_deg;
         cut_qpar        = p.cut_qpar_nm;
         cut_init        = true;
-        vcut_vs_alpha_f = true;     // As in the paper (Fig. 4c)
+        vcut_vs_alpha_f = true;     // As in the papers (Ohm 2018 Fig. 4c, Brett 2019 Fig. 4b)
         film_graded     = true;
         material_beta   = p.material_beta;
         det.sdd_mm      = p.sdd_mm;
         det.pixel_mm    = p.pixel_mm;
         det.npx_h       = p.det_px_h;
         det.npx_v       = p.det_px_v;
-        det.beam_x_px   = 0.5 * p.det_px_h;
+        det.beam_x_px   = p.beam_x_px;
         det.beam_y_px   = p.beam_y_px;
         det.module_w    = p.module_w;
         det.module_h    = p.module_h;
