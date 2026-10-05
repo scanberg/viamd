@@ -260,7 +260,7 @@ struct ScatteringComponent : viamd::EventHandler {
     // Self scattering of the (original) beads, groups of (sigma, sum w^2), for the diagnostic in the horizontal cut
     std::vector<std::pair<float, double>> bead_self;
     double bead_self_area = 1.0;
-    bool   show_bead_self = true;
+    bool   show_bead_self = false;
 
     // --- Ambient medium and substrate ---
     int    ambient_preset = 0;
@@ -287,7 +287,6 @@ struct ScatteringComponent : viamd::EventHandler {
     float ring_rel_width = 0.1f;                 // Lattice shells closer than this (relative to q_par) share a ring
     int   num_qz = 512;
     int   max_slices = 1024;
-    bool  auto_recompute = false;                // Recompute the structure stage when the system state changes
 
     // --- Detector and resolution ---
     float res_fwhm_qpar = 0.0f;                  // Resolution (FWHM, nm^-1)
@@ -358,6 +357,7 @@ struct ScatteringComponent : viamd::EventHandler {
     md_array(void*) scratch = nullptr;       // per worker thread slice scratch
     size_t scratch_bytes = 0;
     uint64_t structure_hash = 0;             // Hash of the inputs used for the current ctx
+    uint64_t ctx_gen = 0;                    // Incremented for every created ctx, identifies it in the model hash
     bool structure_stale = false;            // The system changed since the current ctx was computed
     double ctx_q_z_max = 0.0;                // Å^-1, as used when ctx was created
     double particle_z_min = 0.0;
@@ -366,7 +366,8 @@ struct ScatteringComponent : viamd::EventHandler {
     double compute_time = 0.0;
 
     // --- Model stage ---
-    task_system::ID task_eval = task_system::INVALID_ID;
+    task_system::ID task_eval_range = task_system::INVALID_ID;   // The evaluation itself
+    task_system::ID task_eval = task_system::INVALID_ID;         // Completion of the evaluation (sets eval_ready)
     std::atomic<bool> eval_ready{false};
     uint64_t eval_hash_pending = 0;          // Hash of the model currently being evaluated
     uint64_t eval_hash_shown = 0;            // Hash of the model currently shown
@@ -591,7 +592,9 @@ struct ScatteringComponent : viamd::EventHandler {
         h = md_hash64(&inc, sizeof(inc), h);
 #endif
         h = md_hash64(&num_qz, sizeof(num_qz), h);
-        h = md_hash64(&ctx, sizeof(ctx), h);
+        // Not the ctx pointer: a recompute frees and reallocates ctx, which usually lands at the same address, and the
+        // result of the new structure (e.g. another trajectory frame) would then never be evaluated
+        h = md_hash64(&ctx_gen, sizeof(ctx_gen), h);
         h = md_hash64(&structure_hash, sizeof(structure_hash), h);
         return h;
     }
@@ -701,8 +704,10 @@ struct ScatteringComponent : viamd::EventHandler {
         task_system::task_interrupt_and_wait_for(task_slices);
         task_system::task_interrupt_and_wait_for(task_rings);
         task_system::task_wait_for(task_finish);
+        // A partial evaluation still completes (and sets eval_ready), it is discarded below
+        task_system::task_interrupt(task_eval_range);
         task_system::task_wait_for(task_eval);
-        task_slices = task_rings = task_finish = task_eval = task_system::INVALID_ID;
+        task_slices = task_rings = task_finish = task_eval_range = task_eval = task_system::INVALID_ID;
         if (compute_state.load() == ComputeState_Running) {
             compute_state = ComputeState_Idle;
         }
@@ -1152,6 +1157,7 @@ struct ScatteringComponent : viamd::EventHandler {
             snprintf(status, sizeof(status), "Failed to initialize the scattering computation (see log)");
             return false;
         }
+        ctx_gen += 1;
 #if VIAMD_SCATTERING_NEUTRON
         ctx_radiation = radiation;
         // Flat incoherent background: sum sigma_inc / (4 pi A), per unit area and solid angle like the coherent part
@@ -1192,7 +1198,7 @@ struct ScatteringComponent : viamd::EventHandler {
             md_gisaxs_compute_rings(ctx, beg, end);
         });
 
-        task_finish = task_system::create_pool_task(STR_LIT("Scattering finalize"), [this]() {
+        task_finish = task_system::create_pool_task(STR_LIT("##Scattering finalize"), [this]() {
             md_gisaxs_release_spectra(ctx);
             compute_state = compute_cancel ? ComputeState_Failed : ComputeState_Done;
         });
@@ -1225,15 +1231,15 @@ struct ScatteringComponent : viamd::EventHandler {
         eval_hash_pending = hash;
         eval_ready = false;
 
-        task_eval = task_system::create_pool_task(STR_LIT("Scattering evaluate"), (uint32_t)Nq, [this](uint32_t beg, uint32_t end, uint32_t) {
+        task_eval_range = task_system::create_pool_task(STR_LIT("Scattering evaluate"), (uint32_t)Nq, [this](uint32_t beg, uint32_t end, uint32_t) {
             md_gisaxs_evaluate_range(ctx, &eval_model, eval_qz.data(), beg, end, eval_out.data());
         }, 4);
-        const task_system::ID done = task_system::create_pool_task(STR_LIT("Scattering evaluate done"), [this]() {
+        // Bookkeeping only, hidden from the async task overlay ("##")
+        task_eval = task_system::create_pool_task(STR_LIT("##Scattering evaluate done"), [this]() {
             eval_ready = true;
         });
-        task_system::set_task_dependency(done, task_eval);
-        task_system::enqueue_task(task_eval);
-        task_eval = done;
+        task_system::set_task_dependency(task_eval, task_eval_range);
+        task_system::enqueue_task(task_eval_range);
     }
 
     void accept_eval() {
@@ -1291,7 +1297,7 @@ struct ScatteringComponent : viamd::EventHandler {
         eval_hash_shown = eval_hash_pending;
         res_dirty = true;
         eval_ready = false;
-        task_eval = task_system::INVALID_ID;
+        task_eval_range = task_eval = task_system::INVALID_ID;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1314,11 +1320,6 @@ struct ScatteringComponent : viamd::EventHandler {
             if (ctx) { md_gisaxs_destroy(ctx); ctx = nullptr; }
             compute_state = ComputeState_Idle;
             snprintf(status, sizeof(status), "Computation was cancelled or failed");
-        }
-
-        // Follow the trajectory: recompute once the running computation (if any) is done
-        if (auto_recompute && structure_stale && compute_state.load() != ComputeState_Running && app_state) {
-            start_compute();
         }
 
         if (eval_ready.load()) {
@@ -1554,9 +1555,6 @@ struct ScatteringComponent : viamd::EventHandler {
                                                             : "Sample or sampling settings changed since the last computation");
             }
         }
-        ImGui::Checkbox("Follow trajectory", &auto_recompute);
-        ImGui::SetItemTooltip("Recompute automatically when the system state changes (e.g. a new trajectory frame).\n"
-                              "Beam, substrate, resolution and display changes never need a recompute.");
         if (status[0]) {
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextDisabled("%s", status);
@@ -2182,7 +2180,6 @@ struct ScatteringComponent : viamd::EventHandler {
                 if (log_scale) positive_range(hcut.data(), R, &b, &e);
                 if (e > b) {
                     ImPlot::SetNextLineStyle(col_h, 1.5f);
-                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 2.0f);
                     ImPlot::PlotLine("I", ring_q_nm.data() + b, hcut.data() + b, (int)(e - b));
                 }
                 if (show_bead_self && !bead_self.empty()) {
@@ -2335,7 +2332,6 @@ struct ScatteringComponent : viamd::EventHandler {
         viamd::write_flt(state, STR_LIT("RingRelWidth"), ring_rel_width);
         viamd::write_int(state, STR_LIT("NumQz"), num_qz);
         viamd::write_int(state, STR_LIT("MaxSlices"), max_slices);
-        viamd::write_bool(state, STR_LIT("AutoRecompute"), auto_recompute);
         viamd::write_flt(state, STR_LIT("ResFwhmQpar"), res_fwhm_qpar);
         viamd::write_flt(state, STR_LIT("ResFwhmQz"), res_fwhm_qz);
         viamd::write_bool(state, STR_LIT("ViewDetector"), view_detector);
@@ -2427,7 +2423,6 @@ struct ScatteringComponent : viamd::EventHandler {
             else if (str_eq(ident, STR_LIT("RingRelWidth")))      viamd::extract_flt(ring_rel_width, arg);
             else if (str_eq(ident, STR_LIT("NumQz")))             viamd::extract_int(num_qz, arg);
             else if (str_eq(ident, STR_LIT("MaxSlices")))         viamd::extract_int(max_slices, arg);
-            else if (str_eq(ident, STR_LIT("AutoRecompute")))     viamd::extract_bool(auto_recompute, arg);
             else if (str_eq(ident, STR_LIT("ResFwhmQpar")))       viamd::extract_flt(res_fwhm_qpar, arg);
             else if (str_eq(ident, STR_LIT("ResFwhmQz")))         viamd::extract_flt(res_fwhm_qz, arg);
             else if (str_eq(ident, STR_LIT("ViewDetector")))      viamd::extract_bool(view_detector, arg);
