@@ -18,7 +18,6 @@
 
 #include <imgui_widgets.h>
 #include <implot_internal.h>
-#include <implot3d.h>
 
 #include <gfx/gl_utils.h>
 #include <gfx/volumerender_utils.h>
@@ -65,8 +64,8 @@ constexpr double DA_PER_A3_TO_KG_PER_M3 = 1660.53906892;
 constexpr int VOL_MAX_DIM = 512;
 constexpr int VOL_TF_RES  = 1024;    // Fine enough that the cut at R is sharp to a small fraction of a voxel
 
-// Topography display: past this many columns per axis the heat map is averaged down, as the V(R,z)
-// surface is. The statistics are always taken over every column.
+// Topography display: past this many columns per axis the heat map is averaged down. The statistics
+// are always taken over every column.
 constexpr uint32_t HEIGHT_MAX_DIM = 256;
 
 // Pore network. Colours are ABGR, one per PORE_CLASS_, from the Okabe-Ito set: distinct under
@@ -117,8 +116,9 @@ const char* radius_source_lbl[RadiusSource_Count] = {
 
 // Which part of the box the scalar results are reported over. A film simulated with an open z axis
 // sits in a box with vacuum above and below it, and a porosity averaged over that box measures how
-// much vacuum the box was given rather than anything about the film. There is no safe default, so
-// the region is a stated choice and the profiles always show the whole grid regardless of it.
+// much vacuum the box was given rather than anything about the film. The film slab is therefore the
+// default. On a box filled to its faces it covers the whole box unless an edge slab falls below the
+// threshold, and the region line says which slabs were used. The profiles always show the whole grid.
 enum Region {
     Region_Box = 0,     // The whole grid
     Region_Film,        // The film slab, located by the half density convention
@@ -130,35 +130,6 @@ const char* region_lbl[Region_Count] = {
     "Whole box",
     "Film slab (auto)",
     "Manual z range",
-};
-
-// How the V(R,z) surface is shown. The two views carry the same numbers: the surface is what the
-// quantity is, the heatmap is what it is easier to read a value off.
-enum SurfaceView {
-    SurfaceView_Surface = 0,
-    SurfaceView_Heatmap,
-    SurfaceView_Hidden,
-    SurfaceView_Count,
-};
-
-const char* surface_view_lbl[SurfaceView_Count] = {
-    "Surface (3D)",
-    "Heatmap (2D)",
-    "Hidden",
-};
-
-// A slab volume is the arbitrary thickness the profile was cut at, so the normalized form is the one
-// that compares across slabs and across runs. The absolute one is still worth having, because it is
-// what integrates back to the accessible volume of the region.
-enum SurfaceValue {
-    SurfaceValue_Fraction = 0,
-    SurfaceValue_Volume,
-    SurfaceValue_Count,
-};
-
-const char* surface_value_lbl[SurfaceValue_Count] = {
-    "V(R,z) / V(z)",
-    "V(R,z) in nm^3",
 };
 
 // Which face of the film the topography map shows. The thickness is the one of the three which does
@@ -175,11 +146,6 @@ const char* height_view_lbl[HeightView_Count] = {
     "Bottom surface",
     "Thickness",
 };
-
-// The surface is a quad per grid cell, drawn every frame. The slab and radius counts are the user's
-// to raise and this is not the place to pay for it: past this many points per axis the grid is
-// sampled rather than drawn whole, which changes nothing visible and keeps the plot interactive.
-constexpr uint32_t SURF_MAX_DIM = 128;
 
 struct Stats {
     uint64_t num_grid      = 0;      // Voxels in the grid
@@ -437,7 +403,7 @@ struct VoidAnalysis : viamd::EventHandler {
     bool     net_region_removing = false;
 
     // Porosity and accessible volume
-    Region   region      = Region_Box;
+    Region   region      = Region_Film;
     float    film_frac   = 0.5f;     // Solid fraction, as a share of the interior value, at the film edge
     float    manual_z_lo = 0.0f;
     float    manual_z_hi = 0.0f;
@@ -448,25 +414,13 @@ struct VoidAnalysis : viamd::EventHandler {
     double   film_solid  = 0.0;
     bool     has_film    = false;
 
-    // Cached reductions. The curve and the heatmap are a few million bin sums, so they are rebuilt
-    // when the result or the region changes rather than every frame; the per slab accessible
-    // fraction is one sweep of the bins and can follow the probe slider.
-    int    acc_num_radii = 64;
-    SurfaceView  surface_view  = SurfaceView_Hidden;    // Opt in: the 3D surface is drawn every frame
-    SurfaceValue surface_value = SurfaceValue_Fraction;
+    // Cached reductions. The curves are rebuilt when the result or the region changes rather than
+    // every frame; the per slab accessible fraction is one sweep of the bins and can follow the
+    // probe slider.
     bool   curves_dirty  = true;
     bool   probe_dirty   = true;
-    double surf_max      = 1.0;      // Largest value on the surface, for the colour scale
-    uint32_t surf_nx     = 0;        // Sampled grid of the surface: slabs along x, radii along y
-    uint32_t surf_ny     = 0;
-    double surf_x0 = 0.0, surf_x1 = 1.0;   // World bounds of the sampled grid, nm
-    double surf_y0 = 0.0, surf_y1 = 1.0;
-    md_array(double) acc_r    = 0;   // Probe radius samples, nm
+    md_array(double) acc_r    = 0;   // Probe radius at the histogram bin edges, nm: the knots of V(R)
     md_array(double) acc_frac = 0;   // V(R)/V over the region
-    md_array(float)  surf_x   = 0;   // [ix + iy * surf_nx], z of the slab
-    md_array(float)  surf_y   = 0;   // ... probe radius
-    md_array(float)  surf_z   = 0;   // ... the value
-    md_array(float)  acc_heat = 0;   // [(surf_ny - 1 - iy) * surf_nx + ix], row 0 is the largest radius
     md_array(double) prof_z   = 0;   // Slab centres, nm
     md_array(double) prof_phi = 0;   // Porosity per slab
     md_array(double) prof_acc = 0;   // V(R,z)/V(z) per slab at the current probe
@@ -622,19 +576,13 @@ struct VoidAnalysis : viamd::EventHandler {
         stats = {};
         md_array_free(acc_r, arena);
         md_array_free(acc_frac, arena);
-        md_array_free(surf_x, arena);
-        md_array_free(surf_y, arena);
-        md_array_free(surf_z, arena);
-        md_array_free(acc_heat, arena);
         md_array_free(prof_z, arena);
         md_array_free(prof_phi, arena);
         md_array_free(prof_acc, arena);
         md_array_free(prof_rho, arena);
         md_array_free(hist_x, arena);
         md_array_free(hist_y, arena);
-        acc_r = 0; acc_frac = 0; acc_heat = 0;
-        surf_x = 0; surf_y = 0; surf_z = 0;
-        surf_nx = surf_ny = 0;
+        acc_r = 0; acc_frac = 0;
         prof_z = 0; prof_phi = 0; prof_acc = 0; prof_rho = 0;
         hist_x = 0; hist_y = 0;
         region_beg = region_end = 0;
@@ -1005,33 +953,21 @@ struct VoidAnalysis : viamd::EventHandler {
         probe_dirty  = true;
     }
 
-    // V(R)/V over the region, the same per slab as a function of R, and the distance histogram of
-    // the region. All of it is sums over bins - a few million of them - which is cheap enough to do
-    // on demand and far too much to do every frame.
+    // V(R)/V over the region, the porosity and density profiles against z, and the distance
+    // histogram of the region. All of it is sums over bins, cheap enough to do on demand and too
+    // much to do every frame.
     void update_curves() {
         curves_dirty = false;
         if (!has_result) return;
 
         const void_profile_t p = make_profile();
-        const size_t nr = (size_t)CLAMP(acc_num_radii, 4, 256);
-
-        // From zero, so the left endpoint of the curve is the porosity, out to the largest clearance
-        // in the box, where it reaches zero. The curve between them is the whole of what this
-        // section reports; the scalars are two points read off it.
-        const double r_hi_nm = MAX(stats.d_max, stats.bin_width) / (double)ANGSTROM_PER_NM;
-
-        md_array_resize(acc_r, nr, arena);
-        md_array_resize(acc_frac, nr, arena);
-        for (size_t i = 0; i < nr; ++i) {
-            acc_r[i]    = r_hi_nm * (double)i / (double)(nr - 1);
-            acc_frac[i] = void_profile_accessible_fraction(&p, region_beg, region_end, acc_r[i] * (double)ANGSTROM_PER_NM);
-        }
+        const double nm = (double)ANGSTROM_PER_NM;
 
         const uint32_t ns = stats.num_slabs;
         md_array_resize(prof_z,   ns, arena);
         md_array_resize(prof_phi, ns, arena);
         for (uint32_t sl = 0; sl < ns; ++sl) {
-            prof_z[sl]   = 0.5 * (void_profile_z_lo(&p, sl) + void_profile_z_hi(&p, sl)) / (double)ANGSTROM_PER_NM;
+            prof_z[sl]   = 0.5 * (void_profile_z_lo(&p, sl) + void_profile_z_hi(&p, sl)) / nm;
             prof_phi[sl] = void_profile_porosity(&p, sl, sl + 1);
         }
 
@@ -1040,56 +976,38 @@ struct VoidAnalysis : viamd::EventHandler {
             prof_rho[sl] = density_over(sl, sl + 1);
         }
 
-        // The V(R,z) grid: a histogram of the accessible volume per z slab over every radius. Both
-        // views read from this - a surface over (z, R) and, transposed and flipped, a heatmap - so
-        // rotating one to check a value against the other is comparing a quantity with itself.
-        const uint32_t stride_x = (ns + SURF_MAX_DIM - 1) / SURF_MAX_DIM;
-        const uint32_t stride_y = ((uint32_t)nr + SURF_MAX_DIM - 1) / SURF_MAX_DIM;
-        surf_nx = (ns + stride_x - 1) / stride_x;
-        surf_ny = ((uint32_t)nr + stride_y - 1) / stride_y;
-
-        md_array_resize(surf_x, (size_t)surf_nx * surf_ny, arena);
-        md_array_resize(surf_y, (size_t)surf_nx * surf_ny, arena);
-        md_array_resize(surf_z, (size_t)surf_nx * surf_ny, arena);
-        md_array_resize(acc_heat, (size_t)surf_nx * surf_ny, arena);
-
-        const double nm3 = (double)ANGSTROM_PER_NM * (double)ANGSTROM_PER_NM * (double)ANGSTROM_PER_NM;
-        surf_max = 0.0;
-        for (uint32_t iy = 0; iy < surf_ny; ++iy) {
-            const size_t i = MIN(nr - 1, (size_t)iy * stride_y);
-            const double r = acc_r[i] * (double)ANGSTROM_PER_NM;
-            for (uint32_t ix = 0; ix < surf_nx; ++ix) {
-                const uint32_t sl = MIN(ns - 1, ix * stride_x);
-                const double frac = void_profile_accessible_fraction(&p, sl, sl + 1, r);
-                const double v    = (surface_value == SurfaceValue_Volume)
-                                  ? frac * (double)void_profile_num_total(&p, sl, sl + 1) * stats.voxel_volume / nm3
-                                  : frac;
-                const size_t k = (size_t)ix + (size_t)iy * surf_nx;
-                surf_x[k] = (float)prof_z[sl];
-                surf_y[k] = (float)acc_r[i];
-                surf_z[k] = (float)v;
-                // Row 0 of a heatmap is drawn at the top of the bounds, so its rows run from the
-                // largest radius down while the surface runs the other way.
-                acc_heat[(size_t)(surf_ny - 1 - iy) * surf_nx + ix] = (float)v;
-                if (v > surf_max) surf_max = v;
-            }
+        // The distance histogram of the region, summed over its slabs once. The bars are this as it
+        // stands and the V(R)/V curve is its reverse cumulative.
+        uint64_t region_hist[NUM_BINS] = {};
+        for (uint32_t sl = region_beg; sl < region_end; ++sl) {
+            const uint64_t* h = stats.hist + (size_t)sl * NUM_BINS;
+            for (int b = 0; b < NUM_BINS; ++b) region_hist[b] += h[b];
         }
-        if (!(surf_max > 0.0)) surf_max = 1.0;
-        surf_x0 = surf_x[0];
-        surf_x1 = surf_x[(size_t)surf_nx - 1];
-        surf_y0 = surf_y[0];
-        surf_y1 = surf_y[(size_t)(surf_ny - 1) * surf_nx];
+        const double n_tot = (double)MAX((uint64_t)1, void_profile_num_total(&p, region_beg, region_end));
 
         md_array_resize(hist_x, NUM_BINS, arena);
         md_array_resize(hist_y, NUM_BINS, arena);
-        const double n_tot = (double)MAX((uint64_t)1, void_profile_num_total(&p, region_beg, region_end));
         for (int b = 0; b < NUM_BINS; ++b) {
-            uint64_t c = 0;
-            for (uint32_t sl = region_beg; sl < region_end; ++sl) {
-                c += stats.hist[(size_t)sl * NUM_BINS + b];
+            hist_x[b] = ((double)b + 0.5) * stats.bin_width / nm;
+            hist_y[b] = (double)region_hist[b] / n_tot;
+        }
+
+        // V(R)/V. void_profile_count_above splits the bin holding R linearly, so the curve is
+        // piecewise linear with its knots at the bin edges and is exact when evaluated there - there
+        // is no sampling resolution to choose. From R = 0, where it is the porosity, to the first
+        // edge past the largest clearance, where it reaches zero.
+        const double   d_hi      = MAX(stats.d_max, 0.0);
+        const uint32_t num_edges = (stats.bin_width > 0.0) ? (uint32_t)MIN((double)NUM_BINS, floor(d_hi / stats.bin_width) + 1.0) : 1;
+        const uint32_t num_knots = num_edges + 1;
+        md_array_resize(acc_r,    num_knots, arena);
+        md_array_resize(acc_frac, num_knots, arena);
+        uint64_t above = 0;
+        for (int b = NUM_BINS; b >= 0; --b) {
+            if (b < NUM_BINS) above += region_hist[b];
+            if ((uint32_t)b < num_knots) {
+                acc_r[b]    = (double)b * stats.bin_width / nm;
+                acc_frac[b] = (double)above / n_tot;
             }
-            hist_x[b] = ((double)b + 0.5) * stats.bin_width / (double)ANGSTROM_PER_NM;
-            hist_y[b] = (double)c / n_tot;
         }
     }
 
@@ -1509,8 +1427,9 @@ struct VoidAnalysis : viamd::EventHandler {
         }
     }
 
-    // The full V(R,z) surface, long form: one row per (radius, slab) pair, which is what a plotting
-    // tool wants and what a matrix written as a grid of numbers is not.
+    // V(R,z) in long form: one row per (radius, slab) pair, which is what a plotting tool wants and
+    // what a matrix written as a grid of numbers is not. The radii are the knots of the curve, so a
+    // linear interpolation between rows reproduces it exactly.
     void export_accessible_csv() const {
         char path_buf[2048];
         if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
@@ -2156,7 +2075,7 @@ struct VoidAnalysis : viamd::EventHandler {
     void draw_network_section() {
         const double nm = (double)ANGSTROM_PER_NM;
 
-        ImGui::SeparatorText("Pore network");
+        if (!ImGui::CollapsingHeader("Pore network", ImGuiTreeNodeFlags_DefaultOpen)) return;
         ImGui::TextDisabled("The void as pores and the throats between them, in the 3D view. Through z, open at both ends.");
 
         float r_min_nm = net_r_min / ANGSTROM_PER_NM;
@@ -2247,7 +2166,7 @@ struct VoidAnalysis : viamd::EventHandler {
         const double nm  = (double)ANGSTROM_PER_NM;
         const double nm3 = nm * nm * nm;
 
-        ImGui::SeparatorText("Porosity and accessible volume");
+        if (!ImGui::CollapsingHeader("Porosity and accessible volume", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
         if (ImGui::BeginCombo("Report over", region_lbl[region])) {
             for (int i = 0; i < Region_Count; ++i) {
@@ -2335,9 +2254,6 @@ struct VoidAnalysis : viamd::EventHandler {
             ImGui::SetItemTooltip("No atom carries a mass, so this is the number density instead.");
         }
 
-        ImGui::SliderInt("Radius samples", &acc_num_radii, 8, 256, "%d", ImGuiSliderFlags_AlwaysClamp);
-        if (ImGui::IsItemDeactivatedAfterEdit()) curves_dirty = true;
-
         // Three views side by side. V(R)/V against R, whose left endpoint is the porosity and which the
         // probe radius reads off; the same against z, where the R = 0 curve is the porosity profile
         // and the gap to the probe curve is the pore volume the probe is too large for; and the
@@ -2404,63 +2320,6 @@ struct VoidAnalysis : viamd::EventHandler {
             ImGui::EndTable();
         }
 
-        // V(R,z): the accessible volume of every z slab over every probe radius, in one picture. A
-        // cut at constant z is the curve above for that slab; a cut at constant R is the profile.
-        // What the surface shows that neither cut does is where the two run out together - the
-        // radius at which the interior of the film goes flat while the surface layers still have
-        // room is the shape of an infiltration limit.
-        if (ImGui::BeginCombo("V(R,z)", surface_view_lbl[surface_view])) {
-            for (int i = 0; i < SurfaceView_Count; ++i) {
-                if (ImGui::Selectable(surface_view_lbl[i], surface_view == i)) surface_view = (SurfaceView)i;
-            }
-            ImGui::EndCombo();
-        }
-        if (surface_view != SurfaceView_Hidden) {
-            if (ImGui::BeginCombo("Height", surface_value_lbl[surface_value])) {
-                for (int i = 0; i < SurfaceValue_Count; ++i) {
-                    if (ImGui::Selectable(surface_value_lbl[i], surface_value == i)) {
-                        surface_value = (SurfaceValue)i;
-                        curves_dirty  = true;
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::SetItemTooltip("The normalized form compares across slabs and across runs; the absolute one is what\n"
-                                  "sums back to the accessible volume of the region. A slab thickness is a choice, so\n"
-                                  "the absolute surface moves with the slab count and the normalized one does not.");
-        }
-
-        if (surface_view == SurfaceView_Surface && surf_nx > 1 && surf_ny > 1) {
-            ImPlot3D::PushColormap(ImPlot3DColormap_Viridis);
-            if (ImPlot3D::BeginPlot("##acc_surface", ImVec2(-1, 320))) {
-                ImPlot3D::SetupAxes("z (nm)", "R (nm)", surface_value_lbl[surface_value]);
-                ImPlot3D::SetupAxesLimits(surf_x0, surf_x1, surf_y0, surf_y1, 0.0, surf_max, ImPlot3DCond_Always);
-                ImPlot3DSpec spec;
-                spec.Marker    = ImPlot3DMarker_None;
-                spec.FillAlpha = 1.0f;
-                spec.LineColor = ImVec4(0.0f, 0.0f, 0.0f, 0.25f);
-                spec.Flags     = ImPlot3DSurfaceFlags_NoMarkers;
-                ImPlot3D::PlotSurface("V(R,z)", surf_x, surf_y, surf_z, (int)surf_nx, (int)surf_ny, 0.0, surf_max, spec);
-                ImPlot3D::EndPlot();
-            }
-            ImPlot3D::PopColormap();
-            ImGui::TextDisabled("Drag to rotate. %u slabs x %u radii%s",
-                                surf_nx, surf_ny,
-                                (surf_nx < stats.num_slabs || (int)surf_ny < acc_num_radii) ? ", sampled from a finer grid" : "");
-        } else if (surface_view == SurfaceView_Heatmap && surf_nx > 1 && surf_ny > 1) {
-            ImPlot::PushColormap(ImPlotColormap_Viridis);
-            if (ImPlot::BeginPlot("##acc_heat", ImVec2(-76, 220), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
-                ImPlot::SetupAxes("z (nm)", "Probe radius R (nm)");
-                ImPlot::SetupAxesLimits(surf_x0, surf_x1, surf_y0, surf_y1, ImPlotCond_Always);
-                ImPlot::PlotHeatmap("V(R,z)", acc_heat, (int)surf_ny, (int)surf_nx, 0.0, surf_max, nullptr,
-                                    ImPlotPoint(surf_x0, surf_y0), ImPlotPoint(surf_x1, surf_y1));
-                ImPlot::EndPlot();
-            }
-            ImGui::SameLine();
-            ImPlot::ColormapScale("##acc_heat_scale", 0.0, surf_max, ImVec2(60, 220), "%.3g");
-            ImPlot::PopColormap();
-        }
-
         // Distance histogram of the region. V(R)/V above is its reverse cumulative, so this is the
         // same data read as a density: where the pore space sits in clearance, rather than how much
         // of it survives a given probe.
@@ -2486,7 +2345,7 @@ struct VoidAnalysis : viamd::EventHandler {
     void draw_height_section() {
         const double nm = (double)ANGSTROM_PER_NM;
 
-        ImGui::SeparatorText("Surface topography");
+        if (!ImGui::CollapsingHeader("Surface topography", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
         if (height_pass) {
             if (draw_pass_progress(height_pass, "Topography")) cancel_height_pass();
@@ -2580,7 +2439,7 @@ struct VoidAnalysis : viamd::EventHandler {
     }
 
     void draw_volume_section() {
-        ImGui::SeparatorText("Volume rendering");
+        if (!ImGui::CollapsingHeader("Volume rendering", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
         ImGui::Checkbox("Show distance field", &show_volume);
         ImGui::SetItemTooltip("Ray casts the distance field in the 3D view. It is transparent wherever the clearance\n"
