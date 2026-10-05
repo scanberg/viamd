@@ -93,12 +93,9 @@ static bool is_script(SeriesSource source) {
     return source == SeriesSource_Script || source == SeriesSource_ScriptFiltered;
 }
 
-static const md_script_eval_t* series_eval(const ApplicationState* app, SeriesSource source) {
-    switch (source) {
-    case SeriesSource_Script:         return app->script.full_eval;
-    case SeriesSource_ScriptFiltered: return app->script.filt_eval;
-    default: return nullptr;
-    }
+// Both script sources are the one evaluation, over different frame sets
+static size_t series_frame_set(SeriesSource source) {
+    return source == SeriesSource_ScriptFiltered ? SCRIPT_FRAME_SET_FILTER : SCRIPT_FRAME_SET_ALL;
 }
 
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source) {
@@ -106,8 +103,22 @@ const md_attributes_t* series_table(const ApplicationState* app, SeriesSource so
     if (source == SeriesSource_System) {
         return &app->mold.sys.attributes;
     }
-    const md_script_eval_t* eval = series_eval(app, source);
-    return eval ? md_script_eval_attributes(eval) : nullptr;
+    const md_script_eval_t* eval = is_script(source) ? app->script.eval : nullptr;
+    return eval ? md_script_eval_frame_set_attributes(eval, series_frame_set(source)) : nullptr;
+}
+
+const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, str_t path) {
+    const md_attributes_t* table = series_table(app, source);
+    if (source == SeriesSource_ScriptFiltered && table && !md_attributes_find(table, path)) {
+        return series_table(app, SeriesSource_Script);
+    }
+    return table;
+}
+
+const md_bitfield_t* series_frame_mask(const ApplicationState* app, SeriesSource source) {
+    const md_script_eval_t* eval = is_script(source) ? app->script.eval : nullptr;
+    if (!eval) return nullptr;
+    return source == SeriesSource_ScriptFiltered ? md_script_eval_frame_set_completed(eval, SCRIPT_FRAME_SET_FILTER) : md_script_eval_frame_mask(eval);
 }
 
 str_t series_script_ident(const SeriesKey& key) {
@@ -199,7 +210,7 @@ static void fill_names(View* out, const ApplicationState* app, const SeriesKey& 
     if (is_script(key.source)) {
         const str_t ident = series_script_ident(key);
         str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
-        out->vis_payload = app->script.eval_ir ? md_script_ir_property_vis_payload(app->script.eval_ir, ident) : nullptr;
+        out->vis_ref = md_script_ir_property_vis_ref(app->script.eval_ir, ident);
     }
 }
 
@@ -326,7 +337,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
     const char** reason = out_reason ? out_reason : &reason_buf;
     *reason = nullptr;
 
-    const md_attributes_t* table = series_table(app, key.source);
+    const md_attributes_t* table = series_table(app, key.source, str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
     if (!attr) {
         *reason = "Nothing is published at this path";
@@ -351,7 +362,8 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
         uint32_t views = SeriesView_Distribution;
         const size_t n = attr->format.shape[0];
         if (is_script(key.source)) {
-            if (n == md_array_size(app->timeline.x_values)) views |= SeriesView_Timeline;
+            // Over the filter's frames it is the same over time, so only the full one is offered for that
+            if (key.source == SeriesSource_Script && n == md_array_size(app->timeline.x_values)) views |= SeriesView_Timeline;
         } else {
             // What series_resolve_temporal needs of the axis, short of converting it
             const md_attribute_t* axis = md_attributes_axis(table, attr);
@@ -363,7 +375,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
                 }
             }
         }
-        if (!(views & SeriesView_Timeline)) {
+        if (!(views & SeriesView_Timeline) && key.source != SeriesSource_ScriptFiltered) {
             *reason = "Its frame axis cannot be placed on the timeline (no trajectory, or time without a unit on one side)";
         }
         return views;
@@ -386,10 +398,10 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
 
     if (key.variant >= SeriesVariant_Count || key.variant == SeriesVariant_Aggregate || key.path[0] == '\0') return false;
 
-    const md_attributes_t* table = series_table(app, key.source);
+    const str_t path = str_from_cstr(key.path);
+    const md_attributes_t* table = series_table(app, key.source, path);
     if (!table) return false;
 
-    const str_t path = str_from_cstr(key.path);
     const md_attribute_t* attr = md_attributes_find(table, path);
     if (!attribute_temporal(attr)) return false;
 
@@ -602,10 +614,10 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     if (key.path[0] == '\0') return false;
     if (key.variant != SeriesVariant_Values && key.variant != SeriesVariant_Aggregate) return false;
 
-    const md_attributes_t* table = series_table(app, key.source);
+    const str_t path = str_from_cstr(key.path);
+    const md_attributes_t* table = series_table(app, key.source, path);
     if (!table) return false;
 
-    const str_t path = str_from_cstr(key.path);
     const md_attribute_t* attr = md_attributes_find(table, path);
     if (!attribute_numeric_resident(attr)) return false;
 
@@ -666,11 +678,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
             double range[2] = {0, 0};
             const bool has_range = read_range(range, md_attributes_find_in(table, path, STR_LIT("range")));
             if (temporal) {
-                const md_bitfield_t* mask = nullptr;
-                if (is_script(key.source)) {
-                    const md_script_eval_t* eval = series_eval(app, key.source);
-                    mask = eval ? md_script_eval_frame_mask(eval) : nullptr;
-                }
+                const md_bitfield_t* mask = series_frame_mask(app, key.source);
                 if (!has_range) {
                     // The range the values cover, over the frames that count
                     double lo = DBL_MAX, hi = -DBL_MAX;
@@ -744,9 +752,9 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     if (!is_script(key.source)) return false;
     const str_t ident = series_script_ident(key);
     str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
-    out->vis_payload = app->script.eval_ir ? md_script_ir_property_vis_payload(app->script.eval_ir, ident) : nullptr;
+    out->vis_ref = md_script_ir_property_vis_ref(app->script.eval_ir, ident);
 
-    const md_attributes_t* table = series_table(app, key.source);
+    const md_attributes_t* table = series_table(app, key.source, str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
     if (!attr || !attr->data || attr->format.rank != 3) return false;
     out->attr = attr;
@@ -766,12 +774,12 @@ bool series_script_property(SeriesKey* out, const ApplicationState* app, SeriesS
     const str_t name = md_script_ir_property_names(ir)[index];
     if (!(md_script_ir_property_flags(ir, name) & kind_flags)) return false;
 
-    const md_attributes_t* table = series_table(app, source);
-    if (!table) return false;
-
     char path[SERIES_PATH_CAP];
     const int len = snprintf(path, sizeof(path), STR_FMT STR_FMT, STR_ARG(script_prefix), STR_ARG(name));
     if (len <= 0 || (size_t)len >= sizeof(path)) return false;
+
+    const md_attributes_t* table = series_table(app, source, str_t{path, (size_t)len});
+    if (!table) return false;
     if (!md_attributes_find(table, str_t{path, (size_t)len})) return false;
 
     *out = series_key(source, str_t{path, (size_t)len});

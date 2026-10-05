@@ -20,6 +20,7 @@
 
 #include <core/md_str.h>
 #include <core/md_unit.h>
+#include <md_script.h>
 
 // The rest of the application uses ImGui's vector operators, which have to be asked for before
 // imgui.h is first included; this header may be that first include
@@ -45,7 +46,6 @@
 struct ApplicationState;
 struct md_attribute_t;
 struct md_attributes_t;
-struct md_script_vis_payload_o;
 
 namespace viamd {
 struct serialization_state_t;
@@ -84,7 +84,15 @@ bool        series_source_from_name(SeriesSource* out, str_t name);
 SeriesKey series_key(SeriesSource source, str_t path, SeriesVariant variant = SeriesVariant_Values);
 
 // The table a source reads from, NULL when it has none right now
+// The table a source publishes. The filtered source's holds what is aggregated over the timeline filter's
+// frames (distributions, volumes) only.
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source);
+// The table which holds path for source. For the filtered source a temporal property is the full evaluation's,
+// kept once for every frame, and taken over the filter's frames by series_frame_mask.
+const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, str_t path);
+// The frames a temporal script property is taken over for source: those evaluated, of the filter's for the
+// filtered source. NULL for any other source.
+const struct md_bitfield_t* series_frame_mask(const ApplicationState* app, SeriesSource source);
 
 // "d1", "d1 (mean)", "d1 (filtered)", "Potential"
 void   series_label(char* buf, size_t cap, const ApplicationState* app, const SeriesKey& key);
@@ -192,7 +200,7 @@ struct SeriesTemporalView {
     char  plot_id[SERIES_PATH_CAP + 72] = "";   // label##identity, what ImPlot is handed
     char  unit_str[32] = "";                    // the display unit of the values
     char  script_ident[64] = "";                // a script property's identifier, empty otherwise
-    const md_script_vis_payload_o* vis_payload = nullptr;
+    md_script_vis_ref_t vis_ref = {};
 };
 
 // False when nothing is published at the path (yet), or it cannot be placed on the timeline: not
@@ -224,7 +232,7 @@ struct SeriesHistogramView {
     char  x_unit_str[32] = "";
     char  y_unit_str[32] = "";
     char  script_ident[64] = "";
-    const md_script_vis_payload_o* vis_payload = nullptr;
+    md_script_vis_ref_t vis_ref = {};
 };
 
 // num_bins is what is asked for; a script distribution is evaluated at a resolution of its own and
@@ -252,7 +260,7 @@ struct SeriesVolumeView {
     uint64_t version = 0;
     char  label[64] = "";
     char  script_ident[64] = "";
-    const md_script_vis_payload_o* vis_payload = nullptr;
+    md_script_vis_ref_t vis_ref = {};
 };
 bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const SeriesKey& key);
 

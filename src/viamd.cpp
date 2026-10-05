@@ -340,8 +340,7 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
 void interrupt_async_tasks(ApplicationState* state) {
     task_system::pool_interrupt_running_tasks();
 
-    if (state->script.full_eval) md_script_eval_interrupt(state->script.full_eval);
-    if (state->script.filt_eval) md_script_eval_interrupt(state->script.filt_eval);
+    if (state->script.eval) md_script_eval_interrupt(state->script.eval);
 
     task_system::pool_wait_for_completion();
 }
@@ -927,23 +926,16 @@ void free_system_data(ApplicationState* data) {
 
     md_bitfield_clear(&data->selection.selection_mask);
     md_bitfield_clear(&data->selection.highlight_mask);
-    md_script_ir_t* ir = data->script.ir;
-    md_script_ir_t* eval_ir = data->script.eval_ir;
+    // Computed for this system
+    script_vis_reset(data);
+
+    // The tasks were waited for above: with the fields cleared, nothing uses any IR
     data->script.ir = nullptr;
     data->script.eval_ir = nullptr;
-    if (ir) {
-        md_script_ir_free(ir);
-    }
-    if (eval_ir && eval_ir != ir) {
-        md_script_ir_free(eval_ir);
-    }
-    if (data->script.full_eval) {
-        md_script_eval_free(data->script.full_eval);
-        data->script.full_eval = nullptr;
-    }
-    if (data->script.filt_eval) {
-        md_script_eval_free(data->script.filt_eval);
-        data->script.filt_eval = nullptr;
+    script_ir_collect(data);
+    if (data->script.eval) {
+        md_script_eval_free(data->script.eval);
+        data->script.eval = nullptr;
     }
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
@@ -974,8 +966,7 @@ bool load_data_from_file(ApplicationState* state, str_t filepath, const loader::
             // below and they would start over anyway; the rest are left to FINISH rather than
             // interrupted - an interrupted backbone task leaves a just loaded trajectory without its
             // backbone data.
-            if (state->script.full_eval) md_script_eval_interrupt(state->script.full_eval);
-            if (state->script.filt_eval) md_script_eval_interrupt(state->script.filt_eval);
+            if (state->script.eval) md_script_eval_interrupt(state->script.eval);
             task_system::pool_wait_for_completion();
 
             if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state, run)) {
@@ -5236,10 +5227,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             if (app->operations.recalc_bonds) {
                 static int64_t cur_nearest_frame = -1;
 
-                // We cannot recalculate bonds while the full or filtered evaluation is running
+                // We cannot recalculate bonds while the evaluation is running
                 // because it would overwrite the bond data while we are reading it
                 int64_t nearest_frame = (int64_t)(app->animation.frame + 0.5);
-                if (!task_system::task_is_running(app->tasks.evaluate_full) && !task_system::task_is_running(app->tasks.evaluate_filt)) {
+                if (!task_system::task_is_running(app->tasks.evaluate) && !task_system::task_is_running(app->script.vis_task)) {
                     const bool has_frames = run_num_frames(app) > 0;
                     if (!has_frames || (cur_nearest_frame != nearest_frame)) {
                         cur_nearest_frame = nearest_frame;
@@ -5337,41 +5328,213 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
     }
 }
 
-void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags) {
+md_script_ir_t* script_ir_create(ApplicationState* state) {
+    ASSERT(state);
+    md_script_ir_t* ir = md_script_ir_create(state->allocator.persistent);
+    md_array_push(state->script.all_irs, ir, state->allocator.persistent);
+    return ir;
+}
+
+void script_ir_collect(ApplicationState* state) {
     ASSERT(state);
 
-    if (payload == NULL) {
-        MD_LOG_DEBUG("No payload supplied for visualization");
+    // A running task may be on an IR the fields have since moved on from
+    if (task_system::task_is_running(state->tasks.evaluate) || task_system::task_is_running(state->script.vis_task)) {
         return;
     }
 
-    md_script_vis_ctx_t ctx = {
-        .ir   = state->script.ir,
-        .sys  = &state->mold.sys,
-        .state = &state->mold.state,
-    };
-
-    if (md_script_vis_eval_payload(&state->script.vis, payload, subidx, &ctx, flags)) {
-        if (!md_bitfield_empty(&state->script.vis.atom_mask)) {
-            md_bitfield_copy(&state->selection.highlight_mask, &state->script.vis.atom_mask);
+    for (size_t i = 0; i < md_array_size(state->script.all_irs);) {
+        md_script_ir_t* ir = state->script.all_irs[i];
+        if (ir != state->script.ir && ir != state->script.eval_ir) {
+            md_script_ir_free(ir);
+            md_array_swap_back_and_pop(state->script.all_irs, i);
+        } else {
+            ++i;
         }
     }
 }
 
+const md_script_ir_t* script_ir_of(const ApplicationState* state, md_script_vis_ref_t ref) {
+    ASSERT(state);
+    if (md_script_vis_ref_valid(state->script.ir, ref))      return state->script.ir;
+    if (md_script_vis_ref_valid(state->script.eval_ir, ref)) return state->script.eval_ir;
+    return nullptr;
+}
+
+void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int subidx, md_script_vis_flags_t flags) {
+    ASSERT(state);
+    // Resolved in the IR which made it: an editor token and a plotted property may come from different ones
+    if (!script_ir_of(state, ref)) {
+        return;
+    }
+    ScriptVisTarget& t = state->script.vis_target;
+    t = {};
+    t.kind   = ScriptVisTarget::Ref;
+    t.ref    = ref;
+    t.subidx = subidx;
+    t.flags  = flags;
+}
+
 void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags) {
     ASSERT(state);
+    if (str_empty(str)) {
+        return;
+    }
+    ScriptVisTarget& t = state->script.vis_target;
+    t = {};
+    t.kind  = ScriptVisTarget::Str;
+    t.str   = str_copy(str, state->allocator.frame);
+    t.flags = flags;
+}
 
-    md_script_vis_ctx_t ctx = {
-        .ir    = state->script.ir,
-        .sys   = &state->mold.sys,
-        .state = &state->mold.state,
-    };
+// A visualization computed off the main thread. Everything it reads is its own or outlives it: a copy of the
+// atoms' state, the IR (not freed while the task runs, see script_ir_collect), the system (which stays until the
+// pool has finished, see interrupt_async_tasks). Everything it makes is in its arena.
+struct ScriptVisJob {
+    uint64_t key = 0;               // what it is of: the target, and the IR the target is resolved in
+    uint64_t state_key = 0;         // where the atoms were
+    md_allocator_i* arena = nullptr;
+    ScriptVisTarget target = {};    // str in the arena
+    const md_script_ir_t* ir = nullptr;
+    const md_system_t* sys = nullptr;
+    md_system_state_t state = {};
+    md_script_vis_t vis = {};
+    bool ok = false;
+};
 
-    if (md_script_vis_eval_string(&state->script.vis, str, &ctx, flags)) {
-        if (!md_bitfield_empty(&state->script.vis.atom_mask)) {
-            md_bitfield_copy(&state->selection.highlight_mask, &state->script.vis.atom_mask);
+static void vis_job_free(ScriptVisJob* job) {
+    if (job) {
+        md_arena_allocator_destroy(job->arena);
+        delete job;
+    }
+}
+
+// The IR a target is resolved in: the one which made the reference, or the script being edited for an expression
+static const md_script_ir_t* vis_target_ir(const ApplicationState* state, const ScriptVisTarget& t) {
+    return t.kind == ScriptVisTarget::Ref ? script_ir_of(state, t.ref) : state->script.ir;
+}
+
+static uint64_t vis_target_key(const ApplicationState* state, const ScriptVisTarget& t) {
+    const md_script_ir_t* ir = vis_target_ir(state, t);
+    const uintptr_t ir_ptr = (uintptr_t)ir;
+    const uint64_t fingerprint = md_script_ir_fingerprint(ir);
+    uint64_t h = md_hash64(&t.kind, sizeof(t.kind), 0);
+    h = md_hash64(&t.subidx, sizeof(t.subidx), h);
+    h = md_hash64(&t.flags, sizeof(t.flags), h);
+    h = md_hash64(&t.ref.ir_id, sizeof(t.ref.ir_id), h);
+    h = md_hash64(&t.ref.node_idx, sizeof(t.ref.node_idx), h);
+    if (t.kind == ScriptVisTarget::Str) {
+        h = md_hash64(t.str.ptr, t.str.len, h);
+    }
+    h = md_hash64(&ir_ptr, sizeof(ir_ptr), h);
+    h = md_hash64(&fingerprint, sizeof(fingerprint), h);
+    return h;
+}
+
+// Where the atoms are. Hashed rather than tracked: nothing that moves them can be missed. Only while something
+// is visualized.
+static uint64_t vis_state_key(const md_system_state_t& st) {
+    // The cell field by field: the struct has padding
+    const md_unitcell_t& uc = st.unitcell;
+    const double cell[6] = { uc.x, uc.xy, uc.xz, uc.y, uc.yz, uc.z };
+    const uint32_t cell_flags = (uint32_t)uc.flags;
+    uint64_t h = md_hash64(cell, sizeof(cell), 0);
+    h = md_hash64(&cell_flags, sizeof(cell_flags), h);
+    if (st.xyz && st.num_atoms) {
+        h = md_hash64(st.xyz, st.num_atoms * sizeof(vec3_t), h);
+    }
+    return h;
+}
+
+static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t state_key) {
+    const ScriptVisTarget& t = state->script.vis_target;
+    const md_script_ir_t* ir = vis_target_ir(state, t);
+    if (t.kind == ScriptVisTarget::Ref && !ir) {
+        return;
+    }
+
+    ScriptVisJob* job = new ScriptVisJob();
+    job->key = key;
+    job->state_key = state_key;
+    job->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    job->target = t;
+    job->target.str = str_copy(t.str, job->arena);
+    job->ir = ir;
+    job->sys = &state->mold.sys;
+    job->state.alloc = job->arena;
+    md_system_state_copy(&job->state, &state->mold.state);
+    md_script_vis_init(&job->vis, job->arena);
+
+    const task_system::ID task = task_system::create_pool_task(STR_LIT("##Visualize script"), [job]() {
+        md_script_vis_ctx_t ctx = {
+            .ir    = job->ir,
+            .sys   = job->sys,
+            .state = &job->state,
+        };
+        const ScriptVisTarget& tgt = job->target;
+        job->ok = (tgt.kind == ScriptVisTarget::Ref)
+            ? md_script_vis_eval_ref(&job->vis, tgt.ref, tgt.subidx, &ctx, tgt.flags)
+            : md_script_vis_eval_string(&job->vis, tgt.str, &ctx, tgt.flags);
+    });
+    task_system::enqueue_task(task);
+
+    state->script.vis_running = job;
+    state->script.vis_task = task;
+}
+
+void script_vis_begin_frame(ApplicationState* state) {
+    ASSERT(state);
+    state->script.vis_target = {};
+    state->script.vis_shown = nullptr;
+}
+
+void script_vis_update(ApplicationState* state) {
+    ASSERT(state);
+    auto& sc = state->script;
+
+    // A finished computation becomes the result
+    if (sc.vis_running && !task_system::task_is_running(sc.vis_task)) {
+        vis_job_free(sc.vis_result);
+        sc.vis_result = sc.vis_running;
+        sc.vis_running = nullptr;
+    }
+
+    sc.vis_shown = nullptr;
+    if (sc.vis_target.kind == ScriptVisTarget::None) {
+        return;
+    }
+
+    const uint64_t key = vis_target_key(state, sc.vis_target);
+    const uint64_t state_key = vis_state_key(state->mold.state);
+
+    // At most one at a time. While one runs, whatever is set when it has finished is what comes next: the
+    // targets in between are never computed.
+    const bool computed = sc.vis_result && sc.vis_result->key == key && sc.vis_result->state_key == state_key;
+    if (!sc.vis_running && !computed) {
+        vis_job_dispatch(state, key, state_key);
+    }
+
+    // Shown only if it is of what is set. For where the atoms were, while it is computed for where they are.
+    if (sc.vis_result && sc.vis_result->ok && sc.vis_result->key == key) {
+        sc.vis_shown = &sc.vis_result->vis;
+        if (!md_bitfield_empty(&sc.vis_shown->atom_mask)) {
+            md_bitfield_copy(&state->selection.highlight_mask, &sc.vis_shown->atom_mask);
         }
     }
+}
+
+void script_vis_reset(ApplicationState* state) {
+    ASSERT(state);
+    auto& sc = state->script;
+    if (sc.vis_running) {
+        task_system::task_wait_for(sc.vis_task);
+        vis_job_free(sc.vis_running);
+        sc.vis_running = nullptr;
+    }
+    vis_job_free(sc.vis_result);
+    sc.vis_result = nullptr;
+    sc.vis_shown = nullptr;
+    sc.vis_target = {};
 }
 
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx) {

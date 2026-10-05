@@ -509,8 +509,7 @@ int main(int argc, char** argv) {
 
         file_queue_process(&state);
 
-        state.script.vis = {0};
-        md_script_vis_init(&state.script.vis, state.allocator.frame);
+        script_vis_begin_frame(&state);
 
         picking_handler_new_frame(&state.picking_handler);
         viamd::event_system_broadcast_event(viamd::EventType_ViamdPickingRangeReserve, viamd::EventPayloadType_PickingSpace, picking_handler_current_space(&state.picking_handler));
@@ -709,14 +708,10 @@ int main(int argc, char** argv) {
         }
 
         if (state.timeline.filter.temporal_window.enabled) {
-            const double pre_beg = state.timeline.filter.beg_frame;
-            const double pre_end = state.timeline.filter.end_frame;
+            // The script's filter frame set follows (see the evaluation below)
             const double half_window_ext = state.timeline.filter.temporal_window.extent_in_frames * 0.5;
             state.timeline.filter.beg_frame = CLAMP(round(state.animation.frame - half_window_ext), 0.0, max_frame);
             state.timeline.filter.end_frame = CLAMP(round(state.animation.frame + half_window_ext), 0.0, max_frame);
-            if (state.script.ir && (state.timeline.filter.beg_frame != pre_beg || state.timeline.filter.end_frame != pre_end)) {
-                state.script.evaluate_filt = true;
-            }
         }
 
         if (state.timeline.filter.enabled) {
@@ -769,10 +764,9 @@ int main(int argc, char** argv) {
             script_editor::markers_clear(&state.editor_markers);
 
             if (state.script.time_since_last_change > COMPILATION_TIME_DELAY_IN_SECONDS) {
-                // We cannot recompile while it is evaluating.
-                // Need to interrupt and wait for tasks to finish.
-                if (state.script.full_eval) md_script_eval_interrupt(state.script.full_eval);
-                if (state.script.filt_eval) md_script_eval_interrupt(state.script.filt_eval);
+                // The evaluations are of what is about to be replaced, so they are stopped. Their IR is not
+                // affected: the compilation goes into a new one, and the old is freed once nothing holds it.
+                if (state.script.eval) md_script_eval_interrupt(state.script.eval);
 
                 // Try aquire all semaphores
                 {
@@ -784,11 +778,8 @@ int main(int argc, char** argv) {
                     state.script.compile_ir = false;
                     state.script.time_since_last_change = 0;
 
-                    if (state.script.ir && state.script.ir != state.script.eval_ir) {
-                        md_script_ir_free(state.script.ir);
-                    }
-                    
-                    state.script.ir = md_script_ir_create(persistent_alloc);
+                    // The previous IR is freed once nothing uses it (script_ir_collect)
+                    state.script.ir = script_ir_create(&state);
 
                     std::string src = state.editor.GetText();
                     str_t src_str {src.data(), src.length()};
@@ -843,7 +834,7 @@ int main(int argc, char** argv) {
                         const md_script_vis_token_t* vis_tokens = md_script_ir_vis_tokens(state.script.ir);
                         for (size_t i = 0; i < num_tokens; ++i) {
                             const md_script_vis_token_t& tok = vis_tokens[i];
-                            script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.payload);
+                            script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, tok.text, nullptr, tok.ref);
                         }
 
                         if (md_script_ir_valid(state.script.ir)) {
@@ -852,7 +843,6 @@ int main(int argc, char** argv) {
                                 state.script.ir_fingerprint = ir_figerprint;
                             }
                         } else {
-                            md_script_ir_free(state.script.ir);
                             state.script.ir = nullptr;
                         }
                     }
@@ -860,92 +850,103 @@ int main(int argc, char** argv) {
             }
         }
 
+        // IRs replaced, once no task may be on them. Before the evaluation is started again below, which could
+        // otherwise keep a task running every frame
+        script_ir_collect(&state);
+
         if (num_frames > 0) {
             if (state.script.eval_init) {
-                if (task_system::task_is_running(state.tasks.evaluate_full)) md_script_eval_interrupt(state.script.full_eval);
-                if (task_system::task_is_running(state.tasks.evaluate_filt)) md_script_eval_interrupt(state.script.filt_eval);
-                    
-                if (task_system::task_is_running(state.tasks.evaluate_full) == false &&
-                    task_system::task_is_running(state.tasks.evaluate_filt) == false) {
+                if (task_system::task_is_running(state.tasks.evaluate)) {
+                    md_script_eval_interrupt(state.script.eval);
+                } else {
                     state.script.eval_init = false;
 
-                    if (state.script.full_eval) {
-                        md_script_eval_free(state.script.full_eval);
-                    }
-                    if (state.script.filt_eval) {
-                        md_script_eval_free(state.script.filt_eval);
-                    }
-                
-                    if (md_script_ir_valid(state.script.ir)) {
-                        if (state.script.ir != state.script.eval_ir) {
-                            md_script_ir_free(state.script.eval_ir);
-                            state.script.eval_ir = state.script.ir;
-                        }
-                        state.script.full_eval = md_script_eval_create(num_frames, state.script.eval_ir, state.allocator.persistent);
-                        state.script.filt_eval = md_script_eval_create(num_frames, state.script.eval_ir, state.allocator.persistent);
+                    // Not remade below if the last compilation failed (in the same frame as the request)
+                    if (state.script.eval) {
+                        md_script_eval_free(state.script.eval);
+                        state.script.eval = nullptr;
                     }
 
-                    // The evaluations' tables were freed and new ones allocated, possibly in the
+                    if (md_script_ir_valid(state.script.ir)) {
+                        state.script.eval_ir = state.script.ir;
+                        // Every frame, and the timeline filter's: none yet, it is applied below
+                        md_bitfield_t none = md_bitfield_create(frame_alloc);
+                        const md_bitfield_t* sets[SCRIPT_FRAME_SET_COUNT] = { nullptr, &none };
+                        const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = SCRIPT_FRAME_SET_COUNT, .frame_sets = sets };
+                        state.script.eval = md_script_eval_create_desc(state.script.eval_ir, &desc, state.allocator.persistent);
+                        state.script.filter_frames = {};
+                    }
+
+                    // The evaluation's tables were freed and new ones allocated, possibly in the
                     // same place: nothing derived from the old ones may be taken for the new.
                     series_cache_free(&state);
 
-                    state.script.evaluate_filt = true;
-                    state.script.evaluate_full = true;
+                    state.script.evaluate = true;
                 }
             }
 
-            if (state.script.full_eval && state.script.evaluate_full) {
-                if (task_system::task_is_running(state.tasks.evaluate_full)) {
-                    md_script_eval_interrupt(state.script.full_eval);
-                } else {
-                    if (md_script_ir_valid(state.script.eval_ir) &&
-                        md_script_eval_ir_fingerprint(state.script.full_eval) == md_script_ir_fingerprint(state.script.eval_ir))
-                    {
-                        state.script.evaluate_full = false;
-                        md_script_eval_clear_data(state.script.full_eval);
+            if (state.script.eval && md_script_ir_valid(state.script.eval_ir) &&
+                md_script_eval_ir_fingerprint(state.script.eval) == md_script_ir_fingerprint(state.script.eval_ir))
+            {
+                // The filter frame set follows the timeline filter, and is empty while there is none
+                ScriptFilterFrames filter = {};
+                if (state.timeline.filter.enabled) {
+                    const uint32_t frames = (uint32_t)num_frames;
+                    filter.enabled = true;
+                    filter.beg = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, frames - 1);
+                    filter.end = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, filter.beg + 1, frames);
+                }
+                const ScriptFilterFrames& applied = state.script.filter_frames;
+                const bool filter_changed = filter.enabled != applied.enabled || filter.beg != applied.beg || filter.end != applied.end;
 
-                        if (md_script_ir_property_count(state.script.eval_ir) > 0) {
-                            state.tasks.evaluate_full = task_system::create_pool_task(STR_LIT("Eval Full"), (uint32_t)num_frames, [&state](uint32_t frame_beg, uint32_t frame_end, uint32_t thread_num) {
+                if (state.script.evaluate || filter_changed) {
+                    if (task_system::task_is_running(state.tasks.evaluate)) {
+                        // Started again once it has stopped. Nothing it has done is lost: only the frames
+                        // the sets have not added yet are evaluated.
+                        md_script_eval_interrupt(state.script.eval);
+                    } else {
+                        state.script.evaluate = false;
+                        if (filter_changed) {
+                            md_bitfield_t frames = md_bitfield_create(frame_alloc);
+                            if (filter.enabled) {
+                                md_bitfield_set_range(&frames, filter.beg, filter.end);
+                            }
+                            md_script_eval_set_frame_set(state.script.eval, SCRIPT_FRAME_SET_FILTER, &frames);
+                            state.script.filter_frames = filter;
+                        }
+                        md_script_eval_reset_interrupt(state.script.eval);
+
+                        // What is left to do, over the union of the sets
+                        md_bitfield_t pending = md_bitfield_create(frame_alloc);
+                        const size_t count = md_script_eval_pending_frames(state.script.eval, &pending);
+                        if (count > 0) {
+                            md_array_resize(state.script.eval_frames, count, state.allocator.persistent);
+                            size_t n = 0;
+                            md_bitfield_iter_t it = md_bitfield_iter_create(&pending);
+                            while (md_bitfield_iter_next(&it) && n < count) {
+                                state.script.eval_frames[n++] = (uint32_t)md_bitfield_iter_idx(&it);
+                            }
+
+                            // The IR is taken now: eval_ir may be replaced while it runs, and the IR it runs on is
+                            // not freed until it has finished. Nor are the frames touched.
+                            const md_script_ir_t* ir = state.script.eval_ir;
+                            md_script_eval_t* eval = state.script.eval;
+                            const uint32_t* frames = state.script.eval_frames;
+                            state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
                                 (void)thread_num;
-                                md_script_eval_frame_range(state.script.full_eval, state.script.eval_ir, &state.mold.sys, str_from_cstr(state.mold.run), frame_beg, frame_end);
+                                md_script_eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.mold.run), frames + beg, end - beg);
                             });
-                            
+
 #if MEASURE_EVALUATION_TIME
                             uint64_t time = (uint64_t)md_tick_now();
-                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval Full"), [t0 = time]() {
+                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval"), [t0 = time, n]() {
                                 uint64_t t1 = md_tick_now();
                                 double s = md_tick_to_seconds(t1 - t0);
-                                VIAMD_LOG_INFO("Evaluation completed in: %.3fs", s);
+                                VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, s);
                             });
+                            task_system::set_task_dependency(time_task, state.tasks.evaluate);
 #endif
-                            task_system::set_task_dependency(time_task, state.tasks.evaluate_full);
-                            task_system::enqueue_task(state.tasks.evaluate_full);
-                        }
-                    }
-                }
-            }
-
-            if (state.script.filt_eval && state.script.evaluate_filt && state.timeline.filter.enabled) {
-                if (task_system::task_is_running(state.tasks.evaluate_filt)) {
-                    md_script_eval_interrupt(state.script.filt_eval);
-                } else {
-                    if (md_script_ir_valid(state.script.eval_ir) &&
-                        md_script_eval_ir_fingerprint(state.script.filt_eval) == md_script_ir_fingerprint(state.script.eval_ir))
-                    {
-                        state.script.evaluate_filt = false;
-                        md_script_eval_clear_data(state.script.filt_eval);
-
-                        if (md_script_ir_property_count(state.script.eval_ir) > 0) {
-                            const uint32_t traj_frames = (uint32_t)run_num_frames(&state);
-                            const uint32_t beg_frame = CLAMP((uint32_t)state.timeline.filter.beg_frame, 0, traj_frames-1);
-                            const uint32_t end_frame = CLAMP((uint32_t)state.timeline.filter.end_frame + 1, beg_frame + 1, traj_frames);
-                            if (beg_frame != end_frame) {
-                                state.tasks.evaluate_filt = task_system::create_pool_task(STR_LIT("Eval Filt"), end_frame - beg_frame, [offset = beg_frame, &state](uint32_t beg, uint32_t end, uint32_t thread_num) {
-                                    (void)thread_num;
-                                    md_script_eval_frame_range(state.script.filt_eval, state.script.eval_ir, &state.mold.sys, str_from_cstr(state.mold.run), offset + beg, offset + end);
-                                });
-                                task_system::enqueue_task(state.tasks.evaluate_filt);
-                            }
+                            task_system::enqueue_task(state.tasks.evaluate);
                         }
                     }
                 }
@@ -962,7 +963,10 @@ int main(int argc, char** argv) {
             state.representation.atom_visibility_mask_dirty = false;
         }
 
-        if (state.script.vis.text) {
+        // Everything which sets what the script visualizes has run
+        script_vis_update(&state);
+
+        if (state.script.vis_shown && state.script.vis_shown->text) {
             PUSH_CPU_SECTION("Draw vis text");
             ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
             if (window) {
@@ -978,9 +982,10 @@ int main(int argc, char** argv) {
                 const float rect_rounding = 5.f;
                 const ImVec2 rect_padding = ImVec2(4.f, 2.f);
 
-                size_t num_text = md_array_size(state.script.vis.text);
+                const md_script_vis_text_t* texts = state.script.vis_shown->text;
+                size_t num_text = md_array_size(texts);
                 for (size_t i = 0; i < num_text; ++i) {
-                    const md_script_vis_text_t& vis_text = state.script.vis.text[i];
+                    const md_script_vis_text_t& vis_text = texts[i];
 
                     const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(vis_text.pos, 1.0f));
                     const vec4_t c = p / p.w;
@@ -1138,6 +1143,7 @@ int main(int argc, char** argv) {
     }
 
     interrupt_async_tasks(&state);
+    script_vis_reset(&state);
     series_cache_free(&state);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdShutdown);
@@ -1723,7 +1729,7 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             if (do_bonds) {
-                if (!task_system::task_is_running(data->tasks.evaluate_full) && !task_system::task_is_running(data->tasks.evaluate_filt)) {
+                if (!task_system::task_is_running(data->tasks.evaluate) && !task_system::task_is_running(data->script.vis_task)) {
                     const auto& mol = data->mold.sys;
 
                     vec3_t* xyz = NULL;
@@ -3649,11 +3655,8 @@ static void draw_async_task_window(ApplicationState* data) {
             ImGui::SameLine();
             if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
                 task_system::task_interrupt(id);
-                if (id == data->tasks.evaluate_full) {
-                    md_script_eval_interrupt(data->script.full_eval);
-                }
-                else if(id == data->tasks.evaluate_filt) {
-                    md_script_eval_interrupt(data->script.filt_eval);
+                if (id == data->tasks.evaluate) {
+                    md_script_eval_interrupt(data->script.eval);
                 }
             }
         }
@@ -3969,7 +3972,7 @@ static ImVec4 plot_highlight(ImVec4 color) {
 
 // The part of a legend entry's popup both windows share: colour or colormap, and which members of
 // a population are drawn. A member hovered in the popup is written to hovered_pop_idx.
-static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int dim, const char* script_ident, const md_script_vis_payload_o* vis_payload, int* hovered_pop_idx) {
+static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int dim, const char* script_ident, md_script_vis_ref_t vis_ref, int* hovered_pop_idx) {
     if (dim > 1) {
         const char* color_type_labels[] = {"Solid", "Colormap"};
         int color_type = s.use_colormap ? 1 : 0;
@@ -4004,7 +4007,7 @@ static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int d
             }
             if (ImGui::IsItemHovered()) {
                 if (script_ident[0] != '\0') {
-                    script_visualize_payload(data, vis_payload, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                    script_visualize_ref(data, vis_ref, k, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                     script_set_hovered_property(data, str_from_cstr(script_ident), k);
                 }
                 *hovered_pop_idx = k;
@@ -4038,8 +4041,7 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
     if (ImGui::IsItemHovered()) {
         const str_t ident = series_script_ident(key);
         if (!str_empty(ident)) {
-            const md_script_vis_payload_o* vis = data->script.eval_ir ? md_script_ir_property_vis_payload(data->script.eval_ir, ident) : nullptr;
-            script_visualize_payload(data, vis, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+            script_visualize_ref(data, md_script_ir_property_vis_ref(data->script.eval_ir, ident), -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
             script_set_hovered_property(data, ident);
         } else {
             ImGui::SetTooltip("%s\nClick to show in the first subplot, drag into any", key.path);
@@ -4083,7 +4085,7 @@ static void plot_system_series_menu(ApplicationState* data, const char* dnd_type
 
 // The members of a script property's population, if it has one: the extent of its value axis
 static size_t script_property_population(const ApplicationState* data, const SeriesKey& key) {
-    const md_attributes_t* table = series_table(data, key.source);
+    const md_attributes_t* table = series_table(data, key.source, str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
     if (!attr || attr->format.rank < 1 || attr->format.shape[0] == 0) return 0;
     return md_attribute_element_count(&attr->format) / attr->format.shape[0];
@@ -4155,9 +4157,6 @@ static void draw_timeline_window(ApplicationState* data) {
     if (ImGui::Begin("Timelines", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         int& num_subplots = data->timeline.num_subplots;
         num_subplots = CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
-
-        double pre_filter_min = data->timeline.filter.beg_frame;
-        double pre_filter_max = data->timeline.filter.end_frame;
 
         const float* x_values   = data->timeline.x_values;
         const int num_x_values  = (int)md_array_size(data->timeline.x_values);
@@ -4437,7 +4436,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
-                                script_visualize_payload(data, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                                 script_set_hovered_property(data, str_from_cstr(v.script_ident));
                             }
                             if (!resolved[j]) {
@@ -4474,7 +4473,7 @@ static void draw_timeline_window(ApplicationState* data) {
                             }
 
                             int popup_hovered_pop = -1;
-                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_payload, &popup_hovered_pop);
+                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_ref, &popup_hovered_pop);
                             if (popup_hovered_pop != -1) {
                                 hovered_idx = j;
                                 hovered_pop_idx = popup_hovered_pop;
@@ -4543,7 +4542,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
                         const SeriesTemporalView& v = views[hovered_idx];
                         const int pop_idx = v.dim > 1 ? hovered_pop_idx : -1;
-                        script_visualize_payload(data, v.vis_payload, pop_idx, ~MD_SCRIPT_VISUALIZE_SDF);
+                        script_visualize_ref(data, v.vis_ref, pop_idx, ~MD_SCRIPT_VISUALIZE_SDF);
                         script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
                     }
 
@@ -4600,9 +4599,6 @@ static void draw_timeline_window(ApplicationState* data) {
             ImPlot::GetInputMap() = old_map;
         }
 
-        if (data->timeline.filter.enabled && (data->timeline.filter.beg_frame != pre_filter_min || data->timeline.filter.end_frame != pre_filter_max)) {
-            data->script.evaluate_filt = true;
-        }
 
         // A series dragged out of a plot and dropped outside any of them is taken out of that plot
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -4841,7 +4837,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             const SeriesHistogramView& v = views[hovered_idx];
                             if (v.script_ident[0] != '\0') {
                                 script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
-                                script_visualize_payload(data, v.vis_payload, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, hovered_pop_idx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                             }
                             if (hovered_label[0] != '\0') {
                                 ImGui::SetTooltip("%s", hovered_label);
@@ -4864,7 +4860,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
-                                script_visualize_payload(data, v.vis_payload, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, -1, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_GEOMETRY);
                                 script_set_hovered_property(data, str_from_cstr(v.script_ident));
                             }
                             if (!resolved[j]) {
@@ -4906,7 +4902,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
 
                             int popup_hovered_pop = -1;
-                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_payload, &popup_hovered_pop);
+                            plot_series_style_popup(data, s, resolved[j] ? v.dim : 1, v.script_ident, v.vis_ref, &popup_hovered_pop);
                             if (popup_hovered_pop != -1) {
                                 hovered_idx = j;
                                 hovered_pop_idx = popup_hovered_pop;
@@ -5248,7 +5244,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 }
                 ImGui::EndTooltip();
             }
-            if (hovered_marker->atoms || hovered_marker->payload) {
+            if (hovered_marker->atoms || !md_script_vis_ref_empty(hovered_marker->vis_ref)) {
                 if (hovered_marker->atoms) {
                     // Errors and warnings: the atoms the message is about
                     md_bitfield_copy(&state->selection.highlight_mask, hovered_marker->atoms);
@@ -5256,22 +5252,24 @@ static void draw_script_editor_window(ApplicationState* state) {
                 else if (hovered_marker->type == script_editor::MarkerType_Visualization) {
                     // Clear hovered property
                     script_set_hovered_property(state, STR_LIT(""));
-                    if (md_script_ir_valid(state->script.ir)) {
-                        const md_script_vis_payload_o* payload = hovered_marker->payload;
-                        str_t payload_ident = md_script_payload_ident(payload);
-                        int payload_dim  = md_script_payload_dim(payload); 
+                    // The markers come from the IR last compiled. One which did not compile is gone, and its
+                    // markers resolve in nothing
+                    const md_script_vis_ref_t ref = hovered_marker->vis_ref;
+                    if (const md_script_ir_t* ir = script_ir_of(state, ref)) {
+                        str_t ref_ident = md_script_vis_ref_ident(ir, ref);
+                        int ref_dim  = md_script_vis_ref_dim(ir, ref);
 
-                        if (payload_dim > 1) {
+                        if (ref_dim > 1) {
                             int delta = (int)ImGui::GetIO().MouseWheel;
                             if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
                                 delta *= 10;
                             }
                             state->script.sub_idx += delta;
-                            state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)payload_dim - 1);
+                            state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)ref_dim - 1);
                         }
 
-                        script_visualize_payload(state, payload, state->script.sub_idx, 0);
-                        script_set_hovered_property(state, payload_ident, state->script.sub_idx);
+                        script_visualize_ref(state, ref, state->script.sub_idx, 0);
+                        script_set_hovered_property(state, ref_ident, state->script.sub_idx);
                     }
                 }
 
@@ -5363,7 +5361,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     return true;
 }
 
-static bool export_cube(const ApplicationState& data, const md_attribute_t* attr, const md_script_vis_payload_o* vis_payload, str_t filename) {
+static bool export_cube(const ApplicationState& data, const md_attribute_t* attr, md_script_vis_ref_t vis_ref, str_t filename) {
     // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
@@ -5373,7 +5371,7 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
         return false;
     }
 
-    if (!vis_payload) {
+    if (md_script_vis_ref_empty(vis_ref)) {
         VIAMD_LOG_ERROR("Export Cube: Missing input visualization data");
         return false;
     }
@@ -5397,7 +5395,7 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
             .sys = &data.mold.sys,
             .state = &data.mold.state,
         };
-        result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF);
+        result = md_script_vis_eval_ref(&vis, vis_ref, 0, &ctx, MD_SCRIPT_VISUALIZE_ATOMS | MD_SCRIPT_VISUALIZE_SDF);
     }
 
     if (result == true) {
@@ -5506,7 +5504,7 @@ static void draw_property_export_window(ApplicationState* data) {
         static int volume_format = 0;
         static int bins_exp      = 7;   // 128 bins
 
-        if (task_system::task_is_running(data->tasks.evaluate_full)) {
+        if (task_system::task_is_running(data->tasks.evaluate)) {
             ImGui::Text("The properties are currently being evaluated, please wait...");
             ImGui::End();
             return;
@@ -5632,7 +5630,7 @@ static void draw_property_export_window(ApplicationState* data) {
                 SeriesVolumeView view;
                 if (!series_resolve_volume(&view, data, selected)) {
                     VIAMD_LOG_ERROR("'%s' has no volume to export", label);
-                } else if (str_eq(file_extension, STR_LIT("cube")) && export_cube(*data, view.attr, view.vis_payload, path)) {
+                } else if (str_eq(file_extension, STR_LIT("cube")) && export_cube(*data, view.attr, view.vis_ref, path)) {
                     VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", label, STR_ARG(path));
                 }
             } else {
@@ -6212,7 +6210,8 @@ static void render(ApplicationState* state) {
         immediate::Scope vis_scope(state->gfx.overlay, "visualization");
         immediate::Scope vis_scope_depth(state->gfx.world, "visualization with depth");
 
-        const md_script_vis_t& vis = state->script.vis;
+        static const md_script_vis_t nothing = {};
+        const md_script_vis_t& vis = state->script.vis_shown ? *state->script.vis_shown : nothing;
 
         if (vis.points) {
             immediate::points(vis_scope, (immediate::Vertex*)vis.points, md_array_size(vis.points), state->script.point_color);

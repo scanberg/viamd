@@ -960,6 +960,33 @@ struct PickingReadbackRequest {
     mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
+// The frame sets of the script evaluation (md_script_eval_desc_t): every frame, and the timeline filter's
+enum {
+    SCRIPT_FRAME_SET_ALL = 0,
+    SCRIPT_FRAME_SET_FILTER,
+    SCRIPT_FRAME_SET_COUNT,
+};
+
+// The timeline filter as applied to SCRIPT_FRAME_SET_FILTER: frames [beg, end[, none while not enabled
+struct ScriptFilterFrames {
+    bool     enabled = false;
+    uint32_t beg = 0;
+    uint32_t end = 0;
+};
+
+// What the script visualization is to show this frame (script_visualize_ref, script_visualize_str)
+struct ScriptVisTarget {
+    enum Kind : uint8_t { None = 0, Ref, Str };
+    Kind kind = None;
+    md_script_vis_ref_t ref = {};       // Ref
+    str_t str = {};                     // Str: an expression, copied into the frame allocator
+    int subidx = -1;
+    md_script_vis_flags_t flags = 0;
+};
+
+// A visualization computed off the main thread (viamd.cpp)
+struct ScriptVisJob;
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -1125,8 +1152,7 @@ struct ApplicationState {
     // --- ASYNC TASKS HANDLES ---
     struct {
         task_system::ID backbone_computations = task_system::INVALID_ID;
-        task_system::ID evaluate_full = task_system::INVALID_ID;
-        task_system::ID evaluate_filt = task_system::INVALID_ID;
+        task_system::ID evaluate = task_system::INVALID_ID;
     } tasks;
 
     // --- ATOM SELECTION ---
@@ -1416,23 +1442,34 @@ struct ApplicationState {
 
         uint64_t text_hash;
 
-        // A bit confusing and a bit of a hack,
-        // But we want to preserve the ir while evaluating it (visualizing it etc)
-        // So we only commit the 'new' ir to eval_ir upon starting evaluation
+        // ir: the last compilation of the editor's text, what its markers refer to. eval_ir: the compilation the
+        // evaluation (eval) was made from, what the plots show. Often the same IR. Assigned directly: an IR is
+        // never freed while either points at it (see script_ir_collect).
         md_script_ir_t*   ir = nullptr;
         md_script_ir_t*   eval_ir = nullptr;
 
-        md_script_eval_t* full_eval = nullptr;
-        md_script_eval_t* filt_eval = nullptr;
-        md_script_vis_t vis = {};
+        // Every IR made (script_ir_create), freed by script_ir_collect once nothing can be using it
+        md_array(md_script_ir_t*) all_irs = nullptr;
+
+        // One evaluation, over the frame sets SCRIPT_FRAME_SET_*: temporal properties once for every frame,
+        // distributions and volumes over each set's own frames
+        md_script_eval_t* eval = nullptr;
+        ScriptFilterFrames filter_frames = {};      // as applied to SCRIPT_FRAME_SET_FILTER
+        md_array(uint32_t) eval_frames = nullptr;   // what the running evaluation task works through
+        // The visualization: the target is set anew every frame, the job computes it off the main thread, and
+        // what is shown is the last result while it is still for the target (see script_vis_update)
+        ScriptVisTarget vis_target = {};
+        ScriptVisJob* vis_running = nullptr;
+        ScriptVisJob* vis_result = nullptr;
+        task_system::ID vis_task = task_system::INVALID_ID;
+        const md_script_vis_t* vis_shown = nullptr;
 
         // Controls current subindex being visualized (if array)
         int sub_idx = -1;
 
         bool compile_ir = false;
         bool eval_init = false;
-        bool evaluate_full = false;
-        bool evaluate_filt = false;
+        bool evaluate = false;     // a new evaluation, to be started
         double time_since_last_change = 0.0;
         uint64_t ir_fingerprint = 0;
     } script;
@@ -2266,7 +2303,32 @@ void file_queue_process(ApplicationState* state);
 // view
 void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitfield_t* mask = nullptr);
 
+// Script IR lifetime
+// Every IR is made by script_ir_create, and nothing frees one directly. Off the main thread an IR is used by the
+// evaluation task and the visualization task only, and each takes the current one (script.eval_ir, script.ir)
+// when it starts. So while neither runs, an IR which neither field points at is used by nothing, and
+// script_ir_collect frees it. Main thread, once per frame. A new task which uses an IR joins the check there.
+md_script_ir_t* script_ir_create(ApplicationState* state);
+void script_ir_collect(ApplicationState* state);
+
 // Script visualization
-void script_visualize_payload(ApplicationState* state, const md_script_vis_payload_o* payload, int subidx, md_script_vis_flags_t flags = 0);
+// The script IR which made ref: the one being compiled (whose tokens the editor marks) or the one being
+// evaluated (whose properties the plots show). NULL if neither, e.g. once it has been recompiled.
+const md_script_ir_t* script_ir_of(const ApplicationState* state, md_script_vis_ref_t ref);
+// What is visualized is set anew every frame by whatever is hovered, and the last one set in a frame is what
+// is shown. It is computed on a worker thread, never stalling the frame, and shown once ready: from then on for
+// as long as it is still what is set. When the atoms move it is computed again, while the previous result
+// stays on screen.
+//
+// Sets ref, visualized in the IR which made it. Nothing if it no longer resolves.
+void script_visualize_ref(ApplicationState* state, md_script_vis_ref_t ref, int subidx, md_script_vis_flags_t flags = 0);
+// Sets an expression, compiled against the script being edited (its identifiers)
 void script_visualize_str(ApplicationState* state, str_t str, md_script_vis_flags_t flags = 0);
+// Clears what is set. Start of every frame, before anything sets one.
+void script_vis_begin_frame(ApplicationState* state);
+// Takes a finished computation, starts one for what is set if it is not computed yet, and decides what is
+// shown (script.vis_shown), highlighting its atoms. After everything which sets one, before drawing.
+void script_vis_update(ApplicationState* state);
+// Drops every result, waiting for a running computation. Before the system goes.
+void script_vis_reset(ApplicationState* state);
 void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);

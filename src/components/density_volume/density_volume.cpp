@@ -275,7 +275,7 @@ struct DensityVolume : viamd::EventHandler {
         const bool resolved = selected && series_resolve_volume(&vol_view, state, volume_key);
 
         const md_attribute_t* prop_attr = resolved ? vol_view.attr : NULL;
-        const md_script_vis_payload_o* vis_payload = vol_view.vis_payload;
+        const md_script_vis_ref_t vis_ref = vol_view.vis_ref;
         const uint64_t data_version = vol_view.version;
 
         bool reset_view = false;
@@ -312,7 +312,7 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         if (dirty_rep) {
-            if (prop_attr && vis_payload) {
+            if (prop_attr && !md_script_vis_ref_empty(vis_ref)) {
                 dirty_rep = false;
                 size_t num_reps = 0;
                 bool result = false;
@@ -325,7 +325,7 @@ struct DensityVolume : viamd::EventHandler {
                         .sys = &state->mold.sys,
                         .state = &state->mold.state
                     };
-                    result = md_script_vis_eval_payload(&vis, vis_payload, 0, &ctx, MD_SCRIPT_VISUALIZE_SDF);
+                    result = md_script_vis_eval_ref(&vis, vis_ref, 0, &ctx, MD_SCRIPT_VISUALIZE_SDF);
                 }
 
                 if (result) {
@@ -456,8 +456,7 @@ struct DensityVolume : viamd::EventHandler {
                             }
                             if (ImGui::IsItemHovered()) {
                                 const str_t ident = series_script_ident(key);
-                                const md_script_vis_payload_o* vis = state->script.eval_ir ? md_script_ir_property_vis_payload(state->script.eval_ir, ident) : nullptr;
-                                script_visualize_payload(state, vis, -1, MD_SCRIPT_VISUALIZE_DEFAULT);
+                                script_visualize_ref(state, md_script_ir_property_vis_ref(state->script.eval_ir, ident), -1, MD_SCRIPT_VISUALIZE_DEFAULT);
                                 script_set_hovered_property(state, ident);
                             }
                             ImGui::PopID();
