@@ -87,14 +87,41 @@ const char* pore_class_lbl[5] = {
     "Reachable from the bottom",
     "Through the film",
 };
+// What each class means, for the counts in the window. Reachable is through throats: a probe passes
+// a throat no narrower than itself, and enters at a face where the pore's clearance in the face plane
+// is at least its radius.
+const char* pore_class_tip[5] = {
+    "Pores whose largest inscribed sphere is narrower than the probe: it does not fit in them at all.",
+
+    "Pores the probe fits in, but which no chain of throats at least as wide as the probe connects to\n"
+    "either z face. Cavities sealed off at this radius: they count in the accessible volume, but nothing\n"
+    "that has to get in from outside can reach them.",
+
+    "Pores a probe entering through the top face (high z) can reach through throats at least as wide\n"
+    "as itself, but from which it cannot go on to the bottom face: dead ends open to the top.",
+
+    "Pores a probe entering through the bottom face (low z) can reach through throats at least as wide\n"
+    "as itself, but from which it cannot go on to the top face: dead ends open to the bottom.",
+
+    "Pores in a connected region of throats at least as wide as the probe which opens onto both z faces:\n"
+    "a probe can enter at one face, pass through them and leave at the other. These are what infiltration\n"
+    "through the film uses. Zero above the critical radius r_c, give or take the merge depth.",
+};
 constexpr uint32_t PORE_ROUTE_COLOR         = 0xff003d9e;     // #9E3D00, a darker vermillion: the route is spanning by definition
 constexpr uint32_t PORE_FOCUS_ON_LIGHT      = 0xff1a1a1a;
 constexpr uint32_t PORE_FOCUS_ON_DARK       = 0xfff2f2f2;
 constexpr float    PORE_POINT_SIZE          = 7.0f;     // Pixels, the smallest a pore is drawn
 constexpr float    PORE_POINT_SIZE_FOCUS    = 12.0f;
 
+// The top of the probe slider, and so of the class sweep below, in nm
+constexpr float    PROBE_RADIUS_MAX_NM      = 10.0f;
+
+// Radii the pore classes are sampled at, from the network's smallest clearance to PROBE_RADIUS_MAX_NM.
+// The counts are exact at each; what the sampling decides is only how finely a step is placed.
+constexpr size_t   PORE_SWEEP_SAMPLES       = 512;
+
 // Past this many selected pores only their points are drawn in focus. A box over a dense network can
-// take thousands, and each one in full focus is its sphere and a sphere per throat.
+// take thousands, and each one in full focus is all of its throats.
 constexpr uint32_t PORE_MAX_FOCUS_DRAWN     = 2000;
 
 // The skeleton is rebuilt every frame, so a network past this many throats draws the widest of them
@@ -325,10 +352,14 @@ struct NetworkPass : Pass {
     md_array(uint32_t) route = 0;
     double   bottleneck = 0.0;
     double   route_length = 0.0;
+    md_array(double)   sweep_r = 0;             // Angstrom, ascending
+    md_array(uint32_t) sweep_counts = 0;        // [k * PORE_CLASS_COUNT + class]
 
     ~NetworkPass() {
         pore_network_free(&net);
         md_array_free(route, md_get_heap_allocator());
+        md_array_free(sweep_r, md_get_heap_allocator());
+        md_array_free(sweep_counts, md_get_heap_allocator());
     }
 };
 
@@ -361,6 +392,33 @@ struct HeightPass : Pass {
     }
 };
 
+// A sphere as line pairs: its parallels and every other meridian
+static void wire_sphere_lines(md_array(immediate::Vertex)* lines, vec3_t c, float r, uint32_t col, vec3_t normal, int stacks, int slices, md_allocator_i* alloc) {
+    const float pi = 3.14159265358979f;
+    auto seg = [&](vec3_t a, vec3_t b) {
+        const immediate::Vertex va = { a, col, normal, 0xFFFFFFFFu };
+        const immediate::Vertex vb = { b, col, normal, 0xFFFFFFFFu };
+        md_array_push(*lines, va, alloc);
+        md_array_push(*lines, vb, alloc);
+    };
+    for (int i = 1; i < stacks; ++i) {          // Parallels
+        const float t = pi * (float)i / (float)stacks;
+        const float z = r * cosf(t), rr = r * sinf(t);
+        for (int j = 0; j < slices; ++j) {
+            const float p0 = 2.0f * pi * (float)j / (float)slices, p1 = 2.0f * pi * (float)(j + 1) / (float)slices;
+            seg(vec3_t{ c.x + rr * cosf(p0), c.y + rr * sinf(p0), c.z + z }, vec3_t{ c.x + rr * cosf(p1), c.y + rr * sinf(p1), c.z + z });
+        }
+    }
+    for (int j = 0; j < slices; j += 2) {       // Meridians, every other slice
+        const float p = 2.0f * pi * (float)j / (float)slices;
+        for (int i = 0; i < stacks; ++i) {
+            const float t0 = pi * (float)i / (float)stacks, t1 = pi * (float)(i + 1) / (float)stacks;
+            seg(vec3_t{ c.x + r * sinf(t0) * cosf(p), c.y + r * sinf(t0) * sinf(p), c.z + r * cosf(t0) },
+                vec3_t{ c.x + r * sinf(t1) * cosf(p), c.y + r * sinf(t1) * sinf(p), c.z + r * cosf(t1) });
+        }
+    }
+}
+
 struct VoidAnalysis : viamd::EventHandler {
     bool show_window = false;
 
@@ -384,17 +442,22 @@ struct VoidAnalysis : viamd::EventHandler {
     bool     has_net         = false;
     bool     show_net        = true;
     bool     show_net_route  = true;
-    bool     net_show_small  = false;   // Pores and throats too narrow for the probe
+    // Which classes the 3D view draws, pores and throats alike, by PORE_CLASS_. Too narrow is off by
+    // default: at any probe worth asking about it is most of the network and buries the rest.
+    bool     net_show_class[PORE_CLASS_COUNT] = { false, true, true, true, true };
     double   net_seconds     = 0.0;
     pore_network_t net       = {};
     md_array(uint8_t)  net_class = 0;   // PORE_CLASS_ per pore at net_class_r
     float    net_class_r     = -1.0f;
     uint32_t net_class_count[5] = {};
     md_array(uint32_t) net_route = 0;   // Widest route, top face first
+    md_array(double) net_sweep_r = 0;   // Probe radii of the class sweep, nm
+    md_array(double) net_sweep_n[PORE_CLASS_COUNT] = {};    // Pores per class at each
     double   net_route_bottleneck = 0.0;
     double   net_route_length     = 0.0;
     uint32_t net_hovered     = PORE_INVALID;
     PickingRange net_picking = {};
+    immediate::Queue* net_focus_queue = nullptr;    // The focus throats, see draw_network_focus
     size_t   net_drawn_throats = 0;
     md_array(uint8_t) net_selected = 0; // Per pore, set by clicking it in the 3D view
     uint32_t net_num_selected = 0;
@@ -506,6 +569,10 @@ struct VoidAnalysis : viamd::EventHandler {
                 clear_result();
                 clear_sasa();
                 free_volume();
+                if (net_focus_queue) {
+                    immediate::queue_destroy(net_focus_queue);
+                    net_focus_queue = nullptr;
+                }
                 arena = nullptr;
                 break;
             case viamd::EventType_ViamdFrameTick:
@@ -535,6 +602,10 @@ struct VoidAnalysis : viamd::EventHandler {
                 // other representation.
                 if (show_volume && has_result) {
                     draw_volume(*(const ApplicationState*)e.payload);
+                }
+                // After the volume, so the focus throats read over it
+                if (show_net && has_net) {
+                    draw_network_focus(*(const ApplicationState*)e.payload);
                 }
                 break;
             }
@@ -1470,6 +1541,45 @@ struct VoidAnalysis : viamd::EventHandler {
         }
     }
 
+    // The pore class sweep, one row per probe radius: every class, so a row sums to the number of pores
+    // and any of them can be turned into a fraction without going back to the network.
+    void export_network_sweep_csv() const {
+        const size_t ns = md_array_size(net_sweep_r);
+        if (!has_net || ns == 0) return;
+
+        char path_buf[2048];
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
+        str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+
+        md_file_t file = {};
+        if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+            MD_LOG_ERROR("Void analysis: could not open '%.*s' for writing", (int)path.len, path.ptr);
+            return;
+        }
+        defer { md_file_close(&file); };
+
+        const double nm = (double)ANGSTROM_PER_NM;
+        md_file_printf(file, "# VIAMD void analysis, pore network classes against probe radius\n");
+        md_file_printf(file, "# Counts are pores (network vertices), exact at each radius. Reachable means through throats at least R wide,\n");
+        md_file_printf(file, "# entering where a pore's clearance in the top (high z) or bottom (low z) grid plane is at least R.\n");
+        md_file_printf(file, "# pores,%zu\n", md_array_size(net.vertices));
+        md_file_printf(file, "# throats,%zu\n", md_array_size(net.edges));
+        md_file_printf(file, "# smallest_clearance_nm,%.6f\n", net.r_min / nm);
+        md_file_printf(file, "# merge_depth_nm,%.6f\n", net.merge / nm);
+        if (net.has_r_c) {
+            md_file_printf(file, "# critical_radius_nm,%.6f\n", net.r_c / nm);
+        }
+        md_file_printf(file, "R_nm,through_film,reachable_from_top,reachable_from_bottom,closed,too_narrow\n");
+        for (size_t k = 0; k < ns; ++k) {
+            md_file_printf(file, "%.6f,%u,%u,%u,%u,%u\n", net_sweep_r[k],
+                (uint32_t)net_sweep_n[PORE_CLASS_SPANNING][k],
+                (uint32_t)net_sweep_n[PORE_CLASS_TOP][k],
+                (uint32_t)net_sweep_n[PORE_CLASS_BOTTOM][k],
+                (uint32_t)net_sweep_n[PORE_CLASS_CLOSED][k],
+                (uint32_t)net_sweep_n[PORE_CLASS_SMALL][k]);
+        }
+    }
+
     // Shrake-Rupley through the same nearest query: scatter points over a bead's expanded sphere and count those
     // nothing else buries. No voxels involved, and it converges as 1/sqrt(N) rather than with the grid.
     //
@@ -1659,6 +1769,12 @@ struct VoidAnalysis : viamd::EventHandler {
         md_array_free(net_route, md_get_heap_allocator());
         md_array_free(net_selected, md_get_heap_allocator());
         md_array_free(net_region, md_get_heap_allocator());
+        md_array_free(net_sweep_r, md_get_heap_allocator());
+        for (int c = 0; c < PORE_CLASS_COUNT; ++c) {
+            md_array_free(net_sweep_n[c], md_get_heap_allocator());
+            net_sweep_n[c] = 0;
+        }
+        net_sweep_r = 0;
         net_class = 0;
         net_route = 0;
         net_selected = 0;
@@ -1731,6 +1847,18 @@ struct VoidAnalysis : viamd::EventHandler {
                 p->route_length = len;
             }
 
+            // Every class over every probe radius the slider reaches, in one pass, so the curves
+            // are there when the network is.
+            if (!p->cancelled() && md_array_size(p->net.vertices) > 0) {
+                const size_t ns = PORE_SWEEP_SAMPLES;
+                const double r0 = p->net.r_min;
+                const double r1 = MAX(r0, (double)(PROBE_RADIUS_MAX_NM * ANGSTROM_PER_NM));
+                md_array_resize(p->sweep_r, ns, heap);
+                md_array_resize(p->sweep_counts, ns * PORE_CLASS_COUNT, heap);
+                for (size_t k = 0; k < ns; ++k) p->sweep_r[k] = r0 + (r1 - r0) * (double)k / (double)(ns - 1);
+                pore_network_class_sweep(p->sweep_counts, &p->net, p->sweep_r, ns, heap);
+            }
+
             p->seconds = md_tick_to_seconds(md_tick_now() - p->t0);
             p->state   = p->cancelled() ? Pass_Failed : Pass_Done;
         });
@@ -1764,6 +1892,16 @@ struct VoidAnalysis : viamd::EventHandler {
         net_route_bottleneck = p->bottleneck;
         net_route_length     = p->route_length;
         net_seconds          = p->seconds;
+        {
+            md_allocator_i* heap = md_get_heap_allocator();
+            const size_t ns = md_array_size(p->sweep_r);
+            md_array_resize(net_sweep_r, ns, heap);
+            for (int c = 0; c < PORE_CLASS_COUNT; ++c) md_array_resize(net_sweep_n[c], ns, heap);
+            for (size_t k = 0; k < ns; ++k) {
+                net_sweep_r[k] = p->sweep_r[k] / (double)ANGSTROM_PER_NM;
+                for (int c = 0; c < PORE_CLASS_COUNT; ++c) net_sweep_n[c][k] = (double)p->sweep_counts[k * PORE_CLASS_COUNT + c];
+            }
+        }
         delete p;
 
         has_net = true;
@@ -1786,8 +1924,10 @@ struct VoidAnalysis : viamd::EventHandler {
         for (size_t i = 0; i < V; ++i) net_class_count[net_class[i]] += 1;
     }
 
+    // Shown in 3D under the class filter. What is hidden is also not pickable, not taken by a box and
+    // not drawn in focus - it stays selected, and comes back so when its class is shown again.
     bool net_pore_visible(uint32_t i) const {
-        return net_show_small || net_class[i] != PORE_CLASS_SMALL;
+        return i < md_array_size(net_class) && net_show_class[net_class[i]];
     }
 
     // Contrast against the background, for what is in focus: near black on a light background and
@@ -1814,7 +1954,7 @@ struct VoidAnalysis : viamd::EventHandler {
     }
 
     // The pores whose centres project inside the box, out of those drawn - or, when removing, out of
-    // those selected - exactly as the atoms are chosen.
+    // those drawn and selected - exactly as the atoms are chosen.
     void update_network_region(const InteractionSurfaceEvent& ev) {
         clear_network_region();
         const size_t V = md_array_size(net.vertices);
@@ -1822,7 +1962,7 @@ struct VoidAnalysis : viamd::EventHandler {
         const bool removing = ev.selection_mode == InteractionSelectionMode::Remove;
         net_region_removing = removing;
         for (uint32_t i = 0; i < (uint32_t)V; ++i) {
-            if (removing ? !net_selected[i] : !net_pore_visible(i)) continue;
+            if (!net_pore_visible(i) || (removing && !net_selected[i])) continue;
             const pore_vertex_t& v = net.vertices[i];
             const vec4_t c = mat4_mul_vec4(ev.world_to_clip, vec4_set(v.pos[0], v.pos[1], v.pos[2], 1.0f));
             if (!(c.w > 0.0f)) continue;    // Behind the camera, where the divide would mirror it into view
@@ -1883,6 +2023,75 @@ struct VoidAnalysis : viamd::EventHandler {
         }
     }
 
+    // The throats of the pores in focus - hovered or selected - in the focus colour, whatever their
+    // class. Drawn in the transparent pass, not into the world queue.
+    //
+    // A throat starts at the centre of its pore and so crosses the pore's point. In the world queue the
+    // focus throats wrote depth and picking there, which made the picking buffer depend on the hover:
+    // a hovered pore drew lines over its own point, the cursor could land on one of them, the hover
+    // went to whatever the line said, the lines went with it, and the hover came back the next frame.
+    // In the transparent pass the transparency buffer is the only target, so they write neither depth
+    // nor picking and leave the picking buffer exactly as it is without them. They depth test against
+    // the opaque scene, LEQUAL so that the ordinary drawing of the same throat does not hide them.
+    void draw_network_focus(const ApplicationState& state) {
+        const size_t V = md_array_size(net.vertices);
+        if (V == 0 || md_array_size(net_class) != V) return;
+        const bool hovered  = net_hovered < V && net_pore_visible(net_hovered);
+        const bool selected = net_num_selected > 0 && net_num_selected <= PORE_MAX_FOCUS_DRAWN && md_array_size(net_selected) == V;
+        if (!hovered && !selected) return;
+
+        md_allocator_i* frame  = state.allocator.frame;
+        const vec3_t    facing = vec3_normalize(vec3_from_vec4(state.view.param.matrix.inv.view.col[2]));
+        const uint32_t  col    = focus_color(state);
+        const uint32_t  no_pick = 0xFFFFFFFFu;
+
+        md_array(immediate::Vertex) lines = 0;
+        auto throats_of = [&](uint32_t i) {
+            for (uint32_t j = net.adj_offset[i]; j < net.adj_offset[i + 1]; ++j) {
+                vec3_t a, s, b;
+                pore_network_edge_points(&a, &s, &b, &net, net.adj[j]);
+                const immediate::Vertex v[4] = { { a, col, facing, no_pick }, { s, col, facing, no_pick },
+                                                 { s, col, facing, no_pick }, { b, col, facing, no_pick } };
+                for (const immediate::Vertex& x : v) md_array_push(lines, x, frame);
+            }
+        };
+        if (hovered) throats_of(net_hovered);
+        if (selected) {
+            for (uint32_t i = 0; i < (uint32_t)V; ++i) {
+                if (net_selected[i] && i != net_hovered && net_pore_visible(i)) throats_of(i);
+            }
+        }
+        if (md_array_size(lines) == 0) return;
+
+        if (!net_focus_queue) net_focus_queue = immediate::queue_create("void_pore_focus");
+        immediate::queue_reset(net_focus_queue);
+        immediate::lines(net_focus_queue, lines, md_array_size(lines));
+
+        // Opaque lines, so no blending: the colour replaces what is there, with full coverage
+        const GLboolean blend_on   = glIsEnabled(GL_BLEND);
+        const GLboolean depth_on   = glIsEnabled(GL_DEPTH_TEST);
+        GLboolean depth_mask = GL_TRUE;
+        GLint     depth_func = GL_LESS;
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_mask);
+        glGetIntegerv(GL_DEPTH_FUNC, &depth_func);
+
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+
+        immediate::RenderParams params = {};
+        params.view = state.view.param.matrix.curr.view;
+        params.proj = state.view.param.matrix.curr.proj;
+        immediate::render(net_focus_queue, params);
+        immediate::queue_reset(net_focus_queue);
+
+        if (blend_on) glEnable(GL_BLEND);
+        if (!depth_on) glDisable(GL_DEPTH_TEST);
+        glDepthFunc((GLenum)depth_func);
+        glDepthMask(depth_mask);
+    }
+
     // Drawn into the world queue, which is rendered with the depth test into the G-buffer: lit by the
     // same pass as the structure, hidden by what is in front of it, and picked by depth rather than
     // by draw order.
@@ -1906,75 +2115,42 @@ struct VoidAnalysis : viamd::EventHandler {
             return vec3_t{ net.vertices[i].pos[0], net.vertices[i].pos[1], net.vertices[i].pos[2] };
         };
 
+        const bool pickable = net_picking.domain == PickingDomain_PoreNetwork && net_picking.end - net_picking.beg == (uint32_t)V;
+        const uint32_t no_pick = 0xFFFFFFFFu;
+
         md_array(immediate::Vertex) lines = 0;
         md_array_ensure(lines, 4 * MIN(E, PORE_MAX_DRAWN_THROATS) + 1024, frame);
-        auto seg = [&](vec3_t a, vec3_t b, uint32_t col) {
-            const immediate::Vertex va = { a, col, facing, 0xFFFFFFFFu };
-            const immediate::Vertex vb = { b, col, facing, 0xFFFFFFFFu };
-            md_array_push(lines, va, frame);
-            md_array_push(lines, vb, frame);
-        };
         auto throat = [&](uint32_t e, uint32_t col) {
             vec3_t a, s, b;
             pore_network_edge_points(&a, &s, &b, &net, e);
-            seg(a, s, col);
-            seg(s, b, col);
-        };
-        auto wire_sphere = [&](vec3_t c, float r, uint32_t col, int stacks, int slices) {
-            const float pi = 3.14159265358979f;
-            for (int i = 1; i < stacks; ++i) {          // Parallels
-                const float t = pi * (float)i / (float)stacks;
-                const float z = r * cosf(t), rr = r * sinf(t);
-                for (int j = 0; j < slices; ++j) {
-                    const float p0 = 2.0f * pi * (float)j / (float)slices, p1 = 2.0f * pi * (float)(j + 1) / (float)slices;
-                    seg(vec3_t{ c.x + rr * cosf(p0), c.y + rr * sinf(p0), c.z + z }, vec3_t{ c.x + rr * cosf(p1), c.y + rr * sinf(p1), c.z + z }, col);
-                }
-            }
-            for (int j = 0; j < slices; j += 2) {       // Meridians, every other slice
-                const float p = 2.0f * pi * (float)j / (float)slices;
-                for (int i = 0; i < stacks; ++i) {
-                    const float t0 = pi * (float)i / (float)stacks, t1 = pi * (float)(i + 1) / (float)stacks;
-                    seg(vec3_t{ c.x + r * sinf(t0) * cosf(p), c.y + r * sinf(t0) * sinf(p), c.z + r * cosf(t0) },
-                        vec3_t{ c.x + r * sinf(t1) * cosf(p), c.y + r * sinf(t1) * sinf(p), c.z + r * cosf(t1) }, col);
-                }
-            }
+            const immediate::Vertex v[4] = { { a, col, facing, no_pick }, { s, col, facing, no_pick },
+                                             { s, col, facing, no_pick }, { b, col, facing, no_pick } };
+            for (const immediate::Vertex& x : v) md_array_push(lines, x, frame);
         };
 
-        // A pore in focus - hovered or selected - shows its largest sphere and each of its throats at
-        // its own width. First, so that where it coincides with the ordinary drawing of the same
-        // throat, the depth test keeps the focus colour.
-        auto draw_focus = [&](uint32_t i) {
-            wire_sphere(pore_pos(i), net.vertices[i].radius, focus, 10, 20);
-            for (uint32_t j = net.adj_offset[i]; j < net.adj_offset[i + 1]; ++j) {
-                const uint32_t e = net.adj[j];
-                const pore_edge_t& edge = net.edges[e];
-                throat(e, focus);
-                wire_sphere(vec3_t{ edge.pos[0], edge.pos[1], edge.pos[2] }, edge.radius, focus, 6, 12);
-            }
-        };
-        const bool hovered = net_hovered < V;
-        if (hovered) draw_focus(net_hovered);
-        if (net_num_selected > 0 && net_num_selected <= PORE_MAX_FOCUS_DRAWN) {
-            for (uint32_t i = 0; i < (uint32_t)V; ++i) {
-                if (net_selected[i] && i != net_hovered) draw_focus(i);
-            }
-        }
+        // The throats of the pores in focus are drawn in the transparent pass, see draw_network_focus
+        const bool hovered = net_hovered < V && net_pore_visible(net_hovered);
 
         // The voxel that limits the widest route, at r_c
         const size_t nr = md_array_size(net_route);
         const bool route = show_net_route && nr > 0;
         if (route && net.has_r_c) {
-            wire_sphere(vec3_t{ net.throat[0], net.throat[1], net.throat[2] }, (float)net.r_c, PORE_ROUTE_COLOR, 8, 16);
+            wire_sphere_lines(&lines, vec3_t{ net.throat[0], net.throat[1], net.throat[2] }, (float)net.r_c, PORE_ROUTE_COLOR, facing, 8, 16, frame);
         }
 
         // Throats. Widest first, so the ones a probe of this radius passes are a prefix. An open
-        // throat joins two pores of the same component, so either end gives its class.
+        // throat joins two pores of the same component, so either end gives its class; one the probe
+        // does not pass is too narrow, whatever the pores on either side are. The cap counts what
+        // is drawn, so it is the widest throats of the classes shown.
         net_drawn_throats = 0;
-        for (size_t e = 0; e < E && net_drawn_throats < PORE_MAX_DRAWN_THROATS; ++e, ++net_drawn_throats) {
+        for (size_t e = 0; e < E && net_drawn_throats < PORE_MAX_DRAWN_THROATS; ++e) {
             const pore_edge_t& edge = net.edges[e];
             const bool open = edge.radius >= probe_radius;
-            if (!open && !net_show_small) break;
-            throat((uint32_t)e, open ? PORE_CLASS_COLOR[net_class[edge.a]] : PORE_CLASS_COLOR[PORE_CLASS_SMALL]);
+            if (!open && !net_show_class[PORE_CLASS_SMALL]) break;     // The rest are narrower still
+            const int c = open ? (int)net_class[edge.a] : (int)PORE_CLASS_SMALL;
+            if (!net_show_class[c]) continue;
+            throat((uint32_t)e, PORE_CLASS_COLOR[c]);
+            net_drawn_throats += 1;
         }
 
         immediate::Scope scope(state.gfx.world, "void_pore_network");
@@ -2001,9 +2177,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
         // Pores, as points that keep their size on screen. Those in focus go first and larger, so the
         // depth test keeps their colour where the ordinary point of the same pore lands on it.
-        const bool pickable = net_picking.domain == PickingDomain_PoreNetwork && net_picking.end - net_picking.beg == (uint32_t)V;
         if (pickable) immediate::set_picking_base_idx(scope, net_picking.beg);
-        const uint32_t no_pick = 0xFFFFFFFFu;
 
         md_array(immediate::Vertex) pts = 0;
         md_array_ensure(pts, V, frame);
@@ -2016,7 +2190,7 @@ struct VoidAnalysis : viamd::EventHandler {
         const bool removing_region = net_num_region > 0 && net_region_removing;
         if (hovered) pore_vertex(net_hovered, focus);
         for (uint32_t i = 0; i < (uint32_t)V && (net_num_selected > 0 || net_num_region > 0); ++i) {
-            if (i == net_hovered) continue;
+            if (i == net_hovered || !net_pore_visible(i)) continue;
             const bool sel = net_selected[i] != 0;
             const bool reg = net_region[i] != 0;
             if (removing_region ? (sel && !reg) : (sel || reg)) pore_vertex(i, focus);
@@ -2133,26 +2307,56 @@ struct VoidAnalysis : viamd::EventHandler {
         ImGui::Checkbox("Show in 3D", &show_net);
         ImGui::SameLine();
         ImGui::Checkbox("Widest route", &show_net_route);
-        ImGui::SameLine();
-        ImGui::Checkbox("Too narrow for the probe", &net_show_small);
         if (net_drawn_throats >= PORE_MAX_DRAWN_THROATS) {
             ImGui::TextColored({1.0f, 0.8f, 0.35f, 1.0f}, "Drawing the %zu widest throats only", PORE_MAX_DRAWN_THROATS);
         }
 
         if (net_class_r != probe_radius) update_network_classes();
+        // The legend is the filter: tick a class to draw its pores and throats in the 3D view
         ImGui::Text("At probe %.2f nm:", probe_radius / nm);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(ticked classes are shown in 3D)");
         static const int order[] = { PORE_CLASS_SPANNING, PORE_CLASS_TOP, PORE_CLASS_BOTTOM, PORE_CLASS_CLOSED, PORE_CLASS_SMALL };
         for (int c : order) {
+            ImGui::PushID(c);
+            ImGui::Checkbox("##show", &net_show_class[c]);
+            ImGui::SetItemTooltip("Show these pores and their throats in the 3D view");
+            ImGui::SameLine();
             ImGui::ColorButton(pore_class_lbl[c], ImGui::ColorConvertU32ToFloat4(PORE_CLASS_COLOR[c] | 0xFF000000u),
                                ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder, ImVec2(10, 10));
             ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
             ImGui::Text("%s: %u", pore_class_lbl[c], net_class_count[c]);
+            ImGui::SetItemTooltip("%s", pore_class_tip[c]);
+            ImGui::PopID();
+        }
+
+        // The three classes a probe can get into from outside, over every probe radius: how much of
+        // the network is open to infiltration, and from which side, as the probe grows. Exactly the
+        // counts the lines above give, at PORE_SWEEP_SAMPLES radii; the marker is the current probe.
+        const size_t ns = md_array_size(net_sweep_r);
+        if (ns > 1 && ImPlot::BeginPlot("##net_sweep", ImVec2(-1, 200))) {
+            ImPlot::SetupAxes("Probe radius R (nm)", "Pores", 0, ImPlotAxisFlags_AutoFit);
+            ImPlot::SetupAxisLimits(ImAxis_X1, net_sweep_r[0], net_sweep_r[ns - 1], ImPlotCond_Once);
+            static const int swept[] = { PORE_CLASS_SPANNING, PORE_CLASS_TOP, PORE_CLASS_BOTTOM };
+            for (int c : swept) {
+                ImPlot::SetNextLineStyle(ImGui::ColorConvertU32ToFloat4(PORE_CLASS_COLOR[c] | 0xFF000000u), 2.0f);
+                ImPlot::PlotLine(pore_class_lbl[c], net_sweep_r, net_sweep_n[c], (int)ns);
+            }
+            double r_nm = probe_radius / nm;
+            ImPlot::DragLineX(0, &r_nm, ImVec4(1, 0.6f, 0.2f, 1), 1.0f, ImPlotDragToolFlags_NoInputs);
+            ImPlot::EndPlot();
+        }
+        if (ns > 1) {
+            if (ImGui::Button("Export pore classes vs R")) export_network_sweep_csv();
+            ImGui::SetItemTooltip("CSV, one row per probe radius of the plot, with all five classes: the three plotted,\n"
+                                  "closed and too narrow. A row sums to the number of pores.");
         }
         ImGui::TextDisabled("Hover a pore in the 3D view for its details. Click to select, shift click or drag to add,\n"
                             "shift right click or drag to remove.");
         if (net_num_selected > 0) {
             ImGui::Text("%u selected%s", net_num_selected,
-                        net_num_selected > PORE_MAX_FOCUS_DRAWN ? " (spheres drawn up to 2000)" : "");
+                        net_num_selected > PORE_MAX_FOCUS_DRAWN ? " (highlighted up to 2000)" : "");
             ImGui::SameLine();
             if (ImGui::SmallButton("Clear selection")) clear_network_selection();
         }
@@ -2530,7 +2734,7 @@ struct VoidAnalysis : viamd::EventHandler {
             }
 
             float probe_nm = probe_radius / ANGSTROM_PER_NM;
-            if (ImGui::SliderFloat("Probe radius (nm)", &probe_nm, 0.0f, 10.0f, "%.2f")) {
+            if (ImGui::SliderFloat("Probe radius (nm)", &probe_nm, 0.0f, PROBE_RADIUS_MAX_NM, "%.2f")) {
                 probe_radius = probe_nm * ANGSTROM_PER_NM;
                 probe_dirty  = true;
                 vol_tf_dirty = true;

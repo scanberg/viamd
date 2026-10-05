@@ -2021,6 +2021,103 @@ void pore_network_classify(uint8_t* out_class, const pore_network_t* net, double
     md_free(temp, faces,  V * sizeof(uint8_t));
 }
 
+void pore_network_class_sweep(uint32_t* out_counts, const pore_network_t* net, const double* r, size_t num_r, struct md_allocator_i* temp) {
+    ASSERT(out_counts);
+    ASSERT(net);
+    ASSERT(temp);
+    if (num_r == 0) return;
+    ASSERT(r);
+    MEMSET(out_counts, 0, num_r * PORE_CLASS_COUNT * sizeof(uint32_t));
+
+    const size_t V = md_array_size(net->vertices);
+    const size_t E = md_array_size(net->edges);
+    if (V == 0) return;
+    const pore_vertex_t* vert = net->vertices;
+
+    // A component's class is which faces it reaches
+    static const uint8_t face_class[4] = { PORE_CLASS_CLOSED, PORE_CLASS_TOP, PORE_CLASS_BOTTOM, PORE_CLASS_SPANNING };
+    STATIC_ASSERT(PORE_FACE_TOP == 1 && PORE_FACE_BOTTOM == 2, "face_class is indexed by the face bits");
+
+    uint32_t* parent = (uint32_t*)md_alloc(temp, V * sizeof(uint32_t));
+    uint32_t* size   = (uint32_t*)md_alloc(temp, V * sizeof(uint32_t));
+    uint8_t*  faces  = (uint8_t*) md_alloc(temp, V * sizeof(uint8_t));
+    uint8_t*  active = (uint8_t*) md_alloc(temp, V * sizeof(uint8_t));
+    uint32_t* by_rad = (uint32_t*)md_alloc(temp, V * sizeof(uint32_t));
+    uint32_t* by_top = (uint32_t*)md_alloc(temp, V * sizeof(uint32_t));
+    uint32_t* by_bot = (uint32_t*)md_alloc(temp, V * sizeof(uint32_t));
+    for (size_t i = 0; i < V; ++i) {
+        parent[i] = (uint32_t)i;
+        size[i]   = 1;
+        faces[i]  = 0;
+        active[i] = 0;
+        by_rad[i] = by_top[i] = by_bot[i] = (uint32_t)i;
+    }
+    std::sort(by_rad, by_rad + V, [vert](uint32_t a, uint32_t b) { return vert[a].radius      > vert[b].radius; });
+    std::sort(by_top, by_top + V, [vert](uint32_t a, uint32_t b) { return vert[a].face_top    > vert[b].face_top; });
+    std::sort(by_bot, by_bot + V, [vert](uint32_t a, uint32_t b) { return vert[a].face_bottom > vert[b].face_bottom; });
+
+    uint32_t count[PORE_CLASS_COUNT] = {};
+    uint32_t num_active = 0;
+
+    // A face entry or a throat is never wider than its pore, so the pore is normally in already;
+    // taking it in here keeps the counts whole if that ever fails to hold.
+    auto activate = [&](uint32_t i) {
+        if (active[i]) return;
+        active[i] = 1;
+        num_active += 1;
+        count[face_class[faces[vert_find(parent, i)]]] += 1;
+    };
+    auto add_face = [&](uint32_t i, uint8_t bit) {
+        activate(i);
+        const uint32_t c = vert_find(parent, i);
+        const uint8_t  f = faces[c] | bit;
+        if (f == faces[c]) return;
+        count[face_class[faces[c]]] -= size[c];
+        count[face_class[f]]        += size[c];
+        faces[c] = f;
+    };
+    auto join = [&](uint32_t a, uint32_t b) {
+        activate(a);
+        activate(b);
+        a = vert_find(parent, a);
+        b = vert_find(parent, b);
+        if (a == b) return;
+        count[face_class[faces[a]]] -= size[a];
+        count[face_class[faces[b]]] -= size[b];
+        if (size[a] < size[b]) { const uint32_t tmp = a; a = b; b = tmp; }
+        parent[b] = a;
+        size[a]  += size[b];
+        faces[a] |= faces[b];
+        count[face_class[faces[a]]] += size[a];
+    };
+
+    // The same comparisons classify makes - a pore fits at radius <= r, a face entry and a throat
+    // pass at >= r - so the counts at each radius are its counts, not an approximation of them.
+    size_t iv = 0, it = 0, ib = 0, ie = 0;
+    for (size_t k = num_r; k-- > 0;) {
+        const double rk = r[k];
+        while (iv < V && (double)vert[by_rad[iv]].radius      >= rk) activate(by_rad[iv++]);
+        while (it < V && (double)vert[by_top[it]].face_top    >= rk) add_face(by_top[it++], PORE_FACE_TOP);
+        while (ib < V && (double)vert[by_bot[ib]].face_bottom >= rk) add_face(by_bot[ib++], PORE_FACE_BOTTOM);
+        while (ie < E && (double)net->edges[ie].radius        >= rk) {
+            join(net->edges[ie].a, net->edges[ie].b);
+            ++ie;
+        }
+
+        uint32_t* out = out_counts + k * PORE_CLASS_COUNT;
+        MEMCPY(out, count, sizeof(count));
+        out[PORE_CLASS_SMALL] = (uint32_t)V - num_active;
+    }
+
+    md_free(temp, parent, V * sizeof(uint32_t));
+    md_free(temp, size,   V * sizeof(uint32_t));
+    md_free(temp, faces,  V * sizeof(uint8_t));
+    md_free(temp, active, V * sizeof(uint8_t));
+    md_free(temp, by_rad, V * sizeof(uint32_t));
+    md_free(temp, by_top, V * sizeof(uint32_t));
+    md_free(temp, by_bot, V * sizeof(uint32_t));
+}
+
 bool pore_network_widest_route(md_array(uint32_t)* out_vertices, double* out_bottleneck, const pore_network_t* net, struct md_allocator_i* alloc) {
     ASSERT(out_vertices);
     ASSERT(net);

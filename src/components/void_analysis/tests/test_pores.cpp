@@ -5,6 +5,7 @@
 #include <core/md_allocator.h>
 
 #include <math.h>
+#include <algorithm>
 #include <vector>
 
 // The pore network, checked on fields where the pores and throats can be named on paper, and on a
@@ -256,6 +257,73 @@ UTEST(viamd_pores, disordered_field_agrees_with_percolation) {
 
     pore_network_free(&net);
     channel_percolation_free(&perc);
+}
+
+UTEST(viamd_pores, class_sweep_agrees_with_classify_at_every_radius) {
+    // The sweep is one union-find over decreasing width standing in for a classification per radius,
+    // so it has to give classify's counts exactly - at radii between events and at radii equal to
+    // one, where the >= and < of the two have to agree. On a disordered field, merged and not.
+    md_allocator_i* alloc = md_get_heap_allocator();
+    const int n = 48;
+    const float h = 0.5f;
+    const double L = n * h;
+
+    uint32_t s = 2024;
+    auto next = [&s]() { s = s * 1664525u + 1013904223u; return (double)(s >> 8) / (double)(1u << 24); };
+    std::vector<double> cx, cy, cz, cr;
+    for (int i = 0; i < 30; ++i) {
+        cx.push_back(next() * L); cy.push_back(next() * L); cz.push_back(next() * L);
+        cr.push_back(1.5 + 1.5 * next());
+    }
+    Field fd(n, n, n, h, true, [&](double x, double y, double z) {
+        double best = 1.0e30;
+        for (size_t i = 0; i < cx.size(); ++i) {
+            double dx = x - cx[i]; dx -= L * round(dx / L);
+            double dy = y - cy[i]; dy -= L * round(dy / L);
+            const double dz = z - cz[i];
+            best = fmin(best, sqrt(dx * dx + dy * dy + dz * dz) - cr[i]);
+        }
+        return best;
+    });
+
+    for (double merge : { 0.0, 1.0 }) {
+        pore_network_t net;
+        ASSERT_TRUE(pore_network_build(&net, &fd.field, 0.25, merge, alloc, NULL, NULL));
+        const size_t V = md_array_size(net.vertices);
+        ASSERT_TRUE(V > 2);
+
+        // A uniform sweep past the widest pore, and every distinct event width on top of it
+        std::vector<double> r;
+        for (int k = 0; k <= 64; ++k) r.push_back(0.25 + 8.0 * k / 64.0);
+        for (size_t i = 0; i < V; ++i) {
+            r.push_back(net.vertices[i].radius);
+            if (net.vertices[i].face_top    >= 0.0f) r.push_back(net.vertices[i].face_top);
+            if (net.vertices[i].face_bottom >= 0.0f) r.push_back(net.vertices[i].face_bottom);
+        }
+        for (size_t e = 0; e < md_array_size(net.edges); ++e) r.push_back(net.edges[e].radius);
+        std::sort(r.begin(), r.end());
+        r.erase(std::unique(r.begin(), r.end()), r.end());
+        r.push_back(r.back() + 1.0);
+
+        std::vector<uint32_t> counts(r.size() * PORE_CLASS_COUNT);
+        pore_network_class_sweep(counts.data(), &net, r.data(), r.size(), alloc);
+
+        std::vector<uint8_t> cls(V);
+        size_t mismatches = 0, spanning_seen = 0;
+        for (size_t k = 0; k < r.size(); ++k) {
+            pore_network_classify(cls.data(), &net, r[k], alloc);
+            uint32_t ref[PORE_CLASS_COUNT] = {};
+            for (uint8_t c : cls) ref[c] += 1;
+            for (int c = 0; c < PORE_CLASS_COUNT; ++c) mismatches += (ref[c] != counts[k * PORE_CLASS_COUNT + c]);
+            spanning_seen += ref[PORE_CLASS_SPANNING] > 0;
+        }
+        EXPECT_EQ((size_t)0, mismatches);
+        EXPECT_TRUE(spanning_seen > 0);     // The field is open enough that the sweep is not all zeros
+
+        // Past the widest pore everything is too narrow
+        EXPECT_EQ((uint32_t)V, counts[(r.size() - 1) * PORE_CLASS_COUNT + PORE_CLASS_SMALL]);
+        pore_network_free(&net);
+    }
 }
 
 UTEST(viamd_pores, a_tube_through_the_periodic_seam) {

@@ -593,6 +593,7 @@ enum {
     PORE_CLASS_TOP,             // Reachable from the top face only
     PORE_CLASS_BOTTOM,          // From the bottom only
     PORE_CLASS_SPANNING,        // From both: on a route through the film
+    PORE_CLASS_COUNT,
 };
 
 #ifdef __cplusplus
@@ -617,6 +618,15 @@ void pore_network_free(pore_network_t* net);
 
 // out_class[num_vertices], one PORE_CLASS_ per vertex at probe radius r.
 void pore_network_classify(uint8_t* out_class, const pore_network_t* net, double r, struct md_allocator_i* temp);
+
+// The pores of each class over a sweep of probe radii: out_counts[k * PORE_CLASS_COUNT + c] is the
+// number of vertices pore_network_classify puts in class c at radius r[k], exactly. r ascending.
+//
+// Classifying at every radius would be one union-find per radius. Lowering R only ever adds - a
+// pore the probe now fits, a face entry it now passes, a throat it now passes - so this is one
+// pass over all three in order of decreasing width, joining as it goes and keeping per class
+// counts current, which costs one classification and a sort whatever the number of radii.
+void pore_network_class_sweep(uint32_t* out_counts, const pore_network_t* net, const double* r, size_t num_r, struct md_allocator_i* temp);
 
 // The widest route from the top face to the bottom: the vertex chain whose narrowest throat (or
 // face entry) is as wide as possible, top first. out_bottleneck is that narrowest width. It agrees
