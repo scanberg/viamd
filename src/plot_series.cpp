@@ -382,6 +382,10 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
     }
 
     if (is_script(key.source) && (script_property_kind(app, key) & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) && attribute_numeric_resident(attr)) {
+        if (attr->format.rank != 1) {
+            *reason = "An array of distributions, [n][bins]: not plotted yet";
+            return 0;
+        }
         return SeriesView_Distribution;
     }
 
