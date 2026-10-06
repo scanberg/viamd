@@ -225,9 +225,18 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             if (flags & MD_FLAG_SP2)            { *sb += "SP2 "; }
             if (flags & MD_FLAG_SP3)            { *sb += "SP3 "; }
             if (flags & MD_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
+            if (flags & MD_FLAG_HBOND_DONOR)    { *sb += "HBOND-DONOR "; }
+            if (flags & MD_FLAG_HBOND_ACCEPTOR) { *sb += "HBOND-ACCEPTOR "; }
+            if (flags & MD_FLAG_VIRTUAL_SITE)   { *sb += "VIRTUAL-SITE "; }
             if (flags & MD_FLAG_COARSE_GRAINED) { *sb += "COARSE-GRAINED "; }
             if (flags & MD_FLAG_DERIVED)        { *sb += "DERIVED "; }
             *sb += "\n";
+        }
+        if (state.selection.granularity == SelectionGranularity::Atom) {
+            const int charge = md_atom_formal_charge(&sys.atom, atom_idx);
+            const int num_h  = md_atom_hydrogen_count(&sys.atom, atom_idx);
+            if (charge) md_strb_fmt(sb, "formal charge: %+d\n", charge);
+            if (num_h > 0) md_strb_fmt(sb, "hydrogens: %d\n", num_h);
         }
         /*
         // @TODO: REIMPLEMENT THIS
@@ -251,17 +260,15 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             } bond_flag_label_t;
 
             bond_flag_label_t bond_flag_map[] = {
-                {MD_BOND_FLAG_COVALENT,     "COVALENT"},
-                {MD_BOND_FLAG_DOUBLE,       "DOUBLE"},
-                {MD_BOND_FLAG_TRIPLE,       "TRIPLE"},
-                {MD_BOND_FLAG_QUADRUPLE,    "QUADRUPLE"},
-                {MD_BOND_FLAG_AROMATIC,     "AROMATIC"},
-                {MD_BOND_FLAG_COORDINATE,   "COORD"},
-				{MD_BOND_FLAG_METAL,        "METAL"},
-				{MD_BOND_FLAG_INFERRED,     "INFERRED"},
-				{MD_BOND_FLAG_USER_DEFINED, "USER"},
-				{MD_BOND_FLAG_TOPOLOGY,     "TOPOLOGY"},
+                {MD_BOND_FLAG_AROMATIC,        "AROMATIC"},
+                {MD_BOND_FLAG_DELOCALIZED,     "DELOCALIZED"},
+                {MD_BOND_FLAG_COORDINATE,      "COORD"},
+                {MD_BOND_FLAG_ORDER_PERCEIVED, "ORDER-PERCEIVED"},
             };
+
+            // Where the bond came from is a value, not a set of bits (md_bond_origin)
+            static const char* origin_label[] = {"FILE", "TOPOLOGY", "USER", "INFERRED"};
+            len += snprintf(bond_flags_buf + len, sizeof(bond_flags_buf) - len, "%s ", origin_label[md_bond_origin(flags) & 3]);
 
             for (size_t i = 0; i < ARRAY_SIZE(bond_flag_map); ++i) {
                 if (flags & bond_flag_map[i].flag) {
@@ -269,11 +276,16 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
                 }
             }
             
+            // The order is a value, not a set of bits (md_bond_order)
+            const int order = md_bond_order(flags);
             char bond_type = '-';
-            if (flags & MD_BOND_FLAG_DOUBLE) bond_type = '=';
-            if (flags & MD_BOND_FLAG_TRIPLE) bond_type = '#';
-            if (flags & MD_BOND_FLAG_QUADRUPLE) bond_type = '$';
-            if (flags & MD_BOND_FLAG_AROMATIC) bond_type = ':';
+            if (order == MD_BOND_ORDER_DOUBLE)    bond_type = '=';
+            if (order == MD_BOND_ORDER_TRIPLE)    bond_type = '#';
+            if (order == MD_BOND_ORDER_QUADRUPLE) bond_type = '$';
+            if (flags & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED)) bond_type = ':';
+            if (order) {
+                len += snprintf(bond_flags_buf + len, sizeof(bond_flags_buf) - len, "ORDER-%d ", order);
+            }
 
             vec3_t p0 = md_state_coord(&sys_state, pair.idx[0]);
             vec3_t p1 = md_state_coord(&sys_state, pair.idx[1]);
@@ -1751,9 +1763,10 @@ void load_workspace(ApplicationState* data, str_t filename) {
         for (size_t i = 0; i < num_user_bonds; ++i) {
             const md_atom_pair_t& pair = pending.user_bonds[i];
             if ((size_t)pair.idx[0] < num_atoms && (size_t)pair.idx[1] < num_atoms) {
-                md_system_bond_insert(&data->mold.sys, pair.idx[0], pair.idx[1], MD_BOND_FLAG_USER_DEFINED);
+                md_system_bond_insert(&data->mold.sys, pair.idx[0], pair.idx[1], md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
             }
         }
+        md_util_system_infer_coordination(&data->mold.sys);
         data->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 
@@ -1941,7 +1954,7 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
     // Save user defined bonds
     bool has_user_bonds = false;
     for (size_t i = 0; i < app_state->mold.sys.bond.count; ++i) {
-        if (app_state->mold.sys.bond.flags[i] & MD_BOND_FLAG_USER_DEFINED) {
+        if (md_bond_origin(app_state->mold.sys.bond.flags[i]) == MD_BOND_ORIGIN_USER) {
             if (!has_user_bonds) {
                 viamd::write_section_header(state, STR_LIT("UserBonds"));
                 has_user_bonds = true;

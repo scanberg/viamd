@@ -1128,10 +1128,12 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t b = 0; b < sys.bond.count; ++b) {
             const uint32_t f = sys.bond.flags ? (uint32_t)sys.bond.flags[b] : 0u;
-            if      (f & MD_BOND_FLAG_USER_DEFINED) c.bonds_user += 1;
-            else if (f & MD_BOND_FLAG_TOPOLOGY)     c.bonds_topology += 1;
-            else if (f & MD_BOND_FLAG_INFERRED)     c.bonds_inferred += 1;
-            else                                    c.bonds_file += 1;
+            switch (md_bond_origin((md_bond_flags_t)f)) {
+            case MD_BOND_ORIGIN_USER:     c.bonds_user     += 1; break;
+            case MD_BOND_ORIGIN_TOPOLOGY: c.bonds_topology += 1; break;
+            case MD_BOND_ORIGIN_INFERRED: c.bonds_inferred += 1; break;
+            default:                      c.bonds_file     += 1; break;
+            }
         }
 
         for (size_t a = 0; a < sys.atom.count; ++a) {
@@ -1465,7 +1467,7 @@ struct Dataset : viamd::EventHandler {
             if (ImGui::IsItemHovered()) {
                 md_bitfield_clear(&data.selection.highlight_mask);
                 for (size_t b = 0; b < sys.bond.count; ++b) {
-                    if (sys.bond.flags && (sys.bond.flags[b] & MD_BOND_FLAG_USER_DEFINED)) {
+                    if (sys.bond.flags && md_bond_origin(sys.bond.flags[b]) == MD_BOND_ORIGIN_USER) {
                         md_bitfield_set_bit(&data.selection.highlight_mask, sys.bond.pairs[b].idx[0]);
                         md_bitfield_set_bit(&data.selection.highlight_mask, sys.bond.pairs[b].idx[1]);
                     }

@@ -2354,14 +2354,15 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                 if (ImGui::MenuItem(buf)) {
-                    md_system_bond_insert(&state->mold.sys, idx[0], idx[1], MD_BOND_FLAG_USER_DEFINED);
+                    md_system_bond_insert(&state->mold.sys, idx[0], idx[1], md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
+                    md_util_system_infer_coordination(&state->mold.sys);
                     md_system_bond_build_connectivity(&state->mold.sys);
                     state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
                     ImGui::CloseCurrentPopup();
                 }
             } else {
 				md_bond_flags_t flags = md_system_bond_flags(&state->mold.sys, bond_idx);
-                if (flags & MD_BOND_FLAG_USER_DEFINED) {
+                if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
                     char buf[256];
                     snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                     if (ImGui::MenuItem(buf)) {
