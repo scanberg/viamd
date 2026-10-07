@@ -45,6 +45,14 @@ uniform sampler3D u_tex_density_volume;
 uniform sampler3D u_tex_color_volume;
 uniform sampler2D u_tex_tf;
 
+#if defined(USE_FIELD)
+// A scalar field on the density volume's own grid, evaluated where the isosurfaces can sample it,
+// and the colour map it is shown through: x is the start of the range, y one over its extent
+uniform sampler3D u_tex_field;
+uniform sampler2D u_tex_field_colormap;
+uniform vec2      u_field_range;
+#endif
+
 layout(location = 0) out vec4 out_color;
 
 const float REF_SAMPLING_RATE = 150.0;
@@ -122,6 +130,10 @@ vec4 sampleTransfer(float density) {
 vec4 sampleIsoColor(vec3 texPos, vec4 baseColor) {
 #if defined(USE_COLOR_VOLUME)
     return baseColor * texture(u_tex_color_volume, texPos);
+#elif defined(USE_FIELD)
+    float v = texture(u_tex_field, texPos).r;
+    float t = clamp((v - u_field_range.x) * u_field_range.y, 0.0, 1.0);
+    return baseColor * vec4(texture(u_tex_field_colormap, vec2(t, 0.5)).rgb, 1.0);
 #else
     return baseColor;
 #endif

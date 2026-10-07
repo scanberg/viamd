@@ -2845,6 +2845,132 @@ static void draw_animation_window(ApplicationState* data) {
     ImGui::End();
 }
 
+// How the isosurfaces of an electronic structure representation are coloured. The atoms' colours
+// are not offered for a density property; a field is offered whenever the dataset has what one is
+// made from.
+static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool advanced, bool allow_atom_colors) {
+    bool update_rep = false;
+
+    bool any_field = false;
+    for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
+        any_field |= surface_field_available((SurfaceFieldKind)k, sys);
+    }
+
+    if (ImGui::BeginCombo("coloring", surface_coloring_str[(int)es.coloring])) {
+        for (int i = 0; i < (int)SurfaceColoring::Count; ++i) {
+            const SurfaceColoring c = (SurfaceColoring)i;
+            const bool enabled = (c == SurfaceColoring::AtomColors) ? allow_atom_colors :
+                                 (c == SurfaceColoring::Field)      ? any_field : true;
+            ImGui::BeginDisabled(!enabled);
+            if (ImGui::Selectable(surface_coloring_str[i], es.coloring == c)) {
+                es.coloring = c;
+                update_rep = true;
+            }
+            ImGui::EndDisabled();
+            if (!enabled && c == SurfaceColoring::Field) {
+                ImGui::SetItemTooltip("Nothing in this dataset to make a field from: the embedding potential needs classical charges (atom/charge)");
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    if (es.coloring == SurfaceColoring::AtomColors && advanced) {
+        const double min_power = 2.0;
+        const double max_power = 20.0;
+        update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &es.gaussian_splatting_power, &min_power, &max_power, "%.2f");
+    }
+
+    if (es.coloring != SurfaceColoring::Field) {
+        return update_rep;
+    }
+
+    if (ImGui::BeginCombo("field", surface_field_kind_str[(int)es.field_kind])) {
+        for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
+            const SurfaceFieldKind kind = (SurfaceFieldKind)k;
+            ImGui::BeginDisabled(!surface_field_available(kind, sys));
+            if (ImGui::Selectable(surface_field_kind_str[k], es.field_kind == kind)) {
+                es.field_kind = kind;
+                update_rep = true;
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+    }
+    if (es.field_kind == SurfaceFieldKind::EmbeddingPotential) {
+        ImGui::SetItemTooltip("The electrostatic potential of the classical charges (atom/charge) on the surface.\n"
+                              "For a polarizable embedding this is the potential of its PERMANENT charges:\n"
+                              "the induced dipoles are solved for during the calculation and not stored.");
+    }
+
+    SurfaceFieldMapping& map = es.field_map;
+    const SurfaceFieldVolume& vol = es.field_vol;
+
+    const ImVec2 button_size = {ImGui::CalcItemWidth(), 0};
+    if (ImPlot::ColormapButton(ImPlot::GetColormapName(map.colormap), button_size, map.colormap)) {
+        ImGui::OpenPopup("Field Colormap");
+    }
+    if (ImGui::BeginPopup("Field Colormap")) {
+        for (int m = 4; m < ImPlot::GetColormapCount(); ++m) {
+            if (ImPlot::ColormapButton(ImPlot::GetColormapName(m), button_size, m)) {
+                map.colormap = m;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    // Shown in the display unit, kept in the field's own
+    char unit[32] = "";
+    const double scl = display_units::factor_print(unit, sizeof(unit), surface_field_unit(es.field_kind));
+    const float fscl = (float)scl;
+
+    bool range_mode_changed = false;
+    range_mode_changed |= ImGui::Checkbox("auto range", &map.auto_range);
+    ImGui::SetItemTooltip("Follow the spread of the field on the surface: its 1st to 99th percentile");
+    ImGui::SameLine();
+    range_mode_changed |= ImGui::Checkbox("symmetric", &map.symmetric);
+    ImGui::SetItemTooltip("A range centred on zero");
+    if (range_mode_changed) {
+        if (map.symmetric && !map.auto_range) {
+            const float r = MAX(fabsf(map.range_beg), fabsf(map.range_end));
+            map.range_beg = -r;
+            map.range_end =  r;
+        }
+        surface_field_mapping_update_range(&map, vol);
+    }
+
+    const float data_ext = MAX(fabsf(vol.surface_min), fabsf(vol.surface_max)) * fscl;
+    const float limit = data_ext > 0.0f ? 1.5f * data_ext : 1.0f;
+    char fmt[48];
+    snprintf(fmt, sizeof(fmt), "%%.4g %s", unit);
+    if (map.symmetric) {
+        float r = MAX(fabsf(map.range_beg), fabsf(map.range_end)) * fscl;
+        if (ImGui::SliderFloat("range ±", &r, 0.0f, limit, fmt)) {
+            map.range_beg = -r / fscl;
+            map.range_end =  r / fscl;
+            map.auto_range = false;
+        }
+    } else {
+        float beg = map.range_beg * fscl;
+        float end = map.range_end * fscl;
+        if (ImGui::RangeSliderFloat("range", &beg, &end, -limit, limit, fmt)) {
+            map.range_beg = beg / fscl;
+            map.range_end = end / fscl;
+            map.auto_range = false;
+        }
+    }
+
+    if (vol.num_surface_samples > 0) {
+        ImGui::TextDisabled("on surface: %.4g to %.4g %s", vol.surface_lo * scl, vol.surface_hi * scl, unit);
+        ImGui::SetItemTooltip("1st to 99th percentile; extremes %.4g to %.4g %s", vol.surface_min * scl, vol.surface_max * scl, unit);
+        if (advanced) {
+            ImGui::TextDisabled("%zu of %zu voxels evaluated", vol.num_evaluated, vol.num_voxels);
+        }
+    }
+
+    return update_rep;
+}
+
 static bool draw_representations_window_electronic_structure(ApplicationState* state, Representation& rep) {
     ImGuiComboFlags flags = 0;
     ElectronicStructureRepresentation& es = rep.electronic_structure;
@@ -3173,9 +3299,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     const double min_tau = 0.0;
     const double max_tau = 1.0;
     
-    const double min_power = 2.0;
-    const double max_power = 20.0;
-
     const double iso_min = 1.0e-8;
     const double iso_max = 5.0;
 
@@ -3205,41 +3328,40 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             ImGui::SetItemTooltip("Optical density shared by all custom isosurfaces");
         }
 
+        update_rep |= draw_surface_coloring(es, state->mold.sys, advanced, false);
+
         return update_rep;
     }
     
     const char* iso_label = electronic_structure_iso_value_label();
     
     if (electronic_structure_is_signed(es)) {
-        ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic);
+        // The band a field is evaluated in follows the isovalue
+        update_rep |= ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic) && rep.electronic_structure.coloring == SurfaceColoring::Field;
         ImGui::SetItemTooltip("%s", electronic_structure_iso_value_tooltip(rep.electronic_structure));
         if (advanced) {
             ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Optical density of the isosurfaces");
         }
-        if (rep.electronic_structure.use_atom_colors) {
+        update_rep |= draw_surface_coloring(rep.electronic_structure, state->mold.sys, advanced, true);
+        if (rep.electronic_structure.coloring != SurfaceColoring::Uniform) {
             ImGui::ColorEdit4("tint positive", rep.electronic_structure.tint_psi_pos.elem);
             ImGui::ColorEdit4("tint negative", rep.electronic_structure.tint_psi_neg.elem);
         } else {
             ImGui::ColorEdit4("color positive", rep.electronic_structure.col_psi_pos.elem);
             ImGui::ColorEdit4("color negative", rep.electronic_structure.col_psi_neg.elem);
         }
-        if (advanced || rep.electronic_structure.use_atom_colors) {
-            update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
-        }
-
-        if (advanced && rep.electronic_structure.use_atom_colors) {
-            update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
-        }
     }
     else {
-        ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic);
+        // The band a field is evaluated in follows the isovalue
+        update_rep |= ImGui::SliderScalar(iso_label, ImGuiDataType_Double, &rep.electronic_structure.iso_value, &iso_min, &iso_max, "%.8f", ImGuiSliderFlags_Logarithmic) && rep.electronic_structure.coloring == SurfaceColoring::Field;
         ImGui::SetItemTooltip("%s", electronic_structure_iso_value_tooltip(rep.electronic_structure));
         if (advanced) {
             ImGui::SliderScalar((const char*)u8"iso τ", ImGuiDataType_Double, &rep.electronic_structure.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             ImGui::SetItemTooltip("Optical density of the isosurfaces");
         }
-        if (rep.electronic_structure.use_atom_colors) {
+        update_rep |= draw_surface_coloring(rep.electronic_structure, state->mold.sys, advanced, true);
+        if (rep.electronic_structure.coloring != SurfaceColoring::Uniform) {
             if (es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                 ImGui::ColorEdit4("tint attachment", rep.electronic_structure.tint_att.elem);
             }
@@ -3257,12 +3379,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             } else {
                 ImGui::ColorEdit4("color density",  rep.electronic_structure.col_den.elem);
             }
-        }
-        if (advanced || rep.electronic_structure.use_atom_colors) {
-            update_rep |= ImGui::Checkbox("use atom colors", &rep.electronic_structure.use_atom_colors);
-        }
-        if (advanced && rep.electronic_structure.use_atom_colors) {
-            update_rep |= ImGui::SliderScalar("gaussian power", ImGuiDataType_Double, &rep.electronic_structure.gaussian_splatting_power, &min_power, &max_power, "%.2f");
         }
     }
 
@@ -6600,40 +6716,42 @@ static void draw_representations_opaque(ApplicationState* state) {
                     md_array_push(draw_ops, op, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
-                // immediate draw of dipole moment as arrow
-                vec3_t dipole_vec = {0, 0, 0};
-                vec3_t dipole_org = {0, 0, 0};
-                if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
-                    // The representation's own (key, index) IS the picking address: the group's
-                    // range was reserved under that key this frame, and the shader adds the base to
-                    // the per primitive index, so the element index is what goes on the primitive.
-                    // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
-                    // which the shader passes through untouched - visible, just not pickable.
-                    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-                    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
+                if (rep.enabled) {
+                    // immediate draw of dipole moment as arrow
+                    vec3_t dipole_vec = { 0, 0, 0 };
+                    vec3_t dipole_org = { 0, 0, 0 };
+                    if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
+                        // The representation's own (key, index) IS the picking address: the group's
+                        // range was reserved under that key this frame, and the shader adds the base to
+                        // the per primitive index, so the element index is what goes on the primitive.
+                        // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
+                        // which the shader passes through untouched - visible, just not pickable.
+                        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+                        const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
 
-                    immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
-                    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
+                        immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
+                        immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
-                    const vec3_t org = dipole_org;
-                    const vec3_t vec = dipole_vec * (float)rep.dipole.scale;
+                        const vec3_t org = dipole_org;
+                        const vec3_t vec = dipole_vec * (float)rep.dipole.scale;
 
-                    // cylinder body
-                    const float body_scale = 0.8f;
+                        // cylinder body
+                        const float body_scale = 0.8f;
 
-                    const float body_radius = rep.dipole.radius;
-                    const float head_radius = body_radius * 1.5f;
+                        const float body_radius = rep.dipole.radius;
+                        const float head_radius = body_radius * 1.5f;
 
-                    vec3_t cyl_beg = rep.dipole.offset + org;
-                    vec3_t cyl_end = rep.dipole.offset + org + vec * body_scale;
-                    vec3_t arrow_end = rep.dipole.offset + org + vec;
+                        vec3_t cyl_beg = rep.dipole.offset + org;
+                        vec3_t cyl_end = rep.dipole.offset + org + vec * body_scale;
+                        vec3_t arrow_end = rep.dipole.offset + org + vec;
 
-                    uint32_t color_u32 = convert_color(rep.dipole.color);
+                        uint32_t color_u32 = convert_color(rep.dipole.color);
 
-                    uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
+                        uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
 
-                    immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
-                    immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
+                        immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
+                        immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
+                    }
                 }
             }
         }
@@ -6685,9 +6803,10 @@ static void draw_representations_transparent(ApplicationState* state) {
     if (num_representations == 0) return;
 
     for (size_t i = 0; i < num_representations; ++i) {
-        const Representation& rep = state->representation.reps[i];
+        Representation& rep = state->representation.reps[i];
         if (!rep.enabled) continue;
         if (rep.type == RepresentationType::ElectronicStructure) {
+            const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
             IsoDesc iso;
             electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
 
@@ -6706,6 +6825,8 @@ static void draw_representations_transparent(ApplicationState* state) {
                     .density_volume = rep.electronic_structure.density_vol.tex_id,
                     .color_volume = rep.electronic_structure.color_vol.tex_id,
                     .transfer_function = rep.electronic_structure.dvr.tf_tex,
+                    .field_volume = use_field ? rep.electronic_structure.field_vol.tex_id : 0,
+                    .field_colormap = use_field ? surface_field_colormap_texture(&rep.electronic_structure.field_vol, rep.electronic_structure.field_map.colormap) : 0,
                 },
                 .matrix = {
                     .model = rep.electronic_structure.density_vol.texture_to_world,
@@ -6726,12 +6847,17 @@ static void draw_representations_transparent(ApplicationState* state) {
                     .values = iso.values,
                     .colors = iso.colors,
                     .optical_densities = iso.optical_densities,
-                    .use_color_volume = rep.electronic_structure.use_atom_colors,
+                    .use_color_volume = rep.electronic_structure.coloring == SurfaceColoring::AtomColors,
+                    .use_field = use_field,
                 },
                 .dvr = {
                     .enabled = rep.electronic_structure.dvr.enabled,
                     .min_tf_value = -1.0f,
                     .max_tf_value = 1.0f,
+                },
+                .field = {
+                    .range_beg = rep.electronic_structure.field_map.range_beg,
+                    .range_end = rep.electronic_structure.field_map.range_end,
                 },
                 .shading = {
                     .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25,

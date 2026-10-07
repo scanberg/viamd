@@ -307,7 +307,7 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
         if (dipole_group_from_key(&group, sys, hit.key) && hit.local_idx < group.count) {
             char label[64];
             int label_len = dipole_entry_label(label, sizeof(label), group, hit.local_idx);
-            md_strb_fmt(sb, "%.*s\n", label_len, label);
+            md_strb_fmt(sb, "dipole: %.*s\n", label_len, label);
 
             vec3_t vec = {0, 0, 0};
             if (dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx)) {
@@ -1423,6 +1423,27 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             if (viamd::extract_int(component, arg)) rep->electronic_structure.transition_density_component = (ElectronicStructureTransitionDensityComponent)component;
         } else if (str_eq(ident, STR_LIT("ElectronicStructureIso"))) {
             viamd::extract_dbl(rep->electronic_structure.iso_value, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureColoring"))) {
+            int c;
+            if (viamd::extract_int(c, arg) && c >= 0 && c < (int)SurfaceColoring::Count) rep->electronic_structure.coloring = (SurfaceColoring)c;
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldKind"))) {
+            int k;
+            if (viamd::extract_int(k, arg) && k >= 0 && k < (int)SurfaceFieldKind::Count) rep->electronic_structure.field_kind = (SurfaceFieldKind)k;
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldColormap"))) {
+            viamd::extract_int(rep->electronic_structure.field_map.colormap, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldRange"))) {
+            float r[2];
+            if (viamd::extract_flt_vec(r, 2, arg)) { rep->electronic_structure.field_map.range_beg = r[0]; rep->electronic_structure.field_map.range_end = r[1]; }
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldSymmetric"))) {
+            viamd::extract_bool(rep->electronic_structure.field_map.symmetric, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldAutoRange"))) {
+            viamd::extract_bool(rep->electronic_structure.field_map.auto_range, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureTintPos"))) {
+            viamd::extract_vec4(rep->electronic_structure.tint_psi_pos, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureTintNeg"))) {
+            viamd::extract_vec4(rep->electronic_structure.tint_psi_neg, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureTintDen"))) {
+            viamd::extract_vec4(rep->electronic_structure.tint_den, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureColPos"))) {
             viamd::extract_vec4(rep->electronic_structure.col_psi_pos, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureColNeg"))) {
@@ -1524,6 +1545,18 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
         viamd::write_vec4(state, STR_LIT("ElectronicStructureColDen"),   rep.electronic_structure.col_den);
         viamd::write_vec4(state, STR_LIT("ElectronicStructureColAtt"),   rep.electronic_structure.col_att);
         viamd::write_vec4(state, STR_LIT("ElectronicStructureColDet"),   rep.electronic_structure.col_det);
+        viamd::write_int(state,  STR_LIT("ElectronicStructureColoring"), (int)rep.electronic_structure.coloring);
+        viamd::write_vec4(state, STR_LIT("ElectronicStructureTintPos"),  rep.electronic_structure.tint_psi_pos);
+        viamd::write_vec4(state, STR_LIT("ElectronicStructureTintNeg"),  rep.electronic_structure.tint_psi_neg);
+        viamd::write_vec4(state, STR_LIT("ElectronicStructureTintDen"),  rep.electronic_structure.tint_den);
+        if (rep.electronic_structure.coloring == SurfaceColoring::Field) {
+            const float range[2] = { rep.electronic_structure.field_map.range_beg, rep.electronic_structure.field_map.range_end };
+            viamd::write_int(state,      STR_LIT("ElectronicStructureFieldKind"),      (int)rep.electronic_structure.field_kind);
+            viamd::write_int(state,      STR_LIT("ElectronicStructureFieldColormap"),  rep.electronic_structure.field_map.colormap);
+            viamd::write_flt_vec(state,  STR_LIT("ElectronicStructureFieldRange"),     range, 2);
+            viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldSymmetric"), rep.electronic_structure.field_map.symmetric);
+            viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldAutoRange"), rep.electronic_structure.field_map.auto_range);
+        }
         viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIsoCount"), rep.electronic_structure.density_property.num_isos);
         for (int j = 0; j < rep.electronic_structure.density_property.num_isos; ++j) {
             char key[64];
@@ -2132,6 +2165,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
     if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
     if (rep.electronic_structure.dvr.tf_tex)         gl::free_texture(&rep.electronic_structure.dvr.tf_tex);
+    surface_field_free(&rep.electronic_structure.field_vol);
     md_array_swap_back_and_pop(state->representation.reps, idx);
     recompute_atom_visibility_mask(state);
 }
@@ -2316,12 +2350,18 @@ bool atom_property_value_range(float* out_min, float* out_max, const md_attribut
     if (result) {
         float value_min =  FLT_MAX;
         float value_max = -FLT_MAX;
+        size_t num_present = 0;
         for (size_t i = 0; i < num_values; ++i) {
+            if (atom_property_value_absent(values[i])) continue;
             value_min = MIN(value_min, values[i]);
             value_max = MAX(value_max, values[i]);
+            num_present += 1;
         }
-        if (out_min) *out_min = value_min;
-        if (out_max) *out_max = value_max;
+        result = num_present > 0;
+        if (result) {
+            if (out_min) *out_min = value_min;
+            if (out_max) *out_max = value_max;
+        }
     }
     md_temp_end(temp);
 
@@ -2482,8 +2522,10 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 // then the basis' atom indices are its own and not the system's. That map was the last thing an
 // evaluation still needed a loader for, so it is published beside the basis and read from there.
 //
-// Absent means the identity, which is what a standalone load is, so nothing publishes it in the
-// common case and every consumer needs the same one line to handle both.
+// Absent means the identity AND that the QM atoms are the whole system, which is what a plain
+// standalone load is, so nothing publishes it in the common case and every consumer needs the same
+// one line to handle both. A standalone load that appends an embedding's sites after the QM atoms
+// publishes the identity explicitly: the QM atoms are then only part of the system.
 //
 // It is VIAMD that publishes it and not the reader, because the file alone cannot decide: the same
 // h5 carries a local-to-global map whether it is opened on its own - where the map must NOT be
@@ -3085,6 +3127,7 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
         return false;
     }
     init_volume(&rep->electronic_structure.density_vol, grid, GL_R32F);
+    rep->electronic_structure.grid = grid;
     const uint32_t tex_id = rep->electronic_structure.density_vol.tex_id;
 
     switch (es.source) {
@@ -3202,6 +3245,61 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
     volume::compute_point_color_volume(rep->electronic_structure.color_vol.tex_id, dim, voxel_size.elem, world_to_model.elem,
                                        index_to_world.elem, point_xyzw, point_colors, num_points,
                                        rep->electronic_structure.gaussian_splatting_power);
+}
+
+// The values of a volume texture, read back. A volume the md_gpu path is still filling is waited
+// for first, and image stores of the GL compute path are made visible before the read.
+static bool volume_read_values(float* dst, ApplicationState* state, const Volume& vol) {
+    if (!vol.tex_id) return false;
+    gpu_volume_jobs_drain(state);
+    if (glMemoryBarrier) {
+        glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    }
+    GLint prev = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_3D, &prev);
+    glBindTexture(GL_TEXTURE_3D, vol.tex_id);
+    glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, dst);
+    glBindTexture(GL_TEXTURE_3D, (GLuint)prev);
+    return true;
+}
+
+// The field the isosurfaces are coloured by, on the grid of the density volume and around the
+// surfaces drawn from it. The VALUES depend on the field and the geometry (the frame, which the
+// volume hash holds) and are kept while only the isovalues change: a new isovalue evaluates the
+// voxels it adds to the band and nothing else.
+static void electronic_structure_field_update(ApplicationState* state, Representation* rep) {
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    if (!surface_field_available(es.field_kind, state->mold.sys)) {
+        surface_field_free(&es.field_vol);
+        return;
+    }
+
+    IsoDesc iso;
+    electronic_structure_iso_desc_init(&iso, es);
+
+    const uint64_t source_hash = md_hash64(&es.field_kind, sizeof(es.field_kind), es.vol_hash);
+    const uint64_t band_hash   = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
+    if (es.field_vol.tex_id && source_hash == es.field_vol.source_hash && band_hash == es.field_vol.band_hash) {
+        return;
+    }
+
+    const size_t num_voxels = md_grid_num_points(&es.grid);
+    if (num_voxels == 0) return;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    float* density = (float*)md_temp_alloc(temp, sizeof(float) * num_voxels);
+    if (!density || !volume_read_values(density, state, es.density_vol)) {
+        return;
+    }
+
+    const md_tick_t t0 = md_tick_now();
+    if (surface_field_update(&es.field_vol, es.field_kind, state->mold.sys, state->mold.state, es.grid, density, iso.values, iso.count, source_hash, band_hash)) {
+        surface_field_mapping_update_range(&es.field_map, es.field_vol);
+        const SurfaceFieldVolume& fv = es.field_vol;
+        MD_LOG_DEBUG("Surface field: %zu of %zu voxels evaluated, %.1f ms; on %zu surface samples min %g, 1%% %g, 99%% %g, max %g", fv.num_evaluated, num_voxels,
+                     md_tick_to_milliseconds(md_tick_now() - t0), fv.num_surface_samples, fv.surface_min, fv.surface_lo, fv.surface_hi, fv.surface_max);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3452,7 +3550,7 @@ void update_all_representations(ApplicationState* state) {
 bool representation_uses_atom_colors(const Representation& rep) {
     switch (rep.type) {
         case RepresentationType::ElectronicStructure:
-            return rep.electronic_structure.use_atom_colors;
+            return rep.electronic_structure.coloring == SurfaceColoring::AtomColors;
         case RepresentationType::DipoleMoment:
             return false;
         default:
@@ -3543,6 +3641,12 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     float range_ext = (rep->atomic_property.range_end - rep->atomic_property.range_beg);
                     range_ext = MAX(range_ext, 0.001f);
                     for (size_t i = 0; i < num_atoms; ++i) {
+                        // An atom without a value is not a point on the ramp: NAN would reach the
+                        // colormap lookup as an index, so it gets a neutral grey of its own instead
+                        if (atom_property_value_absent(values[i])) {
+                            colors[i] = IM_COL32(128, 128, 128, 255);
+                            continue;
+                        }
                         float t = (values[i] - rep->atomic_property.range_beg) / range_ext;
                         colors[i] = ImPlot::SampleColormapU32(ImClamp(t, 0.0f, 1.0f), rep->atomic_property.colormap);
                     }
@@ -3654,13 +3758,15 @@ void update_representation(ApplicationState* state, Representation* rep) {
                 electronic_structure_evaluate(state, rep);
             }
 
-            if (rep->electronic_structure.use_atom_colors) {
+            if (rep->electronic_structure.coloring == SurfaceColoring::AtomColors) {
                 uint64_t col_hash = md_hash64(&rep->electronic_structure.gaussian_splatting_power, sizeof(rep->electronic_structure.gaussian_splatting_power), (int)rep->color_mapping);
                 col_hash = md_hash64_combine(col_hash, rep->electronic_structure.vol_hash);
                 if (col_hash != rep->electronic_structure.col_hash) {
                     rep->electronic_structure.col_hash = col_hash;
                     electronic_structure_color_volume_update(state, rep, colors);
                 }
+            } else if (rep->electronic_structure.coloring == SurfaceColoring::Field) {
+                electronic_structure_field_update(state, rep);
             }
         }
         break;
@@ -3881,7 +3987,7 @@ done:
             // Lower case, like every other auto created representation - "protein", "water",
             // "electronic structure". dipole_label_pretty title cases for menus and tooltips,
             // which is a different job and stays as it is.
-            snprintf(dipole_rep->name, sizeof(dipole_rep->name), "ground state");
+            snprintf(dipole_rep->name, sizeof(dipole_rep->name), "dipole moment");
             dipole_rep->enabled = true;
             break;
         }

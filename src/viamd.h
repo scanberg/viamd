@@ -26,6 +26,7 @@
 #include <gfx/immediate_draw_utils.h>
 
 #include <task_system.h>
+#include <surface_field.h>
 #include <loader.h>
 #include <event.h>
 #include <plot_series.h>
@@ -130,6 +131,21 @@ enum class ElectronicStructureField {
     Amplitude,
     Density,
     Count
+};
+
+// What colours an isosurface: its own colour, the colours of the atoms blended over it, or a field
+// evaluated on it and shown through a colour map (surface_field.h)
+enum class SurfaceColoring {
+    Uniform,
+    AtomColors,
+    Field,
+    Count
+};
+
+inline const char* surface_coloring_str[(int)SurfaceColoring::Count] = {
+    "Uniform",
+    "Atom Colors",
+    "Field",
 };
 
 enum class ElectronicStructureSpin {
@@ -500,7 +516,16 @@ struct ElectronicStructureRepresentation {
     // Optical scaling factor which controls attenuation of light within iso surfaces.
     double iso_optical_density = 0.005;
 
-    bool use_atom_colors = false;
+    SurfaceColoring coloring = SurfaceColoring::Uniform;
+
+    // SurfaceColoring::Field: the field, how it maps to colour, and its values on the grid of
+    // density_vol - evaluated only around the isosurfaces this representation draws
+    SurfaceFieldKind    field_kind = SurfaceFieldKind::EmbeddingPotential;
+    SurfaceFieldMapping field_map  = {};
+    SurfaceFieldVolume  field_vol  = {};
+
+    // The grid density_vol was evaluated on (bohr), kept for what is evaluated on the same grid
+    md_grid_t grid = {};
 
     struct {
         bool enabled = false;
@@ -644,7 +669,7 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
         iso->count = 2;
         iso->values[0] =  iso_threshold;
         iso->values[1] = -iso_threshold;
-        if (rep.use_atom_colors) {
+        if (rep.coloring != SurfaceColoring::Uniform) {
             iso->colors[0] = rep.tint_psi_pos;
             iso->colors[1] = rep.tint_psi_neg;
         } else {
@@ -656,7 +681,7 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
     } else {
         iso->count = 1;
         iso->values[0] = iso_threshold;
-        if (rep.use_atom_colors) {
+        if (rep.coloring != SurfaceColoring::Uniform) {
             if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                 iso->colors[0] = rep.tint_att;
             } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
@@ -712,7 +737,11 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
     case ElectronicStructureSource::DensityProperty:
         rep->spin = ElectronicStructureSpin::None;
         rep->use_magnitude = false;
-        rep->use_atom_colors = false;
+        // The atoms' colours are not offered for a density property; a field is, as it is
+        // evaluated on the same grid
+        if (rep->coloring == SurfaceColoring::AtomColors) {
+            rep->coloring = SurfaceColoring::Uniform;
+        }
         if (rep->density_property.num_isos <= 0) {
             electronic_structure_density_property_init_defaults(rep);
         }
@@ -1831,8 +1860,19 @@ int atom_property_variant_count(const md_attribute_t* attr);
 
 // Span of the values, over EVERY variant so a colour ramp does not jump as the variant changes.
 // Derived rather than stored: it belongs to whoever is drawing the ramp, not to the table.
-// Scans the whole attribute, so call it when the selection changes, not per frame.
+// Scans the whole attribute, so call it when the selection changes, not per frame. Atoms without a
+// value play no part; false when there are none with one.
 bool atom_property_value_range(float* out_min, float* out_max, const md_attribute_t* attr);
+
+// Whether an atom has NO value in a per atom field. A producer marks that with NAN
+// (md_attributes_publish_atom_column): the QM atoms in an embedding's charges, the embedding's sites
+// in a column of the QM calculation, a blank in an mmCIF column. Tested on the bits, because under
+// fast math every float spelling of the test (v != v, isnan) may be folded away.
+static inline bool atom_property_value_absent(float v) {
+    uint32_t u;
+    MEMCPY(&u, &v, sizeof(u));
+    return (u & 0x7fffffffu) > 0x7f800000u;
+}
 
 // Builds the per dataset GPU data - the uploaded GTO basis and the atom buffer - from the system's
 // own basis/ attributes, and grows the device coefficient scratch to fit. Returns false when the

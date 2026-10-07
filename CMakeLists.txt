@@ -174,6 +174,7 @@ set(SRC_FILES
     src/app_settings.cpp
     src/color_utils.cpp
     src/display_units.cpp
+    src/surface_field.cpp
     src/event.cpp
     src/image.cpp
     src/imgui_widgets.cpp
@@ -190,6 +191,7 @@ set(SRC_FILES
     src/app_settings.h
     src/color_utils.h
     src/display_units.h
+    src/surface_field.h
     src/event.h
     src/image.h
     src/imgui_widgets.h

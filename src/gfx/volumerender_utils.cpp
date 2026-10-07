@@ -67,6 +67,8 @@ static struct {
         GLuint iso_col_vol = 0;
         GLuint dvr_and_iso = 0;
         GLuint dvr_and_iso_col_vol = 0;
+        GLuint iso_field = 0;
+        GLuint dvr_and_iso_field = 0;
         GLuint splat_color = 0;
     } program;
 
@@ -115,6 +117,8 @@ void initialize() {
     GLuint f_shader_iso_only_col_vol    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
     GLuint f_shader_dvr_and_iso         = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO"));
     GLuint f_shader_dvr_and_iso_col_vol = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
+    GLuint f_shader_iso_only_field      = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO\n#define USE_FIELD"));
+    GLuint f_shader_dvr_and_iso_field   = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR\n#define INCLUDE_ISO\n#define USE_FIELD"));
     
     defer {
         glDeleteShader(v_shader_vol);
@@ -124,9 +128,11 @@ void initialize() {
         glDeleteShader(f_shader_iso_only_col_vol);
         glDeleteShader(f_shader_dvr_and_iso);
         glDeleteShader(f_shader_dvr_and_iso_col_vol);
+        glDeleteShader(f_shader_iso_only_field);
+        glDeleteShader(f_shader_dvr_and_iso_field);
     };
     
-    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_iso_only_col_vol == 0 || f_shader_dvr_and_iso == 0 || f_shader_dvr_and_iso_col_vol == 0) {
+    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0|| f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_iso_only_col_vol == 0 || f_shader_dvr_and_iso == 0 || f_shader_dvr_and_iso_col_vol == 0 || f_shader_iso_only_field == 0 || f_shader_dvr_and_iso_field == 0) {
         MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
@@ -149,6 +155,8 @@ void initialize() {
     if (!gl.program.iso_col_vol) gl.program.iso_col_vol = glCreateProgram();
     if (!gl.program.dvr_and_iso) gl.program.dvr_and_iso = glCreateProgram();
     if (!gl.program.dvr_and_iso_col_vol) gl.program.dvr_and_iso_col_vol = glCreateProgram();
+    if (!gl.program.iso_field) gl.program.iso_field = glCreateProgram();
+    if (!gl.program.dvr_and_iso_field) gl.program.dvr_and_iso_field = glCreateProgram();
 
     {
         const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit};
@@ -177,6 +185,14 @@ void initialize() {
     {
         const GLuint shaders[] = {v_shader_vol, f_shader_dvr_and_iso_col_vol};
         gl::attach_link_detach(gl.program.dvr_and_iso_col_vol, shaders, (int)ARRAY_SIZE(shaders));
+    }
+    {
+        const GLuint shaders[] = {v_shader_vol, f_shader_iso_only_field};
+        gl::attach_link_detach(gl.program.iso_field, shaders, (int)ARRAY_SIZE(shaders));
+    }
+    {
+        const GLuint shaders[] = {v_shader_vol, f_shader_dvr_and_iso_field};
+        gl::attach_link_detach(gl.program.dvr_and_iso_field, shaders, (int)ARRAY_SIZE(shaders));
     }
 
 
@@ -612,9 +628,19 @@ void render_volume(const RenderDesc& desc) {
     glActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
 
-    if (desc.iso.use_color_volume) {
+    // A field takes the place of the colour volume: the two are alternatives, never both
+    const bool use_field        = desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
+    const bool use_color_volume = !use_field && desc.iso.use_color_volume;
+
+    if (use_color_volume) {
         glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_3D, desc.texture.color_volume);
+    }
+    if (use_field) {
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_3D, desc.texture.field_volume);
+        glActiveTexture(GL_TEXTURE6);
+        glBindTexture(GL_TEXTURE_2D, desc.texture.field_colormap);
     }
 
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tex_result, 0);
@@ -649,12 +675,14 @@ void render_volume(const RenderDesc& desc) {
         GLuint vol_prog = 0;
         if (desc.dvr.enabled) {
             if (desc.iso.enabled) {
-                vol_prog = desc.iso.use_color_volume ? gl.program.dvr_and_iso_col_vol : gl.program.dvr_and_iso;
+                vol_prog = use_field ? gl.program.dvr_and_iso_field : use_color_volume ? gl.program.dvr_and_iso_col_vol : gl.program.dvr_and_iso;
             } else {
                 vol_prog = gl.program.dvr_only;
             }
         } else {
-            if (desc.iso.use_color_volume) {
+            if (use_field) {
+                vol_prog = gl.program.iso_field;
+            } else if (use_color_volume) {
                 vol_prog = gl.program.iso_col_vol;
             } else {
                 vol_prog = desc.iso.enabled ? gl.program.iso_only : 0;
@@ -684,6 +712,12 @@ void render_volume(const RenderDesc& desc) {
         glUniform1i(uniform_loc_tex_density_volume, 2);
         glUniform1i(uniform_loc_tex_tf, 3);
         glUniform1i(uniform_loc_tex_color_volume, 4);
+        if (use_field) {
+            const float ext = desc.field.range_end - desc.field.range_beg;
+            glUniform1i(glGetUniformLocation(vol_prog, "u_tex_field"), 5);
+            glUniform1i(glGetUniformLocation(vol_prog, "u_tex_field_colormap"), 6);
+            glUniform2f(glGetUniformLocation(vol_prog, "u_field_range"), desc.field.range_beg, ext != 0.0f ? 1.0f / ext : 0.0f);
+        }
         glUniform1fv(uniform_loc_iso_values, (GLsizei)iso_count, (const float*)iso_values);
         glUniform4fv(uniform_loc_iso_colors, (GLsizei)iso_count, (const float*)iso_colors);
         glUniform1fv(uniform_loc_iso_optical_densities, (GLsizei)iso_count, (const float*)iso_optical_densities);
