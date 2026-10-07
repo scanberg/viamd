@@ -1831,8 +1831,19 @@ int atom_property_variant_count(const md_attribute_t* attr);
 
 // Span of the values, over EVERY variant so a colour ramp does not jump as the variant changes.
 // Derived rather than stored: it belongs to whoever is drawing the ramp, not to the table.
-// Scans the whole attribute, so call it when the selection changes, not per frame.
+// Scans the whole attribute, so call it when the selection changes, not per frame. Atoms without a
+// value play no part; false when there are none with one.
 bool atom_property_value_range(float* out_min, float* out_max, const md_attribute_t* attr);
+
+// Whether an atom has NO value in a per atom field. A producer marks that with NAN
+// (md_attributes_publish_atom_column): the QM atoms in an embedding's charges, the embedding's sites
+// in a column of the QM calculation, a blank in an mmCIF column. Tested on the bits, because under
+// fast math every float spelling of the test (v != v, isnan) may be folded away.
+static inline bool atom_property_value_absent(float v) {
+    uint32_t u;
+    MEMCPY(&u, &v, sizeof(u));
+    return (u & 0x7fffffffu) > 0x7f800000u;
+}
 
 // Builds the per dataset GPU data - the uploaded GTO basis and the atom buffer - from the system's
 // own basis/ attributes, and grows the device coefficient scratch to fit. Returns false when the

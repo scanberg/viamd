@@ -6600,40 +6600,42 @@ static void draw_representations_opaque(ApplicationState* state) {
                     md_array_push(draw_ops, op, frame_alloc);
                 }
             } else if (rep.type == RepresentationType::DipoleMoment) {
-                // immediate draw of dipole moment as arrow
-                vec3_t dipole_vec = {0, 0, 0};
-                vec3_t dipole_org = {0, 0, 0};
-                if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
-                    // The representation's own (key, index) IS the picking address: the group's
-                    // range was reserved under that key this frame, and the shader adds the base to
-                    // the per primitive index, so the element index is what goes on the primitive.
-                    // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
-                    // which the shader passes through untouched - visible, just not pickable.
-                    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-                    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
+                if (rep.enabled) {
+                    // immediate draw of dipole moment as arrow
+                    vec3_t dipole_vec = { 0, 0, 0 };
+                    vec3_t dipole_org = { 0, 0, 0 };
+                    if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
+                        // The representation's own (key, index) IS the picking address: the group's
+                        // range was reserved under that key this frame, and the shader adds the base to
+                        // the per primitive index, so the element index is what goes on the primitive.
+                        // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
+                        // which the shader passes through untouched - visible, just not pickable.
+                        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+                        const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
 
-                    immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
-                    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
+                        immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
+                        immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
-                    const vec3_t org = dipole_org;
-                    const vec3_t vec = dipole_vec * (float)rep.dipole.scale;
+                        const vec3_t org = dipole_org;
+                        const vec3_t vec = dipole_vec * (float)rep.dipole.scale;
 
-                    // cylinder body
-                    const float body_scale = 0.8f;
+                        // cylinder body
+                        const float body_scale = 0.8f;
 
-                    const float body_radius = rep.dipole.radius;
-                    const float head_radius = body_radius * 1.5f;
+                        const float body_radius = rep.dipole.radius;
+                        const float head_radius = body_radius * 1.5f;
 
-                    vec3_t cyl_beg = rep.dipole.offset + org;
-                    vec3_t cyl_end = rep.dipole.offset + org + vec * body_scale;
-                    vec3_t arrow_end = rep.dipole.offset + org + vec;
+                        vec3_t cyl_beg = rep.dipole.offset + org;
+                        vec3_t cyl_end = rep.dipole.offset + org + vec * body_scale;
+                        vec3_t arrow_end = rep.dipole.offset + org + vec;
 
-                    uint32_t color_u32 = convert_color(rep.dipole.color);
+                        uint32_t color_u32 = convert_color(rep.dipole.color);
 
-                    uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
+                        uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
 
-                    immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
-                    immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
+                        immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
+                        immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
+                    }
                 }
             }
         }

@@ -307,7 +307,7 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
         if (dipole_group_from_key(&group, sys, hit.key) && hit.local_idx < group.count) {
             char label[64];
             int label_len = dipole_entry_label(label, sizeof(label), group, hit.local_idx);
-            md_strb_fmt(sb, "%.*s\n", label_len, label);
+            md_strb_fmt(sb, "dipole: %.*s\n", label_len, label);
 
             vec3_t vec = {0, 0, 0};
             if (dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx)) {
@@ -2316,12 +2316,18 @@ bool atom_property_value_range(float* out_min, float* out_max, const md_attribut
     if (result) {
         float value_min =  FLT_MAX;
         float value_max = -FLT_MAX;
+        size_t num_present = 0;
         for (size_t i = 0; i < num_values; ++i) {
+            if (atom_property_value_absent(values[i])) continue;
             value_min = MIN(value_min, values[i]);
             value_max = MAX(value_max, values[i]);
+            num_present += 1;
         }
-        if (out_min) *out_min = value_min;
-        if (out_max) *out_max = value_max;
+        result = num_present > 0;
+        if (result) {
+            if (out_min) *out_min = value_min;
+            if (out_max) *out_max = value_max;
+        }
     }
     md_temp_end(temp);
 
@@ -2482,8 +2488,10 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 // then the basis' atom indices are its own and not the system's. That map was the last thing an
 // evaluation still needed a loader for, so it is published beside the basis and read from there.
 //
-// Absent means the identity, which is what a standalone load is, so nothing publishes it in the
-// common case and every consumer needs the same one line to handle both.
+// Absent means the identity AND that the QM atoms are the whole system, which is what a plain
+// standalone load is, so nothing publishes it in the common case and every consumer needs the same
+// one line to handle both. A standalone load that appends an embedding's sites after the QM atoms
+// publishes the identity explicitly: the QM atoms are then only part of the system.
 //
 // It is VIAMD that publishes it and not the reader, because the file alone cannot decide: the same
 // h5 carries a local-to-global map whether it is opened on its own - where the map must NOT be
@@ -3543,6 +3551,12 @@ void update_representation(ApplicationState* state, Representation* rep) {
                     float range_ext = (rep->atomic_property.range_end - rep->atomic_property.range_beg);
                     range_ext = MAX(range_ext, 0.001f);
                     for (size_t i = 0; i < num_atoms; ++i) {
+                        // An atom without a value is not a point on the ramp: NAN would reach the
+                        // colormap lookup as an index, so it gets a neutral grey of its own instead
+                        if (atom_property_value_absent(values[i])) {
+                            colors[i] = IM_COL32(128, 128, 128, 255);
+                            continue;
+                        }
                         float t = (values[i] - rep->atomic_property.range_beg) / range_ext;
                         colors[i] = ImPlot::SampleColormapU32(ImClamp(t, 0.0f, 1.0f), rep->atomic_property.colormap);
                     }
@@ -3881,7 +3895,7 @@ done:
             // Lower case, like every other auto created representation - "protein", "water",
             // "electronic structure". dipole_label_pretty title cases for menus and tooltips,
             // which is a different job and stays as it is.
-            snprintf(dipole_rep->name, sizeof(dipole_rep->name), "ground state");
+            snprintf(dipole_rep->name, sizeof(dipole_rep->name), "dipole moment");
             dipole_rep->enabled = true;
             break;
         }
