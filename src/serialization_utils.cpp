@@ -1,7 +1,7 @@
 #include <serialization_utils.h>
 #include <core/md_allocator.h>
 #include <core/md_parse.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_base64.h>
 #include <core/md_log.h>
 
@@ -130,13 +130,19 @@ void write_str(serialization_state_t& state, str_t ident, str_t str) {
 	}
 }
 
-void write_bitfield(serialization_state_t& state, str_t ident, const md_bitfield_t* bf) {
+void write_bitset(serialization_state_t& state, str_t ident, const md_bitset_t* bs) {
     md_temp_scope_t temp = md_temp_begin();
     defer { md_temp_end(temp); };
 
-	void*  serialized_data = md_temp_alloc(temp, md_bitfield_serialize_size_in_bytes(bf));
-	size_t serialized_size = md_bitfield_serialize(serialized_data, bf);
-	if (serialized_size) {
+	if (md_bitset_empty(*bs)) return;
+	void*  serialized_data = md_temp_alloc(temp, md_bitset_serialize_size_in_bytes(*bs));
+	size_t serialized_size = md_bitset_serialize(serialized_data, *bs);
+	if (!serialized_size) {
+		// Not silently: the workspace would load without it
+		MD_LOG_ERROR("Failed to write the set '" STR_FMT "' to the workspace", STR_ARG(ident));
+		return;
+	}
+	{
 		char*  base64_data = (char*)md_temp_alloc(temp, md_base64_encode_size_in_bytes(serialized_size));
 		size_t base64_size = md_base64_encode(base64_data, serialized_data, serialized_size);
 		if (base64_size) {
@@ -251,8 +257,9 @@ bool extract_to_char_buf(char* buf, size_t cap, str_t arg) {
 	return false;
 }
 
-bool extract_bitfield(md_bitfield_t* bf, str_t arg) {
-	md_temp_scope_t temp = md_temp_begin();
+bool extract_bitset(md_bitset_t* bs, str_t arg, md_allocator_i* alloc) {
+	// Not alloc's arena: the result must outlive this scope
+	md_temp_scope_t temp = md_temp_begin_avoid(alloc);
 	defer { md_temp_end(temp); };
 
 	// Bitfield starts with ###
@@ -275,9 +282,9 @@ bool extract_bitfield(md_bitfield_t* bf, str_t arg) {
 	void* raw_ptr = md_temp_alloc(temp, raw_cap);
 
 	const size_t raw_len = md_base64_decode(raw_ptr, str_ptr(arg), str_len(arg));
-	if (!raw_len || !md_bitfield_deserialize(bf, raw_ptr, raw_len)) {
-		MD_LOG_ERROR("Failed to deserialize bitfield");
-		md_bitfield_clear(bf);
+	if (!raw_len || !md_bitset_deserialize(bs, raw_ptr, raw_len, alloc)) {
+		MD_LOG_ERROR("Failed to deserialize bitset");
+		*bs = md_bitset_empty_set();
 		return false;
 	}
 

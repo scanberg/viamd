@@ -13,7 +13,7 @@
 #include <TextEditor.h>
 
 #include <core/md_str.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <md_script.h>
 
 #include <string>
@@ -66,7 +66,7 @@ struct Marker {
     int prio;                               // where markers overlap, the one with the highest priority is hovered
     TextEditor::DocPos beg, end;            // [beg, end)
     str_t text;                             // tooltip, zero terminated
-    const md_bitfield_t* atoms;             // errors and warnings: the atoms the message is about (a copy), may be NULL
+    const md_bitset_t* atoms;             // errors and warnings: the atoms the message is about (a copy), may be NULL
     md_script_vis_ref_t vis_ref;            // visualization tokens: resolves in the script IR the markers came from
 };
 
@@ -90,7 +90,7 @@ void markers_set_source(Markers* markers, str_t source);
 
 // Adds a marker for the byte range [beg, end) of the source. text and atoms are copied.
 void markers_add(Markers* markers, MarkerType type, int prio, md_script_range_marker_t range, str_t text,
-                 const md_bitfield_t* atoms = nullptr, md_script_vis_ref_t vis_ref = {});
+                 const md_bitset_t* atoms = nullptr, md_script_vis_ref_t vis_ref = {});
 
 // Call after TextEditor::Render(). Finds the marker under the mouse and updates the squiggles.
 // editor_hovered: whether the editor itself is hovered (ImGui::IsItemHovered() right after Render()).

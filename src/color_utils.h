@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include <core/md_vec_math.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <md_system.h>
 
 #include <math.h>
@@ -326,8 +326,8 @@ static inline uint32_t tint_color(uint32_t base_rgba_u32, uint32_t tint_rgba_u32
     return convert_color(tint_color(convert_color(base_rgba_u32), convert_color(tint_rgba_u32), tint_strength, saturation));
 }
 
-void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask);
-void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale);
+void filter_colors(uint32_t* colors, size_t num_colors, md_bitset_t mask);
+void scale_saturation(uint32_t* colors, md_bitset_t mask, float scale);
 void scale_saturation(uint32_t* colors, size_t count, float scale);
 
 void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength, float saturation = 1.0f);

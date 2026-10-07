@@ -17,7 +17,7 @@
 #include <core/md_log.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
 
@@ -220,13 +220,14 @@ struct Contacts : viamd::EventHandler {
             for (float r : radius) max_radius = std::max(max_radius, r);
 
             std::vector<uint32_t> label(N);
-            md_bitfield_t set = md_bitfield_create(md_get_heap_allocator());
+            md_bitmask_t set_m = md_bitmask_create(0, (uint32_t)N, md_get_heap_allocator());
             // Particles in no group get a label of their own and are left out of the set
             for (size_t k = 0; k < N; ++k) label[k] = (uint32_t)(res.ranges.size() + k);
             for (size_t g = 0; g < res.ranges.size(); ++g) {
                 for (uint32_t k = res.ranges[g].beg; k < res.ranges[g].end; ++k) label[k] = (uint32_t)g;
-                md_bitfield_set_range(&set, res.ranges[g].beg, res.ranges[g].end);
+                md_bitmask_set_range(&set_m, res.ranges[g].beg, res.ranges[g].end);
             }
+            const md_bitset_t set = md_bitmask_view(&set_m);
 
             md_contact_pairs_desc_t desc = {};
             desc.set_a = &set;
@@ -250,7 +251,7 @@ struct Contacts : viamd::EventHandler {
                 md_contact_pairs_free(&pairs);
             }
             md_arena_allocator_destroy(arena);
-            md_bitfield_free(&set);
+            md_bitmask_free(&set_m);
             res.seconds = md_tick_to_seconds(md_tick_now() - t0);
             pending_ready = true;
             busy = false;
@@ -386,8 +387,7 @@ struct Contacts : viamd::EventHandler {
         }
 
         if (hovered_group >= 0 && hovered_group < (int)res.ranges.size()) {
-            md_bitfield_clear(&app_state->selection.highlight_mask);
-            md_bitfield_set_range(&app_state->selection.highlight_mask, res.ranges[hovered_group].beg, res.ranges[hovered_group].end);
+            md_bitmask_assign(&app_state->selection.highlight_mask, md_bitset_range((uint32_t)(res.ranges[hovered_group].beg), (uint32_t)(res.ranges[hovered_group].end)));
         }
     }
 };

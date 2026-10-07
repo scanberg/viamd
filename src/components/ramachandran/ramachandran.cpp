@@ -16,7 +16,7 @@
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <md_system.h>
 #include <md_util.h>
 
@@ -878,8 +878,8 @@ struct Ramachandran : viamd::EventHandler {
             const auto& sys = state.mold.sys;
             // The angles of the displayed state, which it carries in its attributes (NULL when it has none)
             const md_backbone_angles_t* curr_angles = md_util_state_backbone_angles(&state.mold.state, &sys);
-            md_bitfield_t* selection_mask = &state.selection.selection_mask;
-            md_bitfield_t* highlight_mask = &state.selection.highlight_mask;
+            md_bitmask_t* selection_mask = &state.selection.selection_mask;
+            md_bitmask_t* highlight_mask = &state.selection.highlight_mask;
 
             const int plot_offset = MAX(0, layout_mode - 1);
             const int plot_cols = (layout_mode == 0) ? 2 : 1;
@@ -960,7 +960,7 @@ struct Ramachandran : viamd::EventHandler {
                             selection_rect.X.Max = mouse_coord.x;
                             selection_rect.Y.Max = mouse_coord.y;
                             if (selection_rect.Size().x != 0 && selection_rect.Size().y != 0) {
-                                md_bitfield_copy(highlight_mask, selection_mask);
+                                md_bitmask_assign(highlight_mask, md_bitmask_view(selection_mask));
                                 ImPlot::DragRect(0, &selection_rect.X.Min, &selection_rect.Y.Min, &selection_rect.X.Max, &selection_rect.Y.Max, ImVec4(1,1,1,0.5f), ImPlotDragToolFlags_NoInputs);
                             }
 
@@ -978,7 +978,7 @@ struct Ramachandran : viamd::EventHandler {
                         int64_t mouse_hover_idx = -1;
 
                         if (hovered) {
-                            md_bitfield_clear(highlight_mask);
+                            md_bitmask_clear(highlight_mask);
                         }
 
                         if (show_curr && curr_angles) {
@@ -1050,11 +1050,11 @@ struct Ramachandran : viamd::EventHandler {
                                 if (bb_angles.phi == 0 && bb_angles.psi == 0) continue;
 
                                 int64_t atom_idx = sys.protein_backbone.segment.atoms[idx].ca;
-                                if (md_bitfield_test_bit(highlight_mask, atom_idx)) {
+                                if (md_bitmask_test_bit(highlight_mask, (uint32_t)atom_idx)) {
                                     md_array_push(highlight_indices, idx, state.allocator.frame);
                                 }
 
-                                if (md_bitfield_test_bit(selection_mask, atom_idx)) {
+                                if (md_bitmask_test_bit(selection_mask, (uint32_t)atom_idx)) {
                                     md_array_push(selection_indices, idx, state.allocator.frame);
                                 }
                             }
@@ -1107,16 +1107,16 @@ struct Ramachandran : viamd::EventHandler {
                                 auto size = selection_rect.Size();
                                 if (size.x == 0 && size.y == 0) {
                                     if (mouse_hover_idx != -1) {
-                                        modify_field(selection_mask, highlight_mask, op);
+                                        modify_field(selection_mask, md_bitmask_view(highlight_mask), op);
                                     } else {
                                         if (ImGui::IsMouseReleased(1)) {
-                                            md_bitfield_clear(selection_mask);
+                                            md_bitmask_clear(selection_mask);
                                         }
                                     }
                                 }
                                 else {
                                     // Commit whatever is in the highlight mask
-                                    modify_field(selection_mask, highlight_mask, op);
+                                    modify_field(selection_mask, md_bitmask_view(highlight_mask), op);
                                 }
                             } 
                         }

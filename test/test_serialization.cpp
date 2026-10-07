@@ -4,7 +4,7 @@
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_str_builder.h>
 
 // The workspace file format: sections in brackets, then ident=value lines under them. These tests
@@ -157,17 +157,16 @@ UTEST(viamd_serialization, multiline_string_round_trip) {
     EXPECT_EQ(7, i);
 }
 
-UTEST(viamd_serialization, bitfield_round_trip) {
+UTEST(viamd_serialization, bitset_round_trip) {
     md_allocator_i* alloc = md_get_heap_allocator();
     writer_t w(alloc);
 
-    md_bitfield_t src = md_bitfield_create(alloc);
-    md_bitfield_t dst = md_bitfield_create(alloc);
-    const int bits[] = { 0, 1, 5, 63, 64, 65, 1000, 4095 };
-    for (size_t i = 0; i < ARRAY_SIZE(bits); ++i) md_bitfield_set_bit(&src, bits[i]);
+    const uint32_t bits[] = { 0, 1, 5, 63, 64, 65, 1000, 4095 };
+    md_bitset_t src = md_bitset_from_indices(bits, ARRAY_SIZE(bits), alloc);
+    md_bitset_t dst = {};
 
     viamd::write_section_header(w.state, STR_LIT("Selection"));
-    viamd::write_bitfield(w.state, STR_LIT("Mask"), &src);
+    viamd::write_bitset(w.state, STR_LIT("Mask"), &src);
 
     viamd::deserialization_state_t deser = w.reader();
     str_t section;
@@ -176,15 +175,76 @@ UTEST(viamd_serialization, bitfield_round_trip) {
     entry_t e[4];
     ASSERT_EQ(1u, (uint32_t)read_entries(e, 4, deser));
     EXPECT_STREQ("Mask", e[0].ident);
-    ASSERT_TRUE(viamd::extract_bitfield(&dst, str_from_cstr(e[0].arg)));
+    ASSERT_TRUE(viamd::extract_bitset(&dst, str_from_cstr(e[0].arg), alloc));
 
-    EXPECT_EQ(md_bitfield_popcount(&src), md_bitfield_popcount(&dst));
+    EXPECT_EQ(md_bitset_count(src), md_bitset_count(dst));
+    EXPECT_TRUE(md_bitset_equal(src, dst));
     for (size_t i = 0; i < ARRAY_SIZE(bits); ++i) {
-        EXPECT_TRUE(md_bitfield_test_bit(&dst, bits[i]));
+        EXPECT_TRUE(md_bitset_test(dst, bits[i]));
     }
 
-    md_bitfield_free(&src);
-    md_bitfield_free(&dst);
+    md_bitset_free(&src, alloc);
+    md_bitset_free(&dst, alloc);
+}
+
+// A selection of atoms beyond 2^24, which the format of md_bitfield cannot hold, is written all the same (in the
+// second format) and reads back: it used to be dropped from the workspace without a word
+UTEST(viamd_serialization, bitset_round_trip_large_indices) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    writer_t w(alloc);
+
+    const uint32_t bits[] = { 5, 20000000, 20000001, 99999999 };
+    md_bitset_t src = md_bitset_from_indices(bits, ARRAY_SIZE(bits), alloc);
+    md_bitset_t dst = {};
+
+    viamd::write_section_header(w.state, STR_LIT("Selection"));
+    viamd::write_bitset(w.state, STR_LIT("Mask"), &src);
+
+    viamd::deserialization_state_t deser = w.reader();
+    str_t section;
+    ASSERT_TRUE(viamd::next_section_header(section, deser));
+
+    entry_t e[4];
+    ASSERT_EQ(1u, (uint32_t)read_entries(e, 4, deser));
+    ASSERT_TRUE(viamd::extract_bitset(&dst, str_from_cstr(e[0].arg), alloc));
+    EXPECT_TRUE(md_bitset_equal(src, dst));
+
+    md_bitset_free(&src, alloc);
+    md_bitset_free(&dst, alloc);
+}
+
+// Masks in workspaces saved before md_bitset replaced md_bitfield. The strings were written by
+// md_bitfield_serialize + base64; they must read back, and the same sets must write the same bytes.
+UTEST(viamd_serialization, bitset_reads_masks_written_by_md_bitfield) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    struct { const char* b64; uint32_t ranges[4][2]; size_t num_ranges; uint64_t count; } golden[] = {
+        { "KQMAAAABAAcAIwBgAACAQA/gaAAAAeA0cQQAAAAAgA==", {{0, 2}, {5, 6}, {63, 66}, {1000, 1001}}, 4, 8 },  // + 4095, checked below
+        { "JAEAAAD/IAAAAOAtAAQAAAAAAA==", {{0, 32}}, 1, 32 },
+        { "KQQAAQACgAMACQDgAgAA/+BlAOACeeAjAA4BAAAAAAAAAAAAAAAAAAA=", {{600, 2000}, {5000, 5001}}, 2, 1401 },
+    };
+    for (size_t k = 0; k < ARRAY_SIZE(golden); ++k) {
+        char arg[256];
+        snprintf(arg, sizeof(arg), "###%s###", golden[k].b64);
+        md_bitset_t s = {};
+        ASSERT_TRUE(viamd::extract_bitset(&s, str_from_cstr(arg), alloc));
+        EXPECT_EQ(golden[k].count, md_bitset_count(s));
+        for (size_t r = 0; r < golden[k].num_ranges; ++r) {
+            EXPECT_TRUE(md_bitset_test_all_range(s, golden[k].ranges[r][0], golden[k].ranges[r][1]));
+        }
+        if (k == 0) EXPECT_TRUE(md_bitset_test(s, 4095));
+
+        // Written back: the identical string
+        writer_t w(alloc);
+        viamd::write_section_header(w.state, STR_LIT("S"));
+        viamd::write_bitset(w.state, STR_LIT("Mask"), &s);
+        viamd::deserialization_state_t deser = w.reader();
+        str_t section;
+        ASSERT_TRUE(viamd::next_section_header(section, deser));
+        entry_t e[2];
+        ASSERT_EQ(1u, (uint32_t)read_entries(e, 2, deser));
+        EXPECT_STREQ(arg, e[0].arg);
+        md_bitset_free(&s, alloc);
+    }
 }
 
 UTEST(viamd_serialization, entry_after_a_bitfield_survives) {
@@ -195,14 +255,13 @@ UTEST(viamd_serialization, entry_after_a_bitfield_survives) {
     md_allocator_i* alloc = md_get_heap_allocator();
     writer_t w(alloc);
 
-    md_bitfield_t mask = md_bitfield_create(alloc);
-    md_bitfield_set_range(&mask, 0, 32);
+    md_bitset_t mask = md_bitset_range(0, 32);
 
     viamd::write_section_header(w.state, STR_LIT("Groups"));
-    viamd::write_str     (w.state, STR_LIT("GroupLabel"), STR_LIT("first"));
-    viamd::write_bitfield(w.state, STR_LIT("GroupAtoms"), &mask);
-    viamd::write_str     (w.state, STR_LIT("GroupLabel"), STR_LIT("second"));
-    viamd::write_bitfield(w.state, STR_LIT("GroupAtoms"), &mask);
+    viamd::write_str   (w.state, STR_LIT("GroupLabel"), STR_LIT("first"));
+    viamd::write_bitset(w.state, STR_LIT("GroupAtoms"), &mask);
+    viamd::write_str   (w.state, STR_LIT("GroupLabel"), STR_LIT("second"));
+    viamd::write_bitset(w.state, STR_LIT("GroupAtoms"), &mask);
 
     viamd::deserialization_state_t deser = w.reader();
     str_t section;
@@ -217,8 +276,6 @@ UTEST(viamd_serialization, entry_after_a_bitfield_survives) {
     EXPECT_STREQ("GroupLabel", e[2].ident);
     EXPECT_STREQ("second",     e[2].arg);
     EXPECT_STREQ("GroupAtoms", e[3].ident);
-
-    md_bitfield_free(&mask);
 }
 
 UTEST(viamd_serialization, malformed_values_are_rejected) {
@@ -237,7 +294,7 @@ UTEST(viamd_serialization, malformed_values_are_rejected) {
     EXPECT_NEAR(1.5, d, 1.0e-9);
 
     md_allocator_i* alloc = md_get_heap_allocator();
-    md_bitfield_t bf = md_bitfield_create(alloc);
-    EXPECT_FALSE(viamd::extract_bitfield(&bf, STR_LIT("no markers here")));
-    md_bitfield_free(&bf);
+    md_bitset_t bs = {};
+    EXPECT_FALSE(viamd::extract_bitset(&bs, STR_LIT("no markers here"), alloc));
+    EXPECT_TRUE(md_bitset_empty(bs));
 }

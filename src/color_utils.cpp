@@ -231,23 +231,22 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
     }
 }
 
-void filter_colors(uint32_t* colors, size_t num_colors, const md_bitfield_t* mask) {
+void filter_colors(uint32_t* colors, size_t num_colors, md_bitset_t mask) {
     for (size_t i = 0; i < num_colors; ++i) {
         colors[i] &= 0x00FFFFFFU;
     }
 
-    md_bitfield_iter_t it = md_bitfield_iter_create(mask);
-    while (md_bitfield_iter_next(&it)) {
-        uint64_t idx = md_bitfield_iter_idx(&it);
+    md_bitset_iter_t it = md_bitset_iter(mask);
+    while (md_bitset_iter_next(&it)) {
+        uint64_t idx = it.idx;
         colors[idx] = 0xFF000000U | (colors[idx] & 0x00FFFFFFU);
     }
 }
 
-void scale_saturation(uint32_t* colors, const md_bitfield_t* mask, float scale) {
-    int64_t beg_bit = mask->beg_bit;
-    int64_t end_bit = mask->end_bit;
-    while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-        int64_t i = beg_bit - 1;
+void scale_saturation(uint32_t* colors, md_bitset_t mask, float scale) {
+    md_bitset_iter_t it = md_bitset_iter(mask);
+    while (md_bitset_iter_next(&it)) {
+        const uint32_t i = it.idx;
         colors[i] = scale_saturation(colors[i], scale);
     }
 }

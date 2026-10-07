@@ -4,7 +4,7 @@
 #include <core/md_allocator.h>
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 
@@ -59,8 +59,8 @@ struct Shapespace : viamd::EventHandler {
 
     md_array(vec3_t) weights = 0;
     md_array(vec2_t) coords  = 0;
-    md_array(md_bitfield_t) bitfields = 0;
-    md_bitfield_t joined_bitfield = {};
+    md_array(md_bitset_t) bitfields = 0;
+    md_bitset_t joined_bitfield = {};
 
     md_allocator_i* arena = 0;
 
@@ -85,7 +85,7 @@ struct Shapespace : viamd::EventHandler {
             case viamd::EventType_ViamdInitialize: {
                 app_state = (ApplicationState*)e.payload;
                 arena = md_arena_allocator_create(app_state->allocator.persistent, MEGABYTES(1));
-                md_bitfield_init(&joined_bitfield, arena);
+                joined_bitfield = md_bitset_empty_set();
                 workspace_register_window("ShapeSpace", &show_window);
                 break;
             }
@@ -185,7 +185,7 @@ struct Shapespace : viamd::EventHandler {
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered()) {
                 if (input_valid) {
-                    md_bitfield_copy(&app_state->selection.highlight_mask, &joined_bitfield);
+                    md_bitmask_assign(&app_state->selection.highlight_mask, joined_bitfield);
                 } else if (error[0] != '\0') {
                     ImGui::SetTooltip("%s", error);
                 }
@@ -300,7 +300,7 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot::PopStyleVar(2);
 
                 if (ImPlot::IsPlotHovered()) {
-                    md_bitfield_clear(&app_state->selection.highlight_mask);
+                    md_bitmask_clear(&app_state->selection.highlight_mask);
                 }
 
                 // Redraw hovered index
@@ -317,7 +317,7 @@ struct Shapespace : viamd::EventHandler {
                     vec2_t* coordinates = coords + offset;
                     ImPlot::PlotScatterG("##hovered structure", getter, coordinates, count);
                     if (hovered_structure_idx < (int)md_array_size(bitfields)) {
-                        md_bitfield_copy(&app_state->selection.highlight_mask, &bitfields[hovered_structure_idx]);
+                        md_bitmask_assign(&app_state->selection.highlight_mask, bitfields[hovered_structure_idx]);
                     }
                 }
                 if (hovered_point_idx != -1) {
@@ -335,7 +335,7 @@ struct Shapespace : viamd::EventHandler {
                     ImGui::SetTooltip("%s", buf);
 
                     if (structure_idx < (int)md_array_size(bitfields)) {
-                        md_bitfield_copy(&app_state->selection.highlight_mask, &bitfields[structure_idx]);
+                        md_bitmask_assign(&app_state->selection.highlight_mask, bitfields[structure_idx]);
                     }
 
                     if (ImGui::IsWindowFocused() && ImPlot::IsPlotHovered() && ImGui::GetIO().MouseClicked[0]) {
@@ -362,8 +362,7 @@ struct Shapespace : viamd::EventHandler {
                 num_frames = 0;
                 num_structures = 0;
                 md_arena_allocator_reset(arena);
-                joined_bitfield = {0};
-                md_bitfield_init(&joined_bitfield, arena);
+                joined_bitfield = md_bitset_empty_set();
 
                 input_valid = false;
                 MEMSET(error, 0, sizeof(error));
@@ -381,8 +380,12 @@ struct Shapespace : viamd::EventHandler {
                         MD_LOG_ERROR("No trajectory frames present when attempting to populate shape space");
                         return;
                     }
-                    for (size_t i = 0; i < num_structures; ++i) {
-                        md_bitfield_or_inplace(&joined_bitfield, &bitfields[i]);
+                    {
+                        md_bitmask_t b = md_bitmask_create(0, MD_BITSET_MAX_INDEX, arena);
+                        for (size_t i = 0; i < num_structures; ++i) {
+                            md_bitmask_or(&b, bitfields[i]);
+                        }
+                        joined_bitfield = md_bitmask_extract(&b, arena);
                     }
 
                     md_array_resize(weights, num_frames * num_structures, arena);
@@ -425,14 +428,14 @@ struct Shapespace : viamd::EventHandler {
                             }
 
                             for (size_t i = 0; i < md_array_size(shapespace->bitfields); ++i) {
-                                const md_bitfield_t* bf = &shapespace->bitfields[i];
-                                size_t count = md_bitfield_popcount(bf);
+                                const md_bitset_t* bf = &shapespace->bitfields[i];
+                                size_t count = md_bitset_count(*bf);
                                 md_array_resize(xyzw, count, alloc);
 
-                                md_bitfield_iter_t iter = md_bitfield_iter_create(bf);
+                                md_bitset_iter_t iter = md_bitset_iter(*bf);
                                 size_t dst_idx = 0;
-                                while (md_bitfield_iter_next(&iter)) {
-                                    const size_t src_idx = md_bitfield_iter_idx(&iter);
+                                while (md_bitset_iter_next(&iter)) {
+                                    const size_t src_idx = iter.idx;
                                     xyzw[dst_idx++] = vec4_from_vec3(xyz[src_idx], w ? w[src_idx] : 1.0f);
                                 }
 

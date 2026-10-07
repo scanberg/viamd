@@ -8,7 +8,7 @@
 #include <md_script.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
-#include <core/md_bitfield.h>
+#include <core/md_bitset.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
 #include <core/md_str.h>
@@ -115,10 +115,12 @@ const md_attributes_t* series_table(const ApplicationState* app, SeriesSource so
     return table;
 }
 
-const md_bitfield_t* series_frame_mask(const ApplicationState* app, SeriesSource source) {
+bool series_frame_mask(md_bitset_t* out, const ApplicationState* app, SeriesSource source, md_allocator_i* alloc) {
+    ASSERT(out);
     const md_script_eval_t* eval = is_script(source) ? app->script.eval : nullptr;
-    if (!eval) return nullptr;
-    return source == SeriesSource_ScriptFiltered ? md_script_eval_frame_set_completed(eval, SCRIPT_FRAME_SET_FILTER) : md_script_eval_frame_mask(eval);
+    if (!eval) return false;
+    *out = source == SeriesSource_ScriptFiltered ? md_script_eval_frame_set_completed(eval, SCRIPT_FRAME_SET_FILTER, alloc) : md_script_eval_frame_mask(eval, alloc);
+    return true;
 }
 
 str_t series_script_ident(const SeriesKey& key) {
@@ -540,7 +542,7 @@ int series_temporal_print_value(char* buf, size_t cap, const SeriesTemporalView&
 
 // Density of values[f * stride + k] over the frames f in mask (all num_frames without one), per
 // member k or over all of them at once. Values outside [lo, hi] are not counted.
-static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, double hi, const float* values, size_t num_frames, size_t stride, const md_bitfield_t* mask) {
+static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, double hi, const float* values, size_t num_frames, size_t stride, const md_bitset_t* mask) {
     const bool aggregate = dim_out == 1 && stride > 1;
     MEMSET(bins, 0, sizeof(float) * (size_t)num_bins * dim_out);
 
@@ -563,9 +565,9 @@ static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, doub
     };
 
     if (mask) {
-        md_bitfield_iter_t it = md_bitfield_iter_create(mask);
-        while (md_bitfield_iter_next(&it)) {
-            const size_t f = md_bitfield_iter_idx(&it);
+        md_bitset_iter_t it = md_bitset_iter(*mask);
+        while (md_bitset_iter_next(&it)) {
+            const size_t f = it.idx;
             if (f >= num_frames) break;
             add_frame(f);
         }
@@ -682,7 +684,8 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
             double range[2] = {0, 0};
             const bool has_range = read_range(range, md_attributes_find_in(table, path, STR_LIT("range")));
             if (temporal) {
-                const md_bitfield_t* mask = series_frame_mask(app, key.source);
+                md_bitset_t frames = md_bitset_empty_set();
+                const md_bitset_t* mask = series_frame_mask(&frames, app, key.source, app->allocator.frame) ? &frames : nullptr;
                 if (!has_range) {
                     // The range the values cover, over the frames that count
                     double lo = DBL_MAX, hi = -DBL_MAX;

@@ -270,7 +270,7 @@ static void update_timeline_time_unit(ApplicationState* state) {
     state->timeline.view_range.end_x *= ratio;
 }
 
-static void modify_selection(ApplicationState* state, md_bitfield_t* atom_mask, SelectionOperator op = SelectionOperator::Set) {
+static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, SelectionOperator op = SelectionOperator::Set) {
     ASSERT(state);
     modify_field(&state->selection.selection_mask, atom_mask, op);
 }
@@ -348,13 +348,16 @@ int main(int argc, char** argv) {
 
     md_temp_arena_system_init();
 
-    md_bitfield_init(&state.selection.selection_mask, persistent_alloc);
-    md_bitfield_init(&state.selection.highlight_mask, persistent_alloc);
-    md_bitfield_init(&state.selection.query.mask, persistent_alloc);
-    md_bitfield_init(&state.selection.grow.mask, persistent_alloc);
-    md_bitfield_init(&state.operations.selection_mask, persistent_alloc);
-    md_bitfield_init(&state.operations.recenter_query.mask, persistent_alloc);
-    md_bitfield_init(&state.representation.visibility_mask, persistent_alloc);
+    // The masks are edited in place. Over any atom index: they hold only the words they write, and a mask over a
+    // system's atoms needs no resizing when another is loaded.
+    md_bitmask_init(&state.selection.selection_mask,       0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.highlight_mask,       0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.query.mask,           0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.grow.mask,            0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.representation.visibility_mask, 0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    // Sets, replaced whole
+    state.operations.selection_mask = md_bitset_empty_set();
+    state.operations.recenter_query.mask = md_bitset_empty_set();
 
     // Init platform
     VIAMD_LOG_DEBUG("Initializing GL...");
@@ -587,25 +590,25 @@ int main(int argc, char** argv) {
             event.world_to_clip = world_to_clip;
 
             if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
-                const md_bitfield_t* candidate_mask = &state.representation.visibility_mask;
+                md_bitset_t candidate_mask = md_bitmask_view(&state.representation.visibility_mask);
                 if (event.selection_mode == InteractionSelectionMode::Remove) {
                     // When removing, only consider currently selected atoms as candidates for region selection
-                    candidate_mask = &state.selection.selection_mask;
+                    candidate_mask = md_bitmask_view(&state.selection.selection_mask);
                 }
                 point_set_region_mask_compute(&state.selection.highlight_mask,
                     state.mold.state.xyz, state.mold.state.num_atoms,
-                    candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
+                    &candidate_mask, world_to_clip, event.region_min, event.region_max, event.surface_size);
 
                 grow_mask_by_selection_granularity(&state.selection.highlight_mask, state.selection.granularity, state.mold.sys);
                 if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
                     // Merge highlight into selection
                     if (event.selection_mode == InteractionSelectionMode::Append) {
-                        md_bitfield_or_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                        md_bitmask_or(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
                     }
                     else if (event.selection_mode == InteractionSelectionMode::Remove) {
-                        md_bitfield_andnot_inplace(&state.selection.selection_mask, &state.selection.highlight_mask);
+                        md_bitmask_andnot(&state.selection.selection_mask, md_bitmask_view(&state.selection.highlight_mask));
                     }
-                    md_bitfield_clear(&state.selection.highlight_mask);
+                    md_bitmask_clear(&state.selection.highlight_mask);
                     // A region select is not a sequence of individual picks, so whatever order was
                     // recorded before no longer describes the selection.
                     single_selection_sequence_clear(&state.selection.single_selection_sequence);
@@ -815,8 +818,8 @@ int main(int argc, char** argv) {
                     const size_t num_stored_selections = md_array_size(state.selection.stored_selections);                       
                     for (size_t i = 0; i < num_stored_selections; ++i) {
                         str_t name = str_from_cstr(state.selection.stored_selections[i].name);
-                        const md_bitfield_t* bf = &state.selection.stored_selections[i].atom_mask;
-                        md_script_ir_add_identifier_bitfield(state.script.ir, name, bf);
+                        const md_bitset_t* bf = &state.selection.stored_selections[i].atom_mask;
+                        md_script_ir_add_identifier_bitset(state.script.ir, name, *bf);
                     }
                     
                     if (src_str) {
@@ -879,8 +882,8 @@ int main(int argc, char** argv) {
                     if (md_script_ir_valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
                         // Every frame, and the timeline filter's: none yet, it is applied below
-                        md_bitfield_t none = md_bitfield_create(frame_alloc);
-                        const md_bitfield_t* sets[SCRIPT_FRAME_SET_COUNT] = { nullptr, &none };
+                        md_bitset_t none = md_bitset_empty_set();
+                        const md_bitset_t* sets[SCRIPT_FRAME_SET_COUNT] = { nullptr, &none };
                         const md_script_eval_desc_t desc = { .num_frames = num_frames, .num_frame_sets = SCRIPT_FRAME_SET_COUNT, .frame_sets = sets };
                         state.script.eval = md_script_eval_create_desc(state.script.eval_ir, &desc, state.allocator.persistent);
                         state.script.filter_frames = {};
@@ -916,24 +919,21 @@ int main(int argc, char** argv) {
                     } else {
                         state.script.evaluate = false;
                         if (filter_changed) {
-                            md_bitfield_t frames = md_bitfield_create(frame_alloc);
-                            if (filter.enabled) {
-                                md_bitfield_set_range(&frames, filter.beg, filter.end);
-                            }
+                            const md_bitset_t frames = filter.enabled ? md_bitset_range(filter.beg, filter.end) : md_bitset_empty_set();
                             md_script_eval_set_frame_set(state.script.eval, SCRIPT_FRAME_SET_FILTER, &frames);
                             state.script.filter_frames = filter;
                         }
                         md_script_eval_reset_interrupt(state.script.eval);
 
                         // What is left to do, over the union of the sets
-                        md_bitfield_t pending = md_bitfield_create(frame_alloc);
-                        const size_t count = md_script_eval_pending_frames(state.script.eval, &pending);
+                        const md_bitset_t pending = md_script_eval_pending_frames(state.script.eval, frame_alloc);
+                        const size_t count = md_bitset_count(pending);
                         if (count > 0) {
                             md_array_resize(state.script.eval_frames, count, state.allocator.persistent);
                             size_t n = 0;
-                            md_bitfield_iter_t it = md_bitfield_iter_create(&pending);
-                            while (md_bitfield_iter_next(&it) && n < count) {
-                                state.script.eval_frames[n++] = (uint32_t)md_bitfield_iter_idx(&it);
+                            md_bitset_iter_t it = md_bitset_iter(pending);
+                            while (md_bitset_iter_next(&it) && n < count) {
+                                state.script.eval_frames[n++] = (uint32_t)it.idx;
                             }
 
                             // The IR is taken now: eval_ir may be replaced while it runs, and the IR it runs on is
@@ -1091,14 +1091,21 @@ int main(int argc, char** argv) {
         // Given a throughput of 10GB/s results in a time of 1.25 ms per bitfield.
 
         uint64_t v_hash = state.representation.visibility_mask_hash;
-        uint64_t h_hash = md_bitfield_hash64(&state.selection.highlight_mask, 0);
-        uint64_t s_hash = md_bitfield_hash64(&state.selection.selection_mask, 0);
+        uint64_t h_hash = md_bitset_hash64(md_bitmask_view(&state.selection.highlight_mask), 0);
+        uint64_t s_hash = md_bitset_hash64(md_bitmask_view(&state.selection.selection_mask), 0);
         uint64_t f_hash = md_hash64_combine(v_hash, md_hash64_combine(h_hash, s_hash));
         
-        uint64_t r_hash = 0;
+        // What each representation is: not the bytes of the struct, which hold handles, pointers and flags that
+        // change without the representation changing (its atom mask, for one, is replaced whenever it is evaluated)
+        uint64_t r_hash = md_array_size(state.representation.reps);
         for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
-			md_hash64(&state.representation.reps[i], sizeof(Representation), r_hash);
-		}
+            const Representation& rep = state.representation.reps[i];
+            const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)rep.enabled };
+            r_hash = md_hash64(kind, sizeof(kind), r_hash);
+            const str_t filt = str_from_cstrn(rep.filt, sizeof(rep.filt));
+            r_hash = md_hash64(filt.ptr, filt.len, r_hash);
+            r_hash = md_bitset_hash64(rep.atom_mask, r_hash);
+        }
 
         // These represent the 'current' state so we can compare against it to see if they were modified
         static uint64_t highlight_hash = 0;
@@ -1449,19 +1456,20 @@ static void draw_main_menu(ApplicationState* data) {
         if (ImGui::BeginMenu("Selection")) {
             ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
             ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms,\nwhole components (residues) or whole instances (chains, molecules)");
-            size_t num_selected_atoms = md_bitfield_popcount(&data->selection.selection_mask);
+            size_t num_selected_atoms = md_bitmask_count(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
-                md_bitfield_not_inplace(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
+                md_bitmask_invert_range(&data->selection.selection_mask, 0, data->mold.sys.atom.count);
             }
             if (ImGui::IsItemHovered()) {
-                md_bitfield_not(&data->selection.highlight_mask, &data->selection.selection_mask, 0, data->mold.sys.atom.count);
+                md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.selection_mask));
+                md_bitmask_invert_range(&data->selection.highlight_mask, 0, data->mold.sys.atom.count);
             }
             if (ImGui::MenuItem("Query")) data->selection.query.show_window = true;
             if (num_selected_atoms == 0) ImGui::PushDisabled();
             if (ImGui::MenuItem("Grow"))  data->selection.grow.show_window = true;
             if (num_selected_atoms == 0) ImGui::PopDisabled();
             if (ImGui::MenuItem("Clear")) {
-                md_bitfield_clear(&data->selection.selection_mask);
+                md_bitmask_clear(&data->selection.selection_mask);
                 single_selection_sequence_clear(&data->selection.single_selection_sequence);
             }
             ImGui::Spacing();
@@ -1469,7 +1477,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             // STORED SELECTIONS
             {
-                md_bitfield_clear(&data->selection.highlight_mask);
+                md_bitmask_clear(&data->selection.highlight_mask);
                 // @NOTE(Robin): This ImGui ItemFlag can be used to force the menu to remain open after buttons are pressed.
                 // Leave it here as a comment if we feel that it is needed in the future
                 //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
@@ -1496,17 +1504,17 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::InputQuery("##label", sel.name, sizeof(sel.name), is_valid, error);
                     ImGui::SameLine();
                     if (ImGui::Button("Load")) {
-                        md_bitfield_copy(&data->selection.selection_mask, &sel.atom_mask);
+                        md_bitmask_assign(&data->selection.selection_mask, sel.atom_mask);
                         flag_all_representations_as_dirty(data);
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("Load the stored selection as the active selection");
-                        md_bitfield_copy(&data->selection.highlight_mask, &sel.atom_mask);
+                        md_bitmask_assign(&data->selection.highlight_mask, sel.atom_mask);
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Store")) {
                         ImGui::SetTooltip("Store the active selection into this selection");
-                        md_bitfield_copy(&sel.atom_mask, &data->selection.selection_mask);
+                        md_bitset_assign(&sel.atom_mask, md_bitmask_view(&data->selection.selection_mask), persistent_alloc);
                         data->script.compile_ir = true;
                         flag_all_representations_as_dirty(data);
                     }
@@ -1521,7 +1529,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
                     snprintf(name_buf, sizeof(name_buf), "sel%i", (int)md_array_size(data->selection.stored_selections) + 1);
-                    create_selection(data, str_from_cstr(name_buf), &data->selection.selection_mask);
+                    create_selection(data, str_from_cstr(name_buf), md_bitmask_view(&data->selection.selection_mask));
                 }
 
                 //ImGui::PopItemFlag();
@@ -1612,7 +1620,7 @@ static void draw_main_menu(ApplicationState* data) {
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
             if (ImGui::BeginTable("##table", 3, flags)) {
                 if (ImGui::IsWindowHovered()) {
-                    md_bitfield_clear(&data->selection.highlight_mask);
+                    md_bitmask_clear(&data->selection.highlight_mask);
                 }
                 ImGui::TableSetupColumn("Now");
                 ImGui::TableSetupColumn("Every frame");
@@ -1620,8 +1628,8 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::TableHeadersRow();
 
                 const float button_width = (ImGui::GetFontSize() / 20.f) * 175.f;
-                const md_bitfield_t& target_mask = recenter_get_active_target_mask(data);
-                const bool recenter_available = !md_bitfield_empty(&target_mask);
+                const md_bitset_t& target_mask = recenter_get_active_target_mask(data);
+                const bool recenter_available = !md_bitset_empty(target_mask);
                 const char* no_target_tip =
                     "There is nothing to center on yet. Select atoms and choose 'Set as Centering Target' in the\n"
                     "right-click menu of the viewport, or tick " ICON_FA_COMMENT_DOTS " and pick the target with a query.";
@@ -1645,7 +1653,7 @@ static void draw_main_menu(ApplicationState* data) {
                     } else {
                         ImGui::SetTooltip("Move everything so the target (highlighted) is in the middle of the box,\nor at the origin when there is no box");
                         // Highlight the target atoms that the system will be recentered around
-                        md_bitfield_copy (&data->selection.highlight_mask, &target_mask);
+                        md_bitmask_assign(&data->selection.highlight_mask, target_mask);
                     }
                 }
 
@@ -2116,7 +2124,8 @@ static void write_script_range(md_strb_t& sb, const int* indices, size_t num_ind
     md_temp_end(temp);
 }
 
-static md_array(str_t) generate_script_selection_suggestions(str_t ident, const md_bitfield_t* bf, const md_system_t* sys) {
+static md_array(str_t) generate_script_selection_suggestions(str_t ident, md_bitset_t sel, const md_system_t* sys) {
+    const md_bitset_t* bf = &sel;
     md_array(str_t) suggestions = 0;
 
     bool within_same_comp = true;
@@ -2125,9 +2134,9 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     md_instance_idx_t inst_idx = -1;
     md_component_idx_t comp_idx = -1;
 
-    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
-    while (md_bitfield_iter_next(&it)) {
-        uint64_t a_idx = md_bitfield_iter_idx(&it);
+    md_bitset_iter_t it = md_bitset_iter(*bf);
+    while (md_bitset_iter_next(&it)) {
+        uint64_t a_idx = it.idx;
         int32_t  i_idx = md_system_instance_find_by_atom_idx(sys, a_idx);
         int32_t  c_idx = md_system_component_find_by_atom_idx(sys, a_idx);
 
@@ -2148,19 +2157,19 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         }
     }
     
-    const size_t popcount = md_bitfield_popcount(bf);
+    const size_t popcount = md_bitset_count(*bf);
     
     md_strb_t sb = md_strb_create(frame_alloc);
     defer { md_strb_free(&sb); };
 
-    auto write_atom_remainder = [](md_strb_t& sb, const md_bitfield_t* bf, int ref_idx = 0) {
+    auto write_atom_remainder = [](md_strb_t& sb, const md_bitset_t* bf, int ref_idx = 0) {
         // Add any remainder
-        const uint64_t remainder = md_bitfield_popcount(bf);
+        const uint64_t remainder = md_bitset_count(*bf);
         if (remainder) {
             int* indices = (int*)md_alloc(frame_alloc, remainder * sizeof(int));
             defer { md_free(frame_alloc, indices, remainder * sizeof(int)); };
 
-            md_bitfield_iter_extract_indices(indices, remainder, md_bitfield_iter_create(bf));
+            md_bitset_iter_extract_indices(indices, remainder, md_bitset_iter(*bf));
             sb += "atom(";
             write_script_range(sb, indices, remainder, ref_idx);
             sb += ")";
@@ -2201,18 +2210,22 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
         }
     }
 
-    md_bitfield_t tmp_bf = md_bitfield_create(frame_alloc);
-    md_bitfield_copy(&tmp_bf, bf);
-    
+    // What is left once complete chains and residues are taken out
+    md_bitmask_t remainder = md_bitmask_create(0, (uint32_t)sys->atom.count, frame_alloc);
+    md_bitmask_assign(&remainder, *bf);
+    auto remainder_has_all = [&remainder](md_urange_t range) {
+        return range.beg < range.end && md_bitmask_test_all_range(&remainder, range.beg, range.end);
+    };
+
     md_array(int) complete_chains = 0;
     md_array(int) complete_residues = 0;
     
     if (sys->instance.count) {
         for (size_t i = 0; i < sys->instance.count; ++i) {    
             const md_urange_t range = md_system_instance_atom_range(sys, i);
-            if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
+            if (remainder_has_all(range)) {
                 md_array_push(complete_chains, (int)i, frame_alloc);
-                md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
+                md_bitmask_clear_range(&remainder, range.beg, range.end);
             }
         }
     }
@@ -2220,14 +2233,15 @@ static md_array(str_t) generate_script_selection_suggestions(str_t ident, const 
     if (sys->component.count) {
         for (size_t i = 0; i < sys->component.count; ++i) {    
             const md_urange_t range = md_component_atom_range(&sys->component, i);
-            if (md_bitfield_test_all_range(&tmp_bf, range.beg, range.end)) {
+            if (remainder_has_all(range)) {
                 md_array_push(complete_residues, (int)i, frame_alloc);
-                md_bitfield_clear_range(&tmp_bf, range.beg, range.end);
+                md_bitmask_clear_range(&remainder, range.beg, range.end);
             }
         }
     }
 
-    const uint64_t atom_remainder_count = md_bitfield_popcount(&tmp_bf);
+    const uint64_t atom_remainder_count = md_bitmask_count(&remainder);
+    const md_bitset_t tmp_bf = md_bitmask_view(&remainder);
     
     if (complete_chains) {
         md_strb_reset(&sb);
@@ -2341,13 +2355,13 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
     if (!state->mold.sys.atom.count) return;
 
     const size_t sss_count = single_selection_sequence_count(&state->selection.single_selection_sequence);
-    const size_t num_atoms_selected = md_bitfield_popcount(&state->selection.selection_mask);
+    const size_t num_atoms_selected = md_bitmask_count(&state->selection.selection_mask);
 
     if (ImGui::BeginPopup("Context Popup")) {
         if (num_atoms_selected == 2) {
             // Suggest construction of covalent bond
             int idx[2];
-            md_bitfield_iter_extract_indices(idx, 2, md_bitfield_iter_create(&state->selection.selection_mask));
+            md_bitset_iter_extract_indices(idx, 2, md_bitmask_iter(&state->selection.selection_mask));
 
             md_bond_idx_t bond_idx = md_system_bond_find(&state->mold.sys, idx[0], idx[1]);
             if (bond_idx == -1) {
@@ -2555,10 +2569,10 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 }
             }
             if (num_atoms_selected >= 1) {
-                const md_bitfield_t* bf = &state->selection.selection_mask;
+                const md_bitset_t sel = md_bitmask_view(&state->selection.selection_mask);
                 str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), frame_alloc);
                 
-                md_array(str_t) suggestions = generate_script_selection_suggestions(ident, bf, &state->mold.sys);
+                md_array(str_t) suggestions = generate_script_selection_suggestions(ident, sel, &state->mold.sys);
 
 			    char buf[128]; // Buffer for limiting menu item size
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
@@ -2620,11 +2634,12 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
         if (ImGui::BeginMenu("Selection")) {
             if (ImGui::MenuItem("Invert")) {
-                md_bitfield_not_inplace(&state->selection.selection_mask, 0, state->mold.sys.atom.count);
+                md_bitmask_invert_range(&state->selection.selection_mask, 0, state->mold.sys.atom.count);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
-                md_bitfield_not(&state->selection.highlight_mask, &state->selection.selection_mask, 0, state->mold.sys.atom.count);
+                md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
+                md_bitmask_invert_range(&state->selection.highlight_mask, 0, state->mold.sys.atom.count);
             }
             if (ImGui::MenuItem("Query")) {
                 state->selection.query.show_window = true;
@@ -2636,7 +2651,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     ImGui::CloseCurrentPopup();
                 }
                 if (ImGui::MenuItem("Clear")) {
-                    md_bitfield_clear(&state->selection.selection_mask);
+                    md_bitmask_clear(&state->selection.selection_mask);
                     single_selection_sequence_clear(&state->selection.single_selection_sequence);
                 }
             }
@@ -2645,15 +2660,13 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
         
         if (num_atoms_selected > 0) {
             if (ImGui::MenuItem("Set as Centering Target")) {
-                md_bitfield_clear(&state->operations.selection_mask);
-                md_bitfield_copy(&state->operations.selection_mask, &state->selection.selection_mask);
+                md_bitset_assign(&state->operations.selection_mask, md_bitmask_view(&state->selection.selection_mask), persistent_alloc);
                 state->operations.recenter_query.enabled = false;
                 recenter_update_target_data(state);
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsItemHovered()) {
-                md_bitfield_clear(&state->selection.highlight_mask);
-                md_bitfield_copy(&state->selection.highlight_mask, &state->selection.selection_mask);
+                md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
             }
         }
 
@@ -2666,7 +2679,7 @@ static void draw_selection_grow_window(ApplicationState* data) {
     if (ImGui::Begin("Selection Grow", &data->selection.grow.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(-1);
         static uint64_t sel_popcount = 0;
-        const uint64_t popcount = md_bitfield_popcount(&data->selection.selection_mask);
+        const uint64_t popcount = md_bitmask_count(&data->selection.selection_mask);
         const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
         const char* fmt = (data->selection.grow.mode == SelectionGrowthMode::CovalentBond) ? "%.0f" : "%.2f";
         const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f, fmt);
@@ -2682,21 +2695,23 @@ static void draw_selection_grow_window(ApplicationState* data) {
         if (data->selection.grow.mask_invalid) {
             sel_popcount = popcount;
             data->selection.grow.mask_invalid = false;
-            md_bitfield_copy(&data->selection.grow.mask, &data->selection.selection_mask);
+            md_bitmask_t* grow = &data->selection.grow.mask;
+            md_bitmask_assign(grow, md_bitmask_view(&data->selection.selection_mask));
+            const md_bitset_t viable = md_bitmask_view(&data->representation.visibility_mask);
 
             switch (data->selection.grow.mode) {
             case SelectionGrowthMode::CovalentBond:
-                md_util_mask_grow_by_bonds(&data->selection.grow.mask, &data->mold.sys, (int)data->selection.grow.extent, &data->representation.visibility_mask);
+                md_util_mask_grow_by_bonds(grow, &data->mold.sys, (int)data->selection.grow.extent, &viable);
                 break;
             case SelectionGrowthMode::Radial: {
-                md_util_mask_grow_by_radius(&data->selection.grow.mask, &data->mold.state, data->selection.grow.extent, &data->representation.visibility_mask);
+                md_util_mask_grow_by_radius(grow, &data->mold.state, data->selection.grow.extent, &viable);
                 break;
             }
             default:
                 ASSERT(false);
             }
 
-            grow_mask_by_selection_granularity(&data->selection.grow.mask, data->selection.granularity, data->mold.sys);
+            grow_mask_by_selection_granularity(grow, data->selection.granularity, data->mold.sys);
         }
 
         const bool show_preview =   (ImGui::GetHoveredID() == ImGui::GetID("##Extent")) ||
@@ -2704,10 +2719,10 @@ static void draw_selection_grow_window(ApplicationState* data) {
                                     (ImGui::GetHoveredID() == ImGui::GetID("Apply"));
 
         if (show_preview) {
-            md_bitfield_copy(&data->selection.highlight_mask, &data->selection.grow.mask);
+            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.grow.mask));
         }
         if (apply) {
-            md_bitfield_copy(&data->selection.selection_mask, &data->selection.grow.mask);
+            md_bitmask_assign(&data->selection.selection_mask, md_bitmask_view(&data->selection.grow.mask));
             data->selection.grow.mask_invalid = true;
         }
     }
@@ -2746,22 +2761,20 @@ static void draw_selection_query_window(ApplicationState* data) {
 
         if (data->selection.query.query_invalid) {
             data->selection.query.query_invalid = false;
-            data->selection.query.query_ok = md_filter(&data->selection.query.mask, str_from_cstr(data->selection.query.buf), &data->mold.sys, &data->mold.state, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error));
+            md_bitset_t result = md_bitset_empty_set();
+            data->selection.query.query_ok = md_filter(&result, str_from_cstr(data->selection.query.buf), &data->mold.sys, &data->mold.state, data->script.ir, NULL, data->selection.query.error, sizeof(data->selection.query.error), frame_alloc);
             query_frame = data->animation.frame;
 
-            if (data->selection.query.query_ok) {
-                grow_mask_by_selection_granularity(&data->selection.query.mask, data->selection.granularity, data->mold.sys);
-            } else {
-                md_bitfield_clear(&data->selection.query.mask);
-            }
+            md_bitmask_assign(&data->selection.query.mask, data->selection.query.query_ok ? result : md_bitset_empty_set());
+            grow_mask_by_selection_granularity(&data->selection.query.mask, data->selection.granularity, data->mold.sys);
         }
 
         if (preview) {
-            md_bitfield_copy(&data->selection.highlight_mask, &data->selection.query.mask);
+            md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.query.mask));
         }
 
         if (apply && data->selection.query.query_ok) {
-            md_bitfield_copy(&data->selection.selection_mask, &data->selection.query.mask);
+            md_bitmask_assign(&data->selection.selection_mask, md_bitmask_view(&data->selection.query.mask));
             data->selection.query.show_window = false;
         }
     }
@@ -4335,7 +4348,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     bool print_timeline_tooltip = false;
 
                     if (ImPlot::IsPlotHovered()) {
-                        md_bitfield_clear(&data->selection.highlight_mask);
+                        md_bitmask_clear(&data->selection.highlight_mask);
                         script_set_hovered_property(data,  STR_LIT(""));
 
                         print_timeline_tooltip = true;
@@ -5269,14 +5282,14 @@ static void draw_script_editor_window(ApplicationState* state) {
         }
 
         if (editor_hovered) {
-            md_bitfield_clear(&state->selection.highlight_mask);
+            md_bitmask_clear(&state->selection.highlight_mask);
         }
 
         if (hovered_marker) {
             if (hovered_marker->atoms || !md_script_vis_ref_empty(hovered_marker->vis_ref)) {
                 if (hovered_marker->atoms) {
                     // Errors and warnings: the atoms the message is about
-                    md_bitfield_copy(&state->selection.highlight_mask, hovered_marker->atoms);
+                    md_bitmask_assign(&state->selection.highlight_mask, *hovered_marker->atoms);
                 }
                 else if (hovered_marker->type == script_editor::MarkerType_Visualization) {
                     // Clear hovered property
@@ -5306,7 +5319,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
                 if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
                     SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
-                    modify_selection(state, &state->selection.highlight_mask, op);
+                    modify_selection(state, md_bitmask_view(&state->selection.highlight_mask), op);
                 }
             }
 
@@ -5464,8 +5477,8 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
 
             // transformation matrix from world to volume
             mat4_t M = vis.sdf.matrices[0];
-            const md_bitfield_t* bf = &vis.sdf.structures[0];
-            const int num_atoms = (int)md_bitfield_popcount(bf);
+            const md_bitset_t* bf = &vis.sdf.structures[0];
+            const int num_atoms = (int)md_bitset_count(*bf);
             const int vol_dim[3] = {(int)attr->format.shape[0], (int)attr->format.shape[1], (int)attr->format.shape[2]};
             const float* values = volume_values;
             const double extent = vis.sdf.extent * 2.0 * angstrom_to_bohr;
@@ -5485,10 +5498,9 @@ static bool export_cube(const ApplicationState& data, const md_attribute_t* attr
             const float scl = angstrom_to_bohr;
             M = mat4_mul(mat4_scale(scl, scl, scl), M);
 
-            size_t beg_bit = bf->beg_bit;
-            size_t end_bit = bf->end_bit;
-            while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
-                size_t i = beg_bit - 1;
+            md_bitset_iter_t it = md_bitset_iter(*bf);
+            while (md_bitset_iter_next(&it)) {
+                size_t i = it.idx;
                 vec3_t coord = md_state_coord(&state, i);
                 coord = mat4_mul_vec3(M, coord, 1.0f);
                 int anum     = md_atom_atomic_number(&sys.atom, i);
@@ -5770,10 +5782,10 @@ static void draw_property_export_window(ApplicationState* data) {
     ImGui::End();
 }
 
-md_array(int) extract_bitfield_indices(const md_bitfield_t* bf, md_allocator_i* alloc) {
-    size_t count = md_bitfield_popcount(bf);
+md_array(int) extract_bitfield_indices(const md_bitset_t* bf, md_allocator_i* alloc) {
+    size_t count = md_bitset_count(*bf);
     md_array(int) indices = md_array_create(int, count, alloc);
-    md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(bf));
+    md_bitset_iter_extract_indices(indices, count, md_bitset_iter(*bf));
     return indices;
 }
 
@@ -5825,10 +5837,7 @@ void draw_structure_export_window(ApplicationState* data) {
             auto& query = struct_exp.query;
             bool valid = query.is_valid;
 
-            if (!md_bitfield_validate(&query.mask)) {
-                md_bitfield_init(&query.mask, persistent_alloc);
-            }
-            
+
             if (!valid) ImGui::PushInvalid();
             ImGui::InputQuery("Query", query.buf, sizeof(query.buf), query.is_valid, query.error);
             if (!valid) ImGui::PopInvalid();
@@ -5837,7 +5846,7 @@ void draw_structure_export_window(ApplicationState* data) {
             bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
             
             if (query.requires_evaluation) {
-                md_bitfield_clear(&query.mask);
+                md_bitset_free(&query.mask, persistent_alloc);
                 query.is_valid = md_filter(
                     &query.mask,
                     str_from_cstr(query.buf),
@@ -5846,18 +5855,18 @@ void draw_structure_export_window(ApplicationState* data) {
                     data->script.ir,
                     &query.is_dynamic,
                     query.error,
-                    sizeof(query.error)
+                    sizeof(query.error), persistent_alloc
                 );
                 query.requires_evaluation = false;
             }
 
             if (ImGui::IsWindowHovered()) {
                 // Clear highlight mask
-                md_bitfield_clear(&data->selection.highlight_mask);
+                md_bitmask_clear(&data->selection.highlight_mask);
             }
 
             if (query.is_valid && preview) {
-                md_bitfield_copy(&data->selection.highlight_mask, &query.mask);
+                md_bitmask_assign(&data->selection.highlight_mask, query.mask);
             }
         }
 
@@ -5874,16 +5883,16 @@ void draw_structure_export_window(ApplicationState* data) {
         auto extract_atom_indices = [data](int* out_atom_indices, size_t atom_index_cap, const md_system_state_t* state) -> size_t {
             switch (data->structure_export.selected_atom_filter) {
                 case 0: { // Active Selection
-                    return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->selection.selection_mask));
+                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->selection.selection_mask));
                 } break;
                 case 1: { // Visible Atoms
-                    return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->representation.visibility_mask));
+                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->representation.visibility_mask));
                 } break;
                 case 2: { // Query
                     if (data->structure_export.query.is_dynamic) {
                         // IMPORTANT: Clear the previous mask before re-evaluating a dynamic query.
                         // Otherwise atoms that drop out in subsequent frames remain set from earlier frames.
-                        md_bitfield_clear(&data->structure_export.query.mask);
+                        md_bitset_free(&data->structure_export.query.mask, persistent_alloc);
                         data->structure_export.query.is_valid = md_filter(
                             &data->structure_export.query.mask,
                             str_from_cstr(data->structure_export.query.buf),
@@ -5892,14 +5901,14 @@ void draw_structure_export_window(ApplicationState* data) {
                             data->script.ir,
                             &data->structure_export.query.is_dynamic,
                             data->structure_export.query.error,
-                            sizeof(data->structure_export.query.error)
+                            sizeof(data->structure_export.query.error), persistent_alloc
                         );
                     }
                     if (!data->structure_export.query.is_valid) {
                         VIAMD_LOG_ERROR("Cannot export structure, the query expression is invalid: " STR_FMT, STR_ARG(str_from_cstr(data->structure_export.query.error)));
                         return 0;
                     } else {
-                        return md_bitfield_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitfield_iter_create(&data->structure_export.query.mask));
+                        return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitset_iter(data->structure_export.query.mask));
                     }
                 } break;
                 case 3: { // All Atoms
@@ -6092,23 +6101,23 @@ static void update_md_buffers(ApplicationState* data) {
         MEMSET(flags, 0, sys.atom.count * sizeof(uint8_t));
 
         {
-            md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.highlight_mask);
-            while (md_bitfield_iter_next(&it)) {
-                uint64_t idx = md_bitfield_iter_idx(&it);
+            md_bitset_iter_t it = md_bitmask_iter(&data->selection.highlight_mask);
+            while (md_bitset_iter_next(&it)) {
+                uint64_t idx = it.idx;
                 flags[idx] |= AtomBit_Highlighted;
             }
         }
         {
-            md_bitfield_iter_t it = md_bitfield_iter_create(&data->selection.selection_mask);
-            while (md_bitfield_iter_next(&it)) {
-                uint64_t idx = md_bitfield_iter_idx(&it);
+            md_bitset_iter_t it = md_bitmask_iter(&data->selection.selection_mask);
+            while (md_bitset_iter_next(&it)) {
+                uint64_t idx = it.idx;
                 flags[idx] |= AtomBit_Selected;
             }
         }
         {
-            md_bitfield_iter_t it = md_bitfield_iter_create(&data->representation.visibility_mask);
-            while (md_bitfield_iter_next(&it)) {
-                uint64_t idx = md_bitfield_iter_idx(&it);
+            md_bitset_iter_t it = md_bitmask_iter(&data->representation.visibility_mask);
+            while (md_bitset_iter_next(&it)) {
+                uint64_t idx = it.idx;
                 flags[idx] |= AtomBit_Visible;
             }
         }
@@ -6364,8 +6373,8 @@ static void render(ApplicationState* state) {
 
     if (!use_gfx) {
         PUSH_GPU_SECTION("Selection")
-        const bool atom_selection_empty = md_bitfield_empty(&state->selection.selection_mask);
-        const bool atom_highlight_empty = md_bitfield_empty(&state->selection.highlight_mask);
+        const bool atom_selection_empty = md_bitmask_empty(&state->selection.selection_mask);
+        const bool atom_highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
 
         glDepthMask(0);
 

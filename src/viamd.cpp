@@ -1203,8 +1203,8 @@ void init_trajectory_data(ApplicationState* data, uint32_t traj_flags) {
 
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
-        md_bitfield_clear(&data->operations.recenter_query.mask);
-        md_bitfield_clear(&data->operations.selection_mask);
+        md_bitset_free(&data->operations.recenter_query.mask, data->allocator.persistent);
+        md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
         data->operations.recenter_query.valid = false;
         data->operations.recenter_query.dynamic = false;
         data->operations.recenter_query.evaluated_version = 0;
@@ -1298,8 +1298,8 @@ void free_system_data(ApplicationState* data) {
     MEMSET(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
     clear_frame_cache(&data->mold.frame_cache);
 
-    md_bitfield_clear(&data->selection.selection_mask);
-    md_bitfield_clear(&data->selection.highlight_mask);
+    md_bitmask_clear(&data->selection.selection_mask);
+    md_bitmask_clear(&data->selection.highlight_mask);
     // Computed for this system
     script_vis_reset(data);
 
@@ -1518,10 +1518,10 @@ struct WorkspacePending {
     md_array(md_atom_pair_t) user_bonds;
 
     bool has_selection_mask;
-    md_bitfield_t selection_mask;
+    md_bitset_t selection_mask;
 
     bool has_recenter_target;
-    md_bitfield_t recenter_target;
+    md_bitset_t recenter_target;
 
     // Timeline filter and zoom, in frames: a time would depend on the unit it is shown in
     bool   has_filter_range;
@@ -1572,7 +1572,7 @@ static void workspace_reset(ApplicationState* data) {
     data->view.camera.fov_y = Camera{}.fov_y;
 
     data->selection.granularity = SelectionGranularity::Atom;
-    md_bitfield_clear(&data->selection.selection_mask);
+    md_bitmask_clear(&data->selection.selection_mask);
     single_selection_sequence_clear(&data->selection.single_selection_sequence);
 
     data->operations.recenter = false;
@@ -1583,7 +1583,7 @@ static void workspace_reset(ApplicationState* data) {
     data->operations.recenter_query.enabled = false;
     data->operations.recenter_query.query[0] = '\0';
     recenter_mark_query_dirty(data);
-    md_bitfield_clear(&data->operations.selection_mask);
+    md_bitset_free(&data->operations.selection_mask, data->allocator.persistent);
 }
 
 static void deserialize_files(viamd::deserialization_state_t& state, WorkspacePending& pending, str_t folder, md_allocator_i* alloc) {
@@ -1890,13 +1890,13 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
 
 // A mask by the atoms it holds. Base64 now; a workspace written before that holds the raw bytes,
 // which is read when it survived the text format (a mask whose bytes held no line break).
-static bool deserialize_mask(md_bitfield_t* mask, str_t arg) {
+static bool deserialize_mask(md_bitset_t* mask, str_t arg, md_allocator_i* alloc) {
     if (str_begins_with(arg, STR_LIT("###"))) {
-        return viamd::extract_bitfield(mask, arg);
+        return viamd::extract_bitset(mask, arg, alloc);
     }
     str_t raw;
     viamd::extract_str(raw, arg);
-    return !str_empty(raw) && md_bitfield_deserialize(mask, raw.ptr, raw.len);
+    return !str_empty(raw) && md_bitset_deserialize(mask, raw.ptr, raw.len, alloc);
 }
 
 void load_workspace(ApplicationState* data, str_t filename) {
@@ -1922,8 +1922,8 @@ void load_workspace(ApplicationState* data, str_t filename) {
 
     // ## 2. Read
     WorkspacePending pending = {};
-    md_bitfield_init(&pending.selection_mask, temp_alloc);
-    md_bitfield_init(&pending.recenter_target, temp_alloc);
+    pending.selection_mask = md_bitset_empty_set();
+    pending.recenter_target = md_bitset_empty_set();
 
     str_t folder = {};
     extract_folder_path(&folder, filename);
@@ -2027,7 +2027,7 @@ void load_workspace(ApplicationState* data, str_t filename) {
                     viamd::extract_to_char_buf(op.recenter_query.query, sizeof(op.recenter_query.query), arg);
                     recenter_mark_query_dirty(data);
                 }
-                else if (str_eq(ident, STR_LIT("RecenterTarget")))      pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg);
+                else if (str_eq(ident, STR_LIT("RecenterTarget")))      pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
             }
         } else if (str_eq(section, STR_LIT("Representation"))) {
             deserialize_representation(data, state);
@@ -2051,26 +2051,24 @@ void load_workspace(ApplicationState* data, str_t filename) {
             }
         } else if (str_eq(section, STR_LIT("Selection"))) {
             str_t label = {};
-            md_bitfield_t mask = {};
-            md_bitfield_init(&mask, temp_alloc);
+            md_bitset_t mask = {};
             bool has_mask = false;
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Label"))) {
                     viamd::extract_str(label, arg);
                 } else if (str_eq(ident, STR_LIT("Mask"))) {
-                    has_mask = deserialize_mask(&mask, arg);
+                    has_mask = deserialize_mask(&mask, arg, temp_alloc);
                 }
             }
             if (!str_empty(label) && has_mask) {
-                Selection* sel = create_selection(data, label);
-                md_bitfield_copy(&sel->atom_mask, &mask);
+                create_selection(data, label, mask);
             }
         } else if (str_eq(section, STR_LIT("ActiveSelection"))) {
             while (viamd::next_entry(ident, arg, state)) {
                 if (str_eq(ident, STR_LIT("Granularity"))) {
                     viamd::extract_enum(data->selection.granularity, arg, (int)SelectionGranularity::Count);
                 } else if (str_eq(ident, STR_LIT("Mask"))) {
-                    pending.has_selection_mask = deserialize_mask(&pending.selection_mask, arg);
+                    pending.has_selection_mask = deserialize_mask(&pending.selection_mask, arg, temp_alloc);
                 }
             }
         } else if (str_eq(section, STR_LIT("Windows"))) {
@@ -2154,15 +2152,14 @@ void load_workspace(ApplicationState* data, str_t filename) {
     }
 
     // Masks of atoms that are not there are dropped rather than applied to whatever holds those indices now
-    auto mask_fits = [num_atoms](const md_bitfield_t* mask) {
-        uint64_t first = 0, last = 0;
-        return num_atoms > 0 && (md_bitfield_empty(mask) || (md_bitfield_get_range(&first, &last, mask) && last < num_atoms));
+    auto mask_fits = [num_atoms](const md_bitset_t* mask) {
+        return num_atoms > 0 && (md_bitset_empty(*mask) || mask->end <= num_atoms);
     };
     if (pending.has_selection_mask && mask_fits(&pending.selection_mask)) {
-        md_bitfield_copy(&data->selection.selection_mask, &pending.selection_mask);
+        md_bitmask_assign(&data->selection.selection_mask, pending.selection_mask);
     }
     if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
-        md_bitfield_copy(&data->operations.selection_mask, &pending.recenter_target);
+        md_bitset_assign(&data->operations.selection_mask, pending.recenter_target, data->allocator.persistent);
         recenter_update_target_data(data);
     }
 
@@ -2330,8 +2327,8 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         viamd::write_bool(state, STR_LIT("RecalcBonds"), op.recalc_bonds);
         viamd::write_bool(state, STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
         viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.query));
-        if (!md_bitfield_empty(&op.selection_mask)) {
-            viamd::write_bitfield(state, STR_LIT("RecenterTarget"), &op.selection_mask);
+        if (!md_bitset_empty(op.selection_mask)) {
+            viamd::write_bitset(state, STR_LIT("RecenterTarget"), &op.selection_mask);
         }
     }
 
@@ -2349,13 +2346,14 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
         const Selection& sel = app_state->selection.stored_selections[i];
         viamd::write_section_header(state, STR_LIT("Selection"));
         viamd::write_str(state, STR_LIT("Label"), str_from_cstr(sel.name));
-        viamd::write_bitfield(state, STR_LIT("Mask"), &sel.atom_mask);
+        viamd::write_bitset(state, STR_LIT("Mask"), &sel.atom_mask);
     }
 
     viamd::write_section_header(state, STR_LIT("ActiveSelection"));
     viamd::write_int(state, STR_LIT("Granularity"), (int)app_state->selection.granularity);
-    if (!md_bitfield_empty(&app_state->selection.selection_mask)) {
-        viamd::write_bitfield(state, STR_LIT("Mask"), &app_state->selection.selection_mask);
+    const md_bitset_t selection = md_bitmask_view(&app_state->selection.selection_mask);
+    if (!md_bitset_empty(selection)) {
+        viamd::write_bitset(state, STR_LIT("Mask"), &selection);
     }
 
     // Save user defined bonds
@@ -2398,19 +2396,19 @@ bool save_workspace(ApplicationState* app_state, str_t filename) {
 }
 
 // --- SELECTION ---
-Selection* create_selection(ApplicationState* state, str_t name, md_bitfield_t* atom_mask) {
+Selection* create_selection(ApplicationState* state, str_t name, md_bitset_t atom_mask) {
     ASSERT(state);
     Selection sel;
     str_copy_to_char_buf(sel.name, sizeof(sel.name), name);
-    md_bitfield_init(&sel.atom_mask, state->allocator.persistent);
-    if (atom_mask) {
-        md_bitfield_copy(&sel.atom_mask, atom_mask);
-    }
+    sel.atom_mask = md_bitset_copy(atom_mask, state->allocator.persistent);
     md_array_push(state->selection.stored_selections, sel, state->allocator.persistent);
     return md_array_last(state->selection.stored_selections);
 }
 
 void remove_all_selections(ApplicationState* state) {
+    for (size_t i = 0; i < md_array_size(state->selection.stored_selections); ++i) {
+        md_bitset_free(&state->selection.stored_selections[i].atom_mask, state->allocator.persistent);
+    }
     md_array_shrink(state->selection.stored_selections, 0);
 }
 
@@ -2420,7 +2418,7 @@ void remove_selection(ApplicationState* state, size_t idx) {
         VIAMD_LOG_ERROR("Index [%zu] out of range when trying to remove selection", idx);
     }
     auto item = &state->selection.stored_selections[idx];
-    md_bitfield_free(&item->atom_mask);
+    md_bitset_free(&item->atom_mask, state->allocator.persistent);
 
     state->selection.stored_selections[idx] = *md_array_last(state->selection.stored_selections);
     md_array_pop(state->selection.stored_selections);
@@ -2433,7 +2431,7 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     rep->gfx_rep = md_gfx_rep_create(state->mold.sys.atom.count);
 #endif
     rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
-    md_bitfield_init(&rep->atom_mask, state->allocator.persistent);
+    rep->atom_mask = md_bitset_empty_set();
 
     // Default to the first per atom field the system offers, if it offers any - unless the
     // representation already names one the system has. This runs again for every representation
@@ -2491,7 +2489,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     ASSERT(state);
     ASSERT(idx < md_array_size(state->representation.reps));
     auto& rep = state->representation.reps[idx];
-    md_bitfield_free(&rep.atom_mask);
+    md_bitset_free(&rep.atom_mask, state->allocator.persistent);
     md_gl_rep_destroy(rep.md_rep);
     // A readback queued for this representation's volume would land in a texture that no longer
     // exists, so let the queue run out first.
@@ -2507,13 +2505,13 @@ void recompute_atom_visibility_mask(ApplicationState* state) {
     ASSERT(state);
     auto& mask = state->representation.visibility_mask;
 
-    md_bitfield_clear(&mask);
+    md_bitmask_clear(&mask);
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         auto& rep = state->representation.reps[i];
         if (!rep.enabled) continue;
-        md_bitfield_or_inplace(&mask, &rep.atom_mask);
+        md_bitmask_or(&mask, rep.atom_mask);
     }
-    state->representation.visibility_mask_hash = md_bitfield_hash64(&mask, 0);
+    state->representation.visibility_mask_hash = md_bitset_hash64(md_bitmask_view(&mask), 0);
 }
 
 // "ground_state" reads as "Ground State" in a menu. The path segment is the identity; this is
@@ -2668,7 +2666,7 @@ int atom_attribute_variant_count(const md_attribute_t* attr) {
     return attr->format.rank > 1 ? (int)attr->format.shape[0] : 1;
 }
 
-ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitfield_t* mask) {
+ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitset_t* mask) {
     ColorScaleSpan span;
     if (!attr) return span;
 
@@ -2686,7 +2684,7 @@ ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitfield
         float value_max = -FLT_MAX;
         size_t num_present = 0;
         for (size_t i = 0; i < num_values; ++i) {
-            if (mask && !md_bitfield_test_bit(mask, i % num_atoms)) continue;
+            if (mask && !md_bitset_test(*mask, (uint32_t)(i % num_atoms))) continue;
             if (atom_attribute_value_absent(values[i])) continue;
             value_min = MIN(value_min, values[i]);
             value_max = MAX(value_max, values[i]);
@@ -4047,7 +4045,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
             rep->filt_is_dirty = true;
         }
         if (rep->filt_is_dirty) {
-            rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, &state->mold.state, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+            rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, &state->mold.state, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error), state->allocator.persistent);
             rep->filt_is_dirty = false;
         }
 
@@ -4105,11 +4103,11 @@ void update_representation(ApplicationState* state, Representation* rep) {
             if (num_extracted == num_atoms) {
                 // The span of the atoms shown, measured again only when the values or the atoms
                 // changed: it scans every variant of the attribute
-                const md_bitfield_t* shown = rep->filt_is_valid ? &rep->atom_mask : nullptr;
+                const md_bitset_t* shown = rep->filt_is_valid ? &rep->atom_mask : nullptr;
                 uint64_t span_hash = md_hash64(&coloring.key, sizeof(coloring.key), 1);
                 const uint64_t version = md_attributes_version(&sys.attributes, coloring.key);
                 span_hash = md_hash64(&version, sizeof(version), span_hash);
-                span_hash = shown ? md_bitfield_hash64(shown, span_hash) : md_hash64(&num_atoms, sizeof(num_atoms), span_hash);
+                span_hash = shown ? md_bitset_hash64(*shown, span_hash) : md_hash64(&num_atoms, sizeof(num_atoms), span_hash);
                 if (span_hash != coloring.span_hash) {
                     coloring.span = atom_attribute_span(attr, shown);
                     coloring.span_hash = span_hash;
@@ -4157,10 +4155,8 @@ void update_representation(ApplicationState* state, Representation* rep) {
                             int i1 = CLAMP((int)state->animation.frame + 1, 0, (int)rep->prop->data.num_values / dim - 1);
                             float frame_fract = fractf((float)state->animation.frame);
 
-                            md_bitfield_t mask = {0};
-                            md_bitfield_init(&mask, frame_alloc);
                             for (int i = 0; i < dim; ++i) {
-                                md_bitfield_and(&mask, &rep->atom_mask, &vis.structure[i]);
+                                md_bitset_t mask = md_bitset_and(rep->atom_mask, vis.structure[i], frame_alloc);
                                 float value = lerpf(values[i0 * dim + i], values[i1 * dim + i], frame_fract);
                                 float t = CLAMP((value - rep->map_beg) / (rep->map_end - rep->map_beg), 0, 1);
                                 ImVec4 color = ImPlot::SampleColormap(t, rep->color_map);
@@ -4252,7 +4248,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
 
     if (colors) {
         if (rep->filt_is_valid) {
-            filter_colors(colors, num_atoms, &rep->atom_mask);
+            filter_colors(colors, num_atoms, rep->atom_mask);
             state->representation.atom_visibility_mask_dirty = true;
             md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
 
@@ -5004,7 +5000,7 @@ void recenter_mark_query_dirty(ApplicationState* state) {
     }
 }
 
-const md_bitfield_t& recenter_get_active_target_mask(const ApplicationState* state) {
+const md_bitset_t& recenter_get_active_target_mask(const ApplicationState* state) {
     ASSERT(state);
     return state->operations.recenter_query.enabled ? state->operations.recenter_query.mask : state->operations.selection_mask;
 }
@@ -5031,9 +5027,9 @@ bool recenter_update_query_mask(ApplicationState* state) {
         return false;
     }
 
-    md_bitfield_clear(&query.mask);
+    md_bitset_free(&query.mask, state->allocator.persistent);
     query.dynamic = false;
-    query.valid = md_filter(&query.mask, str_from_cstr(query.query), &state->mold.sys, &state->mold.state, state->script.ir, &query.dynamic, query.error, sizeof(query.error));
+    query.valid = md_filter(&query.mask, str_from_cstr(query.query), &state->mold.sys, &state->mold.state, state->script.ir, &query.dynamic, query.error, sizeof(query.error), state->allocator.persistent);
     query.evaluated_version = query.version;
     return true;
 }
@@ -5044,14 +5040,9 @@ void recenter_update(ApplicationState* state) {
     recenter_update_target_data(state);
 }
 
-// Exactly the same atoms, whatever range of bits each bitfield happens to be stored over. A hash of the
-// stored blocks is neither: it misses their offset, and the same atoms can be stored over different ranges.
-static bool same_atoms(const md_bitfield_t* a, const md_bitfield_t* b) {
-    md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-    md_bitfield_t diff = md_bitfield_create(md_temp_allocator(temp));
-    md_bitfield_xor(&diff, a, b);
-    return md_bitfield_empty(&diff);
+// Exactly the same atoms, whatever form each set is in
+static bool same_atoms(const md_bitset_t* a, const md_bitset_t* b) {
+    return md_bitset_equal(*a, *b);
 }
 
 void recenter_update_target_data(ApplicationState* state) {
@@ -5062,17 +5053,14 @@ void recenter_update_target_data(ApplicationState* state) {
     if (!state->operations.fixate_orientation) return;
 
     auto& ref = state->operations.initial_frame;
-    const md_bitfield_t& target_mask = recenter_get_active_target_mask(state);
+    const md_bitset_t& target_mask = recenter_get_active_target_mask(state);
 
     // Keyed on the atoms themselves. The versions this used to compare change every time a query is
     // evaluated, which for one that depends on the frame is every frame, whether or not its atoms changed.
     if (!ref.valid || !same_atoms(&ref.target_mask, &target_mask)) {
-        if (!ref.target_mask.alloc) {
-            md_bitfield_init(&ref.target_mask, state->allocator.persistent);
-        }
-        md_bitfield_copy(&ref.target_mask, &target_mask);
+        md_bitset_assign(&ref.target_mask, target_mask, state->allocator.persistent);
         ref.valid = true;
-        size_t count = md_bitfield_popcount(&target_mask);
+        size_t count = md_bitset_count(target_mask);
 
         md_array_resize(state->operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
 
@@ -5088,10 +5076,10 @@ void recenter_update_target_data(ApplicationState* state) {
             temp_state.xyz = temp_xyz;
             extract_frame(state, 0, &temp_state);
 
-            md_bitfield_iter_t it = md_bitfield_iter_create(&target_mask);
+            md_bitset_iter_t it = md_bitset_iter(target_mask);
             int dst_idx = 0;
-            while (md_bitfield_iter_next(&it)) {
-                uint64_t src_idx = md_bitfield_iter_idx(&it);
+            while (md_bitset_iter_next(&it)) {
+                uint64_t src_idx = it.idx;
                 float mass = md_atom_mass(&state->mold.sys.atom, src_idx);
                 state->operations.initial_frame.rel_xyzw[dst_idx++] = vec4_from_vec3(temp_xyz[src_idx], mass);
             }
@@ -5119,8 +5107,8 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
     *rotation    = mat4_ident();
     bool turn = false;
 
-    const md_bitfield_t& target_mask = recenter_get_active_target_mask(app);
-    size_t count = md_bitfield_popcount(&target_mask);
+    const md_bitset_t& target_mask = recenter_get_active_target_mask(app);
+    size_t count = md_bitset_count(target_mask);
 
     if (count > 0) {
         md_temp_scope_t temp = md_temp_begin_in(app->allocator.frame);
@@ -5223,7 +5211,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     // A wrap or a make whole on its own keeps the turn the coordinates had
     mat4_t rotation = prev_rotation;
     bool fresh_turn = false;
-    if (recenter && !md_bitfield_empty(&recenter_get_active_target_mask(app))) {
+    if (recenter && !md_bitset_empty(recenter_get_active_target_mask(app))) {
         // Current for this target before it is fitted against. The main loop does this every frame too, but
         // ticking 'keep orientation' applies at once, before the loop has had a chance to build it.
         recenter_update_target_data(app);
@@ -5718,10 +5706,10 @@ void interaction_surface_event_extract(InteractionSurfaceEvent* event, const Int
     }
 }
 
-void point_set_region_mask_compute(md_bitfield_t* mask,
+void point_set_region_mask_compute(md_bitmask_t* mask,
     const vec3_t xyz[],
     size_t count,
-    const md_bitfield_t* candidate_mask,
+    const md_bitset_t* candidate_mask,
     const mat4_t& world_to_clip,
     const vec2_t& region_min,
     const vec2_t& region_max,
@@ -5729,24 +5717,26 @@ void point_set_region_mask_compute(md_bitfield_t* mask,
 {
     ASSERT(mask);
     ASSERT(xyz);
+    // The candidates are read while the mask is written: they must not be a view of it
+    ASSERT(!candidate_mask || !candidate_mask->words || !mask->words || candidate_mask->words < mask->words || candidate_mask->words >= mask->words + mask->cap);
 
-    md_bitfield_clear(mask);
+    md_bitmask_clear(mask);
 
     // Transform visible atoms using supplied world_to_clip and set if within region
 
     if (candidate_mask) {
         // Do for candidate set
-        md_bitfield_iter_t it = md_bitfield_iter_create(candidate_mask);
+        md_bitset_iter_t it = md_bitset_iter(*candidate_mask);
 
-        while (md_bitfield_iter_next(&it)) {
-            size_t idx = md_bitfield_iter_idx(&it);
+        while (md_bitset_iter_next(&it)) {
+            size_t idx = it.idx;
             vec4_t xyz1 = vec4_from_vec3(xyz[idx], 1.0f);
             vec4_t coord = mat4_mul_vec4(world_to_clip, xyz1);
             vec2_t surf_coord = {( coord.x / coord.w * 0.5f + 0.5f) * surface_size.x,
                                     (-coord.y / coord.w * 0.5f + 0.5f) * surface_size.y};
             if (region_min.x <= surf_coord.x && surf_coord.x <= region_max.x &&
                 region_min.y <= surf_coord.y && surf_coord.y <= region_max.y) {
-                md_bitfield_set_bit(mask, idx);
+                md_bitmask_set_bit(mask, (uint32_t)idx);
             }
         }
     } else {
@@ -5758,7 +5748,7 @@ void point_set_region_mask_compute(md_bitfield_t* mask,
                                     (-coord.y / coord.w * 0.5f + 0.5f) * surface_size.y};
             if (region_min.x <= surf_coord.x && surf_coord.x <= region_max.x &&
                 region_min.y <= surf_coord.y && surf_coord.y <= region_max.y) {
-                md_bitfield_set_bit(mask, i);
+                md_bitmask_set_bit(mask, (uint32_t)i);
             }
         }
     }
@@ -5854,7 +5844,7 @@ void file_queue_process(ApplicationState* state) {
                     // @TODO @FIX: This is hacky, just because the loader CAN set system state does not mean it always will.
                     // This should be instead captured and performed by the Event that signals when a new system is loaded.
                     if (loader_state.flags & LoaderFlag_System) {
-                        md_bitfield_reset(&state->representation.visibility_mask);
+                        md_bitmask_clear(&state->representation.visibility_mask);
 
                         if (!state->settings.keep_representations) {
                             remove_all_representations(state);
@@ -5871,7 +5861,7 @@ void file_queue_process(ApplicationState* state) {
     }
 }
 
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitfield_t* mask) {
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask) {
     ASSERT(transform);
     if (!state.num_atoms) return;
 
@@ -5882,10 +5872,10 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     const int32_t* indices = nullptr;
     size_t count = state.num_atoms;
     if (mask) {
-        const size_t popcount = md_bitfield_popcount(mask);
+        const size_t popcount = md_bitset_count(*mask);
         if (0 < popcount && popcount < state.num_atoms) {
             int32_t* idx = md_temp_alloc_array(temp, int32_t, popcount);
-            size_t len = md_bitfield_iter_extract_indices(idx, popcount, md_bitfield_iter_create(mask));
+            size_t len = md_bitset_iter_extract_indices(idx, popcount, md_bitset_iter(*mask));
             if (len > popcount || len > state.num_atoms) {
                 MD_LOG_DEBUG("Error: Invalid number of indices");
                 len = MIN(popcount, state.num_atoms);
@@ -5954,7 +5944,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 					[[fallthrough]];
                 case InteractionSurfaceEventKind::Click:
                     // Use highlight mask as intermediate mask for selection operations and to provide hover feedback
-                    md_bitfield_clear(&state->selection.highlight_mask);
+                    md_bitmask_clear(&state->selection.highlight_mask);
                     if (surf->hit.domain == PickingDomain_Atom) {
                         int32_t atom_idx = surf->hit.local_idx;
                         if (atom_idx >= 0 && (size_t)atom_idx < state->mold.sys.atom.count) {
@@ -6002,20 +5992,20 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
                         if (surf->hit.domain == PickingDomain_Atom || surf->hit.domain == PickingDomain_Bond || surf->hit.domain == PickingDomain_BackboneSegment) {
                             if (surf->selection_mode == InteractionSelectionMode::Append) {
-                                md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                                md_bitmask_or(&state->selection.selection_mask, md_bitmask_view(&state->selection.highlight_mask));
                             }
                             else if (surf->selection_mode == InteractionSelectionMode::Remove) {
-                                md_bitfield_andnot_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                                md_bitmask_andnot(&state->selection.selection_mask, md_bitmask_view(&state->selection.highlight_mask));
                             }
                             else if (surf->selection_mode == InteractionSelectionMode::None) {
-                                md_bitfield_clear(&state->selection.selection_mask);
-                                md_bitfield_or_inplace(&state->selection.selection_mask, &state->selection.highlight_mask);
+                                md_bitmask_clear(&state->selection.selection_mask);
+                                md_bitmask_or(&state->selection.selection_mask, md_bitmask_view(&state->selection.highlight_mask));
                             }
                         }
                         else if (surf->hit.domain == 0) {
                             // A plain click (no modifier, no drag) or a remove-click on empty space clears the selection
                             if (surf->selection_mode == InteractionSelectionMode::None || surf->selection_mode == InteractionSelectionMode::Remove) {
-                                md_bitfield_clear(&state->selection.selection_mask);
+                                md_bitmask_clear(&state->selection.selection_mask);
                                 single_selection_sequence_clear(&state->selection.single_selection_sequence);
                             }
                         }
@@ -6041,23 +6031,24 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             ASSERT(event.payload_type == viamd::EventPayloadType_ViewFitRequest);
             ViewFitRequest* req = (ViewFitRequest*)event.payload;
             if (req) {
-                md_bitfield_t* bf = nullptr;
+                const md_bitmask_t* m = nullptr;
                 switch (req->round) {
                 case ViewFitRound_Highlight:
-                    bf = &state->selection.highlight_mask; break;
+                    m = &state->selection.highlight_mask; break;
                 case ViewFitRound_Selection:
-                    bf = &state->selection.selection_mask; break;
+                    m = &state->selection.selection_mask; break;
                 case ViewFitRound_Visible:
-                    bf = &state->representation.visibility_mask; break;
+                    m = &state->representation.visibility_mask; break;
                 default:
                     break;
                 }
 
-                size_t popcount = bf ? md_bitfield_popcount(bf) : 0;
+                const md_bitset_t bf = m ? md_bitmask_view(m) : md_bitset_empty_set();
+                size_t popcount = md_bitset_count(bf);
                 if (popcount > 0) {
                     vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
                     if (dst_xyzw) {
-                        md_util_system_extract_xyzw_from_mask(dst_xyzw, bf, &state->mold.sys, &state->mold.state);
+                        md_util_system_extract_xyzw_from_mask(dst_xyzw, &bf, &state->mold.sys, &state->mold.state);
                     }
                 }
             }
@@ -6316,8 +6307,8 @@ void script_vis_update(ApplicationState* state) {
     // Shown only if it is of what is set. For where the atoms were, while it is computed for where they are.
     if (sc.vis_result && sc.vis_result->ok && sc.vis_result->key == key) {
         sc.vis_shown = &sc.vis_result->vis;
-        if (!md_bitfield_empty(&sc.vis_shown->atom_mask)) {
-            md_bitfield_copy(&state->selection.highlight_mask, &sc.vis_shown->atom_mask);
+        if (!md_bitset_empty(sc.vis_shown->atom_mask)) {
+            md_bitmask_assign(&state->selection.highlight_mask, sc.vis_shown->atom_mask);
         }
     }
 }
