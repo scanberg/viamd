@@ -189,48 +189,50 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
             md_strb_push_char(sb, '\n');
         }
 
-        uint32_t flags = 0;
+        // What the level the selection works at says about it: the atom's particle, role and chemistry, the kind
+        // of the component and its place in the chain, or the kind of the instance's entity
+        const md_component_kind_t comp_kind = comp_idx != -1 ? md_component_kind(&sys.component, comp_idx) : MD_COMPONENT_KIND_OTHER;
+        const bool nucleotide = comp_kind == MD_COMPONENT_KIND_NUCLEOTIDE;
 
         if (state.selection.granularity == SelectionGranularity::Atom) {
-			flags = md_system_atom_flags(&sys, atom_idx);
-		} else if (state.selection.granularity == SelectionGranularity::Component && comp_idx != -1) {
-			flags = md_system_component_flags(&sys, comp_idx);
+            const md_particle_kind_t particle = md_atom_particle_kind(&sys.atom, atom_idx);
+            if (particle != MD_PARTICLE_ATOM) {
+                md_strb_fmt(sb, "particle: %s\n", md_particle_kind_name(particle));
+            }
+            const md_atom_flags_t flags = md_system_atom_flags(&sys, atom_idx);
+            if (flags) {
+                *sb += "flags: ";
+                if (flags & MD_ATOM_FLAG_BACKBONE)       { *sb += "BACKBONE "; }
+                if (flags & MD_ATOM_FLAG_SIDE_CHAIN)     { *sb += "SIDE-CHAIN "; }
+                if (flags & MD_ATOM_FLAG_NUCLEOSIDE)     { *sb += "NUCLEOSIDE "; }
+                if (flags & MD_ATOM_FLAG_NUCLEOBASE)     { *sb += "NUCLEOBASE "; }
+                if (flags & MD_ATOM_FLAG_TERMINAL_BEG)   { *sb += nucleotide ? "5'-TERMINUS " : "N-TERMINUS "; }
+                if (flags & MD_ATOM_FLAG_TERMINAL_END)   { *sb += nucleotide ? "3'-TERMINUS " : "C-TERMINUS "; }
+                switch (md_atom_flags_hybridization(flags)) {
+                case MD_HYBRIDIZATION_SP:  *sb += "SP ";  break;
+                case MD_HYBRIDIZATION_SP2: *sb += "SP2 "; break;
+                case MD_HYBRIDIZATION_SP3: *sb += "SP3 "; break;
+                default: break;
+                }
+                if (flags & MD_ATOM_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
+                *sb += "\n";
+            }
+        } else if (state.selection.granularity == SelectionGranularity::Component && comp_idx != -1) {
+            const md_component_flags_t flags = md_system_component_flags(&sys, comp_idx);
+            if (comp_kind != MD_COMPONENT_KIND_OTHER || flags) {
+                md_strb_fmt(sb, "kind: %s", md_component_kind_name(comp_kind));
+                if ((comp_kind == MD_COMPONENT_KIND_AMINO_ACID || nucleotide) && !(flags & MD_COMPONENT_FLAG_RESOLVED)) { *sb += ", unresolved"; }
+                if (flags & MD_COMPONENT_FLAG_TERMINAL_BEG) { *sb += nucleotide ? ", 5'-terminus" : ", N-terminus"; }
+                if (flags & MD_COMPONENT_FLAG_TERMINAL_END) { *sb += nucleotide ? ", 3'-terminus" : ", C-terminus"; }
+                *sb += "\n";
+            }
         } else if (state.selection.granularity == SelectionGranularity::Instance && inst_idx != -1) {
-			flags = md_system_instance_flags(&sys, inst_idx);
-        }
-
-		const uint32_t TERM_N = MD_FLAG_AMINO_ACID   | MD_FLAG_TERMINAL_BEG;
-		const uint32_t TERM_C = MD_FLAG_AMINO_ACID   | MD_FLAG_TERMINAL_END;
-		const uint32_t TERM_5 = MD_FLAG_NUCLEIC_ACID | MD_FLAG_TERMINAL_BEG;
-		const uint32_t TERM_3 = MD_FLAG_NUCLEIC_ACID | MD_FLAG_TERMINAL_END;
-
-        if (flags) {
-            *sb += "flags: ";
-            if (flags & MD_FLAG_HETERO)         { *sb += "HETERO "; }
-			if (flags & MD_FLAG_POLYPEPTIDE)    { *sb += "POLYPEPTIDE "; }
-            if (flags & MD_FLAG_AMINO_ACID)     { *sb += "AMINO-ACID "; }
-            if (flags & MD_FLAG_SIDE_CHAIN)     { *sb += "SIDE-CHAIN "; }
-			if (flags & MD_FLAG_NUCLEIC_ACID)   { *sb += "NUCLEIC-ACID "; }
-            if (flags & MD_FLAG_NUCLEOTIDE)     { *sb += "NUCLEOTIDE "; }
-            if (flags & MD_FLAG_NUCLEOSIDE)     { *sb += "NUCLEOSIDE "; }
-            if (flags & MD_FLAG_NUCLEOBASE)     { *sb += "NUCLEOBASE "; }
-            if (flags & MD_FLAG_WATER)          { *sb += "WATER "; }
-            if (flags & MD_FLAG_ION)            { *sb += "ION "; }
-            if (flags & MD_FLAG_BACKBONE)       { *sb += "BACKBONE "; }
-            if ((flags & TERM_N) == TERM_N)     { *sb += "N-TERMINUS "; }
-            if ((flags & TERM_C) == TERM_C)     { *sb += "C-TERMINUS "; }
-			if ((flags & TERM_5) == TERM_5)     { *sb += "5'-TERMINUS "; }
-			if ((flags & TERM_3) == TERM_3)     { *sb += "3'-TERMINUS "; }
-            if (flags & MD_FLAG_SP)             { *sb += "SP "; }
-            if (flags & MD_FLAG_SP2)            { *sb += "SP2 "; }
-            if (flags & MD_FLAG_SP3)            { *sb += "SP3 "; }
-            if (flags & MD_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
-            if (flags & MD_FLAG_HBOND_DONOR)    { *sb += "HBOND-DONOR "; }
-            if (flags & MD_FLAG_HBOND_ACCEPTOR) { *sb += "HBOND-ACCEPTOR "; }
-            if (flags & MD_FLAG_VIRTUAL_SITE)   { *sb += "VIRTUAL-SITE "; }
-            if (flags & MD_FLAG_COARSE_GRAINED) { *sb += "COARSE-GRAINED "; }
-            if (flags & MD_FLAG_DERIVED)        { *sb += "DERIVED "; }
-            *sb += "\n";
+            const md_entity_idx_t ent_idx = md_instance_entity_idx(&sys.instance, inst_idx);
+            if (ent_idx != -1) {
+                const str_t desc = md_entity_description(&sys.entity, ent_idx);
+                md_strb_fmt(sb, "entity[%i]: " STR_FMT " (%s%s)\n", ent_idx + 1, STR_ARG(desc), md_entity_kind_name(md_entity_kind(&sys.entity, ent_idx)),
+                    (md_entity_flags(&sys.entity, ent_idx) & MD_ENTITY_FLAG_INFERRED) ? ", inferred" : "");
+            }
         }
         if (state.selection.granularity == SelectionGranularity::Atom) {
             const int charge = md_atom_formal_charge(&sys.atom, atom_idx);
@@ -457,6 +459,43 @@ static md_secondary_structure_t secondary_structure_from_render_class(SecondaryS
     }
 }
 
+// Fills an isolated coil between two segments of the same structure in with that structure, within each chain, to
+// keep the cartoon from flickering at the noise of the assignment. Presentation only.
+static void secondary_structure_weights_fill_isolated_coils(md_gl_secondary_structure_t* weights, const md_protein_backbone_data_t* backbone) {
+    auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
+        return a.helix == b.helix && a.sheet == b.sheet;
+    };
+    const md_gl_secondary_structure_t ss_coil  = { 0, 0 };
+    const md_gl_secondary_structure_t ss_helix = { .helix = 1.0f };
+    const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
+    for (size_t r = 0; r < backbone->range.count; ++r) {
+        for (size_t j = backbone->range.offset[r] + 1; j + 1 < backbone->range.offset[r + 1]; ++j) {
+            if (!is_eq(weights[j], ss_coil)) continue;
+            if (is_eq(weights[j - 1], ss_helix) && is_eq(weights[j + 1], ss_helix)) weights[j] = ss_helix;
+            if (is_eq(weights[j - 1], ss_sheet) && is_eq(weights[j + 1], ss_sheet)) weights[j] = ss_sheet;
+        }
+    }
+}
+
+// The cartoon's secondary structure for the displayed state's own labels, uploaded directly: the weights are renderer
+// input and are kept nowhere but on the GPU. Without a run there is nothing to blend between; interpolate_system_state
+// uploads its own blend of the frames around the displayed one.
+static void upload_secondary_structure_weights(ApplicationState* data) {
+    const md_system_t& sys = data->mold.sys;
+    const size_t num_segments = sys.protein_backbone.segment.count;
+    const md_secondary_structure_t* ss = md_util_state_secondary_structure(&data->mold.state, &sys);
+    if (!ss || num_segments == 0) return;
+
+    md_temp_scope_t temp = md_temp_begin();
+    defer { md_temp_end(temp); };
+    md_gl_secondary_structure_t* weights = md_temp_alloc_array(temp, md_gl_secondary_structure_t, num_segments);
+    for (size_t i = 0; i < num_segments; ++i) {
+        weights[i] = md_gl_secondary_structure_convert(ss[i]);
+    }
+    secondary_structure_weights_fill_isolated_coils(weights, &sys.protein_backbone);
+    md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)num_segments, weights, 0);
+}
+
 static void secondary_structure_render_denoise(md_secondary_structure_t* dst, const md_secondary_structure_t* src, size_t num_frames, size_t stride) {
     ASSERT(dst);
     ASSERT(src);
@@ -565,6 +604,19 @@ const double* run_frame_times(const ApplicationState* app) {
 md_unit_t run_time_unit(const ApplicationState* app) {
     const md_attribute_t* axis = run_time_axis(app);
     return axis ? axis->unit : md_unit_none();
+}
+
+const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app) {
+    ASSERT(app);
+    const md_system_state_t* state = &app->mold.state;
+    const auto& render = app->trajectory_data.secondary_structure_render;
+    if (render.data && render.stride == app->mold.sys.protein_backbone.segment.count && md_state_has_frame(state)) {
+        const size_t frame = (size_t)md_state_frame_nearest(state);
+        if ((frame + 1) * render.stride <= render.count) {
+            return render.data + frame * render.stride;
+        }
+    }
+    return md_util_state_secondary_structure(state, &app->mold.sys);
 }
 
 static const str_t frame_extract_paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
@@ -856,8 +908,11 @@ void init_system_data(ApplicationState* data) {
         recenter_mark_query_dirty(data);
 
         data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
-        if (data->mold.sys.protein_backbone.segment.count > 0) {
-            data->mold.interpolated_properties.secondary_structure = md_array_create(md_gl_secondary_structure_t, data->mold.sys.protein_backbone.segment.count, data->mold.sys.alloc);
+
+        // The backbone of the loaded coordinates, carried by the state, which stands until a run replaces it frame by
+        // frame (interpolate_system_state)
+        if (md_util_state_backbone_compute(&data->mold.state, &data->mold.sys)) {
+            upload_secondary_structure_weights(data);
         }
 
         mat3_t A;
@@ -932,7 +987,6 @@ void free_system_data(ApplicationState* data) {
 
     MEMSET(data->files.molecule, 0, sizeof(data->files.molecule));
 
-    data->mold.interpolated_properties.secondary_structure = nullptr;
 
     MEMSET(data->mold.frame_cache.states, 0, sizeof(data->mold.frame_cache.states));
     clear_frame_cache(&data->mold.frame_cache);
@@ -3462,7 +3516,7 @@ void update_representation(ApplicationState* state, Representation* rep) {
                 .helix = convert_color(rep->secondary_structure.color_helix),
                 .sheet = convert_color(rep->secondary_structure.color_sheet),
             };
-            color_atoms_secondary_structure(colors, num_atoms, sys, palette);
+            color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(state), palette);
             break;
         }
         case ColorMapping::Property:
@@ -3733,18 +3787,18 @@ void create_default_representations(ApplicationState* state) {
         goto done;
     }
 
-    // TODO: Redo this check with entities instead of atom flags
-    for (size_t i = 0; i < state->mold.sys.atom.count; ++i) {
-        uint32_t flags = state->mold.sys.atom.flags[i];
-        if (flags & MD_FLAG_AMINO_ACID) amino_acid_present = true;
-        if (flags & MD_FLAG_NUCLEOTIDE) nucleic_present = true;
-        if (flags & MD_FLAG_ION) ion_present = true;
-        if (flags & MD_FLAG_WATER) water_present = true;
-        if (flags & MD_FLAG_COARSE_GRAINED) num_coarse_grained += 1;
-
-        if (!(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE | MD_FLAG_ION | MD_FLAG_WATER))) {
-            ligand_present = true;
+    // What is present, by what the components are. The selections of the representations below are by the same.
+    for (size_t i = 0; i < state->mold.sys.component.count; ++i) {
+        switch (md_component_kind(&state->mold.sys.component, i)) {
+        case MD_COMPONENT_KIND_AMINO_ACID: amino_acid_present = true; break;
+        case MD_COMPONENT_KIND_NUCLEOTIDE: nucleic_present = true;    break;
+        case MD_COMPONENT_KIND_ION:        ion_present = true;        break;
+        case MD_COMPONENT_KIND_WATER:      water_present = true;      break;
+        default:                           ligand_present = true;     break;
         }
+    }
+    for (size_t i = 0; i < state->mold.sys.atom.count; ++i) {
+        num_coarse_grained += md_atom_particle_kind(&state->mold.sys.atom, i) == MD_PARTICLE_BEAD;
     }
 
     // Coarse grained when most of it is. A handful of beads, or atoms a loader could not assign an
@@ -3759,14 +3813,19 @@ void create_default_representations(ApplicationState* state) {
         RepresentationType type = RepresentationType::Cartoon;
         ColorMapping color = ColorMapping::SecondaryStructure;
 
-        if (state->mold.sys.instance.count > 1) {
-            color = ColorMapping::InstId;
-        } else {
-            size_t res_count = md_instance_comp_count(&state->mold.sys.instance, 0);
-            if (res_count < 20) {
-                type = RepresentationType::BallAndStick;
-                color = ColorMapping::Type;
+        // Several chains are told apart by color; a short single chain (or none: free amino acids) is shown atom by atom
+        size_t num_chains = 0;
+        size_t chain_res_count = 0;
+        for (size_t i = 0; i < state->mold.sys.instance.count; ++i) {
+            if (md_system_instance_entity_kind(&state->mold.sys, i) == MD_ENTITY_KIND_PEPTIDE) {
+                if (num_chains++ == 0) chain_res_count = md_instance_comp_count(&state->mold.sys.instance, i);
             }
+        }
+        if (num_chains > 1) {
+            color = ColorMapping::InstId;
+        } else if (chain_res_count < 20) {
+            type = RepresentationType::BallAndStick;
+            color = ColorMapping::Type;
         }
 
         Representation* prot = create_representation(state, type, color, STR_LIT("protein"));
@@ -3884,6 +3943,11 @@ void interpolate_system_state(ApplicationState* app) {
         md_system_state_t* src_states[4];
 		md_system_state_t* dst_state;
 
+        // The backbone of the destination state, and the cartoon's weights for it (temporary, uploaded at the end)
+        md_backbone_angles_t*        dst_angle;
+        md_secondary_structure_t*    dst_ss;
+        md_gl_secondary_structure_t* ss_weights;
+
         vec3_t* aabb_min;
         vec3_t* aabb_max;
 
@@ -3903,6 +3967,17 @@ void interpolate_system_state(ApplicationState* app) {
         .aabb_min = md_temp_alloc_array(temp, vec3_t, num_threads),
         .aabb_max = md_temp_alloc_array(temp, vec3_t, num_threads),
     };
+
+    // The backbone of the displayed state is the run's at the frames around it: the angles and the secondary structure
+    // go into the state's attributes, the cartoon's weights into temporary memory, which is uploaded at the end.
+    const size_t num_segments = app->mold.sys.protein_backbone.segment.count;
+    if (num_segments > 0 && app->trajectory_data.backbone_angles.data) {
+        payload.dst_angle = md_util_state_backbone_angles_write(&app->mold.state, &app->mold.sys);
+    }
+    if (num_segments > 0 && app->trajectory_data.secondary_structure.data) {
+        payload.dst_ss = md_util_state_secondary_structure_write(&app->mold.state, &app->mold.sys);
+        payload.ss_weights = payload.dst_ss ? md_temp_alloc_array(temp, md_gl_secondary_structure_t, num_segments) : nullptr;
+    }
 
     // Stamp the destination with the frame it is about to represent. The interpolated state is not
     // written by a run extraction, so nothing else would fill this in, and a
@@ -4068,7 +4143,7 @@ void interpolate_system_state(ApplicationState* app) {
         tasks[num_tasks++] = aabb_task;
     }
 
-    if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.angle) {
+    if (payload.dst_angle) {
         switch (mode) {
             case InterpolationMode::Nearest: {
                 task_system::ID angle_task = task_system::create_pool_task(STR_LIT("## Compute Backbone Angles"), [data = &payload]() {
@@ -4077,7 +4152,7 @@ void interpolate_system_state(ApplicationState* app) {
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
-                    MEMCPY(data->app->mold.sys.protein_backbone.segment.angle, src_angle, data->app->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
+                    MEMCPY(data->dst_angle, src_angle, data->app->mold.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
                 });
 
                 tasks[num_tasks++] = angle_task;
@@ -4090,7 +4165,6 @@ void interpolate_system_state(ApplicationState* app) {
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[1],
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
-                    md_system_t& sys = data->app->mold.sys;
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
                         float psi[2] = {src_angles[0][i].psi, src_angles[1][i].psi};
@@ -4100,7 +4174,7 @@ void interpolate_system_state(ApplicationState* app) {
 
                         float final_phi = lerp(phi[0], phi[1], data->t);
                         float final_psi = lerp(psi[0], psi[1], data->t);
-                        sys.protein_backbone.segment.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
+                        data->dst_angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
                     }
                 });
 
@@ -4116,7 +4190,6 @@ void interpolate_system_state(ApplicationState* app) {
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[2],
                         data->app->trajectory_data.backbone_angles.data + data->app->trajectory_data.backbone_angles.stride * data->frames[3],
                     };
-                    md_system_t& sys = data->app->mold.sys;
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
                         float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
@@ -4131,7 +4204,7 @@ void interpolate_system_state(ApplicationState* app) {
 
                         float final_phi = cubic_spline(phi[0], phi[1], phi[2], phi[3], data->t, data->s);
                         float final_psi = cubic_spline(psi[0], psi[1], psi[2], psi[3], data->t, data->s);
-                        sys.protein_backbone.segment.angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
+                        data->dst_angle[i] = {deperiodize_orthof(final_phi, 0, (float)TWO_PI), deperiodize_orthof(final_psi, 0, (float)TWO_PI)};
                     }
                 });
 
@@ -4144,13 +4217,13 @@ void interpolate_system_state(ApplicationState* app) {
         }
     }
 
-    if (sys.protein_backbone.segment.count > 0 && sys.protein_backbone.segment.secondary_structure) {
-        if (md_array_size(app->mold.interpolated_properties.secondary_structure) != sys.protein_backbone.segment.count) {
-			MD_LOG_ERROR("Secondary structure array size does not match the number of segments.");
-        }
-        size_t num_backbone_segments = sys.protein_backbone.segment.count;
-        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_backbone_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
+    if (payload.dst_ss) {
+        task_system::ID ss_task = task_system::create_pool_task(STR_LIT("## Interpolate Secondary Structures"), (uint32_t)num_segments, [data = &payload, mode](uint32_t range_beg, uint32_t range_end, uint32_t thread_num) {
             (void)thread_num;
+            // The state carries the secondary structure of the nearest frame as it was assigned. The cartoon blends the
+            // denoised copy (a presentation smoothing, see secondary_structure_render) where it exists.
+            const md_secondary_structure_t* label_nearest = data->app->trajectory_data.secondary_structure.data +
+                data->app->trajectory_data.secondary_structure.stride * (data->t < 0.5f ? data->frames[1] : data->frames[2]);
             const md_secondary_structure_t* ss_data = data->app->trajectory_data.secondary_structure_render.data ?
                 data->app->trajectory_data.secondary_structure_render.data :
                 data->app->trajectory_data.secondary_structure.data;
@@ -4194,10 +4267,8 @@ void interpolate_system_state(ApplicationState* app) {
                 [[fallthrough]];
             case InterpolationMode::Nearest: {
                 for (size_t i = range_beg; i < range_end; ++i) {
-                    md_secondary_structure_t ss = src_ss_nearest[i];
-                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = ss;
-                    data->app->mold.interpolated_properties.secondary_structure[i] = md_gl_secondary_structure_convert(ss);
+                    data->dst_ss[i] = label_nearest[i];
+                    data->ss_weights[i] = md_gl_secondary_structure_convert(src_ss_nearest[i]);
                 }
                 break;
             }
@@ -4205,10 +4276,8 @@ void interpolate_system_state(ApplicationState* app) {
                 for (size_t i = range_beg; i < range_end; ++i) {
                     md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
                     md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
-                    md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[0], ss_gl[1], data->t);
-                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    data->app->mold.interpolated_properties.secondary_structure[i] = ss_gl_i;
+                    data->dst_ss[i] = label_nearest[i];
+                    data->ss_weights[i] = blend_ss(ss_gl[0], ss_gl[1], data->t);
                 }
                 break;
             }
@@ -4232,10 +4301,8 @@ void interpolate_system_state(ApplicationState* app) {
                         ss_gl[2] = ss_gl[1];
                     }
 
-                    md_gl_secondary_structure_t ss_gl_i = blend_ss(ss_gl[1], ss_gl[2], smoothstep5(data->t));
-                    // Set both the analytical (nearest) and interpolated secondary structure (rendering)
-                    data->app->mold.sys.protein_backbone.segment.secondary_structure[i] = src_ss_nearest[i];
-                    data->app->mold.interpolated_properties.secondary_structure[i] = ss_gl_i;
+                    data->dst_ss[i] = label_nearest[i];
+                    data->ss_weights[i] = blend_ss(ss_gl[1], ss_gl[2], smoothstep5(data->t));
                 }
                 break;
             }
@@ -4243,36 +4310,12 @@ void interpolate_system_state(ApplicationState* app) {
         });
         tasks[num_tasks++] = ss_task;
 
-#if 1
-        // Task for cleaning up isolated coils to its neighbors (if the same), to reduce the noise in the secondary structure during transitions. This is a non temporal filtering step
+        // Isolated coils between matching structured segments are filled in, to reduce the noise during transitions.
+        // A non temporal filtering step, after the blend above.
         task_system::ID ss_cleanup_task = task_system::create_pool_task(STR_LIT("## Cleanup Secondary Structures"), [data = &payload]() {
-            // Cleanup isolated coils to reduce noise during transitions
-            auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
-                return a.helix == b.helix && a.sheet == b.sheet;
-            };
-            const md_gl_secondary_structure_t ss_coil = { 0,0 };
-            const md_gl_secondary_structure_t ss_helix = { .helix = 1.0f };
-            const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
-
-            md_gl_secondary_structure_t* ss_gl = data->app->mold.interpolated_properties.secondary_structure;
-            for (size_t i = 0; i < data->app->mold.sys.protein_backbone.range.count; ++i) {
-                size_t range_beg = data->app->mold.sys.protein_backbone.range.offset[i];
-                size_t range_end = data->app->mold.sys.protein_backbone.range.offset[i + 1];
-                for (size_t j = range_beg + 1; j + 1 < range_end; ++j) {
-                    // Set isolated coils between matching structured segments to reduce noise during transitions.
-                    if (is_eq(ss_gl[j - 1], ss_helix) && is_eq(ss_gl[j + 1], ss_helix) && is_eq(ss_gl[j], ss_coil)) {
-                        ss_gl[j] = ss_helix;
-                    }
-                    if (is_eq(ss_gl[j - 1], ss_sheet) && is_eq(ss_gl[j + 1], ss_sheet) && is_eq(ss_gl[j], ss_coil)) {
-                        ss_gl[j] = ss_sheet;
-                    }
-                }
-            }
+            secondary_structure_weights_fill_isolated_coils(data->ss_weights, &data->app->mold.sys.protein_backbone);
         });
         tasks[num_tasks++] = ss_cleanup_task;
-#endif
-
-        app->mold.dirty_gpu_buffers |= MolBit_DirtySecondaryStructure;
     }
 
     if (num_tasks > 0) {
@@ -4281,6 +4324,11 @@ void interpolate_system_state(ApplicationState* app) {
         }
         task_system::enqueue_task(tasks[0]);
         task_system::task_wait_for(tasks[num_tasks - 1]);
+    }
+
+    // The weights are the renderer's input and nothing else's: straight to the GPU, from the temporary memory above
+    if (payload.ss_weights) {
+        md_gl_mol_set_backbone_secondary_structure(app->mold.gl_mol, 0, (uint32_t)num_segments, payload.ss_weights, 0);
     }
 
     vec3_t aabb_min = payload.aabb_min[0];

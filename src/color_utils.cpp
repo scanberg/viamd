@@ -171,13 +171,13 @@ void color_atoms_inst_idx(uint32_t* colors, size_t count, const md_system_t& sys
     }
 }
 
-void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const SecondaryStructurePalette& palette) {
+void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const md_secondary_structure_t* secondary_structure, const SecondaryStructurePalette& palette) {
     const uint32_t color_unknown = palette.unknown;
     const uint32_t color_coil    = palette.coil;
     const uint32_t color_helix   = palette.helix;
     const uint32_t color_sheet   = palette.sheet;
 
-    if (sys.protein_backbone.segment.secondary_structure) {
+    if (secondary_structure) {
         for (size_t i = 0; i < sys.protein_backbone.range.count; ++i) {
             uint32_t range_beg = sys.protein_backbone.range.offset[i];
             uint32_t range_end = sys.protein_backbone.range.offset[i+1];
@@ -188,7 +188,7 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
 
             uint32_t* seg_colors = md_temp_alloc_array(temp_scope, uint32_t, range_ext);
             for (size_t j = 0; j < range_ext; ++j) {
-                md_secondary_structure_t ss = sys.protein_backbone.segment.secondary_structure[range_beg + j];
+                md_secondary_structure_t ss = secondary_structure[range_beg + j];
                 uint32_t color = color_unknown;
                 switch (ss) {
                     case MD_SECONDARY_STRUCTURE_HELIX_310:

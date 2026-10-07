@@ -153,7 +153,6 @@ enum MolBit_ {
     MolBit_None                     = 0,
     MolBit_DirtyPosition            = 1u << 0,
     MolBit_DirtyRadius              = 1u << 1,
-    MolBit_DirtySecondaryStructure  = 1u << 2,
     MolBit_DirtyFlags               = 1u << 3,
     MolBit_DirtyBonds               = 1u << 4,
     MolBit_ClearVelocity            = 1u << 5,
@@ -1051,25 +1050,18 @@ struct ApplicationState {
         // The arena backing this dataset is sys.alloc - there is no second handle to it. It is
         // created once at startup and survives every load: free_system_data rewinds it and puts the
         // handle back, because zeroing a system also zeroes the allocator it was using.
+        // The cartoon's secondary structure (blend weights between coil, helix and sheet) lives on the GPU only: it is
+        // computed where it is produced and uploaded straight away (upload_secondary_structure_weights,
+        // interpolate_system_state), never read back and kept nowhere else.
         md_gl_mol_t         gl_mol = {};
-
-        // Derived FOR DRAWING, in the renderer's own format, never read back - the same rule the
-        // GPU block below states, which is why this belongs beside gl_mol rather than in one of the
-        // attribute tables. md_gl_secondary_structure_t is a pair of blend weights, not a physical
-        // quantity: nothing would ask "what is the helix weight of segment 12" as a question about
-        // the molecule, and its only consumer is md_gl_mol_set_backbone_secondary_structure.
-        //
-        // Per DATASET, so it replicates with the rest of this block when several can be loaded.
-        struct {
-            md_array(md_gl_secondary_structure_t) secondary_structure = nullptr;
-        } interpolated_properties;
 #if EXPERIMENTAL_GFX_API
         md_gfx_handle_t     gfx_structure = {};
 #endif
         md_system_t         sys = {};
 
         // The actual interpolated state of the system.
-        // Is only used for rendering and visualization of properties.
+        // Is only used for rendering and visualization of properties. Its attributes carry the backbone angles and
+        // secondary structure of the displayed frame (md_util_state_backbone_angles, md_util_state_secondary_structure).
         md_system_state_t   state = {};
 
 		mat4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
@@ -1739,6 +1731,11 @@ bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t
 str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);
 // The attribute at "<run>/<leaf>" of the current run; NULL without a run or without such an attribute.
 const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf);
+
+// The secondary structure to show for the displayed state, one per segment of sys.protein_backbone: the denoised copy
+// of the run at the displayed frame (secondary_structure_render), else the state's own assignment
+// (md_util_state_secondary_structure). For presentation; NULL when there is neither.
+const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app);
 
 // Frame cache operations
 void clear_system_frame_cache(ApplicationState* app);

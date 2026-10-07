@@ -6064,14 +6064,6 @@ static void update_md_buffers(ApplicationState* data) {
         md_gl_mol_set_bonds(data->mold.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
     }
 
-    if (data->mold.dirty_gpu_buffers & MolBit_DirtySecondaryStructure) {
-        const md_gl_secondary_structure_t* ss_arr = data->mold.interpolated_properties.secondary_structure;
-        size_t ss_len = md_array_size(ss_arr);
-        if (ss_len > 0) {
-            md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)ss_len, ss_arr, 0);
-        }
-    }
-
     data->mold.dirty_gpu_buffers = 0;
 }
 

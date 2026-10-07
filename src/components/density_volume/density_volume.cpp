@@ -375,7 +375,7 @@ struct DensityVolume : viamd::EventHandler {
                     color_atoms_inst_idx(colors, num_atoms, sys);
                     break;
                 case ColorMapping::SecondaryStructure:
-                    color_atoms_secondary_structure(colors, num_atoms, sys);
+                    color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(state));
                     break;
                 default:
                     ASSERT(false);
