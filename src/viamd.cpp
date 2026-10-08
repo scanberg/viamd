@@ -1357,19 +1357,30 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_bool(rep->dynamic_evaluation, arg);
         } else if (str_eq(ident, STR_LIT("AtomicPropertyPath"))) {
             // Ids are a function of the path: this resolves before the dataset is loaded
-            rep->atomic_property.key = md_attributes_id_from_path(arg);
+            rep->atom_attribute.key = md_attributes_id_from_path(arg);
         } else if (str_eq(ident, STR_LIT("AtomicPropertyVariant"))) {
-            viamd::extract_int(rep->atomic_property.variant_idx, arg);
+            viamd::extract_int(rep->atom_attribute.variant_idx, arg);
         } else if (str_eq(ident, STR_LIT("AtomicPropertyColormap"))) {
-            viamd::extract_int(rep->atomic_property.colormap, arg);
-        } else if (str_eq(ident, STR_LIT("AtomicPropertyDataRange"))) {
-            float r[2];
-            if (viamd::extract_flt_vec(r, 2, arg)) { rep->atomic_property.value_min = r[0]; rep->atomic_property.value_max = r[1]; }
+            viamd::extract_int(rep->atom_attribute.scale.colormap, arg);
         } else if (str_eq(ident, STR_LIT("AtomicPropertyRange"))) {
+            // A range that was written is one somebody set: a workspace from before the range could
+            // follow the values has no AtomicPropertyAutoRange, and keeps it. One that has, has it
+            // after this line and says for itself.
             float r[2];
-            if (viamd::extract_flt_vec(r, 2, arg)) { rep->atomic_property.range_beg = r[0]; rep->atomic_property.range_end = r[1]; }
-        } else if (str_eq(ident, STR_LIT("AtomicPropertySymmetricZero"))) {
-            viamd::extract_bool(rep->atomic_property.range_symmetric_zero, arg);
+            if (viamd::extract_flt_vec(r, 2, arg)) {
+                rep->atom_attribute.scale.range_beg = r[0];
+                rep->atom_attribute.scale.range_end = r[1];
+                rep->atom_attribute.scale.auto_range = false;
+            }
+        } else if (str_eq(ident, STR_LIT("AtomicPropertyAutoRange"))) {
+            viamd::extract_bool(rep->atom_attribute.scale.auto_range, arg);
+        } else if (str_eq(ident, STR_LIT("AtomicPropertySymmetric"))) {
+            viamd::extract_bool(rep->atom_attribute.scale.symmetric, arg);
+        } else if (str_eq(ident, STR_LIT("AtomicPropertyLegend"))) {
+            viamd::extract_bool(rep->atom_attribute.scale.show_legend, arg);
+        } else if (str_eq(ident, STR_LIT("AtomicPropertyDataRange")) || str_eq(ident, STR_LIT("AtomicPropertySymmetricZero"))) {
+            // Written by earlier versions: the span is measured from the data now, and the old
+            // symmetric flag never reached the colours
         } else if (str_eq(ident, STR_LIT("DipolePath"))) {
             rep->dipole.dipole_key = md_attributes_id_from_path(arg);
         } else if (str_eq(ident, STR_LIT("DipoleIndex"))) {
@@ -1507,15 +1518,17 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
     viamd::write_bool(state, STR_LIT("DynamicEval"), rep.dynamic_evaluation);
 
     // Attributes by path: an id is a hash of it, and the path is what a reader can see
-    if (const md_attribute_t* prop = md_attributes_get(attributes, rep.atomic_property.key)) {
+    if (const md_attribute_t* prop = md_attributes_get(attributes, rep.atom_attribute.key)) {
         viamd::write_str(state, STR_LIT("AtomicPropertyPath"), prop->path);
-        viamd::write_int(state, STR_LIT("AtomicPropertyVariant"), rep.atomic_property.variant_idx);
-        viamd::write_int(state, STR_LIT("AtomicPropertyColormap"), rep.atomic_property.colormap);
-        const float data_range[2] = { rep.atomic_property.value_min, rep.atomic_property.value_max };
-        const float range[2]      = { rep.atomic_property.range_beg, rep.atomic_property.range_end };
-        viamd::write_flt_vec(state, STR_LIT("AtomicPropertyDataRange"), data_range, 2);
+        viamd::write_int(state, STR_LIT("AtomicPropertyVariant"), rep.atom_attribute.variant_idx);
+        const ColorScale& scale = rep.atom_attribute.scale;
+        const float range[2] = { scale.range_beg, scale.range_end };
+        viamd::write_int(state, STR_LIT("AtomicPropertyColormap"), scale.colormap);
         viamd::write_flt_vec(state, STR_LIT("AtomicPropertyRange"), range, 2);
-        viamd::write_bool(state, STR_LIT("AtomicPropertySymmetricZero"), rep.atomic_property.range_symmetric_zero);
+        // After the range, which on its own reads as a range somebody set
+        viamd::write_bool(state, STR_LIT("AtomicPropertyAutoRange"), scale.auto_range);
+        viamd::write_bool(state, STR_LIT("AtomicPropertySymmetric"), scale.symmetric);
+        viamd::write_bool(state, STR_LIT("AtomicPropertyLegend"), scale.show_legend);
     }
 
     if (rep.type == RepresentationType::DipoleMoment) {
@@ -2119,11 +2132,16 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
     md_bitfield_init(&rep->atom_mask, state->allocator.persistent);
 
-    // Default to the first per atom field the system offers, if it offers any. There is no list to
-    // consult: the attribute table is the list.
-    md_attribute_id_t first_property = MD_ATTRIBUTE_INVALID;
-    if (atom_property_query(&first_property, 1, state->mold.sys) > 0) {
-        atom_property_select(&rep->atomic_property, first_property, state->mold.sys);
+    // Default to the first per atom field the system offers, if it offers any - unless the
+    // representation already names one the system has. This runs again for every representation
+    // when a system is loaded, which is AFTER a workspace's representations were read, and for a
+    // clone: neither may lose the attribute it was coloured by, or how. There is no list to consult:
+    // the attribute table is the list.
+    if (!md_attributes_get(&state->mold.sys.attributes, rep->atom_attribute.key)) {
+        md_attribute_id_t first_attribute = MD_ATTRIBUTE_INVALID;
+        if (atom_attribute_query(&first_attribute, 1, state->mold.sys) > 0) {
+            atom_attribute_select(&rep->atom_attribute, first_attribute, state->mold.sys);
+        }
     }
 
     flag_representation_as_dirty(rep);
@@ -2306,17 +2324,17 @@ bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& 
 // A per atom scalar field: values one component wide, the atom axis LAST, and at most one axis of
 // variants ahead of it. mdlib deliberately does not know that an "atom/..." path is over this
 // system's atoms - categories are not predeclared - so this is where that convention is checked.
-static bool atom_property_qualifies(const md_attribute_t* attr, const md_system_t& sys) {
+static bool atom_attribute_qualifies(const md_attribute_t* attr, const md_system_t& sys) {
     const md_attribute_format_t& fmt = attr->format;
     if (fmt.rank < 1 || fmt.rank > 2) return false;
     if (fmt.components != 1) return false;
     return fmt.shape[fmt.rank - 1] == (uint32_t)sys.atom.count;
 }
 
-size_t atom_property_query(md_attribute_id_t out_ids[], size_t cap, const md_system_t& sys) {
+size_t atom_attribute_query(md_attribute_id_t out_ids[], size_t cap, const md_system_t& sys) {
     size_t count = 0;
     for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, STR_LIT("atom")); md_attributes_next(&it);) {
-        if (!atom_property_qualifies(it.attr, sys)) continue;
+        if (!atom_attribute_qualifies(it.attr, sys)) continue;
 
         if (out_ids && count < cap) {
             out_ids[count] = it.attr->id;
@@ -2327,64 +2345,82 @@ size_t atom_property_query(md_attribute_id_t out_ids[], size_t cap, const md_sys
     return count;
 }
 
-str_t atom_property_label(const md_attribute_t* attr) {
+str_t atom_attribute_label(const md_attribute_t* attr) {
     if (!attr) return str_t{};
     // An empty label is a valid state, and the leaf is what the path spells for itself.
     return str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
 }
 
-int atom_property_variant_count(const md_attribute_t* attr) {
+int atom_attribute_variant_count(const md_attribute_t* attr) {
     if (!attr) return 0;
     return attr->format.rank > 1 ? (int)attr->format.shape[0] : 1;
 }
 
-bool atom_property_value_range(float* out_min, float* out_max, const md_attribute_t* attr) {
-    if (!attr) return false;
+ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitfield_t* mask) {
+    ColorScaleSpan span;
+    if (!attr) return span;
 
     const size_t num_values = md_attribute_element_count(&attr->format);
-    if (num_values == 0) return false;
+    const size_t num_atoms  = attr->format.rank > 0 ? attr->format.shape[attr->format.rank - 1] : 0;
+    if (num_values == 0 || num_atoms == 0) return span;
 
     md_temp_scope_t temp = md_temp_begin();
     float* values = (float*)md_temp_alloc(temp, sizeof(float) * num_values);
 
-    // Deliberately the whole attribute and not one variant: a span recomputed per variant would
-    // make the colours shift as the index slider moves, which reads as the data changing.
-    bool result = values && md_attribute_extract_f32(values, num_values, attr, md_attribute_slice_all(), md_unit_none()) == num_values;
-    if (result) {
+    // Deliberately the whole attribute and not one variant: a span measured per variant would make
+    // the colours shift as the index slider moves, which reads as the data changing.
+    if (values && md_attribute_extract_f32(values, num_values, attr, md_attribute_slice_all(), md_unit_none()) == num_values) {
         float value_min =  FLT_MAX;
         float value_max = -FLT_MAX;
         size_t num_present = 0;
         for (size_t i = 0; i < num_values; ++i) {
-            if (atom_property_value_absent(values[i])) continue;
+            if (mask && !md_bitfield_test_bit(mask, i % num_atoms)) continue;
+            if (atom_attribute_value_absent(values[i])) continue;
             value_min = MIN(value_min, values[i]);
             value_max = MAX(value_max, values[i]);
             num_present += 1;
         }
-        result = num_present > 0;
-        if (result) {
-            if (out_min) *out_min = value_min;
-            if (out_max) *out_max = value_max;
+        if (num_present > 0) {
+            span = color_scale_span(value_min, value_max);
         }
     }
     md_temp_end(temp);
 
-    return result;
+    return span;
 }
 
-void atom_property_select(AtomicPropertyRepresentation* prop, md_attribute_id_t key, const md_system_t& sys) {
-    ASSERT(prop);
+void atom_attribute_legend_label(char* buf, size_t cap, const md_attribute_t* attr, int variant_idx) {
+    ASSERT(buf && cap > 0);
+    const str_t label = atom_attribute_label(attr);
+    const int num_variants = atom_attribute_variant_count(attr);
+    if (num_variants > 1) {
+        snprintf(buf, cap, "%.*s [%d/%d]", (int)label.len, label.ptr, CLAMP(variant_idx, 0, num_variants - 1) + 1, num_variants);
+    } else {
+        snprintf(buf, cap, "%.*s", (int)label.len, label.ptr);
+    }
+}
 
-    prop->key = key;
-    prop->variant_idx = 0;
+void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t key, const md_system_t& sys) {
+    ASSERT(coloring);
 
-    float value_min = 0.0f;
-    float value_max = 1.0f;
-    atom_property_value_range(&value_min, &value_max, md_attributes_get(&sys.attributes, key));
+    coloring->key = key;
+    coloring->variant_idx = 0;
+    coloring->span_hash = 0;    // measured again, over the representation's atoms, with its colours
 
-    prop->value_min = value_min;
-    prop->value_max = value_max;
-    prop->range_beg = value_min;
-    prop->range_end = value_max;
+    // Started out from the values of every atom: the representation's own are not at hand here
+    const ColorScaleSpan span = atom_attribute_span(md_attributes_get(&sys.attributes, key), nullptr);
+    const bool signed_values = color_scale_span_signed(span);
+
+    ColorScale& scale = coloring->scale;
+    scale.symmetric  = signed_values;
+    scale.auto_range = true;
+    if (signed_values && scale.colormap == DEFAULT_COLORMAP) {
+        scale.colormap = COLOR_SCALE_COLORMAP_RDBU;
+    } else if (!signed_values && scale.colormap == COLOR_SCALE_COLORMAP_RDBU) {
+        scale.colormap = DEFAULT_COLORMAP;
+    }
+    coloring->span = span;
+    color_scale_update_range(&scale, span);
 }
 
 // ---------------------------------------------------------------------------
@@ -3307,7 +3343,7 @@ static void electronic_structure_field_update(ApplicationState* state, Represent
 
     const md_tick_t t0 = md_tick_now();
     if (surface_field_update(&es.field_vol, es.field_kind, state->mold.sys, state->mold.state, es.grid, density, iso.values, iso.count, source_hash, band_hash)) {
-        surface_field_mapping_update_range(&es.field_map, es.field_vol);
+        color_scale_update_range(&es.field_map, surface_field_span(es.field_vol));
         const SurfaceFieldVolume& fv = es.field_vol;
         MD_LOG_DEBUG("Surface field: %zu of %zu voxels evaluated, %.1f ms; on %zu surface samples min %g, 1%% %g, 99%% %g, max %g", fv.num_evaluated, num_voxels,
                      md_tick_to_milliseconds(md_tick_now() - t0), fv.num_surface_samples, fv.surface_min, fv.surface_lo, fv.surface_hi, fv.surface_max);
@@ -3587,13 +3623,23 @@ void update_representation(ApplicationState* state, Representation* rep) {
     const size_t bytes = num_atoms * sizeof(uint32_t);
 
     //md_script_property_t prop = {0};
-    //if (rep->color_mapping == ColorMapping::Property) {
+    //if (rep->color_mapping == ColorMapping::Attribute) {
     //rep->prop_is_valid = md_script_compile_and_eval_property(&prop, rep->prop, &data->mold.sys, frame_allocator, &data->script.ir, rep->prop_error.beg(), rep->prop_error.capacity());
     //}
 
     uint32_t* colors = 0;
     if (representation_uses_atom_colors(*rep)) {
         colors = (uint32_t*)md_vm_arena_push(frame_alloc, sizeof(uint32_t) * num_atoms);
+
+        // The atoms first: the colours are applied through them, and a colour scale's range can
+        // follow the values of exactly the atoms shown
+        if (rep->dynamic_evaluation) {
+            rep->filt_is_dirty = true;
+        }
+        if (rep->filt_is_dirty) {
+            rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, &state->mold.state, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
+            rep->filt_is_dirty = false;
+        }
 
         switch (rep->color_mapping) {
         case ColorMapping::Uniform:
@@ -3629,46 +3675,49 @@ void update_representation(ApplicationState* state, Representation* rep) {
             color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(state), palette);
             break;
         }
-        case ColorMapping::Property:
-            // @TODO: Map colors accordingly
-            //color_atoms_uniform(colors, mol.atom.count, rep->uniform_color);
+        case ColorMapping::Attribute: {
+            AtomAttributeColoring& coloring = rep->atom_attribute;
+            const md_attribute_t* attr = md_attributes_get(&sys.attributes, coloring.key);
+            size_t num_extracted = 0;
+            float* values = nullptr;
 
-            {
-                const md_attribute_t* attr = md_attributes_get(&sys.attributes, rep->atomic_property.key);
-                size_t num_extracted = 0;
-                float* values = nullptr;
+            if (attr) {
+                values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
 
-                if (attr) {
-                    values = (float*)md_vm_arena_push(frame_alloc, sizeof(float) * num_atoms);
-
-                    // Fixing the variant axis hands back exactly the atom axis, so there is no
-                    // offset arithmetic here to get wrong. A field with no variant axis is rank 1
-                    // and takes no indices at all.
-                    const uint32_t variant = (uint32_t)CLAMP(rep->atomic_property.variant_idx, 0, MAX(atom_property_variant_count(attr) - 1, 0));
-                    const md_attribute_slice_t slice = attr->format.rank > 1 ? md_attribute_slice_1(variant) : md_attribute_slice_all();
-                    num_extracted = md_attribute_extract_f32(values, num_atoms, attr, slice, md_unit_none());
-                }
-
-                if (num_extracted == num_atoms) {
-                    float range_ext = (rep->atomic_property.range_end - rep->atomic_property.range_beg);
-                    range_ext = MAX(range_ext, 0.001f);
-                    for (size_t i = 0; i < num_atoms; ++i) {
-                        // An atom without a value is not a point on the ramp: NAN would reach the
-                        // colormap lookup as an index, so it gets a neutral grey of its own instead
-                        if (atom_property_value_absent(values[i])) {
-                            colors[i] = IM_COL32(128, 128, 128, 255);
-                            continue;
-                        }
-                        float t = (values[i] - rep->atomic_property.range_beg) / range_ext;
-                        colors[i] = ImPlot::SampleColormapU32(ImClamp(t, 0.0f, 1.0f), rep->atomic_property.colormap);
-                    }
-                } else {
-                    if (attr) {
-                        MD_LOG_DEBUG("Failed to extract values for the selected atom property");
-                    }
-                    MEMSET(colors, 0xFFFFFFFFu, bytes);
-                }
+                // Fixing the variant axis hands back exactly the atom axis, so there is no
+                // offset arithmetic here to get wrong. A field with no variant axis is rank 1
+                // and takes no indices at all.
+                const uint32_t variant = (uint32_t)CLAMP(coloring.variant_idx, 0, MAX(atom_attribute_variant_count(attr) - 1, 0));
+                const md_attribute_slice_t slice = attr->format.rank > 1 ? md_attribute_slice_1(variant) : md_attribute_slice_all();
+                num_extracted = md_attribute_extract_f32(values, num_atoms, attr, slice, md_unit_none());
             }
+
+            if (num_extracted == num_atoms) {
+                // The span of the atoms shown, measured again only when the values or the atoms
+                // changed: it scans every variant of the attribute
+                const md_bitfield_t* shown = rep->filt_is_valid ? &rep->atom_mask : nullptr;
+                uint64_t span_hash = md_hash64(&coloring.key, sizeof(coloring.key), 1);
+                const uint64_t version = md_attributes_version(&sys.attributes, coloring.key);
+                span_hash = md_hash64(&version, sizeof(version), span_hash);
+                span_hash = shown ? md_bitfield_hash64(shown, span_hash) : md_hash64(&num_atoms, sizeof(num_atoms), span_hash);
+                if (span_hash != coloring.span_hash) {
+                    coloring.span = atom_attribute_span(attr, shown);
+                    coloring.span_hash = span_hash;
+                }
+                color_scale_update_range(&coloring.scale, coloring.span);
+
+                for (size_t i = 0; i < num_atoms; ++i) {
+                    // An atom without a value is not a point on the ramp: NAN would reach the
+                    // colormap lookup as an index, so it gets a neutral grey of its own instead
+                    colors[i] = atom_attribute_value_absent(values[i]) ? IM_COL32(128, 128, 128, 255) : color_scale_color_u32(coloring.scale, values[i]);
+                }
+            } else {
+                if (attr) {
+                    MD_LOG_DEBUG("Failed to extract values for the selected atom attribute");
+                }
+                MEMSET(colors, 0xFFFFFFFFu, bytes);
+            }
+        }
 #if 0
             if (rep->prop) {
                 MEMSET(colors, 0xFFFFFFFF, bytes);
@@ -3792,15 +3841,6 @@ void update_representation(ApplicationState* state, Representation* rep) {
     }
 
     if (colors) {
-        if (rep->dynamic_evaluation) {
-            rep->filt_is_dirty = true;
-        }
-
-        if (rep->filt_is_dirty) {
-			rep->filt_is_valid = md_filter(&rep->atom_mask, str_from_cstr(rep->filt), &state->mold.sys, &state->mold.state, state->script.ir, &rep->filt_is_dynamic, rep->filt_error, sizeof(rep->filt_error));
-            rep->filt_is_dirty = false;
-        }
-
         if (rep->filt_is_valid) {
             filter_colors(colors, num_atoms, &rep->atom_mask);
             state->representation.atom_visibility_mask_dirty = true;
@@ -3851,7 +3891,7 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
 
 // Per atom scalar fields are deliberately not gathered anywhere. They live in the system's attribute
 // table under atom/, whoever loaded the data put them there, and the UI reads that table directly
-// through atom_property_query.
+// through atom_attribute_query.
 
 static void init_all_representations(ApplicationState* state) {
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
