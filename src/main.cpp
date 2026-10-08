@@ -2820,7 +2820,7 @@ static void draw_animation_window(ApplicationState* data) {
         if (data->animation.interpolation == InterpolationMode::CubicSpline) {
             ImGui::SliderFloat("Tension", &data->animation.tension, 0.0f, 1.0f, "%.2f");
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Tension of the Cubic Spline");
+                ImGui::SetTooltip("Tension of the Cubic Spline (0 = Catmull-Rom, 1 = ease in and out of every frame)");
             }
         }
         switch (data->animation.mode) {
@@ -6138,6 +6138,10 @@ static void update_md_buffers(ApplicationState* data) {
 
     if (data->mold.dirty_gpu_buffers & MolBit_ClearVelocity) {
         md_gl_mol_zero_velocity(data->mold.gl_mol);
+    }
+
+    if (data->mold.dirty_gpu_buffers & MolBit_ResetBackboneHistory) {
+        md_gl_mol_reset_backbone_history(data->mold.gl_mol);
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyRadius) {

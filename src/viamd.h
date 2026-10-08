@@ -172,6 +172,7 @@ enum MolBit_ {
     MolBit_DirtyFlags               = 1u << 3,
     MolBit_DirtyBonds               = 1u << 4,
     MolBit_ClearVelocity            = 1u << 5,
+    MolBit_ResetBackboneHistory     = 1u << 6,  // The positions jumped: the backbone orientation starts over (md_gl_mol_reset_backbone_history)
 };
 
 enum class RepresentationType {
@@ -1117,6 +1118,9 @@ struct ApplicationState {
         // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
         // so the next call is never skipped by a stale match.
         int64_t             last_interpolated_nearest_frame = -1;
+        // The (fractional) frame last interpolated, negative when there is none. A jump away from it
+        // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
+        double              last_interpolated_frame = -1.0;
         uint32_t            dirty_gpu_buffers = 0;
 
 #if MD_ENABLE_GPU

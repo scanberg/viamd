@@ -693,6 +693,7 @@ void free_trajectory_data(ApplicationState* state) {
     // first frame to the renderer whenever it happens to resolve to the same nearest frame index
     // as whatever was last displayed (frame 0 is the common case).
     state->mold.last_interpolated_nearest_frame = -1;
+    state->mold.last_interpolated_frame = -1.0;
 
     // The views above are dropped first; now the storage they pointed at goes with the run - its
     // frame axis, the quantities derived per frame, and whatever was loaded against it.
@@ -4024,6 +4025,18 @@ void interpolate_system_state(ApplicationState* app) {
     }
     app->mold.last_interpolated_nearest_frame = nearest_frame;
 
+    // The backbone keeps the orientation of its cross sections coherent from one displayed state to the next. That
+    // continuity only means something while the structure moves continuously, so a jump (seeking, skipping frames,
+    // a new run) starts it over. Playback keeps it whatever the speed.
+    {
+        const double last = app->mold.last_interpolated_frame;
+        const bool playing = app->animation.mode == PlaybackMode::Playing;
+        if (last < 0.0 || (!playing && fabs(time - last) > 1.5)) {
+            app->mold.dirty_gpu_buffers |= MolBit_ResetBackboneHistory;
+        }
+        app->mold.last_interpolated_frame = time;
+    }
+
     // This represents the frames that we would like to load into memory for interpolation (worst case).
     const int64_t frames[4] = {
         MAX(0LL, frame - 1),
@@ -4068,7 +4081,9 @@ void interpolate_system_state(ApplicationState* app) {
 
     Payload payload = {
         .app = app,
-        .s = 1.0f - CLAMP(app->animation.tension, 0.0f, 1.0f),
+        // Tangent scale of the cardinal spline: (p2 - p0) * s. Tension 0 gives s = 0.5, i.e. Catmull-Rom, which plays
+        // uniform motion back uniformly; tension 1 eases in and out of every frame.
+        .s = 0.5f * (1.0f - CLAMP(app->animation.tension, 0.0f, 1.0f)),
         .t = (float)fract(time),
         .mode = mode,
         .nearest_frame = nearest_frame,
