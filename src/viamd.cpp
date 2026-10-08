@@ -3203,16 +3203,21 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
         return;
     }
 
-    const int downsample_factor = 1;
+    // Half the density's resolution: the colours vary on the scale of atoms, and at full resolution the
+    // RGBA8 texture is as large as the density itself (512 MB at the 512^3 limit)
+    const int downsample_factor = 2;
     int dim[3] = {
-        (int)(rep->electronic_structure.density_vol.dim[0] / downsample_factor),
-        (int)(rep->electronic_structure.density_vol.dim[1] / downsample_factor),
-        (int)(rep->electronic_structure.density_vol.dim[2] / downsample_factor),
+        MAX(1, DIV_UP((int)rep->electronic_structure.density_vol.dim[0], downsample_factor)),
+        MAX(1, DIV_UP((int)rep->electronic_structure.density_vol.dim[1], downsample_factor)),
+        MAX(1, DIV_UP((int)rep->electronic_structure.density_vol.dim[2], downsample_factor)),
     };
     MEMCPY(rep->electronic_structure.color_vol.dim, dim, sizeof(dim));
     rep->electronic_structure.color_vol.world_to_model   = rep->electronic_structure.density_vol.world_to_model;
     rep->electronic_structure.color_vol.texture_to_world = rep->electronic_structure.density_vol.texture_to_world;
-    rep->electronic_structure.color_vol.voxel_size       = rep->electronic_structure.density_vol.voxel_size * (float)downsample_factor;
+    rep->electronic_structure.color_vol.voxel_size       = vec3_set(
+        rep->electronic_structure.density_vol.voxel_size.x * rep->electronic_structure.density_vol.dim[0] / dim[0],
+        rep->electronic_structure.density_vol.voxel_size.y * rep->electronic_structure.density_vol.dim[1] / dim[1],
+        rep->electronic_structure.density_vol.voxel_size.z * rep->electronic_structure.density_vol.dim[2] / dim[2]);
     gl::init_texture_3D(&rep->electronic_structure.color_vol.tex_id, dim[0], dim[1], dim[2], GL_RGBA8);
 
     const vec3_t& voxel_size     = rep->electronic_structure.color_vol.voxel_size;

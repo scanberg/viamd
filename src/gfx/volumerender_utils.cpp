@@ -14,6 +14,8 @@
 
 #include <implot.h>
 
+#include <float.h>
+
 #include <shaders.inl>
 
 #define PUSH_GPU_SECTION(lbl)                                                                       \
@@ -1049,22 +1051,20 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
 
 }
 
-static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
+static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
     PUSH_GPU_SECTION("SPLAT COLOR VOLUME")
     glUseProgram(gl.program.splat_color);
 
-    glUniformMatrix4fv(glGetUniformLocation(gl.program.splat_color, "u_world_to_model"), 1, GL_FALSE, (const float*)world_to_model);
     glUniformMatrix4fv(glGetUniformLocation(gl.program.splat_color, "u_voxel_to_world"), 1, GL_FALSE, (const float*)index_to_world);
-    glUniform3iv(glGetUniformLocation(gl.program.splat_color, "u_volume_dim"),    1, volume_dim);
-    glUniform3fv(glGetUniformLocation(gl.program.splat_color, "u_voxel_spacing"), 1, voxel_spacing);
+    glUniform3iv(glGetUniformLocation(gl.program.splat_color, "u_volume_dim"), 1, volume_dim);
     glUniform1i (glGetUniformLocation(gl.program.splat_color, "u_num_points"), (int)point_count);
-    glUniform1f(glGetUniformLocation(gl.program.splat_color, "u_power"), power);
+    glUniform1f (glGetUniformLocation(gl.program.splat_color, "u_power"), power);
 
     size_t point_xyzw_offset    = 0;
-	size_t point_xyzw_size      = ALIGN_TO(sizeof(vec4_t) * point_count, 256);
-	size_t point_color_offset   = point_xyzw_offset + point_xyzw_size;
+    size_t point_xyzw_size      = ALIGN_TO(sizeof(vec4_t) * point_count, 256);
+    size_t point_color_offset   = point_xyzw_offset + point_xyzw_size;
     size_t point_color_size     = ALIGN_TO(sizeof(uint32_t) * point_count, 256);
-	size_t total_buffer_size    = ALIGN_TO(point_xyzw_size + point_color_size, 256);
+    size_t total_buffer_size    = ALIGN_TO(point_xyzw_size + point_color_size, 256);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl.ssbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER, total_buffer_size , NULL, GL_DYNAMIC_DRAW);
@@ -1089,56 +1089,102 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
     POP_GPU_SECTION()
 }
 
-static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
-    ASSERT(volume_dim[0] % 4 == 0);
-    ASSERT(volume_dim[1] % 4 == 0);
-    ASSERT(volume_dim[2] % 4 == 0);
+// The CPU twin of splat_color.comp (used where there are no compute shaders, GL < 4.3): normalised
+// Gaussian weights evaluated relative to the largest one, over the points that can matter in each 8^3
+// block of voxels.
+static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
+    const int dim_x = volume_dim[0];
+    const int dim_y = volume_dim[1];
+    const int dim_z = volume_dim[2];
+    if (dim_x <= 0 || dim_y <= 0 || dim_z <= 0 || point_count == 0) return;
 
-    (void)voxel_spacing;
-    (void)world_to_model;
+    static constexpr int   BLOCK  = 8;
+    static constexpr float CUTOFF = 20.0f;  // a point weighing less than exp(-CUTOFF) of the best one is left out
 
     md_temp_scope_t temp_scope = md_temp_begin();
     defer { md_temp_end(temp_scope); };
 
-    size_t bytes = sizeof(vec4_t) * volume_dim[0] * volume_dim[1] * volume_dim[2];
-    vec4_t* result = (vec4_t*)md_temp_alloc(temp_scope, bytes);
-    ASSERT(result);
+    uint32_t* result = (uint32_t*)md_temp_alloc(temp_scope, sizeof(uint32_t) * (size_t)dim_x * dim_y * dim_z);
+    vec4_t*   points = (vec4_t*)  md_temp_alloc(temp_scope, sizeof(vec4_t) * point_count);    // xyz, power / (2 sigma^2)
+    vec4_t*   colors = (vec4_t*)  md_temp_alloc(temp_scope, sizeof(vec4_t) * point_count);
+    uint32_t* cand   = (uint32_t*)md_temp_alloc(temp_scope, sizeof(uint32_t) * point_count);
+    if (!result || !points || !colors || !cand) return;
 
-    mat4_t index_to_world_mat = mat4_load((const float*)index_to_world);
+    for (size_t i = 0; i < point_count; ++i) {
+        const float sigma = MAX(point_xyzw[i].w, 0.1f);
+        points[i] = vec4_set(point_xyzw[i].x, point_xyzw[i].y, point_xyzw[i].z, power / (2.0f * sigma * sigma));
+        colors[i] = convert_color(point_color[i]);
+    }
 
-    for (int z = 0; z < volume_dim[2]; ++z) {
-        for (int y = 0; y < volume_dim[1]; ++y) {
-            for (int x = 0; x < volume_dim[0]; ++x) {
-                vec4_t voxel_pos_index = {(float)x, (float)y, (float)z, 1.0f};
-                vec4_t voxel_pos_world = mat4_mul_vec4(index_to_world_mat, voxel_pos_index);
-                vec4_t acc = {0};
-                float  sum = 0.0f;
+    const mat4_t M = mat4_load((const float*)index_to_world);
 
-                for (size_t i = 0; i < point_count; ++i) {
-                    vec4_t point_world = point_xyzw[i];
-                    float sigma = point_world.w;
-                    point_world.w = 1.0f; // Ignore radius for distance calculation, we will use it as part of the influence factor instead
-                    float dist2 = vec4_distance_squared(voxel_pos_world, point_world);
+    for (int bz = 0; bz < dim_z; bz += BLOCK) {
+        for (int by = 0; by < dim_y; by += BLOCK) {
+            for (int bx = 0; bx < dim_x; bx += BLOCK) {
+                const int lo[3] = { bx, by, bz };
+                const int hi[3] = { MIN(bx + BLOCK, dim_x) - 1, MIN(by + BLOCK, dim_y) - 1, MIN(bz + BLOCK, dim_z) - 1 };
 
-                    float inv2sig2 = 1.0f / (2.0f * sigma * sigma);
-                    float w = expf(-dist2 * inv2sig2 * power);
-                    acc += w * convert_color(point_color[i]);
-                    sum += w;
+                // World space bounds of the voxel centres of the block (the volume may be rotated)
+                vec3_t bmin = vec3_set( FLT_MAX,  FLT_MAX,  FLT_MAX);
+                vec3_t bmax = vec3_set(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+                for (int c = 0; c < 8; ++c) {
+                    const vec4_t idx = { (float)((c & 1) ? hi[0] : lo[0]), (float)((c & 2) ? hi[1] : lo[1]), (float)((c & 4) ? hi[2] : lo[2]), 1.0f };
+                    const vec3_t p = vec3_from_vec4(mat4_mul_vec4(M, idx));
+                    bmin = vec3_min(bmin, p);
+                    bmax = vec3_max(bmax, p);
                 }
 
-                vec4_t color = (sum > 0.0f) ? acc / sum : vec4_set(1.0f, 1.0f, 1.0f, 0.0f);
-                acc /= sum;
-                int linear_idx = x + y * volume_dim[0] + z * volume_dim[0] * volume_dim[1];
-                result[linear_idx] = color;
+                // The best exponent some point is guaranteed everywhere in the block, then the points that can matter
+                float e_best = -FLT_MAX;
+                for (size_t i = 0; i < point_count; ++i) {
+                    const vec3_t p   = vec3_from_vec4(points[i]);
+                    const vec3_t far = vec3_max(vec3_abs(vec3_sub(p, bmin)), vec3_abs(vec3_sub(p, bmax)));
+                    e_best = MAX(e_best, -vec3_dot(far, far) * points[i].w);
+                }
+                uint32_t num_cand = 0;
+                for (size_t i = 0; i < point_count; ++i) {
+                    const vec3_t p    = vec3_from_vec4(points[i]);
+                    const vec3_t near = vec3_sub(p, vec3_clamp(p, bmin, bmax));
+                    if (-vec3_dot(near, near) * points[i].w >= e_best - CUTOFF) {
+                        cand[num_cand++] = (uint32_t)i;
+                    }
+                }
+
+                for (int z = lo[2]; z <= hi[2]; ++z) {
+                    for (int y = lo[1]; y <= hi[1]; ++y) {
+                        for (int x = lo[0]; x <= hi[0]; ++x) {
+                            const vec3_t xw = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)x, (float)y, (float)z, 1.0f)));
+                            // Streamed log-sum-exp: weights relative to the largest exponent so far
+                            float  m   = -FLT_MAX;
+                            float  sum = 0.0f;
+                            vec4_t acc = {0, 0, 0, 0};
+                            for (uint32_t j = 0; j < num_cand; ++j) {
+                                const uint32_t i = cand[j];
+                                const vec3_t d = vec3_sub(xw, vec3_from_vec4(points[i]));
+                                const float  e = -vec3_dot(d, d) * points[i].w;
+                                if (e > m) {
+                                    const float scale = expf(m - e);
+                                    sum = sum * scale + 1.0f;
+                                    acc = vec4_add(vec4_mul1(acc, scale), colors[i]);
+                                    m = e;
+                                } else {
+                                    const float w = expf(e - m);
+                                    sum += w;
+                                    acc = vec4_add(acc, vec4_mul1(colors[i], w));
+                                }
+                            }
+                            const vec4_t color = (sum > 0.0f) ? vec4_mul1(acc, 1.0f / sum) : vec4_set(1.0f, 1.0f, 1.0f, 0.0f);
+                            result[(size_t)x + (size_t)y * dim_x + (size_t)z * dim_x * dim_y] = convert_color(color);
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Write result into volume texture
     glBindTexture(GL_TEXTURE_3D, vol_texture);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, volume_dim[0], volume_dim[1], volume_dim[2], GL_RGBA, GL_FLOAT, result);
+    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim_x, dim_y, dim_z, GL_RGBA, GL_UNSIGNED_BYTE, result);
     glBindTexture(GL_TEXTURE_3D, 0);
-
 }
 
 // vol_origin is the origin of the volume in world space
@@ -1153,10 +1199,12 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
     glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
     glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
 
-    if (gl_major > 4 || (gl_major == 4 && gl_minor >= 3)) {
-        splat_point_color_volume_GPU(vol_texture, volume_dim, voxel_spacing, world_to_model, index_to_world, point_xyzw, point_color, point_count, (float)power);
+    (void)voxel_spacing;
+    (void)world_to_model;
+    if ((gl_major > 4 || (gl_major == 4 && gl_minor >= 3)) && gl.program.splat_color) {
+        splat_point_color_volume_GPU(vol_texture, volume_dim, index_to_world, point_xyzw, point_color, point_count, (float)power);
     } else {
-        splat_point_color_volume_CPU(vol_texture, volume_dim, voxel_spacing, world_to_model, index_to_world, point_xyzw, point_color, point_count, (float)power);
+        splat_point_color_volume_CPU(vol_texture, volume_dim, index_to_world, point_xyzw, point_color, point_count, (float)power);
     }
 }
 
