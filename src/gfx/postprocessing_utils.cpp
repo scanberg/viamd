@@ -154,8 +154,8 @@ static struct {
 
     struct {
         GLuint fbo = 0;
-        GLuint tex_half[2] = {};        // half res RGBA16F: gather result, post-filtered result
-        GLuint tex_tile[2] = {};        // tile res R16F: max |CoC| per tile, 3x3 dilated
+        GLuint tex_half[4] = {};        // half res RGBA16F: gather far / near, post-filtered far / near (near is premultiplied)
+        GLuint tex_tile[2] = {};        // tile res RG16F: (max near |CoC|, max far CoC) per tile, gather radius after dilation
         GLuint program_prepass = 0;
         GLuint program_tile = 0;
         GLuint program_gather = 0;
@@ -631,10 +631,11 @@ void initialize_targets(int32_t width, int32_t height) {
     const int half_h = MAX(height / 2, 1);
     const int tile_w = DIV_UP(half_w, TILE);
     const int tile_h = DIV_UP(half_h, TILE);
-    ensure_texture_2d(&gl.bokeh_dof.tex_half[0], GL_RGBA16F, half_w, half_h, GL_RGBA, GL_FLOAT, GL_NEAREST, GL_NEAREST);
-    ensure_texture_2d(&gl.bokeh_dof.tex_half[1], GL_RGBA16F, half_w, half_h, GL_RGBA, GL_FLOAT, GL_LINEAR, GL_LINEAR);
-    ensure_texture_2d(&gl.bokeh_dof.tex_tile[0], GL_R16F, tile_w, tile_h, GL_RED, GL_FLOAT, GL_NEAREST, GL_NEAREST);
-    ensure_texture_2d(&gl.bokeh_dof.tex_tile[1], GL_R16F, tile_w, tile_h, GL_RED, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+    for (int i = 0; i < 4; ++i) {
+        ensure_texture_2d(&gl.bokeh_dof.tex_half[i], GL_RGBA16F, half_w, half_h, GL_RGBA, GL_FLOAT, GL_LINEAR, GL_LINEAR);
+    }
+    ensure_texture_2d(&gl.bokeh_dof.tex_tile[0], GL_RG16F, tile_w, tile_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
+    ensure_texture_2d(&gl.bokeh_dof.tex_tile[1], GL_RG16F, tile_w, tile_h, GL_RG, GL_FLOAT, GL_NEAREST, GL_NEAREST);
 }
 
 void shutdown() {
@@ -643,9 +644,9 @@ void shutdown() {
         if (*prog) glDeleteProgram(*prog);
         *prog = 0;
     }
-    if (gl.bokeh_dof.tex_half[0]) glDeleteTextures(2, gl.bokeh_dof.tex_half);
+    if (gl.bokeh_dof.tex_half[0]) glDeleteTextures(4, gl.bokeh_dof.tex_half);
     if (gl.bokeh_dof.tex_tile[0]) glDeleteTextures(2, gl.bokeh_dof.tex_tile);
-    gl.bokeh_dof.tex_half[0] = gl.bokeh_dof.tex_half[1] = 0;
+    for (int i = 0; i < 4; ++i) gl.bokeh_dof.tex_half[i] = 0;
     gl.bokeh_dof.tex_tile[0] = gl.bokeh_dof.tex_tile[1] = 0;
 }
 }  // namespace dof
@@ -1415,10 +1416,13 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
     {
         const GLuint program = gl.bokeh_dof.program_tile;
         const GLint loc_dilate = glGetUniformLocation(program, "u_dilate");
+        // Foreground blur reaches up to the CoC clamp; the dilation has to search that far (in tiles)
+        const int reach_tiles = (int)ceilf(max_coc_px * 0.5f / (float)dof::TILE);
         glViewport(0, 0, tile_w, tile_h);
         glScissor(0, 0, tile_w, tile_h);
         glUseProgram(program);
         glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
+        glUniform1i(glGetUniformLocation(program, "u_reach_tiles"), reach_tiles);
         glActiveTexture(GL_TEXTURE0);
 
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_tile[0], 0);
@@ -1438,8 +1442,13 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
         glViewport(0, 0, half_w, half_h);
         glScissor(0, 0, half_w, half_h);
 
+        // Far and near layers are written to separate targets so the composite applies the near coverage once
+        const GLenum two_buffers[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+        glDrawBuffers(2, two_buffers);
+
         GLuint program = gl.bokeh_dof.program_gather;
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[0], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[1], 0);
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, gl.rt.tex_half_dof);
@@ -1451,15 +1460,25 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         program = gl.bokeh_dof.program_postfilter;
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[1], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[2], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.bokeh_dof.tex_half[3], 0);
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[0]);
         glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[1]);
+        glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, gl.rt.tex_half_dof);
-        glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
-        glUniform1i(glGetUniformLocation(program, "u_tex_coc"), 1);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_tile[1]);
+        glUniform1i(glGetUniformLocation(program, "u_tex_far"), 0);
+        glUniform1i(glGetUniformLocation(program, "u_tex_near"), 1);
+        glUniform1i(glGetUniformLocation(program, "u_tex_coc"), 2);
+        glUniform1i(glGetUniformLocation(program, "u_tex_tile"), 3);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
     }
     POP_GPU_SECTION()
 
@@ -1473,10 +1492,13 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[1]);
+        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[2]);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, gl.bokeh_dof.tex_half[3]);
         glUniform1i(glGetUniformLocation(program, "u_tex_color"), 0);
         glUniform1i(glGetUniformLocation(program, "u_tex_linear_depth"), 1);
-        glUniform1i(glGetUniformLocation(program, "u_tex_dof"), 2);
+        glUniform1i(glGetUniformLocation(program, "u_tex_far"), 2);
+        glUniform1i(glGetUniformLocation(program, "u_tex_near"), 3);
         glUniform1f(glGetUniformLocation(program, "u_focus"), focus);
         glUniform1f(glGetUniformLocation(program, "u_aperture_px"), aperture_px);
         glUniform1f(glGetUniformLocation(program, "u_max_coc_px"), max_coc_px);
