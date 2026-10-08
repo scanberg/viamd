@@ -48,7 +48,7 @@ enum LoaderType_ {
     LoaderType_EDR,     // GROMACS energy file, supplements a loaded trajectory
     LoaderType_XVG,     // xmgrace columns (GROMACS analysis output), a series along the loaded trajectory
     LoaderType_CSV,     // comma separated columns, a series along the loaded trajectory
-    LoaderType_ASE_TRAJ,
+    LoaderType_ASE_TRAJ, // ASE trajectory (.traj): a system and its trajectory in one file
     LoaderType_COUNT
 };
 
@@ -84,7 +84,7 @@ namespace loader {
     // Publish the trajectory in filepath as the run "run/<name>" (see md_run_publish in mdlib's
     // md_system.h): frame axis, cells and positions streamed from the file. filepath is the file the
     // frames are in - the structure file itself for a multi model PDB or a multi frame XYZ. False for
-    // a format that does not publish runs yet (some formats also require multiple frames).
+    // a format that does not publish runs yet, and for a file with a single frame.
     bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags);
 
     // To help enlist supported loader type
