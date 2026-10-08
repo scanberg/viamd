@@ -13,6 +13,7 @@ void blit_static_velocity(GLuint tex_depth, const ViewParam& view_param);
 void scale_hsv(GLuint color_tex, vec3_t hsv_scale);
 
 void blit_texture(GLuint tex);
+// Writes the colour premultiplied by its alpha, (rgb * a, a): meant for the transparency buffer
 void blit_color(vec4_t color);
 
 }  // namespace postprocessing
@@ -31,7 +32,7 @@ struct Inputs {
     GLuint color = 0;
     GLuint normal = 0;
     GLuint velocity = 0;
-    GLuint transparency = 0;        // LDR, blended over the tone mapped image (overlays, DVR)
+    GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, selection, DVR)
     GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces)
     GLuint history = 0;         // TAA history target, written this frame
     GLuint history_prev = 0;    // optional: last frame's history (ping-pong). If 0, history is copied internally

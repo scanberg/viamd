@@ -48,25 +48,22 @@ void main() {
 namespace volume {
 
 static struct {
-    GLuint vao = 0;
-    GLuint vbo = 0;
+    GLuint vao = 0;     // empty: the full screen triangle comes from gl_VertexID
     GLuint ubo = 0;
     GLuint fbo = 0;
     GLuint ssbo = 0;
 
-    GLuint tex_entry  = 0;
-    GLuint tex_exit   = 0;
-    GLuint tex_result = 0;
-
-    uint32_t width  = 0;
-    uint32_t height = 0;
-
     struct {
-        GLuint entry_exit = 0;
-        GLuint entry_exit_depth = 0;
-        GLuint dvr_only = 0;
+        GLuint dvr = 0;
         GLuint splat_color = 0;
     } program;
+
+    struct {
+        GLint tex_volume = -1;
+        GLint tex_depth = -1;
+        GLint tex_tf = -1;
+        GLint block_index = -1;
+    } dvr_loc;
 
     struct {
         int major = 0;
@@ -74,30 +71,18 @@ static struct {
     } version;
 } gl;
 
-struct UniformData {
-    mat4_t view_to_model_mat;
-    mat4_t model_to_view_mat;
-    mat4_t inv_proj_mat;
-    mat4_t model_view_proj_mat;
-
+// std140, mirrors DvrUniforms in dvr.frag
+struct DvrUniformData {
+    mat4_t clip_to_model;
+    vec3_t clip_min;
+    float  tf_min;
+    vec3_t clip_max;
+    float  tf_inv_ext;
     vec2_t inv_res;
     float  time;
-    float  gamma;
-
-    vec3_t clip_volume_min;
-    float  tf_min;
-    vec3_t clip_volume_max;
-    float  tf_inv_ext;
-
-    vec3_t gradient_spacing_world_space;
-    float  exposure;
-    mat4_t gradient_spacing_tex_space;
-
-    vec3_t env_radiance;
-    float  roughness;
-    vec3_t dir_radiance;
-    float  F0;
+    float  use_depth;
 };
+static_assert(sizeof(DvrUniformData) == 64 + 3 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
 
 // -----------------------------------------------------------------------------
 // GPU timings
@@ -845,91 +830,44 @@ void initialize() {
     glGetIntegerv(GL_MAJOR_VERSION, (GLint*)&gl.version.major);
     glGetIntegerv(GL_MINOR_VERSION, (GLint*)&gl.version.minor);
 
-    GLuint v_shader_entry_exit          = gl::compile_shader_from_source({(const char*)entryexit_vert, entryexit_vert_size}, GL_VERTEX_SHADER);
-    GLuint f_shader_entry_exit          = gl::compile_shader_from_source({(const char*)entryexit_frag, entryexit_frag_size}, GL_FRAGMENT_SHADER);
-    GLuint f_shader_entry_exit_depth    = gl::compile_shader_from_source({(const char*)entryexit_frag, entryexit_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define SAMPLE_DEPTH"));
-
-    GLuint v_shader_vol                 = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
-    GLuint f_shader_dvr_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR"));
-
-    defer {
-        glDeleteShader(v_shader_vol);
-        glDeleteShader(v_shader_entry_exit);
-        glDeleteShader(f_shader_entry_exit);
-        glDeleteShader(f_shader_entry_exit_depth);
-        glDeleteShader(f_shader_dvr_only);
-    };
-
-    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0 || f_shader_entry_exit_depth == 0 || f_shader_dvr_only == 0) {
-        MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
-        return;
-    }
-    
-    if (gl.version.major >= 4 && gl.version.minor >= 3) {
-        GLuint c_shader_splat_color = gl::compile_shader_from_source({ (const char*)splat_color_comp, splat_color_comp_size }, GL_COMPUTE_SHADER);
-        if (c_shader_splat_color == 0) {
-            MD_LOG_ERROR("shader compilation failed, shader program for splat color computation will not be updated");
-            return;
+    {
+        GLuint v_shader = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
+        GLuint f_shader = gl::compile_shader_from_source({(const char*)dvr_frag, dvr_frag_size}, GL_FRAGMENT_SHADER);
+        if (v_shader && f_shader) {
+            if (!gl.program.dvr) gl.program.dvr = glCreateProgram();
+            const GLuint shaders[] = {v_shader, f_shader};
+            gl::attach_link_detach(gl.program.dvr, shaders, (int)ARRAY_SIZE(shaders));
+            gl.dvr_loc.tex_volume  = glGetUniformLocation(gl.program.dvr, "u_tex_volume");
+            gl.dvr_loc.tex_depth   = glGetUniformLocation(gl.program.dvr, "u_tex_depth");
+            gl.dvr_loc.tex_tf      = glGetUniformLocation(gl.program.dvr, "u_tex_tf");
+            gl.dvr_loc.block_index = glGetUniformBlockIndex(gl.program.dvr, "DvrUniforms");
+        } else {
+            MD_LOG_ERROR("DVR shader compilation failed, the DVR program will not be updated");
         }
-        if (!gl.program.splat_color) gl.program.splat_color = glCreateProgram();
-        gl::attach_link_detach(gl.program.splat_color, &c_shader_splat_color, 1);
-        glDeleteShader(c_shader_splat_color);
+        if (v_shader) glDeleteShader(v_shader);
+        if (f_shader) glDeleteShader(f_shader);
     }
 
-    if (!gl.program.entry_exit) gl.program.entry_exit = glCreateProgram();
-    if (!gl.program.entry_exit_depth) gl.program.entry_exit_depth = glCreateProgram();
-    if (!gl.program.dvr_only) gl.program.dvr_only = glCreateProgram();
-
-    {
-        const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit};
-        gl::attach_link_detach(gl.program.entry_exit, shaders, (int)ARRAY_SIZE(shaders));
-    }
-    {
-        const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit_depth};
-        gl::attach_link_detach(gl.program.entry_exit_depth, shaders, (int)ARRAY_SIZE(shaders));
-    }
-    {
-        const GLuint shaders[] = {v_shader_vol, f_shader_dvr_only};
-        gl::attach_link_detach(gl.program.dvr_only, shaders, (int)ARRAY_SIZE(shaders));
-    }
-
-
-    if (!gl.vbo) {
-        // https://stackoverflow.com/questions/28375338/cube-using-single-gl-triangle-strip
-        constexpr uint8_t cube_strip[42] = {0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1,
-                                            0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
-        glGenBuffers(1, &gl.vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(cube_strip), cube_strip, GL_STATIC_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    if (gl.version.major > 4 || (gl.version.major == 4 && gl.version.minor >= 3)) {
+        GLuint c_shader_splat_color = gl::compile_shader_from_source({ (const char*)splat_color_comp, splat_color_comp_size }, GL_COMPUTE_SHADER);
+        if (c_shader_splat_color) {
+            if (!gl.program.splat_color) gl.program.splat_color = glCreateProgram();
+            gl::attach_link_detach(gl.program.splat_color, &c_shader_splat_color, 1);
+            glDeleteShader(c_shader_splat_color);
+        } else {
+            MD_LOG_ERROR("shader compilation failed, shader program for splat color computation will not be updated");
+        }
     }
 
     if (!gl.vao) {
         glGenVertexArrays(1, &gl.vao);
-        glBindVertexArray(gl.vao);
-        glBindBuffer(GL_ARRAY_BUFFER, gl.vbo);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_UNSIGNED_BYTE, GL_FALSE, 0, (const GLvoid*)0);
-        glBindVertexArray(0);
     }
 
     if (!gl.ubo) {
         glGenBuffers(1, &gl.ubo);
         glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
-        glBufferData(GL_UNIFORM_BUFFER, sizeof(UniformData), 0, GL_DYNAMIC_DRAW);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(DvrUniformData), 0, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    }
-
-    if (!gl.tex_entry) {
-        glGenTextures(1, &gl.tex_entry);
-    }
-
-    if (!gl.tex_exit) {
-        glGenTextures(1, &gl.tex_exit);
-    }
-
-    if (!gl.tex_result) {
-        glGenTextures(1, &gl.tex_result);
     }
 
     if (!gl.fbo) {
@@ -1208,373 +1146,74 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
     }
 }
 
-// What the shared entry/exit + raycasting path takes: the union of the two public descriptions,
-// with exactly one of dvr / iso enabled.
-struct RaycastDesc {
-    struct {
-        uint32_t depth = 0;
-        uint32_t color = 0;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        bool clear_color = false;
-    } render_target;
+// -----------------------------------------------------------------------------
+// Direct volume rendering
+// -----------------------------------------------------------------------------
 
-    struct {
-        uint32_t density_volume = 0;
-        uint32_t color_volume   = 0;
-        uint32_t transfer_function = 0;
-        uint32_t field_volume   = 0;
-        uint32_t field_colormap = 0;
-    } texture;
-
-    struct {
-        mat4_t model = {};
-        mat4_t view = {};
-        mat4_t proj = {};
-        mat4_t inv_proj = {};
-    } matrix;
-
-    struct {
-        vec3_t min = {0, 0, 0};
-        vec3_t max = {1, 1, 1};
-    } clip_volume;
-
-    struct {
-        bool enabled = false;
-    } temporal;
-
-    struct {
-        bool enabled = false;
-        size_t count = 0;
-        const float* values = NULL;
-        const vec4_t* colors = NULL;
-        const float* optical_densities = NULL;
-        bool use_color_volume = false;
-        bool use_field = false;
-    } iso;
-
-    struct {
-        bool enabled = false;
-        float min_tf_value = 0.0f;
-        float max_tf_value = 1.0f;
-    } dvr;
-
-    struct {
-        float range_beg = 0.0f;
-        float range_end = 1.0f;
-    } field;
-
-    struct {
-        vec3_t env_radiance = {0,0,0};
-        float roughness = 0.4f;
-        vec3_t dir_radiance = {1,1,1};
-        float ior = 1.5f;
-        float exposure = 1.0f;
-        float gamma = 2.2f;
-    } shading;
-
-    vec3_t voxel_spacing = {};
-};
-
-static void render_raycast(const RaycastDesc& desc) {
-    if (!desc.dvr.enabled && !desc.iso.enabled) return;
-
-    int    iso_count = CLAMP((int)desc.iso.count, 0, 8);
-    float  iso_values[8];
-    vec4_t iso_colors[8];
-    float  iso_optical_densities[8] = { 0 };
-
-    MEMCPY(iso_values, desc.iso.values, iso_count * sizeof(float));
-    MEMCPY(iso_colors, desc.iso.colors, iso_count * sizeof(vec4_t));
-    if (desc.iso.optical_densities) {
-        MEMCPY(iso_optical_densities, desc.iso.optical_densities, iso_count * sizeof(float));
+void render_dvr(const DvrRenderDesc& desc) {
+    if (!desc.texture.density_volume || !desc.texture.transfer_function || !gl.program.dvr ||
+        desc.render_target.width == 0 || desc.render_target.height == 0) {
+        return;
     }
 
-    // Sort on iso value
-    for (int i = 0; i < iso_count - 1; ++i) {
-        for (int j = i + 1; j < iso_count; ++j) {
-            if (iso_values[j] < iso_values[i]) {
-                float  val_tmp = iso_values[i];
-                vec4_t col_tmp = iso_colors[i];
-                float  od_tmp = iso_optical_densities[i];
-                iso_values[i] = iso_values[j];
-                iso_colors[i] = iso_colors[j];
-                iso_optical_densities[i] = iso_optical_densities[j];
-                iso_values[j] = val_tmp;
-                iso_colors[j] = col_tmp;
-                iso_optical_densities[j] = od_tmp;
-            }
-        }
-    }
-
-    // For the default framebuffer glDrawBuffers rejects the FRONT/BACK/LEFT/RIGHT
-    // tokens that glDrawBuffer accepts and that GL_DRAW_BUFFER0 reports back, so the
-    // restore has to go through glDrawBuffer there. See reset_gl_state() in
-    // postprocessing_utils.cpp for the same fix.
-    auto restore_draw_buffers = [](GLint fbo, const GLint* buffers, GLint count) {
-        if (fbo == 0) {
-            glDrawBuffer(count > 0 ? (GLenum)buffers[0] : GL_NONE);
-        } else if (count > 0) {
-            glDrawBuffers(count, (const GLenum*)buffers);
-        } else {
-            glDrawBuffer(GL_NONE);
-        }
-    };
-
-    GLint bound_fbo;
-    GLint bound_viewport[4];
-    GLint bound_draw_buffer[8] = {0};
-    GLint bound_draw_buffer_count = 0;
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &bound_fbo);
-    glGetIntegerv(GL_VIEWPORT, bound_viewport);
-    for (int i = 0; i < 8; ++i) {
-        glGetIntegerv(GL_DRAW_BUFFER0 + i, &bound_draw_buffer[i]);
-        // @NOTE: Assume that its tightly packed and if we stumple upon a zero draw buffer index, we enterpret that as the 'end'
-        if (bound_draw_buffer[i] != GL_NONE) {
-            bound_draw_buffer_count = i + 1;
-        }
-    }
-
-    if (gl.width < desc.render_target.width ||
-        gl.height < desc.render_target.height)
-    {
-        gl.width = desc.render_target.width;
-        gl.height = desc.render_target.height;
-        gl::init_texture_2D(&gl.tex_entry,  gl.width, gl.height, GL_RGB16);
-        gl::init_texture_2D(&gl.tex_exit,   gl.width, gl.height, GL_RGB16);
-        gl::init_texture_2D(&gl.tex_result, gl.width, gl.height, GL_RGBA8);
-    }
-
-    const mat4_t model_to_view_matrix = mat4_mul(desc.matrix.view, desc.matrix.model);
-
+    // Moves the jitter pattern every frame when something (TAA) integrates it, keeps it still otherwise
     static float time = 0.0f;
-    time += 1.0f / 100.0f;
-    if (time > 100.0) time -= 100.0f;
-    if (!desc.temporal.enabled) {
-        time = 0.0f;
-    }
+    time = desc.temporal.enabled ? fmodf(time + 0.01f, 100.0f) : 0.0f;
 
-    float tf_min = desc.dvr.min_tf_value;
-    float tf_max = desc.dvr.max_tf_value;
-    float tf_ext = tf_max - tf_min;
-    float inv_tf_ext = tf_ext == 0 ? 1.0f : 1.0f / tf_ext;
+    const float tf_ext = desc.tf.max_value - desc.tf.min_value;
+    const mat4_t model_to_clip = desc.matrix.proj * desc.matrix.view * desc.matrix.model;
 
-    const float n1 = 1.0f;
-    const float n2 = desc.shading.ior;
-    const float F0 = powf((n1-n2)/(n1+n2), 2.0f);
+    DvrUniformData data = {};
+    data.clip_to_model = mat4_inverse(model_to_clip);
+    data.clip_min   = desc.clip_volume.min;
+    data.tf_min     = desc.tf.min_value;
+    data.clip_max   = desc.clip_volume.max;
+    data.tf_inv_ext = tf_ext != 0.0f ? 1.0f / tf_ext : 1.0f;
+    data.inv_res    = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
+    data.time       = time;
+    data.use_depth  = desc.render_target.depth ? 1.0f : 0.0f;
 
-    UniformData data;
-    data.view_to_model_mat = mat4_inverse(model_to_view_matrix);
-    data.model_to_view_mat = model_to_view_matrix;
-    data.inv_proj_mat      = desc.matrix.inv_proj;
-    data.model_view_proj_mat = desc.matrix.proj * model_to_view_matrix;
-    data.inv_res = {1.f / (float)(desc.render_target.width), 1.f / (float)(desc.render_target.height)};
-    data.time = time;
-    data.gamma = desc.shading.gamma;
-    data.clip_volume_min = desc.clip_volume.min;
-    data.tf_min = tf_min;
-    data.clip_volume_max = desc.clip_volume.max;
-    data.tf_inv_ext = inv_tf_ext;
-    data.gradient_spacing_world_space = desc.voxel_spacing;
-    data.exposure = desc.shading.exposure;
-    data.gradient_spacing_tex_space = data.view_to_model_mat * mat4_scale(desc.voxel_spacing.x, desc.voxel_spacing.y, desc.voxel_spacing.z);
-    data.env_radiance = desc.shading.env_radiance;
-    data.roughness = desc.shading.roughness;
-    data.dir_radiance = desc.shading.dir_radiance;
-    data.F0 = F0;
+    const SavedState saved = save_state();
 
-    glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(UniformData), &data);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    PUSH_GPU_SECTION("DVR")
+    if (bind_color_target(gl.fbo, desc.render_target.color, desc.render_target.width, desc.render_target.height, desc.render_target.clear_color)) {
+        glBindBuffer(GL_UNIFORM_BUFFER, gl.ubo);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(DvrUniformData), &data);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
 
-    bool use_depth = desc.render_target.depth;
-
-    if (use_depth) {
         glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, desc.texture.density_volume);
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
-    }
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
+        glActiveTexture(GL_TEXTURE0);
 
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, gl.ubo);
-    glBindVertexArray(gl.vao);
+        glUseProgram(gl.program.dvr);
+        glUniformBlockBinding(gl.program.dvr, gl.dvr_loc.block_index, 0);
+        glUniform1i(gl.dvr_loc.tex_volume, 0);
+        glUniform1i(gl.dvr_loc.tex_depth, 1);
+        glUniform1i(gl.dvr_loc.tex_tf, 2);
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
+        // Premultiplied colour over whatever is in the target
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_SCISSOR_TEST);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl.fbo);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tex_entry, 0);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.tex_exit,  0);
-    const GLuint draw_bufs[] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
-    glDrawBuffers(2, draw_bufs);
-
-    glClearColor(0,0,0,0);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glViewport(0, 0, desc.render_target.width, desc.render_target.height);
-
-    glEnable(GL_CULL_FACE);
-    {
-        PUSH_GPU_SECTION("VOLUME ENTRY / EXIT");
-        
-        const GLuint prog = use_depth ? gl.program.entry_exit_depth : gl.program.entry_exit;
-        const GLint uniform_block_index = glGetUniformBlockIndex(prog, "UniformData");
-        const GLint uniform_loc_tex_depth = glGetUniformLocation(prog, "u_tex_depth");
-
-        glUseProgram(prog);
-        glUniform1i(uniform_loc_tex_depth, 0);
-        glUniformBlockBinding(prog, uniform_block_index, 0);
-
-        glCullFace(GL_FRONT);
-        timer_begin(TimingStage_EntryExit);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
-        timer_end();
-        POP_GPU_SECTION()
-    }
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, gl.tex_entry);
-
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, gl.tex_exit);
-
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_3D, desc.texture.density_volume);
-
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, desc.texture.transfer_function);
-
-    // A field takes the place of the colour volume: the two are alternatives, never both
-    const bool use_field        = desc.iso.enabled && desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
-    const bool use_color_volume = desc.iso.enabled && !use_field && desc.iso.use_color_volume;
-
-    if (use_color_volume) {
-        glActiveTexture(GL_TEXTURE4);
-        glBindTexture(GL_TEXTURE_3D, desc.texture.color_volume);
-    }
-    if (use_field) {
-        glActiveTexture(GL_TEXTURE5);
-        glBindTexture(GL_TEXTURE_3D, desc.texture.field_volume);
-        glActiveTexture(GL_TEXTURE6);
-        glBindTexture(GL_TEXTURE_2D, desc.texture.field_colormap);
-    }
-
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.tex_result, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_DEPTH_TEST);
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    if (desc.render_target.color) {
-        ASSERT(glIsTexture(desc.render_target.color));
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc.render_target.color, 0);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        GLenum vol_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
-        if (vol_status != GL_FRAMEBUFFER_COMPLETE) {
-            MD_LOG_ERROR("Volume render target framebuffer is incomplete (0x%04X)", (unsigned int)vol_status);
-        }
-        if (desc.render_target.clear_color) {
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
-        }
-    } else {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
-        glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
-        restore_draw_buffers(bound_fbo, bound_draw_buffer, bound_draw_buffer_count);
-    }
-
-    PUSH_GPU_SECTION("VOLUME RAYCASTING")
-    {
-        GLuint vol_prog = desc.dvr.enabled ? gl.program.dvr_only : 0;
-
-        if (vol_prog == 0) {
-            MD_LOG_DEBUG("No raycasting shader program available for the current render description, skipping raycasting");
-            glBindVertexArray(0);
-            glDisable(GL_BLEND);
-            glEnable(GL_DEPTH_TEST);
-            glCullFace(GL_BACK);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
-            glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
-            restore_draw_buffers(bound_fbo, bound_draw_buffer, bound_draw_buffer_count);
-            POP_GPU_SECTION()
-            return;
-        }
-
-        const GLint uniform_block_index             = glGetUniformBlockIndex(vol_prog, "UniformData");
-        const GLint uniform_loc_tex_entry           = glGetUniformLocation(vol_prog, "u_tex_entry");
-        const GLint uniform_loc_tex_exit            = glGetUniformLocation(vol_prog, "u_tex_exit");
-        const GLint uniform_loc_tex_tf              = glGetUniformLocation(vol_prog, "u_tex_tf");
-        const GLint uniform_loc_tex_density_volume  = glGetUniformLocation(vol_prog, "u_tex_density_volume");
-        const GLint uniform_loc_tex_color_volume    = glGetUniformLocation(vol_prog, "u_tex_color_volume");
-        const GLint uniform_loc_iso_values          = glGetUniformLocation(vol_prog, "u_iso.values");
-        const GLint uniform_loc_iso_colors          = glGetUniformLocation(vol_prog, "u_iso.colors");
-        const GLint uniform_loc_iso_optical_densities = glGetUniformLocation(vol_prog, "u_iso.optical_densities");
-        const GLint uniform_loc_iso_count           = glGetUniformLocation(vol_prog, "u_iso.count");
-
-        glUseProgram(vol_prog);
-
-        glUniform1i(uniform_loc_tex_entry, 0);
-        glUniform1i(uniform_loc_tex_exit,  1);
-        glUniform1i(uniform_loc_tex_density_volume, 2);
-        glUniform1i(uniform_loc_tex_tf, 3);
-        glUniform1i(uniform_loc_tex_color_volume, 4);
-        if (use_field) {
-            const float ext = desc.field.range_end - desc.field.range_beg;
-            glUniform1i(glGetUniformLocation(vol_prog, "u_tex_field"), 5);
-            glUniform1i(glGetUniformLocation(vol_prog, "u_tex_field_colormap"), 6);
-            glUniform2f(glGetUniformLocation(vol_prog, "u_field_range"), desc.field.range_beg, ext != 0.0f ? 1.0f / ext : 0.0f);
-        }
-        glUniform1fv(uniform_loc_iso_values, (GLsizei)iso_count, (const float*)iso_values);
-        glUniform4fv(uniform_loc_iso_colors, (GLsizei)iso_count, (const float*)iso_colors);
-        glUniform1fv(uniform_loc_iso_optical_densities, (GLsizei)iso_count, (const float*)iso_optical_densities);
-        glUniform1i(uniform_loc_iso_count, (int)iso_count);
-        glUniformBlockBinding(vol_prog, uniform_block_index, 0);
-
+        glBindVertexArray(gl.vao);
         timer_begin(TimingStage_Raycast);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         timer_end();
-
         glBindVertexArray(0);
         glUseProgram(0);
     }
     POP_GPU_SECTION()
 
-    glDisable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glCullFace(GL_BACK);
-
-    if (desc.render_target.color) {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
-        glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
-        restore_draw_buffers(bound_fbo, bound_draw_buffer, bound_draw_buffer_count);
-    }
-
-}
-
-void render_dvr(const DvrRenderDesc& desc) {
-    if (!desc.texture.density_volume || !desc.texture.transfer_function) return;
-
-    RaycastDesc rc = {};
-    rc.render_target.depth       = desc.render_target.depth;
-    rc.render_target.color       = desc.render_target.color;
-    rc.render_target.width       = desc.render_target.width;
-    rc.render_target.height      = desc.render_target.height;
-    rc.render_target.clear_color = desc.render_target.clear_color;
-    rc.texture.density_volume    = desc.texture.density_volume;
-    rc.texture.transfer_function = desc.texture.transfer_function;
-    rc.matrix.model    = desc.matrix.model;
-    rc.matrix.view     = desc.matrix.view;
-    rc.matrix.proj     = desc.matrix.proj;
-    rc.matrix.inv_proj = desc.matrix.inv_proj;
-    rc.clip_volume.min = desc.clip_volume.min;
-    rc.clip_volume.max = desc.clip_volume.max;
-    rc.temporal.enabled = desc.temporal.enabled;
-    rc.dvr.enabled = true;
-    rc.dvr.min_tf_value = desc.tf.min_value;
-    rc.dvr.max_tf_value = desc.tf.max_value;
-    rc.voxel_spacing = desc.voxel_spacing;
-    render_raycast(rc);
+    restore_state(saved);
 }
 
 }  // namespace volume

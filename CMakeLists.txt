@@ -271,9 +271,7 @@ set(SHADER_FILES
     src/shaders/velocity/blit_velocity_dilate.frag
     src/shaders/velocity/blit_tilemax.frag
     src/shaders/velocity/blit_neighbormax.frag
-    src/shaders/volume/entryexit.vert
-    src/shaders/volume/entryexit.frag
-    src/shaders/volume/raycaster.frag
+    src/shaders/volume/dvr.frag
     src/shaders/volume/isosurface.frag
     src/shaders/volume/block_minmax.frag
     src/shaders/volume/block_proxy.vert

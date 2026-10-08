@@ -172,10 +172,9 @@ struct DvrRenderDesc {
         float min_value = 0.0f;
         float max_value = 1.0f;
     } tf;
-
-    vec3_t voxel_spacing = {};
 };
 
+// Premultiplied colour + coverage, blended over the target with (ONE, ONE_MINUS_SRC_ALPHA)
 void render_dvr(const DvrRenderDesc& desc);
 
 

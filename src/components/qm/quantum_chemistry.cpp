@@ -7971,7 +7971,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     draw_rep(nto.gl_rep, state.gl.shaders, view_mat, proj_mat);
 
                     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-                    glClearColor(1, 1, 1, 0);
+                    glClearColor(0, 0, 0, 0);   // premultiplied: nothing
                     glClear(GL_COLOR_BUFFER_BIT);
 
                     if (true) {

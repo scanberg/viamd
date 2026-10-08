@@ -694,6 +694,7 @@ void main() {
 }
 )");
 
+// Premultiplied: what it writes goes into the transparency buffer, which holds premultiplied colour
 constexpr str_t f_shader_src_col = STR_LIT(R"(
 #version 150 core
 
@@ -701,7 +702,8 @@ uniform vec4 u_color;
 out vec4 out_frag;
 
 void main() {
-	out_frag = u_color;
+	float a = clamp(u_color.a, 0.0, 1.0);
+	out_frag = vec4(u_color.rgb * a, a);
 }
 )");
 
@@ -2088,7 +2090,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     if (do_transparency) {
         PUSH_GPU_SECTION("Add Transparency")
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);    // premultiplied
         blit_texture(in.transparency);
         glDisable(GL_BLEND);
         POP_GPU_SECTION()

@@ -882,7 +882,6 @@ struct DensityVolume : viamd::EventHandler {
                             .min_value = dvr.tf.min_val,
                             .max_value = dvr.tf.max_val,
                         },
-                        .voxel_spacing = voxel_spacing,
                     };
                     volume::render_dvr(vol_desc);
                 } else if (iso.enabled) {
@@ -933,7 +932,8 @@ struct DensityVolume : viamd::EventHandler {
                 glEnable(GL_DEPTH_TEST);
                 glDepthMask(GL_TRUE);
                 glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                // Into the transparency buffer, which holds premultiplied colour
+                glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
 				immediate::Queue* queue = immediate::queue_create("Density Volume Bounds");
 

@@ -6571,7 +6571,8 @@ static void render(ApplicationState* state) {
     // (1 - alpha) and mixes the picking index with whatever was already there,
     // neither of which is a meaningful operation on that data.
     glEnablei(GL_BLEND, 0);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    // The transparency buffer holds premultiplied colour: straight alpha sources, accumulated premultiplied
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDisablei(GL_BLEND, 1);
     glDisablei(GL_BLEND, 2);
     glDisablei(GL_BLEND, 3);
