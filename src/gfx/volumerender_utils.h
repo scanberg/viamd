@@ -8,6 +8,25 @@ namespace volume {
 void initialize();
 void shutdown();
 
+// GPU time spent in the volume passes, averaged per frame over the last few frames. Measured with
+// GL_TIME_ELAPSED queries that are read back a few frames late, so collecting them never stalls.
+enum TimingStage {
+    TimingStage_BlockMinMax,
+    TimingStage_EntryExit,
+    TimingStage_Raycast,
+    TimingStage_Count
+};
+
+struct GpuTimings {
+    float ms[TimingStage_Count] = {};
+    float total_ms = 0.0f;
+};
+
+// Call once per frame: collects finished queries and publishes the averages
+void timings_new_frame();
+GpuTimings timings_get();
+const char* timing_stage_name(TimingStage stage);
+
 mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
 mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
 mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z);

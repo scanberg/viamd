@@ -1801,6 +1801,16 @@ static void draw_main_menu(ApplicationState* data) {
             const float w = ImGui::CalcTextSize(fps_buf).x;
             ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
             ImGui::Text("%s", fps_buf);
+            if (ImGui::IsItemHovered()) {
+                // GPU time of the volume passes, all views together (main viewport and component windows)
+                const volume::GpuTimings t = volume::timings_get();
+                ImGui::BeginTooltip();
+                ImGui::Text("Volume rendering, GPU per frame: %.3f ms", t.total_ms);
+                for (int i = 0; i < volume::TimingStage_Count; ++i) {
+                    ImGui::Text("  %-14s %.3f ms", volume::timing_stage_name((volume::TimingStage)i), t.ms[i]);
+                }
+                ImGui::EndTooltip();
+            }
         }
         ImGui::EndMainMenuBar();
     }
@@ -6366,6 +6376,8 @@ static void render(ApplicationState* state) {
     }
 
     update_view_param(state);
+
+    volume::timings_new_frame();
 
     gbuffer_clear(&state->gbuffer);
 

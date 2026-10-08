@@ -103,7 +103,90 @@ struct UniformData {
     float  F0;
 };
 
+// -----------------------------------------------------------------------------
+// GPU timings
+// -----------------------------------------------------------------------------
+
+static constexpr int    TIMER_QUERY_COUNT     = 64;
+static constexpr int    TIMER_PUBLISH_FRAMES  = 30;
+
+static struct {
+    struct {
+        GLuint id = 0;
+        int    stage = 0;
+        bool   pending = false;
+    } query[TIMER_QUERY_COUNT];
+
+    int    active = -1;     // the query recording right now: GL_TIME_ELAPSED queries cannot nest
+    double accum_ms[TimingStage_Count] = {};
+    int    accum_frames = 0;
+    GpuTimings published = {};
+} timing;
+
+static void timer_begin(TimingStage stage) {
+    if (timing.active != -1) return;
+    for (int i = 0; i < TIMER_QUERY_COUNT; ++i) {
+        if (timing.query[i].id && !timing.query[i].pending) {
+            timing.query[i].stage = stage;
+            timing.active = i;
+            glBeginQuery(GL_TIME_ELAPSED, timing.query[i].id);
+            return;
+        }
+    }
+}
+
+static void timer_end() {
+    if (timing.active == -1) return;
+    glEndQuery(GL_TIME_ELAPSED);
+    timing.query[timing.active].pending = true;
+    timing.active = -1;
+}
+
+void timings_new_frame() {
+    for (int i = 0; i < TIMER_QUERY_COUNT; ++i) {
+        if (!timing.query[i].pending) continue;
+        GLint available = 0;
+        glGetQueryObjectiv(timing.query[i].id, GL_QUERY_RESULT_AVAILABLE, &available);
+        if (!available) continue;
+        GLuint64 ns = 0;
+        glGetQueryObjectui64v(timing.query[i].id, GL_QUERY_RESULT, &ns);
+        timing.accum_ms[timing.query[i].stage] += (double)ns * 1.0e-6;
+        timing.query[i].pending = false;
+    }
+
+    timing.accum_frames += 1;
+    if (timing.accum_frames >= TIMER_PUBLISH_FRAMES) {
+        GpuTimings t = {};
+        for (int i = 0; i < TimingStage_Count; ++i) {
+            t.ms[i] = (float)(timing.accum_ms[i] / timing.accum_frames);
+            t.total_ms += t.ms[i];
+            timing.accum_ms[i] = 0.0;
+        }
+        timing.published = t;
+        timing.accum_frames = 0;
+    }
+}
+
+GpuTimings timings_get() {
+    return timing.published;
+}
+
+const char* timing_stage_name(TimingStage stage) {
+    switch (stage) {
+    case TimingStage_BlockMinMax: return "Block min/max";
+    case TimingStage_EntryExit:   return "Entry / exit";
+    case TimingStage_Raycast:     return "Raycast";
+    default: return "";
+    }
+}
+
 void initialize() {
+    if (!timing.query[0].id) {
+        for (int i = 0; i < TIMER_QUERY_COUNT; ++i) {
+            glGenQueries(1, &timing.query[i].id);
+        }
+    }
+
     glGetIntegerv(GL_MAJOR_VERSION, (GLint*)&gl.version.major);
     glGetIntegerv(GL_MINOR_VERSION, (GLint*)&gl.version.minor);
 
@@ -612,7 +695,9 @@ void render_volume(const RenderDesc& desc) {
         glUniformBlockBinding(prog, uniform_block_index, 0);
 
         glCullFace(GL_FRONT);
+        timer_begin(TimingStage_EntryExit);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 42);
+        timer_end();
         POP_GPU_SECTION()
     }
 
@@ -724,7 +809,9 @@ void render_volume(const RenderDesc& desc) {
         glUniform1i(uniform_loc_iso_count, (int)iso_count);
         glUniformBlockBinding(vol_prog, uniform_block_index, 0);
 
+        timer_begin(TimingStage_Raycast);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        timer_end();
 
         glBindVertexArray(0);
         glUseProgram(0);
