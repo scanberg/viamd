@@ -195,6 +195,7 @@ static void draw_script_editor_window(ApplicationState* state);
 static void draw_script_reference_window(ApplicationState* state);
 static void open_script_reference(ApplicationState* state, str_t topic, bool take_focus = true);
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
+static void draw_field_legend_windows(const ApplicationState& state);
 
 static void draw_debug_window(ApplicationState* state);
 static void draw_property_export_window(ApplicationState* state);
@@ -549,6 +550,7 @@ int main(int argc, char** argv) {
         //ImGui::ShowDemoWindow();
 
         draw_coordinate_system_widget_window(&state.view.target, state.view.camera);
+        draw_field_legend_windows(state);
             
         ImGui::BeginCanvas("Main interaction window", true);
         ImVec2 view_size = ImGui::GetContentRegionAvail();
@@ -2897,8 +2899,9 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
         ImGui::EndCombo();
     }
     if (es.field_kind == SurfaceFieldKind::EmbeddingPotential) {
-        ImGui::SetItemTooltip("The electrostatic potential of the classical charges (atom/charge) on the surface.\n"
-                              "For a polarizable embedding this is the potential of its PERMANENT charges:\n"
+        ImGui::SetItemTooltip("The electrostatic potential of the classical multipoles on the surface: the charges,\n"
+                              "and the dipoles and quadrupoles where the potential has them.\n"
+                              "For a polarizable embedding this is the potential of its PERMANENT multipoles:\n"
                               "the induced dipoles are solved for during the calculation and not stored.");
     }
 
@@ -2909,6 +2912,9 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     if (ImPlot::ColormapButton(ImPlot::GetColormapName(map.colormap), button_size, map.colormap)) {
         ImGui::OpenPopup("Field Colormap");
     }
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::Checkbox("legend", &map.show_legend);
+    ImGui::SetItemTooltip("Show the colour map with its range and unit in the view.\nHold Alt to move or resize it.");
     if (ImGui::BeginPopup("Field Colormap")) {
         for (int m = 4; m < ImPlot::GetColormapCount(); ++m) {
             if (ImPlot::ColormapButton(ImPlot::GetColormapName(m), button_size, m)) {
@@ -6272,6 +6278,70 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
         }
     }
     ImGui::End();
+}
+
+// The legend of a field coloured surface: its colour map over the range it spans, with values and
+// unit, in a window without decoration over the view. Like the coordinate widget it takes no input
+// unless Alt is held, and then it can be moved and resized; where it was is kept in the .ini.
+static void draw_field_legend_window(const ElectronicStructureRepresentation& es, int rep_idx, const char* rep_name) {
+    const SurfaceFieldMapping& map = es.field_map;
+    if (map.range_end == map.range_beg) return;
+
+    char unit[32] = "";
+    const double scl = display_units::factor_print(unit, sizeof(unit), surface_field_unit(es.field_kind));
+    char header[96];
+    if (unit[0]) snprintf(header, sizeof(header), "%s (%s)", surface_field_kind_str[(int)es.field_kind], unit);
+    else         snprintf(header, sizeof(header), "%s", surface_field_kind_str[(int)es.field_kind]);
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float width = MAX(ImGui::CalcTextSize(header).x + 2.0f * style.WindowPadding.x, 120.0f);
+    const float height = 300.0f;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - width - 20.0f, viewport->WorkPos.y + 60.0f + 40.0f * (float)rep_idx), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(80, 120), ImVec2(1000, 2000));
+
+    const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
+                             ImGuiWindowFlags_NoFocusOnAppearing;
+    if (!editable) {
+        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs;
+    }
+
+    // The look of the text the script draws into the view: light on a translucent dark backing,
+    // which reads on any background and any colour map
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, editable ? 0.65f : 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 5.0f);
+    ImPlot::PushStyleColor(ImPlotCol_FrameBg, ImVec4(0, 0, 0, 0));
+
+    char title[160];
+    snprintf(title, sizeof(title), "Legend: %s###field_legend_%d", rep_name, rep_idx);
+    if (ImGui::Begin(title, nullptr, flags)) {
+        ImGui::TextUnformatted(header);
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        char id[32];
+        snprintf(id, sizeof(id), "##scale%d", rep_idx);
+        ImPlot::ColormapScale(id, map.range_beg * scl, map.range_end * scl, ImVec2(avail.x, avail.y), "%g", ImPlotColormapScaleFlags_NoLabel, map.colormap);
+    }
+    ImGui::End();
+
+    ImPlot::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+}
+
+static void draw_field_legend_windows(const ApplicationState& state) {
+    const size_t num_reps = md_array_size(state.representation.reps);
+    for (size_t i = 0; i < num_reps; ++i) {
+        const Representation& rep = state.representation.reps[i];
+        if (!rep.enabled || rep.type != RepresentationType::ElectronicStructure) continue;
+        const ElectronicStructureRepresentation& es = rep.electronic_structure;
+        // Only while the surface is coloured by a field that exists: a legend of nothing would mislead
+        if (es.coloring != SurfaceColoring::Field || !es.field_map.show_legend || !es.field_vol.tex_id) continue;
+        draw_field_legend_window(es, (int)i, rep.name);
+    }
 }
 
 static void render(ApplicationState* state) {

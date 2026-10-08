@@ -29,10 +29,11 @@ struct md_system_state_t;
 // UNITS: positions in bohr (the grid's), values in the field's unit (surface_field_unit).
 
 enum class SurfaceFieldKind {
-    // The electrostatic potential of the classical charges of the system (atom/charge), with the
-    // atoms that carry none - the QM atoms of an embedding, NAN there - left out. For a polarizable
-    // embedding this is its PERMANENT part only: the induced dipoles are solved for during the
-    // calculation and not stored, so they are not in it.
+    // The electrostatic potential of the classical multipoles of the system: the charges
+    // (atom/charge), and the dipoles and quadrupoles (atom/dipole, atom/quadrupole) where the
+    // potential has them, with the atoms that carry none - the QM atoms of an embedding, NAN there -
+    // left out. For a polarizable embedding this is its PERMANENT part only: the induced dipoles are
+    // solved for during the calculation and not stored, so they are not in it.
     EmbeddingPotential,
     Count
 };
@@ -50,6 +51,7 @@ struct SurfaceFieldMapping {
     float range_end  =  0.05f;
     bool  symmetric  = true;        // a range centred on zero, the natural one for a potential
     bool  auto_range = true;        // the range follows the field's spread on the surface
+    bool  show_legend = false;      // the colour map, its range and unit drawn over the view
 };
 
 struct SurfaceFieldVolume {

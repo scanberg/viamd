@@ -215,6 +215,7 @@ static void fill_picking_tooltip_text(md_strb_t* sb, const ApplicationState& sta
                 default: break;
                 }
                 if (flags & MD_ATOM_FLAG_AROMATIC)       { *sb += "AROMATIC "; }
+                if (flags & MD_ATOM_FLAG_QM)             { *sb += "QM "; }
                 *sb += "\n";
             }
         } else if (state.selection.granularity == SelectionGranularity::Component && comp_idx != -1) {
@@ -1438,6 +1439,8 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
             viamd::extract_bool(rep->electronic_structure.field_map.symmetric, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldAutoRange"))) {
             viamd::extract_bool(rep->electronic_structure.field_map.auto_range, arg);
+        } else if (str_eq(ident, STR_LIT("ElectronicStructureFieldLegend"))) {
+            viamd::extract_bool(rep->electronic_structure.field_map.show_legend, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureTintPos"))) {
             viamd::extract_vec4(rep->electronic_structure.tint_psi_pos, arg);
         } else if (str_eq(ident, STR_LIT("ElectronicStructureTintNeg"))) {
@@ -1556,6 +1559,7 @@ static void serialize_representation(viamd::serialization_state_t& state, const 
             viamd::write_flt_vec(state,  STR_LIT("ElectronicStructureFieldRange"),     range, 2);
             viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldSymmetric"), rep.electronic_structure.field_map.symmetric);
             viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldAutoRange"), rep.electronic_structure.field_map.auto_range);
+            viamd::write_bool(state,     STR_LIT("ElectronicStructureFieldLegend"),    rep.electronic_structure.field_map.show_legend);
         }
         viamd::write_int(state,  STR_LIT("ElectronicStructureDensityPropertyIsoCount"), rep.electronic_structure.density_property.num_isos);
         for (int j = 0; j < rep.electronic_structure.density_property.num_isos; ++j) {

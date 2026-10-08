@@ -54,8 +54,20 @@ bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys) {
     }
 }
 
-// The field as a charge distribution md_gto_int evaluates. Point charges only for now; the QM
-// density and nuclei, for the full electrostatic potential, are the same structure with a basis.
+// A per atom column of 'components' values in 'unit', or nothing when the system has none
+static bool extract_atom_column(double* dst, const md_system_t& sys, str_t path, uint32_t components, md_unit_t unit) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
+    const size_t num_atoms = md_system_atom_count(&sys);
+    if (!attr || attr->format.components != components || md_attribute_value_count(&attr->format) != num_atoms) {
+        return false;
+    }
+    const size_t n = num_atoms * components;
+    return md_attribute_extract_f64(dst, n, attr, md_attribute_slice_all(), unit) == n;
+}
+
+// The field as a charge distribution md_gto_int evaluates: the classical sites as points with their
+// charge, and their dipole and quadrupole where the potential has them. The QM density and nuclei,
+// for the full electrostatic potential, are the same structure with a basis.
 static bool build_charges(md_gto_int_charges_t* out, SurfaceFieldKind kind, const md_system_t& sys, const md_system_state_t& state, md_allocator_i* alloc) {
     ASSERT(kind == SurfaceFieldKind::EmbeddingPotential);
     (void)kind;
@@ -73,16 +85,34 @@ static bool build_charges(md_gto_int_charges_t* out, SurfaceFieldKind kind, cons
     if (md_attribute_extract_f64(q, num_atoms, attr, md_attribute_slice_all(), md_unit_elementary_charge()) != num_atoms) {
         return false;
     }
+    double* mu = (double*)md_temp_alloc(temp, sizeof(double) * 3 * num_atoms);
+    double* Q  = (double*)md_temp_alloc(temp, sizeof(double) * 6 * num_atoms);
+    const md_unit_t e_bohr2 = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
+    const bool has_mu = extract_atom_column(mu, sys, STR_LIT("atom/dipole"),     3, md_unit_elementary_charge_bohr());
+    const bool has_Q  = extract_atom_column(Q,  sys, STR_LIT("atom/quadrupole"), 6, e_bohr2);
 
     float*  xyz    = (float*)md_temp_alloc(temp, sizeof(float) * 3 * num_atoms);
     double* charge = (double*)md_temp_alloc(temp, sizeof(double) * num_atoms);
+    double* dipole = has_mu ? (double*)md_temp_alloc(temp, sizeof(double) * 3 * num_atoms) : nullptr;
+    double* quad   = has_Q  ? (double*)md_temp_alloc(temp, sizeof(double) * 6 * num_atoms) : nullptr;
     size_t  n = 0;
     for (size_t i = 0; i < num_atoms; ++i) {
-        if (!is_finite_f64(q[i]) || q[i] == 0.0) continue;
+        // An atom with no charge at all (NAN) is not a site; a site is one whatever it carries, as an
+        // expansion point can have a dipole or a quadrupole and no charge
+        if (!is_finite_f64(q[i])) continue;
+        bool any = q[i] != 0.0;
+        double m[9] = {};
+        for (int k = 0; has_mu && k < 3; ++k) m[k]     = is_finite_f64(mu[3 * i + k]) ? mu[3 * i + k] : 0.0;
+        for (int k = 0; has_Q  && k < 6; ++k) m[3 + k] = is_finite_f64(Q[6 * i + k])  ? Q[6 * i + k]  : 0.0;
+        for (int k = 0; k < 9; ++k) any |= m[k] != 0.0;
+        if (!any) continue;
+
         xyz[3 * n + 0] = (float)(state.xyz[i].x * ANGSTROM_TO_BOHR_D);
         xyz[3 * n + 1] = (float)(state.xyz[i].y * ANGSTROM_TO_BOHR_D);
         xyz[3 * n + 2] = (float)(state.xyz[i].z * ANGSTROM_TO_BOHR_D);
         charge[n] = q[i];
+        if (dipole) MEMCPY(dipole + 3 * n, m, sizeof(double) * 3);
+        if (quad)   MEMCPY(quad + 6 * n, m + 3, sizeof(double) * 6);
         n += 1;
     }
     if (n == 0) {
@@ -90,9 +120,11 @@ static bool build_charges(md_gto_int_charges_t* out, SurfaceFieldKind kind, cons
     }
 
     md_gto_int_charges_desc_t desc = {};
-    desc.point_xyz    = xyz;
-    desc.point_charge = charge;
-    desc.num_points   = n;
+    desc.point_xyz        = xyz;
+    desc.point_charge     = charge;
+    desc.num_points       = n;
+    desc.point_dipole     = dipole;
+    desc.point_quadrupole = quad;
     return md_gto_int_charges_init(out, &desc, alloc);
 }
 
