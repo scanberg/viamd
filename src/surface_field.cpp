@@ -45,10 +45,27 @@ static const md_attribute_t* find_atom_charges(const md_system_t& sys) {
     return attr;
 }
 
+// The embedding potential is the environment's: the QM region is what the surfaces are drawn from,
+// never a source of the field on them. A QM atom carries a charge too when the system came from a
+// topology a QM calculation supplements (the force field's), and that charge sits inside the very
+// surface it would colour, so the QM flag excludes an atom whatever it carries.
+static inline bool atom_in_environment(const md_system_t& sys, size_t i) {
+    return (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_QM) == 0;
+}
+
+// Whether any atom is outside the QM region: what the 'environment' keyword requires as well
+static bool has_environment(const md_system_t& sys) {
+    const size_t num_atoms = md_system_atom_count(&sys);
+    for (size_t i = 0; i < num_atoms; ++i) {
+        if (atom_in_environment(sys, i)) return true;
+    }
+    return false;
+}
+
 bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys) {
     switch (kind) {
     case SurfaceFieldKind::EmbeddingPotential:
-        return find_atom_charges(sys) != nullptr;
+        return find_atom_charges(sys) != nullptr && has_environment(sys);
     default:
         return false;
     }
@@ -65,8 +82,8 @@ static bool extract_atom_column(double* dst, const md_system_t& sys, str_t path,
     return md_attribute_extract_f64(dst, n, attr, md_attribute_slice_all(), unit) == n;
 }
 
-// The field as a charge distribution md_gto_int evaluates: the classical sites as points with their
-// charge, and their dipole and quadrupole where the potential has them. The QM density and nuclei,
+// The field as a charge distribution md_gto_int evaluates: the environment's classical sites as points
+// with their charge, and their dipole and quadrupole where the potential has them. The QM density and nuclei,
 // for the full electrostatic potential, are the same structure with a basis.
 static bool build_charges(md_gto_int_charges_t* out, SurfaceFieldKind kind, const md_system_t& sys, const md_system_state_t& state, md_allocator_i* alloc) {
     ASSERT(kind == SurfaceFieldKind::EmbeddingPotential);
@@ -97,6 +114,8 @@ static bool build_charges(md_gto_int_charges_t* out, SurfaceFieldKind kind, cons
     double* quad   = has_Q  ? (double*)md_temp_alloc(temp, sizeof(double) * 6 * num_atoms) : nullptr;
     size_t  n = 0;
     for (size_t i = 0; i < num_atoms; ++i) {
+        // An atom of the QM region is not a site, whatever it carries
+        if (!atom_in_environment(sys, i)) continue;
         // An atom with no charge at all (NAN) is not a site; a site is one whatever it carries, as an
         // expansion point can have a dipole or a quadrupole and no charge
         if (!is_finite_f64(q[i])) continue;

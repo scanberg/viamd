@@ -2870,7 +2870,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
             }
             ImGui::EndDisabled();
             if (!enabled && c == SurfaceColoring::Field) {
-                ImGui::SetItemTooltip("Nothing in this dataset to make a field from: the embedding potential needs classical charges (atom/charge)");
+                ImGui::SetItemTooltip("Nothing in this dataset to make a field from: the embedding potential needs classical charges (atom/charge)\n"
+                                       "on atoms outside the QM region");
             }
         }
         ImGui::EndCombo();
@@ -2899,8 +2900,9 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
         ImGui::EndCombo();
     }
     if (es.field_kind == SurfaceFieldKind::EmbeddingPotential) {
-        ImGui::SetItemTooltip("The electrostatic potential of the classical multipoles on the surface: the charges,\n"
+        ImGui::SetItemTooltip("The electrostatic potential of the environment's classical multipoles on the surface: the charges,\n"
                               "and the dipoles and quadrupoles where the potential has them.\n"
+                              "The QM region is left out, whatever charges a topology gives its atoms.\n"
                               "For a polarizable embedding this is the potential of its PERMANENT multipoles:\n"
                               "the induced dipoles are solved for during the calculation and not stored.");
     }
