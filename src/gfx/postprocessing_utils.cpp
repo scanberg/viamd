@@ -108,6 +108,7 @@ static inline bool is_orthographic_proj_matrix(const float P[4][4]) { return P[2
 static struct {
     GLuint vao = 0;
     GLuint v_shader_fs_quad = 0;
+    bool programs_ready = false;    // programs are compiled once; initialize() on resize only reallocates targets
     uint32_t tex_width = 0;
     uint32_t tex_height = 0;
 
@@ -116,7 +117,8 @@ static struct {
         GLuint scratch_fbo = 0;
         GLuint tex_rgba8 = 0;
         GLuint tex_half_dof = 0;        // half res RGBA16F: colour + signed CoC (DOF prepass)
-        GLuint tex_color[2] = {0, 0};
+        GLuint tex_color[2] = {0, 0};   // HDR ping-pong (R11F_G11F_B10F): compose, SSAO, DOF
+        GLuint tex_ldr[2] = {0, 0};     // LDR ping-pong (RGB10_A2): everything after tone mapping
         GLuint tex_history_prev = 0;
     } rt;
 
@@ -352,7 +354,7 @@ static GLuint setup_variant(str_t name, str_t src, bool perspective) {
     return setup_program_from_source(name, src, perspective ? STR_LIT("#define AO_PERSPECTIVE 1") : STR_LIT("#define AO_PERSPECTIVE 0"));
 }
 
-void initialize(int width, int height) {
+void initialize_programs() {
     const str_t ao_src       = {(const char*)ssao_frag, ssao_frag_size};
     const str_t blur_src     = {(const char*)blur_frag, blur_frag_size};
     const str_t upsample_src = {(const char*)upsample_frag, upsample_frag_size};
@@ -364,7 +366,9 @@ void initialize(int width, int height) {
         gl.ssao.program_blur[i]     = setup_variant(STR_LIT("ssao blur"),     blur_src,     i == 1);
         gl.ssao.program_upsample[i] = setup_variant(STR_LIT("ssao upsample"), upsample_src, i == 1);
     }
+}
 
+void initialize_targets(int width, int height) {
     // Must have the dimensions of mip level 1 of the linear depth texture
     const int half_w = MAX(width / 2, 1);
     const int half_h = MAX(height / 2, 1);
@@ -504,6 +508,7 @@ void shutdown() {
     if (compose.persp.program) glDeleteProgram(compose.persp.program);
     if (compose.ortho.program) glDeleteProgram(compose.ortho.program);
     if (compose.ubo)        glDeleteBuffers(1, &compose.ubo);
+    compose.ubo = 0;
 }
 }  // namespace compose
 
@@ -608,7 +613,7 @@ static GLuint setup(str_t name, const unsigned char* src, size_t size, str_t def
     return setup_program_from_source(name, {(const char*)src, size}, defines);
 }
 
-void initialize(int32_t width, int32_t height) {
+void initialize_programs() {
     GLuint* programs[] = {&gl.bokeh_dof.program_prepass, &gl.bokeh_dof.program_tile, &gl.bokeh_dof.program_gather, &gl.bokeh_dof.program_postfilter, &gl.bokeh_dof.program_composite};
     for (GLuint* prog : programs) {
         if (*prog) glDeleteProgram(*prog);
@@ -619,7 +624,9 @@ void initialize(int32_t width, int32_t height) {
     gl.bokeh_dof.program_gather     = setup(STR_LIT("DOF gather"),     dof_gather_frag,     dof_gather_frag_size);
     gl.bokeh_dof.program_postfilter = setup(STR_LIT("DOF postfilter"), dof_postfilter_frag, dof_postfilter_frag_size);
     gl.bokeh_dof.program_composite  = setup(STR_LIT("DOF composite"),  dof_composite_frag,  dof_composite_frag_size);
+}
 
+void initialize_targets(int32_t width, int32_t height) {
     const int half_w = MAX(width / 2, 1);
     const int half_h = MAX(height / 2, 1);
     const int tile_w = DIV_UP(half_w, TILE);
@@ -645,6 +652,7 @@ void shutdown() {
 
 namespace blit {
 static GLuint program_tex = 0;
+static GLuint program_tex_dither = 0;
 static GLuint program_col = 0;
 static GLint uniform_loc_texture = -1;
 static GLint uniform_loc_color = -1;
@@ -658,6 +666,30 @@ out vec4 out_frag;
 
 void main() {
     out_frag = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
+}
+)");
+
+// Final copy to the (8-bit) output with triangular dither of +-1 LSB. Quantisation happens only here, so this replaces
+// the large per-pixel albedo noise compose used to add against banding.
+constexpr str_t f_shader_src_tex_dither = STR_LIT(R"(
+#version 150 core
+
+uniform sampler2D u_texture;
+uniform float u_time;
+
+out vec4 out_frag;
+
+float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+    vec4 c = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
+    vec2 p = gl_FragCoord.xy + u_time * 61.0;
+    float d = hash(p) + hash(p + vec2(17.31, 41.17)) - 1.0;   // triangular in [-1, 1]
+    out_frag = vec4(c.rgb + d / 255.0, c.a);
 }
 )");
 
@@ -676,13 +708,17 @@ void initialize() {
     program_tex = setup_program_from_source(STR_LIT("blit texture"), f_shader_src_tex);
     uniform_loc_texture = glGetUniformLocation(program_tex, "u_texture");
 
+    program_tex_dither = setup_program_from_source(STR_LIT("blit texture dither"), f_shader_src_tex_dither);
+
     program_col = setup_program_from_source(STR_LIT("blit color"), f_shader_src_col);
     uniform_loc_color = glGetUniformLocation(program_col, "u_color");
 }
 
 void shutdown() {
     if (program_tex) glDeleteProgram(program_tex);
+    if (program_tex_dither) glDeleteProgram(program_tex_dither);
     if (program_col) glDeleteProgram(program_col);
+    program_tex = program_tex_dither = program_col = 0;
 }
 }  // namespace blit
 
@@ -805,7 +841,7 @@ struct {
     } uniform_loc;
 } blit_dilate;
 
-void initialize(int32_t width, int32_t height) {
+void initialize_programs() {
     {
         blit_velocity.program = setup_program_from_source(STR_LIT("screen-space velocity"), {(const char*)blit_velocity_frag, blit_velocity_frag_size});
 		blit_velocity.uniform_loc.tex_depth = glGetUniformLocation(blit_velocity.program, "u_tex_depth");
@@ -830,7 +866,9 @@ void initialize(int32_t width, int32_t height) {
         blit_dilate.uniform_loc.tex_vel = glGetUniformLocation(blit_dilate.program, "u_tex_vel");
         blit_dilate.uniform_loc.texel_size = glGetUniformLocation(blit_dilate.program, "u_texel_size");
     }
+}
 
+void initialize_targets(int32_t width, int32_t height) {
     if (!gl.velocity.tex_tilemax) {
         glGenTextures(1, &gl.velocity.tex_tilemax);
     }
@@ -873,6 +911,8 @@ void shutdown() {
     if (blit_dilate.program) glDeleteProgram(blit_dilate.program);
     if (gl.velocity.tex_tilemax) glDeleteTextures(1, &gl.velocity.tex_tilemax);
     if (gl.velocity.tex_neighbormax) glDeleteTextures(1, &gl.velocity.tex_neighbormax);
+    blit_velocity.program = blit_tilemax.program = blit_neighbormax.program = blit_dilate.program = 0;
+    gl.velocity.tex_tilemax = gl.velocity.tex_neighbormax = 0;
 }
 }  // namespace velocity
 
@@ -907,7 +947,11 @@ void initialize() {
     }
 }
 
-void shutdown() {}
+void shutdown() {
+    if (gl.temporal.with_motion_blur.program) glDeleteProgram(gl.temporal.with_motion_blur.program);
+    if (gl.temporal.no_motion_blur.program)   glDeleteProgram(gl.temporal.no_motion_blur.program);
+    gl.temporal.with_motion_blur.program = gl.temporal.no_motion_blur.program = 0;
+}
 }  // namespace temporal
 
 namespace sharpen {
@@ -954,16 +998,37 @@ void shutdown() {
 }
 }
 
-void initialize(int width, int height) {
+static void initialize_programs() {
     if (!gl.vao) glGenVertexArrays(1, &gl.vao);
 
     gl.v_shader_fs_quad = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
 
-    // LINEARIZE DEPTH
-
     gl.linear_depth.linearize.program_persp = setup_program_from_source(STR_LIT("linearize depth persp"), f_shader_src_linearize_depth, STR_LIT("#version 150 core\n#define PERSPECTIVE 1"));
     gl.linear_depth.linearize.program_ortho = setup_program_from_source(STR_LIT("linearize depth ortho"), f_shader_src_linearize_depth, STR_LIT("#version 150 core\n#define PERSPECTIVE 0"));
     gl.linear_depth.downsample.program = setup_program_from_source(STR_LIT("linear depth downsample"), {(const char*)depth_downsample_frag, depth_downsample_frag_size});
+
+    ssao::initialize_programs();
+    dof::initialize_programs();
+    velocity::initialize_programs();
+    highlight::initialize();
+    hsv::initialize();
+    tonemapping::initialize();
+    temporal::initialize();
+    blit::initialize();
+    blur::initialize();
+    sharpen::initialize();
+    compose::initialize();
+    fxaa::initialize();
+
+    gl.programs_ready = true;
+}
+
+// Called at startup and on every resize. Programs used to be recompiled (and the old ones leaked) on every call;
+// now they are created once and only the size dependent targets are reallocated here.
+void initialize(int width, int height) {
+    if (!gl.programs_ready) {
+        initialize_programs();
+    }
 
     if (gl.linear_depth.texture)
         glDeleteTextures(1, &gl.linear_depth.texture);
@@ -1004,10 +1069,15 @@ void initialize(int width, int height) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     }
 
-    // Internal transient targets
+    // Internal transient targets.
+    // HDR stages use R11F_G11F_B10F, fine for linear HDR. Its 6/6/5 bit mantissas are too coarse for the display
+    // referred values after tone mapping (steps of 1/128 and 1/64 near white: visible banding, and the TAA
+    // exponential history can get stuck), so the LDR stages and the TAA history use RGB10_A2 at the same 32 bpp.
     ensure_texture_2d(&gl.rt.tex_color[0], GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
     ensure_texture_2d(&gl.rt.tex_color[1], GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
-    ensure_texture_2d(&gl.rt.tex_history_prev, GL_R11F_G11F_B10F, width, height, GL_RGB, GL_FLOAT);
+    ensure_texture_2d(&gl.rt.tex_ldr[0], GL_RGB10_A2, width, height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
+    ensure_texture_2d(&gl.rt.tex_ldr[1], GL_RGB10_A2, width, height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
+    ensure_texture_2d(&gl.rt.tex_history_prev, GL_RGB10_A2, width, height, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV);
 
     ensure_texture_2d(&gl.rt.tex_rgba8, GL_RGBA8, width, height, GL_RGBA, GL_UNSIGNED_BYTE);
     ensure_texture_2d(&gl.rt.tex_half_dof, GL_RGBA16F, MAX(width / 2, 1), MAX(height / 2, 1), GL_RGBA, GL_FLOAT);
@@ -1029,18 +1099,9 @@ void initialize(int width, int height) {
     gl.tex_width = width;
     gl.tex_height = height;
 
-    ssao::initialize(width, height);
-    dof::initialize(width, height);
-    velocity::initialize(width, height);
-    highlight::initialize();
-    hsv::initialize();
-    tonemapping::initialize();
-    temporal::initialize();
-    blit::initialize();
-    blur::initialize();
-    sharpen::initialize();
-    compose::initialize();
-    fxaa::initialize();
+    ssao::initialize_targets(width, height);
+    dof::initialize_targets(width, height);
+    velocity::initialize_targets(width, height);
 }
 
 void shutdown() {
@@ -1057,9 +1118,18 @@ void shutdown() {
     compose::shutdown();
     fxaa::shutdown();
 
+    if (gl.linear_depth.linearize.program_persp) glDeleteProgram(gl.linear_depth.linearize.program_persp);
+    if (gl.linear_depth.linearize.program_ortho) glDeleteProgram(gl.linear_depth.linearize.program_ortho);
+    if (gl.linear_depth.downsample.program)      glDeleteProgram(gl.linear_depth.downsample.program);
+    if (gl.linear_depth.texture) glDeleteTextures(1, &gl.linear_depth.texture);
+    gl.linear_depth.linearize.program_persp = gl.linear_depth.linearize.program_ortho = gl.linear_depth.downsample.program = 0;
+    gl.linear_depth.texture = 0;
+
     if (gl.vao) glDeleteVertexArrays(1, &gl.vao);
-    //if (gl.vbo) glDeleteBuffers(1, &gl.vbo);
     if (gl.v_shader_fs_quad) glDeleteShader(gl.v_shader_fs_quad);
+    gl.vao = 0;
+    gl.v_shader_fs_quad = 0;
+    gl.programs_ready = false;
     if (gl.rt.fbo) glDeleteFramebuffers(1, &gl.rt.fbo);
     if (gl.rt.scratch_fbo) glDeleteFramebuffers(1, &gl.rt.scratch_fbo);
     if (gl.linear_depth.fbo) glDeleteFramebuffers(1, &gl.linear_depth.fbo);
@@ -1067,6 +1137,7 @@ void shutdown() {
     if (gl.ssao.fbo) glDeleteFramebuffers(1, &gl.ssao.fbo);
     if (gl.bokeh_dof.fbo) glDeleteFramebuffers(1, &gl.bokeh_dof.fbo);
     if (gl.rt.tex_color[0]) glDeleteTextures(2, gl.rt.tex_color);
+    if (gl.rt.tex_ldr[0]) glDeleteTextures(2, gl.rt.tex_ldr);
     if (gl.rt.tex_history_prev) glDeleteTextures(1, &gl.rt.tex_history_prev);
     if (gl.rt.tex_rgba8) glDeleteTextures(1, &gl.rt.tex_rgba8);
     if (gl.rt.tex_half_dof) glDeleteTextures(1, &gl.rt.tex_half_dof);
@@ -1680,6 +1751,19 @@ void blit_texture(GLuint tex) {
     glUseProgram(0);
 }
 
+static void blit_texture_dither(GLuint tex, float time) {
+    ASSERT(glIsTexture(tex));
+    glUseProgram(blit::program_tex_dither);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(glGetUniformLocation(blit::program_tex_dither, "u_texture"), 0);
+    glUniform1f(glGetUniformLocation(blit::program_tex_dither, "u_time"), time);
+    glBindVertexArray(gl.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
 void blit_color(vec4_t color) {
     glUseProgram(blit::program_col);
     glUniform4fv(blit::uniform_loc_color, 1, &color.x);
@@ -1914,12 +1998,15 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    GLenum dst_buffer = GL_COLOR_ATTACHMENT1;
-    GLuint src_texture = gl.rt.tex_color[0];
+    // Ping-pong between attachment 0 and 1 of gl.rt.fbo. Which textures sit there changes at the tone mapping pass
+    // (HDR pair -> LDR pair), so the source texture is tracked explicitly.
+    const GLuint* pair = gl.rt.tex_color;
+    GLenum dst_buffer = GL_COLOR_ATTACHMENT0;
+    GLuint src_texture = 0;
 
-    auto swap_target = [&dst_buffer, &src_texture]() {
+    auto swap_target = [&]() {
+        src_texture = pair[dst_buffer - GL_COLOR_ATTACHMENT0];
         dst_buffer = dst_buffer == GL_COLOR_ATTACHMENT0 ? GL_COLOR_ATTACHMENT1 : GL_COLOR_ATTACHMENT0;
-        src_texture = src_texture == gl.rt.tex_color[0] ? gl.rt.tex_color[1] : gl.rt.tex_color[0];
     };
     glDrawBuffer(dst_buffer);
 
@@ -1952,6 +2039,10 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     if (do_tonemap) {
         PUSH_GPU_SECTION("Tonemapping")
         swap_target();
+        // From here on the values are display referred: switch the ping-pong pair to the RGB10_A2 targets
+        pair = gl.rt.tex_ldr;
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gl.rt.tex_ldr[0], 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gl.rt.tex_ldr[1], 0);
         glDrawBuffer(dst_buffer);
         Tonemapping tonemapper = settings.tonemap.enabled ? to_legacy_tonemapper(settings.tonemap.mode) : Tonemapping_Passthrough;
         apply_tonemapping(src_texture, tonemapper, settings.tonemap.exposure, settings.tonemap.gamma);
@@ -1985,7 +2076,11 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     }
 
     if (do_taa) {
-        copy_texture_2d(gl.rt.tex_history_prev, in.history, width, height);
+        GLuint history_prev = in.history_prev;
+        if (!history_prev) {
+            copy_texture_2d(gl.rt.tex_history_prev, in.history, width, height);
+            history_prev = gl.rt.tex_history_prev;
+        }
 
         swap_target();
         const float feedback_min = settings.taa.feedback_min;
@@ -2001,7 +2096,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         const GLenum taa_buffers[2] = { GL_COLOR_ATTACHMENT2, dst_buffer };
         glDrawBuffers(2, taa_buffers);
 
-        apply_temporal_aa(gl.linear_depth.texture, src_texture, gl.rt.tex_history_prev, in.velocity, gl.velocity.tex_neighbormax, view_param.jitter.curr, view_param.jitter.prev,
+        apply_temporal_aa(gl.linear_depth.texture, src_texture, history_prev, in.velocity, gl.velocity.tex_neighbormax, view_param.jitter.curr, view_param.jitter.prev,
                           feedback_min, feedback_max, motion_scale, time);
 
         POP_GPU_SECTION()
@@ -2022,7 +2117,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     if (do_present) {
         swap_target();
         glDepthMask(0);
-        blit_texture(src_texture);
+        blit_texture_dither(src_texture, time);
     }
 
     if (last_depth_test) glEnable(GL_DEPTH_TEST);

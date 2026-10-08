@@ -6640,9 +6640,17 @@ static void render(ApplicationState* state) {
     inputs.velocity = state->gbuffer.tex.velocity;
     inputs.transparency = state->gbuffer.tex.transparency;
     inputs.history = settings.taa.enabled ? state->gbuffer.tex.history : 0;
+    inputs.history_prev = settings.taa.enabled ? state->gbuffer.tex.history_prev : 0;
 
     postprocess_pipeline::execute(inputs, settings, state->view.param);
     POP_GPU_SECTION()
+
+    if (settings.taa.enabled) {
+        // Ping-pong: what was written this frame is read as the previous history next frame (no copy needed)
+        uint32_t tmp = state->gbuffer.tex.history;
+        state->gbuffer.tex.history = state->gbuffer.tex.history_prev;
+        state->gbuffer.tex.history_prev = tmp;
+    }
 
     if (do_screenshot && state->screenshot.hide_gui) {
         state->screenshot.sample_count += 1;
