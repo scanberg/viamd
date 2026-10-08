@@ -425,6 +425,7 @@ struct DensityVolume : viamd::EventHandler {
                     MEMCPY(volume_texture.dim, dim, sizeof(dim));
                 }
                 gl::set_texture_3D_data(volume_texture.id, 0, prop_attr->data, GL_R32F);
+                volume::notify_data_changed(volume_texture.id);
             }
         }
     }

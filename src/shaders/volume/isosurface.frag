@@ -11,6 +11,10 @@
 // Membership: a point is INSIDE isosurface i when the density is on the far side of its value from
 // zero, d >= v for v >= 0 and d <= v for v < 0. Crossing a surface toggles membership of exactly that
 // surface, and the optical densities of the surfaces enclosing the ray attenuate it in between.
+//
+// Empty space: when u_use_proxy is set, the nearest and farthest depths of the blocks that can hold a
+// surface (block_proxy.vert) narrow the ray to the part that can see one, and pixels whose ray meets no
+// such block are discarded before any sampling.
 
 #ifndef MAX_ISO
 #define MAX_ISO 8
@@ -36,6 +40,11 @@ layout(std140) uniform IsoUniforms {
     vec2  u_inv_res;
     float u_field_inv_ext;
     float u_optical_scale;      // optical density -> extinction per world unit
+
+    float u_use_proxy;          // u_tex_entry / u_tex_exit hold the block proxy depths
+    float u_entry_from_near;    // the near plane cuts the volume: rays start there, not at the proxy entry
+    float u_pad0;
+    float u_pad1;
 };
 
 uniform float u_iso_values[MAX_ISO];
@@ -45,6 +54,8 @@ uniform int   u_iso_count;
 
 uniform sampler3D u_tex_volume;
 uniform sampler2D u_tex_depth;
+uniform sampler2D u_tex_entry;  // nearest depth of the block proxy, 1 where there is none
+uniform sampler2D u_tex_exit;   // farthest depth of the block proxy, 0 where there is none
 
 #if defined(USE_COLOR_VOLUME)
 uniform sampler3D u_tex_color_volume;
@@ -195,8 +206,19 @@ void main() {
     ivec2 px  = ivec2(gl_FragCoord.xy);
     vec2  ndc = (gl_FragCoord.xy * u_inv_res) * 2.0 - 1.0;
 
+    float proxy_entry = 0.0;
+    float proxy_exit  = 1.0;
+    if (u_use_proxy > 0.5) {
+        proxy_exit = texelFetch(u_tex_exit, px, 0).r;
+        if (proxy_exit <= 0.0) discard;     // the ray meets no block that can hold a surface
+        if (u_entry_from_near < 0.5) {
+            proxy_entry = texelFetch(u_tex_entry, px, 0).r;
+        }
+    }
+
     // The ray from the near plane to the opaque scene (or the far plane), clipped to the clip box
     float depth = (u_use_depth > 0.5) ? texelFetch(u_tex_depth, px, 0).r : 1.0;
+    if (proxy_entry >= depth) discard;
     vec3 pn  = unproject(ndc, 0.0);
     vec3 pf  = unproject(ndc, depth);
     vec3 seg = pf - pn;
@@ -208,6 +230,20 @@ void main() {
     vec3 tmax = max(t0, t1);
     float s0 = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
     float s1 = min(min(tmax.x, tmax.y), min(tmax.z, 1.0));
+
+    if (u_use_proxy > 0.5) {
+        // The proxy span as parameters on the same segment, widened by half a voxel so that depth
+        // quantization cannot start a ray just past a surface that touches a block face
+        vec3  dim_v  = vec3(textureSize(u_tex_volume, 0));
+        float margin = 0.5 / max(length(seg * dim_v), 1e-6);
+        float inv_ss = 1.0 / max(dot(seg, seg), 1e-30);
+        if (proxy_entry > 0.0) {
+            s0 = max(s0, dot(unproject(ndc, proxy_entry) - pn, seg) * inv_ss - margin);
+        }
+        if (proxy_exit < depth) {
+            s1 = min(s1, dot(unproject(ndc, proxy_exit) - pn, seg) * inv_ss + margin);
+        }
+    }
     if (s0 >= s1) discard;
 
     vec3  p0  = pn + seg * s0;

@@ -27,6 +27,16 @@ void timings_new_frame();
 GpuTimings timings_get();
 const char* timing_stage_name(TimingStage stage);
 
+// The isosurface renderer keeps a coarse min/max grid per density volume to skip empty space, and has to
+// be told when a volume's texels change: call this after every upload into (or evaluation onto) a density
+// volume texture, and after (re)allocating one. A volume that is never announced still works, but its
+// grid is built once and then not again.
+void notify_data_changed(uint32_t volume_texture);
+
+// Increases every time notify_data_changed() is called for the texture; 0 for a texture never announced.
+// For callers that cache what they render from a volume.
+uint64_t data_version(uint32_t volume_texture);
+
 mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
 mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb);
 mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z);

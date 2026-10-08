@@ -119,6 +119,7 @@ void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
     vol->texture_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, extent * scl);
     vol->voxel_size       = grid.spacing * scl;
     gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
+    volume::notify_data_changed(vol->tex_id);
 }
 
 static void init_all_representations(ApplicationState* state);
@@ -2757,6 +2758,8 @@ static size_t basis_atom_positions_gather(vec3_t* dst, size_t cap, const md_syst
 // available.
 static void gpu_volume_upload_to_gl(uint32_t vol_tex, const void* src, size_t size) {
     if (!src) return;
+    // The isosurface renderer's empty space grid follows the texels
+    volume::notify_data_changed(vol_tex);
     if (void* dst = gl::pbo_upload_begin(size)) {
         MEMCPY(dst, src, size);
         if (gl::pbo_upload_end_texture_3D(vol_tex, 0, GL_R32F)) return;
@@ -3023,6 +3026,7 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
     }
 
     md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), ao_coeffs, cutoff, mode, op);
+    volume::notify_data_changed(vol_tex);
     return true;
 }
 
@@ -3094,6 +3098,7 @@ bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const m
     }
 
     md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), density_matrix, false, op);
+    volume::notify_data_changed(vol_tex);
     return true;
 }
 

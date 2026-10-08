@@ -202,6 +202,8 @@ struct IsoProgram {
     GLint  loc_tex_color_volume = -1;
     GLint  loc_tex_field = -1;
     GLint  loc_tex_field_colormap = -1;
+    GLint  loc_tex_entry = -1;
+    GLint  loc_tex_exit = -1;
     GLint  block_index = -1;
 };
 
@@ -226,14 +228,65 @@ struct IsoUniformData {
     vec2_t inv_res;
     float  field_inv_ext;
     float  optical_scale;
+
+    float  use_proxy;
+    float  entry_from_near;
+    float  pad0;
+    float  pad1;
 };
-static_assert(sizeof(IsoUniformData) == 3 * 64 + 6 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
+static_assert(sizeof(IsoUniformData) == 3 * 64 + 7 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
+
+// Block min/max grids: what the isosurface rays skip empty space with. One per density volume, kept
+// here keyed by the volume's texture and rebuilt when notify_data_changed() says its texels changed.
+static constexpr int BLOCK_MIN_SIZE     = 8;    // voxels per block side, at least
+static constexpr int BLOCK_MAX_PER_AXIS = 32;   // larger volumes get larger blocks: the proxy draws one box per block
+static constexpr int BLOCK_CACHE_SIZE   = 64;
+
+struct BlockGrid {
+    GLuint   volume = 0;
+    GLuint   minmax = 0;            // RG32F, one texel per block
+    uint64_t version = 0;           // of the volume's texels
+    uint64_t built_version = 0;     // the version minmax was built from
+    int      dim[3] = {};           // of the volume when built
+    int      block_dim[3] = {};
+    int      block_size = 0;
+    uint64_t last_used = 0;
+};
 
 static struct {
     IsoProgram prog[IsoVariant_Count];
     GLuint ubo = 0;
     GLuint fbo = 0;
-    GLuint vao = 0;     // empty, the full screen triangle comes from gl_VertexID
+    GLuint vao = 0;     // empty: full screen triangle and proxy boxes both come from gl_VertexID
+
+    BlockGrid grid[BLOCK_CACHE_SIZE];
+    uint64_t  use_counter = 0;
+
+    struct {
+        GLuint program = 0;
+        GLint  loc_volume = -1;
+        GLint  loc_layer = -1;
+        GLint  loc_block_size = -1;
+        GLuint fbo = 0;
+    } minmax;
+
+    struct {
+        GLuint program = 0;
+        GLint  loc_minmax = -1;
+        GLint  loc_model_to_clip = -1;
+        GLint  loc_block_dim = -1;
+        GLint  loc_block_ext = -1;
+        GLint  loc_clip_min = -1;
+        GLint  loc_clip_max = -1;
+        GLint  loc_iso_values = -1;
+        GLint  loc_iso_tau = -1;
+        GLint  loc_iso_count = -1;
+        GLuint fbo = 0;
+        GLuint tex_entry = 0;       // DEPTH_COMPONENT32F, nearest proxy depth
+        GLuint tex_exit = 0;        // DEPTH_COMPONENT32F, farthest proxy depth
+        int    width = 0;
+        int    height = 0;
+    } proxy;
 } iso;
 
 static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
@@ -257,6 +310,8 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
     p->loc_tex_color_volume   = glGetUniformLocation(prog, "u_tex_color_volume");
     p->loc_tex_field          = glGetUniformLocation(prog, "u_tex_field");
     p->loc_tex_field_colormap = glGetUniformLocation(prog, "u_tex_field_colormap");
+    p->loc_tex_entry          = glGetUniformLocation(prog, "u_tex_entry");
+    p->loc_tex_exit           = glGetUniformLocation(prog, "u_tex_exit");
     p->block_index            = glGetUniformBlockIndex(prog, "IsoUniforms");
 }
 
@@ -269,7 +324,46 @@ static void iso_initialize() {
     iso_program_setup(&iso.prog[IsoVariant_Uniform],     v_shader, STR_LIT(""));
     iso_program_setup(&iso.prog[IsoVariant_ColorVolume], v_shader, STR_LIT("#define USE_COLOR_VOLUME"));
     iso_program_setup(&iso.prog[IsoVariant_Field],       v_shader, STR_LIT("#define USE_FIELD"));
+
+    {
+        GLuint f_shader = gl::compile_shader_from_source({(const char*)block_minmax_frag, block_minmax_frag_size}, GL_FRAGMENT_SHADER);
+        if (f_shader) {
+            if (!iso.minmax.program) iso.minmax.program = glCreateProgram();
+            const GLuint shaders[] = {v_shader, f_shader};
+            gl::attach_link_detach(iso.minmax.program, shaders, (int)ARRAY_SIZE(shaders));
+            glDeleteShader(f_shader);
+            iso.minmax.loc_volume     = glGetUniformLocation(iso.minmax.program, "u_tex_volume");
+            iso.minmax.loc_layer      = glGetUniformLocation(iso.minmax.program, "u_layer");
+            iso.minmax.loc_block_size = glGetUniformLocation(iso.minmax.program, "u_block_size");
+        } else {
+            MD_LOG_ERROR("Block min/max shader compilation failed, isosurfaces will not skip empty space");
+        }
+    }
     glDeleteShader(v_shader);
+
+    {
+        GLuint v_proxy = gl::compile_shader_from_source({(const char*)block_proxy_vert, block_proxy_vert_size}, GL_VERTEX_SHADER);
+        GLuint f_proxy = gl::compile_shader_from_source({(const char*)block_proxy_frag, block_proxy_frag_size}, GL_FRAGMENT_SHADER);
+        if (v_proxy && f_proxy) {
+            if (!iso.proxy.program) iso.proxy.program = glCreateProgram();
+            const GLuint shaders[] = {v_proxy, f_proxy};
+            gl::attach_link_detach(iso.proxy.program, shaders, (int)ARRAY_SIZE(shaders));
+            const GLuint prog = iso.proxy.program;
+            iso.proxy.loc_minmax        = glGetUniformLocation(prog, "u_tex_minmax");
+            iso.proxy.loc_model_to_clip = glGetUniformLocation(prog, "u_model_to_clip");
+            iso.proxy.loc_block_dim     = glGetUniformLocation(prog, "u_block_dim");
+            iso.proxy.loc_block_ext     = glGetUniformLocation(prog, "u_block_ext");
+            iso.proxy.loc_clip_min      = glGetUniformLocation(prog, "u_clip_min");
+            iso.proxy.loc_clip_max      = glGetUniformLocation(prog, "u_clip_max");
+            iso.proxy.loc_iso_values    = glGetUniformLocation(prog, "u_iso_values");
+            iso.proxy.loc_iso_tau       = glGetUniformLocation(prog, "u_iso_tau");
+            iso.proxy.loc_iso_count     = glGetUniformLocation(prog, "u_iso_count");
+        } else {
+            MD_LOG_ERROR("Block proxy shader compilation failed, isosurfaces will not skip empty space");
+        }
+        if (v_proxy) glDeleteShader(v_proxy);
+        if (f_proxy) glDeleteShader(f_proxy);
+    }
 
     if (!iso.ubo) {
         glGenBuffers(1, &iso.ubo);
@@ -283,6 +377,228 @@ static void iso_initialize() {
     if (!iso.vao) {
         glGenVertexArrays(1, &iso.vao);
     }
+    if (!iso.minmax.fbo) {
+        glGenFramebuffers(1, &iso.minmax.fbo);
+    }
+    if (!iso.proxy.fbo) {
+        glGenFramebuffers(1, &iso.proxy.fbo);
+    }
+}
+
+static BlockGrid* block_grid_find(GLuint volume) {
+    for (int i = 0; i < BLOCK_CACHE_SIZE; ++i) {
+        if (iso.grid[i].volume == volume) return &iso.grid[i];
+    }
+    return NULL;
+}
+
+static BlockGrid* block_grid_acquire(GLuint volume) {
+    if (BlockGrid* g = block_grid_find(volume)) {
+        return g;
+    }
+    // A free slot, else the one used longest ago
+    BlockGrid* slot = NULL;
+    for (int i = 0; i < BLOCK_CACHE_SIZE; ++i) {
+        if (!iso.grid[i].volume) {
+            slot = &iso.grid[i];
+            break;
+        }
+        if (!slot || iso.grid[i].last_used < slot->last_used) {
+            slot = &iso.grid[i];
+        }
+    }
+    const GLuint minmax = slot->minmax;     // the texture object is reused, its storage respecified on build
+    *slot = BlockGrid{};
+    slot->minmax    = minmax;
+    slot->volume    = volume;
+    slot->version   = 1;
+    slot->last_used = ++iso.use_counter;
+    return slot;
+}
+
+void notify_data_changed(uint32_t volume_texture) {
+    if (!volume_texture) return;
+    block_grid_acquire(volume_texture)->version += 1;
+}
+
+uint64_t data_version(uint32_t volume_texture) {
+    const BlockGrid* g = block_grid_find(volume_texture);
+    return g ? g->version : 0;
+}
+
+// The block grid of the volume, (re)built if its texels changed since. NULL when it cannot be made.
+static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
+    if (!iso.minmax.program || !iso.minmax.fbo) return NULL;
+
+    BlockGrid* g = block_grid_acquire(volume);
+    g->last_used = ++iso.use_counter;
+
+    const bool same_dim = g->dim[0] == dim[0] && g->dim[1] == dim[1] && g->dim[2] == dim[2];
+    if (g->minmax && same_dim && g->built_version == g->version) {
+        return g;
+    }
+
+    int bs = BLOCK_MIN_SIZE;
+    while (DIV_UP(MAX(dim[0], MAX(dim[1], dim[2])), bs) > BLOCK_MAX_PER_AXIS) {
+        bs *= 2;
+    }
+    const int bd[3] = { DIV_UP(dim[0], bs), DIV_UP(dim[1], bs), DIV_UP(dim[2], bs) };
+
+    if (!g->minmax) {
+        glGenTextures(1, &g->minmax);
+    }
+    if (!same_dim || g->block_size != bs || g->built_version == 0) {
+        glBindTexture(GL_TEXTURE_3D, g->minmax);
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RG32F, bd[0], bd[1], bd[2], 0, GL_RG, GL_FLOAT, NULL);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_3D, 0);
+    }
+
+    PUSH_GPU_SECTION("ISO BLOCK MIN/MAX")
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, iso.minmax.fbo);
+    glViewport(0, 0, bd[0], bd[1]);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+
+    glUseProgram(iso.minmax.program);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_3D, volume);
+    glUniform1i(iso.minmax.loc_volume, 0);
+    glUniform1i(iso.minmax.loc_block_size, bs);
+    glBindVertexArray(iso.vao);
+
+    bool complete = true;
+    timer_begin(TimingStage_BlockMinMax);
+    for (int z = 0; z < bd[2]; ++z) {
+        glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, g->minmax, 0, z);
+        if (z == 0) {
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            const GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                MD_LOG_ERROR("Block min/max framebuffer is incomplete (0x%04X)", (unsigned int)status);
+                complete = false;
+                break;
+            }
+        }
+        glUniform1i(iso.minmax.loc_layer, z);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    timer_end();
+
+    glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0, 0);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    POP_GPU_SECTION()
+
+    if (!complete) {
+        return NULL;
+    }
+
+    MEMCPY(g->dim, dim, sizeof(g->dim));
+    MEMCPY(g->block_dim, bd, sizeof(g->block_dim));
+    g->block_size = bs;
+    g->built_version = g->version;
+    return g;
+}
+
+// Whether any corner of the clip box lies at or behind the near plane. Then rays start at the near plane
+// rather than at the proxy's nearest depth, which cannot see the faces of a box around the camera.
+static bool near_plane_cuts(const mat4_t& model_to_clip, vec3_t lo, vec3_t hi) {
+    for (int i = 0; i < 8; ++i) {
+        const vec4_t p = { (i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z, 1.0f };
+        const vec4_t c = mat4_mul_vec4(model_to_clip, p);
+        if (c.z <= -c.w) return true;
+    }
+    return false;
+}
+
+// Rasterizes the boxes of the blocks that can hold a surface into the entry (nearest) and exit (farthest)
+// depth textures
+static bool proxy_render(const BlockGrid& g, const mat4_t& model_to_clip, vec3_t clip_min, vec3_t clip_max,
+                         const float* values, const float* tau, int count, int width, int height) {
+    if (!iso.proxy.program || !iso.proxy.fbo) return false;
+
+    if (iso.proxy.width < width || iso.proxy.height < height) {
+        iso.proxy.width  = MAX(iso.proxy.width, width);
+        iso.proxy.height = MAX(iso.proxy.height, height);
+        GLuint* texs[2] = { &iso.proxy.tex_entry, &iso.proxy.tex_exit };
+        for (GLuint* t : texs) {
+            if (!*t) glGenTextures(1, t);
+            glBindTexture(GL_TEXTURE_2D, *t);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, iso.proxy.width, iso.proxy.height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    const vec3_t block_ext = {
+        (float)g.block_size / (float)g.dim[0],
+        (float)g.block_size / (float)g.dim[1],
+        (float)g.block_size / (float)g.dim[2],
+    };
+    const int instances = g.block_dim[0] * g.block_dim[1] * g.block_dim[2];
+
+    PUSH_GPU_SECTION("ISO PROXY ENTRY / EXIT")
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, iso.proxy.fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, iso.proxy.tex_entry, 0);
+    glDrawBuffer(GL_NONE);
+    const GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        MD_LOG_ERROR("Isosurface proxy framebuffer is incomplete (0x%04X)", (unsigned int)status);
+        POP_GPU_SECTION()
+        return false;
+    }
+
+    glViewport(0, 0, width, height);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);    // both faces: the nearest and the farthest of every box count
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+
+    glUseProgram(iso.proxy.program);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_3D, g.minmax);
+    glUniform1i(iso.proxy.loc_minmax, 0);
+    glUniformMatrix4fv(iso.proxy.loc_model_to_clip, 1, GL_FALSE, &model_to_clip.elem[0][0]);
+    glUniform3i(iso.proxy.loc_block_dim, g.block_dim[0], g.block_dim[1], g.block_dim[2]);
+    glUniform3fv(iso.proxy.loc_block_ext, 1, block_ext.elem);
+    glUniform3fv(iso.proxy.loc_clip_min, 1, clip_min.elem);
+    glUniform3fv(iso.proxy.loc_clip_max, 1, clip_max.elem);
+    glUniform1fv(iso.proxy.loc_iso_values, count, values);
+    glUniform1fv(iso.proxy.loc_iso_tau, count, tau);
+    glUniform1i(iso.proxy.loc_iso_count, count);
+    glBindVertexArray(iso.vao);
+
+    timer_begin(TimingStage_EntryExit);
+    glClearDepth(1.0);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    glDepthFunc(GL_LESS);
+    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 14, instances);
+
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, iso.proxy.tex_exit, 0);
+    glClearDepth(0.0);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    glDepthFunc(GL_GREATER);
+    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 14, instances);
+    timer_end();
+
+    glClearDepth(1.0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    POP_GPU_SECTION()
+    return true;
 }
 
 // The draw target and the state a pass changes, captured so the caller's are put back afterwards
@@ -294,6 +610,9 @@ struct SavedState {
     GLboolean depth_test = GL_FALSE;
     GLboolean blend = GL_FALSE;
     GLboolean cull_face = GL_FALSE;
+    GLboolean scissor_test = GL_FALSE;
+    GLboolean depth_mask = GL_TRUE;
+    GLint depth_func = GL_LESS;
     GLint blend_src_rgb = GL_ONE;
     GLint blend_dst_rgb = GL_ZERO;
     GLint blend_src_alpha = GL_ONE;
@@ -313,6 +632,9 @@ static SavedState save_state() {
     s.depth_test = glIsEnabled(GL_DEPTH_TEST);
     s.blend      = glIsEnabled(GL_BLEND);
     s.cull_face  = glIsEnabled(GL_CULL_FACE);
+    s.scissor_test = glIsEnabled(GL_SCISSOR_TEST);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &s.depth_mask);
+    glGetIntegerv(GL_DEPTH_FUNC, &s.depth_func);
     glGetIntegerv(GL_BLEND_SRC_RGB,   &s.blend_src_rgb);
     glGetIntegerv(GL_BLEND_DST_RGB,   &s.blend_dst_rgb);
     glGetIntegerv(GL_BLEND_SRC_ALPHA, &s.blend_src_alpha);
@@ -336,6 +658,9 @@ static void restore_state(const SavedState& s) {
     if (s.depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     if (s.blend)      glEnable(GL_BLEND);      else glDisable(GL_BLEND);
     if (s.cull_face)  glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
+    if (s.scissor_test) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    glDepthMask(s.depth_mask);
+    glDepthFunc(s.depth_func);
     glBlendFuncSeparate(s.blend_src_rgb, s.blend_dst_rgb, s.blend_src_alpha, s.blend_dst_alpha);
 }
 
@@ -385,7 +710,8 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
 
     const mat4_t model_to_view = desc.matrix.view * desc.matrix.model;
     const mat4_t view_to_model = mat4_inverse(model_to_view);
-    const mat4_t clip_to_model = mat4_inverse(desc.matrix.proj * model_to_view);
+    const mat4_t model_to_clip = desc.matrix.proj * model_to_view;
+    const mat4_t clip_to_model = mat4_inverse(model_to_clip);
 
     // One voxel, the smallest of the three axes, along each view axis: the gradient taken over those
     // offsets is the view space normal directly
@@ -417,10 +743,32 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     data.inv_res           = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
     data.field_inv_ext     = field_ext != 0.0f ? 1.0f / field_ext : 0.0f;
     data.optical_scale     = ISO_OPTICAL_SCALE;
+    data.entry_from_near   = near_plane_cuts(model_to_clip, desc.clip_volume.min, desc.clip_volume.max) ? 1.0f : 0.0f;
 
     const SavedState saved = save_state();
 
     PUSH_GPU_SECTION("ISOSURFACES")
+    // Empty space: the blocks that can hold one of these surfaces, drawn as boxes for the span of every ray
+    bool use_proxy = false;
+    if (count > 0) {
+        if (const BlockGrid* g = block_grid_update(desc.texture.density_volume, dim)) {
+            use_proxy = proxy_render(*g, model_to_clip, desc.clip_volume.min, desc.clip_volume.max, values, tau, count,
+                                     (int)desc.render_target.width, (int)desc.render_target.height);
+        }
+    }
+    data.use_proxy = use_proxy ? 1.0f : 0.0f;
+
+    // The caller's framebuffer is the target when there is no colour texture
+    if (!desc.render_target.color) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, saved.fbo);
+        glViewport(saved.viewport[0], saved.viewport[1], saved.viewport[2], saved.viewport[3]);
+        if (saved.fbo == 0) {
+            glDrawBuffer(saved.draw_buffer_count > 0 ? (GLenum)saved.draw_buffer[0] : GL_NONE);
+        } else if (saved.draw_buffer_count > 0) {
+            glDrawBuffers(saved.draw_buffer_count, (const GLenum*)saved.draw_buffer);
+        }
+    }
+
     const bool bound = bind_color_target(iso.fbo, desc.render_target.color, desc.render_target.width, desc.render_target.height, desc.render_target.clear_color);
     if (bound && count > 0) {
         glBindBuffer(GL_UNIFORM_BUFFER, iso.ubo);
@@ -442,6 +790,10 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
             glActiveTexture(GL_TEXTURE4);
             glBindTexture(GL_TEXTURE_2D, desc.texture.field_colormap);
         }
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, use_proxy ? iso.proxy.tex_entry : 0);
+        glActiveTexture(GL_TEXTURE6);
+        glBindTexture(GL_TEXTURE_2D, use_proxy ? iso.proxy.tex_exit : 0);
         glActiveTexture(GL_TEXTURE0);
 
         glUseProgram(p.program);
@@ -451,6 +803,8 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         if (p.loc_tex_color_volume != -1)   glUniform1i(p.loc_tex_color_volume, 2);
         if (p.loc_tex_field != -1)          glUniform1i(p.loc_tex_field, 3);
         if (p.loc_tex_field_colormap != -1) glUniform1i(p.loc_tex_field_colormap, 4);
+        glUniform1i(p.loc_tex_entry, 5);
+        glUniform1i(p.loc_tex_exit,  6);
         glUniform1fv(p.loc_iso_values, count, values);
         glUniform4fv(p.loc_iso_colors, count, (const float*)colors);
         glUniform1fv(p.loc_iso_tau,    count, tau);
@@ -459,6 +813,8 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         // Premultiplied radiance over whatever is in the target
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
+        glDisable(GL_SCISSOR_TEST);
+        glDepthMask(GL_FALSE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
