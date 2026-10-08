@@ -31,7 +31,8 @@ struct Inputs {
     GLuint color = 0;
     GLuint normal = 0;
     GLuint velocity = 0;
-    GLuint transparency = 0;
+    GLuint transparency = 0;        // LDR, blended over the tone mapped image (overlays, DVR)
+    GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces)
     GLuint history = 0;         // TAA history target, written this frame
     GLuint history_prev = 0;    // optional: last frame's history (ping-pong). If 0, history is copied internally
 };

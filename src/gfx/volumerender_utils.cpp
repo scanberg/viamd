@@ -63,9 +63,6 @@ static struct {
         GLuint entry_exit = 0;
         GLuint entry_exit_depth = 0;
         GLuint dvr_only = 0;
-        GLuint iso_only = 0;
-        GLuint iso_col_vol = 0;
-        GLuint iso_field = 0;
         GLuint splat_color = 0;
     } program;
 
@@ -177,12 +174,315 @@ const char* timing_stage_name(TimingStage stage) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Isosurfaces
+// -----------------------------------------------------------------------------
+
+static constexpr int   ISO_MAX_COUNT = 8;
+// Optical densities are given per 1/150 world unit: the extinction per world unit inside a surface is
+// tau * ISO_OPTICAL_SCALE. Kept from the previous raycaster so existing settings look the same.
+static constexpr float ISO_OPTICAL_SCALE = 150.0f;
+static constexpr float ISO_SAMPLES_PER_VOXEL = 1.0f;
+
+enum IsoVariant {
+    IsoVariant_Uniform,
+    IsoVariant_ColorVolume,
+    IsoVariant_Field,
+    IsoVariant_Count
+};
+
+struct IsoProgram {
+    GLuint program = 0;
+    GLint  loc_iso_values = -1;
+    GLint  loc_iso_colors = -1;
+    GLint  loc_iso_tau = -1;
+    GLint  loc_iso_count = -1;
+    GLint  loc_tex_volume = -1;
+    GLint  loc_tex_depth = -1;
+    GLint  loc_tex_color_volume = -1;
+    GLint  loc_tex_field = -1;
+    GLint  loc_tex_field_colormap = -1;
+    GLint  block_index = -1;
+};
+
+// std140, mirrors IsoUniforms in isosurface.frag
+struct IsoUniformData {
+    mat4_t clip_to_model;
+    mat4_t model_to_view;
+    mat4_t grad_offsets;
+
+    vec3_t clip_min;
+    float  samples_per_voxel;
+    vec3_t clip_max;
+    float  use_depth;
+
+    vec3_t env_radiance;
+    float  roughness;
+    vec3_t dir_radiance;
+    float  F0;
+    vec3_t light_dir;
+    float  field_beg;
+
+    vec2_t inv_res;
+    float  field_inv_ext;
+    float  optical_scale;
+};
+static_assert(sizeof(IsoUniformData) == 3 * 64 + 6 * 16, "IsoUniformData must match the std140 layout of IsoUniforms");
+
+static struct {
+    IsoProgram prog[IsoVariant_Count];
+    GLuint ubo = 0;
+    GLuint fbo = 0;
+    GLuint vao = 0;     // empty, the full screen triangle comes from gl_VertexID
+} iso;
+
+static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t defines) {
+    GLuint f_shader = gl::compile_shader_from_source({(const char*)isosurface_frag, isosurface_frag_size}, GL_FRAGMENT_SHADER, defines);
+    if (!f_shader) {
+        MD_LOG_ERROR("Isosurface shader compilation failed (" STR_FMT "), keeping the previous program", STR_ARG(defines));
+        return;
+    }
+    if (!p->program) p->program = glCreateProgram();
+    const GLuint shaders[] = {v_shader, f_shader};
+    gl::attach_link_detach(p->program, shaders, (int)ARRAY_SIZE(shaders));
+    glDeleteShader(f_shader);
+
+    const GLuint prog = p->program;
+    p->loc_iso_values         = glGetUniformLocation(prog, "u_iso_values");
+    p->loc_iso_colors         = glGetUniformLocation(prog, "u_iso_colors");
+    p->loc_iso_tau            = glGetUniformLocation(prog, "u_iso_tau");
+    p->loc_iso_count          = glGetUniformLocation(prog, "u_iso_count");
+    p->loc_tex_volume         = glGetUniformLocation(prog, "u_tex_volume");
+    p->loc_tex_depth          = glGetUniformLocation(prog, "u_tex_depth");
+    p->loc_tex_color_volume   = glGetUniformLocation(prog, "u_tex_color_volume");
+    p->loc_tex_field          = glGetUniformLocation(prog, "u_tex_field");
+    p->loc_tex_field_colormap = glGetUniformLocation(prog, "u_tex_field_colormap");
+    p->block_index            = glGetUniformBlockIndex(prog, "IsoUniforms");
+}
+
+static void iso_initialize() {
+    GLuint v_shader = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
+    if (!v_shader) {
+        MD_LOG_ERROR("Isosurface vertex shader compilation failed");
+        return;
+    }
+    iso_program_setup(&iso.prog[IsoVariant_Uniform],     v_shader, STR_LIT(""));
+    iso_program_setup(&iso.prog[IsoVariant_ColorVolume], v_shader, STR_LIT("#define USE_COLOR_VOLUME"));
+    iso_program_setup(&iso.prog[IsoVariant_Field],       v_shader, STR_LIT("#define USE_FIELD"));
+    glDeleteShader(v_shader);
+
+    if (!iso.ubo) {
+        glGenBuffers(1, &iso.ubo);
+        glBindBuffer(GL_UNIFORM_BUFFER, iso.ubo);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(IsoUniformData), 0, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    }
+    if (!iso.fbo) {
+        glGenFramebuffers(1, &iso.fbo);
+    }
+    if (!iso.vao) {
+        glGenVertexArrays(1, &iso.vao);
+    }
+}
+
+// The draw target and the state a pass changes, captured so the caller's are put back afterwards
+struct SavedState {
+    GLint fbo = 0;
+    GLint viewport[4] = {};
+    GLint draw_buffer[8] = {};
+    GLint draw_buffer_count = 0;
+    GLboolean depth_test = GL_FALSE;
+    GLboolean blend = GL_FALSE;
+    GLboolean cull_face = GL_FALSE;
+    GLint blend_src_rgb = GL_ONE;
+    GLint blend_dst_rgb = GL_ZERO;
+    GLint blend_src_alpha = GL_ONE;
+    GLint blend_dst_alpha = GL_ZERO;
+};
+
+static SavedState save_state() {
+    SavedState s = {};
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &s.fbo);
+    glGetIntegerv(GL_VIEWPORT, s.viewport);
+    for (int i = 0; i < 8; ++i) {
+        glGetIntegerv(GL_DRAW_BUFFER0 + i, &s.draw_buffer[i]);
+        if (s.draw_buffer[i] != GL_NONE) {
+            s.draw_buffer_count = i + 1;
+        }
+    }
+    s.depth_test = glIsEnabled(GL_DEPTH_TEST);
+    s.blend      = glIsEnabled(GL_BLEND);
+    s.cull_face  = glIsEnabled(GL_CULL_FACE);
+    glGetIntegerv(GL_BLEND_SRC_RGB,   &s.blend_src_rgb);
+    glGetIntegerv(GL_BLEND_DST_RGB,   &s.blend_dst_rgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &s.blend_src_alpha);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &s.blend_dst_alpha);
+    return s;
+}
+
+static void restore_state(const SavedState& s) {
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s.fbo);
+    glViewport(s.viewport[0], s.viewport[1], s.viewport[2], s.viewport[3]);
+    // For the default framebuffer glDrawBuffers rejects the FRONT/BACK/LEFT/RIGHT tokens that
+    // glDrawBuffer accepts and that GL_DRAW_BUFFER0 reports back, so it goes through glDrawBuffer there.
+    // See reset_gl_state() in postprocessing_utils.cpp for the same fix.
+    if (s.fbo == 0) {
+        glDrawBuffer(s.draw_buffer_count > 0 ? (GLenum)s.draw_buffer[0] : GL_NONE);
+    } else if (s.draw_buffer_count > 0) {
+        glDrawBuffers(s.draw_buffer_count, (const GLenum*)s.draw_buffer);
+    } else {
+        glDrawBuffer(GL_NONE);
+    }
+    if (s.depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (s.blend)      glEnable(GL_BLEND);      else glDisable(GL_BLEND);
+    if (s.cull_face)  glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
+    glBlendFuncSeparate(s.blend_src_rgb, s.blend_dst_rgb, s.blend_src_alpha, s.blend_dst_alpha);
+}
+
+// Binds desc's colour target, or keeps the caller's framebuffer when there is none
+static bool bind_color_target(GLuint fbo, uint32_t color, uint32_t width, uint32_t height, bool clear) {
+    if (!color) return true;
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    GLenum status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        MD_LOG_ERROR("Volume render target framebuffer is incomplete (0x%04X)", (unsigned int)status);
+        return false;
+    }
+    glViewport(0, 0, width, height);
+    if (clear) {
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    return true;
+}
+
+bool render_isosurfaces(const IsoRenderDesc& desc) {
+    const int count = CLAMP((int)desc.iso.count, 0, ISO_MAX_COUNT);
+    if (!desc.texture.density_volume || (count > 0 && (!desc.iso.values || !desc.iso.colors)) || desc.render_target.width == 0 || desc.render_target.height == 0) {
+        return false;
+    }
+
+    // A field takes the place of the colour volume: the two are alternatives, never both
+    const bool use_field        = desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
+    const bool use_color_volume = !use_field && desc.iso.use_color_volume && desc.texture.color_volume;
+    const IsoProgram& p = iso.prog[use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform];
+
+    int dim[3] = {};
+    if (!p.program || !gl::get_texture_dim(dim, desc.texture.density_volume) || dim[0] <= 0 || dim[1] <= 0 || dim[2] <= 0) {
+        return false;
+    }
+
+    float  values[ISO_MAX_COUNT] = {};
+    vec4_t colors[ISO_MAX_COUNT] = {};
+    float  tau[ISO_MAX_COUNT] = {};
+    MEMCPY(values, desc.iso.values, count * sizeof(float));
+    MEMCPY(colors, desc.iso.colors, count * sizeof(vec4_t));
+    if (desc.iso.optical_densities) {
+        MEMCPY(tau, desc.iso.optical_densities, count * sizeof(float));
+    }
+
+    const mat4_t model_to_view = desc.matrix.view * desc.matrix.model;
+    const mat4_t view_to_model = mat4_inverse(model_to_view);
+    const mat4_t clip_to_model = mat4_inverse(desc.matrix.proj * model_to_view);
+
+    // One voxel, the smallest of the three axes, along each view axis: the gradient taken over those
+    // offsets is the view space normal directly
+    const vec3_t voxel_ext = {
+        vec3_length(vec3_from_vec4(desc.matrix.model.col[0])) / (float)dim[0],
+        vec3_length(vec3_from_vec4(desc.matrix.model.col[1])) / (float)dim[1],
+        vec3_length(vec3_from_vec4(desc.matrix.model.col[2])) / (float)dim[2],
+    };
+    const float h = MAX(1.0e-6f, MIN(voxel_ext.x, MIN(voxel_ext.y, voxel_ext.z)));
+
+    const float n1 = 1.0f;
+    const float n2 = desc.shading.ior;
+    const float field_ext = desc.field.range_end - desc.field.range_beg;
+
+    IsoUniformData data = {};
+    data.clip_to_model     = clip_to_model;
+    data.model_to_view     = model_to_view;
+    data.grad_offsets      = view_to_model * mat4_scale(h, h, h);
+    data.clip_min          = desc.clip_volume.min;
+    data.samples_per_voxel = ISO_SAMPLES_PER_VOXEL;
+    data.clip_max          = desc.clip_volume.max;
+    data.use_depth         = desc.render_target.depth ? 1.0f : 0.0f;
+    data.env_radiance      = desc.shading.env_radiance;
+    data.roughness         = desc.shading.roughness;
+    data.dir_radiance      = desc.shading.dir_radiance;
+    data.F0                = powf((n1 - n2) / (n1 + n2), 2.0f);
+    data.light_dir         = vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f));   // as in compose_deferred
+    data.field_beg         = desc.field.range_beg;
+    data.inv_res           = {1.0f / (float)desc.render_target.width, 1.0f / (float)desc.render_target.height};
+    data.field_inv_ext     = field_ext != 0.0f ? 1.0f / field_ext : 0.0f;
+    data.optical_scale     = ISO_OPTICAL_SCALE;
+
+    const SavedState saved = save_state();
+
+    PUSH_GPU_SECTION("ISOSURFACES")
+    const bool bound = bind_color_target(iso.fbo, desc.render_target.color, desc.render_target.width, desc.render_target.height, desc.render_target.clear_color);
+    if (bound && count > 0) {
+        glBindBuffer(GL_UNIFORM_BUFFER, iso.ubo);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(IsoUniformData), &data);
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 0, iso.ubo);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, desc.texture.density_volume);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, desc.render_target.depth);
+        if (use_color_volume) {
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_3D, desc.texture.color_volume);
+        }
+        if (use_field) {
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_3D, desc.texture.field_volume);
+            glActiveTexture(GL_TEXTURE4);
+            glBindTexture(GL_TEXTURE_2D, desc.texture.field_colormap);
+        }
+        glActiveTexture(GL_TEXTURE0);
+
+        glUseProgram(p.program);
+        glUniformBlockBinding(p.program, p.block_index, 0);
+        glUniform1i(p.loc_tex_volume, 0);
+        glUniform1i(p.loc_tex_depth, 1);
+        if (p.loc_tex_color_volume != -1)   glUniform1i(p.loc_tex_color_volume, 2);
+        if (p.loc_tex_field != -1)          glUniform1i(p.loc_tex_field, 3);
+        if (p.loc_tex_field_colormap != -1) glUniform1i(p.loc_tex_field_colormap, 4);
+        glUniform1fv(p.loc_iso_values, count, values);
+        glUniform4fv(p.loc_iso_colors, count, (const float*)colors);
+        glUniform1fv(p.loc_iso_tau,    count, tau);
+        glUniform1i (p.loc_iso_count,  count);
+
+        // Premultiplied radiance over whatever is in the target
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+        glBindVertexArray(iso.vao);
+        timer_begin(TimingStage_Raycast);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        timer_end();
+        glBindVertexArray(0);
+        glUseProgram(0);
+    }
+    POP_GPU_SECTION()
+
+    restore_state(saved);
+    return bound;
+}
+
 void initialize() {
     if (!timing.query[0].id) {
         for (int i = 0; i < TIMER_QUERY_COUNT; ++i) {
             glGenQueries(1, &timing.query[i].id);
         }
     }
+
+    iso_initialize();
 
     glGetIntegerv(GL_MAJOR_VERSION, (GLint*)&gl.version.major);
     glGetIntegerv(GL_MINOR_VERSION, (GLint*)&gl.version.minor);
@@ -193,9 +493,6 @@ void initialize() {
 
     GLuint v_shader_vol                 = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
     GLuint f_shader_dvr_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_DVR"));
-    GLuint f_shader_iso_only            = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO"));
-    GLuint f_shader_iso_only_col_vol    = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO\n#define USE_COLOR_VOLUME"));
-    GLuint f_shader_iso_only_field      = gl::compile_shader_from_source({(const char*)raycaster_frag, raycaster_frag_size}, GL_FRAGMENT_SHADER, STR_LIT("#define INCLUDE_ISO\n#define USE_FIELD"));
 
     defer {
         glDeleteShader(v_shader_vol);
@@ -203,12 +500,9 @@ void initialize() {
         glDeleteShader(f_shader_entry_exit);
         glDeleteShader(f_shader_entry_exit_depth);
         glDeleteShader(f_shader_dvr_only);
-        glDeleteShader(f_shader_iso_only);
-        glDeleteShader(f_shader_iso_only_col_vol);
-        glDeleteShader(f_shader_iso_only_field);
     };
 
-    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0 || f_shader_entry_exit_depth == 0 || f_shader_dvr_only == 0 || f_shader_iso_only == 0 || f_shader_iso_only_col_vol == 0 || f_shader_iso_only_field == 0) {
+    if (v_shader_entry_exit == 0 || v_shader_vol == 0 || f_shader_entry_exit == 0 || f_shader_entry_exit_depth == 0 || f_shader_dvr_only == 0) {
         MD_LOG_ERROR("shader compilation failed, shader program for raycasting will not be updated");
         return;
     }
@@ -227,9 +521,6 @@ void initialize() {
     if (!gl.program.entry_exit) gl.program.entry_exit = glCreateProgram();
     if (!gl.program.entry_exit_depth) gl.program.entry_exit_depth = glCreateProgram();
     if (!gl.program.dvr_only) gl.program.dvr_only = glCreateProgram();
-    if (!gl.program.iso_only) gl.program.iso_only = glCreateProgram();
-    if (!gl.program.iso_col_vol) gl.program.iso_col_vol = glCreateProgram();
-    if (!gl.program.iso_field) gl.program.iso_field = glCreateProgram();
 
     {
         const GLuint shaders[] = {v_shader_entry_exit, f_shader_entry_exit};
@@ -242,18 +533,6 @@ void initialize() {
     {
         const GLuint shaders[] = {v_shader_vol, f_shader_dvr_only};
         gl::attach_link_detach(gl.program.dvr_only, shaders, (int)ARRAY_SIZE(shaders));
-    }
-    {
-        const GLuint shaders[] = {v_shader_vol, f_shader_iso_only};
-        gl::attach_link_detach(gl.program.iso_only, shaders, (int)ARRAY_SIZE(shaders));
-    }
-    {
-        const GLuint shaders[] = {v_shader_vol, f_shader_iso_only_col_vol};
-        gl::attach_link_detach(gl.program.iso_col_vol, shaders, (int)ARRAY_SIZE(shaders));
-    }
-    {
-        const GLuint shaders[] = {v_shader_vol, f_shader_iso_only_field};
-        gl::attach_link_detach(gl.program.iso_field, shaders, (int)ARRAY_SIZE(shaders));
     }
 
 
@@ -803,18 +1082,7 @@ static void render_raycast(const RaycastDesc& desc) {
 
     PUSH_GPU_SECTION("VOLUME RAYCASTING")
     {
-        GLuint vol_prog = 0;
-        if (desc.dvr.enabled) {
-            vol_prog = gl.program.dvr_only;
-        } else {
-            if (use_field) {
-                vol_prog = gl.program.iso_field;
-            } else if (use_color_volume) {
-                vol_prog = gl.program.iso_col_vol;
-            } else {
-                vol_prog = desc.iso.enabled ? gl.program.iso_only : 0;
-            }
-        }
+        GLuint vol_prog = desc.dvr.enabled ? gl.program.dvr_only : 0;
 
         if (vol_prog == 0) {
             MD_LOG_DEBUG("No raycasting shader program available for the current render description, skipping raycasting");
@@ -878,45 +1146,6 @@ static void render_raycast(const RaycastDesc& desc) {
         restore_draw_buffers(bound_fbo, bound_draw_buffer, bound_draw_buffer_count);
     }
 
-}
-
-void render_isosurfaces(const IsoRenderDesc& desc) {
-    if (desc.iso.count == 0 || !desc.texture.density_volume) return;
-
-    RaycastDesc rc = {};
-    rc.render_target.depth       = desc.render_target.depth;
-    rc.render_target.color       = desc.render_target.color;
-    rc.render_target.width       = desc.render_target.width;
-    rc.render_target.height      = desc.render_target.height;
-    rc.render_target.clear_color = desc.render_target.clear_color;
-    rc.texture.density_volume = desc.texture.density_volume;
-    rc.texture.color_volume   = desc.texture.color_volume;
-    rc.texture.field_volume   = desc.texture.field_volume;
-    rc.texture.field_colormap = desc.texture.field_colormap;
-    rc.matrix.model    = desc.matrix.model;
-    rc.matrix.view     = desc.matrix.view;
-    rc.matrix.proj     = desc.matrix.proj;
-    rc.matrix.inv_proj = desc.matrix.inv_proj;
-    rc.clip_volume.min = desc.clip_volume.min;
-    rc.clip_volume.max = desc.clip_volume.max;
-    rc.temporal.enabled = desc.temporal.enabled;
-    rc.iso.enabled = true;
-    rc.iso.count   = desc.iso.count;
-    rc.iso.values  = desc.iso.values;
-    rc.iso.colors  = desc.iso.colors;
-    rc.iso.optical_densities = desc.iso.optical_densities;
-    rc.iso.use_color_volume  = desc.iso.use_color_volume;
-    rc.iso.use_field         = desc.iso.use_field;
-    rc.field.range_beg = desc.field.range_beg;
-    rc.field.range_end = desc.field.range_end;
-    rc.shading.env_radiance = desc.shading.env_radiance;
-    rc.shading.roughness    = desc.shading.roughness;
-    rc.shading.dir_radiance = desc.shading.dir_radiance;
-    rc.shading.ior          = desc.shading.ior;
-    rc.shading.exposure     = desc.shading.exposure;
-    rc.shading.gamma        = desc.shading.gamma;
-    rc.voxel_spacing = desc.voxel_spacing;
-    render_raycast(rc);
 }
 
 void render_dvr(const DvrRenderDesc& desc) {

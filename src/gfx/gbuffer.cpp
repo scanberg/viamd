@@ -27,6 +27,7 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     if (!gbuf->tex.normal) glGenTextures(1, &gbuf->tex.normal);
     if (!gbuf->tex.velocity) glGenTextures(1, &gbuf->tex.velocity);
     if (!gbuf->tex.transparency) glGenTextures(1, &gbuf->tex.transparency);
+    if (!gbuf->tex.transparency_hdr) glGenTextures(1, &gbuf->tex.transparency_hdr);
     if (!gbuf->tex.picking) glGenTextures(1, &gbuf->tex.picking);
     if (!gbuf->tex.history) glGenTextures(1, &gbuf->tex.history);
     if (!gbuf->tex.history_prev) glGenTextures(1, &gbuf->tex.history_prev);
@@ -75,6 +76,13 @@ void gbuffer_init(GBuffer* gbuf, int width, int height) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, gbuf->tex.transparency_hdr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
@@ -185,6 +193,7 @@ void gbuffer_free(GBuffer* gbuf) {
     if (gbuf->tex.normal) glDeleteTextures(1, &gbuf->tex.normal);
     if (gbuf->tex.velocity) glDeleteTextures(1, &gbuf->tex.velocity);
     if (gbuf->tex.transparency) glDeleteTextures(1, &gbuf->tex.transparency);
+    if (gbuf->tex.transparency_hdr) glDeleteTextures(1, &gbuf->tex.transparency_hdr);
     if (gbuf->tex.picking) glDeleteTextures(1, &gbuf->tex.picking);
     if (gbuf->tex.history) glDeleteTextures(1, &gbuf->tex.history);
     if (gbuf->tex.history_prev) glDeleteTextures(1, &gbuf->tex.history_prev);

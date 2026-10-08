@@ -1924,6 +1924,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
     const bool do_tonemap = settings.tonemap.enabled;
     const bool do_dof = settings.dof.enabled;
     const bool do_transparency = in.transparency != 0;
+    const bool do_transparency_hdr = in.transparency_hdr != 0;
     const bool do_fxaa = settings.fxaa.enabled;
     const bool do_taa = settings.taa.enabled && do_velocity && in.history;
     const bool do_sharpen = settings.sharpen.enabled;
@@ -2053,6 +2054,17 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         glDrawBuffer(dst_buffer);
         PUSH_GPU_SECTION("DOF")
         apply_dof(gl.linear_depth.texture, src_texture, settings.dof.focus_depth, settings.dof.aperture, noise_frame);
+        POP_GPU_SECTION()
+    }
+
+    // After DOF: the isosurfaces have no depth of their own for it to work with, so they stay sharp
+    if (do_transparency_hdr) {
+        PUSH_GPU_SECTION("Add HDR Transparency")
+        glDrawBuffer(dst_buffer);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        blit_texture(in.transparency_hdr);
+        glDisable(GL_BLEND);
         POP_GPU_SECTION()
     }
 

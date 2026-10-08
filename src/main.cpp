@@ -179,7 +179,8 @@ static void update_view_param(ApplicationState* state);
 static void render(ApplicationState* state);
 static void draw_representations_opaque(ApplicationState* state);
 static void draw_representations_opaque_lean_and_mean(ApplicationState* state, uint32_t mask = 0xFFFFFFFFU);
-static void draw_representations_transparent(ApplicationState* state);
+// Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
+static bool draw_representations_transparent(ApplicationState* state);
 
 static void draw_load_dataset_window(ApplicationState* state);
 static void draw_main_menu(ApplicationState* state);
@@ -6552,7 +6553,7 @@ static void render(ApplicationState* state) {
 
     glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
 
-    draw_representations_transparent(state);
+    const bool transparency_hdr_written = draw_representations_transparent(state);
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
 
     const GLenum draw_buffers_transparent[] = { GL_COLOR_ATTACHMENT_TRANSPARENCY, 0, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING };
@@ -6631,6 +6632,7 @@ static void render(ApplicationState* state) {
     inputs.normal = state->gbuffer.tex.normal;
     inputs.velocity = state->gbuffer.tex.velocity;
     inputs.transparency = state->gbuffer.tex.transparency;
+    inputs.transparency_hdr = transparency_hdr_written ? state->gbuffer.tex.transparency_hdr : 0;
     inputs.history = settings.taa.enabled ? state->gbuffer.tex.history : 0;
     inputs.history_prev = settings.taa.enabled ? state->gbuffer.tex.history_prev : 0;
 
@@ -6867,12 +6869,14 @@ static void draw_representations_opaque(ApplicationState* state) {
 #endif
 }
 
-static void draw_representations_transparent(ApplicationState* state) {
+static bool draw_representations_transparent(ApplicationState* state) {
     ASSERT(state);
-    if (state->mold.sys.atom.count == 0) return;
+    if (state->mold.sys.atom.count == 0) return false;
 
     const size_t num_representations = md_array_size(state->representation.reps);
-    if (num_representations == 0) return;
+    if (num_representations == 0) return false;
+
+    bool written = false;
 
     for (size_t i = 0; i < num_representations; ++i) {
         Representation& rep = state->representation.reps[i];
@@ -6889,9 +6893,10 @@ static void draw_representations_transparent(ApplicationState* state) {
             volume::IsoRenderDesc desc = {
                 .render_target = {
                     .depth = state->gbuffer.tex.depth,
-                    .color = state->gbuffer.tex.transparency,
+                    .color = state->gbuffer.tex.transparency_hdr,
                     .width = state->gbuffer.width,
                     .height = state->gbuffer.height,
+                    .clear_color = !written,
                 },
                 .texture = {
                     .density_volume = rep.electronic_structure.density_vol.tex_id,
@@ -6908,9 +6913,6 @@ static void draw_representations_transparent(ApplicationState* state) {
                 .clip_volume = {
                     .min = {0,0,0},
                     .max = {1,1,1},
-                },
-                .temporal = {
-                    .enabled = state->visuals.temporal_aa.enabled,
                 },
                 .iso = {
                     .count = iso.count,
@@ -6929,13 +6931,12 @@ static void draw_representations_transparent(ApplicationState* state) {
                     .roughness = 0.3f,
                     .dir_radiance = {10,10,10},
                     .ior = 1.5f,
-                    .exposure = state->visuals.tonemapping.exposure,
-                    .gamma = state->visuals.tonemapping.gamma,
-            },
-                .voxel_spacing = rep.electronic_structure.density_vol.voxel_size,
+                },
             };
 
-            volume::render_isosurfaces(desc);
+            if (volume::render_isosurfaces(desc)) {
+                written = true;
+            }
 
 #if DEBUG
             {
@@ -6945,6 +6946,7 @@ static void draw_representations_transparent(ApplicationState* state) {
 #endif
         }
     }
+    return written;
 }
 
 static void draw_representations_opaque_lean_and_mean(ApplicationState* data, uint32_t mask) {

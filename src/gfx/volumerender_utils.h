@@ -59,7 +59,13 @@ void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], c
 
 // ISOSURFACES
 // Up to 8 isovalues, each a surface with its own colour and an optional optical density (tau): the
-// absorption accumulated while the ray is inside that surface.
+// absorption accumulated while the ray is inside that surface. A point is inside the surface of value v
+// when the density d >= v (v >= 0) or d <= v (v < 0).
+//
+// The output is linear, premultiplied radiance with coverage in alpha, blended over the target with
+// (ONE, ONE_MINUS_SRC_ALPHA). It is meant for an HDR target (RGBA16F) that is composited over the
+// scene before tone mapping (postprocess_pipeline::Inputs::transparency_hdr), and it is lit with the
+// same model as the deferred compose pass so that it matches the opaque geometry.
 struct IsoRenderDesc {
     struct {
         uint32_t depth = 0;
@@ -89,10 +95,6 @@ struct IsoRenderDesc {
     } clip_volume;
 
     struct {
-        bool enabled = false;
-    } temporal;
-
-    struct {
         size_t count = 0;
         const float* values = NULL;
         const vec4_t* colors = NULL;
@@ -108,20 +110,19 @@ struct IsoRenderDesc {
     } field;
 
     // A simplified Cook-Torrance model: uniform environment radiance and one directional light at
-    // {1,1,1} in view space. roughness in [0,1], ior of the surfaces (1.5 ~ plastic).
+    // {1,1,1} in view space, as in the deferred compose pass. roughness in [0,1], ior of the surfaces
+    // (1.5 ~ plastic, which is the F0 = 0.04 the compose pass uses).
     struct {
         vec3_t env_radiance = {0,0,0};
         float roughness = 0.4f;
         vec3_t dir_radiance = {1,1,1};
         float ior = 1.5f;
-        float exposure = 1.0f;
-        float gamma = 2.2f;
     } shading;
-
-    vec3_t voxel_spacing = {};
 };
 
-void render_isosurfaces(const IsoRenderDesc& desc);
+// Returns true when the colour target holds this pass's result (cleared and/or drawn into), false when
+// nothing was done (no valid volume or program), in which case a requested clear did not happen either.
+bool render_isosurfaces(const IsoRenderDesc& desc);
 
 // DIRECT VOLUME RENDERING
 // Emission-absorption through a 1D transfer function (a colour map with an alpha ramp), applied to

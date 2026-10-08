@@ -398,7 +398,9 @@ struct QuantumChemistry : viamd::EventHandler {
         Volume   vol[16] = {};
         int      vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
         SpinChannel vol_mo_type[16] = {};
-        uint32_t iso_tex[16] = {};
+        uint32_t iso_tex[16] = {};      // RGBA16F: the panel's isosurfaces, premultiplied HDR
+        uint32_t out_tex[16] = {};      // RGBA8: the finished panel
+        uint32_t out_fbo = 0;
         task_system::ID vol_task[16] = {};
         int num_x  = 3;
         int num_y  = 3;
@@ -428,7 +430,9 @@ struct QuantumChemistry : viamd::EventHandler {
     struct Nto {
         bool show_window = false;
         Volume   vol[2] = {};
-        uint32_t iso_tex[2] = {};
+        uint32_t iso_tex[2] = {};       // RGBA16F: the panel's isosurfaces, premultiplied HDR
+        uint32_t out_tex[2] = {};       // RGBA8: the finished panel
+        uint32_t out_fbo = 0;
 
         int sel_nto_idx = -1;
 
@@ -6476,8 +6480,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%i %s", mo_idx + 1, lbl);
-                    draw_list->AddImage((ImTextureID)(intptr_t)orb.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddImage((ImTextureID)(intptr_t)orb.iso_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddImage((ImTextureID)(intptr_t)orb.out_tex[i], p0, p1, { 0,1 }, { 1,0 });
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
                     // The energy label is dropped, not faked, when the file carries no energies
@@ -6518,8 +6521,10 @@ struct QuantumChemistry : viamd::EventHandler {
             auto& gbuf = orb.gbuf;
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
                 gbuffer_init(&gbuf, width, height);
-                for (int i = 0; i < num_mos; ++i) {
-                    gl::init_texture_2D(orb.iso_tex + i, width, height, GL_RGBA8);
+                // Reallocated at the new size as the panels need them
+                for (int i = 0; i < (int)ARRAY_SIZE(orb.iso_tex); ++i) {
+                    if (orb.iso_tex[i]) gl::free_texture(&orb.iso_tex[i]);
+                    if (orb.out_tex[i]) gl::free_texture(&orb.out_tex[i]);
                 }
             }
 
@@ -6585,15 +6590,12 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 md_gl_draw(&draw_args);
 
-                glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-                glClearColor(1, 1, 1, 0);
-                glClear(GL_COLOR_BUFFER_BIT);
+                glDisable(GL_SCISSOR_TEST);
 
-                PUSH_GPU_SECTION("Postprocessing")
+                const vec3_t bg_color = {24.f, 24.f, 24.f};
+
                 postprocess_pipeline::Settings postprocess_settings = {};
-                postprocess_pipeline::Inputs postprocess_inputs = {};
-
-                postprocess_settings.background_color = {24.f, 24.f, 24.f};
+                postprocess_settings.background_color = bg_color;
                 postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
                 postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
                 postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
@@ -6603,11 +6605,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 postprocess_settings.fxaa.enabled = true;
                 postprocess_settings.taa.enabled = false;
                 postprocess_settings.sharpen.enabled = false;
-
-                postprocess_inputs.depth = orb.gbuf.tex.depth;
-                postprocess_inputs.color = orb.gbuf.tex.color;
-                postprocess_inputs.normal = orb.gbuf.tex.normal;
-                postprocess_inputs.velocity = orb.gbuf.tex.velocity;
 
                 ViewParam view_param = {
                     .matrix = {
@@ -6628,48 +6625,64 @@ struct QuantumChemistry : viamd::EventHandler {
                     .fov_y = orb.camera.fov_y,
                 };
 
-                postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
+                if (!orb.out_fbo) glGenFramebuffers(1, &orb.out_fbo);
+
+                // Every panel is its own orbital's isosurfaces over the one opaque image they share, put
+                // through post-processing on its own: the surfaces are composited in HDR, before tone mapping
+                PUSH_GPU_SECTION("ORB GRID PANELS")
+                for (int i = 0; i < num_mos; ++i) {
+                    if (!orb.iso_tex[i]) gl::init_texture_2D(&orb.iso_tex[i], width, height, GL_RGBA16F);
+                    if (!orb.out_tex[i]) gl::init_texture_2D(&orb.out_tex[i], width, height, GL_RGBA8);
+
+                    volume::IsoRenderDesc vol_desc = {
+                        .render_target = {
+                            .depth  = orb.gbuf.tex.depth,
+                            .color  = orb.iso_tex[i],
+                            .width  = orb.gbuf.width,
+                            .height = orb.gbuf.height,
+                            .clear_color = true,
+                        },
+                        .texture = {
+                            .density_volume = orb.vol[i].tex_id,
+                        },
+                        .matrix = {
+                            .model = orb.vol[i].texture_to_world,
+                            .view  = view_mat,
+                            .proj  = proj_mat,
+                            .inv_proj = inv_proj_mat,
+                        },
+                        .iso = {
+                            .count  = (size_t)orb.iso.count,
+                            .values = orb.iso.values,
+                            .colors = orb.iso.colors,
+                        },
+                        // Lit like the compose pass lights the atoms of the panel: env = background / 4
+                        .shading = {
+                            .env_radiance = bg_color * 0.25f,
+                            .roughness = 0.3f,
+                            .dir_radiance = {10,10,10},
+                            .ior = 1.5f,
+                        },
+                    };
+                    const bool iso_written = volume::render_isosurfaces(vol_desc);
+
+                    postprocess_pipeline::Inputs postprocess_inputs = {};
+                    postprocess_inputs.depth = orb.gbuf.tex.depth;
+                    postprocess_inputs.color = orb.gbuf.tex.color;
+                    postprocess_inputs.normal = orb.gbuf.tex.normal;
+                    postprocess_inputs.velocity = orb.gbuf.tex.velocity;
+                    postprocess_inputs.transparency_hdr = iso_written ? orb.iso_tex[i] : 0;
+
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, orb.out_fbo);
+                    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, orb.out_tex[i], 0);
+                    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                    glViewport(0, 0, orb.gbuf.width, orb.gbuf.height);
+                    postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
+                }
                 POP_GPU_SECTION()
 
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                 glDrawBuffer(GL_BACK);
-                glDisable(GL_SCISSOR_TEST);
-
-                PUSH_GPU_SECTION("ORB GRID RAYCAST")
-                    for (int i = 0; i < num_mos; ++i) {
-                        volume::IsoRenderDesc vol_desc = {
-                            .render_target = {
-                                .depth  = orb.gbuf.tex.depth,
-                                .color  = orb.iso_tex[i],
-                                .width  = orb.gbuf.width,
-                                .height = orb.gbuf.height,
-                                .clear_color = true,
-                            },
-                            .texture = {
-                                .density_volume = orb.vol[i].tex_id,
-                            },
-                            .matrix = {
-                                .model = orb.vol[i].texture_to_world,
-                                .view  = view_mat,
-                                .proj  = proj_mat,
-                                .inv_proj = inv_proj_mat,
-                            },
-                            .iso = {
-                                .count  = (size_t)orb.iso.count,
-                                .values = orb.iso.values,
-                                .colors = orb.iso.colors,
-                            },
-                            .shading = {
-                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
-                                .roughness = 0.3f,
-                                .dir_radiance = {10,10,10},
-                                .ior = 1.5f,
-                            },
-                            .voxel_spacing = orb.vol[i].voxel_size,
-                        };
-                        volume::render_isosurfaces(vol_desc);
-                    }
-                POP_GPU_SECTION();
             }
         }
         ImGui::End();
@@ -7700,8 +7713,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     //char buf[32];
                     //snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.gbuf.tex.transparency, p0, p1, { 0,1 }, { 1,0 });
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.iso_tex[idx], p0, p1, { 0,1 }, { 1,0 });
+                    draw_list->AddImage((ImTextureID)(intptr_t)nto.out_tex[idx], p0, p1, { 0,1 }, { 1,0 });
                     //draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
 
@@ -7825,8 +7837,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 auto& gbuf = nto.gbuf;
                 if ((int)gbuf.width != width || (int)gbuf.height != height) {
                     gbuffer_init(&gbuf, width, height);
-                    for (int i : nto_target_idx) {
-                        gl::init_texture_2D(nto.iso_tex + i, width, height, GL_RGBA8);
+                    // Reallocated at the new size as the panels need them
+                    for (int i = 0; i < (int)ARRAY_SIZE(nto.iso_tex); ++i) {
+                        if (nto.iso_tex[i]) gl::free_texture(&nto.iso_tex[i]);
+                        if (nto.out_tex[i]) gl::free_texture(&nto.out_tex[i]);
                     }
                 }
 
@@ -8036,15 +8050,22 @@ struct QuantumChemistry : viamd::EventHandler {
                     .resolution = {win_sz.x, win_sz.y},
                     .fov_y = nto.camera.fov_y,
                 };
-
-                postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
                 POP_GPU_SECTION()
 
-                PUSH_GPU_SECTION("NTO RAYCAST")
+                glDisable(GL_SCISSOR_TEST);
+                if (!nto.out_fbo) glGenFramebuffers(1, &nto.out_fbo);
+
+                // Every panel is its own density's isosurfaces over the opaque image (and selection) the two
+                // share, put through post-processing on its own: the surfaces are composited in HDR
+                PUSH_GPU_SECTION("NTO PANELS")
                 for (int i : nto_target_idx) {
+                    if (!nto.iso_tex[i]) gl::init_texture_2D(&nto.iso_tex[i], width, height, GL_RGBA16F);
+                    if (!nto.out_tex[i]) gl::init_texture_2D(&nto.out_tex[i], width, height, GL_RGBA8);
+
                     bool is_density = (i == NTO_Attachment || i == NTO_Detachment);
                     
                     bool enabled = true;
+                    bool iso_written = false;
                     size_t count = is_density ? 1 : 2;
                     float  values[2];
                     vec4_t colors[2];
@@ -8090,16 +8111,23 @@ struct QuantumChemistry : viamd::EventHandler {
                                 .values  = values,
                                 .colors  = colors,
                             },
+                            // Lit like the compose pass lights the atoms of the panel: env = background / 4
                             .shading = {
-                                .env_radiance = state.visuals.background.color * state.visuals.background.intensity * 0.25f,
+                                .env_radiance = postprocess_settings.background_color * 0.25f,
                                 .roughness = 0.3f,
                                 .dir_radiance = {10,10,10},
                                 .ior = 1.5f,
                             },
-                            .voxel_spacing = nto.vol[i].voxel_size,
                         };
-                        volume::render_isosurfaces(vol_desc);
+                        iso_written = volume::render_isosurfaces(vol_desc);
                     }
+
+                    postprocess_inputs.transparency_hdr = iso_written ? nto.iso_tex[i] : 0;
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.out_fbo);
+                    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, nto.out_tex[i], 0);
+                    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                    glViewport(0, 0, nto.gbuf.width, nto.gbuf.height);
+                    postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
                 }
                 POP_GPU_SECTION();
 

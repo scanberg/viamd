@@ -853,6 +853,7 @@ struct DensityVolume : viamd::EventHandler {
                 glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
             }
 
+            bool iso_written = false;
             if (show_density_volume) {
                 if (dvr.enabled) {
                     volume::DvrRenderDesc vol_desc = {
@@ -887,9 +888,10 @@ struct DensityVolume : viamd::EventHandler {
                     volume::IsoRenderDesc vol_desc = {
                         .render_target = {
                             .depth  = gbuf.tex.depth,
-                            .color  = gbuf.tex.transparency,
+                            .color  = gbuf.tex.transparency_hdr,
                             .width  = gbuf.width,
                             .height = gbuf.height,
+                            .clear_color = true,
                         },
                         .texture = {
                             .density_volume = volume_texture.id,
@@ -909,17 +911,15 @@ struct DensityVolume : viamd::EventHandler {
                             .values = iso.values,
                             .colors = iso.colors,
                         },
+                        // Lit like the compose pass lights the reference structures: env = background / 4
                         .shading = {
-                            .env_radiance = state->visuals.background.color * state->visuals.background.intensity,
+                            .env_radiance = state->visuals.background.color * state->visuals.background.intensity * 0.25f,
                             .roughness = 0.3f,
                             .dir_radiance = {10,10,10},
                             .ior = 1.5f,
-                            .exposure = state->visuals.tonemapping.exposure,
-                            .gamma = state->visuals.tonemapping.gamma,
                         },
-                        .voxel_spacing = voxel_spacing,
                     };
-                    volume::render_isosurfaces(vol_desc);
+                    iso_written = volume::render_isosurfaces(vol_desc);
                 }
             }
 
@@ -973,6 +973,7 @@ struct DensityVolume : viamd::EventHandler {
             postprocess_inputs.normal = gbuf.tex.normal;
             postprocess_inputs.velocity = gbuf.tex.velocity;
             postprocess_inputs.transparency = gbuf.tex.transparency;
+            postprocess_inputs.transparency_hdr = iso_written ? gbuf.tex.transparency_hdr : 0;
 
             ViewParam view_param = {
                 .matrix = {
