@@ -6,6 +6,8 @@
 #include <core/md_grid.h>
 #include <core/md_unit.h>
 
+#include <color_scale.h>
+
 struct md_system_t;
 struct md_system_state_t;
 
@@ -42,17 +44,17 @@ inline const char* surface_field_kind_str[(int)SurfaceFieldKind::Count] = {
     "Embedding Potential",
 };
 
-// ImPlotColormap_RdBu: red for negative, blue for positive, white at the middle of the range
-#define SURFACE_FIELD_DEFAULT_COLORMAP 11
-
-struct SurfaceFieldMapping {
-    int   colormap   = SURFACE_FIELD_DEFAULT_COLORMAP;
-    float range_beg  = -0.05f;      // in the field's unit
-    float range_end  =  0.05f;
-    bool  symmetric  = true;        // a range centred on zero, the natural one for a potential
-    bool  auto_range = true;        // the range follows the field's spread on the surface
-    bool  show_legend = false;      // the colour map, its range and unit drawn over the view
-};
+// How a field is mapped to colour starts out as fits a potential: a range centred on zero, following
+// the field's spread on the surface, on a diverging map - red for negative, blue for positive.
+static inline ColorScale surface_field_default_scale() {
+    ColorScale scale;
+    scale.colormap   = COLOR_SCALE_COLORMAP_RDBU;
+    scale.range_beg  = -0.05f;      // in the field's unit
+    scale.range_end  =  0.05f;
+    scale.symmetric  = true;
+    scale.auto_range = true;
+    return scale;
+}
 
 struct SurfaceFieldVolume {
     uint32_t  tex_id = 0;           // GL_R32F, the dimensions of the grid
@@ -92,8 +94,9 @@ bool surface_field_update(SurfaceFieldVolume* vol, SurfaceFieldKind kind, const 
                           const md_grid_t& grid, const float* density, const float* iso_values, size_t num_iso,
                           uint64_t source_hash, uint64_t band_hash);
 
-// The range the mapping takes from the surface when it is automatic
-void surface_field_mapping_update_range(SurfaceFieldMapping* map, const SurfaceFieldVolume& vol);
+// The spread of the field on the surface, as a colour scale reads it: the 1st to 99th percentile for
+// an automatic range, the extremes beside it. Empty while there are no samples.
+ColorScaleSpan surface_field_span(const SurfaceFieldVolume& vol);
 
 // The colour map texture for the mapping's colour map, rebuilt when it changed
 uint32_t surface_field_colormap_texture(SurfaceFieldVolume* vol, int colormap);

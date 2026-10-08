@@ -114,7 +114,7 @@ enum class ColorMapping {
     InstId,
     InstIndex,
     SecondaryStructure,
-    Property,
+    Attribute,          // a per atom attribute of the system, through a colour scale
     Count
 };
 
@@ -218,7 +218,7 @@ inline const char* color_mapping_str[(int)ColorMapping::Count] = {
     "Chain Id",
     "Chain Idx",
     "Secondary Structure",
-    "Property",
+    "Attribute",
 };
 
 
@@ -522,7 +522,7 @@ struct ElectronicStructureRepresentation {
     // SurfaceColoring::Field: the field, how it maps to colour, and its values on the grid of
     // density_vol - evaluated only around the isosurfaces this representation draws
     SurfaceFieldKind    field_kind = SurfaceFieldKind::EmbeddingPotential;
-    SurfaceFieldMapping field_map  = {};
+    ColorScale          field_map  = surface_field_default_scale();
     SurfaceFieldVolume  field_vol  = {};
 
     // The grid density_vol was evaluated on (bohr), kept for what is evaluated on the same grid
@@ -835,19 +835,21 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
     }
 }
 
-// Colouring by a per atom scalar field. The field itself is an attribute on the system, so what
-// is stored here is its id and nothing else about it - no copied label, no cached list position.
-// The id is a hash of the path and stable across a reload, so a representation keeps pointing at
-// the same quantity when the data is reloaded; an index into a gathered list would not.
-struct AtomicPropertyRepresentation {
-    int colormap = DEFAULT_COLORMAP;
+// Colouring atoms by one of their attributes: a per atom scalar field of the system's attribute
+// table (atom/...). The attribute itself is stored as its id and nothing else about it - no copied
+// label, no cached list position. The id is a hash of the path and stable across a reload, so a
+// representation keeps pointing at the same quantity when the data is reloaded; an index into a
+// gathered list would not.
+//
+// The values map to colours by a colour scale, the same one an isosurface coloured by a field uses
+// (color_scale.h). Its automatic range follows the span of the atoms the representation SHOWS - the
+// atoms of its filter, over every variant so the colours do not jump as the variant changes.
+struct AtomAttributeColoring {
     md_attribute_id_t key = MD_ATTRIBUTE_INVALID;
     int variant_idx = 0;                // position along the leading axis, when the field has one
-    float value_min = 0.0f;             // span of the DATA, refreshed when key changes
-    float value_max = 1.0f;
-    float range_beg = 0.0f;             // span the colour ramp is mapped over, user adjustable
-    float range_end = 1.0f;
-    bool  range_symmetric_zero = true;  // Use a symmetric min and max value around zero
+    ColorScale scale = {};
+    ColorScaleSpan span = {};           // of the shown atoms, refreshed with the colours
+    uint64_t span_hash = 0;             // what span was measured over: the attribute, its version, the atoms
 };
 
 struct DipoleRepresentation {
@@ -903,7 +905,7 @@ struct Representation {
 	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 
     ElectronicStructureRepresentation electronic_structure = {};
-    AtomicPropertyRepresentation atomic_property = {};
+    AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
 };
 
@@ -1853,26 +1855,29 @@ int dipole_entry_label(char* buf, size_t cap, const DipoleGroup& group, uint32_t
 // system's atom count; an optional leading axis is the variant axis. Everything else under atom/ -
 // a position, a velocity, anything several components wide - is data this colouring cannot express
 // and is skipped rather than mangled. Cheap enough to call per frame.
-size_t atom_property_query(md_attribute_id_t out_ids[], size_t cap, const md_system_t& sys);
+size_t atom_attribute_query(md_attribute_id_t out_ids[], size_t cap, const md_system_t& sys);
 
 // What to show for it: the attribute's label, or its leaf path segment when it has none. A view
 // into the table's storage, null terminated, so it can go straight to ImGui.
-str_t atom_property_label(const md_attribute_t* attr);
+str_t atom_attribute_label(const md_attribute_t* attr);
 
 // Number of variants: the leading index axis, 1 when the field has none.
-int atom_property_variant_count(const md_attribute_t* attr);
+int atom_attribute_variant_count(const md_attribute_t* attr);
 
-// Span of the values, over EVERY variant so a colour ramp does not jump as the variant changes.
-// Derived rather than stored: it belongs to whoever is drawing the ramp, not to the table.
-// Scans the whole attribute, so call it when the selection changes, not per frame. Atoms without a
-// value play no part; false when there are none with one.
-bool atom_property_value_range(float* out_min, float* out_max, const md_attribute_t* attr);
+// Span of the values, over EVERY variant so a colour ramp does not jump as the variant changes, and
+// over the atoms of 'mask' (all of them when NULL). Derived rather than stored: it belongs to whoever
+// is drawing the ramp, not to the table. Scans the whole attribute, so not something to call per
+// frame without a reason. Atoms without a value play no part; invalid when there are none with one.
+ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitfield_t* mask);
+
+// What a legend calls it: the label, and which variant when there are several ("Charge [2/5]")
+void atom_attribute_legend_label(char* buf, size_t cap, const md_attribute_t* attr, int variant_idx);
 
 // Whether an atom has NO value in a per atom field. A producer marks that with NAN
 // (md_attributes_publish_atom_column): the QM atoms in an embedding's charges, the embedding's sites
 // in a column of the QM calculation, a blank in an mmCIF column. Tested on the bits, because under
 // fast math every float spelling of the test (v != v, isnan) may be folded away.
-static inline bool atom_property_value_absent(float v) {
+static inline bool atom_attribute_value_absent(float v) {
     uint32_t u;
     MEMCPY(&u, &v, sizeof(u));
     return (u & 0x7fffffffu) > 0x7f800000u;
@@ -2135,10 +2140,11 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
                                            const double* density_matrix, size_t dim, md_gto_op_t op);
 #endif
 
-// Points a representation at an attribute and seeds its drawing range from that attribute's own
-// span. Selecting a field and choosing the range to draw it over are one action the first time and
-// separate afterwards, which is why the range is seeded here and never recomputed behind the user.
-void atom_property_select(AtomicPropertyRepresentation* prop, md_attribute_id_t key, const md_system_t& sys);
+// Points a representation at an attribute, and starts its colour scale out as fits the values: a
+// symmetric range on a diverging map for values on both sides of zero (a charge), the range of the
+// values on a sequential map otherwise. A colour map the user chose is kept; only the two defaults
+// trade places. The range follows the values from there unless the user takes it over.
+void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t key, const md_system_t& sys);
 
 // Recentering operations (low level)
 

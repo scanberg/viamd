@@ -371,17 +371,15 @@ bool surface_field_update(SurfaceFieldVolume* vol, SurfaceFieldKind kind, const 
     return true;
 }
 
-void surface_field_mapping_update_range(SurfaceFieldMapping* map, const SurfaceFieldVolume& vol) {
-    ASSERT(map);
-    if (!map->auto_range || vol.num_surface_samples == 0) return;
-    if (map->symmetric) {
-        const float r = MAX(fabsf(vol.surface_lo), fabsf(vol.surface_hi));
-        map->range_beg = -r;
-        map->range_end =  r;
-    } else {
-        map->range_beg = vol.surface_lo;
-        map->range_end = vol.surface_hi;
-    }
+ColorScaleSpan surface_field_span(const SurfaceFieldVolume& vol) {
+    ColorScaleSpan span;
+    if (vol.num_surface_samples == 0) return span;
+    span.valid = true;
+    span.min = vol.surface_min;
+    span.max = vol.surface_max;
+    span.lo  = vol.surface_lo;
+    span.hi  = vol.surface_hi;
+    return span;
 }
 
 uint32_t surface_field_colormap_texture(SurfaceFieldVolume* vol, int colormap) {

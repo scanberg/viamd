@@ -195,7 +195,7 @@ static void draw_script_editor_window(ApplicationState* state);
 static void draw_script_reference_window(ApplicationState* state);
 static void open_script_reference(ApplicationState* state, str_t topic, bool take_focus = true);
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
-static void draw_field_legend_windows(const ApplicationState& state);
+static void draw_color_legend_windows(const ApplicationState& state);
 
 static void draw_debug_window(ApplicationState* state);
 static void draw_property_export_window(ApplicationState* state);
@@ -550,7 +550,7 @@ int main(int argc, char** argv) {
         //ImGui::ShowDemoWindow();
 
         draw_coordinate_system_widget_window(&state.view.target, state.view.camera);
-        draw_field_legend_windows(state);
+        draw_color_legend_windows(state);
             
         ImGui::BeginCanvas("Main interaction window", true);
         ImVec2 view_size = ImGui::GetContentRegionAvail();
@@ -2907,73 +2907,13 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                               "the induced dipoles are solved for during the calculation and not stored.");
     }
 
-    SurfaceFieldMapping& map = es.field_map;
+    // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
+    // nothing re-evaluated: it is not an update of the representation
     const SurfaceFieldVolume& vol = es.field_vol;
-
-    const ImVec2 button_size = {ImGui::CalcItemWidth(), 0};
-    if (ImPlot::ColormapButton(ImPlot::GetColormapName(map.colormap), button_size, map.colormap)) {
-        ImGui::OpenPopup("Field Colormap");
-    }
-    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-    ImGui::Checkbox("legend", &map.show_legend);
-    ImGui::SetItemTooltip("Show the colour map with its range and unit in the view.\nHold Alt to move or resize it.");
-    if (ImGui::BeginPopup("Field Colormap")) {
-        for (int m = 4; m < ImPlot::GetColormapCount(); ++m) {
-            if (ImPlot::ColormapButton(ImPlot::GetColormapName(m), button_size, m)) {
-                map.colormap = m;
-                ImGui::CloseCurrentPopup();
-            }
-        }
-        ImGui::EndPopup();
-    }
-
-    // Shown in the display unit, kept in the field's own
-    char unit[32] = "";
-    const double scl = display_units::factor_print(unit, sizeof(unit), surface_field_unit(es.field_kind));
-    const float fscl = (float)scl;
-
-    bool range_mode_changed = false;
-    range_mode_changed |= ImGui::Checkbox("auto range", &map.auto_range);
-    ImGui::SetItemTooltip("Follow the spread of the field on the surface: its 1st to 99th percentile");
-    ImGui::SameLine();
-    range_mode_changed |= ImGui::Checkbox("symmetric", &map.symmetric);
-    ImGui::SetItemTooltip("A range centred on zero");
-    if (range_mode_changed) {
-        if (map.symmetric && !map.auto_range) {
-            const float r = MAX(fabsf(map.range_beg), fabsf(map.range_end));
-            map.range_beg = -r;
-            map.range_end =  r;
-        }
-        surface_field_mapping_update_range(&map, vol);
-    }
-
-    const float data_ext = MAX(fabsf(vol.surface_min), fabsf(vol.surface_max)) * fscl;
-    const float limit = data_ext > 0.0f ? 1.5f * data_ext : 1.0f;
-    char fmt[48];
-    snprintf(fmt, sizeof(fmt), "%%.4g %s", unit);
-    if (map.symmetric) {
-        float r = MAX(fabsf(map.range_beg), fabsf(map.range_end)) * fscl;
-        if (ImGui::SliderFloat("range ±", &r, 0.0f, limit, fmt)) {
-            map.range_beg = -r / fscl;
-            map.range_end =  r / fscl;
-            map.auto_range = false;
-        }
-    } else {
-        float beg = map.range_beg * fscl;
-        float end = map.range_end * fscl;
-        if (ImGui::RangeSliderFloat("range", &beg, &end, -limit, limit, fmt)) {
-            map.range_beg = beg / fscl;
-            map.range_end = end / fscl;
-            map.auto_range = false;
-        }
-    }
-
-    if (vol.num_surface_samples > 0) {
-        ImGui::TextDisabled("on surface: %.4g to %.4g %s", vol.surface_lo * scl, vol.surface_hi * scl, unit);
-        ImGui::SetItemTooltip("1st to 99th percentile; extremes %.4g to %.4g %s", vol.surface_min * scl, vol.surface_max * scl, unit);
-        if (advanced) {
-            ImGui::TextDisabled("%zu of %zu voxels evaluated", vol.num_evaluated, vol.num_voxels);
-        }
+    color_scale_draw_controls(&es.field_map, surface_field_span(vol), surface_field_unit(es.field_kind),
+                              "on surface", "its 1st to 99th percentile on the surface");
+    if (advanced && vol.num_surface_samples > 0) {
+        ImGui::TextDisabled("%zu of %zu voxels evaluated", vol.num_evaluated, vol.num_voxels);
     }
 
     return update_rep;
@@ -3571,78 +3511,59 @@ static void draw_representations_window(ApplicationState* state) {
                     update_rep = true;
                 }
 
-                if (rep.color_mapping == ColorMapping::Property) {
+                if (rep.color_mapping == ColorMapping::Attribute) {
                     // The list of per atom fields IS the system's attribute table under atom/.
                     // Queried here rather than cached anywhere, so it cannot disagree with the data.
                     md_attribute_id_t prop_ids[64];
-                    size_t num_props = MIN(atom_property_query(prop_ids, ARRAY_SIZE(prop_ids), state->mold.sys), ARRAY_SIZE(prop_ids));
+                    size_t num_props = MIN(atom_attribute_query(prop_ids, ARRAY_SIZE(prop_ids), state->mold.sys), ARRAY_SIZE(prop_ids));
 
                     const md_attributes_t& attributes = state->mold.sys.attributes;
-                    const md_attribute_t* selected_prop = md_attributes_get(&attributes, rep.atomic_property.key);
+                    const md_attribute_t* selected_prop = md_attributes_get(&attributes, rep.atom_attribute.key);
 
                     // A key the table no longer holds - a reload which dropped that field - falls
                     // back to the first available rather than leaving the representation blank.
                     if (!selected_prop && num_props > 0) {
-                        atom_property_select(&rep.atomic_property, prop_ids[0], state->mold.sys);
-                        selected_prop = md_attributes_get(&attributes, rep.atomic_property.key);
+                        atom_attribute_select(&rep.atom_attribute, prop_ids[0], state->mold.sys);
+                        selected_prop = md_attributes_get(&attributes, rep.atom_attribute.key);
                         update_rep = true;
                     }
 
                     if (num_props > 0 && selected_prop) {
-                        if (ImGui::BeginCombo("property", atom_property_label(selected_prop).ptr)) {
+                        if (ImGui::BeginCombo("attribute", atom_attribute_label(selected_prop).ptr)) {
                             for (size_t i = 0; i < num_props; ++i) {
                                 const md_attribute_t* attr = md_attributes_get(&attributes, prop_ids[i]);
                                 if (!attr) continue;
-                                bool selected = prop_ids[i] == rep.atomic_property.key;
-                                if (ImGui::Selectable(atom_property_label(attr).ptr, selected)) {
-                                    atom_property_select(&rep.atomic_property, prop_ids[i], state->mold.sys);
+                                bool selected = prop_ids[i] == rep.atom_attribute.key;
+                                if (ImGui::Selectable(atom_attribute_label(attr).ptr, selected)) {
+                                    atom_attribute_select(&rep.atom_attribute, prop_ids[i], state->mold.sys);
                                     update_rep = true;
                                 }
                             }
                             ImGui::EndCombo();
                         }
 
-                        const int num_variants = atom_property_variant_count(selected_prop);
+                        const int num_variants = atom_attribute_variant_count(selected_prop);
                         if (num_variants > 1) {
-                            int idx = rep.atomic_property.variant_idx + 1;
+                            int idx = rep.atom_attribute.variant_idx + 1;
                             const int min = 1;
                             const int max = num_variants;
                             if (ImGui::SliderInt("index", &idx, min, max)) {
                                 update_rep = true;
                             }
-                            rep.atomic_property.variant_idx = CLAMP(idx - 1, 0, num_variants - 1);
+                            rep.atom_attribute.variant_idx = CLAMP(idx - 1, 0, num_variants - 1);
                         }
                         
-                        if (ImPlot::ColormapButton(ImPlot::GetColormapName(rep.atomic_property.colormap), ImVec2(inner_item_width,0), rep.atomic_property.colormap)) {
-                            ImGui::OpenPopup("Color Map Selector");
-                        }
-
-                        // The data's own span, taken when the field was selected. Not recomputed
-                        // here: it is what the user's range is measured against, and a value which
-                        // moved underneath the slider would move the slider.
-						const float value_pad = MAX(fabsf(rep.atomic_property.value_min), fabsf(rep.atomic_property.value_max));
-                        const float value_min = rep.atomic_property.value_min - value_pad;
-                        const float value_max = rep.atomic_property.value_max + value_pad;
-
-						// Otherwise, we allow independent scaling of the min and max values
-                        // Scale a bit outside of the default range
-                        update_rep |= ImGui::RangeSliderFloat("min / max", &rep.atomic_property.range_beg, &rep.atomic_property.range_end, value_min, value_max);
-
-                        if (ImGui::BeginPopup("Color Map Selector")) {
-                            for (int map = 0; map < ImPlot::GetColormapCount(); ++map) {
-                                if (ImPlot::ColormapButton(ImPlot::GetColormapName(map), ImVec2(inner_item_width,0), map)) {
-                                    rep.atomic_property.colormap = map;
-                                    update_rep = true;
-                                    ImGui::CloseCurrentPopup();
-                                }
-                            }
-                            ImGui::EndPopup();
-                        }
+                        // The same scale an isosurface coloured by a field has. Its span is what
+                        // the colours were last made from, the atoms of this representation.
+                        const bool multiple = num_variants > 1;
+                        update_rep |= color_scale_draw_controls(&rep.atom_attribute.scale, rep.atom_attribute.span, selected_prop->unit, "shown atoms",
+                                                                multiple ? "the smallest to the largest value of the atoms shown, at every index"
+                                                                         : "the smallest to the largest value of the atoms shown");
                     } else {
-                        ImGui::Text("no properties available");
+                        ImGui::TextDisabled("no per atom attributes in this dataset");
                     }
                 }
-                if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Property) {
+                if (rep.filt_is_dynamic || rep.color_mapping == ColorMapping::Attribute) {
                     if (advanced) {
                         update_rep |= ImGui::Checkbox("auto-update", &rep.dynamic_evaluation);
                         if (!rep.dynamic_evaluation) {
@@ -6286,67 +6207,31 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
     ImGui::End();
 }
 
-// The legend of a field coloured surface: its colour map over the range it spans, with values and
-// unit, in a window without decoration over the view. Like the coordinate widget it takes no input
-// unless Alt is held, and then it can be moved and resized; where it was is kept in the .ini.
-static void draw_field_legend_window(const ElectronicStructureRepresentation& es, int rep_idx, const char* rep_name) {
-    const SurfaceFieldMapping& map = es.field_map;
-    if (map.range_end == map.range_beg) return;
-
-    char unit[32] = "";
-    const double scl = display_units::factor_print(unit, sizeof(unit), surface_field_unit(es.field_kind));
-    char header[96];
-    if (unit[0]) snprintf(header, sizeof(header), "%s (%s)", surface_field_kind_str[(int)es.field_kind], unit);
-    else         snprintf(header, sizeof(header), "%s", surface_field_kind_str[(int)es.field_kind]);
-
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const float width = MAX(ImGui::CalcTextSize(header).x + 2.0f * style.WindowPadding.x, 120.0f);
-    const float height = 300.0f;
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - width - 20.0f, viewport->WorkPos.y + 60.0f + 40.0f * (float)rep_idx), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(80, 120), ImVec2(1000, 2000));
-
-    const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
-                             ImGuiWindowFlags_NoFocusOnAppearing;
-    if (!editable) {
-        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoInputs;
-    }
-
-    // The look of the text the script draws into the view: light on a translucent dark backing,
-    // which reads on any background and any colour map
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, editable ? 0.65f : 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 5.0f);
-    ImPlot::PushStyleColor(ImPlotCol_FrameBg, ImVec4(0, 0, 0, 0));
-
-    char title[160];
-    snprintf(title, sizeof(title), "Legend: %s###field_legend_%d", rep_name, rep_idx);
-    if (ImGui::Begin(title, nullptr, flags)) {
-        ImGui::TextUnformatted(header);
-        const ImVec2 avail = ImGui::GetContentRegionAvail();
-        char id[32];
-        snprintf(id, sizeof(id), "##scale%d", rep_idx);
-        ImPlot::ColormapScale(id, map.range_beg * scl, map.range_end * scl, ImVec2(avail.x, avail.y), "%g", ImPlotColormapScaleFlags_NoLabel, map.colormap);
-    }
-    ImGui::End();
-
-    ImPlot::PopStyleColor();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(2);
-}
-
-static void draw_field_legend_windows(const ApplicationState& state) {
+// The legends of the representations that colour by a value: the field of an isosurface, or the
+// attribute of its atoms. One per representation at most, since one representation colours by one
+// thing, and only while what it shows exists - a legend of nothing would mislead.
+static void draw_color_legend_windows(const ApplicationState& state) {
     const size_t num_reps = md_array_size(state.representation.reps);
+    int slot = 0;
     for (size_t i = 0; i < num_reps; ++i) {
         const Representation& rep = state.representation.reps[i];
-        if (!rep.enabled || rep.type != RepresentationType::ElectronicStructure) continue;
-        const ElectronicStructureRepresentation& es = rep.electronic_structure;
-        // Only while the surface is coloured by a field that exists: a legend of nothing would mislead
-        if (es.coloring != SurfaceColoring::Field || !es.field_map.show_legend || !es.field_vol.tex_id) continue;
-        draw_field_legend_window(es, (int)i, rep.name);
+        if (!rep.enabled) continue;
+
+        if (rep.type == RepresentationType::ElectronicStructure) {
+            const ElectronicStructureRepresentation& es = rep.electronic_structure;
+            if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && es.field_vol.tex_id) {
+                color_scale_draw_legend(es.field_map, surface_field_unit(es.field_kind), surface_field_kind_str[(int)es.field_kind], rep.name, (int)i, slot++);
+                continue;
+            }
+        }
+
+        if (representation_uses_atom_colors(rep) && rep.color_mapping == ColorMapping::Attribute && rep.atom_attribute.scale.show_legend) {
+            const md_attribute_t* attr = md_attributes_get(&state.mold.sys.attributes, rep.atom_attribute.key);
+            if (!attr) continue;
+            char label[128];
+            atom_attribute_legend_label(label, sizeof(label), attr, rep.atom_attribute.variant_idx);
+            color_scale_draw_legend(rep.atom_attribute.scale, attr->unit, label, rep.name, (int)i, slot++);
+        }
     }
 }
 

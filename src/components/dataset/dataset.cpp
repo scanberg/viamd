@@ -1107,7 +1107,7 @@ struct Dataset : viamd::EventHandler {
             row.num_atoms += atoms.end - atoms.beg;
             for (uint32_t a = atoms.beg; a < atoms.end && a < sys.atom.count; ++a) {
                 row.mass += md_atom_mass(&sys.atom, a);
-                if (charge && !atom_property_value_absent(charge[a])) row.charge += charge[a];
+                if (charge && !atom_attribute_value_absent(charge[a])) row.charge += charge[a];
                 atom_row[a] = e;
                 counts[e].beads += md_atom_particle_kind(&sys.atom, a) == MD_PARTICLE_BEAD;
             }
@@ -1130,7 +1130,7 @@ struct Dataset : viamd::EventHandler {
             rest.num_atoms += 1;
             rest.mass += md_atom_mass(&sys.atom, a);
             // An atom without a charge (a QM atom beside an embedding's sites) adds none
-            if (charge && !atom_property_value_absent(charge[a])) rest.charge += charge[a];
+            if (charge && !atom_attribute_value_absent(charge[a])) rest.charge += charge[a];
         }
         if (rest.num_atoms > 0) {
             md_array_push(c.rows, rest, data.allocator.persistent);

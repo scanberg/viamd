@@ -566,7 +566,7 @@ struct DensityVolume : viamd::EventHandler {
                         }
 
                         if (ImGui::BeginCombo("color", color_mapping_str[(int)rep.colormap])) {
-                            for (int i = 0; i < (int)ColorMapping::Property; ++i) {
+                            for (int i = 0; i < (int)ColorMapping::Attribute; ++i) {
                                 if (ImGui::Selectable(color_mapping_str[i], (int)rep.type == i)) {
                                     rep.colormap = (ColorMapping)i;
                                     dirty_rep = true;
